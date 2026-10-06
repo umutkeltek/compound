@@ -184,6 +184,11 @@ func BindSelectionBeforePreflight(wenv envelope.WorkEnvelope, harnessName string
 	if err != nil {
 		return harness.RunInput{}, err
 	}
+	// Same refusal the shared runner applies, raised here so the public CLI
+	// refuses before any envelope state change.
+	if err := harness.CheckSelectionApplicable(harnessName, &snapshot); err != nil {
+		return harness.RunInput{}, err
+	}
 	input.ExecutionSelectionSnapshot = &snapshot
 	if harnessName != "codex" || snapshot.LaunchProfileID == "" {
 		return input, nil
@@ -198,65 +203,42 @@ func BindSelectionBeforePreflight(wenv envelope.WorkEnvelope, harnessName string
 	return input, nil
 }
 
-// applyEffortEvidence stamps the honest evidence about whether the
-// applied effort is known. Today the wire cannot attest applied effort
-// for any production harness (the Claude wrapper carries effort as
-// SB_LANE_REQUESTED_EFFORT env without argv), so the snapshot records
-// RequestedEffort and leaves AppliedEffort empty with evidence
-// "unobservable:wrapper carries effort as env only; no argv or settings
-// pin attests the applied value". The validator refuses an AppliedEffort
-// paired with unobservable evidence, so the snapshot cannot accidentally
-// claim an applied value the wire never proved.
+// applyEffortEvidence stamps the honest evidence about whether the requested
+// effort can be applied, read from the harness's registry selection row
+// (harness.SelectionCapabilityFor) instead of a name list. The requested value
+// is NEVER cleared: when the row says the harness cannot apply it, the
+// evidence says so and the shared runner refuses the launch before mint
+// (selection_unsupported:<harness>:effort). Recording a request and then
+// running without it was the silent drop this replaces.
 //
-// work_r7a_execution_selection_20260911.
+// work_r7a_execution_selection_20260911; fail-closed 2026-10-06.
 func applyEffortEvidence(snap *runattempt.ExecutionSelectionSnapshot) {
-	switch snap.Harness {
-	case "claude_code", "claude_minimax", "claude_mini", "claude_zai", "claude_qwen", "claude":
-		if snap.RequestedEffort == "" {
-			return
-		}
-		// Today: every claude_* wrapper carries effort as
-		// SB_LANE_REQUESTED_EFFORT env. No argv, no settings file
-		// pin. Record unobservable honestly so a reader sees the
-		// requested value but never a claimed-applied value.
-		snap.EffortEvidence = "unobservable:wrapper carries effort as env only (SB_LANE_REQUESTED_EFFORT); no argv or settings pin attests the applied value"
-	case "codex":
-		// Native Codex applies this in the adapter. Keep the requested value
-		// until the adapter attests argv application or refuses the launch.
-		if snap.RequestedEffort != "" {
-			snap.EffortEvidence = "unobservable:Codex effort application awaits adapter preflight"
-		} else {
-			snap.EffortEvidence = "unsupported:no Codex effort requested"
-		}
-	default:
-		// os-harness-entrypoints / unknown: no effort control.
+	capability, _ := harness.SelectionCapabilityFor(snap.Harness)
+	switch {
+	case snap.RequestedEffort == "" && capability.EffortPassable:
+		snap.EffortEvidence = "unsupported:no effort requested"
+	case snap.RequestedEffort == "":
 		snap.EffortEvidence = "unsupported:harness " + snap.Harness + " has no effort control"
-		snap.RequestedEffort = ""
+	case capability.EffortPassable:
+		// The adapter attests argv application at Run, or refuses the launch.
+		snap.EffortEvidence = "unobservable:" + snap.Harness + " effort application awaits adapter argv attestation"
+	default:
+		snap.EffortEvidence = "unsupported:harness " + snap.Harness + " cannot apply a requested effort; launch refuses selection_unsupported"
 	}
 }
 
-// applyNativeSessionEvidence stamps the honest evidence about whether a
-// native session id is known. Today the production wire does not yet
-// pin --session-id on the Claude adapter argv (the wire would need a
-// RunInput field that the runner hands to the adapter, and that path
-// is not implemented in v0.1), so the snapshot records
-// unsupported:wire does not pin --session-id today. The validator
-// refuses a NativeSessionID paired with unsupported evidence, so the
-// snapshot cannot accidentally claim a pinned session it never proved.
+// applyNativeSessionEvidence stamps the honest native-session evidence from
+// the same registry row. No harness pins a session from the wire today, so the
+// row's SessionEvidence (unsupported/unobservable) is what a reader sees; the
+// validator refuses a NativeSessionID paired with either.
 //
 // work_r7a_execution_selection_20260911.
 func applyNativeSessionEvidence(snap *runattempt.ExecutionSelectionSnapshot) {
 	if snap.NativeSessionEvidence != "" {
 		return
 	}
-	switch snap.Harness {
-	case "claude_code", "claude_minimax", "claude_mini", "claude_zai", "claude_qwen", "claude":
-		snap.NativeSessionEvidence = "unsupported:wire does not pin --session-id on the argv in v0.1; pass --session-id directly via the wrapper for explicit pinning"
-	case "codex":
-		snap.NativeSessionEvidence = "unobservable:Codex native session ID is not captured by this adapter"
-	default:
-		snap.NativeSessionEvidence = "unsupported:harness " + snap.Harness + " has no native session concept"
-	}
+	capability, _ := harness.SelectionCapabilityFor(snap.Harness)
+	snap.NativeSessionEvidence = firstNonEmpty(capability.SessionEvidence, "unsupported:harness "+snap.Harness+" has no native session concept")
 }
 
 // envelopePtr returns *envelope.ExecutionSelection, treating a nil as a

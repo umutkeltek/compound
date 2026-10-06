@@ -98,6 +98,11 @@ type Harness struct {
 	// understands X.Y.Z and nothing else — see the deepseek_harness note there
 	// for the pre-release case that is deliberately left unprobed.
 	ExpectedVersion string `json:"expected_version,omitempty"`
+
+	// Selection is what this harness's launch can do with a requested model,
+	// effort, and session (selection_capability.go). Nil means no row: every
+	// requested model or effort on it is refused before launch.
+	Selection *SelectionCapability `json:"selection,omitempty"`
 }
 
 // Registry maps harness name -> capabilities.
@@ -171,6 +176,7 @@ func DefaultRegistry() Registry {
 	return Registry{Harnesses: map[string]Harness{
 		"claude_code": {
 			Name:                 "claude_code",
+			Selection:            claudeLaneSelection(),
 			Posture:              PostureInteractive,
 			InstructionMechanism: "settings + hooks + CLAUDE.md",
 			Capabilities: Capabilities{
@@ -190,6 +196,7 @@ func DefaultRegistry() Registry {
 		},
 		"claude_zai": {
 			Name:                 "claude_zai",
+			Selection:            claudeLaneSelection(),
 			Posture:              PostureUnattended,
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
 			// Unlike the `_providers` lanes, this one is a FULL Claude profile with
@@ -215,6 +222,7 @@ func DefaultRegistry() Registry {
 		},
 		"claude_minimax": {
 			Name:                 "claude_minimax",
+			Selection:            claudeLaneSelection(),
 			Posture:              PostureUnattended,
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
 			// A lane declaration is a conservative FLOOR, not an aspiration. Every hook flag here
@@ -256,6 +264,7 @@ func DefaultRegistry() Registry {
 		},
 		"claude_qwen": {
 			Name:                 "claude_qwen",
+			Selection:            claudeLaneSelection(),
 			Posture:              PostureUnattended,
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
 			// This is the raise, mirroring claude_minimax: `compound hook install
@@ -287,6 +296,7 @@ func DefaultRegistry() Registry {
 		},
 		"claude_zai_full": {
 			Name:                 "claude_zai_full",
+			Selection:            claudeLaneSelection(),
 			Posture:              PostureUnattended,
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
 			// Hook flags once sat at zero because this lane's settings registered no
@@ -310,6 +320,7 @@ func DefaultRegistry() Registry {
 		},
 		"claude_neuralwatt": {
 			Name:                 "claude_neuralwatt",
+			Selection:            claudeLaneSelection(),
 			Posture:              PostureUnattended,
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
 			// Registry identity only. This lane is a Claude-family launch profile that
@@ -338,6 +349,7 @@ func DefaultRegistry() Registry {
 		},
 		"claude_gpt56_sol_wpcom": {
 			Name:                 "claude_gpt56_sol_wpcom",
+			Selection:            claudeLaneSelection(),
 			Posture:              PostureUnattended,
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
 			// Registry identity only. Same floor as claude_neuralwatt: no installed hook
@@ -358,6 +370,7 @@ func DefaultRegistry() Registry {
 		},
 		"claude_gpt56_sol_wpcom_headroom": {
 			Name:                 "claude_gpt56_sol_wpcom_headroom",
+			Selection:            claudeLaneSelection(),
 			Posture:              PostureUnattended,
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
 			// Registry identity only. Same floor as claude_gpt56_sol_wpcom; the
@@ -378,6 +391,7 @@ func DefaultRegistry() Registry {
 		},
 		"claude_gpt": {
 			Name:                 "claude_gpt",
+			Selection:            claudeLaneSelection(),
 			Posture:              PostureUnattended,
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
 			// Registry identity only. Same floor as the other new lanes; this one routes
@@ -398,6 +412,7 @@ func DefaultRegistry() Registry {
 		},
 		"claude_kimi": {
 			Name:                 "claude_kimi",
+			Selection:            claudeLaneSelection(),
 			Posture:              PostureUnattended,
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
 			// Registry identity only. Kimi K3 coding plan via rotating OAuth is a
@@ -418,6 +433,7 @@ func DefaultRegistry() Registry {
 		},
 		"claude_deepseek_flash_api": {
 			Name:                 "claude_deepseek_flash_api",
+			Selection:            claudeLaneSelection(),
 			Posture:              PostureUnattended,
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
 			// Registry identity only. Direct DEEPSEEK_API_KEY upstream, falls back to the
@@ -438,6 +454,7 @@ func DefaultRegistry() Registry {
 		},
 		"claude_deepseek_flash_nvidia": {
 			Name:                 "claude_deepseek_flash_nvidia",
+			Selection:            claudeLaneSelection(),
 			Posture:              PostureUnattended,
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
 			// Registry identity only. NVIDIA Build free tier, rate-limited; multiple
@@ -458,6 +475,7 @@ func DefaultRegistry() Registry {
 		},
 		"codex": {
 			Name:                 "codex",
+			Selection:            codexSelection(),
 			Posture:              PostureInteractive,
 			InstructionMechanism: "AGENTS.md + hooks + skills (progressive disclosure)",
 			Capabilities: Capabilities{
@@ -485,6 +503,7 @@ func DefaultRegistry() Registry {
 		},
 		"hermes": {
 			Name:                 "hermes",
+			Selection:            noSelectionControl("registry identity only; no executor adapter"),
 			Posture:              PostureUnattended,
 			InstructionMechanism: "AGENTS.md + plugin lifecycle hooks + skills + MCP",
 			Capabilities: Capabilities{
@@ -503,6 +522,7 @@ func DefaultRegistry() Registry {
 		},
 		"opencode": {
 			Name:                 "opencode",
+			Selection:            noSelectionControl("registry identity only; no executor adapter"),
 			Posture:              PostureUnattended,
 			InstructionMechanism: "config instructions + plugins + native skills",
 			Capabilities: Capabilities{
@@ -522,6 +542,7 @@ func DefaultRegistry() Registry {
 		},
 		"prime_agent": {
 			Name:                 "prime_agent",
+			Selection:            noSelectionControl("pi adapter never places RunInput model or effort on argv; only caller Args can"),
 			Posture:              PostureUnattended,
 			InstructionMechanism: "AGENTS.md + system-prompt arg + --no-session headless invocation + structured-IPC mode",
 			// Prime-agent has no SessionStart/UserPromptSubmit/PreToolUse/PostToolUse hook
@@ -579,7 +600,8 @@ func DefaultRegistry() Registry {
 			ExpectedVersion: "0.8.0",
 		},
 		"oh_my_pi": {
-			Name: "oh_my_pi",
+			Name:      "oh_my_pi",
+			Selection: noSelectionControl("pi adapter never places RunInput model or effort on argv; only caller Args can"),
 			// The OMP hook shim wraps compound with its own ~8s hard kill. The
 			// internal fail-open watchdog MUST answer before that (5-6s, with a
 			// margin to persist the timeout evidence), or the outer kill wins
@@ -643,6 +665,7 @@ func DefaultRegistry() Registry {
 		},
 		"qwen_code": {
 			Name:                 "qwen_code",
+			Selection:            noSelectionControl("registry identity only; no executor adapter"),
 			InstructionMechanism: "QWEN.md/AGENTS.md context files + .qwen/ project dirs + -p headless with -o text|json|stream-json",
 			// Conservative FLOOR. qwen-code is the one harness here whose hook surface
 			// has the same SHAPE as claude_code's — SessionStart, UserPromptSubmit,
@@ -690,6 +713,7 @@ func DefaultRegistry() Registry {
 		},
 		"deepseek_harness": {
 			Name:                 "deepseek_harness",
+			Selection:            noSelectionControl("registry identity only; no executor adapter"),
 			InstructionMechanism: "cordis plugin profile layers under $DSH_HOME/profiles/<name> + --patch overlays + `dsh --profile headless <task>` one-shot",
 			// ADOPT-LATER row. The identity is recorded so the decision has a written
 			// owner instead of being re-derived, and so a later lane has a stable id to

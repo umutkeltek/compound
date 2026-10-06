@@ -39,11 +39,12 @@ func TestWorkAdvanceExecuteUsesSavedSelectionWithoutHarnessFlag(t *testing.T) {
 		LaunchProfileRevision: "sha256:eeb7c22957a53d0876ede9bf0a28515c27665f5f2e329e83d93768d715400f4a",
 		Harness:               "os-harness-entrypoints",
 		ProviderRoute:         "os/test",
-		RequestedModelID:      "os-model",
-		Source:                "explicit",
-		Revision:              1,
-		SelectedBy:            "claude_code:orchestrator",
-		SelectedAt:            now.Format(time.RFC3339),
+		// No requested model: os-harness-entrypoints binds none, and an
+		// unapplicable saved model is refused rather than dropped.
+		Source:     "explicit",
+		Revision:   1,
+		SelectedBy: "claude_code:orchestrator",
+		SelectedAt: now.Format(time.RFC3339),
 	}
 	w, err := store.Create(work.CreateInput{
 		Owner: "codex", Actor: "codex",

@@ -19,6 +19,10 @@ This is the per-family record required by
   `terminalization_reason`. A work-close-owned terminalization prepares its
   immutable intent before publishing terminal work, fences generic terminal
   writers, then completes against that exact intent.
+- **[MINOR]** Added optional append-once `observed` (observed model, effort,
+  session, hook posture, and source) beside `execution_selection`. It records
+  what the launch read back before start; it never rewrites the requested
+  snapshot, and it is absent (not zeroed) when nothing was observable.
 - A terminal harness- or caller-owned completion may record owner/proof fields
   without a prepared work-close intent. The absence of an intent is therefore
   not invalid by itself; ownership determines whether preparation was owed.

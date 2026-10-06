@@ -2,6 +2,7 @@ package executewire
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -196,7 +197,6 @@ func TestLaunchStampsSelectionSnapshotBeforeAdapterRun(t *testing.T) {
 		Harness:               "claude_minimax",
 		ProviderRoute:         "minimax/MiniMax-M3",
 		RequestedModelID:      "MiniMax-M3",
-		RequestedEffort:       "xhigh",
 		Source:                "explicit",
 		Revision:              2,
 		SelectedBy:            "claude_code:orchestrator",
@@ -319,14 +319,18 @@ func TestLaunchRecordsUnsupportedEffortHonestly(t *testing.T) {
 	w = attachGitDelivery(t, store, w)
 	driveToRunning(t, store, w.ID, "actor", now)
 
-	restoreResolver := installDelegateResolver(t, "os-harness-entrypoints", "os-entrypoint", "os-model", "os/path")
+	// claude lanes bind the routed model but have no effort control; with no
+	// effort requested the launch proceeds and records that honestly. (The
+	// old fixture used os-harness-entrypoints, which binds no model: the
+	// routed model now refuses there, see TestLaunchRefusesClaudeLaneEffortBeforeAdapterRun.)
+	restoreResolver := installDelegateResolver(t, "claude_minimax", "claude", "MiniMax-M3", "minimax/MiniMax-M3")
 	defer restoreResolver()
-	stub := &snapshotStub{name: "os-harness-entrypoints"}
-	registerStubAdapter(t, home, "os-harness-entrypoints", stub)
+	stub := &snapshotStub{name: "claude_minimax"}
+	registerStubAdapter(t, home, "claude_minimax", stub)
 	restoreReadiness := installReadinessStub(t)
 	defer restoreReadiness()
 
-	if _, err := LaunchViaActuator(store, w.ID, "os-harness-entrypoints", "os-harness-entrypoints", "stub", "actor", now); err != nil {
+	if _, err := LaunchViaActuator(store, w.ID, "claude_minimax", "claude_minimax", "stub", "actor", now); err != nil {
 		t.Fatalf("launch: %v", err)
 	}
 	snap := stub.observedSnap.Load()
@@ -377,4 +381,76 @@ func writeDriftedProfileManifest(t *testing.T, home string) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, "model-capabilities.yaml"), []byte(body), 0o644)
+}
+
+// Fail-closed 2026-10-06: a saved claude-lane effort the wrapper cannot apply
+// is refused by the wire with the typed reason BEFORE any launch authority or
+// RunAttempt is minted; the adapter never runs. Preflight refuses the same way
+// so the unattended seam treats it as a skip, not a failed launch.
+func TestLaunchRefusesClaudeLaneEffortBeforeAdapterRun(t *testing.T) {
+	home := initTestHome(t)
+	if err := writeDriftedProfileManifest(t, home); err != nil {
+		t.Fatal(err)
+	}
+	stubHomePath = home
+	store, err := work.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	sel := &envelope.ExecutionSelection{
+		LaunchProfileID:       "claude-minimax",
+		LaunchProfileRevision: "sha256:eeb7c22957a53d0876ede9bf0a28515c27665f5f2e329e83d93768d715400f4a",
+		Harness:               "claude_minimax",
+		ProviderRoute:         "minimax/MiniMax-M3",
+		RequestedModelID:      "MiniMax-M3",
+		RequestedEffort:       "xhigh",
+		Source:                "explicit",
+		Revision:              2,
+		SelectedBy:            "claude_code:orchestrator",
+		SelectedAt:            now.Format(time.RFC3339),
+	}
+	w := seedReadyWorkWithSelection(t, store, "work_sel_effort_refused", sel)
+	w = attachGitDelivery(t, store, w)
+
+	restoreResolver := installDelegateResolver(t, "claude_minimax", "claude", "MiniMax-M3", "minimax/MiniMax-M3")
+	defer restoreResolver()
+	stub := &snapshotStub{name: "claude_minimax"}
+	registerStubAdapter(t, home, "claude_minimax", stub)
+	restoreReadiness := installReadinessStub(t)
+	defer restoreReadiness()
+
+	const want = "selection_unsupported:claude_minimax:effort"
+	if err := PreflightViaActuator(store, w.ID, "claude_minimax", now); err == nil || err.Error() != want {
+		t.Fatalf("preflight err = %v, want %s", err, want)
+	}
+	driveToRunning(t, store, w.ID, "test-actor", now)
+	before, err := store.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rattID, err := LaunchViaActuator(store, w.ID, "claude_minimax", "claude_minimax", "stub-prompt", "test-actor", now)
+	var refusal *harness.SelectionUnsupportedError
+	if !errors.As(err, &refusal) || err.Error() != want || rattID != "" {
+		t.Fatalf("launch = (%q, %v), want refusal %s", rattID, err, want)
+	}
+	if stub.observedInput.Load() != nil {
+		t.Fatal("adapter ran despite the refusal")
+	}
+	attempts, err := runattempt.Open(home).List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ra := range attempts {
+		if ra.Origin == runattempt.OriginHarnessExecution {
+			t.Fatalf("refusal minted a harness execution attempt: %+v", ra)
+		}
+	}
+	after, err := store.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != before.State || len(after.RunAttemptIDs) != len(before.RunAttemptIDs) || after.PolicyDecisionID != before.PolicyDecisionID {
+		t.Fatalf("refusal mutated the envelope: before=%s/%v after=%s/%v", before.State, before.RunAttemptIDs, after.State, after.RunAttemptIDs)
+	}
 }

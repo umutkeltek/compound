@@ -69,6 +69,7 @@ type runAttemptStore interface {
 	SetCommand(id, command string) (runattempt.RunAttempt, error)
 	SetExecutionPosture(id string, posture runattempt.ExecutionPosture) (runattempt.RunAttempt, error)
 	SetExecutionSelectionSnapshot(id string, snap runattempt.ExecutionSelectionSnapshot) (runattempt.RunAttempt, error)
+	SetObservedExecution(id string, obs runattempt.ObservedExecution) (runattempt.RunAttempt, error)
 	SetDispatchIntent(id, laneID, requestedModelID, requestedProviderRoute string) (runattempt.RunAttempt, error)
 	SetProofRefs(id string, refs []string) (runattempt.RunAttempt, error)
 	SetTranscript(id, ref string) (runattempt.RunAttempt, error)
@@ -129,6 +130,13 @@ func runWithSubprocessOptions(
 	if err := validateSubprocessInput(harnessName, in); err != nil {
 		return RunOutput{}, err
 	}
+	// Fail closed BEFORE mint: a requested model or effort this harness cannot
+	// apply is a typed refusal (selection_unsupported:<harness>:<field>), never
+	// a run that silently drops the request. No attempt, no command.
+	if err := CheckSelectionApplicable(harnessName, in.ExecutionSelectionSnapshot); err != nil {
+		return RunOutput{}, err
+	}
+	hookReading, hookKnown := readHookPosture(harnessName)
 	killTree := killProcessTree
 	if options.killProcessTree != nil {
 		killTree = options.killProcessTree
@@ -209,7 +217,11 @@ func runWithSubprocessOptions(
 		}
 	}
 	if in.ExecutionSelectionSnapshot != nil {
-		if stamped, sErr := store.SetExecutionSelectionSnapshot(ra.ID, *in.ExecutionSelectionSnapshot); sErr != nil {
+		snap := *in.ExecutionSelectionSnapshot
+		if snap.SettingsDigest == "" && hookKnown {
+			snap.SettingsDigest = settingsDigest(harnessName, hookReading)
+		}
+		if stamped, sErr := store.SetExecutionSelectionSnapshot(ra.ID, snap); sErr != nil {
 			return failTerm("stamp execution selection snapshot: " + sErr.Error()), fmt.Errorf("%s: stamp execution selection snapshot: %w", harnessName, sErr)
 		} else {
 			ra = stamped
@@ -270,6 +282,13 @@ func runWithSubprocessOptions(
 		}
 	}
 	cmd := build(ctx, in)
+	// The observed leg is read from the command actually built and stamped
+	// once beside (never into) the requested snapshot; nothing observed, no block.
+	if obs, ok := observeLaunch(harnessName, cmd, hookReading, hookKnown); ok {
+		if _, err := store.SetObservedExecution(ra.ID, obs); err != nil {
+			return failTerm("stamp observed execution: " + err.Error()), fmt.Errorf("%s: stamp observed execution: %w", harnessName, err)
+		}
+	}
 	// Spawn the subprocess in its own process group (unix only; a no-op
 	// elsewhere) so the timeout kill below reaps the whole tree, not just the
 	// direct child -- see procgroup_unix.go for the orphaned-grandchild hang

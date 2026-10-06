@@ -24,6 +24,9 @@ type SettingsMatrixRow struct {
 	Settings          []OwnedSetting        `json:"settings"`
 	Sources           []SettingSourceReport `json:"declared_sources"`
 	Unverified        []string              `json:"unverified"`
+	// Selection is the registry row's launch selection capability; nil when
+	// the registry carries none (every requested model/effort then refuses).
+	Selection *SelectionCapability `json:"selection,omitempty"`
 }
 type SettingsMatrix struct {
 	SchemaVersion string              `json:"schema_version"`
@@ -40,7 +43,7 @@ func SettingsMatrixFor(homePath string, registry Registry, only string) Settings
 		if only != "" && name != only {
 			continue
 		}
-		row := SettingsMatrixRow{Harness: name, AuthorityRef: PermissionAuthorityRef(name), AuthorityStatus: "unavailable", NativeStatus: "unverified", OverallStatus: "unverified", Settings: []OwnedSetting{}, Sources: []SettingSourceReport{}, Unverified: []string{"effective_session_model_and_effort", "undeclared_launch_overrides"}}
+		row := SettingsMatrixRow{Harness: name, AuthorityRef: PermissionAuthorityRef(name), AuthorityStatus: "unavailable", NativeStatus: "unverified", OverallStatus: "unverified", Settings: []OwnedSetting{}, Sources: []SettingSourceReport{}, Unverified: []string{"effective_session_model_and_effort", "undeclared_launch_overrides"}, Selection: registry.Harnesses[name].Selection}
 		policy, revision, err := LoadPermissionAuthority(homePath, name)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {

@@ -915,4 +915,8 @@ var executeStageLaunchRefusalReasons = []string{
 	"lane_unready",
 	"workspace_unresolvable",
 	"adapter_missing",
+	// selection_unsupported:<harness>:<field> -- the saved/override selection
+	// asks for a model or effort the harness cannot apply (internal/harness
+	// SelectionCapability). Deterministic: the envelope is not claimed or burned.
+	"selection_unsupported",
 }

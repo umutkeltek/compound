@@ -16,9 +16,12 @@ func TestWorkAdvanceExecuteSavedProfileFollowsSelectedHarness(t *testing.T) {
 			if override {
 				savedHarness = "codex"
 			}
+			// No requested model: os-harness-entrypoints binds none, and a saved
+			// model it cannot apply is refused (selection_unsupported) rather than
+			// dropped. This test pins profile forwarding, not model application.
 			sel := envelope.ExecutionSelection{
 				LaunchProfileID: "fixture-saved", LaunchProfileRevision: "sha256:" + strings.Repeat("a", 64),
-				Harness: savedHarness, ProviderRoute: "synthetic/route", RequestedModelID: "synthetic-model",
+				Harness: savedHarness, ProviderRoute: "synthetic/route",
 				Source: "explicit", Revision: 1, SelectedBy: "codex", SelectedAt: cliTestNow.Format(time.RFC3339),
 			}
 			if _, err := f.store.SaveExecutionSelection(f.workID, 0, sel, "codex", cliTestNow); err != nil {

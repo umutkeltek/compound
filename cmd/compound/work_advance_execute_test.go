@@ -2164,17 +2164,13 @@ func savedSelectionFixture(t *testing.T, store *work.Store, workID, profileID, h
 	sel := envelope.ExecutionSelection{
 		LaunchProfileID:  profileID,
 		Harness:          harness,
-		ProviderRoute:    "minimax/fixture-route",
-		RequestedModelID: "fixture-model",
+		ProviderRoute:    route,
+		RequestedModelID: model,
 		RequestedEffort:  effort,
 		Source:           "explicit",
 		Revision:         1,
 		SelectedBy:       "codex",
 		SelectedAt:       cliTestNow.UTC().Format(time.RFC3339),
-	}
-	if harness != "os-harness-entrypoints" {
-		sel.ProviderRoute = "fixture/route"
-		sel.RequestedModelID = "fixture-model"
 	}
 	if _, err := store.SaveExecutionSelection(workID, 0, sel, "codex", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -2205,7 +2201,9 @@ func TestWorkAdvanceExecuteSavedSelectionReachesRunAttemptSnapshot(t *testing.T)
 	if _, err := ws.Claim(w.ID, "codex", cliTestNow); err != nil {
 		t.Fatal(err)
 	}
-	savedSelectionFixture(t, ws, w.ID, "fixture-owner", "os-harness-entrypoints", "minimax/fixture-route", "fixture-model", "high")
+	// os-harness-entrypoints runs the caller's command verbatim: it can bind no
+	// requested model or effort, so the saved choice asks for neither.
+	savedSelectionFixture(t, ws, w.ID, "fixture-owner", "os-harness-entrypoints", "minimax/fixture-route", "", "")
 
 	out := captureStdout(t, func() {
 		cmdWork([]string{
@@ -2257,10 +2255,12 @@ func TestWorkAdvanceExecuteSavedSelectionReachesRunAttemptSnapshot(t *testing.T)
 	}
 }
 
-// A one-run --launch-profile override is honored for THIS run and recorded as
-// source=override, while the saved selection is not rewritten. The override's
-// own resolution (route, model, effort) is what the snapshot asks for.
-func TestWorkAdvanceExecuteOneRunOverrideRecordsOverrideSnapshotWithoutRewritingSaved(t *testing.T) {
+// A one-run --launch-profile override resolves a model (owner authority always
+// returns one). os-harness-entrypoints runs the caller's command verbatim and
+// cannot bind it, so the override is refused before any state change with the
+// typed reason, and the saved selection is not rewritten. (Before 2026-10-06
+// the run launched and the snapshot quietly cleared the requested effort.)
+func TestWorkAdvanceExecuteOneRunOverrideUnapplicableModelRefusedWithoutRewritingSaved(t *testing.T) {
 	homePath := initializedExecutionHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
 	ws, err := work.Open(homePath)
@@ -2277,7 +2277,7 @@ func TestWorkAdvanceExecuteOneRunOverrideRecordsOverrideSnapshotWithoutRewriting
 	if _, err := ws.Claim(w.ID, "codex", cliTestNow); err != nil {
 		t.Fatal(err)
 	}
-	savedSelectionFixture(t, ws, w.ID, "fixture-owner", "os-harness-entrypoints", "", "", "high")
+	savedSelectionFixture(t, ws, w.ID, "fixture-owner", "os-harness-entrypoints", "", "", "")
 
 	restore := work.SwapExecutionSelectionResolver(func(req work.ExecutionSelectionResolveRequest) (work.ExecutionSelectionResolution, error) {
 		if req.LaunchProfileID != "other-owner" {
@@ -2294,42 +2294,37 @@ func TestWorkAdvanceExecuteOneRunOverrideRecordsOverrideSnapshotWithoutRewriting
 	})
 	t.Cleanup(restore)
 
-	out := captureStdout(t, func() {
-		cmdWork([]string{
-			"advance", w.ID,
-			"--to", "running", "--by", "codex",
-			"--execute",
-			"--launch-profile", "other-owner",
-			"--", "echo", "one-run-override",
-		})
-	})
-	if !strings.Contains(out, "selection: source=override profile=other-owner") {
-		t.Fatalf("expected override selection line in output, got:\n%s", out)
+	type exitSignal struct{ code int }
+	originalExit := workAdvanceExecuteExit
+	workAdvanceExecuteExit = func(code int) { panic(exitSignal{code: code}) }
+	t.Cleanup(func() { workAdvanceExecuteExit = originalExit })
+	exitCode := 0
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				signal, ok := recovered.(exitSignal)
+				if !ok {
+					panic(recovered)
+				}
+				exitCode = signal.code
+			}
+		}()
+		cmdWork([]string{"advance", w.ID, "--to", "running", "--by", "codex", "--execute", "--launch-profile", "other-owner", "--", "echo", "one-run-override"})
+	}()
+	if exitCode != 1 {
+		t.Fatalf("unapplicable override exit code = %d, want 1", exitCode)
 	}
 	final, err := ws.Get(w.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ra, err := runattempt.Open(homePath).Get(final.RunAttemptIDs[len(final.RunAttemptIDs)-1])
-	if err != nil {
-		t.Fatal(err)
+	if final.State != "claimed" {
+		t.Fatalf("refused override must leave the envelope claimed, got %q", final.State)
 	}
-	if ra.ExecutionSelection == nil {
-		t.Fatal("the override run must stamp a selection snapshot")
+	runAttemptFiles, _ := filepath.Glob(filepath.Join(homePath, "run_attempts", "ratt_*.json"))
+	if len(runAttemptFiles) != 1 {
+		t.Fatalf("refused override must mint no RunAttempt beyond the claim's, got %d", len(runAttemptFiles))
 	}
-	snap := *ra.ExecutionSelection
-	if snap.Source != "override" || snap.LaunchProfileID != "other-owner" {
-		t.Fatalf("snapshot override identity wrong: %+v", snap)
-	}
-	if snap.ProviderRoute != "other/route" || snap.RequestedModelID != "other-model" {
-		t.Fatalf("snapshot must carry the override's resolved identity: %+v", snap)
-	}
-	// os-harness-entrypoints has no effort control: the snapshot records the
-	// requested effort as unsupported and never claims an applied value.
-	if !strings.HasPrefix(snap.EffortEvidence, "unsupported:") || snap.RequestedEffort != "" || snap.AppliedEffort != "" {
-		t.Fatalf("snapshot effort must record unsupported honestly for this harness: %+v", snap)
-	}
-	// The saved preference was NOT rewritten.
 	after := *final.ExecutionSelection
 	if after.Revision != 1 || after.LaunchProfileID != "fixture-owner" {
 		t.Fatalf("one-run override rewrote the saved selection: %+v", after)
@@ -2374,6 +2369,39 @@ func TestWorkAdvanceExecuteStaleSelectionRevisionNoDelta(t *testing.T) {
 	runAttemptFiles, _ := filepath.Glob(filepath.Join(homePath, "run_attempts", "ratt_*.json"))
 	if len(runAttemptFiles) != 1 {
 		t.Fatalf("stale revision must mint no RunAttempt beyond the claim's, got %d", len(runAttemptFiles))
+	}
+}
+
+// Fail-closed selection 2026-10-06: a saved effort the harness cannot apply is
+// refused at bind with the typed reason -- no RunAttempt, no advance. The old
+// path cleared the effort and launched without it.
+func TestWorkAdvanceExecuteUnapplicableEffortRefusedNoDelta(t *testing.T) {
+	homePath := initializedExecutionHome(t)
+	ws, _ := work.Open(homePath)
+	w, _ := ws.Create(work.CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "an unapplicable effort must not launch",
+	}, cliTestNow)
+	if _, err := ws.Claim(w.ID, "codex", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	savedSelectionFixture(t, ws, w.ID, "fixture-owner", "os-harness-entrypoints", "", "", "high")
+
+	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
+	cmd := exec.Command(compoundTestBinary(t), "work", "advance", w.ID, "--to", "running", "--execute", "--", "echo", "never")
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "selection_unsupported:os-harness-entrypoints:effort") {
+		t.Fatalf("want non-zero exit with the typed refusal, err=%v output:\n%s", err, out)
+	}
+	final, getErr := ws.Get(w.ID)
+	if getErr != nil || final.State != "claimed" {
+		t.Fatalf("refusal must leave the envelope claimed: %+v err=%v", final.State, getErr)
+	}
+	runAttemptFiles, _ := filepath.Glob(filepath.Join(homePath, "run_attempts", "ratt_*.json"))
+	if len(runAttemptFiles) != 1 {
+		t.Fatalf("refusal must mint no RunAttempt beyond the claim's, got %d", len(runAttemptFiles))
 	}
 }
 
