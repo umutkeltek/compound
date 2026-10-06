@@ -1548,7 +1548,11 @@ func Pack(in Input, pol OrientationPolicy, now time.Time) envelope.ContextPack {
 		revs = append(revs, envelope.SourceRev{Source: r.Ref, Rev: "unknown"})
 	}
 	mem := pol.Memory[in.RepoKind]
-	summary := fmt.Sprintf("Oriented as a **%s** repo for `%s`: %d sources included, %d excluded.",
+	// The hook serves this summary verbatim, so it leads with the same
+	// shared baseline + orient reminder the static block carries; both
+	// helpers are task-free, keeping per-run text out of the lead.
+	summary := HumanOutputBaseline() + "\n\n" + HumanOutputOrientReminder() + "\n\n" + fmt.Sprintf(
+		"Oriented as a **%s** repo for `%s`: %d sources included, %d excluded.",
 		in.RepoKind, in.Harness, len(incl), len(excl))
 	if len(excl) > 0 {
 		summary += " Out-of-scope context recorded — see `excluded`."

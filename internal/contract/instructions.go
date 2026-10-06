@@ -17,6 +17,26 @@ const (
 	InstructionBlockRenderSchemaVersion     = "compound.instruction_block_render.v0.1"
 	InstructionMaterializationSchemaVersion = "compound.instruction_materialization.v0.1"
 	instructionBlockEndMarker               = "<!-- END COMPOUND GENERATED INSTRUCTIONS -->"
+
+	// productSteeringBeginMarker / productSteeringEndMarker are the umut-os
+	// spine's nested managed block. The `--bootstrap-replace` materializer
+	// replaces the EXACT pair only; productSteeringFamilySignature is the
+	// wider family match used to REFUSE a file that still carries any
+	// product-steering variant (canonical, duplicate, orphan, hand-edited).
+	productSteeringBeginMarker     = "<!-- BEGIN GENERATED spine/product-steering · do not edit · regen: bun umut-os/spine/gen-product-steering.ts --apply -->"
+	productSteeringEndMarker       = "<!-- END GENERATED spine/product-steering -->"
+	productSteeringFamilySignature = "GENERATED spine/product-steering"
+	legacyWholeFileMarkerPrefix    = "<!-- GENERATED from operating-system/umut-os/spine/steering.config.ts"
+	compoundBeginMarkerPrefix      = "<!-- BEGIN COMPOUND GENERATED INSTRUCTIONS harness="
+)
+
+// Bootstrap takeover kinds — added to the report so an orchestrator can
+// distinguish a legacy whole-file replacement from a nested-block
+// replacement without re-deriving the path of the change.
+const (
+	BootstrapKindNone            = ""
+	BootstrapKindLegacyWholeFile = "legacy_whole_file"
+	BootstrapKindNestedBlock     = "nested_block"
 )
 
 // InstructionBlockRender is the read-only compiler projection for the stable
@@ -47,6 +67,11 @@ type InstructionMaterializationReport struct {
 	AfterSHA256       string `json:"after_sha256"`
 	Changed           bool   `json:"changed"`
 	BootstrapTakeover bool   `json:"bootstrap_takeover"`
+	// BootstrapKind classifies the takeover path; empty when
+	// BootstrapTakeover is false. The legacy umut-os whole-file
+	// replacement and the new nested product-steering block replacement
+	// are distinct operations — the orchestrator must not conflate them.
+	BootstrapKind string `json:"bootstrap_kind,omitempty"`
 }
 
 type instructionMaterializeFS struct {
@@ -104,16 +129,59 @@ func materializeInstructionBlockWithFS(
 	}
 	report.BeforeSHA256 = instructionBlockDigest(string(before))
 
-	beginAt, endAt, details := managedInstructionBlockBounds(string(before), render.Harness)
+	body := string(before)
+	// The ambiguity gate runs in BOTH modes, before any write branch: a
+	// normal materialization must not leave obsolete legacy instructions
+	// active behind a valid Compound block.
+	if msg := instructionMarkerAmbiguityError(render.TargetPath, body); msg != "" {
+		return report, fmt.Errorf("%s", msg)
+	}
+	beginAt, endAt, details := managedInstructionBlockBounds(body, render.Harness)
+	// nestedBegin/nestedEnd bracket the canonical nested product-steering
+	// pair; nestedDetails is non-empty when that family is absent or
+	// malformed (duplicate, orphan, reversed, unknown variant).
+	var nestedBegin, nestedEnd int
+	nestedDetails := []string(nil)
+	if options.BootstrapTakeover {
+		if len(details) > 0 && compoundMarkerPresent(body) {
+			foreign := foreignHarnessMarker(render.TargetPath, body)
+			note := ""
+			if foreign != "" {
+				note = fmt.Sprintf(" (foreign harness=%s)", foreign)
+			}
+			return report, fmt.Errorf(
+				"bootstrap instruction takeover refused: %s already carries a Compound-managed marker%s; run a normal materialization, not bootstrap",
+				render.TargetPath, note)
+		}
+		nestedBegin, nestedEnd, nestedDetails = recognizedNestedProductSteeringBlock(render.TargetPath, body)
+	}
 	var after []byte
 	switch {
 	case len(details) == 0:
 		after = append(after, before[:beginAt]...)
 		after = append(after, render.Content...)
 		after = append(after, before[endAt:]...)
-	case options.BootstrapTakeover && recognizedLegacyInstructionFile(render.TargetPath, string(before)):
+	case options.BootstrapTakeover && recognizedLegacyInstructionFile(render.TargetPath, body):
+		// Legacy whole-file takeover: only the umut-os marker remains, so
+		// the managed block becomes the whole file.
 		after = []byte(strings.TrimRight(render.Content, "\n") + "\n")
 		report.BootstrapTakeover = true
+		report.BootstrapKind = BootstrapKindLegacyWholeFile
+	case options.BootstrapTakeover && len(nestedDetails) == 0:
+		// Nested takeover: replace only the product-steering span (markers
+		// included); prefix and suffix survive byte-for-byte and the legacy
+		// envelope is gone.
+		prefix := append([]byte(nil), before[:nestedBegin]...)
+		suffix := append([]byte(nil), before[nestedEnd:]...)
+		inner := strings.TrimRight(render.Content, "\n") + "\n"
+		after = make([]byte, 0, len(prefix)+len(inner)+len(suffix))
+		after = append(after, prefix...)
+		after = append(after, inner...)
+		after = append(after, suffix...)
+		report.BootstrapTakeover = true
+		report.BootstrapKind = BootstrapKindNestedBlock
+	case options.BootstrapTakeover && len(nestedDetails) > 0:
+		return report, fmt.Errorf("%s", nestedDetails[0])
 	case options.BootstrapTakeover:
 		return report, fmt.Errorf(
 			"bootstrap instruction takeover refused for unrecognized unmanaged target %s",
@@ -215,10 +283,96 @@ func recognizedLegacyInstructionFile(path, body string) bool {
 		return false
 	}
 	first, _, _ := strings.Cut(body, "\n")
-	return strings.HasPrefix(
-		strings.TrimSpace(first),
-		"<!-- GENERATED from operating-system/umut-os/spine/steering.config.ts",
-	)
+	return strings.HasPrefix(strings.TrimSpace(first), legacyWholeFileMarkerPrefix)
+}
+
+// recognizedNestedProductSteeringBlock returns the byte boundaries (markers
+// included) of the EXACT canonical nested product-steering pair when it
+// appears exactly once, in order, on AGENTS.md/CLAUDE.md, and not alongside
+// the legacy whole-file marker. Anything else — duplicate, orphan, reversed,
+// unknown variant, wrong file — returns a refusal detail; the surrounding
+// prefix/suffix are the caller's to preserve byte-for-byte.
+func recognizedNestedProductSteeringBlock(path, content string) (int, int, []string) {
+	if msg := filepath.Base(path); msg != "CLAUDE.md" && msg != "AGENTS.md" {
+		return 0, 0, []string{"bootstrap takeover refused: only AGENTS.md and CLAUDE.md accept the nested product-steering takeover"}
+	}
+	if strings.Contains(content, legacyWholeFileMarkerPrefix) {
+		return 0, 0, []string{"bootstrap takeover refused: legacy whole-file marker and nested product-steering marker present together is ambiguous"}
+	}
+	beginCount := strings.Count(content, productSteeringBeginMarker)
+	endCount := strings.Count(content, productSteeringEndMarker)
+	switch {
+	case beginCount == 0 && endCount == 0:
+		return 0, 0, []string{"bootstrap takeover refused: no nested product-steering markers present"}
+	case beginCount == 0:
+		return 0, 0, []string{"bootstrap takeover refused: nested product-steering begin marker is missing"}
+	case endCount == 0:
+		return 0, 0, []string{"bootstrap takeover refused: nested product-steering end marker is missing"}
+	case beginCount > 1:
+		return 0, 0, []string{"bootstrap takeover refused: nested product-steering begin marker is duplicated"}
+	case endCount > 1:
+		return 0, 0, []string{"bootstrap takeover refused: nested product-steering end marker is duplicated"}
+	}
+	if strings.Count(content, productSteeringFamilySignature) != 2 {
+		return 0, 0, []string{"bootstrap takeover refused: extra or unrecognized product-steering marker variant"}
+	}
+	beginAt := strings.Index(content, productSteeringBeginMarker)
+	endAt := strings.Index(content, productSteeringEndMarker)
+	if endAt < beginAt+len(productSteeringBeginMarker) {
+		return 0, 0, []string{"bootstrap takeover refused: nested product-steering markers are reversed"}
+	}
+	return beginAt, endAt + len(productSteeringEndMarker), nil
+}
+
+// compoundMarkerPresent reports any Compound-managed marker in the body —
+// the begin marker of any harness (own or foreign) or the shared end marker.
+func compoundMarkerPresent(body string) bool {
+	return strings.Contains(body, compoundBeginMarkerPrefix) ||
+		strings.Contains(body, instructionBlockEndMarker)
+}
+
+// foreignHarnessMarker names a Compound begin marker whose harness does not
+// own the target file (codex owns AGENTS.md, claude_code owns CLAUDE.md);
+// "" when none is present.
+func foreignHarnessMarker(path, body string) string {
+	own := map[string]string{"AGENTS.md": "codex", "CLAUDE.md": "claude_code"}[filepath.Base(path)]
+	for _, harness := range []string{"codex", "claude_code"} {
+		if strings.Contains(body, instructionBlockBeginMarker(harness)) && harness != own {
+			return harness
+		}
+	}
+	return ""
+}
+
+// instructionMarkerAmbiguityError refuses a file that mixes managed-marker
+// families, in BOTH normal and bootstrap modes, before any write branch is
+// chosen: a normal materialization would replace only the Compound block and
+// leave the obsolete legacy instructions active, and a takeover cannot know
+// which managed surface owns the file. Mixing the two legacy shapes is
+// ambiguous for the same reason. "" means unambiguous.
+func instructionMarkerAmbiguityError(path, body string) string {
+	var legacy []string
+	if strings.Contains(body, legacyWholeFileMarkerPrefix) {
+		legacy = append(legacy, "legacy whole-file marker")
+	}
+	if strings.Contains(body, productSteeringFamilySignature) {
+		legacy = append(legacy, "legacy product-steering marker")
+	}
+	if len(legacy) == 0 {
+		return ""
+	}
+	mixed := strings.Join(legacy, " and a ")
+	if compoundMarkerPresent(body) {
+		return fmt.Sprintf(
+			"instruction materialization refused: %s carries a Compound-managed marker mixed with a %s; resolve the file manually",
+			path, mixed)
+	}
+	if len(legacy) > 1 {
+		return fmt.Sprintf(
+			"instruction materialization refused: %s carries a %s; resolve the file manually",
+			path, mixed)
+	}
+	return ""
 }
 
 // RenderInstructionBlock emits the stable, managed instruction block for an
@@ -351,12 +505,14 @@ func renderInstructionBlockContent(ec envelope.EffectiveContract, harnessName, p
 		mutationText = "every mutation requires an ActionIntent and PolicyDecision"
 	}
 
-	// Default template (preset == ""). The compiled block is the harness's
-	// static instruction surface; the instruction-sources line is the targeted
-	// list of upstream documents the compiler selected.
+	// Both templates consume the same task-free guidance as ContextPacks.
+	lead := HumanOutputBaseline() + "\n\n" + HumanOutputOrientReminder() +
+		"\n\nMissing legacy paths are migration evidence. Do not recreate retired authorities; use Compound-owned references."
 	if preset == "" {
 		return fmt.Sprintf(`%s
 ## Compound-generated contract
+
+%s
 
 Generated by `+"`compound contract compile`"+` for **%s**. Do not edit this managed block by hand.
 
@@ -369,7 +525,7 @@ Generated by `+"`compound contract compile`"+` for **%s**. Do not edit this mana
 - Recall scope: ambient=%s; explicit-only=%s; forbidden=%s. Only adjudicated Compound state may become ambient recall.
 - Runtime boundary: Task-specific intent, memory, capabilities, and checks stay in `+"`compound orient`"+` and hook-served ContextPacks, not in this static block.
 %s
-`, instructionBlockBeginMarker(harnessName), harnessName, mutationText, sourceText,
+`, instructionBlockBeginMarker(harnessName), lead, harnessName, mutationText, sourceText,
 			instructionPolicyList(ec.MemoryPolicy.Ambient),
 			instructionPolicyList(ec.MemoryPolicy.ExplicitOnly),
 			instructionPolicyList(ec.MemoryPolicy.Forbidden),
@@ -383,6 +539,8 @@ Generated by `+"`compound contract compile`"+` for **%s**. Do not edit this mana
 	// body text, NOT to the marker, so begin markers remain reproducible.
 	return fmt.Sprintf(`%s
 ## Compound-generated contract (executor preset)
+
+%s
 
 Generated by `+"`compound contract compile`"+` for **%s** preset=`+"`%s`"+`. This is the executor-scoped variant rendered for a delegated lane; the default block is the harness's static surface in the tracked repo.
 
@@ -399,7 +557,7 @@ Generated by `+"`compound contract compile`"+` for **%s** preset=`+"`%s`"+`. Thi
 - Recall scope: ambient=%s; explicit-only=%s; forbidden=%s. Only adjudicated Compound state may become ambient recall.
 - Runtime boundary: Task-specific intent, memory, capabilities, and checks stay in `+"`compound orient`"+` and hook-served ContextPacks, not in this static block.
 %s
-`, instructionBlockBeginMarker(harnessName), harnessName, preset, mutationText,
+`, instructionBlockBeginMarker(harnessName), lead, harnessName, preset, mutationText,
 		instructionPolicyList(ec.MemoryPolicy.Ambient),
 		instructionPolicyList(ec.MemoryPolicy.ExplicitOnly),
 		instructionPolicyList(ec.MemoryPolicy.Forbidden),

@@ -7,14 +7,11 @@ import (
 	"testing"
 )
 
-// Falsifier B1: the default per-harness block MUST stay byte-identical to
-// pre-change. The ContentSHA256 literals below were captured by running
-// TestProbePreChangeSHA256 against the unmodified renderer on the same base
-// (50e8496a581e7ba474cfe07294cfa24e643ff639) and pinned. A change to the
-// default template is a deliberate, breaking one — it must surface here.
+// Pin the current default blocks. Template changes must update these hashes
+// and regenerate AGENTS.md/CLAUDE.md in the same change; task text stays out.
 const (
-	preChangeCodexSHA256      = "sha256:52172ae03bef0d406d46004f2914b47f27aaf75a25af3d3657934d04b0e66987"
-	preChangeClaudeCodeSHA256 = "sha256:0575b97edf4e0448f032ef229637f46b7c8c1cc0b845c8cfa1cf622b08b2a882"
+	preChangeCodexSHA256      = "sha256:0672b871af6aa91154a8b199a6807308af9ba10b72de116e560aac67b547fdb2"
+	preChangeClaudeCodeSHA256 = "sha256:a392380153223efa4ed57d22d69829980d589159b2ad3121fe62df30e31254b0"
 )
 
 // Falsifier B1: default block ContentSHA256 is byte-identical pre/post change.

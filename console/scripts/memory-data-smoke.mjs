@@ -7,6 +7,7 @@
  * plain `node --experimental-strip-types` cannot.
  */
 import { runMemoryDataSelfTest } from "../src/lib/memory-data.selftest.ts";
+import "./evidence-card-smoke.mjs";
 
 const result = runMemoryDataSelfTest();
 for (const line of result.details) {
