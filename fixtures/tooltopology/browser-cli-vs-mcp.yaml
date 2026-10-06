@@ -12,32 +12,40 @@ source_ref:
 entries:
   - id: tool:browser-cli
     kind: tool
-    name: Browser CLI
+    name: agent-browser CLI
     interface: cli
     status: active
     weight: 2
     triggers:
       - browser
       - screenshots
+      - logged-in site
     capabilities:
       - web automation
+    constraints:
+      - headless by default (isolated_headless)
+      - isolated --profile from the browser-profile registry
+      - same door in every harness and lane
     evidence_refs:
       - artifact_sha256:def456
   - id: mcp:browser
     kind: mcp
     name: Browser MCP
     interface: mcp
-    status: fallback
+    status: retired
     triggers:
       - browser
     capabilities:
       - web automation
+    constraints:
+      - not loaded by any harness config
+      - invisible inside switchback lanes
     evidence_refs:
       - artifact_sha256:def456
 recommendations:
   - primary: tool:browser-cli
     fallback: mcp:browser
-    reason: prefer CLI for low-context browser work
+    reason: the agent-browser CLI is the one browser door; the retired MCP route resolves to it
     confidence: 0.9
 evidence_refs:
   - artifact_sha256:def456
