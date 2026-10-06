@@ -3,7 +3,8 @@ package harness
 // skill_adapter_test.go — falsifiers F1, F2, F3.
 //
 // F1: the canonical body is harness-neutral — no Claude-specific strings,
-//     contains the profile registry + mcporter references.
+//     contains the profile registry, the agent-browser door and the
+//     isolation ladder.
 // F2: render is deterministic per harness — same body+adapter+time ⇒
 //     byte-identical; footer carries body sha256.
 // F3: install detects drift; replaces symlinked parent with a real dir and
@@ -23,7 +24,7 @@ func fixtureBody(t *testing.T) []byte {
 	t.Helper()
 	// A harness-neutral body. Mirrors the canonical rewrite: no PAI path,
 	// no voice-notify curl, no execution.jsonl, no Claude built-ins, no
-	// mcp__ tool names. References browser-profiles.json + mcporter call.
+	// mcp__ tool names. References browser-profiles.json + agent-browser.
 	return []byte(`---
 name: Browser
 description: harness-neutral body (test fixture)
@@ -31,7 +32,7 @@ description: harness-neutral body (test fixture)
 
 # Browser (test fixture body)
 
-Shared backend: ` + "`mcporter call browser.<tool>`" + `.
+One door: ` + "`agent-browser --session <task> --profile <dir> <verb>`" + `.
 
 Profile registry: ` + "`~/.compound/registries/browser-profiles.json`" + `.
 
@@ -79,8 +80,17 @@ func TestBrowserSkillBodyIsHarnessNeutral(t *testing.T) {
 	}
 	required := []string{
 		"browser-profiles.json",
-		"mcporter call browser",
+		"agent-browser --session",
+		"--profile",
 		"compound browser goal",
+		// The isolation ladder: every level is named so a lane can say
+		// which one it is on.
+		"isolated_headless",
+		"isolated_visible",
+		"operator_browser",
+		"foreground_gui",
+		// App Store Connect is an API door, never a browser door.
+		"App Store Connect",
 	}
 	for _, needle := range required {
 		if !strings.Contains(text, needle) {

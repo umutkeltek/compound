@@ -132,7 +132,7 @@ func SkillAdaptersFor(names []string) []HarnessAdapter {
 func claudeCodeAdapter() HarnessAdapter {
 	header := `---
 name: Browser
-description: Claude browser-automation adapter. Shared backend (mcporter ` + "`browser`" + ` / Playwright MCP); canonical body below. Harness-specific invocation block comes from a private operator overlay at render time.
+description: Claude browser-automation adapter. One door for every web task (open, read, click, fill, screenshot, logged-in site): the ` + "`agent-browser`" + ` CLI with an isolated profile, headless by default; canonical body below. Harness-specific invocation block comes from a private operator overlay at render time.
 ---
 
 # Claude Browser Adapter (rendered, do not edit by hand)
@@ -157,14 +157,14 @@ This adapter is rendered by ` + "`compound harness skill-adapter`" + ` from the 
 	}
 }
 
-// codexAdapter: shell-driven mcporter call (no native MCP for every lane),
-// with an explicit note that the bundled browser plugin is disabled by the
-// governed `compound act repoint` write — codex reaches the shared backend
-// through the shell, not through the bundled plugin.
+// codexAdapter: shell-driven agent-browser CLI, the one browser door every
+// harness reaches the same way. The bundled Codex browser plugin's enabled
+// state is operator config; the template names it only to say it is not the
+// door for this skill, and never asserts whether it is on or off.
 func codexAdapter() HarnessAdapter {
 	header := `---
 name: Browser
-description: Codex browser-automation adapter. Shared backend via shell (` + "`mcporter call browser.*`" + `); the bundled browser plugin is disabled by governed config (compound act repoint). Canonical body below.
+description: Codex browser-automation adapter. One door: the ` + "`agent-browser`" + ` CLI from the shell, isolated profile, headless by default. Canonical body below.
 ---
 
 # Codex Browser Adapter (rendered, do not edit by hand)
@@ -172,33 +172,35 @@ description: Codex browser-automation adapter. Shared backend via shell (` + "`m
 This adapter is rendered by ` + "`compound harness skill-adapter`" + ` from the canonical body at
 ` + "`~/.agents/skills/Browser/SKILL.md`" + `. If the body changes, re-run the door to refresh.
 
-## Codex invocation (shell-driven)
+## Codex invocation (shell)
 
-codex reaches the shared backend through ` + "`mcporter call browser.<tool>`" + `:
+Run the ` + "`agent-browser`" + ` CLI through the shell. Pass the same ` + "`--session`" + ` and
+` + "`--profile`" + ` on every call: a call without ` + "`--profile`" + ` restarts that session's
+browser without the profile.
 
 ` + "```" + `bash
-# Find tool names (one-time):  mcporter list browser | jq '.tools[].name'
-mcporter call browser.browser_navigate '{"url":"https://example.com"}'
-mcporter call browser.browser_snapshot '{}'
-mcporter call browser.browser_click '{"element":"<ref>","ref":"@e12"}'
-mcporter call browser.browser_type '{"element":"<ref>","ref":"@e15","text":"hello"}'
-mcporter call browser.browser_screenshot '{"filename":"/tmp/shot.png"}'
-mcporter call browser.browser_evaluate '{"function":"() => document.title"}'
+DIR="$(jq -r '.profiles[] | select(.id=="<profile-id>") | .user_data_dir' ~/.compound/registries/browser-profiles.json)"
+agent-browser --session <task> --profile "$DIR" open https://example.com
+agent-browser --session <task> --profile "$DIR" snapshot -i
+agent-browser --session <task> --profile "$DIR" click @e2
+agent-browser --session <task> --profile "$DIR" fill @e3 "text"
+agent-browser --session <task> --profile "$DIR" screenshot /tmp/shot.png
+agent-browser --session <task> --profile "$DIR" get url
+agent-browser --session <task> --profile "$DIR" close
 ` + "```" + `
 
-For the agent-browser CLI equivalent:
+A public page with no login drops ` + "`--profile`" + ` and pins the sites instead:
+
 ` + "```" + `bash
-agent-browser --profile ~/.agent-browser/profiles/<site> open <url>
-agent-browser --profile ~/.agent-browser/profiles/<site> snapshot
+agent-browser --session <task> --allowed-domains example.com open https://example.com
 ` + "```" + `
 
-## Bundled plugin is OFF
+## Codex bundled browser plugin
 
-The bundled ` + "`plugins.\"browser@openai-bundled\"`" + ` in ` + "`~/.codex/config.toml`" + ` is
-intentionally disabled (governed ` + "`compound act repoint`" + ` write). codex reaches the
-browser through the shared mcporter backend, not through the bundled plugin.
-If you find the bundled plugin enabled, that is drift — surface it; do not
-re-enable it by hand.
+The bundled in-app browser plugin (` + "`plugins.\"browser@openai-bundled\"`" + ` in
+` + "`~/.codex/config.toml`" + `) drives the Codex app's own browser, mainly for local pages.
+Whether it is enabled is operator config, not this adapter's claim. It is not wired to the
+profile registry and is not a door for logged-in or unattended work; use the commands above.
 
 ---
 
@@ -215,15 +217,14 @@ re-enable it by hand.
 	}
 }
 
-// hermesAdapter: native hermes `browser_*` CDP tools (16 tools) ARE the
-// cheapest path on a hermes lane, but they MUST point at the registry's
-// user_data_dir so cookies/IndexedDB persist across the shared backend and
-// the hermes native tool. Adapter says: use the shared backend for any
-// logged-in work; when using the native tool, point it at the same profile.
+// hermesAdapter: hermes reaches the one door (agent-browser CLI) through its
+// shell like every other harness. Its native browser_* tools are named only
+// for public, unprofiled pages: nothing verifies that they read the profile
+// registry, so profile-bound work stays on the CLI.
 func hermesAdapter() HarnessAdapter {
 	header := `---
 name: Browser
-description: Hermes browser-automation adapter. Native ` + "`browser_*`" + ` CDP tools (cheapest on hermes) OR shared backend (` + "`mcporter browser`" + `); both MUST point at the same registry ` + "`user_data_dir`" + `. Canonical body below.
+description: Hermes browser-automation adapter. One door: the ` + "`agent-browser`" + ` CLI from the shell (isolated profile, headless by default). Hermes-native ` + "`browser_*`" + ` tools only for public pages. Canonical body below.
 ---
 
 # Hermes Browser Adapter (rendered, do not edit by hand)
@@ -233,34 +234,24 @@ This adapter is rendered by ` + "`compound harness skill-adapter`" + ` from the 
 
 ## Hermes invocation
 
-Hermes has TWO reachable paths. Pick by situation:
-
-**1. Shared backend (mcporter ` + "`browser`" + `)** — for any logged-in work, or when
-   hermes's native browser_* tools are blocked:
+**1. ` + "`agent-browser`" + ` (the door)** — the default, and the only path for logged-in or
+profile-bound work. Pass the same ` + "`--session`" + ` and ` + "`--profile`" + ` on every call:
 
 ` + "```" + `bash
-mcporter call browser.browser_navigate '{"url":"https://example.com"}'
-mcporter call browser.browser_snapshot '{}'
-mcporter call browser.browser_click '{"element":"<ref>","ref":"@e12"}'
-mcporter call browser.browser_screenshot '{"filename":"/tmp/shot.png"}'
+agent-browser --session <task> --profile "$DIR" open https://example.com
+agent-browser --session <task> --profile "$DIR" snapshot -i
+agent-browser --session <task> --profile "$DIR" click @e2
+agent-browser --session <task> --profile "$DIR" screenshot /tmp/shot.png
+agent-browser --session <task> --profile "$DIR" close
 ` + "```" + `
 
-**2. Native hermes ` + "`browser_*`" + ` CDP tools (cheapest path on hermes)** — when
-   the hermes lane is already in a browser session and you want the in-process
-   CDP path. Names map one-to-one to the shared backend's verbs:
+` + "`$DIR`" + ` is the profile's ` + "`user_data_dir`" + ` from ` + "`~/.compound/registries/browser-profiles.json`" + `.
 
-- ` + "`browser_navigate`" + ` url=<url>
-- ` + "`browser_snapshot`" + ` (a11y tree with @eN refs)
-- ` + "`browser_click`" + ` ref=<@eN>
-- ` + "`browser_type`" + ` ref=<@eN> text=<text>
-- ` + "`browser_screenshot`" + ` path=<path>
-- ` + "`browser_evaluate`" + ` expression=<js>
-
-**Profile discipline.** When using the native hermes tools, point them at the
-profile's ` + "`user_data_dir`" + ` from ` + "`~/.compound/registries/browser-profiles.json`" + ` so
-cookies and IndexedDB persist across the shared backend and the native tool.
-Two harnesses sharing the same ` + "`user_data_dir`" + ` fight over cookies — serialize or
-use separate profiles.
+**2. Hermes-native tools** (` + "`browser_navigate`" + `, ` + "`browser_snapshot`" + `, ` + "`browser_click`" + `,
+` + "`browser_type`" + `, ` + "`browser_scroll`" + `, ` + "`browser_press`" + `, ` + "`browser_back`" + `, ` + "`browser_console`" + `,
+` + "`browser_vision`" + `, ` + "`browser_get_images`" + `) — public, unprofiled pages only. Nothing
+verifies that they read the profile registry, so never use them for a logged-in site. Their
+argument names are hermes's own; read the tool schema rather than assuming parity with the CLI.
 
 ---
 
