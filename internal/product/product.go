@@ -104,6 +104,12 @@ type Product struct {
 	ReleaseIdentity ReleaseIdentity `json:"release_identity,omitempty" yaml:"release_identity,omitempty"`
 	Deployment      Deployment      `json:"deployment,omitempty" yaml:"deployment,omitempty"`
 	TasteProfile    TasteProfile    `json:"taste_profile,omitempty" yaml:"taste_profile,omitempty"`
+	// Essence, Forms, and Learned are the curated product record every stage
+	// reads (essence.go). They are recorded as essence.*, form.*, and learned.*
+	// facts and read back from the folded current view.
+	Essence Essence       `json:"essence,omitzero" yaml:"essence,omitempty"`
+	Forms   []Form        `json:"forms,omitempty" yaml:"forms,omitempty"`
+	Learned []LearnedFact `json:"learned,omitempty" yaml:"learned,omitempty"`
 }
 
 // Deployment is where a product actually runs and how it gets there. Surfaces
@@ -1088,6 +1094,9 @@ func Validate(bundle Bundle) error {
 	if len(bundle.EvidenceRefs) == 0 {
 		return fmt.Errorf("evidence_refs required")
 	}
+	if err := validateEssence(p); err != nil {
+		return err
+	}
 	for _, s := range bundle.Signals {
 		if err := validateSignal(s); err != nil || s.ProductID != p.ID {
 			if err != nil {
@@ -1962,6 +1971,9 @@ func productClaims(bundle Bundle, evidenceID, sourcePath string) []mem.Candidate
 	}
 	if strings.TrimSpace(p.ReleaseIdentity.AppStoreConnectAppID) != "" {
 		claims = append(claims, add("release_mechanism", "app_store_connect"))
+	}
+	for _, fact := range essenceFacts(p) {
+		claims = append(claims, add(fact.predicate, fact.value))
 	}
 	// Deployment claims key on p.ID like every other product claim. That is the
 	// whole point: these facts previously landed on a bare-slug entity written by
