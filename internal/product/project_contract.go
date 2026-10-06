@@ -288,10 +288,9 @@ func ProjectContractBundle(pc projectContract, rc releaseContract, projectRef, r
 			PrivacyPosture:  projectPrivacy(pc),
 			ReleaseIdentity: exportedReleaseIdentity(identity),
 			Deployment:      projectDeployment(pc),
-			TasteProfile: TasteProfile{
-				Standards: []string{"source-in-place product contract"},
-				RedLines:  []string{"do not infer product signal or causality from project contract"},
-			},
+			// No TasteProfile, Essence, Forms, or Learned: a project contract
+			// declares where a product runs, not its taste or market essence, so
+			// its import never writes or supersedes taste.* or essence.* facts.
 		},
 		EvidenceRefs:    evidenceRefs,
 		contractSourced: true,

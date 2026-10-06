@@ -615,6 +615,8 @@ type runtimeSnapshot struct {
 	probeGroups          []probeGroupSelection
 	probeRevision        string
 	productFenceRevision string
+	productEssence       productEssenceBlock
+	hasProductEssence    bool
 	capabilityHits       []capgraph.Surfaced
 	capabilityTotal      int
 	capabilityRevision   string
@@ -729,6 +731,7 @@ func loadRuntimeSnapshot(in Input, pol OrientationPolicy, homePath string, trace
 	memoryResult := lanes.memory
 	dependencies := captureRuntimeMemoryDependencies(homePath, in, memoryResult.view)
 	snapshot.productFenceRevision = dependencies.ProductFence.Revision
+	snapshot.productEssence, snapshot.hasProductEssence = productEssenceForFence(memoryResult.view, dependencies.ProductFence)
 	snapshot.decisions, snapshot.decisionRevisions, snapshot.excludedDecisions, err = loadDecisionRefsFromView(in, memoryResult.view, dependencies.ProductFence)
 	if err != nil {
 		return snapshot, err
@@ -1095,6 +1098,7 @@ func projectRuntimePack(pack envelope.ContextPack, in Input, snapshot runtimeSna
 			}
 		}
 	}
+	pack = appendProductEssence(pack, snapshot.productEssence, snapshot.hasProductEssence)
 	if topic := strings.TrimSpace(in.Topic); topic != "" {
 		pack.SummaryMD += fmt.Sprintf(" Ambient recall narrowed to topic %q (subtree-scoped); empty topic leaves recall unchanged.", topic)
 	}
