@@ -1,6 +1,7 @@
 package executewire
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -75,10 +76,54 @@ func TestBuildSelectionSnapshotSavedConsumesRevisionAndCarriesEffortForClaudeFam
 	if snap.ProviderRoute != "minimax/fixture-route" || snap.RequestedModelID != "fixture-model" {
 		t.Fatalf("saved snapshot must carry the saved route/model: %+v", snap)
 	}
-	// claude family carries effort via env only: the request survives and the
-	// evidence is unobservable (never a claimed applied value).
-	if snap.RequestedEffort != "high" || !strings.HasPrefix(snap.EffortEvidence, "unobservable:") || snap.AppliedEffort != "" {
-		t.Fatalf("claude-family effort must be requested+unobservable: %+v", snap)
+	// claude lanes cannot apply a requested effort (the wrapper pins its own):
+	// the request survives verbatim, the evidence says unsupported, and the
+	// bind refuses instead of launching without it.
+	if snap.RequestedEffort != "high" || !strings.HasPrefix(snap.EffortEvidence, "unsupported:") || snap.AppliedEffort != "" {
+		t.Fatalf("claude-family effort must be kept and marked unsupported: %+v", snap)
+	}
+	_, err = BindSelectionBeforePreflight(wenv, "claude_code", nil, harness.RunInput{Harness: "claude_code"})
+	var refusal *harness.SelectionUnsupportedError
+	if !errors.As(err, &refusal) || err.Error() != "selection_unsupported:claude_code:effort" {
+		t.Fatalf("bind err = %v, want selection_unsupported:claude_code:effort", err)
+	}
+}
+
+// The default branch used to clear RequestedEffort and record "unsupported";
+// the launch then ran without it. The request is now never cleared, for any
+// harness, and every registered claude lane reads the same row (the old name
+// list covered 5 names, one of them unregistered).
+func TestSelectionSnapshotNeverClearsRequestedEffort(t *testing.T) {
+	for _, name := range []string{"os-harness-entrypoints", "oh_my_pi", "claude_kimi", "claude_deepseek_flash_api", "claude_gpt56_sol_wpcom"} {
+		selection := cliSavedSelection()
+		selection.Harness = name
+		selection.RequestedEffort = "xhigh"
+		snap, err := BuildSelectionSnapshot(envelope.WorkEnvelope{ExecutionSelection: selection}, name, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if snap.RequestedEffort != "xhigh" || !strings.HasPrefix(snap.EffortEvidence, "unsupported:") {
+			t.Fatalf("%s: requested effort cleared or mis-evidenced: %+v", name, snap)
+		}
+	}
+	snap, err := BuildSelectionSnapshot(envelope.WorkEnvelope{ExecutionSelection: cliSavedSelection()}, "claude_kimi", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(snap.NativeSessionEvidence, "unsupported:wire does not pin --session-id") {
+		t.Fatalf("claude_kimi session evidence not from the claude lane row: %q", snap.NativeSessionEvidence)
+	}
+}
+
+// A harness that cannot bind a requested model refuses at bind, before the
+// public CLI changes any envelope state.
+func TestBindSelectionRefusesUnapplicableModel(t *testing.T) {
+	selection := cliSavedSelection()
+	selection.Harness = "os-harness-entrypoints"
+	selection.RequestedEffort = ""
+	_, err := BindSelectionBeforePreflight(envelope.WorkEnvelope{ExecutionSelection: selection}, "os-harness-entrypoints", nil, harness.RunInput{})
+	if err == nil || err.Error() != "selection_unsupported:os-harness-entrypoints:model" {
+		t.Fatalf("bind err = %v, want selection_unsupported:os-harness-entrypoints:model", err)
 	}
 }
 
@@ -92,5 +137,26 @@ func TestBuildSelectionSnapshotNoSavedSelectionFallsThroughToProjectDefault(t *t
 	}
 	if snap.SelectionRevision != 0 {
 		t.Fatalf("project_default must not carry a selection revision: %+v", snap)
+	}
+}
+
+// A one-run override on a harness that can bind it is recorded as
+// source=override with the override's own model and effort, and binds the
+// codex input to that tuple; the saved selection is not consulted.
+func TestBindSelectionOverrideOnCodexCarriesOverrideTuple(t *testing.T) {
+	override := &envelope.ExecutionSelection{
+		LaunchProfileID: "codex-high", LaunchProfileRevision: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		Harness: "codex", ProviderRoute: "chatgpt-subscription", RequestedModelID: "gpt-fixture", RequestedEffort: "high",
+	}
+	input, err := BindSelectionBeforePreflight(envelope.WorkEnvelope{ExecutionSelection: cliSavedSelection()}, "codex", override, harness.RunInput{Harness: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := input.ExecutionSelectionSnapshot
+	if snap == nil || snap.Source != "override" || snap.LaunchProfileID != "codex-high" || snap.RequestedModelID != "gpt-fixture" || snap.RequestedEffort != "high" || snap.SelectionRevision != 0 {
+		t.Fatalf("override snapshot wrong: %+v", snap)
+	}
+	if input.RequestedModelID != "gpt-fixture" || input.RequestedProviderRoute != "chatgpt-subscription" || input.LaunchProfileID != "codex-high" {
+		t.Fatalf("codex input not bound to the override tuple: %+v", input)
 	}
 }

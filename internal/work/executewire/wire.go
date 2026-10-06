@@ -20,7 +20,9 @@ import (
 	"time"
 
 	"compound/internal/actuator"
+	"compound/internal/envelope"
 	"compound/internal/harness"
+	"compound/internal/hookplan"
 	"compound/internal/routeevidence"
 	autonomyproof "compound/internal/routeevidence/autonomy"
 	"compound/internal/runattempt"
@@ -47,6 +49,9 @@ func Install() {
 	// seam with a nil default, so the installed CLI refused every
 	// `--launch-profile` while its tests passed against a stub.
 	work.DefaultExecutionSelectionResolver = ResolveExecutionSelectionViaOwner
+	// The launch stamp reads each harness's live hook posture with the reader
+	// `compound doctor` uses (hookplan), so the attempt and doctor agree.
+	harness.SwapHookPostureReader(liveHookPosture)
 	// Slice 2 (aut-launch-canonical 2026-09-07): mark the seam installed so
 	// the launch wire's precondition passes. A process that never ran
 	// Install() sees every launch refused with "LaunchContext not
@@ -54,6 +59,25 @@ func Install() {
 	// a cancellable context — see the LaunchContext doc for the bound that
 	// applies in production and the open follow-up.
 	launchContextInstalled.Store(true)
+}
+
+// launchSelectionSnapshot is the one snapshot construction preflight and
+// launch share: a candidate with no saved selection is a one-run override.
+func launchSelectionSnapshot(wenv envelope.WorkEnvelope, candidate work.ExecutionRouteCandidate, route, model, revision string) (runattempt.ExecutionSelectionSnapshot, error) {
+	overrideHarness, overrideProfile := "", ""
+	if wenv.ExecutionSelection == nil && candidate.SourceRevision != "" {
+		overrideHarness, overrideProfile = candidate.Harness, candidate.LaunchProfileID
+	}
+	return buildSelectionSnapshotFromSaved(wenv, overrideHarness, overrideProfile, route, model, revision, revision)
+}
+
+func liveHookPosture(harnessName string) (harness.HookPostureReading, bool) {
+	base, err := os.UserHomeDir()
+	if err != nil {
+		return harness.HookPostureReading{}, false
+	}
+	live, ok := hookplan.ReadLiveHookPosture(base, harnessName)
+	return harness.HookPostureReading{Posture: live.Posture, ConfigPath: live.ConfigPath, ConfigDigest: live.ConfigDigest}, ok
 }
 
 func RouteCandidatesFromManifest(homePath, capability string) []work.ExecutionRouteCandidate {
@@ -346,7 +370,7 @@ func PreflightCandidateViaActuator(store *work.Store, workID string, candidate w
 	// the same Compound model-router authority the adapter reads, so
 	// passing its output here makes the comparison hold. Non-tuple
 	// lanes fall through to the lane id, exactly as before.
-	tupleCommand, tupleModelID, tupleProviderRoute, _, _ := resolveLaneLaunchTuple(homePath, candidate.LaunchProfileID, now)
+	tupleCommand, tupleModelID, tupleProviderRoute, tupleProfileRevision, _ := resolveLaneLaunchTuple(homePath, candidate.LaunchProfileID, now)
 	if candidate.SourceRevision != "" {
 		resolved, resolveErr := resolveExecutionRouteCandidate(homePath, candidate, now)
 		if resolveErr != nil {
@@ -368,6 +392,12 @@ func PreflightCandidateViaActuator(store *work.Store, workID string, candidate w
 	}
 	if err := validateSavedSelectionTuple(wenv, candidate, now); err != nil {
 		return fmt.Errorf("lane_unready:%v", err)
+	}
+	// A selection the harness cannot apply refuses here, before the seam claims.
+	if snap, err := launchSelectionSnapshot(wenv, candidate, tupleProviderRoute, tupleModelID, tupleProfileRevision); err == nil {
+		if err := harness.CheckSelectionApplicable(candidate.Harness, &snap); err != nil {
+			return err
+		}
 	}
 	readiness, readinessErr := LaunchReadiness(readinessReq)
 	if readinessErr != nil {
@@ -585,6 +615,18 @@ func LaunchCandidateViaActuator(store *work.Store, workID string, candidate work
 		}
 		return "", fmt.Errorf("lane_unready:%s", detail)
 	}
+	// work_r7a_execution_selection_20260911: the per-run selection snapshot
+	// (what this launch was asked to run, with honest applied-effort +
+	// native-session evidence) is built here and stamped by the shared runner
+	// BEFORE the subprocess starts. A request the harness cannot apply is
+	// refused now, before any launch authority is minted (fail-closed 2026-10-06).
+	snapshot, snapshotErr := launchSelectionSnapshot(wenv, candidate, tupleProviderRoute, tupleModelID, tupleProfileRevision)
+	if snapshotErr != nil {
+		return "", fmt.Errorf("execute stage launch: build selection snapshot: %w", snapshotErr)
+	}
+	if err := harness.CheckSelectionApplicable(candidate.Harness, &snapshot); err != nil {
+		return "", err
+	}
 	// DEFECT 3 fix (AUT-P0-003 2026-09-04): mint a fresh
 	// (ActionIntent, PolicyDecision) pair bound to THIS launch and stamp
 	// it onto the running reservation BEFORE the adapter mints its
@@ -620,30 +662,6 @@ func LaunchCandidateViaActuator(store *work.Store, workID string, candidate work
 		LaneID: candidate.LaunchProfileID, ActionIntentID: launchActionID,
 		Timeout: LaunchTimeoutFor(0),
 		Now:     now,
-	}
-	// work_r7a_execution_selection_20260911: stamp the per-run selection
-	// snapshot (what this launch was asked to run, with honest
-	// applied-effort + native-session evidence) BEFORE the subprocess
-	// starts, so the historical record reflects the plan rather than the
-	// outcome. The shared runner persists RunInput.ExecutionSelectionSnapshot
-	// onto the freshly minted RunAttempt, so the wire computes the
-	// snapshot here (with the saved selection or override as the source)
-	// and the runner does the actual stamp.
-	overrideHarness, overrideProfile := "", ""
-	if wenv.ExecutionSelection == nil && candidate.SourceRevision != "" {
-		overrideHarness, overrideProfile = candidate.Harness, candidate.LaunchProfileID
-	}
-	snapshot, snapshotErr := buildSelectionSnapshotFromSaved(
-		wenv,
-		overrideHarness,
-		overrideProfile,
-		tupleProviderRoute,   // resolved route
-		tupleModelID,         // resolved model id
-		tupleProfileRevision, // observed profile revision (from the resolver)
-		tupleProfileRevision, // tuple's profile revision (same source — used for drift detection)
-	)
-	if snapshotErr != nil {
-		return "", fmt.Errorf("execute stage launch: build selection snapshot: %w", snapshotErr)
 	}
 	runInput.ExecutionSelectionSnapshot = &snapshot
 	runInput.LaunchProfileID = snapshot.LaunchProfileID
@@ -741,6 +759,9 @@ func LaunchCandidateViaActuator(store *work.Store, workID string, candidate work
 	// canonical finalize to route through.
 
 	if strings.TrimSpace(out.RunAttempt.ID) == "" {
+		if runErr != nil { // a pre-mint refusal (e.g. selection_unsupported) keeps its reason
+			return "", fmt.Errorf("execute stage launch: adapter returned empty RunAttempt.ID: %w", runErr)
+		}
 		return "", errors.New("execute stage launch: adapter returned empty RunAttempt.ID")
 	}
 	// R6A 2026-09-10: capture the minted ratt id once so every return path

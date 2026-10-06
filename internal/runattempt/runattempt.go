@@ -425,6 +425,10 @@ type RunAttempt struct {
 	// execution_selection_snapshot.go). Pointer + omitempty preserves byte
 	// identity for records minted before it existed.
 	ExecutionSelection *ExecutionSelectionSnapshot `json:"execution_selection,omitempty"`
+	// Observed is the append-once observed leg (observed_execution.go): what
+	// the launch read back from argv, wrapper env, and hook config. Nil when
+	// nothing was observable; it never rewrites ExecutionSelection.
+	Observed *ObservedExecution `json:"observed,omitempty"`
 }
 
 // RunProgress is the reduced, content-free progress shape shared by

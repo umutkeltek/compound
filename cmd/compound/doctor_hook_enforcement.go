@@ -16,11 +16,11 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode"
 
 	"compound/internal/envelope"
 	"compound/internal/home"
 	"compound/internal/hook"
+	"compound/internal/hookplan"
 	"compound/internal/policy"
 )
 
@@ -49,8 +49,8 @@ import (
 const hookEnforcementProbeTimeout = 5 * time.Second
 
 const (
-	hookPostureObservationOnly = "observation_only"
-	hookPostureEnforced        = "enforced"
+	hookPostureObservationOnly = hookplan.HookPostureObservationOnly
+	hookPostureEnforced        = hookplan.HookPostureEnforced
 )
 
 // doctorHookEnforcement is one binary+posture the installed hooks would invoke. A shared binary
@@ -65,11 +65,7 @@ type doctorHookEnforcement struct {
 	Detail    string   `json:"detail,omitempty"`
 }
 
-type installedHookPosture struct {
-	Binary  string
-	Args    []string
-	Posture string
-}
+type installedHookPosture = hookplan.InstalledHookPosture
 
 type hookProbeTarget struct {
 	Binary          string
@@ -137,66 +133,9 @@ func buildHookEnforcementRows(hooks []doctorHook) ([]doctorHookEnforcement, int)
 	return rows, failing
 }
 
-// installedHookPostures reads a harness config and returns every Compound PreToolUse binding it
-// would execute. The exact --enforce word is part of the identity: two configs can share one binary
-// while deliberately asking it to provide different postures.
-func installedHookPostures(configPath string) []installedHookPosture {
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return nil
-	}
-	var root struct {
-		Hooks map[string][]struct {
-			Hooks []struct {
-				Command string `json:"command"`
-			} `json:"hooks"`
-		} `json:"hooks"`
-	}
-	if json.Unmarshal(data, &root) != nil {
-		return nil
-	}
-	var installed []installedHookPosture
-	for _, group := range root.Hooks["PreToolUse"] {
-		for _, entry := range group.Hooks {
-			words, ok := hookCommandWords(entry.Command)
-			if !ok || len(words) < 4 ||
-				words[1] != "hook" ||
-				words[2] != "pre-tool-use" ||
-				!containsHookCommandWord(words[3:], "--live") {
-				continue
-			}
-			posture := hookPostureObservationOnly
-			if containsHookCommandWord(words[3:], "--enforce") {
-				posture = hookPostureEnforced
-			}
-			installed = append(installed, installedHookPosture{
-				Binary:  words[0],
-				Args:    append([]string(nil), words[1:]...),
-				Posture: posture,
-			})
-		}
-	}
-	return installed
-}
-
-// installedHookBinary retains the original single-binding helper for callers that only need the
-// executable. Posture-aware doctor reporting uses installedHookPostures directly.
-func installedHookBinary(configPath string) string {
-	installed := installedHookPostures(configPath)
-	if len(installed) == 0 {
-		return ""
-	}
-	return installed[0].Binary
-}
-
-func containsHookCommandWord(words []string, want string) bool {
-	for _, word := range words {
-		if word == want {
-			return true
-		}
-	}
-	return false
-}
+// installedHookPostures is the one installed-binding reader (hookplan): doctor probes what it
+// returns and the launch stamp records the posture it names, so both describe the same install.
+var installedHookPostures = hookplan.InstalledHookPostures
 
 // hookCommandBinary extracts the executable from a hook command line. It stays as the compatibility
 // surface for the earlier binary-only check while sharing the posture parser's tokenization.
@@ -208,78 +147,7 @@ func hookCommandBinary(command string) string {
 	return words[0]
 }
 
-// hookCommandWords is the deliberately small POSIX word parser needed for commands written by
-// hookplan. It handles whitespace, single- and double-quoted words, and backslash escapes. In
-// particular, it understands the installer's close-quote/backslash-quote/reopen form for an
-// apostrophe inside a path. Shell expansions and operators are outside the canonical hook command
-// alphabet and are not evaluated.
-func hookCommandWords(command string) ([]string, bool) {
-	var (
-		words       []string
-		word        strings.Builder
-		quote       byte
-		wordStarted bool
-	)
-	flush := func() {
-		if !wordStarted {
-			return
-		}
-		words = append(words, word.String())
-		word.Reset()
-		wordStarted = false
-	}
-	for i := 0; i < len(command); i++ {
-		ch := command[i]
-		switch quote {
-		case '\'':
-			if ch == '\'' {
-				quote = 0
-				continue
-			}
-			word.WriteByte(ch)
-			wordStarted = true
-		case '"':
-			if ch == '"' {
-				quote = 0
-				continue
-			}
-			if ch == '\\' {
-				i++
-				if i >= len(command) {
-					return nil, false
-				}
-				word.WriteByte(command[i])
-				wordStarted = true
-				continue
-			}
-			word.WriteByte(ch)
-			wordStarted = true
-		default:
-			switch {
-			case unicode.IsSpace(rune(ch)):
-				flush()
-			case ch == '\'' || ch == '"':
-				quote = ch
-				wordStarted = true
-			case ch == '\\':
-				i++
-				if i >= len(command) {
-					return nil, false
-				}
-				word.WriteByte(command[i])
-				wordStarted = true
-			default:
-				word.WriteByte(ch)
-				wordStarted = true
-			}
-		}
-	}
-	if quote != 0 {
-		return nil, false
-	}
-	flush()
-	return words, true
-}
+var hookCommandWords = hookplan.HookCommandWords
 
 // probeHookPosture returns "" when the exact installed live command evaluates the mutation and
 // honors the configured process-exit posture, or a one-line reason why it does not.

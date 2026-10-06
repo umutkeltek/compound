@@ -629,3 +629,24 @@ Re-run the matrix after harness/setting/source changes: new identities and owned
 keys appear without editing a second table. This observes declarations, not every
 possible overlay or actual inference. Fresh session model/effort, undeclared CLI
 flags, profiles and remote app overrides remain explicitly unverified.
+
+### Selection capability: fail closed before launch, record what was observed
+
+Each registry row also carries `selection` (`model_passable`, `effort_passable`,
+`effort_observable`, `session_pinnable`, a required `basis`), shown in the settings
+matrix. It is the one source the snapshot builder and the shared subprocess runner
+read; there is no per-harness name list. A requested model or effort the row says
+the launch cannot apply is refused before any RunAttempt is minted with
+`selection_unsupported:<harness>:<field>` (also at public-CLI bind and wire
+preflight, so the envelope is not advanced). A request is never cleared and run
+without. A name with no row (including the raw `claude` adapter and
+`os-harness-entrypoints`) refuses every requested model or effort.
+
+At stamp time `execution_selection.settings_digest` digests the harness's live hook
+posture (`enforce | observe | none`), read with the same installed-binding reader
+doctor probes; a harness Compound installs no hooks for has no digest (unknown, not
+`none`). The append-once `observed` block beside the snapshot records what the
+built launch will run: codex model/effort from argv, claude lane model/effort from
+the wrapper's literal `SB_LANE_CLAUDE_MODEL` / `SB_LANE_REQUESTED_EFFORT` exports
+(read with the settings-source reader, never sourced), and the hook posture. It is
+absent, not zeroed, when nothing was observable.
