@@ -1272,6 +1272,14 @@ type ActionIntent struct {
 	EstimatedCost          EstimatedCost `json:"estimated_cost"`
 	Preview                string        `json:"preview,omitempty"`
 	RollbackPlan           string        `json:"rollback_plan,omitempty"`
+
+	// DesktopSurface is where the action lands on the operator's machine
+	// (isolated_headless, isolated_visible, background_gui, operator_browser,
+	// foreground_gui); empty for an action that touches no desktop surface.
+	// It travels on the intent because the live hook re-evaluates the intent,
+	// not the monitor's decision: policy attaches the operator-live obligation
+	// from this field. The unattended hold rides SecurityFloorOutcome.
+	DesktopSurface string `json:"desktop_surface,omitempty"`
 }
 
 func (e *ActionIntent) Kind() string { return "action_intent" }

@@ -974,6 +974,7 @@ func liveMonitoredAction(
 		Sources:            append([]envelope.SourceEnvelope{}, in.SourceEnvelopes...),
 		ClassifierRisk:     in.ClassifierRisk,
 		FirstPartyCommands: firstPartyCommandCatalog(),
+		Posture:            harness.DefaultRegistry().Posture(hook.NormalizeHarness(harnessName)),
 	}, policy.DefaultConfig(), now)
 }
 

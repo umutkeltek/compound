@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -2733,5 +2734,39 @@ func TestLoadHookFixtureForHomeEmptyStdinReturnsNoOp(t *testing.T) {
 	}
 	if fx.Hook != "user-prompt-submit" || !fx.Live {
 		t.Fatalf("fixture missing live fields: %+v", fx)
+	}
+}
+
+// The live hook is where posture reaches the classifier: the harness name on
+// the hook command line resolves through the registry, and the resulting
+// intent is what the hook re-evaluates. An unattended lane's desktop-taking
+// command must carry the non-clearable floor; the operator's own session must
+// carry the surface without one.
+func TestLiveIntentCarriesRegistryPostureIntoDesktopSurfaceHold(t *testing.T) {
+	t.Parallel()
+
+	in := claudeLiveHookInput{
+		ToolName:  "Bash",
+		ToolInput: map[string]any{"command": "agent-browser --cdp 9444 click @e1"},
+		SessionID: "sess_desktop_surface",
+		Cwd:       "/repo",
+	}
+	reason := policy.DesktopSurfaceUnattendedReason(policy.DesktopSurfaceOperatorBrowser)
+	for _, tc := range []struct {
+		harness   string
+		wantFloor bool
+	}{{"claude-minimax", true}, {"claude-code", false}} {
+		intents, err := liveActionIntents(tc.harness, in, cliTestNow)
+		if err != nil || len(intents) != 1 {
+			t.Fatalf("%s: liveActionIntents = %+v, %v", tc.harness, intents, err)
+		}
+		intent := intents[0]
+		if intent.DesktopSurface != policy.DesktopSurfaceOperatorBrowser {
+			t.Fatalf("%s: intent desktop surface = %q", tc.harness, intent.DesktopSurface)
+		}
+		held := intent.SecurityFloorOutcome == "hold" && slices.Contains(intent.SecurityReasons, reason)
+		if held != tc.wantFloor {
+			t.Fatalf("%s: desktop floor = %v, want %v (%+v)", tc.harness, held, tc.wantFloor, intent.SecurityReasons)
+		}
 	}
 }
