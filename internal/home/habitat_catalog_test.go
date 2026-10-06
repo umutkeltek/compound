@@ -523,3 +523,31 @@ func TestHabitatCatalogOwnsLaneAutomationSurfaces(t *testing.T) {
 		t.Fatalf("doctor habitat not ok with lane automation surfaces present: %+v", report.Habitat)
 	}
 }
+
+// TestHabitatCatalogOwnsOperatorReturnQueue: the away-mode return queue lives
+// at operator/return-queue.jsonl. An unregistered root reds home doctor, which
+// blocks archive-history and `make install` -- so the first away flush on a
+// live home would have broken both. Falsifier: removing the catalog entry turns
+// this RED (operator reported as an unknown root).
+func TestHabitatCatalogOwnsOperatorReturnQueue(t *testing.T) {
+	entry, ok := HabitatForPath("operator/return-queue.jsonl")
+	if !ok || entry.Prefix != "operator" || entry.Status != HabitatStatusActive || entry.Class != HabitatClassOperational {
+		t.Fatalf("operator/ is not active operational state: %+v ok=%t", entry, ok)
+	}
+	if !entry.Backup || entry.Compact || entry.Scaffold {
+		t.Fatalf("operator/ must back up, never compact, and not scaffold: %+v", entry)
+	}
+	homePath := t.TempDir()
+	writeHomeFile(t, homePath, "operator/return-queue.jsonl", "")
+	writeHomeFile(t, homePath, "operator/return-queue.lock", "")
+	inventory, err := InspectHabitat(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.UnknownRoots) != 0 || len(inventory.UnknownEntries) != 0 {
+		t.Fatalf("operator/ must be known; unknown_roots=%v unknown_entries=%v", inventory.UnknownRoots, inventory.UnknownEntries)
+	}
+	if report := Doctor(homePath); !report.HabitatOK {
+		t.Fatalf("doctor habitat not ok with the return queue present: %+v", report.Habitat)
+	}
+}

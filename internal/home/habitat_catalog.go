@@ -124,6 +124,12 @@ func buildHabitatEntries() []HabitatEntry {
 		// delegate create it, so a home that never delegated must not
 		// report a missing scaffold.
 		active("delegate-workspaces", "delegate-workspaces", HabitatClassOperational, false, true, false),
+		// operator/ holds the away-mode return queue (return-queue.jsonl +
+		// its flock), written by internal/operatornotice while the operator's
+		// presence window says away. Operational, backed up (an ask the
+		// operator never sees is lost work), never compacted; Scaffold=false:
+		// only an away flush creates it.
+		active("operator", "operator", HabitatClassOperational, false, true, false),
 		// scripts/ holds operator-installed lane-automation tooling
 		// (babysit-*.sh, watch-income-triage-*.sh) deployed from the
 		// control-plane plan docs. Config-class: operator-authored, backed
