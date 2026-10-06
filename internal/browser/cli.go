@@ -186,6 +186,10 @@ func Run(args []string) {
 		cmdBrowserShow(args[1:])
 	case "doctor":
 		cmdBrowserDoctor(args[1:])
+	case "credential-provider":
+		os.Exit(runCredentialProvider(args[1:], os.Stdin, os.Stdout, os.Stderr))
+	case "credential":
+		os.Exit(runCredentialCLI(args[1:], os.Stdout, os.Stderr))
 	default:
 		fmt.Fprintln(os.Stderr, browserUsage)
 		os.Exit(2)

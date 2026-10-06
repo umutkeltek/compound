@@ -44,6 +44,10 @@ type BrowserProfile struct {
 	Logins      []string               `json:"logins"`
 	Status      BrowserProfileStatus   `json:"status"`
 	UpdatedAt   string                 `json:"updated_at,omitempty"`
+	// CredentialRef optionally names the login secret for this profile
+	// (bws secret key or ~/.compound/secrets/accounts/<name>). A name, never
+	// a value; `compound browser credential-provider` resolves it.
+	CredentialRef string `json:"credential_ref,omitempty"`
 }
 
 // BrowserProfileBackends carries per-backend launch args. Each field is
