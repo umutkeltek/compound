@@ -85,7 +85,7 @@ func (s *Store) attachDispatchPrompt(workID, actor string, now time.Time) (dispa
 		return dispatchPrompt{
 			ContextPackID:       pack.ID,
 			CapabilitiesOffered: offers,
-			Markdown:            renderDispatchPrompt(committed, pack.TaskContract, offers),
+			Markdown:            renderDispatchPrompt(committed, pack.TaskContract, dispatchWorkspace(committed, ""), pack.RequiredChecks, offers),
 		}, nil
 	}
 }
@@ -125,6 +125,7 @@ func (s *Store) dispatchContextPack(w envelope.WorkEnvelope, actor string, now t
 	}
 	pack.IDs.ContractID = contractID
 	pack.Scope.Surface = cwd
+	attachDispatchRecipe(&pack, dispatchWorkspace(w, cwd), s.home)
 	if !capgraph.Exists(s.home) {
 		return pack, nil
 	}
@@ -259,7 +260,7 @@ func dispatchCapabilityOffer(offer envelope.CapabilityOffer) DispatchCapabilityO
 	}
 }
 
-func renderDispatchPrompt(w envelope.WorkEnvelope, task envelope.TaskContract, offers []DispatchCapabilityOffer) string {
+func renderDispatchPrompt(w envelope.WorkEnvelope, task envelope.TaskContract, workspace string, checks []string, offers []DispatchCapabilityOffer) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Dispatch Work %s\n\n", w.ID)
 	if strings.TrimSpace(w.CanonicalSurface) != "" {
@@ -277,6 +278,15 @@ func renderDispatchPrompt(w envelope.WorkEnvelope, task envelope.TaskContract, o
 		}
 		if task.ProofMedium != "" {
 			fmt.Fprintf(&b, "- proof_medium: %s\n", task.ProofMedium)
+		}
+		fmt.Fprintln(&b)
+	}
+	if len(checks) > 0 {
+		fmt.Fprintln(&b, dispatchRecipeHeading)
+		fmt.Fprintln(&b)
+		fmt.Fprintf(&b, "- workspace: %s\n", workspace)
+		for _, check := range checks {
+			fmt.Fprintf(&b, "- %s\n", check)
 		}
 		fmt.Fprintln(&b)
 	}
