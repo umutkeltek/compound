@@ -205,6 +205,7 @@ func EvaluateWithContext(ai envelope.ActionIntent, cfg Config, ctx EvaluationCon
 	// raise caution again -- a dirty repo or a placement miss re-escalates a
 	// cleared action, which keeps "context only ever raises" true.
 	pd = applyAutonomyEnvelope(pd, ai, cfg, now)
+	pd = applyDesktopSurfaceObligation(pd, ai, now)
 	if ctx.SourceControl != nil {
 		pd = applySourceControlContext(pd, ai, cfg, *ctx.SourceControl, now)
 	}

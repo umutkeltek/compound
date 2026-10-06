@@ -56,6 +56,11 @@ type ToolActionRequest struct {
 	Sources            []envelope.SourceEnvelope
 	ClassifierRisk     string
 	FirstPartyCommands FirstPartyCommandCatalog
+	// Posture is PostureInteractive or PostureUnattended: whether a human is at
+	// the keyboard for this harness. Empty means interactive, which is what
+	// every caller that predates the field was. The live hook supplies the
+	// harness registry's answer. Only the desktop-surface hold reads it.
+	Posture string
 }
 
 type ActionClassification struct {
@@ -76,6 +81,9 @@ type ActionClassification struct {
 	// CapturesWorkInProgress marks a shape that commits, stages, stashes, or
 	// destroys working-tree changes. See wip_capture_shell.go.
 	CapturesWorkInProgress bool
+	// DesktopSurface is where the action lands on the operator's machine. See
+	// desktop_surface.go for the vocabulary and why it is its own dimension.
+	DesktopSurface string
 }
 
 type ActionBinding struct {
@@ -240,6 +248,7 @@ func ClassifyToolAction(request ToolActionRequest) ActionClassification {
 			classification.Destination = "command:" + actionHash([]byte(command))
 		}
 	}
+	classification.DesktopSurface = classifyDesktopSurface(tool, request.Arguments)
 	return classification
 }
 
@@ -291,6 +300,9 @@ func MonitorToolAction(request ToolActionRequest, cfg Config, now time.Time) Mon
 
 		CapturesWorkInProgress: classification.CapturesWorkInProgress,
 	}
+	if classification.DesktopSurface != DesktopSurfaceNone {
+		intent.DesktopSurface = classification.DesktopSurface
+	}
 
 	decision := Evaluate(intent, cfg, now)
 	securityFloor := ""
@@ -338,6 +350,9 @@ func MonitorToolAction(request ToolActionRequest, cfg Config, now time.Time) Mon
 	case ClassifierRiskSuspicious:
 		constrain("hold", "classifier marked content suspicious; classifier may raise burden but never grant")
 	}
+	if DesktopSurfaceTakesOperatorDesktop(classification.DesktopSurface) && postureUnattended(request.Posture) {
+		constrain("hold", DesktopSurfaceUnattendedReason(classification.DesktopSurface))
+	}
 	intent.SecurityFloorOutcome = securityFloor
 	intent.SecurityReasons = append([]string{}, securityReasons...)
 	// The envelope runs LAST, on the fully-constrained decision: the security
@@ -345,6 +360,7 @@ func MonitorToolAction(request ToolActionRequest, cfg Config, now time.Time) Mon
 	// particular hold is one it may clear. Evaluate applies the same owner for
 	// callers that never pass through the monitor.
 	decision = applyAutonomyEnvelope(decision, intent, cfg, now)
+	decision = applyDesktopSurfaceObligation(decision, intent, now)
 
 	binding := ActionBinding{
 		SchemaVersion:      ActionBindingSchema,
