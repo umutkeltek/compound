@@ -13,6 +13,7 @@ import (
 
 	"compound/internal/envelope"
 	"compound/internal/eventstore"
+	"compound/internal/home"
 )
 
 func SourceLifecycleGateEvidenceRef(sourceFamily, gate string) string {
@@ -115,8 +116,7 @@ func resolveSourceLifecycleEvidenceBinding(homePath string, manifest SourceManif
 	if !validLifecycleEnvelopeStorageID(workID, "work_") {
 		return SourceLifecycleEvidenceBinding{}, fmt.Errorf("evidence transition %s has invalid work_id %q", transitionID, workID)
 	}
-	workPath := filepath.Join(homePath, "work", "work", workID+".json")
-	workBody, err := os.ReadFile(workPath)
+	workBody, err := readSourceLifecycleEvidenceWork(homePath, workID)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return SourceLifecycleEvidenceBinding{}, fmt.Errorf("evidence work %s not found", workID)
@@ -158,6 +158,45 @@ func resolveSourceLifecycleEvidenceBinding(homePath string, manifest SourceManif
 		CanonicalSurface:     manifest.SourceFamily,
 		RequiredGateProofRef: requiredGateRef,
 	}, nil
+}
+
+// Operational archival changes custody location, not the sealed evidence bytes.
+func readSourceLifecycleEvidenceWork(homePath, workID string) ([]byte, error) {
+	relative := filepath.ToSlash(filepath.Join("work", "work", workID+".json"))
+	workPath := filepath.Join(homePath, filepath.FromSlash(relative))
+	body, present, err := home.ReadRootedRegularFileCanonicalOnly(homePath, workPath, "source lifecycle evidence work")
+	if err != nil || present {
+		return body, err
+	}
+	entries, err := home.LoadOperationalArchiveIndex(homePath)
+	if err != nil {
+		return nil, err
+	}
+	var matched *home.OperationalArchiveEntry
+	for i := range entries {
+		if entries[i].OriginalPath != relative {
+			continue
+		}
+		if matched != nil {
+			return nil, fmt.Errorf("ambiguous archived evidence work %s", workID)
+		}
+		matched = &entries[i]
+	}
+	if matched == nil {
+		return nil, os.ErrNotExist
+	}
+	expectedArchivePath := filepath.ToSlash(filepath.Join(home.OperationalArchiveFilesRel, filepath.FromSlash(relative)))
+	if matched.Kind != "work" || matched.Operation != "archived" || matched.Status != "completed" || matched.ArchivePath != expectedArchivePath {
+		return nil, fmt.Errorf("invalid archived evidence work authority %s", workID)
+	}
+	body, err = home.ReadRootedRegularFile(homePath, filepath.Join(homePath, filepath.FromSlash(matched.ArchivePath)), "archived source lifecycle evidence work")
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) != matched.Size || strings.TrimPrefix(lifecycleEvidenceSHA256(body), "sha256:") != matched.SHA256 {
+		return nil, fmt.Errorf("archived evidence work %s does not match index size and hash", workID)
+	}
+	return body, nil
 }
 
 func validateStoredSourceLifecycleEvidenceBindings(sourceFamily string, proofs []SourceLifecycleProof) error {

@@ -481,6 +481,13 @@ Every arrow needs evidence. The gates are:
 9. archive with a verified rollback procedure;
 10. request an explicit operator decision for service shutdown, destructive retirement, or deletion.
 
+Operational archival preserves evidence identity. Lifecycle verification reads current work through
+Compound's rooted canonical reader. Only genuine absence permits lookup in the owned operational archive
+index: exactly one committed, completed work entry at the canonical archive path, with matching size and
+SHA-256. Present corrupt work, pending or ambiguous custody, symlinks, and forged archive metadata fail
+closed. The original WorkEnvelope/Receipt/Transition validation and sealed binding hashes remain unchanged;
+verification never restores archived work to the live directory or rewrites bindings.
+
 High-risk gates do not accept assertion-shaped proof strings. Their proof value is `transition:<id>` for a
 separate, completed evidence WorkEnvelope whose canonical surface exactly equals the source family. Its completed,
 effective Receipt and linked Transition must share that work id, and the Receipt must carry the exact token
