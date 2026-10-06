@@ -320,38 +320,75 @@ func IntakePlatformSignal(homePath string, store *mem.Store, doc PlatformChangeD
 	return report, nil
 }
 
+// platformSurfaceAliases are the channel and surface-ref spellings that put a
+// product on a signal surface besides the surface's own name. The ledger
+// records channels and refs, not surface kinds, and this portfolio's App
+// Store apps are iPhone apps, so the App Store channel and an App Store ref
+// are what put a product on ios. No product field declares a platform (such
+// as macOS-only) today, so nothing can exclude an App Store product from ios.
+var platformSurfaceAliases = map[string]struct{ channels, refPrefixes []string }{
+	"ios": {channels: []string{"app_store"}, refPrefixes: []string{"appstore:", "app_store:"}},
+}
+
 // platformMatch reports which member of a product carries the surface, and
-// why — or, with an empty entity, why none does. A product is on surface s
-// when a channel is s or a surface ref is s or s:<id>. The ledger records
-// surface refs, not surface kinds, so a kind is never inferred from a ref.
+// the exact channel or surface ref that matched — or, with an empty entity,
+// why none does. A product is on surface s when a channel is s or a surface
+// ref is s or s:<id>; failing that, when a channel or ref is one of s's
+// aliases. An exact match outranks an alias, so the reason is the strongest.
 func (idx *whereIndex) platformMatch(members []string, surface string) (string, string) {
-	var channels []string
-	var refs int
-	for _, m := range members {
-		if c, ok := idx.claim(m, "channels"); ok {
-			for _, ch := range strings.Split(c.Object, ",") {
-				ch = strings.TrimSpace(ch)
-				channels = append(channels, ch)
-				if strings.EqualFold(ch, surface) {
-					return m, "channel " + ch
-				}
+	alias := platformSurfaceAliases[surface]
+	channelOK := func(ch string, aliased bool) bool {
+		if !aliased {
+			return ch == surface
+		}
+		for _, a := range alias.channels {
+			if ch == a {
+				return true
 			}
 		}
-		if c, ok := idx.claim(m, "surfaces"); ok {
-			for _, ref := range strings.Split(c.Object, ",") {
-				ref = strings.TrimSpace(ref)
-				refs++
-				low := strings.ToLower(ref)
-				if low == surface || strings.HasPrefix(low, surface+":") {
-					return m, "surface " + ref
+		return false
+	}
+	refOK := func(ref string, aliased bool) bool {
+		if !aliased {
+			return ref == surface || strings.HasPrefix(ref, surface+":")
+		}
+		for _, prefix := range alias.refPrefixes {
+			if strings.HasPrefix(ref, prefix) {
+				return true
+			}
+		}
+		return false
+	}
+	var channels, refs []string
+	for _, aliased := range []bool{false, true} {
+		for _, m := range members {
+			if c, ok := idx.claim(m, "channels"); ok {
+				for _, ch := range strings.Split(c.Object, ",") {
+					ch = strings.TrimSpace(ch)
+					channels = append(channels, ch)
+					if channelOK(strings.ToLower(ch), aliased) {
+						return m, "channel " + ch
+					}
+				}
+			}
+			if c, ok := idx.claim(m, "surfaces"); ok {
+				for _, ref := range strings.Split(c.Object, ",") {
+					ref = strings.TrimSpace(ref)
+					refs = append(refs, ref)
+					if refOK(strings.ToLower(ref), aliased) {
+						return m, "surface " + ref
+					}
 				}
 			}
 		}
 	}
-	if len(compact(channels)) == 0 && refs == 0 {
+	if len(compact(channels)) == 0 && len(compact(refs)) == 0 {
 		return "", "no channels or surfaces recorded"
 	}
-	return "", fmt.Sprintf("channels [%s] do not include %s and none of %d surface refs is %s or %s:<id>", strings.Join(compact(channels), ", "), surface, refs, surface, surface)
+	wantChannels := append([]string{surface}, alias.channels...)
+	wantRefs := append([]string{surface, surface + ":<id>"}, alias.refPrefixes...)
+	return "", fmt.Sprintf("channels [%s] include none of [%s] and none of %d surface refs is or starts with [%s]",
+		strings.Join(compact(channels), ", "), strings.Join(wantChannels, ", "), len(compact(refs)), strings.Join(wantRefs, ", "))
 }
 
 // platformFormStatus compares the form the signal proposes with the form

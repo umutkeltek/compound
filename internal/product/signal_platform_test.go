@@ -460,3 +460,50 @@ form_delta:
 prerequisites:
   - Xcode 27.1 installed
 `
+
+// TestPlatformSignalCountsAppStoreAsIOS: the ledger records channels, not
+// surface kinds, and this portfolio's App Store apps are iPhone apps, so an
+// app_store channel or an appstore:/app_store: surface ref puts a product on
+// the ios surface. The reason names the exact channel or ref that matched, an
+// exact ios match outranks the App Store alias, and a web-only product is
+// still skipped.
+func TestPlatformSignalCountsAppStoreAsIOS(t *testing.T) {
+	home, store, _ := seedPlatformProducts(t)
+	extra := []Bundle{
+		{SchemaVersion: SchemaVersion, EvidenceRefs: []string{"fixture:tidal"}, Product: Product{
+			ID: "product:tidal", Name: "Tidal", OwnerEntity: "project:tidal", Positioning: "Tide alarms.", PrivacyPosture: "local_first",
+			Surfaces: []Surface{{ID: "site", Kind: "web", Ref: "https://tidal.example.invalid"}},
+			Channels: []string{"app_store"},
+		}},
+		{SchemaVersion: SchemaVersion, EvidenceRefs: []string{"fixture:dock"}, Product: Product{
+			ID: "product:dock", Name: "Dock", OwnerEntity: "project:dock", Positioning: "Marina finder.", PrivacyPosture: "local_first",
+			Surfaces: []Surface{{ID: "listing", Kind: "app_store", Ref: "appstore:6700000001"}},
+			Channels: []string{"web"},
+		}},
+	}
+	for _, b := range extra {
+		if _, err := Apply(home, store, b, strings.TrimPrefix(b.Product.ID, "product:")+".yaml", tProduct); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report, err := IntakePlatformSignal(home, store, platformTestDocument(), "foldphone.yaml", tPlatform, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reasons := map[string]string{}
+	for _, m := range report.Matched {
+		reasons[m.ProductID] = m.MatchReason
+	}
+	want := map[string]string{
+		"product:harbor": "channel ios",
+		"product:beacon": "surface ios:com.example.beacon",
+		"product:tidal":  "channel app_store",
+		"product:dock":   "surface appstore:6700000001",
+	}
+	if !jsonEqual(t, reasons, want) {
+		t.Fatalf("match reasons = %v, want %v", reasons, want)
+	}
+	if len(report.Skipped) != 1 || report.Skipped[0].ProductID != "product:webby" || !strings.Contains(report.Skipped[0].Reason, "app_store") {
+		t.Fatalf("skipped = %+v, want only webby, with a reason naming what was looked for", report.Skipped)
+	}
+}
