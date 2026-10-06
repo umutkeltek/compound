@@ -250,6 +250,7 @@ func TestProofCheckPackageIsolationPreservesCanonicalGateInventory(t *testing.T)
 		{"console-decision-execute-smoke", "console-decision-execute-smoke"},
 		{"console-standing-law-smoke", "console-standing-law-smoke"},
 		{"console-memory-data-smoke", "console-memory-data-smoke"},
+		{"console-evidence-card-smoke", "console-evidence-card-smoke"},
 		{"console-attention-consistency-smoke", "console-attention-consistency-smoke"},
 		{"console-work-language-smoke", "console-work-language-smoke"},
 		{"console-work-legibility-smoke", "console-work-legibility-smoke"},
