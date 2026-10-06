@@ -26,6 +26,7 @@ type OperatorState struct {
 	CurrentPriority string                 `json:"current_priority,omitempty"`
 	AutonomyLever   OperatorAutonomyLever  `json:"autonomy_lever,omitempty"`
 	NeedsMe         []string               `json:"needs_me,omitempty"`
+	Presence        *OperatorPresence      `json:"presence,omitempty"`
 	Blocked         []map[string]any       `json:"blocked,omitempty"`
 	Raw             map[string]interface{} `json:"-"`
 }
@@ -84,6 +85,24 @@ func parseOperatorState(data []byte) (OperatorState, error) {
 	}
 	state.Raw = raw
 	if _, err := normalizeAutonomyLevel(state.AutonomyLever.Level); err != nil {
+		return OperatorState{}, err
+	}
+	// The operator-state source view has long written the legacy key
+	// needs_umut while this reader looked only for needs_me, so the list was
+	// always empty here. Read either; needs_me wins whenever its key is
+	// present, even empty, because it is the canonical name.
+	if _, canonical := raw["needs_me"]; !canonical {
+		if _, legacy := raw["needs_umut"]; legacy {
+			var legacyState struct {
+				NeedsUmut []string `json:"needs_umut"`
+			}
+			if err := json.Unmarshal(data, &legacyState); err != nil {
+				return OperatorState{}, fmt.Errorf("parse operator state needs_umut: %w", err)
+			}
+			state.NeedsMe = legacyState.NeedsUmut
+		}
+	}
+	if err := normalizeOperatorPresence(state.Presence); err != nil {
 		return OperatorState{}, err
 	}
 	return state, nil
@@ -268,6 +287,12 @@ func ApplyOperatorState(cfg *Config, state OperatorState) {
 	level := OperatorStateLevel(state)
 	cfg.OperatorAutonomyLevel = level
 	cfg.OperatorAutonomyAuthorityRef = OperatorStateAuthorityRef
+	// The window, not its effective value: presence is evaluated at decision
+	// time against now, so a long-lived config cannot carry a stale "away".
+	if state.Presence != nil {
+		presence := *state.Presence
+		cfg.OperatorPresence = &presence
+	}
 	cfg.PolicyEvidenceRefs = mergeStrings(cfg.PolicyEvidenceRefs, OperatorStateAuthorityRef)
 	if !autonomyAllowsLocalSourceMutation(level) {
 		if cfg.ClassOutcome == nil {

@@ -79,8 +79,14 @@ func applyAutonomyEnvelope(pd envelope.PolicyDecision, ai envelope.ActionIntent,
 	if _, forbidden := matchForbidden(cfg.ForbiddenPaths, path); forbidden {
 		return pd
 	}
-	grant, ok := autonomyEnvelopeGrant(ai, cfg, now)
+	grant, ok := autonomyEnvelopeScopeGrant(ai, cfg, now)
 	if !ok {
+		return pd
+	}
+	if autonomyEnvelopeNarrowedAway(ai, cfg, now) {
+		pd.Reasons = append(pd.Reasons, fmt.Sprintf(
+			"autonomy envelope narrowed: operator presence is away, so %s:%s clears only local_reversible holds; %s/%s needs an exact capability grant with requires_presence away",
+			grantID(grant), grant.TargetPath, ai.Capability, ai.MutationClass))
 		return pd
 	}
 	pd.Outcome = "allow_with_obligations"
@@ -122,7 +128,34 @@ func autonomyEnvelopeBlocked(ai envelope.ActionIntent) bool {
 	return false
 }
 
-// autonomyEnvelopeGrant finds the standing grant whose SCOPE covers this intent.
+// AwayEnvelopeClearableClass is the one mutation class the L3 envelope may
+// still clear while the operator's presence is away.
+const AwayEnvelopeClearableClass = "local_reversible"
+
+// autonomyEnvelopeNarrowedAway is the away-mode narrowing. While the operator
+// is away, a path scope stops being an authorization for consequences: the
+// envelope clears a hold only on a local_reversible intent. Everything else --
+// external_side_effect, financial, destructive, public, security, unknown --
+// needs a grant that matchGrant accepts on its own (exact capability and
+// class), and for a held class that grant is written with requires_presence
+// away. This deliberately ignores the grant's own mutation_class: the envelope
+// never matched class, so a class-bearing path grant would otherwise reopen
+// the same hole. Presence only ever narrows here; it never clears anything.
+func autonomyEnvelopeNarrowedAway(ai envelope.ActionIntent, cfg Config, now time.Time) bool {
+	return cfg.OperatorPresence.Effective(now) == PresenceAway &&
+		strings.TrimSpace(ai.MutationClass) != AwayEnvelopeClearableClass
+}
+
+// autonomyEnvelopeGrant is the envelope's answer for this intent: the scope
+// grant, unless the away narrowing withholds it.
+func autonomyEnvelopeGrant(ai envelope.ActionIntent, cfg Config, now time.Time) (StandingGrant, bool) {
+	if autonomyEnvelopeNarrowedAway(ai, cfg, now) {
+		return StandingGrant{}, false
+	}
+	return autonomyEnvelopeScopeGrant(ai, cfg, now)
+}
+
+// autonomyEnvelopeScopeGrant finds the standing grant whose SCOPE covers this intent.
 //
 // It matches on the PATH the operator drew and, where the grant narrowed one, a
 // destination and a spend ceiling. It deliberately does not match capability,
@@ -138,7 +171,7 @@ func autonomyEnvelopeBlocked(ai envelope.ActionIntent) bool {
 // may read this tree" is not an authorization to mutate it, and letting a read
 // grant open a mutation envelope would let the narrowest grant in the registry
 // authorize the widest thing in it.
-func autonomyEnvelopeGrant(ai envelope.ActionIntent, cfg Config, now time.Time) (StandingGrant, bool) {
+func autonomyEnvelopeScopeGrant(ai envelope.ActionIntent, cfg Config, now time.Time) (StandingGrant, bool) {
 	var best StandingGrant
 	bestRank := -1
 	for _, g := range cfg.StandingGrants {
@@ -155,6 +188,15 @@ func autonomyEnvelopeGrant(ai envelope.ActionIntent, cfg Config, now time.Time) 
 			if t, err := time.Parse(time.RFC3339, g.ExpiresAt); err == nil && now.After(t) {
 				continue
 			}
+		}
+		// The activation window and the presence key bind here exactly as in
+		// matchGrant: an envelope must not open through a grant the ordinary
+		// path would call inactive.
+		if _, inactive := grantNotYetActive(g, now); inactive {
+			continue
+		}
+		if _, miss := grantPresenceMiss(g, cfg, now); miss {
+			continue
 		}
 		if ai.EstimatedCost.USD != nil && (g.MaxUSD == nil || *ai.EstimatedCost.USD > *g.MaxUSD) {
 			continue

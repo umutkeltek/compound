@@ -629,6 +629,7 @@ func printDoctor(stdout io.Writer, rep doctorReport) {
 	if rep.PlacementNote != "" {
 		fmt.Fprintf(stdout, "  note: %s\n", rep.PlacementNote)
 	}
+	policy.RenderPresenceDoctorLine(stdout, rep.Home, time.Now().UTC())
 	printPlacementSourceFreshness(stdout, rep)
 	printRetention(stdout, rep)
 
