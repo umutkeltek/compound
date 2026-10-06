@@ -47,7 +47,7 @@ const browserUsage = "usage: compound browser list [--json] [--instance UUID] [-
 	"       compound browser doctor [--json] [--stale-min M] [--idle-cpu-pct PCT]\n" +
 	"       compound browser doctor --fix [--dry-run] [--json] [--yes-each] scoped reap: orphan swiftshader only; per-target confirmation by default\n" +
 	"\n" +
-	"local operator diagnostic only — output contains local paths and process args; do not pipe into public audit / MCP / general agent context.\n" + portableBrowserUsage
+	"local operator diagnostic only — output contains local paths and process args; do not pipe into public audit / MCP / general agent context.\n" + portableBrowserUsage + "\n" + selfHealUsage
 
 // browserFlagSets enumerates the accepted flags per subcommand. Mirrors the
 // shape used by `scheduleFlagSets` (see cmd/compound/schedule_cli.go) so
@@ -161,6 +161,7 @@ type browserDoctorReport struct {
 	Instances int                    `json:"instances"`
 	Codes     map[string]int         `json:"codes"`
 	Findings  []browserDoctorFinding `json:"findings"`
+	SelfHeal  *selfHealDoctorReport  `json:"self_heal,omitempty"`
 }
 
 const browserDoctorSchema = "compound/browser-doctor.v0.1"
@@ -168,6 +169,9 @@ const browserDoctorSchema = "compound/browser-doctor.v0.1"
 // Run is the organ entry point behind `compound browser` (the cmd-budget
 // ratchet keeps cmd/compound a dispatch layer; the surface lives here).
 func Run(args []string) {
+	if handled, code := runSelfHealCLI(args, os.Stdout, os.Stderr); handled {
+		os.Exit(code)
+	}
 	if handled, err := runPortableBrowser(args, os.Stdout); handled {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
@@ -336,11 +340,13 @@ func cmdBrowserDoctor(args []string) {
 		cmdBrowserDoctorFix(report, dryRun, yesEach, jsonOut)
 		return
 	}
+	report.SelfHeal = selfHealDoctorSection()
 	if jsonOut {
 		printJSONBrowser(report)
 		return
 	}
 	printBrowserDoctorText(report)
+	renderSelfHealDoctorText(os.Stdout, *report.SelfHeal)
 }
 
 // cmdBrowserDoctorFix reaps ONLY the orphan-idle-swiftshader findings. Per

@@ -14,6 +14,9 @@ import (
 // so this stub keeps non-darwin builds compiling (pattern: the parked
 // darwin_surface_stub.go preserved in archive commit 40af455b).
 func Run(args []string) {
+	if handled, code := runSelfHealCLI(args, os.Stdout, os.Stderr); handled {
+		os.Exit(code)
+	}
 	if handled, err := runPortableBrowser(args, os.Stdout); handled {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)

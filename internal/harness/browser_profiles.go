@@ -44,6 +44,15 @@ type BrowserProfile struct {
 	Logins      []string               `json:"logins"`
 	Status      BrowserProfileStatus   `json:"status"`
 	UpdatedAt   string                 `json:"updated_at,omitempty"`
+
+	// Browser self-heal fields, owned by internal/browser (probe/heal). The
+	// registry carries them verbatim so the seed door never drops them.
+	LoginCheckURL   string          `json:"login_check_url,omitempty"`
+	LoggedInMarker  json.RawMessage `json:"logged_in_marker,omitempty"`
+	TwoFactorMarker json.RawMessage `json:"two_factor_marker,omitempty"`
+	LoginRecipe     string          `json:"login_recipe,omitempty"`
+	LastProbe       json.RawMessage `json:"last_probe,omitempty"`
+	HealAttempts    json.RawMessage `json:"heal_attempts,omitempty"`
 }
 
 // BrowserProfileBackends carries per-backend launch args. Each field is
