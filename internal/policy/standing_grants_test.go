@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"compound/internal/envelope"
 )
 
 func TestImportStandingGrantsWritesAuthorityAndPolicyConsumes(t *testing.T) {
@@ -203,5 +206,41 @@ grants:
 	}
 	if len(cfg.StandingGrants) != 2 {
 		t.Fatalf("config fallback and authority overlay should both remain, got %+v", cfg.StandingGrants)
+	}
+}
+
+// An unscoped product-wide grant imported before an exact per-door grant covers the
+// same intent; the exact grant must still be the one consumed, and the broad grant
+// must still catch intents the exact scope does not reach.
+func TestMatchGrantPrefersScopedCoveringGrantOverEarlierUnscopedOne(t *testing.T) {
+	zero := 0.0
+	cfg := DefaultConfig()
+	broad := StandingGrant{
+		ID: "grant_broad_metadata_fixture", Capability: "app_store.metadata.write", MutationClass: "external_side_effect",
+		ReversibilityCeiling: "reversible", BlastRadius: "one_app_version_metadata", MaxUSD: &zero,
+		ExpiresAt: fixedNow.Add(time.Hour).Format(time.RFC3339),
+	}
+	exact := broad
+	exact.ID, exact.Destination, exact.TargetPath = "grant_exact_promo_fixture", "asc-app:1", "/loop/apply-artifacts/apply/**"
+	cfg.StandingGrants = []StandingGrant{broad, exact}
+
+	action := mkAction("external_side_effect", "easy", "/loop/apply-artifacts/apply/apply_x/desired", "one_app_version_metadata")
+	action.Capability, action.Destination, action.EstimatedCost = "app_store.metadata.write", "asc-app:1", envelope.EstimatedCost{USD: &zero}
+	pd := Evaluate(action, cfg, fixedNow)
+	if !Allowed(pd) || pd.StandingGrantID != "grant_exact_promo_fixture" {
+		t.Fatalf("exact grant must win over the earlier broad one: outcome=%q grant=%q reasons=%v", pd.Outcome, pd.StandingGrantID, pd.Reasons)
+	}
+
+	outside := action
+	outside.Target.Path = "/elsewhere/desired"
+	pd = Evaluate(outside, cfg, fixedNow)
+	if !Allowed(pd) || pd.StandingGrantID != "grant_broad_metadata_fixture" {
+		t.Fatalf("broad grant must still cover an intent outside the exact scope: outcome=%q grant=%q reasons=%v", pd.Outcome, pd.StandingGrantID, pd.Reasons)
+	}
+
+	cfg.StandingGrants = []StandingGrant{exact, broad}
+	pd = Evaluate(action, cfg, fixedNow)
+	if pd.StandingGrantID != "grant_exact_promo_fixture" {
+		t.Fatalf("choice must not depend on registry order: grant=%q", pd.StandingGrantID)
 	}
 }

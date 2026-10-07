@@ -630,8 +630,16 @@ func matchForbidden(patterns []string, p string) (string, bool) {
 	return "", false
 }
 
+// matchGrant returns the covering grant. When several grants cover one intent the
+// most tightly scoped one wins (destination and target_path bound), ties broken by
+// registry order. Registry order alone is not authority: an unscoped product-wide
+// grant imported earlier must not shadow the exact per-door grant an executor was
+// built to consume (2026-10-07: a product loop's promo-text door refused every apply
+// as wrong grant because the broad metadata grant sat seven rows above its own).
 func matchGrant(grants []StandingGrant, ai envelope.ActionIntent, cfg Config, now time.Time) (StandingGrant, []string, bool) {
 	var misses []string
+	var best StandingGrant
+	bestScope, found := -1, false
 	for _, g := range grants {
 		if g.Capability != "" && g.Capability != ai.Capability {
 			continue
@@ -650,12 +658,32 @@ func matchGrant(grants []StandingGrant, ai envelope.ActionIntent, cfg Config, no
 			continue
 		}
 		reasons := grantEnvelopeMisses(g, ai, cfg, now)
-		if len(reasons) == 0 {
-			return g, nil, true
+		if len(reasons) != 0 {
+			misses = append(misses, reasons...)
+			continue
 		}
-		misses = append(misses, reasons...)
+		if scope := grantScope(g); scope > bestScope {
+			best, bestScope, found = g, scope, true
+		}
+	}
+	if found {
+		return best, nil, true
 	}
 	return StandingGrant{}, misses, false
+}
+
+// grantScope counts the binding scopes a grant carries: a destination and a
+// target_path each narrow the envelope, so a grant with both outranks one with
+// neither when both cover the same intent.
+func grantScope(g StandingGrant) int {
+	scope := 0
+	if strings.TrimSpace(g.Destination) != "" {
+		scope++
+	}
+	if strings.TrimSpace(g.TargetPath) != "" {
+		scope++
+	}
+	return scope
 }
 
 func grantEnvelopeMisses(g StandingGrant, ai envelope.ActionIntent, cfg Config, now time.Time) []string {
