@@ -16,11 +16,19 @@ test('saved continuity uses a capable local tuple and executes the exact worker 
   assert.equal(worker.profile.models[worker.profileID].harness, 'codex');
   assert.deepEqual(worker.profile.models[worker.profileID].aliases, [worker.executable]);
   assert.equal(worker.profile.models[worker.unsupportedProfileID].harness, 'os-harness-entrypoints');
-  const payload = JSON.stringify({code: 'console.log(JSON.stringify(process.argv.slice(1)))', args: ['two words', '--', 'literal']});
+  const payload = 'COMPOUND_INSTALLED_WORKER_PAYLOAD=' + JSON.stringify({code: 'console.log(JSON.stringify(process.argv.slice(1)))', args: ['two words', '--', 'literal']});
   const options = {encoding: 'utf8', env: {...process.env, PATH: '/usr/bin:/bin:/usr/sbin:/sbin'}};
   const result = spawnSync(worker.executable, ['exec', payload], options);
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), ['two words', '--', 'literal']);
+  const governed = spawnSync(worker.executable, ['exec', '# Current governed work work_synthetic\n\nCurrent source context.\n\n' + payload], options);
+  assert.equal(governed.status, 0, governed.stderr);
+  assert.equal(governed.stdout, result.stdout);
+  for (const wrong of [payload + payload, '{}']) {
+    const refused = spawnSync(worker.executable, ['exec', wrong], options);
+    assert.notEqual(refused.status, 0, 'ambiguous or missing payload boundary must refuse');
+    assert.equal(refused.stdout, '');
+  }
   const invalid = spawnSync(worker.executable, ['unknown', payload], options);
   assert.notEqual(invalid.status, 0, 'wrong launch grammar must not execute the payload');
   assert.equal(invalid.stdout, '');

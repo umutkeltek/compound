@@ -14,7 +14,10 @@ export function createContinuityWorkerFixture(root) {
 const assert = require('node:assert/strict');
 assert.equal(process.argv.length, 4, 'exact worker launch arguments required');
 assert.equal(process.argv[2], 'exec', 'worker requires exec launch grammar');
-const payload = JSON.parse(process.argv[3]);
+const marker = 'COMPOUND_INSTALLED_WORKER_PAYLOAD=';
+const prompt = process.argv[3], index = prompt.indexOf(marker);
+assert(index >= 0 && index === prompt.lastIndexOf(marker), 'exact worker payload boundary required');
+const payload = JSON.parse(prompt.slice(index + marker.length));
 assert.equal(typeof payload.code, 'string');
 assert(Array.isArray(payload.args) && payload.args.every(arg => typeof arg === 'string'));
 process.argv = [process.execPath, ...payload.args];
@@ -124,7 +127,7 @@ export async function acceptInstalled(bundle, commit, root, priorBundle, priorCo
   }).join('\n');
   const execute = (id, code, args = [], resume = false, saved = false) => ['work', 'advance', id, '--to', 'running', '--by', actor,
     '--execute', ...(resume ? ['--resume-verifying'] : []), ...(saved ? [] : ['--harness', 'os-harness-entrypoints']), '--workspace', root,
-    '--timeout', '90s', ...(saved ? ['--prompt', JSON.stringify({code, args})] : ['--', process.execPath, '-e', code, ...args])];
+    '--timeout', '90s', ...(saved ? ['--prompt', 'COMPOUND_INSTALLED_WORKER_PAYLOAD=' + JSON.stringify({code, args})] : ['--', process.execPath, '-e', code, ...args])];
   function close(id, where = home, proofRef = '') {
     const result = cli(`${id}-close`, ['work', 'close', id, '--outcome', 'completed', '--move-type', 'audit_only', '--by', actor,
       '--summary', 'Independent exact installed worker result accepted'], where);
