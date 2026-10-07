@@ -277,8 +277,13 @@ export async function acceptInstalled(bundle, commit, root, priorBundle, priorCo
     assert.deepEqual(fs.readFileSync(workFile(home, unsupported)), unsupportedBefore);
     assert.deepEqual(json('unsupported-attempts-after', ['run-attempt', 'list', '--json']).map(a => a.id).sort(), attemptsBefore);
     assert(!fs.existsSync(marker), 'unsupported saved selection must not launch');
+    const unsupportedClose = cli('unsupported-fixture-claim-close', ['work', 'close', unsupported, '--outcome', 'cancelled',
+      '--move-type', 'audit_only', '--by', actor, '--summary', 'Unsupported saved selection refused before launch; retire only the fixture claim']);
+    const unsupportedChain = JSON.parse(unsupportedClose.stdout.slice(unsupportedClose.stdout.indexOf('{')));
+    assert.equal(unsupportedChain.receipt.outcome, 'cancelled');
     report.checks.push({gate: 'unsupported_saved_selection_no_launch', passed: true,
-      envelope_unchanged: true, attempt_ids_unchanged: true, marker_absent: true});
+      refusal_envelope_unchanged: true, refusal_attempt_ids_unchanged: true, marker_absent: true,
+      fixture_claim_closed: true, cleanup_receipt_id: unsupportedChain.receipt.id});
     const continuation = 'work_installed_continuity', partial = path.join(root, 'partial.json'),
       continuityGoal = 'Continue this saved goal after interruption without rebuilding its brief.';
     create(continuation, continuityGoal, home, profileID);
