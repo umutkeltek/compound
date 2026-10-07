@@ -1,7 +1,9 @@
 package contract
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -110,6 +112,62 @@ func TestBootstrapReplaceNestedProductSteeringReplacesBlockOnlyAndPreservesSurro
 				t.Fatalf("repeat bootstrap must be a normal no-op: report=%+v err=%v", repeat, err)
 			}
 		})
+	}
+}
+
+func TestNestedInstructionTakeoverPreservesSuffixAndPassesGitWhitespace(t *testing.T) {
+	for _, harness := range []string{"codex", "claude_code"} {
+		for _, suffix := range []string{"\n", "", "\n# Unmanaged suffix — keep exactly.\n"} {
+			t.Run(harness+"/"+fmt.Sprintf("suffix-bytes-%d", len(suffix)), func(t *testing.T) {
+				root := t.TempDir()
+				name := "AGENTS.md"
+				if harness == "claude_code" {
+					name = "CLAUDE.md"
+				}
+				prefix := "# Unmanaged project — keep exactly.\n\n"
+				target := writeTarget(t, root, name, prefix+productSteeringBegin+"\nstale\n"+productSteeringEnd+suffix)
+				git := func(args ...string) {
+					t.Helper()
+					cmd := exec.Command("git", args...)
+					cmd.Dir = root
+					cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1")
+					if out, err := cmd.CombinedOutput(); err != nil {
+						t.Fatalf("git %v: %v\n%s", args, err, out)
+					}
+				}
+				git("init", "--quiet")
+				git("add", name)
+				git("-c", "user.name=Synthetic", "-c", "user.email=synthetic@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "synthetic preimage")
+				render := mustRender(t, harness, "nested EOF fixture", root)
+				if _, err := MaterializeInstructionBlock(render, InstructionMaterializationOptions{BootstrapTakeover: true}); err != nil {
+					t.Fatal(err)
+				}
+				git("diff", "--check")
+				got, err := os.ReadFile(target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				inner := render.Content
+				if strings.HasPrefix(suffix, "\n") {
+					inner = strings.TrimSuffix(inner, "\n")
+				}
+				if string(got) != prefix+inner+suffix {
+					t.Fatalf("unmanaged bytes changed: %q", got)
+				}
+				stat, err := os.Stat(target)
+				if err != nil || stat.Mode().Perm() != 0o640 {
+					t.Fatalf("mode changed: %v %v", stat, err)
+				}
+				current := mustRender(t, harness, "nested EOF fixture", root)
+				if current.Drifted {
+					t.Fatalf("compiler output drifted: %+v", current)
+				}
+				second, err := MaterializeInstructionBlock(current, InstructionMaterializationOptions{})
+				if err != nil || second.Changed {
+					t.Fatalf("not idempotent: %+v %v", second, err)
+				}
+			})
+		}
 	}
 }
 

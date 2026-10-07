@@ -16,8 +16,9 @@ rollback evidence; they are not an active hook owner.
 
 `compound contract compile --instructions` is also the sole installed static-instruction compiler. Its
 `--materialize-instructions` mode atomically replaces only the unique Compound-managed region and preserves
-unmanaged bytes; `--bootstrap-replace` is an explicit one-time whole-file takeover restricted to recognized
-legacy-generated `CLAUDE.md` / `AGENTS.md` targets. Preset renders, symlinks, malformed markers, and raced
+unmanaged bytes. Nested takeover reuses the preserved final newline rather than adding a blank line.
+`--bootstrap-replace` is an explicit one-time takeover of recognized legacy-generated `CLAUDE.md` /
+`AGENTS.md` files or nested product-steering blocks. Preset renders, symlinks, malformed markers, and raced
 preimages are refused. The compiled `InstructionBlockRender` plus the installed region is the check surface;
 no parallel installed-instruction registry or generator exists.
 

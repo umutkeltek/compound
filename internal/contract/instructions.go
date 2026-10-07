@@ -174,6 +174,11 @@ func materializeInstructionBlockWithFS(
 		prefix := append([]byte(nil), before[:nestedBegin]...)
 		suffix := append([]byte(nil), before[nestedEnd:]...)
 		inner := strings.TrimRight(render.Content, "\n") + "\n"
+		// The preserved suffix may already own the marker's line ending.
+		// Reuse it rather than adding an extra blank line at EOF.
+		if len(suffix) > 0 && suffix[0] == '\n' {
+			inner = strings.TrimSuffix(inner, "\n")
+		}
 		after = make([]byte, 0, len(prefix)+len(inner)+len(suffix))
 		after = append(after, prefix...)
 		after = append(after, inner...)
