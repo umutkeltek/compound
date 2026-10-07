@@ -280,7 +280,8 @@ export async function acceptInstalled(bundle, commit, root, priorBundle, priorCo
     const unsupportedClose = cli('unsupported-fixture-claim-close', ['work', 'close', unsupported, '--outcome', 'cancelled',
       '--move-type', 'audit_only', '--by', actor, '--summary', 'Unsupported saved selection refused before launch; retire only the fixture claim']);
     const unsupportedChain = JSON.parse(unsupportedClose.stdout.slice(unsupportedClose.stdout.indexOf('{')));
-    assert.equal(unsupportedChain.receipt.outcome, 'cancelled');
+    assert.equal(unsupportedChain.work.state, 'cancelled');
+    assert.equal(unsupportedChain.receipt.outcome, 'no_op');
     report.checks.push({gate: 'unsupported_saved_selection_no_launch', passed: true,
       refusal_envelope_unchanged: true, refusal_attempt_ids_unchanged: true, marker_absent: true,
       fixture_claim_closed: true, cleanup_receipt_id: unsupportedChain.receipt.id});
