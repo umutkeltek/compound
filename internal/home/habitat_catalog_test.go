@@ -134,7 +134,7 @@ func TestHabitatCatalogClassifiesEveryKnownRootAndMakesBridgeDebtExplicit(t *tes
 		"events", "evidence", "exports", "imports", "inbox", "indexes", "lanebeliefs",
 		"ledger", "lock", "locks", "logs", "observed", "packs", "panel-runs", "private",
 		"projections", "registries", "reports", "reviewed-fixtures", "reviews",
-		"run-observations", "runs", "runtime", "scripts", "snapshots", "sources", "state", "tmp", "transactions", "work",
+		"run-observations", "runs", "runtime", "scripts", "snapshots", "social-profiles", "sources", "state", "tmp", "transactions", "work",
 	}
 	for _, root := range knownRoots {
 		entry, ok := HabitatForPath(root)
@@ -413,6 +413,39 @@ func TestDoctorRecognizesOwnedFeatureRoots(t *testing.T) {
 	}
 	if !report.OK {
 		t.Fatalf("doctor not ok with owned feature roots present: %+v", report)
+	}
+}
+
+// TestHabitatCatalogOwnsSocialProfilesRoot: one Chrome profile per online
+// identity lives under social-profiles/<account_id> (account-identity skill,
+// social-accounts registry). A profile carries live session cookies, so it is
+// credential state: Backup MUST stay false and it must never scaffold or
+// compact. Lived 2026-10-07: the first profile (samplecards-paddle) made home
+// doctor report an unknown habitat, which refused compact, archive-history
+// and make install. Falsifier: removing the catalog entry turns this RED.
+func TestHabitatCatalogOwnsSocialProfilesRoot(t *testing.T) {
+	entry, ok := HabitatForPath("social-profiles/samplecards-paddle/Default/Cookies")
+	if !ok {
+		t.Fatal("social-profiles/ is not owned by the habitat catalog")
+	}
+	if entry.ID != "social-profiles" || entry.Prefix != "social-profiles" || entry.Status != HabitatStatusActive || entry.Class != HabitatClassConfig {
+		t.Fatalf("social-profiles habitat is not active configuration state: %+v", entry)
+	}
+	if entry.Backup {
+		t.Fatalf("social-profiles habitat must never flow into backup bundles: %+v", entry)
+	}
+	if entry.Scaffold || entry.Compact {
+		t.Fatalf("social-profiles habitat must not scaffold or compact: %+v", entry)
+	}
+
+	homePath := t.TempDir()
+	writeHomeFile(t, homePath, "social-profiles/samplecards-paddle/Default/Cookies", `{}`)
+	inventory, err := InspectHabitat(homePath)
+	if err != nil {
+		t.Fatalf("InspectHabitat: %v", err)
+	}
+	if len(inventory.UnknownRoots) != 0 || len(inventory.UnknownEntries) != 0 {
+		t.Fatalf("social-profiles reported as unknown: roots=%v entries=%v", inventory.UnknownRoots, inventory.UnknownEntries)
 	}
 }
 

@@ -118,6 +118,14 @@ func buildHabitatEntries() []HabitatEntry {
 		// bundles — a lost secret is re-provisioned, not restored. Scaffold=false
 		// like profiles: only lanes that custody credentials create it.
 		active("secrets", "secrets", HabitatClassConfig, false, false, false),
+		// social-profiles/ custodies one Chrome profile per online identity
+		// (account-identity skill §5; registries/social-accounts.json
+		// browser_profile paths). A profile holds live session cookies, so it
+		// is credential state like secrets/: Backup=false, never scaffolded,
+		// never compacted. Unregistered, the first profile (samplecards-paddle,
+		// 2026-10-07) failed home doctor and with it compact, archive-history
+		// and make install.
+		active("social-profiles", "social-profiles", HabitatClassConfig, false, false, false),
 		// delegate-workspaces/ custodies per-delegation lane workspaces
 		// (DISPATCH-PROMPT.md, REPORT.md, BLOCKED.md) written by the
 		// delegation automation seam. Scaffold=false: only lanes that
