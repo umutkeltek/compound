@@ -1210,6 +1210,7 @@ func proofCheckSteps(baseRef string, headRefs ...string) ([]proofCheckStep, erro
 		{Name: "console-decision-execute-smoke", Command: consoleBunSmokeCommand("scripts/decision-execute-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-decision-execute-smoke"},
 		{Name: "console-standing-law-smoke", Command: consoleBunSmokeCommand("scripts/standing-law-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-standing-law-smoke"},
 		{Name: "console-memory-data-smoke", Command: consoleBunSmokeCommand("scripts/memory-data-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-memory-data-smoke"},
+		{Name: "console-memory-read-honesty-smoke", Command: consoleBunSmokeCommand("scripts/memory-read-honesty-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-memory-read-honesty-smoke"},
 		{Name: "console-evidence-card-smoke", Command: consoleBunSmokeCommand("scripts/evidence-card-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-evidence-card-smoke"},
 		// attention-consistency-smoke imports console TSX (DecideList/Headline) that the node
 		// strip-types runner cannot resolve, so it runs under bun like its TSX-importing siblings

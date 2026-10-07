@@ -474,6 +474,7 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 		"console-decision-execute-smoke",
 		"console-standing-law-smoke",
 		"console-memory-data-smoke",
+		"console-memory-read-honesty-smoke",
 		"console-evidence-card-smoke",
 		"console-attention-consistency-smoke",
 		"console-work-language-smoke",
@@ -511,6 +512,7 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 			t.Fatalf("native gate proof command is not explicitly enforced: %+v", report.Steps[i].Command)
 		}
 		isBunConsoleSmoke := report.Steps[i].Name == "console-projection-timeout-smoke" || report.Steps[i].Name == "console-continue-button-smoke" || report.Steps[i].Name == "console-work-action-row-smoke" || report.Steps[i].Name == "console-work-trace-smoke" || report.Steps[i].Name == "console-lineage-smoke" || report.Steps[i].Name == "console-generic-actions-smoke" || report.Steps[i].Name == "console-view-registry-smoke" || report.Steps[i].Name == "console-decide-brief-smoke" || report.Steps[i].Name == "console-decision-execute-smoke" || report.Steps[i].Name == "console-standing-law-smoke" || report.Steps[i].Name == "console-memory-data-smoke" || report.Steps[i].Name == "console-evidence-card-smoke" || report.Steps[i].Name == "console-work-language-smoke" || report.Steps[i].Name == "console-work-legibility-smoke" || report.Steps[i].Name == "console-ask-triage-smoke" || report.Steps[i].Name == "console-representation-falsifiers-smoke" || report.Steps[i].Name == "console-stream-tail-smoke" || report.Steps[i].Name == "console-decide-decision-feedback-smoke" || report.Steps[i].Name == "console-attention-consistency-smoke" || report.Steps[i].Name == "console-projection-degradation-smoke" || report.Steps[i].Name == "console-stream-door-smoke" || report.Steps[i].Name == "console-traffic-board-smoke" || report.Steps[i].Name == "console-ads-smoke" || report.Steps[i].Name == "console-delegated-sessions-smoke" || report.Steps[i].Name == "console-coordination-smoke"
+		isBunConsoleSmoke = isBunConsoleSmoke || report.Steps[i].Name == "console-memory-read-honesty-smoke"
 		if strings.HasPrefix(report.Steps[i].Name, "console-") && report.Steps[i].Name != "console-tsc" && !isBunConsoleSmoke && !sameStringSlicePrefix(report.Steps[i].Command, []string{"node", "--experimental-strip-types"}) {
 			t.Fatalf("console smoke step %s command = %+v, want node --experimental-strip-types", report.Steps[i].Name, report.Steps[i].Command)
 		}
