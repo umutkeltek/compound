@@ -173,6 +173,12 @@ not an empty healthy home. A last-known passing check is not current acceptance.
 A doctor command that exits nonzero may appear as unavailable rather than a
 parsed failure report; run the displayed command to see its full diagnostic.
 
+Memory carries the same read status through its proposed queue, standing
+decisions, source evidence and lifecycle counts. Whole-home memory projections
+use the existing bounded heavy-read budget. Only a successful live empty read
+may show an empty-state claim; unavailable counts remain unknown, and retained
+last-good rows disclose their stale state with exact read details available.
+
 Settings distinguishes observation-only hooks, missing installation, missing
 handlers and wrapper requirements. Fixture support is not installed enforcement
 proof. Recovery commands begin with verification or a dry-run; restoration needs

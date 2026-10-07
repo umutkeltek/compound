@@ -1,7 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { arr, COMPOUND_HOME, privateFallbacksEnabled, runJson, type Json, str } from "@/lib/compound";
+import { arr, COMPOUND_HOME, HEAVY_PROJECTION_TIMEOUT_MS, privateFallbacksEnabled, runProjection, type Json, type ProjectionRead, str } from "@/lib/compound";
 
 const MEMORY_INBOX = path.resolve(COMPOUND_HOME, "inbox", "memory-candidates");
 const KNOWLEDGE_EXTRACTION_INBOX = path.resolve(COMPOUND_HOME, "inbox", "knowledge-extractions");
@@ -124,7 +124,7 @@ async function consoleSourceFor(candidate: Json): Promise<Json | null> {
  * set (~1,100 rows locally) that took ~50s wall clock — well past the 15s
  * execRunJson timeout, so every /memory page load hung and failed. The plain
  * `memory candidates --json` call (no --include-evidence) returns the same
- * items/counts/generated_at shape in well under a second; it only omits
+ * items/counts/generated_at shape without those extra lookups; it only omits
  * `source_trace_ref`, `evidence_refs`, the nested `evidence` quote object,
  * `annotations`, and `believed_before` per item. No page-load render path
  * reads those fields (the memory-adjudicate DecisionCard/Dialog fall back to
@@ -133,17 +133,18 @@ async function consoleSourceFor(candidate: Json): Promise<Json | null> {
  * per-item evidence/annotations, fetch it on demand for that one item rather
  * than reintroducing this flag on the list loader.
  */
-async function loadFromProjection(filterState?: string): Promise<MemoryCandidate[] | null> {
+export type MemoryCandidateRead = { candidates: MemoryCandidate[]; read: ProjectionRead };
+
+async function loadFromProjection(filterState?: string): Promise<MemoryCandidateRead> {
   const args = ["memory", "candidates", "--json"];
   if (filterState) args.push("--state", filterState);
 
-  const data = await runJson(args);
-  if (!data) return null;
+  const read = await runProjection(args, { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS });
 
-  const items = arr(data.items)
+  const items = arr(read.value?.items)
     .map((item) => candidateWithId(asObject(item)))
     .filter((item): item is MemoryCandidate => Boolean(item));
-  return items;
+  return { candidates: items, read };
 }
 
 async function loadFromInbox(filterState?: string): Promise<MemoryCandidate[]> {
@@ -179,11 +180,15 @@ async function loadFromInbox(filterState?: string): Promise<MemoryCandidate[]> {
   return out;
 }
 
-export async function loadMemoryCandidates(filterState?: string): Promise<MemoryCandidate[]> {
+export async function loadMemoryCandidatesRead(filterState?: string): Promise<MemoryCandidateRead> {
   const projected = await loadFromProjection(filterState);
-  const out = projected ?? (await loadFromInbox(filterState));
+  const out = projected.read.value ? projected.candidates : (await loadFromInbox(filterState));
   out.sort((a, b) => str(b.created_at).localeCompare(str(a.created_at)));
-  return out;
+  return { candidates: out, read: projected.read };
+}
+
+export async function loadMemoryCandidates(filterState?: string): Promise<MemoryCandidate[]> {
+  return (await loadMemoryCandidatesRead(filterState)).candidates;
 }
 
 export async function loadActionableMemoryCandidates(): Promise<MemoryCandidate[]> {
@@ -206,11 +211,13 @@ export async function loadSourceEvidenceCandidates(state = "proposed"): Promise<
 export async function loadProposedMemorySplit(): Promise<{
   actionable: MemoryCandidate[];
   sourceEvidence: MemoryCandidate[];
+  read: ProjectionRead;
 }> {
-  const proposed = await loadMemoryCandidates("proposed");
+  const { candidates: proposed, read } = await loadMemoryCandidatesRead("proposed");
   return {
     actionable: proposed.filter(isActionableMemoryCandidate),
     sourceEvidence: proposed.filter(isKnowledgeClassCandidate),
+    read,
   };
 }
 
@@ -224,28 +231,36 @@ export async function loadProposedMemorySplit(): Promise<{
  * here (it also admits the entity:decision: prefix branch). On the real home the
  * prefilter returns exactly the decision-typed parked rows, so 18 in ⇒ 18 out.
  */
-export async function loadStandingLawCandidates(): Promise<MemoryCandidate[]> {
-  const data = await runJson([
+export async function loadStandingLawCandidatesRead(): Promise<MemoryCandidateRead> {
+  const read = await runProjection([
     "memory", "candidates", "--json", "--state", "parked", "--kind", "decision",
-  ]);
-  const rows = data
-    ? arr(data.items)
+  ], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS });
+  const rows = read.value
+    ? arr(read.value.items)
         .map((item) => candidateWithId(asObject(item)))
         .filter((item): item is MemoryCandidate => Boolean(item))
     : [];
   const out = rows.filter(isStandingLawCandidate);
   out.sort((a, b) => str(b.created_at).localeCompare(str(a.created_at)));
-  return out;
+  return { candidates: out, read };
 }
 
-export async function loadMemoryCounts(): Promise<Record<string, number>> {
-  const all = await loadMemoryCandidates();
+export async function loadStandingLawCandidates(): Promise<MemoryCandidate[]> {
+  return (await loadStandingLawCandidatesRead()).candidates;
+}
+
+export async function loadMemoryCountsRead(): Promise<{ counts: Record<string, number>; read: ProjectionRead }> {
+  const { candidates: all, read } = await loadMemoryCandidatesRead();
   const counts: Record<string, number> = {};
   for (const c of all) {
     const s = str(c.state) || "unknown";
     counts[s] = (counts[s] ?? 0) + 1;
   }
-  return counts;
+  return { counts, read };
+}
+
+export async function loadMemoryCounts(): Promise<Record<string, number>> {
+  return (await loadMemoryCountsRead()).counts;
 }
 
 /**
