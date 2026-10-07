@@ -68,6 +68,7 @@ export async function acceptInstalled(bundle, commit, root, priorBundle, priorCo
   const prior = verifyBundle(priorBundle, priorCommit, platform);
   assert.notEqual(commit, priorCommit, 'prior and candidate generations must differ');
   fs.mkdirSync(root, {mode: 0o700});
+  root = fs.realpathSync(root);
   const logs = path.join(root, 'logs');
   fs.mkdirSync(logs, {mode: 0o700});
   const home = path.join(root, 'home'), bins = path.join(root, 'bin'), bin = path.join(bins, 'compound');
