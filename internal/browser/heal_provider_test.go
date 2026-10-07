@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -38,7 +39,7 @@ func TestCredentialProviderHelperProcess(t *testing.T) {
 		}
 	}
 	if len(args) < 2 || args[0] != "browser" || args[1] != "credential-provider" {
-		fmt.Fprintln(os.Stderr, browserUsage)
+		fmt.Fprint(os.Stderr, credentialProviderUsage)
 		os.Exit(2)
 	}
 	if raw := os.Getenv(providerHelperNowEnv); raw != "" {
@@ -49,6 +50,30 @@ func TestCredentialProviderHelperProcess(t *testing.T) {
 		credentialNow = func() time.Time { return time.Unix(unix, 0).UTC() }
 	}
 	os.Exit(runCredentialProvider(args[2:], os.Stdin, os.Stdout, os.Stderr))
+}
+
+func TestCredentialProviderHelperRejectsWrongCommand(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{nil, {"browser"}, {"browser", "unknown"}} {
+		t.Run(fmt.Sprint(args), func(t *testing.T) {
+			argv := append([]string{"-test.run=^TestCredentialProviderHelperProcess$", "--"}, args...)
+			cmd := exec.Command(exe, argv...)
+			cmd.Env = append(os.Environ(), providerHelperEnv+"=1")
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			err := cmd.Run()
+			exit, ok := err.(*exec.ExitError)
+			if !ok || exit.ExitCode() != 2 {
+				t.Fatalf("helper exit = %v, want misuse exit 2", err)
+			}
+			if stdout.Len() != 0 || stderr.String() != credentialProviderUsage {
+				t.Fatalf("helper output: stdout=%q stderr=%q, want portable provider usage %q", stdout.String(), stderr.String(), credentialProviderUsage)
+			}
+		})
+	}
 }
 
 func TestHealRoundTripThroughRealCredentialProvider(t *testing.T) {

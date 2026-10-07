@@ -67,6 +67,11 @@ The runner requires Node 20+ and a source checkout for synthetic fixtures; it
 executes only installed Compound binaries. It never connects providers or real
 accounts, starts schedulers, mints authority, tags, or publishes a release.
 
+Saved continuity uses a synthetic local Codex-compatible worker, not model
+inference. The drill verifies the selected executable, model and provider tuple,
+interruption, and exact resume. A separate unsupported-adapter control must refuse
+before launch without changing the work envelope or minting an attempt.
+
 The historical `scripts/release-smoke.sh` entrypoint is retired and exits without
 effects. It is not an installer or a substitute for governed `proof-check`.
 

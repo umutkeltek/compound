@@ -7,6 +7,28 @@ import {spawn, spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 
 const hash = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+export function createContinuityWorkerFixture(root) {
+  const profileID = 'local/installed-worker', unsupportedProfileID = 'local/unsupported-worker';
+  const executable = path.join(root, 'installed-worker-fixture.cjs');
+  fs.writeFileSync(executable, `#!${process.execPath}
+const assert = require('node:assert/strict');
+assert.equal(process.argv.length, 4, 'exact worker launch arguments required');
+assert.equal(process.argv[2], 'exec', 'worker requires exec launch grammar');
+const payload = JSON.parse(process.argv[3]);
+assert.equal(typeof payload.code, 'string');
+assert(Array.isArray(payload.args) && payload.args.every(arg => typeof arg === 'string'));
+process.argv = [process.execPath, ...payload.args];
+require('node:vm').runInThisContext('(function(require){' + payload.code + '\\n})')(require);
+`, {flag: 'wx', mode: 0o700});
+  const model = (harness, alias, providerRoute) => ({lane: 'local worker fixture', harness, provider_route: providerRoute,
+    cost_class: 'local', tier: 'cheap', packet_ceiling: 'multi-file', context_window: 200000, max_output: 16000, aliases: [alias],
+    capabilities: {'build-implement': {level: 'primary', evidence: 'fixture:installed-local-worker'}}});
+  const profile = {version: 1, purpose: 'Isolated installed local worker acceptance fixture',
+    capability_classes: ['build-implement'], models: {
+      [profileID]: model('codex', executable, profileID), [unsupportedProfileID]: model('os-harness-entrypoints', process.execPath, unsupportedProfileID)},
+    routing_defaults: {'build-implement': [profileID]}};
+  return {profileID, unsupportedProfileID, executable, profile};
+}
 export function verifyBundle(bundle, commit, platform) {
   assert(['darwin_arm64', 'linux_amd64'].includes(platform), 'unsupported native platform');
   assert(/^[a-f0-9]{40}$/.test(commit), 'full candidate commit required');
@@ -102,7 +124,7 @@ export async function acceptInstalled(bundle, commit, root, priorBundle, priorCo
   }).join('\n');
   const execute = (id, code, args = [], resume = false, saved = false) => ['work', 'advance', id, '--to', 'running', '--by', actor,
     '--execute', ...(resume ? ['--resume-verifying'] : []), ...(saved ? [] : ['--harness', 'os-harness-entrypoints']), '--workspace', root,
-    '--timeout', '90s', '--', process.execPath, '-e', code, ...args];
+    '--timeout', '90s', ...(saved ? ['--prompt', JSON.stringify({code, args})] : ['--', process.execPath, '-e', code, ...args])];
   function close(id, where = home, proofRef = '') {
     const result = cli(`${id}-close`, ['work', 'close', id, '--outcome', 'completed', '--move-type', 'audit_only', '--by', actor,
       '--summary', 'Independent exact installed worker result accepted'], where);
@@ -236,23 +258,32 @@ export async function acceptInstalled(bundle, commit, root, priorBundle, priorCo
     report.checks.push({gate: 'execution_and_rejected_verification', passed: true, work_id: rejected, attempt_id: rejectedID,
       attempt_unchanged: true, caller_marker_refused: true, receipt_id: rejectionChain.receipt.id});
 
-    const profileID = 'local/installed-worker', profile = path.join(root, 'local-profile.yaml');
-    fs.writeFileSync(profile, JSON.stringify({version: 1, purpose: 'Isolated installed local worker acceptance fixture',
-      capability_classes: ['build-implement'], models: {[profileID]: {lane: 'local worker fixture',
-        harness: 'os-harness-entrypoints', provider_route: profileID, cost_class: 'local', tier: 'cheap',
-        packet_ceiling: 'multi-file', context_window: 200000, max_output: 16000, aliases: [process.execPath],
-        capabilities: {'build-implement': {level: 'primary', evidence: 'fixture:installed-local-worker'}}}},
-      routing_defaults: {'build-implement': [profileID]}}), {flag: 'wx', mode: 0o600});
+    const continuityFixture = createContinuityWorkerFixture(root), {profileID, unsupportedProfileID, executable} = continuityFixture;
+    const profile = path.join(root, 'local-profile.yaml');
+    fs.writeFileSync(profile, JSON.stringify(continuityFixture.profile), {flag: 'wx', mode: 0o600});
     cli('import-local-launch-profile', ['route', 'import-model-capabilities', profile]);
+    const unsupported = 'work_installed_unsupported_selection', marker = path.join(root, 'unsupported-launch.marker');
+    create(unsupported, 'Refuse unsupported saved model selection before launch.', home, unsupportedProfileID);
+    const unsupportedBefore = fs.readFileSync(workFile(home, unsupported));
+    const attemptsBefore = json('unsupported-attempts-before', ['run-attempt', 'list', '--json']).map(a => a.id).sort();
+    const unsupportedResult = cli('unsupported-saved-model-refusal', ['work', 'advance', unsupported, '--to', 'running', '--by', actor,
+      '--execute', '--workspace', root, '--timeout', '90s', '--', process.execPath, '-e',
+      'require("node:fs").writeFileSync(process.argv[1], "unexpected launch")', marker], home, 'nonzero');
+    assert.match(unsupportedResult.stderr, /selection_unsupported:os-harness-entrypoints:model/);
+    assert.deepEqual(fs.readFileSync(workFile(home, unsupported)), unsupportedBefore);
+    assert.deepEqual(json('unsupported-attempts-after', ['run-attempt', 'list', '--json']).map(a => a.id).sort(), attemptsBefore);
+    assert(!fs.existsSync(marker), 'unsupported saved selection must not launch');
+    report.checks.push({gate: 'unsupported_saved_selection_no_launch', passed: true,
+      envelope_unchanged: true, attempt_ids_unchanged: true, marker_absent: true});
     const continuation = 'work_installed_continuity', partial = path.join(root, 'partial.json'),
       continuityGoal = 'Continue this saved goal after interruption without rebuilding its brief.';
     create(continuation, continuityGoal, home, profileID);
     const selected = json('continuity-saved-selection', ['work', 'show', continuation, '--json']).execution_selection;
-    assert.equal(selected?.launch_profile_id, profileID); assert.equal(selected?.harness, 'os-harness-entrypoints');
+    assert.equal(selected?.launch_profile_id, profileID); assert.equal(selected?.harness, 'codex');
     const continuationWorker = "const fs=require('fs'),cp=require('child_process'),a=require('assert/strict');const [bin,id,partial,phase,goal,workspace,selection]=process.argv.slice(1);const r=cp.spawnSync(bin,['work','show',id,'--json'],{env:process.env,encoding:'utf8'});a.equal(r.status,0);const w=JSON.parse(r.stdout);a.equal(w.state,'running');a.equal(w.desired_outcome,goal);a.equal(process.cwd(),workspace);a.deepEqual(w.execution_selection,JSON.parse(selection));const consumed={id,goal:w.desired_outcome,workspace:process.cwd(),selection:w.execution_selection};if(phase==='interrupt'){const c=cp.spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});c.once('spawn',()=>{fs.writeFileSync(partial+'.ready',JSON.stringify({...consumed,pid:process.pid,child_pid:c.pid}));fs.renameSync(partial+'.ready',partial);});setInterval(()=>{},1000);}else{const p=JSON.parse(fs.readFileSync(partial));for(const key of Object.keys(consumed))a.deepEqual(p[key],consumed[key]);console.log(JSON.stringify({accepted:true,...consumed}));}";
     const workerArgs = phase => [bin, continuation, partial, phase, continuityGoal, root, JSON.stringify(selected)];
     const args = execute(continuation, continuationWorker, workerArgs('interrupt'), false, true);
-    args.splice(args.indexOf('--'), 0, '--keep-verifying-on-failure');
+    args.splice(args.indexOf('--prompt'), 0, '--keep-verifying-on-failure');
     const child = spawn(bin, args, {cwd: root, env: env(home), stdio: ['ignore', 'pipe', 'pipe']});
     const state = {done: false}; let stdout = '', stderr = '';
     child.stdout.on('data', bytes => { stdout += bytes; }); child.stderr.on('data', bytes => { stderr += bytes; });
@@ -282,13 +313,17 @@ export async function acceptInstalled(bundle, commit, root, priorBundle, priorCo
         assert.equal(attempt.execution_selection.launch_profile_id, profileID);
         assert.equal(attempt.execution_selection.launch_profile_revision, selected.launch_profile_revision);
         assert.equal(attempt.execution_selection.harness, selected.harness);
+        assert.equal(attempt.command, executable);
+        assert.equal(attempt.requested_model_id, profileID);
+        assert.equal(attempt.requested_provider_route, profileID);
       }
       assert.notEqual(resumed.policy_decision_id, after.policy_decision_id); assert.equal(hash(partial), partialHash);
       assert.deepEqual(JSON.parse(output(resumedAttempt)), {accepted: true, id: continuation, goal: continuityGoal,
         workspace: root, selection: selected});
       const chain = close(continuation);
       report.checks.push({gate: 'interruption_fresh_resume', passed: true, cancelled_attempt: cancelledID, resumed_attempt: resumedID,
-        owned_tree_stopped: true, saved_selection: selected, partial_sha256: partialHash, receipt_id: chain.receipt.id});
+        owned_tree_stopped: true, saved_selection: selected, partial_sha256: partialHash, receipt_id: chain.receipt.id,
+        synthetic_tuple_consumed: true, native_inference: false});
     } finally { if (!state.done) { child.kill('SIGTERM'); await joined; } }
 
     const fixtureRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'fixtures');

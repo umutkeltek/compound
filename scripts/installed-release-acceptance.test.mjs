@@ -7,6 +7,25 @@ import {spawnSync} from 'node:child_process';
 import test from 'node:test';
 import {verifyBundle} from './installed-release-acceptance.mjs';
 
+test('saved continuity uses a capable local tuple and executes the exact worker payload', async t => {
+  const acceptance = await import('./installed-release-acceptance.mjs');
+  assert.equal(typeof acceptance.createContinuityWorkerFixture, 'function');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'compound-continuity-fixture-'));
+  t.after(() => fs.rmSync(root, {recursive: true}));
+  const worker = acceptance.createContinuityWorkerFixture(root);
+  assert.equal(worker.profile.models[worker.profileID].harness, 'codex');
+  assert.deepEqual(worker.profile.models[worker.profileID].aliases, [worker.executable]);
+  assert.equal(worker.profile.models[worker.unsupportedProfileID].harness, 'os-harness-entrypoints');
+  const payload = JSON.stringify({code: 'console.log(JSON.stringify(process.argv.slice(1)))', args: ['two words', '--', 'literal']});
+  const options = {encoding: 'utf8', env: {...process.env, PATH: '/usr/bin:/bin:/usr/sbin:/sbin'}};
+  const result = spawnSync(worker.executable, ['exec', payload], options);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), ['two words', '--', 'literal']);
+  const invalid = spawnSync(worker.executable, ['unknown', payload], options);
+  assert.notEqual(invalid.status, 0, 'wrong launch grammar must not execute the payload');
+  assert.equal(invalid.stdout, '');
+});
+
 const commit = '0123456789abcdef0123456789abcdef01234567';
 const names = ['RELEASE', 'install-release.sh', ...['darwin_arm64', 'linux_amd64'].flatMap(p => [
   `compound_0.1.0_${p}.tar.gz`, `compound_0.1.0_${p}.cdx.json`,
