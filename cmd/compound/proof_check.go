@@ -1621,7 +1621,7 @@ func runProofCheckRedactContext(ctx context.Context, repo, baseRef string, headR
 		}
 		var combined bytes.Buffer
 		for _, input := range inputs {
-			cmd := proofCheckCommandContext(ctx, "redact", "--repo-visibility", "public")
+			cmd := proofCheckCommandContext(ctx, "redact", "--repo-visibility", "public", "--source-path", input.Path)
 			cmd.Dir = repo
 			cmd.Stdin = bytes.NewReader(input.Body)
 			out, err := cmd.CombinedOutput()

@@ -25,6 +25,11 @@ calls cannot race an unrelated host cache cleanup or pollute public redact.
 The `internal/work` proof-runtime module owns both custody decisions; the CLI
 only resolves the current candidate and dispatches the canonical gate plan.
 
+For a sealed source snapshot, public redaction receives each changed file's complete
+committed body on stdin and its repo-relative identity through `--source-path`. The path
+is an annotation, not an instruction to read the working file. Edits or deletions after
+capture cannot change either input. A nonzero scanner exit still fails the gate.
+
 ## The execution barrier
 
 Expiry alone never makes a successor executable: every proof gate inherits a

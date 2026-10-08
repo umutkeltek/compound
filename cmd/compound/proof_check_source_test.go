@@ -1,11 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +20,119 @@ import (
 	"compound/internal/home"
 	"compound/internal/work"
 )
+
+type proofRedactScannerCapture struct {
+	Argv []string
+	Body []byte
+}
+
+func TestProofCheckRedactSnapshotTransportPreservesSourceIdentityAndBody(t *testing.T) {
+	// PATH is scoped to this non-parallel test; production scanner resolution stays unchanged.
+	repo := initCompoundCommandGitRepo(t)
+	baseSHA := proofSourceGitOutput(t, repo, "rev-parse", "HEAD")
+	logicalPath := "site/public/contact notes.html"
+	workingPath := filepath.Join(repo, filepath.FromSlash(logicalPath))
+	body := append([]byte("sealed\x00\xff\r\n"), bytes.Repeat([]byte("complete committed body\n"), 512)...)
+	if err := os.MkdirAll(filepath.Dir(workingPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(workingPath, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runCommandGit(t, repo, "add", logicalPath)
+	runCommandGit(t, repo, "commit", "-m", "sealed scanner source")
+	source, err := gitrepository.CaptureCleanSnapshot(repo, baseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := t.TempDir()
+	scanner := filepath.Join(binDir, "redact")
+	shim := "#!/bin/sh\nexport COMPOUND_TEST_REDACT_ARGV0=\"$0\"\nexec \"$COMPOUND_TEST_REDACT_EXEC\" -test.run=^TestProofCheckRedactScannerFixture$ -- \"$@\"\n"
+	if err := os.WriteFile(scanner, []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("COMPOUND_TEST_REDACT_EXEC", os.Args[0])
+	for _, tc := range []struct {
+		name    string
+		deleted bool
+		exit    int
+	}{
+		{name: "working_file_changed"},
+		{name: "working_file_deleted", deleted: true},
+		{name: "scanner_failure", exit: 17},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.deleted {
+				if err := os.Remove(workingPath); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(workingPath, []byte("mutable working body\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			capturePath := filepath.Join(t.TempDir(), "scanner.json")
+			t.Setenv("COMPOUND_TEST_REDACT_CAPTURE", capturePath)
+			t.Setenv("COMPOUND_TEST_REDACT_EXIT", strconv.Itoa(tc.exit))
+			_, err := runProofCheckRedactContext(t.Context(), repo, source.BaseSHA, source.HeadSHA)
+			if tc.exit == 0 {
+				if err != nil {
+					t.Fatalf("scanner failed: %v", err)
+				}
+			} else {
+				var exitErr *exec.ExitError
+				if !errors.As(err, &exitErr) || exitErr.ExitCode() != tc.exit {
+					t.Fatalf("scanner error = %v, want exit %d", err, tc.exit)
+				}
+			}
+			encoded, err := os.ReadFile(capturePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var capture proofRedactScannerCapture
+			if err := json.Unmarshal(encoded, &capture); err != nil {
+				t.Fatal(err)
+			}
+			wantArgv := []string{scanner, "--repo-visibility", "public", "--source-path", logicalPath}
+			if !reflect.DeepEqual(capture.Argv, wantArgv) {
+				t.Fatalf("scanner argv = %q, want %q", capture.Argv, wantArgv)
+			}
+			if !bytes.Equal(capture.Body, body) {
+				t.Fatalf("scanner stdin changed: got %d bytes, want %d committed bytes", len(capture.Body), len(body))
+			}
+		})
+	}
+}
+
+func TestProofCheckRedactScannerFixture(t *testing.T) {
+	capturePath := os.Getenv("COMPOUND_TEST_REDACT_CAPTURE")
+	if capturePath == "" {
+		return
+	}
+	delimiter := slices.Index(os.Args, "--")
+	if delimiter < 0 {
+		t.Fatal("scanner fixture has no argv delimiter")
+	}
+	body, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture := proofRedactScannerCapture{
+		Argv: append([]string{os.Getenv("COMPOUND_TEST_REDACT_ARGV0")}, os.Args[delimiter+1:]...),
+		Body: body,
+	}
+	encoded, err := json.Marshal(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(capturePath, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	exitCode, err := strconv.Atoi(os.Getenv("COMPOUND_TEST_REDACT_EXIT"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Exit(exitCode)
+}
 
 func TestProofCheckAdmissionProfileUsesOneImmutableSourceRange(t *testing.T) {
 	t.Parallel()
