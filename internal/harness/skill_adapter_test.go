@@ -20,6 +20,32 @@ import (
 	"time"
 )
 
+func TestInstallSkillAdaptersRejectsUnsupportedSkillBeforeMutation(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	path := filepath.Join(root, ".codex", "skills", "ExampleSkill", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("---\nname: ExampleSkill\n---\nOwned canonical procedure.\n")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, apply := range []bool{false, true} {
+		_, err := InstallSkillAdapters("ExampleSkill", DefaultSkillAdapters(), apply, time.Now(), fixtureBody(t))
+		if err == nil || !strings.Contains(err.Error(), "supports only Browser") {
+			t.Fatalf("apply=%t: expected unsupported skill refusal, got %v", apply, err)
+		}
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != string(original) {
+		t.Fatalf("unsupported request changed existing procedure: %q, %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".claude")); !os.IsNotExist(err) {
+		t.Fatalf("unsupported request created another adapter: %v", err)
+	}
+}
+
 func fixtureBody(t *testing.T) []byte {
 	t.Helper()
 	// A harness-neutral body. Mirrors the canonical rewrite: no PAI path,

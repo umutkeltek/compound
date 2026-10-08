@@ -379,6 +379,9 @@ func InstallSkillAdapters(skill string, adapters []HarnessAdapter, apply bool, n
 	if strings.TrimSpace(skill) == "" {
 		return InstallReport{}, fmt.Errorf("install skill adapters: skill name is empty")
 	}
+	if skill != "Browser" {
+		return InstallReport{}, fmt.Errorf("install skill adapters: unsupported skill %q; this renderer supports only Browser", skill)
+	}
 	if now.IsZero() {
 		now = time.Now()
 	}
@@ -543,7 +546,7 @@ func FormatInstallReport(rep InstallReport) string {
 func RunSkillAdapterCLI(args []string, apply, asJSON bool, now time.Time) error {
 	skill := strings.TrimSpace(skillAdapterFlag(args, "--skill"))
 	if skill == "" {
-		return fmt.Errorf("usage: compound harness skill-adapter --skill NAME [--harness H] [--apply] [--json]")
+		return fmt.Errorf("usage: compound harness skill-adapter --skill Browser [--harness H] [--apply] [--json]")
 	}
 	adapters := SkillAdaptersFor(strings.Split(skillAdapterFlag(args, "--harness"), ","))
 	if len(adapters) == 0 {
