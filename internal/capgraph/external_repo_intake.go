@@ -856,10 +856,14 @@ func RenderExternalRepoIntakeReviewYAMLDraft(item ExternalRepoIntakeReviewPlanIt
 }
 
 func externalRepoMatchesForQuery(homePath string, decisions []ExternalRepoIntakeDecision, query string) []ExternalRepoIntakeDecision {
+	// Decisions already carry this report's fresh review projection. Only
+	// evaluation-only references need enrichment here; re-reading the entire
+	// review archive for every match makes hook delivery depend on history size.
 	matches := matchExternalRepoDecisions(decisions, query)
-	matches = append(matches, matchExternalRepoEvaluationReferences(homePath, query, matches)...)
-	matches = annotateExternalRepoOwnerReviews(homePath, matches)
-	return annotateExternalRepoCapabilityEvaluations(homePath, matches)
+	references := matchExternalRepoEvaluationReferences(homePath, query, matches)
+	references = annotateExternalRepoOwnerReviews(homePath, references)
+	references = annotateExternalRepoCapabilityEvaluations(homePath, references)
+	return append(matches, references...)
 }
 
 func ExternalRepoMatchedEvidenceForTask(homePath, task string, limit int) ([]SurfacingConstraint, error) {

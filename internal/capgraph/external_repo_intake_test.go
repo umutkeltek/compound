@@ -11,6 +11,39 @@ import (
 	"time"
 )
 
+func TestExternalRepoMatchesPreserveReportReviewSnapshot(t *testing.T) {
+	home := t.TempDir()
+	decision := ExternalRepoIntakeDecision{
+		Repo: "example/review-tool", OwnerReviewStatus: "recorded",
+		OwnerReviewDecision: "reference_only", OwnerReviewPath: "snapshot.reviewed.json",
+	}
+	dir := filepath.Join(home, "reviews", ExternalRepoIntakeReviewArea)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A review written after the report was projected belongs to the next
+	// report, not a second, contradictory read while selecting its matches.
+	data, err := json.Marshal(ExternalRepoIntakeReviewReport{
+		Repo: decision.Repo, Status: "recorded", Decision: "reject",
+		ReviewPath: "new.reviewed.json",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "new.reviewed.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	matches := externalRepoMatchesForQuery(home, []ExternalRepoIntakeDecision{decision}, decision.Repo)
+	if len(matches) != 1 || matches[0].OwnerReviewDecision != "reference_only" || matches[0].OwnerReviewPath != decision.OwnerReviewPath {
+		t.Fatalf("match selection changed the report review snapshot: %+v", matches)
+	}
+	// No process-global cache: a new report must see the changed decision.
+	fresh := annotateExternalRepoDecisionState(home, []ExternalRepoIntakeDecision{decision})
+	if fresh[0].OwnerReviewDecision != "reject" || fresh[0].OwnerReviewPath != "new.reviewed.json" {
+		t.Fatalf("fresh report missed the changed review: %+v", fresh)
+	}
+}
+
 func TestExternalRepoIntakeReportForHome(t *testing.T) {
 	home := t.TempDir()
 

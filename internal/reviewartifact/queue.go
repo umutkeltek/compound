@@ -268,11 +268,16 @@ func Queue(homePath string, opt QueueOptions, now time.Time) (QueueReport, error
 	if err != nil {
 		return QueueReport{}, err
 	}
-	if err := attachArchivedReviewExtraPaths(homePath, report.Items); err != nil {
+	// Sidecars and historical rows must use one fresh archive snapshot per queue.
+	archiveEntries, err := home.LoadOperationalArchiveIndex(homePath)
+	if err != nil {
+		return QueueReport{}, err
+	}
+	if err := attachArchivedReviewExtraPaths(homePath, report.Items, archiveEntries); err != nil {
 		return QueueReport{}, err
 	}
 	if opt.IncludeArchived {
-		archived, err := archivedQueueItems(homePath, opt.Area)
+		archived, err := archivedQueueItems(homePath, opt.Area, archiveEntries)
 		if err != nil {
 			return QueueReport{}, err
 		}
@@ -967,11 +972,7 @@ func queueItemForRel(path, rel string) (QueueItem, error) {
 	return item, nil
 }
 
-func archivedQueueItems(homePath, area string) ([]QueueItem, error) {
-	entries, err := home.LoadOperationalArchiveIndex(homePath)
-	if err != nil {
-		return nil, err
-	}
+func archivedQueueItems(homePath, area string, entries []home.OperationalArchiveEntry) ([]QueueItem, error) {
 	byOriginal := map[string]home.OperationalArchiveEntry{}
 	for _, entry := range entries {
 		byOriginal[entry.OriginalPath] = entry
@@ -996,11 +997,7 @@ func archivedQueueItems(homePath, area string) ([]QueueItem, error) {
 	return out, nil
 }
 
-func attachArchivedReviewExtraPaths(homePath string, items []QueueItem) error {
-	entries, err := home.LoadOperationalArchiveIndex(homePath)
-	if err != nil {
-		return err
-	}
+func attachArchivedReviewExtraPaths(homePath string, items []QueueItem, entries []home.OperationalArchiveEntry) error {
 	if len(entries) == 0 {
 		return nil
 	}
