@@ -53,6 +53,7 @@ func CIConsoleGateNames() []string {
 		"console-instance-pin-smoke",
 		"console-lineage-smoke",
 		"console-memory-data-smoke",
+		"console-memory-read-honesty-smoke",
 		"console-move-type-drift-smoke",
 		"console-mutation-gate-smoke",
 		"console-mutation-readiness-consumers-smoke",

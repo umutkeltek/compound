@@ -57,7 +57,7 @@ func TestCISubsetMembershipIsTotal(t *testing.T) {
 	// Sanity: today the inventory has 50 gates; if the inventory rebalances
 	// (a real change), the test will not silently zero-out — it will fail
 	// loudly with the new count below.
-	const expectedInventorySize = 50
+	const expectedInventorySize = 51
 	if len(inventory) != expectedInventorySize {
 		t.Fatalf(
 			"proof-check inventory size changed: got %d, want %d (update this constant deliberately, never silently)",

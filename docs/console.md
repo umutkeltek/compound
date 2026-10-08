@@ -178,7 +178,8 @@ decisions, source evidence and lifecycle counts. Whole-home memory projections
 use the existing bounded heavy-read budget. Only a successful live empty read
 may show an empty-state claim; unavailable counts remain unknown, and retained
 last-good rows disclose their stale state with exact read details available.
-The dedicated memory-read honesty smoke is a required canonical gate. It runs
+The dedicated memory-read honesty smoke is a required canonical and console-CI
+gate, classified in the same exact inventory as the other console smokes. It runs
 in its own process so the fixture can pin its isolated home and binary before
 any loader resolves runtime identity.
 
