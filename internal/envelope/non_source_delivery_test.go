@@ -10,7 +10,7 @@ import (
 // Use the wire seam so the regression fails on a dropped declaration, not on a
 // missing Go symbol. A binding is per action; it never replaces git_delivery.
 func TestWorkEnvelopeNonSourceDeliveryRoundTrip(t *testing.T) {
-	for _, kind := range []string{"private_runtime", "worktree_retirement"} {
+	for _, kind := range []string{"private_runtime", "worktree_retirement", "installed_package"} {
 		t.Run(kind, func(t *testing.T) {
 			binding := nonSourceDeliveryWireFixture()
 			binding["kind"] = kind

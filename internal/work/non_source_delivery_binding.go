@@ -48,7 +48,7 @@ func (s *Store) preflightActionDeliveryBinding(w envelope.WorkEnvelope, actor, t
 	if terminalStates[w.State] || to != w.State {
 		return nil, fmt.Errorf("non-source delivery binding requires a nonterminal same-state advance")
 	}
-	if request.Kind != envelope.DeliveryPrivateRuntime && request.Kind != envelope.DeliveryWorktreeRetirement {
+	if request.Kind != envelope.DeliveryPrivateRuntime && request.Kind != envelope.DeliveryWorktreeRetirement && request.Kind != envelope.DeliveryInstalledPackage {
 		return nil, fmt.Errorf("unsupported non-source delivery evidence kind %q", request.Kind)
 	}
 	if !slices.Contains(w.ActionIntentIDs, request.ActionIntentID) {
@@ -100,7 +100,7 @@ func (s *Store) nonSourceDeliveryCovers(w envelope.WorkEnvelope, original envelo
 	if binding == nil {
 		return false, nil
 	}
-	if binding.Kind != envelope.DeliveryPrivateRuntime && binding.Kind != envelope.DeliveryWorktreeRetirement {
+	if binding.Kind != envelope.DeliveryPrivateRuntime && binding.Kind != envelope.DeliveryWorktreeRetirement && binding.Kind != envelope.DeliveryInstalledPackage {
 		return false, fmt.Errorf("unsupported non-source delivery binding kind %q", binding.Kind)
 	}
 	var action envelope.ActionIntent
@@ -157,6 +157,8 @@ func (s *Store) nonSourceDeliveryCovers(w envelope.WorkEnvelope, original envelo
 
 func (s *Store) validateNonSourceDeliveryEvidence(w envelope.WorkEnvelope, action envelope.ActionIntent, kind, ref string) error {
 	switch kind {
+	case envelope.DeliveryInstalledPackage:
+		return s.validateInstalledPackageDeliveryEvidence(w, action, ref)
 	case envelope.DeliveryPrivateRuntime:
 		return s.validatePrivateRuntimeDeliveryEvidence(w, action, ref)
 	case envelope.DeliveryWorktreeRetirement:

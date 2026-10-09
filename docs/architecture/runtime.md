@@ -254,6 +254,22 @@ It neither repairs a failed proof nor accepts the parent work. Reserved receipt
 recovery reuses the durable completion time and validates the original transaction,
 including crashes between receipt publication, completion marking and cleanup.
 
+The same door accepts `compound.installed_package_delivery_capture.v0.1` for an
+already installed Homebrew cask copied into its owner's ignored prefix. The request
+names `capture_id`, the original `action_intent_id`, `manager: homebrew-cask`,
+`prefix`, `package`, `version`, and the exact running state/policy/action generation.
+It never invokes an installer. The owner reads the cask's installed receipt, requires
+its recorded recursive copy to own the exact action target, rejects tracked files,
+nested Git repositories and escaping symlinks, and hashes the bounded installed tree.
+The receipt and readback report enter private artifact custody under an authenticated
+read-only Receipt/Transition. Operator-provenanced same-state `installed_package`
+binding covers only that action; capture alone does not bind or accept work.
+Close rechecks the receipt, version, owner identity and installed bytes. An uncovered
+source edit or commit still requires Git delivery. Unsupported package layouts fail
+closed; arbitrary ignored directories, caller reports and executable samples do not
+establish package ownership. Installed package bytes remain package-manager-owned;
+Compound custodies their receipt and content fingerprint, not a second SDK copy.
+
 The same capture command accepts `compound.worktree_retirement_delivery_capture.v0.1`
 with `capture_id`, the exact running state/policy/action generation, and the
 original `plan_path`, `review_report_path`, and `result_path`. Authority remains

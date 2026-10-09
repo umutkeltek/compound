@@ -16,6 +16,7 @@ type ActionDeliveryBinding struct {
 const (
 	DeliveryPrivateRuntime     = "private_runtime"
 	DeliveryWorktreeRetirement = "worktree_retirement"
+	DeliveryInstalledPackage   = "installed_package"
 )
 
 func validateActionDeliveryBindings(v *verr, bindings []ActionDeliveryBinding, actions []string) {
@@ -25,8 +26,8 @@ func validateActionDeliveryBindings(v *verr, bindings []ActionDeliveryBinding, a
 	}
 	seen := make(map[string]bool, len(bindings))
 	for i, binding := range bindings {
-		if binding.Kind != DeliveryPrivateRuntime && binding.Kind != DeliveryWorktreeRetirement {
-			v.addf("non_source_delivery[%d].kind must be private_runtime or worktree_retirement", i)
+		if binding.Kind != DeliveryPrivateRuntime && binding.Kind != DeliveryWorktreeRetirement && binding.Kind != DeliveryInstalledPackage {
+			v.addf("non_source_delivery[%d].kind must be private_runtime, worktree_retirement or installed_package", i)
 		}
 		for _, field := range []struct{ name, id string }{
 			{"action_intent_id", binding.ActionIntentID},

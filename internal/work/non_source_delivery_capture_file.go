@@ -33,7 +33,7 @@ func readDeliveryCaptureFile(path string, limit int64) ([]byte, error) {
 	return body, nil
 }
 
-// CaptureNonSourceDeliveryFile dispatches only the two code-owned schemas.
+// CaptureNonSourceDeliveryFile dispatches only code-owned schemas.
 // It reads once, then strictly decodes the selected input before any mutation.
 func (s *Store) CaptureNonSourceDeliveryFile(workID, requestPath, actor string, now time.Time) (NonSourceDeliveryCaptureResult, error) {
 	out := NonSourceDeliveryCaptureResult{Status: "capture_incomplete"}
@@ -48,6 +48,12 @@ func (s *Store) CaptureNonSourceDeliveryFile(workID, requestPath, actor string, 
 		return out, err
 	}
 	switch schema.SchemaVersion {
+	case InstalledPackageDeliveryCaptureSchema:
+		var request InstalledPackageDeliveryCaptureRequest
+		if err := decodeDeliveryCapture(body, &request); err != nil {
+			return out, err
+		}
+		return s.CaptureInstalledPackageDelivery(workID, request, actor, now)
 	case PrivateRuntimeDeliveryCaptureSchema:
 		var request PrivateRuntimeDeliveryCaptureRequest
 		if err := decodeDeliveryCapture(body, &request); err != nil {
