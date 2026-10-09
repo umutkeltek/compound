@@ -1,5 +1,16 @@
 # The Execution Plane (model-traffic gateway)
 
+The optional [shared Bitwarden adapter](../../adapters/bitwarden-session/README.md)
+is an owned credential-session bridge at the rented edge. Its macOS source,
+installer and real-terminal regression tests live in this repository; installed
+binaries and build provenance live in the instance's existing `actuator/` habitat.
+Bitwarden owns the encrypted vault and Keychain holds its shared unlock session.
+All harnesses discover the same installed entry point through the existing
+tool-topology graph. This is not a new permission owner: task authority still
+comes from the envelope spine. Updates serialize with active vault operations,
+preserve credentials and replace only a successfully built binary. Account
+identities and operational access evidence remain private instance data.
+
 compound is the **control / meaning plane**. Model/provider traffic belongs to a separate
 **execution / data plane** — an AI provider gateway that receives OpenAI/Anthropic-compatible
 requests, routes them by policy/health/cost/latency/quota/credentials, returns the response in the
