@@ -115,6 +115,17 @@ Before expensive canonical certification, run `redact --repo-visibility public
 Token-level and architecture-leak checks are complementary preflights, not
 public-redaction evidence.
 
+An exact public-content classification can be consumed through
+`proof-check --redact-review <act_ID>` without changing the scanner. Its native
+finding, performed public ActionIntent, allowing PolicyDecision, source inventory
+and raw scan evidence must match the canonical profile. Only the two named MEDIUM
+public provider-ID/support-contact classes are supported; this is not local-edit
+permission, a value-wide exception or deployment approval. Admission and new green
+finalization recheck current authority; exact sealed-result recovery remains
+historical and never re-enters execution. The full owner contract and bounds live
+in [Proof-Check](../proof-check.md#exact-public-content-review). Reviewed evidence
+uses owned report v0.5; unreviewed historical reports keep their existing meaning.
+
 ## Bun native JUnit profile
 
 bun_consumers_v1 requires tracked root package.json, bun.lock, and

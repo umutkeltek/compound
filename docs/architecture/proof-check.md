@@ -28,7 +28,50 @@ only resolves the current candidate and dispatches the canonical gate plan.
 For a sealed source snapshot, public redaction receives each changed file's complete
 committed body on stdin and its repo-relative identity through `--source-path`. The path
 is an annotation, not an instruction to read the working file. Edits or deletions after
-capture cannot change either input. A nonzero scanner exit still fails the gate.
+capture cannot change either input. A nonzero scanner exit fails the ordinary gate.
+
+## Exact public-content review
+
+`--redact-review <act_ID>` consumes a previously performed native public review,
+not an allowlist. It is valid only for canonical full proof. The existing finding
+owner custodies a `compound.public_redaction_review.v1` evidence body: the same
+work and complete clean source snapshot, an ordered inventory of every changed
+committed body (including clean files), each SHA-256, original scanner JSON and
+exit code, and exact finding classifications with supporting references.
+
+The review needs its own `public` ActionIntent with capability
+`proof.redaction.review_public`, action `classify_public_redaction_findings`, the
+repository fingerprint and path, the finding reference, and `arguments_hash`
+equal to its CID. Only a performed action with its exact allowing native
+PolicyDecision can be consumed. Local source-edit permission is insufficient;
+the consumer neither creates a grant nor approves an action on the operator's
+behalf. Existing standing grants or exact action approvals remain the owners.
+
+Only MEDIUM `pii.phone.e164` findings classified as `public_provider_identifier`
+and MEDIUM `pii.email` findings classified as `public_support_contact` are
+reviewable. HIGH findings, other MEDIUM classes, new or changed findings, source
+drift, omitted clean files, malformed reports and missing authority still fail.
+Counts must be explicit and agree with findings and the real exit code. Deciding
+JSON refuses duplicate keys under the same Unicode folding as its typed decoder.
+
+The unchanged scanner runs on every complete committed input, now requesting
+`--json`; no allowlist, self-email, public-email or auto-redaction flags are passed.
+It continues through blocking scanner exits before checking exact coverage. Raw
+review and fresh scan bytes stay in the owned v0.5 report; a reviewed gate proves
+`redact-public-reviewed`, never `redact-public-clean`. The ordered profile digest
+seals the action, policy, finding and CID tuple as Compound metadata, not scanner
+arguments. Scanner JSON is bounded to 1 MiB per file and retained evidence to
+4 MiB. Overflow fails while retaining earlier bounded partial evidence.
+
+Fresh public authority is checked at admission, execution acceptance and before
+starting a new green finalizer. Plan reconstruction authenticates the historical
+tuple without granting permission, so exact already-sealed release-pending
+completion can reach the existing recovery door after an approval expires.
+Recovery still requires the original command, source, profile and owned finalizer
+chain; it reruns no gates and mints no new certificate. The same expired review
+cannot admit a fresh run. Unreviewed v0.1–v0.4 reports remain readable; reviewed
+evidence requires v0.5. This proof does not authorize source publication or product
+deployment: those remain separate governed actions.
 
 ## The execution barrier
 

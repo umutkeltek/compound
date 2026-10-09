@@ -554,14 +554,15 @@ type ownedProofReport struct {
 	CIConsole      bool                    `json:"ci_console,omitempty"`
 	ProofRefs      []string                `json:"proof_refs"`
 	Steps          []struct {
-		Name             string                     `json:"name"`
-		Command          []string                   `json:"command"`
-		Dir              string                     `json:"dir,omitempty"`
-		SkipIfMissing    string                     `json:"skip_if_missing,omitempty"`
-		ProofRef         string                     `json:"proof_ref"`
-		Status           string                     `json:"status"`
-		FailureFacts     []string                   `json:"failure_facts,omitempty"`
-		ConsumerEvidence *CanonicalConsumerEvidence `json:"consumer_evidence,omitempty"`
+		Name              string                     `json:"name"`
+		Command           []string                   `json:"command"`
+		Dir               string                     `json:"dir,omitempty"`
+		SkipIfMissing     string                     `json:"skip_if_missing,omitempty"`
+		ProofRef          string                     `json:"proof_ref"`
+		Status            string                     `json:"status"`
+		FailureFacts      []string                   `json:"failure_facts,omitempty"`
+		ConsumerEvidence  *CanonicalConsumerEvidence `json:"consumer_evidence,omitempty"`
+		RedactionEvidence *PublicRedactionEvidence   `json:"redaction_evidence,omitempty"`
 	} `json:"steps"`
 }
 
@@ -1366,6 +1367,9 @@ func (s *Store) reserveProofResourceLocked(workID string, in ProofResourceReserv
 	if claim.By != in.Actor {
 		return ProofResourceReserveResult{}, fmt.Errorf("proof resource work %s lease held by %q, actor is %q", workID, claim.By, in.Actor)
 	}
+	if err := s.validatePublicRedactionProfileAuthority(workID, in.Actor, in.Profile, now); err != nil {
+		return ProofResourceReserveResult{}, fmt.Errorf("public redaction review admission: %w", err)
+	}
 	if in.busyWhenHeld && !in.Steal {
 		status, statusErr := landlease.StatusReadOnly(s.home, now)
 		if statusErr != nil {
@@ -1980,6 +1984,11 @@ func (s *Store) completeProofResourceLocked(workID string, in ProofResourceCompl
 			return ProofResourceCompleteResult{}, err
 		}
 	} else {
+		if status == ProofResourceVerified {
+			if err := s.validatePublicRedactionProfileAuthority(workID, in.Actor, reservation.Profile, now); err != nil {
+				return ProofResourceCompleteResult{}, fmt.Errorf("public redaction review finalization: %w", err)
+			}
+		}
 		ra, err = s.activeProofRunAttempt(reservation, workID, in.Actor)
 		if err != nil {
 			return ProofResourceCompleteResult{}, err
@@ -3897,16 +3906,20 @@ func (s *Store) activeProofRunAttempt(reservation ProofResourceReservation, work
 
 func decodeOwnedProofReport(body []byte) (ownedProofReport, error) {
 	var report ownedProofReport
+	if err := consumerUniqueJSON(body); err != nil {
+		return ownedProofReport{}, err
+	}
 	if err := json.Unmarshal(body, &report); err != nil {
 		return ownedProofReport{}, err
 	}
 	if report.SchemaVersion != "compound.proof_check_report.v0.1" &&
 		report.SchemaVersion != "compound.proof_check_report.v0.2" &&
 		report.SchemaVersion != "compound.proof_check_report.v0.3" &&
-		report.SchemaVersion != "compound.proof_check_report.v0.4" {
+		report.SchemaVersion != "compound.proof_check_report.v0.4" &&
+		report.SchemaVersion != "compound.proof_check_report.v0.5" {
 		return ownedProofReport{}, fmt.Errorf("unsupported schema_version %q", report.SchemaVersion)
 	}
-	if report.SchemaVersion == "compound.proof_check_report.v0.3" || report.SchemaVersion == "compound.proof_check_report.v0.4" {
+	if report.SchemaVersion == "compound.proof_check_report.v0.3" || report.SchemaVersion == "compound.proof_check_report.v0.4" || report.SchemaVersion == "compound.proof_check_report.v0.5" {
 		if report.SourceSnapshot != nil {
 			if err := gitrepository.ValidateSnapshotShape(*report.SourceSnapshot); err != nil {
 				return ownedProofReport{}, fmt.Errorf("source_snapshot: %w", err)
@@ -4042,8 +4055,8 @@ func validateOwnedProofReportAgainstReservation(report ownedProofReport, reserva
 	if !reflect.DeepEqual(report.SourceSnapshot, profile.SourceSnapshot) {
 		return fmt.Errorf("source_snapshot mismatch between report and reservation profile")
 	}
-	if profile.SourceSnapshot != nil && report.SchemaVersion != "compound.proof_check_report.v0.3" && report.SchemaVersion != "compound.proof_check_report.v0.4" {
-		return fmt.Errorf("source-bound proof requires compound.proof_check_report.v0.3 or v0.4")
+	if profile.SourceSnapshot != nil && report.SchemaVersion != "compound.proof_check_report.v0.3" && report.SchemaVersion != "compound.proof_check_report.v0.4" && report.SchemaVersion != "compound.proof_check_report.v0.5" {
+		return fmt.Errorf("source-bound proof requires compound.proof_check_report.v0.3, v0.4 or v0.5")
 	}
 	if len(report.Steps) != len(profile.Gates) {
 		return fmt.Errorf("gate inventory mismatch: report=%d profile=%d", len(report.Steps), len(profile.Gates))
@@ -4070,6 +4083,20 @@ func validateOwnedProofReportAgainstReservation(report ownedProofReport, reserva
 			return fmt.Errorf("gate %q skip_if_missing mismatch: report=%q profile=%q", gate.Name, step.SkipIfMissing, gate.SkipIfMissing)
 		case step.ProofRef != gate.ProofRef:
 			return fmt.Errorf("gate %q proof_ref mismatch: report=%q profile=%q", gate.Name, step.ProofRef, gate.ProofRef)
+		}
+		redactionStep := ProofCheckStep{
+			Name: step.Name, Command: step.Command, ProofRef: step.ProofRef,
+			Status: step.Status, RedactionEvidence: step.RedactionEvidence,
+		}
+		_, reviewed, reviewErr := PublicRedactionBindingForStep(redactionStep)
+		if reviewErr != nil {
+			return fmt.Errorf("gate %q review binding: %w", gate.Name, reviewErr)
+		}
+		if reviewed && report.SchemaVersion != "compound.proof_check_report.v0.5" {
+			return fmt.Errorf("reviewed redaction requires proof report v0.5")
+		}
+		if err := ValidatePublicRedactionEvidence(redactionStep, profile.SourceSnapshot, reservation.WorkID); err != nil {
+			return fmt.Errorf("gate %q redaction evidence: %w", gate.Name, err)
 		}
 		if strings.HasPrefix(gate.Name, "consumer:") && step.Status == "ok" {
 			if err := ValidateCanonicalConsumerEvidence(ProofCheckStep{

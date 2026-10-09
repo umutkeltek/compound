@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 const CanonicalConsumerContractPath = "compound-proof.json"
@@ -349,7 +350,7 @@ func consumerUniqueJSON(body []byte) error {
 				key, ok := keyToken.(string)
 				// encoding/json matches struct fields case-insensitively;
 				// case variants must not smuggle a second deciding value.
-				folded := strings.ToLower(key)
+				folded := consumerJSONKeyIdentity(key)
 				if !ok || keys[folded] {
 					return fmt.Errorf("duplicate or invalid JSON key %q", key)
 				}
@@ -377,4 +378,18 @@ func consumerUniqueJSON(body []byte) error {
 		return fmt.Errorf("trailing JSON value or invalid ending")
 	}
 	return nil
+}
+
+// Match encoding/json's Unicode simple-fold equivalence, not just lowercase.
+// In particular, a long-s key aliases an ASCII s when decoding a struct.
+func consumerJSONKeyIdentity(key string) string {
+	return strings.Map(func(r rune) rune {
+		for {
+			next := unicode.SimpleFold(r)
+			if next <= r {
+				return next
+			}
+			r = next
+		}
+	}, key)
 }

@@ -47,9 +47,10 @@ type ProofCheckStep struct {
 	// other gates leave it nil because their failure markers are gate-specific and out of scope
 	// for a generic on-the-wire field. Capped to keep report size predictable under a red
 	// battery that fans out dozens of FAIL lines per package.
-	FailureLines     []string                   `json:"failure_lines,omitempty"`
-	FailureFacts     []string                   `json:"failure_facts,omitempty"`
-	ConsumerEvidence *CanonicalConsumerEvidence `json:"consumer_evidence,omitempty"`
+	FailureLines      []string                   `json:"failure_lines,omitempty"`
+	FailureFacts      []string                   `json:"failure_facts,omitempty"`
+	ConsumerEvidence  *CanonicalConsumerEvidence `json:"consumer_evidence,omitempty"`
+	RedactionEvidence *PublicRedactionEvidence   `json:"redaction_evidence,omitempty"`
 	// CIPortable marks a fresh-clone CI gate: no external non-Go binary, installed binary,
 	// or COMPOUND_HOME body. It is runtime inventory metadata, not serialized proof output.
 	CIPortable bool `json:"-"`
@@ -579,6 +580,15 @@ func cloneCanonicalProofPlan(in CanonicalProofPlan) CanonicalProofPlan {
 			evidence.Report = append([]byte(nil), evidence.Report...)
 			evidence.Tests = append([]byte(nil), evidence.Tests...)
 			out.Steps[i].ConsumerEvidence = &evidence
+		}
+		if step.RedactionEvidence != nil {
+			evidence := *step.RedactionEvidence
+			evidence.Review = append([]byte(nil), evidence.Review...)
+			evidence.Scans = append([]PublicRedactionScan(nil), evidence.Scans...)
+			for j := range evidence.Scans {
+				evidence.Scans[j].Report = append([]byte(nil), evidence.Scans[j].Report...)
+			}
+			out.Steps[i].RedactionEvidence = &evidence
 		}
 	}
 	return out

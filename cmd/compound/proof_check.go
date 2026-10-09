@@ -52,6 +52,7 @@ func cmdProofCheck(args []string) {
 	if hasFlag(args, "--help") || hasFlag(args, "-h") {
 		fmt.Println("usage: compound proof-check [--json] [--dry-run] [--dev|--ci|--ci-console] [--repo P] [--base REF] [--out FILE] [--work ID --actor ACTOR]")
 		fmt.Println("  --dev         fast, cache-enabled, non-certifying developer feedback")
+		fmt.Println("  --redact-review ACT_ID exact native public-content review for the complete source snapshot (canonical full proof only)")
 		fmt.Println("  --ci          run only the fresh-clone-portable gate subset (bare Go gates; what CI runs on push/PR)")
 		fmt.Println("  --ci-console  run console/TypeScript gates (needs bun + console/node_modules; CI console job, not bare-clone --ci)")
 		fmt.Println("  --out FILE    write full JSON and print final 'battery: ok|FAILED'; exit code stays truthful (0/1/2)")
@@ -66,6 +67,15 @@ func cmdProofCheck(args []string) {
 		fmt.Println("  --recover-legacy-retained release exact pre-v0.3 journal without verification;")
 		fmt.Println("                never runs gates and exits 2 because fresh source-bound v0.3 battery is required")
 		return
+	}
+	reviewActionID := strings.TrimSpace(flagValue(args, "--redact-review"))
+	if hasFlag(args, "--redact-review") && (reviewActionID == "" || strings.HasPrefix(reviewActionID, "--")) {
+		fmt.Fprintln(os.Stderr, "proof-check: --redact-review requires an exact recorded ActionIntent ID")
+		os.Exit(2)
+	}
+	if reviewActionID != "" && (proofCheckDevelopmentRequested(args) || hasFlag(args, "--dry-run") || hasFlag(args, "--ci") || hasFlag(args, "--ci-console") || hasFlag(args, "--recover-legacy-retained") || hasFlag(args, "--timings")) {
+		fmt.Fprintln(os.Stderr, "proof-check: reviewed redaction requires canonical full proof, not a lightweight or recovery mode")
+		os.Exit(2)
 	}
 	if err := proofCheckLegacyRecoveryModeError(args); err != nil {
 		fmt.Fprintln(os.Stderr, "proof-check:", err)
@@ -228,6 +238,18 @@ func cmdProofCheck(args []string) {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
 			os.Exit(2)
 		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "proof-check:", err)
+			os.Exit(2)
+		}
+		if reviewActionID != "" {
+			plan, err = work.BindNativePublicRedactionReview(plan, homePath, workID, actor, reviewActionID)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "proof-check: public redaction review:", err)
+				os.Exit(2)
+			}
+		}
 		profile, err := work.ProofResourceProfileForCanonicalPlan(plan)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
@@ -239,11 +261,6 @@ func cmdProofCheck(args []string) {
 			os.Exit(2)
 		}
 		commandIdentity, err := proofCheckInvocationIdentity(proofCheckArgsWithResolvedOut(args, outPath))
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "proof-check:", err)
-			os.Exit(2)
-		}
-		homePath, err := home.Resolve("")
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
 			os.Exit(2)
@@ -272,6 +289,9 @@ func cmdProofCheck(args []string) {
 			Now:                    time.Now,
 		}, func(ctx context.Context) (proofCheckReport, error) {
 			planContext := work.ContextWithCanonicalProofPlan(ctx, plan)
+			if reviewActionID != "" {
+				planContext = work.ContextWithPublicRedactionReview(planContext, homePath, workID, actor)
+			}
 			produced, runErr := proofCheckCanonicalRunner(planContext, resolvedRepo, false, sourceSnapshot, false, false, time.Now())
 			if runErr != nil {
 				return produced, runErr
@@ -1367,7 +1387,14 @@ func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckS
 	if strings.HasPrefix(step.Name, "consumer:") {
 		output, result.ConsumerEvidence, err = work.RunCanonicalConsumer(ctx, repo, step, headRefs, proofCheckCommandContext, proofCheckRuntimeExecutable)
 	} else if step.Name == "redact-public" {
-		output, err = runProofCheckRedactContext(ctx, repo, baseRef, headRefs...)
+		_, reviewed, bindingErr := work.PublicRedactionBindingForStep(step)
+		if bindingErr != nil {
+			err = bindingErr
+		} else if reviewed {
+			output, result.RedactionEvidence, err = work.RunReviewedPublicRedaction(ctx, repo, step, baseRef, headRefs, proofCheckRedactInputsAtSnapshotContext, proofCheckCommandContext)
+		} else {
+			output, err = runProofCheckRedactContext(ctx, repo, baseRef, headRefs...)
+		}
 	} else if step.Name == "gofmt" {
 		output, err = runProofCheckGofmtContext(ctx, repo)
 	} else if step.Name == "bun-tools-test" {
@@ -1698,10 +1725,7 @@ func proofCheckChangedFilesAtSnapshot(repo string, source gitrepository.Snapshot
 	return proofCheckChangedFilesContext(context.Background(), repo, source.BaseSHA, source.HeadSHA)
 }
 
-type proofCheckRedactInput struct {
-	Path string
-	Body []byte
-}
+type proofCheckRedactInput = work.PublicRedactionInput
 
 func proofCheckRedactInputsAtSnapshot(repo string, source gitrepository.Snapshot) ([]proofCheckRedactInput, error) {
 	return proofCheckRedactInputsAtSnapshotContext(context.Background(), repo, source)
