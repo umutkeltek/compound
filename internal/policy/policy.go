@@ -716,21 +716,7 @@ func grantEnvelopeMisses(g StandingGrant, ai envelope.ActionIntent, cfg Config, 
 	if g.Destination != "" && strings.TrimSpace(ai.Destination) != strings.TrimSpace(g.Destination) {
 		reasons = append(reasons, fmt.Sprintf("standing grant %q covers destination %q, not %q", id, g.Destination, ai.Destination))
 	}
-	if ai.EstimatedCost.USD != nil {
-		if g.MaxUSD == nil {
-			reasons = append(reasons, fmt.Sprintf("standing grant %q does not set max_usd for estimated_cost.usd %.2f", id, *ai.EstimatedCost.USD))
-		} else if *ai.EstimatedCost.USD > *g.MaxUSD {
-			reasons = append(reasons, fmt.Sprintf("standing grant %q estimated_cost.usd %.2f exceeds max_usd %.2f", id, *ai.EstimatedCost.USD, *g.MaxUSD))
-		}
-	}
-	if ai.EstimatedCost.Tokens != nil {
-		if g.MaxTokens == nil {
-			reasons = append(reasons, fmt.Sprintf("standing grant %q does not set max_tokens for estimated_cost.tokens %d", id, *ai.EstimatedCost.Tokens))
-		} else if *ai.EstimatedCost.Tokens > *g.MaxTokens {
-			reasons = append(reasons, fmt.Sprintf("standing grant %q estimated_cost.tokens %d exceeds max_tokens %d", id, *ai.EstimatedCost.Tokens, *g.MaxTokens))
-		}
-	}
-	return reasons
+	return append(reasons, grantCostMisses(g, ai.EstimatedCost)...)
 }
 
 // grantNotYetActive reports a grant whose not_before is still ahead of now.

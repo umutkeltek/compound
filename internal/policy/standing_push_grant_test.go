@@ -105,6 +105,12 @@ func TestExistingRemotePushGrantDoesNotCoverDangerousOrUnresolvedShapes(t *testi
 			if monitored.Decision.StandingGrantID != "" {
 				t.Fatalf("dangerous or unresolved push matched standing grant %q", monitored.Decision.StandingGrantID)
 			}
+			zeroUSD, zeroTokens := 0.0, 0
+			monitored.Intent.EstimatedCost.USD = &zeroUSD
+			monitored.Intent.EstimatedCost.Tokens = &zeroTokens
+			if decision := Evaluate(monitored.Intent, cfg, fixedNow); Allowed(decision) {
+				t.Fatalf("explicit zero costs authorized dangerous or unresolved push: %+v", decision)
+			}
 		})
 	}
 }

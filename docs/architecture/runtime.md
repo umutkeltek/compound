@@ -376,6 +376,15 @@ adapter rejects a mutation that lacks a valid `PolicyDecision`** — prompt-only
 `reversibility`) so agents act without being paged only while inside the grant; leaving the envelope escalates
 to `hold`/blocked through the same policy gate.
 
+Cost matching is shared by exact standing grants and the L3 path-scope fallback.
+An explicitly known zero USD/token estimate needs no ceiling for that dimension;
+it is not spending permission. A positive estimate requires its own explicit
+ceiling and cannot exceed it. Known estimates and their configured ceilings must
+be finite and non-negative to consume a grant. Unspecified estimates retain their
+legacy semantics. This changes no capability, scope, destination, presence,
+expiry, destructive-operation or security-floor boundary, and non-read receipt
+and rollback obligations remain in force.
+
 `PlacementGuard` is policy context, not a second hook path: PreToolUse may pass owner-placement evidence into
 `PolicyDecision` with staged `observe -> warn -> block` behavior. Only `confidence:block` can hard-hold;
 `OPEN_WRITE` and `PLACEMENT_OVERRIDE=1` fail open, unknown modes fail open as observe, and

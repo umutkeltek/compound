@@ -198,10 +198,7 @@ func autonomyEnvelopeScopeGrant(ai envelope.ActionIntent, cfg Config, now time.T
 		if _, miss := grantPresenceMiss(g, cfg, now); miss {
 			continue
 		}
-		if ai.EstimatedCost.USD != nil && (g.MaxUSD == nil || *ai.EstimatedCost.USD > *g.MaxUSD) {
-			continue
-		}
-		if ai.EstimatedCost.Tokens != nil && (g.MaxTokens == nil || *ai.EstimatedCost.Tokens > *g.MaxTokens) {
+		if len(grantCostMisses(g, ai.EstimatedCost)) != 0 {
 			continue
 		}
 		if _, ok := matchForbidden([]string{g.TargetPath}, filepath.ToSlash(ai.Target.Path)); !ok {
