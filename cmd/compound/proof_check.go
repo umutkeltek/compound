@@ -1609,6 +1609,8 @@ func runProofCheckRedact(repo, baseRef string) ([]byte, error) {
 	return runProofCheckRedactContext(context.Background(), repo, baseRef)
 }
 
+// Canonical source scanning permits complete generated resources up to 8 MiB.
+// The scanner still fails closed above this bounded cap; input is never truncated.
 func runProofCheckRedactContext(ctx context.Context, repo, baseRef string, headRefs ...string) ([]byte, error) {
 	if len(headRefs) > 0 && strings.TrimSpace(headRefs[0]) != "" {
 		source := gitrepository.Snapshot{
@@ -1621,7 +1623,7 @@ func runProofCheckRedactContext(ctx context.Context, repo, baseRef string, headR
 		}
 		var combined bytes.Buffer
 		for _, input := range inputs {
-			cmd := proofCheckCommandContext(ctx, "redact", "--repo-visibility", "public", "--source-path", input.Path)
+			cmd := proofCheckCommandContext(ctx, "redact", "--repo-visibility", "public", "--max-bytes", "8388608", "--source-path", input.Path)
 			cmd.Dir = repo
 			cmd.Stdin = bytes.NewReader(input.Body)
 			out, err := cmd.CombinedOutput()
@@ -1642,7 +1644,7 @@ func runProofCheckRedactContext(ctx context.Context, repo, baseRef string, headR
 	}
 	var combined bytes.Buffer
 	for _, file := range files {
-		cmd := proofCheckCommandContext(ctx, "redact", "--repo-visibility", "public", "--from-file", file)
+		cmd := proofCheckCommandContext(ctx, "redact", "--repo-visibility", "public", "--max-bytes", "8388608", "--from-file", file)
 		cmd.Dir = repo
 		out, err := cmd.CombinedOutput()
 		combined.Write(out)

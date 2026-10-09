@@ -32,7 +32,7 @@ func TestProofCheckRedactSnapshotTransportPreservesSourceIdentityAndBody(t *test
 	baseSHA := proofSourceGitOutput(t, repo, "rev-parse", "HEAD")
 	logicalPath := "site/public/contact notes.html"
 	workingPath := filepath.Join(repo, filepath.FromSlash(logicalPath))
-	body := append([]byte("sealed\x00\xff\r\n"), bytes.Repeat([]byte("complete committed body\n"), 512)...)
+	body := append([]byte("sealed\x00\xff\r\n"), bytes.Repeat([]byte("complete committed body\n"), 128*1024)...)
 	if err := os.MkdirAll(filepath.Dir(workingPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestProofCheckRedactSnapshotTransportPreservesSourceIdentityAndBody(t *test
 			if err := json.Unmarshal(encoded, &capture); err != nil {
 				t.Fatal(err)
 			}
-			wantArgv := []string{scanner, "--repo-visibility", "public", "--source-path", logicalPath}
+			wantArgv := []string{scanner, "--repo-visibility", "public", "--max-bytes", "8388608", "--source-path", logicalPath}
 			if !reflect.DeepEqual(capture.Argv, wantArgv) {
 				t.Fatalf("scanner argv = %q, want %q", capture.Argv, wantArgv)
 			}
