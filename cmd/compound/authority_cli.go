@@ -42,7 +42,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -54,12 +56,89 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const gitIndexLockUsage = "usage: compound authority git-index-lock <plan --repo ROOT --work WORK --actor ACTOR | review --plan ID --operator operator:ID --evidence REF --writers-paused --expires RFC3339 | apply --plan ID --review ID --actor ACTOR>"
+
+func runAuthorityGitIndexLock(home string, args []string, out, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, gitIndexLockUsage)
+		return 2
+	}
+	flags := flag.NewFlagSet("git-index-lock "+args[0], flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	flags.Bool("json", false, "emit JSON (always enabled; private patches are never printed)")
+	var run func() (any, error)
+	switch args[0] {
+	case "plan":
+		repo := flags.String("repo", "", "primary checkout root")
+		work := flags.String("work", "", "running owner work")
+		actor := flags.String("actor", "", "current lease holder")
+		run = func() (any, error) {
+			plan, err := authority.BuildGitIndexLockPlan(context.Background(), *repo, *work, *actor, nil, time.Now())
+			if err != nil {
+				return nil, err
+			}
+			if err := authority.RecordGitIndexLockPlan(home, plan, time.Now()); err != nil {
+				return nil, err
+			}
+			return map[string]any{"plan_id": plan.ID, "plan_digest": plan.Digest, "repo": plan.State.Snapshot.Repo, "head": plan.State.Snapshot.Head, "lock": plan.State.Snapshot.Lock, "notice": "Plan only. Applying requires a separate current all-writer pause commitment."}, nil
+		}
+	case "review":
+		plan := flags.String("plan", "", "exact plan ID")
+		operator := flags.String("operator", "", "operator provenance")
+		evidence := flags.String("evidence", "", "actual all-writer agreement evidence, not general recovery approval")
+		paused := flags.Bool("writers-paused", false, "attest every Git writer will remain paused until expiry")
+		expires := flags.String("expires", "", "hard end RFC3339, at most five minutes from now")
+		run = func() (any, error) {
+			end, err := time.Parse(time.RFC3339Nano, *expires)
+			if err != nil {
+				return nil, err
+			}
+			return authority.ReviewGitIndexLockPlan(home, *plan, authority.GitIndexLockWindow{ReviewedBy: *operator, EvidenceRef: *evidence, WritersPaused: *paused, ExpiresAt: end}, time.Now())
+		}
+	case "apply":
+		plan := flags.String("plan", "", "exact plan ID")
+		review := flags.String("review", "", "exact reviewed window ID")
+		actor := flags.String("actor", "", "current lease holder")
+		run = func() (any, error) {
+			return authority.ApplyGitIndexLockRecovery(context.Background(), home, *plan, *review, *actor, nil, time.Now)
+		}
+	default:
+		fmt.Fprintln(stderr, gitIndexLockUsage)
+		return 2
+	}
+	if err := flags.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, gitIndexLockUsage)
+		return 2
+	}
+	value, err := run()
+	if value != nil {
+		if encodeErr := json.NewEncoder(out).Encode(value); encodeErr != nil {
+			fmt.Fprintln(stderr, encodeErr)
+			return 1
+		}
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, "authority git-index-lock:", err)
+		return 1
+	}
+	return 0
+}
+
 func cmdAuthority(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | path-registry <os-path-authority.yaml> | git <repo-path> | dirty-plan <repo-path> [--work-id id] [--action-intent id ...] | worktree-retire <plan|review|apply> | import-os-absorption <matrix.json> | os-absorption [--json] | os-absorption-doctor [--json] | import-infra-database <database.yaml> | import-infra-services <services.yaml> | import-model-catalog <provider-registry.json> | model-catalog [--family F] [--model M] [--json] | model-catalog-doctor [--source P] [--json] | import-job-roster <cron-jobs.json> | import-job-token-governance <cron-token-usage.json> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> [--decision <enum>] [--rationale <text>] [--confidence <0..1>] [--next-action <text>] [--json] | harness-edit-review <card.json> --decision whitelist|reject --rationale <text> [--actor <id>] [--json] | resolve <token> | <entity>")
+		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | path-registry <os-path-authority.yaml> | git <repo-path> | dirty-plan <repo-path> [--work-id id] [--action-intent id ...] | worktree-retire <plan|review|apply> | git-index-lock <plan|review|apply> | import-os-absorption <matrix.json> | os-absorption [--json] | os-absorption-doctor [--json] | import-infra-database <database.yaml> | import-infra-services <services.yaml> | import-model-catalog <provider-registry.json> | model-catalog [--family F] [--model M] [--json] | model-catalog-doctor [--source P] [--json] | import-job-roster <cron-jobs.json> | import-job-token-governance <cron-token-usage.json> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> [--decision <enum>] [--rationale <text>] [--confidence <0..1>] [--next-action <text>] [--json] | harness-edit-review <card.json> --decision whitelist|reject --rationale <text> [--actor <id>] [--json] | resolve <token> | <entity>")
 		os.Exit(2)
 	}
 	store, homePath := openMemStore()
+	if args[0] == "git-index-lock" {
+		if code := runAuthorityGitIndexLock(homePath, args[1:], os.Stdout, os.Stderr); code != 0 {
+			os.Exit(code)
+		}
+		return
+	}
 	if args[0] == "worktree-retire" {
 		code := runAuthorityWorktreeRetire(homePath, args[1:], os.Stdout, os.Stderr, time.Now())
 		if code != 0 {

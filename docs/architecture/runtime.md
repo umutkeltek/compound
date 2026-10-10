@@ -411,6 +411,31 @@ tampered plan, inactive owner work, or legacy count-only review keeps the normal
 
 ---
 
+### Reviewed Git index-lock recovery
+
+`compound authority git-index-lock plan|review|apply` owns the narrow stale-lock
+recovery path. Raw `.git` mutations remain forbidden. A plan seals primary-checkout
+directory and file identities, HEAD, exact index, both binary WIP patches and raw
+tracked-byte hashes. Linked/bare checkouts, untracked files, hidden index flags,
+special entries, active Git operations, ambiguous liveness and nonempty/fresh locks
+are refused. Review binds the entire plan (including work and actor) to explicit
+operator provenance and evidence of an actual all-writer pause, expiring within
+five minutes. Recovery approval alone is not evidence that writers are paused.
+
+Apply first reserves the exact allowed action on running work. Private 0600
+preimages and a durable recovery locator precede the move; 0700 directories and
+descriptor-pinned, platform no-replace rename preserve recovery evidence. Synced
+move-started evidence precedes final liveness, policy/window/lease and identity
+checks. POSIX rename has no inode compare-and-swap: the reviewed writer-free window
+is required, not replaced by those checks. Post-move drift is a partial failure,
+never authority to overwrite a new lock or index. Concurrent apply is refused.
+
+An interrupted invocation reconciles retained evidence read-only and records its
+actual outcome; it never repeats the move. Completed replay reports historical
+receipt/transition identities, not a claim that no new lock exists now. Missing or
+unreadable evidence retains the work reservation for explicit reconciliation.
+There is no background lock sweeper and no runtime installation implicit in this command.
+
 ### Sandbox notification writes
 
 `compound act paddle-sandbox-notification` is the typed Paddle sandbox consumer of

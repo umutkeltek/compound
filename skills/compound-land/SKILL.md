@@ -347,22 +347,21 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   different problem — and it is doubly wrong here, because MAIN has `main` checked out, so moving
   the ref without the index leaves your landed files looking *reverted* in that worktree, and the
   next lane can commit the revert.
-- **`index.lock: File exists` is not proof a lane is live** (lived 2026-07-27, same land). A crashed
-  git leaves the lock behind and `merge --ff-only` then refuses forever. Discriminator: **0 bytes +
-  mtime minutes old + `lsof <repo>/.git/index.lock` shows no holder + no `.git/MERGE_HEAD` /
-  `rebase-merge` / `rebase-apply` / `CHERRY_PICK_HEAD`** = stale, which is the case git's own error
-  text tells you to clear manually. Recovery is still a mutation on SHARED state: first resolve
-  scoped operator approval or a standing grant covering this repository's stale-lock recovery,
-  the owning WorkEnvelope, and a current allowing PolicyDecision. **Existing authority that
-  covers the recovery fulfills approval — proceed without another prompt.** Missing coverage
-  or a missing, unreadable, or holding policy means stop; this ceremony grants no new authority.
-  Another lane may have STAGED work: back up the index, `git diff HEAD`, and untracked WIP bodies,
-  and record their checksums first. Recheck liveness, size, mtime, path, and lock identity
-  immediately before moving only the verified zero-byte stale lock into the governed backup;
-  never delete it or treat this as generic cleanup authority. Live, fresh, nonempty, symlinked,
-  or changed locks stay untouched. Re-verify the index and every preserved WIP body byte-for-byte
-  afterward. `git diff` alone misses staged work; `git diff HEAD` does not include untracked
-  bodies. `ps | grep git` is NOT the liveness check (it matches your own command text); `lsof` is.
+- **An old index lock is a recovery candidate, not proof that Git is idle.**
+  Do not move or delete it by hand and do not relax the generic `.git` forbidden-path rule.
+  Use `compound authority git-index-lock plan --repo ROOT --work WORK --actor ACTOR`.
+  The typed adapter supports primary checkouts only: it requires an empty, current-user,
+  single-link regular lock at least fifteen minutes old, conclusive liveness, no active
+  Git operation, and exact index plus staged/unstaged binary-patch and raw tracked-byte
+  preservation. Untracked files, hidden index flags and special entries fail closed.
+  Scoped recovery approval need not be requested again, but is NOT a writer-pause
+  commitment. Record a separate actual all-writer pause with `git-index-lock review
+  --plan ID --operator operator:ID --evidence REF --writers-paused --expires RFC3339`
+  (maximum five minutes), then `git-index-lock apply --plan ID --review ID --actor ACTOR`.
+  Final checks are not inode compare-and-swap: all Git writers must remain paused.
+  Recovery uses a no-overwrite move and private synced preimages; it never restores
+  over a replacement. Interrupted apply reconciles evidence and receipts without
+  repeating the move. A failed or unknown policy/window/probe stops recovery.
 - **A skill/doc under `.claude/` may be a SYMLINK into the tracked tree — check the target, not the link**
   (lived 2026-07-27). `.claude/` is gitignored wholesale (`.gitignore:12`), so
   `git ls-files .claude/skills/<s>/SKILL.md` reports untracked and `check-ignore` confirms it — but the

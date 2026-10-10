@@ -27,6 +27,10 @@ import (
 // claiming terminal task success; work close remains the only writer of
 // WorkEnvelope.ids.transition_id.
 type ReceiptedActionInput struct {
+	// OutcomePending reserves authority before an external effect without
+	// predicting success. It must be sealed exactly once before publication.
+	// Omission preserves digests of previously persisted transaction inputs.
+	OutcomePending             bool `json:",omitempty"`
 	Action                     envelope.ActionIntent
 	OperationalDecisionClaimID string
 	// PreEvaluatedDecision records an exact operator-governed decision after the
@@ -92,6 +96,9 @@ func (s *Store) RecordReceiptedAction(workID string, in ReceiptedActionInput, no
 
 func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInput, authorityAt, completedAt time.Time, pendingReplaysAuthority bool) (ReceiptedActionResult, error) {
 	var out ReceiptedActionResult
+	if in.OutcomePending {
+		return out, fmt.Errorf("receipted action outcome is not sealed")
+	}
 	if authorityAt.IsZero() && completedAt.IsZero() {
 		authorityAt = time.Now()
 		completedAt = authorityAt

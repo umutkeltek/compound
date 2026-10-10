@@ -13,6 +13,17 @@ State_t  →  Action_t  →  Receipt_t  →  State_t+1
 product/market signals + cost gradients + risk gates + taste standards + operator attention +
 system trust + open loops + dead surfaces.
 
+## External effects with initially unknown outcomes
+
+An adapter must not reserve success before a filesystem effect has happened.
+`work.ReceiptedActionInput.OutcomePending` reserves action/policy authority while
+preventing receipt publication. `SealReceiptedActionOutcome` binds the actual
+outcome once, without changing the action, policy, authorization time, running
+work admission or preimages. Partial failures retain their changed-state evidence.
+The reservation remains until Receipt, Transition and work links converge; exact
+replay cannot alter the sealed outcome. Omitted false preserves existing input
+digests. The index-lock recovery adapter is this seam's production consumer.
+
 ## Evidence of later benefit
 
 A completed changed receipt and its transition establish a **proof-backed change**.
