@@ -1,6 +1,6 @@
 # Required native consumer proof
 
-External Go, Xcode, Bun, and Node/npm repositories can declare a tracked root compound-proof.json.
+External Go, Xcode, Bun, Node/npm, and Python/uv repositories can declare a tracked root compound-proof.json.
 Canonical admission reads that regular Git blob from the sealed head, never from
 ambient configuration or a caller replacement command. Compound and Rust retain
 their existing inventories; a consumer declaration cannot replace them. Module
@@ -221,3 +221,33 @@ containment claim requires separate installed acceptance. Hydration feasibility,
 native parser tests, and changed capability selection are not customer outcomes or
 measured economic benefit. The product's actual governed canonical run and delivery
 must still consume the certificate before a changed-work close is accepted.
+
+## Python/uv native pytest profile
+
+`python_uv_consumers_v1` requires tracked regular root `pyproject.toml`,
+`uv.lock` and `compound-proof.json`; declarations remain root-only.
+Each consumer declares `uv` as a required tool and `report_kind: pytest_junit`.
+The reviewed source-owned wrapper runs genuine pytest, with `--runxfail` and
+`-o junit_family=xunit1`, writing directly to `COMPOUND_PROOF_REPORT`.
+Required and allowed-skip identities are exact compact JSON
+`[repository-relative-file,classname,name]`. Parametrized names are significant.
+
+Admission and finalization reject missing/duplicate identities, required or
+undeclared skips, failures/errors, xfail outcomes, missing or inconsistent native
+summary counts, absent xunit1 files, absolute/escaping paths, namespaces, extra
+roots, malformed/trailing XML and hidden/nested outcomes. Bounded native
+system-out/system-err text is diagnostic only. A summary-only or empty report
+cannot certify. Custom record-property elements are not accepted by this profile.
+
+Python consumers receive private HOME and a disposable project environment,
+fixed frozen/offline/no-config/no-Python-download uv controls, disabled user-site
+imports and fixed pytest options. Ambient provider keys, DSNs, PYTHONPATH,
+PYTHONHOME, pytest options and uv configuration are not inherited.
+`UV_CACHE_DIR` may be a declared existing absolute dependency-cache directory;
+otherwise it is private and empty. Lock-consistent dependency hydration remains
+source-wrapper-owned and must work offline; Compound installs nothing itself.
+A PostgreSQL consumer declares PG_BIN_DIR and owns its disposable database,
+never an ambient production DSN. These controls are not a hostile-code sandbox
+or an attestation of pytest executable bytes. Existing source-review, sealed
+checkout, drift, deadline, process-group/EOF, custody and 32-MiB fences apply.
+Adding support is not product certification or deployment acceptance.

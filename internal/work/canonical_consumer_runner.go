@@ -95,7 +95,7 @@ func RunCanonicalConsumer(ctx context.Context, repo string, step ProofCheckStep,
 	}
 	defer os.RemoveAll(tmp)
 	childHome := os.Getenv("HOME")
-	if consumer.ReportKind == "bun_junit" || consumer.ReportKind == "node_test_junit" {
+	if consumer.ReportKind == "bun_junit" || consumer.ReportKind == "node_test_junit" || consumer.ReportKind == "pytest_junit" {
 		childHome = filepath.Join(tmp, "home")
 		if err := os.Mkdir(childHome, 0o700); err != nil {
 			return nil, evidence, err
@@ -104,7 +104,7 @@ func RunCanonicalConsumer(ctx context.Context, repo string, step ProofCheckStep,
 	reportName := "result.jsonl"
 	if consumer.ReportKind == "xcresult" {
 		reportName = "result.xcresult"
-	} else if consumer.ReportKind == "bun_junit" || consumer.ReportKind == "node_test_junit" {
+	} else if consumer.ReportKind == "bun_junit" || consumer.ReportKind == "node_test_junit" || consumer.ReportKind == "pytest_junit" {
 		reportName = "result.junit.xml"
 	}
 	reportPath := filepath.Join(tmp, reportName)
@@ -113,6 +113,9 @@ func RunCanonicalConsumer(ctx context.Context, repo string, step ProofCheckStep,
 		"GOPROXY=off", "GOSUMDB=off", "GOENV=off", "GOTOOLCHAIN=local", "GOWORK=off",
 		"GOCACHE=" + filepath.Join(tmp, "go-cache"), "GOMODCACHE=" + filepath.Join(tmp, "go-modules"),
 		"GOPATH=" + filepath.Join(tmp, "go-path"), "COMPOUND_PROOF_REPORT=" + reportPath,
+	}
+	if consumer.ReportKind == "pytest_junit" {
+		env = append(env, "UV_CACHE_DIR="+filepath.Join(tmp, "uv-cache"), "UV_PROJECT_ENVIRONMENT="+filepath.Join(tmp, "venv"), "UV_OFFLINE=1", "UV_FROZEN=1", "UV_NO_CONFIG=1", "UV_PYTHON_DOWNLOADS=never", "PYTHONNOUSERSITE=1", "PYTHONDONTWRITEBYTECODE=1", "PYTEST_ADDOPTS=--runxfail -o junit_family=xunit1")
 	}
 	// exec.Cmd deduplicates environment entries, retaining the last declared cache value.
 	env = append(env, external...)
@@ -154,7 +157,7 @@ func RunCanonicalConsumer(ctx context.Context, repo string, step ProofCheckStep,
 	output, runErr := cmd.CombinedOutput()
 	runErr = errors.Join(runErr, writer.Close())
 	runErr = errors.Join(runErr, awaitConsumerWriters(runCtx, cmd, reader))
-	if consumer.ReportKind == "go_test_json" || consumer.ReportKind == "bun_junit" || consumer.ReportKind == "node_test_junit" {
+	if consumer.ReportKind == "go_test_json" || consumer.ReportKind == "bun_junit" || consumer.ReportKind == "node_test_junit" || consumer.ReportKind == "pytest_junit" {
 		evidence.Report, err = readConsumerReport(tmp, reportName)
 	} else {
 		if err = validateConsumerResultBundle(reportPath); err == nil {

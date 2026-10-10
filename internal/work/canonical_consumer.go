@@ -100,7 +100,7 @@ func parseCanonicalConsumerContract(body []byte) (canonicalConsumerContract, err
 	if err := d.Decode(&c); err != nil {
 		return c, fmt.Errorf("consumer contract: %w", err)
 	}
-	if c.SchemaVersion != "compound.proof_consumers.v1" || (c.Profile != "go_consumers_v1" && c.Profile != "xcode_consumers_v1" && c.Profile != "bun_consumers_v1" && c.Profile != "node_npm_consumers_v1") {
+	if c.SchemaVersion != "compound.proof_consumers.v1" || (c.Profile != "go_consumers_v1" && c.Profile != "xcode_consumers_v1" && c.Profile != "bun_consumers_v1" && c.Profile != "node_npm_consumers_v1" && c.Profile != "python_uv_consumers_v1") {
 		return c, fmt.Errorf("unsupported consumer contract schema/profile")
 	}
 	if len(c.Consumers) == 0 || len(c.Consumers) > 32 {
@@ -142,6 +142,8 @@ func parseCanonicalConsumerContract(body []byte) (canonicalConsumerContract, err
 		for name := range env {
 			switch name {
 			case "PG_BIN_DIR", "GOCACHE", "GOMODCACHE", "DEVELOPER_DIR", "BUN_INSTALL_CACHE_DIR":
+			case "UV_CACHE_DIR":
+				// Dependency cache only; Python environment remains private.
 			case "NPM_CACHE_SEED_DIR":
 				if c.Profile != "node_npm_consumers_v1" {
 					return c, fmt.Errorf("npm seed directory requires Node/npm profile")
@@ -172,6 +174,11 @@ func parseCanonicalConsumerContract(body []byte) (canonicalConsumerContract, err
 					return c, fmt.Errorf("Node allowed skip identity: %w", err)
 				}
 			}
+			if c.Profile == "python_uv_consumers_v1" {
+				if _, err := parsePytestIdentity(id); err != nil {
+					return c, fmt.Errorf("pytest allowed skip identity: %w", err)
+				}
+			}
 		}
 		wantKind := "go_test_json"
 		if c.Profile == "xcode_consumers_v1" {
@@ -180,6 +187,11 @@ func parseCanonicalConsumerContract(body []byte) (canonicalConsumerContract, err
 			wantKind = "bun_junit"
 		} else if c.Profile == "node_npm_consumers_v1" {
 			wantKind = "node_test_junit"
+		} else if c.Profile == "python_uv_consumers_v1" {
+			wantKind = "pytest_junit"
+			if !tools["uv"] {
+				return c, fmt.Errorf("Python consumer requires uv in required_tools")
+			}
 		}
 		if s.ReportKind != wantKind {
 			return c, fmt.Errorf("consumer %s report_kind must be %s", s.ID, wantKind)
@@ -194,6 +206,10 @@ func parseCanonicalConsumerContract(body []byte) (canonicalConsumerContract, err
 			} else if wantKind == "node_test_junit" {
 				if _, err := parseNodeTestIdentity(id); err != nil {
 					return c, fmt.Errorf("Node required test identity: %w", err)
+				}
+			} else if wantKind == "pytest_junit" {
+				if _, err := parsePytestIdentity(id); err != nil {
+					return c, fmt.Errorf("pytest required test identity: %w", err)
 				}
 			}
 		}
@@ -312,6 +328,11 @@ func ValidateCanonicalConsumerEvidence(step ProofCheckStep) error {
 			return fmt.Errorf("Bun report cannot carry an Xcode test tree")
 		}
 		return validateConsumerBunReport(c, e.Report)
+	case "pytest_junit":
+		if len(e.Tests) != 0 {
+			return fmt.Errorf("pytest report cannot carry an Xcode test tree")
+		}
+		return validateConsumerPytestReport(c, e.Report)
 	case "node_test_junit":
 		if len(e.Tests) != 0 {
 			return fmt.Errorf("Node report cannot carry an Xcode test tree")

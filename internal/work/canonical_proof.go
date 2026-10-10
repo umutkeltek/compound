@@ -92,7 +92,7 @@ func ResolveCanonicalProofPlan(
 	markers, err := canonicalProofRootMarkers(
 		resolvedRepo,
 		source.HeadSHA,
-		[]string{"Cargo.lock", "Cargo.toml", "go.mod", "package.json", "bun.lock", CanonicalConsumerContractPath},
+		[]string{"Cargo.lock", "Cargo.toml", "go.mod", "package.json", "bun.lock", "pyproject.toml", "uv.lock", CanonicalConsumerContractPath},
 	)
 	if err != nil {
 		return CanonicalProofPlan{}, fmt.Errorf("inspect canonical proof root markers at %s: %w", source.HeadSHA, err)
@@ -102,6 +102,8 @@ func ResolveCanonicalProofPlan(
 	hasGoModule := markers["go.mod"]
 	hasPackageJSON := markers["package.json"]
 	hasBunLock := markers["bun.lock"]
+	hasPyproject := markers["pyproject.toml"]
+	hasUVLock := markers["uv.lock"]
 	contractPath, err := canonicalConsumerDeclarationPath(resolvedRepo, source.HeadSHA)
 	if err != nil {
 		return CanonicalProofPlan{}, err
@@ -123,6 +125,12 @@ func ResolveCanonicalProofPlan(
 		}
 		if contractPath != CanonicalConsumerContractPath && contract.Profile != "node_npm_consumers_v1" {
 			return CanonicalProofPlan{}, fmt.Errorf("nested consumer declaration requires Node/npm profile")
+		}
+		if contract.Profile == "python_uv_consumers_v1" && (!hasPyproject || !hasUVLock) {
+			return CanonicalProofPlan{}, fmt.Errorf("Python consumers require tracked root pyproject.toml and uv.lock")
+		}
+		if contract.Profile != "python_uv_consumers_v1" && (hasPyproject || hasUVLock) {
+			return CanonicalProofPlan{}, fmt.Errorf("consumer profile does not match tracked root Python markers")
 		}
 		if (contract.Profile == "go_consumers_v1") != hasGoModule {
 			return CanonicalProofPlan{}, fmt.Errorf("consumer profile does not match tracked root Go module")
@@ -203,7 +211,7 @@ func validConsumerContractPath(value string) bool {
 // Existing root inventories always win. Only otherwise unsupported repositories
 // can discover one nested declaration; a runtime flag never selects a weaker one.
 func canonicalConsumerDeclarationPath(repo, head string) (string, error) {
-	markers, err := canonicalProofRootMarkers(repo, head, []string{CanonicalConsumerContractPath, "go.mod", "Cargo.toml", "Cargo.lock", "package.json", "bun.lock"})
+	markers, err := canonicalProofRootMarkers(repo, head, []string{CanonicalConsumerContractPath, "go.mod", "Cargo.toml", "Cargo.lock", "package.json", "bun.lock", "pyproject.toml", "uv.lock"})
 	if err != nil {
 		return "", err
 	}
