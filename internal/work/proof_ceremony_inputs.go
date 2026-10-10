@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // ProofCeremonyOwnedIgnoredInputs are the gitignored paths a sealed proof checkout
@@ -25,7 +26,8 @@ var ProofCeremonyOwnedIgnoredInputs = []string{
 // sealedRepo. A fresh linked worktree carries no ignored files, so an input it
 // lacks comes from the repository's main checkout; an input neither has is
 // skipped. command builds each subprocess so the caller's execution barrier and
-// cancellation bind it.
+// cancellation bind it. Copied regular files get fresh access times so temporary
+// cleanup does not mistake APFS clones with inherited timestamps for old inputs.
 func CopyProofCeremonyInputs(
 	ctx context.Context,
 	sourceRepo string,
@@ -73,8 +75,33 @@ func CopyProofCeremonyInputs(
 		if err := validateProofCeremonyInputSnapshot(destinationPath); err != nil {
 			return fmt.Errorf("validate copied proof ceremony input %s: %w", relativePath, err)
 		}
+		if err := refreshProofCeremonyInputAccess(ctx, destinationPath); err != nil {
+			return fmt.Errorf("refresh copied proof ceremony input %s: %w", relativePath, err)
+		}
 	}
 	return nil
+}
+
+func refreshProofCeremonyInputAccess(ctx context.Context, root string) error {
+	now := time.Now()
+	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if walkErr != nil {
+			return walkErr
+		}
+		// WalkDir does not follow symlinks. Refresh only the copied regular files,
+		// preserving their modification times and never touching link targets.
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		return os.Chtimes(path, now, info.ModTime())
+	})
 }
 
 // proofMainCheckout returns the main checkout of the repository sourceRepo belongs

@@ -2,10 +2,12 @@ package work
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // A fresh linked worktree carries no ignored files. Before the fallback, every
@@ -47,4 +49,34 @@ func writeCeremonyInput(t *testing.T, path, body string) {
 		t.Fatal(err)
 	}
 	writeLandingFile(t, path, body)
+}
+
+func TestRefreshProofCeremonyInputAccessFailsClosed(t *testing.T) {
+	t.Run("cancelled", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "input")
+		writeCeremonyInput(t, path, "synthetic input\n")
+		old := time.Now().Add(-7 * 24 * time.Hour).Truncate(time.Second)
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := refreshProofCeremonyInputAccess(ctx, path); !errors.Is(err, context.Canceled) {
+			t.Fatalf("refresh error = %v, want context cancellation", err)
+		}
+		after, err := os.Stat(path)
+		if err != nil || !after.ModTime().Equal(before.ModTime()) {
+			t.Fatalf("cancelled refresh changed input metadata: %v", err)
+		}
+	})
+	t.Run("missing input", func(t *testing.T) {
+		err := refreshProofCeremonyInputAccess(context.Background(), filepath.Join(t.TempDir(), "missing"))
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("refresh error = %v, want missing-input error", err)
+		}
+	})
 }

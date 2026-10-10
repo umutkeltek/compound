@@ -296,7 +296,11 @@ still require their normal source-delivery proof.
 Canonical source proof executes every gate in a detached temporary checkout of
 the sealed HEAD. Only the ceremony-owned ignored inputs are copied as snapshots;
 the original worktree remains the canonical locator and revalidation target, not
-the subprocess execution surface.
+the subprocess execution surface. Copied regular files receive fresh access
+timestamps without changing their modification times, bytes, or modes. This
+prevents temporary-directory age cleanup from treating newly cloned APFS inputs
+as stale. Refresh is cancellable, does not follow symlinks, and fails closed on
+filesystem errors; source inputs and cleanup policy remain unchanged.
 
 External Go/Xcode required tests use the source-sealed
 [native consumer proof contract](contracts/native-consumer-proof.md), including
