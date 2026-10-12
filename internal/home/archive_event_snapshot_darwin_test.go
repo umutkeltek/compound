@@ -42,22 +42,44 @@ func TestArchiveEventSnapshotSurvivesLiveAppendAtHeader(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := filepath.Join(rootPath, "events", "runtime-events.jsonl")
-	original := bytes.Repeat([]byte("synthetic event\n"), 8*1024*1024)
-	appended := bytes.Repeat([]byte("next event\n"), 1024*1024)
-	if err := os.WriteFile(source, original, 0o640); err != nil {
+	// Preserve the realistic 120 MiB input while bounding fixture memory.
+	chunk := bytes.Repeat([]byte("synthetic event\n"), 4096)
+	originalHash := sha256.New()
+	file, err := os.OpenFile(source, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o640)
+	if err != nil {
 		t.Fatal(err)
 	}
+	originalWriter := io.MultiWriter(file, originalHash)
+	for i := 0; i < 2048; i++ {
+		if _, err := originalWriter.Write(chunk); err != nil {
+			file.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	originalSize := int64(len(chunk)) * 2048
+	expected := hex.EncodeToString(originalHash.Sum(nil))
+	appended := bytes.Repeat([]byte("next event\n"), 1024*1024)
 	before, err := os.Lstat(source)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if before.Size() != originalSize {
+		t.Fatalf("fixture size=%d want=%d", before.Size(), originalSize)
 	}
 	root, err := os.OpenRoot(rootPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer root.Close()
-	var archive bytes.Buffer
-	writer := &appendEventOnHeader{Writer: tar.NewWriter(&archive), source: source, appended: appended}
+	archive, err := os.Create(filepath.Join(t.TempDir(), "snapshot.tar"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Close()
+	writer := &appendEventOnHeader{Writer: tar.NewWriter(archive), source: source, appended: appended}
 	entry, err := writeRootedArchiveEventSnapshot(writer, root, "events/runtime-events.jsonl", before)
 	if err != nil {
 		t.Fatalf("live append must not invalidate immutable event snapshot: %v", err)
@@ -65,11 +87,13 @@ func TestArchiveEventSnapshotSurvivesLiveAppendAtHeader(t *testing.T) {
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	expected := sha256.Sum256(original)
-	if entry.Size != int64(len(original)) || entry.SHA256 != hex.EncodeToString(expected[:]) {
-		t.Fatalf("snapshot entry does not seal the pre-append bytes: %+v", entry)
+	if entry.Size != originalSize || entry.SHA256 != expected {
+		t.Fatalf("snapshot entry does not seal pre-append bytes: %+v", entry)
 	}
-	reader := tar.NewReader(&archive)
+	if _, err := archive.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	reader := tar.NewReader(archive)
 	header, err := reader.Next()
 	if err != nil {
 		t.Fatal(err)
@@ -83,13 +107,22 @@ func TestArchiveEventSnapshotSurvivesLiveAppendAtHeader(t *testing.T) {
 		t.Fatalf("snapshot lost source permission metadata: %#o", header.Mode)
 	}
 	if header.Name != entry.Path || size != entry.Size || hex.EncodeToString(hash.Sum(nil)) != entry.SHA256 {
-		t.Fatal("actual tar body differs from sealed snapshot")
+		t.Fatal("actual tar body differs from the sealed snapshot")
 	}
-	after, err := os.ReadFile(source)
+	live, err := os.Open(source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(after, append(original, appended...)) {
+	defer live.Close()
+	livePrefixHash := sha256.New()
+	if n, err := io.CopyN(livePrefixHash, live, originalSize); err != nil || n != originalSize {
+		t.Fatalf("live original bytes missing: n=%d err=%v", n, err)
+	}
+	suffix, err := io.ReadAll(live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hex.EncodeToString(livePrefixHash.Sum(nil)) != expected || !bytes.Equal(suffix, appended) {
 		t.Fatal("snapshot changed or lost original live event bytes")
 	}
 }

@@ -94,6 +94,9 @@ a collection of per-file observations, not a global transactional snapshot.
 The clone is private, short-lived, and removed only by its backup invocation.
 Unsupported clone support fails closed; it never falls back to an unstable read.
 
+The realistic live-append test uses a 120 MiB file and a file-backed tar archive.
+Fixture I/O stays bounded so discarded byte buffers do not pollute later heap measurements.
+
 Native archive verification also hashes the exact compressed source through the
 same verified file descriptor. A checksum is returned only after file identity,
 size, modification time, and path are rechecked. The checksum names the actual
