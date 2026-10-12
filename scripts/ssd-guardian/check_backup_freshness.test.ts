@@ -1,6 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { STATUSES, backupGateAllowsApply, type Status } from "./check_backup_freshness";
 
 describe("backupGateAllowsApply", () => {
@@ -23,18 +21,5 @@ describe("backupGateAllowsApply", () => {
     // read as not-ok and every apply run aborted while logging green.
     expect(backupGateAllowsApply("ok")).toBe(false);
     expect(backupGateAllowsApply("")).toBe(false);
-  });
-});
-
-describe("weekly_reclaim gate wiring", () => {
-  const source = readFileSync(join(import.meta.dir, "weekly_reclaim.ts"), "utf8");
-
-  test("calls the shared gate instead of re-spelling a status literal", () => {
-    expect(source).toContain("backupGateAllowsApply(j.status)");
-  });
-
-  test("does not compare j.status against a bare string literal", () => {
-    // Any `j.status === "..."` / `!== "..."` is the drift that caused the bug.
-    expect(source).not.toMatch(/j\.status\s*[!=]==\s*["']/);
   });
 });

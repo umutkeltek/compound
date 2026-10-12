@@ -101,8 +101,8 @@ describe("guard decision", () => {
     nowMs: NOW_MS,
   };
 
-  test("unloads only a proven old idle LM Studio holder", () => {
-    expect(decideGuardAction(base).action).toBe("unload_idle_lmstudio");
+  test("defers even a proven old idle LM Studio holder", () => {
+    expect(decideGuardAction(base).action).toBe("report_only");
   });
 
   test("does nothing when free space is healthy", () => {
@@ -153,12 +153,12 @@ describe("temporary Go cache selection", () => {
   });
 
   test("matches only explicit rebuildable macOS temp-tree families", () => {
-    expect(isRebuildableTemporaryTree("agent-session-backup-deadbeef")).toBe(true);
-    expect(isRebuildableTemporaryTree("compound-proofcheck-sealed-123")).toBe(true);
-    expect(isRebuildableTemporaryTree("go-build123456")).toBe(true);
-    expect(isRebuildableTemporaryTree("switchback-tap-bodylog-http-123")).toBe(true);
-    expect(isRebuildableTemporaryTree("switchback-forward-proxy-https-123")).toBe(true);
-    expect(isRebuildableTemporaryTree("pytest-of-umut")).toBe(true);
+    expect(isRebuildableTemporaryTree("agent-session-backup-deadbeef")).toBe(false);
+    expect(isRebuildableTemporaryTree("compound-proofcheck-sealed-123")).toBe(false);
+    expect(isRebuildableTemporaryTree("go-build123456")).toBe(false);
+    expect(isRebuildableTemporaryTree("switchback-tap-bodylog-http-123")).toBe(false);
+    expect(isRebuildableTemporaryTree("switchback-forward-proxy-https-123")).toBe(false);
+    expect(isRebuildableTemporaryTree("pytest-of-umut")).toBe(false);
     expect(isRebuildableTemporaryTree("agent-session-backups-important")).toBe(false);
     expect(isRebuildableTemporaryTree("compound-copy")).toBe(false);
   });
@@ -191,10 +191,9 @@ describe("temporary Go cache selection", () => {
       symlinkSync(oldCache, join(root, "gocache-link"));
 
       const candidates = temporaryGoCaches(root, 60 * 60, nowMs);
-      expect(candidates).toHaveLength(2);
+      expect(candidates).toHaveLength(1);
       expect(candidates.map((candidate) => candidate.path).sort()).toEqual([
         oldCache,
-        staleBackup,
       ].sort());
       expect(candidates.every((candidate) => candidate.ageSeconds === 8 * 60 * 60)).toBe(true);
       expect(candidates.every((candidate) => candidate.sizeBytes > 0)).toBe(true);

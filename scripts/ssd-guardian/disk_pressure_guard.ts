@@ -1,16 +1,12 @@
 #!/usr/bin/env bun
 import {
   lstatSync,
-  mkdirSync,
   readFileSync,
   readdirSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
 } from "node:fs";
 import { basename, join } from "node:path";
-import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
+import { flags, limit, measure, capacity, emit, DEFER_REASON } from "./report_only";
 
 const GIB = 1024 ** 3;
 const DEFAULT_FREE_FLOOR_BYTES = 140 * GIB;
@@ -19,15 +15,6 @@ const DEFAULT_MIN_IDLE_SECONDS = 30 * 60;
 const DEFAULT_TEMP_CACHE_MIN_AGE_SECONDS = 60 * 60;
 const DEFAULT_TEMP_ROOT = "/private/tmp";
 const GO_BUILD_CACHE_MARKER = "This directory holds cached build artifacts from the Go build system.";
-const REBUILDABLE_TEMP_PREFIXES = [
-  "agent-session-backup-",
-  "compound-proofcheck-sealed-",
-  "go-build",
-  "switchback-forward-proxy-",
-  "switchback-tap-bodylog-",
-] as const;
-const LM_STUDIO_PORT = 1234;
-
 export type DeletedOpenFile = {
   pid: number;
   command: string;
@@ -44,7 +31,7 @@ export type ModelProcess = {
 };
 
 export type GuardDecision = {
-  action: "none" | "unload_idle_lmstudio" | "report_only";
+  action: "none" | "report_only";
   reasons: string[];
 };
 
@@ -55,7 +42,8 @@ export type TemporaryCacheCandidate = {
 };
 
 export type TemporaryCacheAction = TemporaryCacheCandidate & {
-  status: "candidate" | "reclaimed" | "skipped_open" | "failed";
+  status: "deferred";
+  reason: string;
   error?: string;
 };
 
@@ -85,9 +73,8 @@ export function isRebuildableTemporaryGoCache(name: string): boolean {
 }
 
 export function isRebuildableTemporaryTree(name: string): boolean {
-  return isRebuildableTemporaryGoCache(name)
-    || name === "pytest-of-umut"
-    || REBUILDABLE_TEMP_PREFIXES.some((prefix) => name.startsWith(prefix));
+  // Candidate discovery only. Names/markers never prove every nested payload disposable.
+  return isRebuildableTemporaryGoCache(name);
 }
 
 function hasGoBuildCacheMarker(path: string): boolean {
@@ -107,9 +94,12 @@ export function temporaryGoCaches(
   let entries;
   try {
     entries = readdirSync(root, { withFileTypes: true });
-  } catch {
-    return candidates;
+  } catch (error: any) {
+    if (error?.code === "ENOENT") return candidates;
+    throw error;
   }
+  if (entries.length > 4096) throw new Error("temporary entry bound exceeded");
+  const deadline = Date.now() + 45_000;
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.isSymbolicLink() || !isRebuildableTemporaryTree(entry.name)) {
       continue;
@@ -126,76 +116,14 @@ export function temporaryGoCaches(
       ) {
         continue;
       }
-      const size = run(["du", "-sk", path], 120_000);
-      const sizeKiB = Number(size.stdout.trim().split(/\s+/)[0]);
-      candidates.push({
-        path,
-        sizeBytes: size.ok && Number.isFinite(sizeKiB) ? sizeKiB * 1024 : 0,
-        ageSeconds,
-      });
-    } catch {
-      // A raced removal is no longer a candidate.
+      const observation = measure(path, new Set(), deadline);
+      if (observation.status === "failed" || observation.size_bytes === null) throw new Error(observation.note ?? "temporary measurement failed");
+      candidates.push({ path, sizeBytes: observation.size_bytes, ageSeconds });
+    } catch (error: any) {
+      if (error?.code !== "ENOENT") throw error;
     }
   }
   return candidates.sort((a, b) => b.sizeBytes - a.sizeBytes);
-}
-
-function lsofHasOnlyUnrelatedMountWarnings(stderr: string): boolean {
-  const lines = stderr.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  return lines.length > 0 && lines.every((line) =>
-    line.startsWith("lsof: WARNING: can't stat()")
-    || line === "Output information may be incomplete."
-    || line.startsWith("assuming \"dev=")
-  );
-}
-
-function reclaimTemporaryGoCaches(
-  candidates: TemporaryCacheCandidate[],
-  apply: boolean,
-  minimumAgeSeconds: number,
-  nowMs: number,
-): TemporaryCacheAction[] {
-  return candidates.map((candidate) => {
-    if (!apply) return { ...candidate, status: "candidate" };
-    try {
-      const stat = lstatSync(candidate.path);
-      const ageSeconds = Math.floor((nowMs - stat.mtimeMs) / 1000);
-      if (
-        !stat.isDirectory()
-        || stat.isSymbolicLink()
-        || ageSeconds < minimumAgeSeconds
-        || (
-          isRebuildableTemporaryGoCache(basename(candidate.path))
-          && !hasGoBuildCacheMarker(candidate.path)
-        )
-      ) {
-        return { ...candidate, status: "failed", error: "candidate changed before reclaim" };
-      }
-      const holders = run(["lsof", "-F", "p", "+D", candidate.path], 120_000);
-      if (holders.stdout.trim().length > 0) {
-        return { ...candidate, status: "skipped_open" };
-      }
-      if (
-        !holders.ok
-        && holders.stderr.trim().length > 0
-        && !lsofHasOnlyUnrelatedMountWarnings(holders.stderr)
-      ) {
-        return {
-          ...candidate,
-          status: "failed",
-          error: holders.stderr.trim().slice(0, 300),
-        };
-      }
-      rmSync(candidate.path, { recursive: true });
-      return { ...candidate, status: "reclaimed" };
-    } catch (error) {
-      return {
-        ...candidate,
-        status: "failed",
-        error: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300),
-      };
-    }
-  });
 }
 
 export function parseDeletedOpenFiles(raw: string): DeletedOpenFile[] {
@@ -299,7 +227,7 @@ export function decideGuardAction(input: {
   if (!modelsOldEnough) {
     return { action: "report_only", reasons: [...reasons, "model_too_recent_or_unknown"] };
   }
-  return { action: "unload_idle_lmstudio", reasons: [...reasons, "safe_idle_unload"] };
+  return { action: "report_only", reasons: [...reasons, "owner_review_required_no_model_unload"] };
 }
 
 function macOSUserTemporaryRoot(): string {
@@ -311,16 +239,6 @@ function macOSUserTemporaryRoot(): string {
     )
     ? path
     : DEFAULT_TEMP_ROOT;
-}
-
-function freeBytes(): number {
-  const result = run(["df", "-k", "/System/Volumes/Data"]);
-  if (!result.ok) throw new Error(`df failed: ${result.stderr.trim()}`);
-  const lines = result.stdout.trim().split(/\r?\n/);
-  const fields = lines.at(-1)?.trim().split(/\s+/) ?? [];
-  const availableKiB = Number(fields[3]);
-  if (!Number.isFinite(availableKiB)) throw new Error("df returned no available block count");
-  return availableKiB * 1024;
 }
 
 export function parseLoadedModels(raw: string): ModelProcess[] {
@@ -346,177 +264,34 @@ export function parseLoadedModels(raw: string): ModelProcess[] {
   }
 }
 
-function loadedModels(): ModelProcess[] {
-  const result = run(["lms", "ps", "--json"]);
-  return result.ok ? parseLoadedModels(result.stdout) : [];
-}
-
-function processFacts(pid: number): { lmStudio: boolean; ageSeconds: number | null } {
-  const result = run(["ps", "-p", String(pid), "-o", "ppid=,etime=,command="]);
-  if (!result.ok) return { lmStudio: false, ageSeconds: null };
-  const match = result.stdout.trim().match(/^(\d+)\s+(\S+)\s+(.+)$/);
-  if (!match) return { lmStudio: false, ageSeconds: null };
-  const parent = run(["ps", "-p", match[1], "-o", "command="]);
-  const identity = `${match[3]}\n${parent.stdout}`.toLowerCase();
-  return {
-    lmStudio: identity.includes("lm studio") || identity.includes(".lmstudio"),
-    ageSeconds: parseElapsedSeconds(match[2]),
-  };
-}
-
-function activeLocalClients(): boolean {
-  const result = run([
-    "lsof", "-nP", `-iTCP:${LM_STUDIO_PORT}`, "-sTCP:ESTABLISHED",
-  ]);
-  return result.ok && result.stdout.trim().length > 0;
-}
-
-function writeReceipt(receipt: object, archive: boolean): string {
-  const root = process.env.COMPOUND_HOME ?? join(homedir(), ".compound");
-  const dir = join(root, "state", "ssd-guardian", "pressure");
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const body = `${JSON.stringify(receipt, null, 2)}\n`;
-  const latest = join(dir, "latest.json");
-  const temp = join(dir, `.latest-${process.pid}.tmp`);
-  writeFileSync(temp, body, { mode: 0o600 });
-  renameSync(temp, latest);
-  if (!archive) return latest;
-
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const path = join(dir, `pressure-${timestamp}.json`);
-  writeFileSync(path, body, { mode: 0o600 });
-  return path;
-}
-
 async function main(): Promise<void> {
-  const apply = process.argv.includes("--apply");
-  const freeFloorBytes = Number(process.env.SSD_GUARDIAN_FREE_FLOOR_GIB ?? 140) * GIB;
-  const giantThresholdBytes = Number(process.env.SSD_GUARDIAN_GIANT_FILE_GIB ?? 8) * GIB;
-  const minimumIdleSeconds = Number(
-    process.env.SSD_GUARDIAN_LMSTUDIO_MIN_IDLE_SECONDS ?? DEFAULT_MIN_IDLE_SECONDS,
-  );
-  const temporaryCacheMinimumAgeSeconds = Number(
-    process.env.SSD_GUARDIAN_TEMP_CACHE_MIN_AGE_SECONDS
-      ?? DEFAULT_TEMP_CACHE_MIN_AGE_SECONDS,
-  );
-  const temporaryRoot = process.env.SSD_GUARDIAN_TEMP_ROOT ?? macOSUserTemporaryRoot();
-
-  const beforeFreeBytes = freeBytes();
-  const temporaryCacheCandidates = beforeFreeBytes < freeFloorBytes
-    ? temporaryGoCaches(temporaryRoot, temporaryCacheMinimumAgeSeconds, Date.now())
-    : [];
-  const temporaryCacheActions = reclaimTemporaryGoCaches(
-    temporaryCacheCandidates,
-    apply,
-    temporaryCacheMinimumAgeSeconds,
-    Date.now(),
-  );
-  const decisionFreeBytes = apply ? freeBytes() : beforeFreeBytes;
-  const lsof = run(["lsof", "+L1", "-F", "pcfsn"], 60_000);
-  const deletedFiles = lsof.ok ? parseDeletedOpenFiles(lsof.stdout) : [];
-  const giantFiles = deletedFiles
-    .filter((file) => file.sizeBytes >= giantThresholdBytes)
-    .sort((a, b) => b.sizeBytes - a.sizeBytes);
-  const lmStudioHolderPids = new Set<number>();
-  const holderAgesSeconds = new Map<number, number>();
-  for (const pid of new Set(giantFiles.map((file) => file.pid))) {
-    const facts = processFacts(pid);
-    if (facts.lmStudio) lmStudioHolderPids.add(pid);
-    if (facts.ageSeconds !== null) holderAgesSeconds.set(pid, facts.ageSeconds);
-  }
-  const models = loadedModels();
-  const hasActiveClients = activeLocalClients();
-  const nowMs = Date.now();
-  const decision = decideGuardAction({
-    freeBytes: decisionFreeBytes,
-    freeFloorBytes,
-    giantFiles,
-    lmStudioHolderPids,
-    holderAgesSeconds,
-    models,
-    hasActiveClients,
-    minimumIdleSeconds,
-    nowMs,
-  });
-
-  const actions: Array<{ identifier: string; ok: boolean; error?: string }> = [];
-  let actionRecheck: GuardDecision | null = null;
-  if (apply && decision.action === "unload_idle_lmstudio") {
-    const refreshedModels = loadedModels();
-    actionRecheck = decideGuardAction({
-      freeBytes: freeBytes(),
-      freeFloorBytes,
-      giantFiles,
-      lmStudioHolderPids,
-      holderAgesSeconds,
-      models: refreshedModels,
-      hasActiveClients: activeLocalClients(),
-      minimumIdleSeconds,
-      nowMs: Date.now(),
-    });
-    if (actionRecheck.action !== "unload_idle_lmstudio") {
-      actions.push({
-        identifier: "*",
-        ok: false,
-        error: `readiness changed before unload: ${actionRecheck.reasons.join(",")}`,
-      });
-    } else {
-      for (const model of refreshedModels) {
-        const result = run(["lms", "unload", model.identifier], 120_000);
-        actions.push({
-          identifier: model.identifier,
-          ok: result.ok,
-          error: result.ok ? undefined : result.stderr.trim().slice(0, 300),
-        });
-      }
-    }
-  }
-  const afterFreeBytes = freeBytes();
-  const receipt = {
-    schema_version: "compound.ssd-guardian.pressure.v1",
-    generated_at: new Date().toISOString(),
-    mode: apply ? "apply" : "dry_run",
-    thresholds: {
-      freeFloorBytes,
-      giantThresholdBytes,
-      minimumIdleSeconds,
-      temporaryCacheMinimumAgeSeconds,
-    },
-    beforeFreeBytes,
-    afterFreeBytes,
-    reclaimedBytes: Math.max(0, afterFreeBytes - beforeFreeBytes),
-    temporaryCacheCandidates,
-    temporaryCacheActions,
-    decision,
-    actionRecheck,
-    giantDeletedFiles: giantFiles.slice(0, 20).map((file) => ({
-      pid: file.pid,
-      command: file.command,
-      fd: file.fd,
-      sizeBytes: file.sizeBytes,
-      name: basename(file.path),
-      lmStudio: lmStudioHolderPids.has(file.pid),
-      ageSeconds: holderAgesSeconds.get(file.pid) ?? null,
-    })),
-    models,
-    hasActiveClients,
-    actions,
-  };
-  const receiptPath = apply
-    ? writeReceipt(
-      receipt,
-      decision.action !== "none" || temporaryCacheCandidates.length > 0,
-    )
-    : null;
-  console.log(JSON.stringify({ ...receipt, receiptPath }, null, 2));
-
-  const failedAction = actions.some((action) => !action.ok)
-    || temporaryCacheActions.some((action) => action.status === "failed");
-  if (failedAction || afterFreeBytes < freeFloorBytes) {
-    process.exitCode = 2;
-  }
+  const args = flags("disk_pressure_guard.ts");
+  const freeFloorBytes = limit(process.env.SSD_GUARDIAN_FREE_FLOOR_GIB, 140) * GIB;
+  const giantThresholdBytes = limit(process.env.SSD_GUARDIAN_GIANT_FILE_GIB, 8) * GIB;
+  const age = limit(process.env.SSD_GUARDIAN_TEMP_CACHE_MIN_AGE_SECONDS, DEFAULT_TEMP_CACHE_MIN_AGE_SECONDS);
+  const errors: string[] = [];
+  let beforeFreeBytes: number | null = null;
+  try { beforeFreeBytes = capacity(); } catch (error) { errors.push(String(error)); }
+  const root = process.env.SSD_GUARDIAN_TEMP_ROOT ?? macOSUserTemporaryRoot();
+  let candidates: TemporaryCacheCandidate[] = [];
+  try { if (beforeFreeBytes !== null && beforeFreeBytes < freeFloorBytes) candidates = temporaryGoCaches(root, age, Date.now()); }
+  catch (error) { errors.push(String(error)); }
+  const temporaryCacheActions: TemporaryCacheAction[] = candidates.map((candidate) => ({ ...candidate, status: "deferred", reason: DEFER_REASON }));
+  const lsof = run(["lsof", "+L1", "-F", "pcfsn"], 30_000);
+  if (!lsof.ok) errors.push("deleted-open-file inventory incomplete");
+  const giantFiles = parseDeletedOpenFiles(lsof.stdout).filter((file) => file.sizeBytes >= giantThresholdBytes);
+  let afterFreeBytes: number | null = null;
+  try { afterFreeBytes = capacity(); } catch (error) { errors.push(String(error)); }
+  const belowFloor = afterFreeBytes !== null && afterFreeBytes < freeFloorBytes;
+  emit("pressure", { schema_version: "compound.ssd-guardian.pressure.v2", generated_at: new Date().toISOString(),
+    mode: args.apply ? "apply" : "dry_run", beforeFreeBytes, afterFreeBytes,
+    reclaimedBytes: 0, observedFreeChangeBytes: afterFreeBytes === null || beforeFreeBytes === null ? null : afterFreeBytes - beforeFreeBytes,
+    freeChangeAttribution: "concurrent volume change; guardian performed no reclaim",
+    thresholds: { freeFloorBytes, giantThresholdBytes, temporaryCacheMinimumAgeSeconds: age },
+    temporaryCacheCandidates: candidates, temporaryCacheActions,
+    giantDeletedFiles: giantFiles.slice(0, 20).map((file) => ({ pid: file.pid, command: file.command, fd: file.fd, sizeBytes: file.sizeBytes, name: basename(file.path) })),
+    decision: { action: belowFloor ? "report_only" : "none", reasons: belowFloor ? ["free_space_below_floor", DEFER_REASON] : ["free_space_healthy"] },
+    actions: [], model_unload: "deferred", errors,
+  }, args.apply, errors.length > 0 || belowFloor, candidates.length > 0);
 }
-
-if (import.meta.main) {
-  await main();
-}
+if (import.meta.main) await main();
