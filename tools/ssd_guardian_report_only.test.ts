@@ -95,7 +95,7 @@ for (const error of ["ENOSPC", "EACCES", "EEXIST"]) test(`report publication fai
 }));
 test("pressure capacity failure preserves report with unknown size", () => owned((root) => {
   const { status,report } = run(root,"disk_pressure_guard.ts",["--apply"],{df_error:true});
-  expect(status).toBe(2); expect(report.beforeFreeBytes).toBeNull(); expect(report.afterFreeBytes).toBeNull(); expect(report.errors).not.toHaveLength(0);
+  expect(status).toBe(2); expect(report.beforeFreeBytes).toBeNull(); expect(report.afterFreeBytes).toBeNull(); expect(report.errors).not.toHaveLength(0); expect(report.decision.action).toBe("report_only"); expect(report.decision.reasons).toContain("capacity_unknown"); expect(report.decision.reasons).not.toContain("free_space_healthy");
 }));
 test("empty successful sweep measurement is unavailable", () => owned((root) => {
   const { status,report } = run(root,"sweep_build_caches.ts",["--apply"],{empty_measure:true});

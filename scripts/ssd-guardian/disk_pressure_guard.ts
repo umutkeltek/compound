@@ -290,7 +290,7 @@ async function main(): Promise<void> {
     thresholds: { freeFloorBytes, giantThresholdBytes, temporaryCacheMinimumAgeSeconds: age },
     temporaryCacheCandidates: candidates, temporaryCacheActions,
     giantDeletedFiles: giantFiles.slice(0, 20).map((file) => ({ pid: file.pid, command: file.command, fd: file.fd, sizeBytes: file.sizeBytes, name: basename(file.path) })),
-    decision: { action: belowFloor ? "report_only" : "none", reasons: belowFloor ? ["free_space_below_floor", DEFER_REASON] : ["free_space_healthy"] },
+    decision: { action: afterFreeBytes === null || belowFloor ? "report_only" : "none", reasons: afterFreeBytes === null ? ["capacity_unknown", DEFER_REASON] : belowFloor ? ["free_space_below_floor", DEFER_REASON] : ["free_space_healthy"] },
     actions: [], model_unload: "deferred", errors,
   }, args.apply, errors.length > 0 || belowFloor, candidates.length > 0);
 }
