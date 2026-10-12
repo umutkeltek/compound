@@ -3,6 +3,8 @@ package main
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"os"
@@ -199,4 +201,28 @@ func runStreamedHomeCLI(t *testing.T, bin, homePath string, success bool, args .
 		}
 	}
 	return string(out)
+}
+
+func TestHomeVerifyJSONReturnsNativeArchiveChecksum(t *testing.T) {
+	t.Parallel()
+	bin := compoundTestBinary(t)
+	source := t.TempDir()
+	if err := home.Init(source, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "native-checksum.tar.gz")
+	runStreamedHomeCLI(t, bin, source, true, "home", "backup", "--format", "streamed-v3", "--target", archive)
+	output := runStreamedHomeCLI(t, bin, source, true, "home", "verify", archive, "--json")
+	var report home.VerifyReport
+	if err := json.Unmarshal([]byte(output), &report); err != nil {
+		t.Fatalf("native verifier did not serve JSON: %s %v", output, err)
+	}
+	body, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(body)
+	if !report.OK || report.ArchiveSHA256 != hex.EncodeToString(digest[:]) {
+		t.Fatalf("native verifier checksum mismatch: %+v", report)
+	}
 }

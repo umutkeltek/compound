@@ -13,9 +13,10 @@ import (
 )
 
 const (
-	ArchiveFormatStreamedV3 = "streamed-v3"
-	ArchiveStreamSchemaV3   = "compound.home_archive.v0.3"
-	archiveStreamMaxLinks   = 4096
+	ArchiveFormatStreamedV3              = "streamed-v3"
+	ArchiveFormatStreamedV3EventSnapshot = "streamed-v3-event-snapshot"
+	ArchiveStreamSchemaV3                = "compound.home_archive.v0.3"
+	archiveStreamMaxLinks                = 4096
 )
 
 // Links are bounded, checksum-bound index records, never tar link headers.

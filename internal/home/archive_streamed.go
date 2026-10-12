@@ -203,6 +203,16 @@ func backupStreamed(homePath, targetPath string, now time.Time) (ArchiveReport, 
 }
 
 func backupStreamedVersion(homePath, targetPath string, now time.Time, schema string) (ArchiveReport, error) {
+	return backupStreamedVersionOptions(homePath, targetPath, now, schema, false)
+}
+
+func backupStreamedVersionOptions(homePath, targetPath string, now time.Time, schema string, snapshotEvents bool) (ArchiveReport, error) {
+	if snapshotEvents {
+		if err := requireArchiveEventSnapshotSupport(); err != nil {
+			return ArchiveReport{}, err
+		}
+	}
+
 	homePath, targetPath, err := normalizeArchiveInputs(homePath, targetPath, ArchiveKindBackup, now)
 	if err != nil {
 		return ArchiveReport{}, err
@@ -213,7 +223,7 @@ func backupStreamedVersion(homePath, targetPath string, now time.Time, schema st
 			return err
 		}
 		var writeErr error
-		report, writeErr = writeStreamedHomeArchiveVersion(homePath, targetPath, now, schema)
+		report, writeErr = writeStreamedHomeArchiveOptions(homePath, targetPath, now, schema, snapshotEvents)
 		return writeErr
 	})
 	if err != nil {
@@ -223,6 +233,11 @@ func backupStreamedVersion(homePath, targetPath string, now time.Time, schema st
 }
 
 func writeStreamedHomeArchiveVersion(homePath, targetPath string, now time.Time, schema string) (ArchiveReport, error) {
+	return writeStreamedHomeArchiveOptions(homePath, targetPath, now, schema, false)
+}
+
+func writeStreamedHomeArchiveOptions(homePath, targetPath string, now time.Time, schema string, snapshotEvents bool) (ArchiveReport, error) {
+
 	if schema == ArchiveStreamSchemaV3 {
 		if err := validateArchiveLinkSourceHome(homePath); err != nil {
 			return ArchiveReport{}, err
@@ -324,9 +339,15 @@ func writeStreamedHomeArchiveVersion(homePath, targetPath string, now time.Time,
 		if err := chunks.reserve(rel, info.Size()); err != nil {
 			return err
 		}
-		entry, err := writeRootedArchiveFile(tw, root, rel, info)
-		if err != nil {
-			return err
+		var entry ArchiveEntry
+		var entryErr error
+		if snapshotEvents && strings.HasPrefix(rel, "events/") {
+			entry, entryErr = writeRootedArchiveEventSnapshot(tw, root, rel, info)
+		} else {
+			entry, entryErr = writeRootedArchiveFile(tw, root, rel, info)
+		}
+		if entryErr != nil {
+			return entryErr
 		}
 		files++
 		bytesWritten += entry.Size
@@ -654,7 +675,11 @@ func walkRestoreCleanupBatched(root *os.Root, dir string, visit func(string, fs.
 	return visit(dir, after)
 }
 
-func writeRootedArchiveFile(tw archiveEntryWriter, root *os.Root, rel string, before fs.FileInfo) (entry ArchiveEntry, resultErr error) {
+func writeRootedArchiveFile(tw archiveEntryWriter, root *os.Root, rel string, before fs.FileInfo) (ArchiveEntry, error) {
+	return writeRootedArchiveFileAt(tw, root, rel, rel, before, nil)
+}
+
+func writeRootedArchiveFileAt(tw archiveEntryWriter, root *os.Root, sourceRel, rel string, before fs.FileInfo, metadataOverride fs.FileInfo) (entry ArchiveEntry, resultErr error) {
 	defer func() {
 		if resultErr != nil {
 			resultErr = fmt.Errorf("archive entry %q: %w", rel, resultErr)
@@ -663,7 +688,7 @@ func writeRootedArchiveFile(tw archiveEntryWriter, root *os.Root, rel string, be
 	if !before.Mode().IsRegular() {
 		return ArchiveEntry{}, fmt.Errorf("source must be regular")
 	}
-	f, err := root.Open(filepath.FromSlash(rel))
+	f, err := root.Open(filepath.FromSlash(sourceRel))
 	if err != nil {
 		return ArchiveEntry{}, err
 	}
@@ -675,7 +700,11 @@ func writeRootedArchiveFile(tw archiveEntryWriter, root *os.Root, rel string, be
 	if !opened.Mode().IsRegular() || !os.SameFile(before, opened) || before.Size() != opened.Size() {
 		return ArchiveEntry{}, fmt.Errorf("source identity changed before copying")
 	}
-	hdr, err := tar.FileInfoHeader(opened, "")
+	headerInfo := opened
+	if metadataOverride != nil {
+		headerInfo = metadataOverride
+	}
+	hdr, err := tar.FileInfoHeader(headerInfo, "")
 	if err != nil {
 		return ArchiveEntry{}, err
 	}
@@ -691,7 +720,7 @@ func writeRootedArchiveFile(tw archiveEntryWriter, root *os.Root, rel string, be
 	if n != opened.Size() {
 		return ArchiveEntry{}, fmt.Errorf("source size changed while copying (expected %d, read %d): %w", opened.Size(), n, io.ErrUnexpectedEOF)
 	}
-	after, err := root.Lstat(filepath.FromSlash(rel))
+	after, err := root.Lstat(filepath.FromSlash(sourceRel))
 	if err != nil {
 		return ArchiveEntry{}, err
 	}

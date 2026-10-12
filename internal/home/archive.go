@@ -104,11 +104,12 @@ type ArchiveReport struct {
 }
 
 type VerifyReport struct {
-	Kind        string
-	ArchivePath string
-	Files       int
-	Bytes       int64
-	OK          bool
+	ArchiveSHA256 string
+	Kind          string
+	ArchivePath   string
+	Files         int
+	Bytes         int64
+	OK            bool
 }
 
 type RestoreReport struct {
@@ -263,6 +264,8 @@ func BackupWithFormat(homePath, targetPath, format string, now time.Time) (Archi
 		return backupStreamed(homePath, targetPath, now)
 	case ArchiveFormatStreamedV3:
 		return backupStreamedVersion(homePath, targetPath, now, ArchiveStreamSchemaV3)
+	case ArchiveFormatStreamedV3EventSnapshot:
+		return backupStreamedVersionOptions(homePath, targetPath, now, ArchiveStreamSchemaV3, true)
 	default:
 		return ArchiveReport{}, fmt.Errorf("unsupported home archive format %q", format)
 	}
@@ -383,21 +386,35 @@ func VerifyArchive(archivePath string) (VerifyReport, error) {
 	if err != nil {
 		return VerifyReport{}, err
 	}
-	streamed, probeErr := probeStreamedArchive(f)
-	if probeErr != nil {
-		_ = f.Close()
-		return VerifyReport{}, probeErr
-	}
-	if streamed {
-		report, readErr := readStreamedArchive(archivePath, f, nil, nil, nil)
-		return report, errors.Join(readErr, f.Close())
-	}
-	manifest, actual, err := readOpenedArchiveWithLimits(archivePath, f, nil, defaultArchiveReadLimits, nil)
+	before, err := f.Stat()
 	if err != nil {
 		return VerifyReport{}, errors.Join(err, f.Close())
 	}
-	report, verifyErr := verifyArchiveManifest(archivePath, manifest, actual)
-	return report, errors.Join(verifyErr, f.Close())
+	streamed, probeErr := probeStreamedArchive(f)
+	if probeErr != nil {
+		return VerifyReport{}, errors.Join(probeErr, f.Close())
+	}
+	var report VerifyReport
+	var readErr error
+	if streamed {
+		report, readErr = readStreamedArchive(archivePath, f, nil, nil, nil)
+	} else {
+		var manifest ArchiveManifest
+		var actual map[string]ArchiveEntry
+		manifest, actual, readErr = readOpenedArchiveWithLimits(archivePath, f, nil, defaultArchiveReadLimits, nil)
+		if readErr == nil {
+			report, readErr = verifyArchiveManifest(archivePath, manifest, actual)
+		}
+	}
+	if readErr == nil {
+		report.ArchiveSHA256, readErr = verifiedArchiveSourceSHA256(f, before, archivePath)
+	}
+	resultErr := errors.Join(readErr, f.Close())
+	if resultErr != nil {
+		report.OK = false
+		report.ArchiveSHA256 = ""
+	}
+	return report, resultErr
 }
 
 func verifyArchiveManifest(archivePath string, manifest ArchiveManifest, actual map[string]ArchiveEntry) (VerifyReport, error) {

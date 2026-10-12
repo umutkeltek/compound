@@ -85,6 +85,22 @@ legacy-only read publishes canonical schema and authority without deleting the b
 family a reversible migration path and a visible `degraded` doctor state until the bridge is independently proven
 unnecessary.
 
+The opt-in streamed-v3-event-snapshot backup profile captures event files through
+immutable native clones inside the owned temporary root. Live appends continue
+on the original bodies. Each clone seals one file's observed bytes, and the
+export still rejects source path replacement and snapshot drift. Other source
+families and existing backup profiles retain their strict copy checks. This is
+a collection of per-file observations, not a global transactional snapshot.
+The clone is private, short-lived, and removed only by its backup invocation.
+Unsupported clone support fails closed; it never falls back to an unstable read.
+
+Native archive verification also hashes the exact compressed source through the
+same verified file descriptor. A checksum is returned only after file identity,
+size, modification time, and path are rechecked. The checksum names the actual
+archive bytes; it is not a substitute for member or restore verification.
+Scheduled transfer consumers can use this owner-produced checksum without
+launching a separate interpreter to reopen a protected archive.
+
 ## 3. Information placement grammar
 
 | Information encountered | Physical body | Meaning owner | User-facing form |
