@@ -1,6 +1,7 @@
 package main
 
 import (
+	"compound/internal/authority/gitrepository"
 	"compound/internal/home"
 	"compound/internal/work"
 	"encoding/json"
@@ -413,24 +414,33 @@ func cmdProofCheckTimings(args []string) {
 		}
 	}
 	stats := proofCheckTimingStats(store, profileKind, repo, proofCheckTimingsWindow(args))
+	resources, resourceWarning := proofCheckResourceTimings(homePath, args, profileKind)
+	if resourceWarning != "" {
+		warning = strings.TrimSpace(warning + " " + resourceWarning)
+	}
 
 	if hasFlag(args, "--json") {
 		printJSON(struct {
-			SchemaVersion string                 `json:"schema_version"`
-			ProfileKind   string                 `json:"profile_kind,omitempty"`
-			Repo          string                 `json:"repo,omitempty"`
-			Runs          int                    `json:"runs"`
-			Warning       string                 `json:"warning,omitempty"`
-			Gates         []proofCheckTimingStat `json:"gates"`
-		}{proofCheckTimingsSchemaVersion, profileKind, repo, len(store.Runs), warning, stats})
+			SchemaVersion string                     `json:"schema_version"`
+			ProfileKind   string                     `json:"profile_kind,omitempty"`
+			Repo          string                     `json:"repo,omitempty"`
+			Runs          int                        `json:"runs"`
+			Warning       string                     `json:"warning,omitempty"`
+			Gates         []proofCheckTimingStat     `json:"gates"`
+			Resources     []work.ProofResourceTiming `json:"resources"`
+		}{proofCheckTimingsSchemaVersion, profileKind, repo, len(store.Runs), warning, stats, resources})
 		return
 	}
 
 	if warning != "" {
 		fmt.Println("warning:", warning)
 	}
+	for _, sample := range resources {
+		fmt.Printf("resource %s admission=%s queue-wait=%s observed-reserved=%s\n",
+			sample.ReservationID, formatOptionalMS(sample.AdmissionMS), formatOptionalMS(sample.QueueWaitMS), formatOptionalMS(sample.ObservedReservedMS))
+	}
 	if len(stats) == 0 {
-		fmt.Println("proof-check timings: no recorded runs yet for this lane; run the battery once.")
+		fmt.Println("proof-check timings: no recorded gate runs yet for this lane; run the battery once.")
 		return
 	}
 	fmt.Printf("proof-check timings (%d runs recorded, lane %q)\n", len(store.Runs), laneLabel(profileKind))
@@ -479,4 +489,34 @@ func formatMS(ms int64) string {
 		return fmt.Sprintf("%.1fs", float64(ms)/1000)
 	}
 	return fmt.Sprintf("%dms", ms)
+}
+
+func proofCheckResourceTimings(homePath string, args []string, profile string) ([]work.ProofResourceTiming, string) {
+	if profile != work.ProofResourceProfileCanonicalFull {
+		return nil, ""
+	}
+	fingerprint := ""
+	if !hasFlag(args, "--all-repos") {
+		repo, err := resolveProofCheckRepo(flagValue(args, "--repo"))
+		if err != nil {
+			return nil, "resource timing repository unresolved: " + err.Error()
+		}
+		identity, err := gitrepository.ReadIdentity(repo, "HEAD")
+		if err != nil {
+			return nil, "resource timing identity unavailable: " + err.Error()
+		}
+		fingerprint = identity.Fingerprint
+	}
+	samples, err := work.ReadProofResourceTimings(homePath, fingerprint, proofCheckTimingsWindow(args))
+	if err != nil {
+		return nil, "resource timings unavailable: " + err.Error()
+	}
+	return samples, ""
+}
+
+func formatOptionalMS(ms *int64) string {
+	if ms == nil {
+		return "unobserved"
+	}
+	return formatMS(*ms)
 }

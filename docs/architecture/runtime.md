@@ -1012,3 +1012,25 @@ cool a claim. Actual skill tool calls and explicit `--used` declarations remain 
 An injected ref contributes negative evidence only when `skills.explicit_non_use` names that
 exact ref and `skills.non_use_evidence` cites provenance. Historical `used_declared` receipts
 are preserved as recorded; their missing refs do not imply non-use.
+
+### Proof contention observations
+
+The work owner records a bounded advisory history at
+`work/proof-resource-timings.json`; `proof-check --timings` consumes it alongside
+the existing per-gate distribution. Admission time includes lifecycle preparation
+and waiting. Queue wait counts time in the lease wait loop, separately from time
+waiting for the lifecycle admission lock. Only successfully admitted runs enter
+this history; cancellations and timed-out waiters are not sampled.
+
+The observed reserved interval begins when admission returns successfully and ends
+after the lease confirms release. It includes finalization and retained-completion
+recovery delay, excludes reservation preparation, and is not an exact lock-hold
+measurement. Missing admission or release observations stay unknown. Recovery
+updates the same reservation row without extending an already recorded interval.
+Repository filtering uses the sealed source fingerprint, so worktrees of one
+repository share observations. The reader creates no state.
+
+This history stays outside the sealed report and verification chain. Writes use
+a separate nonblocking telemetry lock; failure reports a warning and preserves the
+actual admission, gate verdict, and release outcome. The observations do not change
+proof or landing exclusivity, cache acceptance, or scheduling.

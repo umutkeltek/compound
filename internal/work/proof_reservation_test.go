@@ -2988,12 +2988,20 @@ func TestProofResourceCommittedVerificationReturnsReleasePendingUntilRecovered(t
 		t.Fatalf("release failure did not retain exact holder: %+v", status)
 	}
 
+	samples, timingErr := ReadProofResourceTimings(s.home, "", 20)
+	if timingErr != nil || len(samples) != 1 || samples[0].ObservedReservedMS != nil || samples[0].ReleasedAt != "" {
+		t.Fatalf("retained holder must not report release timing: %+v, %v", samples, timingErr)
+	}
 	recovered, err := s.CompleteProofResource(w.ID, input, fixedNow.Add(5*time.Second))
 	if err != nil {
 		t.Fatalf("exact completion retry did not release retained holder: %v", err)
 	}
 	if !recovered.ResourceReleased || recovered.RecoveryJournalRetained {
 		t.Fatalf("release recovery = %+v, want released and journal cleared", recovered)
+	}
+	samples, timingErr = ReadProofResourceTimings(s.home, "", 20)
+	if timingErr != nil || len(samples) != 1 || samples[0].ObservedReservedMS == nil || samples[0].ReleasedAt == "" {
+		t.Fatalf("recovered release must complete the same timing row: %+v, %v", samples, timingErr)
 	}
 	pendingPath, err := s.proofResourceCompletionPendingPath(acquired.Reservation.ID)
 	if err != nil {

@@ -46,8 +46,13 @@ func (s *Store) ReserveProofResourceWhenFree(
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if clk == nil {
+		return ProofResourceReserveResult{}, fmt.Errorf("proof resource wait requires a clock")
+	}
 	in.busyWhenHeld = true
-	deadline := clk.Now().Add(wait)
+	started := clk.Now()
+	var waiting time.Duration
+	deadline := started.Add(wait)
 	announced := ""
 	for {
 		status, err := landlease.StatusReadOnly(s.home, clk.Now())
@@ -55,9 +60,11 @@ func (s *Store) ReserveProofResourceWhenFree(
 			announced = status.Holder
 			fmt.Fprintf(progress, "proof resource busy: waiting for %s (lease expires %s)\n", status.Holder, status.ExpiresAt)
 		}
+		waitStarted := clk.Now()
 		if _, err := landlease.WaitUntilFree(ctx, s.home, clk, deadline.Sub(clk.Now()), proofResourceWaitPoll); err != nil {
 			return ProofResourceReserveResult{}, fmt.Errorf("proof resource wait: %w", err)
 		}
+		waiting += clk.Now().Sub(waitStarted)
 		result, err := s.ReserveProofResource(workID, in, clk.Now())
 		var busy *proofResourceBusyError
 		if errors.As(err, &busy) {
@@ -66,6 +73,9 @@ func (s *Store) ReserveProofResourceWhenFree(
 		var held *ProofResourceHeldError
 		if errors.As(err, &held) && clk.Now().Before(deadline) {
 			continue
+		}
+		if err == nil {
+			s.observeProofQueue(result.Reservation.ID, clk.Now().Sub(started), waiting)
 		}
 		return result, err
 	}

@@ -69,6 +69,10 @@ func TestReserveProofResourceWhenFreeQueuesInsteadOfAbandoningAnAttempt(t *testi
 	if added := runAttemptCount(t, s, w.ID) - before; added != 1 {
 		t.Fatalf("reserve added %d run attempts, want only the acquired one", added)
 	}
+	samples, timingErr := ReadProofResourceTimings(s.home, "", 20)
+	if timingErr != nil || len(samples) != 1 || samples[0].QueueWaitMS == nil || *samples[0].QueueWaitMS <= 0 || samples[0].AdmissionMS == nil || *samples[0].AdmissionMS < *samples[0].QueueWaitMS {
+		t.Fatalf("queued admission timings = %+v, error %v", samples, timingErr)
+	}
 	if !strings.Contains(progress.String(), queuedProofOtherHolder) {
 		t.Fatalf("progress %q does not name the holder it waited on", progress.String())
 	}

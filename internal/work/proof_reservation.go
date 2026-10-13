@@ -568,9 +568,15 @@ type ownedProofReport struct {
 
 // ReserveProofResource evaluates and persists one ActionIntent/PolicyDecision around acquisition
 // of the existing landlease mutex. A competing holder is refused before this function returns.
-func (s *Store) ReserveProofResource(workID string, in ProofResourceReserveInput, now time.Time) (ProofResourceReserveResult, error) {
-	var result ProofResourceReserveResult
-	err := s.withLifecycleMutation(func() error {
+func (s *Store) ReserveProofResource(workID string, in ProofResourceReserveInput, now time.Time) (result ProofResourceReserveResult, err error) {
+	observedStart := time.Now() // observation only; authority continues to use injected now
+	defer func() {
+		if err == nil {
+			observedAt := time.Now()
+			s.observeProofAdmission(result.Reservation, observedAt.Sub(observedStart), observedAt, in.busyWhenHeld)
+		}
+	}()
+	err = s.withLifecycleMutation(func() error {
 		var err error
 		result, err = s.reserveProofResourceLocked(strings.TrimSpace(workID), in, now)
 		return err
@@ -2129,6 +2135,9 @@ func (s *Store) completeProofResourceLocked(workID string, in ProofResourceCompl
 			Holder:        reservation.Holder,
 			Cause:         releaseErr,
 		}
+	}
+	if released.Freed {
+		s.observeProofRelease(reservation.ID, time.Now())
 	}
 	cleanupErr := s.clearProofResourceCompletionPending(pendingPath, pending)
 	finalResult := pending.Result
