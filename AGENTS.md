@@ -187,7 +187,7 @@ compound **observes** executions; it does not become one. The rail is proven by 
   double-executed by a concurrent lane. Claim the item (`work claim`) and a NARROW scope (packages/files you will
   touch) before touching anything; do not parallel-edit the same `internal/` package as a live lane.
 - **Landing goes through the land-lease ceremony.** `compound land-lease` is a single-holder, TTL-bounded,
-  steal-with-reason advisory mutex over the ACT of landing to main; the full ceremony (rehearse → battery →
+  steal-with-reason advisory mutex over the ACT of landing to main; after explicit resource cutover it is keyed by the WorkEnvelope repository/ref and independent of canonical proof capacity. Scoped CLI mutations require --work and --actor; the full ceremony (rehearse → battery →
   `--ff-only` under a fresh main-SHA guard → `land-check` → close) is owned by `compound-land`. The SHA guard is
   the correctness check; the lease only serializes the window.
  - **Main-checkout hygiene:** the MAIN checkout stays on `main` and clean; WIP lives in worktrees/branches — uncommitted

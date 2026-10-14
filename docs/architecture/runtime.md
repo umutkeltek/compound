@@ -1034,3 +1034,44 @@ This history stays outside the sealed report and verification chain. Writes use
 a separate nonblocking telemetry lock; failure reports a warning and preserves the
 actual admission, gate verdict, and release outcome. The observations do not change
 proof or landing exclusivity, cache acceptance, or scheduling.
+
+### Scoped proof and landing resources
+
+Git remains the source-control authority. A governed cutover separates one canonical
+proof-capacity lease from landing leases keyed by the WorkEnvelope's validated
+repository fingerprint and canonical target ref. Linked worktrees share a landing
+slot; different repositories or refs can land independently. Proof capacity remains
+one per shared backing root, including across homes that bind that same root.
+Gate subprocesses retain the inherited kernel execution barrier. TTL expiry does
+not authorize overlap with surviving descendants.
+
+`landlease.Resource` selects the legacy or scoped layout on every operation.
+Before cutover, the existing single lease still applies. The migration publishes
+an object-valued holder at the old lease path only after rejecting every legacy
+lease record (even expired), held execution barrier, pending proof completion or
+recovery journal, active proof RunAttempt, and unresolved reservation. Old binaries
+cannot decode that marker as a Lease, so they refuse instead of acquiring a second
+coordination domain. Selection holds the old layout flock briefly; scoped lease
+transactions hold only their own resource lock. Finalizers must not recursively
+invoke methods on that same resource.
+
+`compound land-lease migrate --work W --actor A --operator operator:ID
+--evidence REF --writers-paused --expires RFC3339 [--backing-home P]` requires a
+current, at-most-five-minute all-writer pause with real operator provenance.
+Upgrade and quiesce every participating writer/home first; mixed old/new clients
+are unsupported. The shared root is owned at `work/resource-leases` under the
+chosen backing home, not a cwd or arbitrary cache. An unmigrated external home is
+outside this fence. Cutover is explicit; opening a new binary never migrates state.
+
+After cutover, landing mutations require `--work` and `--actor`. Work validates
+the current work lease, delivery binding, and policy before changing the resource.
+The holder includes the exact work ID as a colon-delimited component. `status
+--work W` selects that landing slot, while `status --proof` reports proof capacity.
+The fresh-main-SHA guard, exact candidate proof, and post-land proof remain required:
+a landing can now advance main while another candidate is being tested.
+
+The RunAttempt census remains a complete fresh read. Prepared reverse-only intents
+can exist without a per-work frame, so an absent frame or stale index cannot prove
+that a work item has no pending terminalization. Optimization must retain complete
+validation and corruption reporting; a new index is justified only by measured
+consumer cost and an explicit writer cutover.

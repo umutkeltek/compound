@@ -235,23 +235,63 @@ func (p *DefaultSweepStaleProbe) LiveDelegate(workID string) (bool, error) {
 	return st.Exists && !st.PaneDead, nil
 }
 
-// LeaseHeld asks the land-lease module whether the currently-held lease names
-// workID. The Holder field format is "proof:<lane>:<ratt>:<scope>:<id>"; the
-// fifth colon-delimited component is the work_id. (Same parsing the
-// run-attempt sweep uses in buildDelegateLivenessProbe.)
+// LeaseHeld checks both proof capacity and the work's authoritative landing
+// slot. A held lease is liveness evidence even when no delegate is visible.
 func (p *DefaultSweepStaleProbe) LeaseHeld(workID string) (bool, error) {
-	status, err := landlease.StatusReadOnly(p.Home, p.Now())
+	status, err := landlease.ProofResource(p.Home).StatusReadOnly(p.Now())
 	if err != nil {
-		return false, fmt.Errorf("sweep-stale probe: land-lease status: %w", err)
+		return false, fmt.Errorf("sweep-stale proof resource: %w", err)
 	}
-	if !status.Held {
+	if status.Held {
+		_, _, heldWork, ok := parseProofResourceHolder(status.Holder)
+		if ok && heldWork == workID {
+			return true, nil
+		}
+		// Legacy landing holders encode work_id as a complete component.
+		if holderNamesWork(status.Holder, workID) {
+			return true, nil
+		}
+	}
+	layout, err := landlease.LayoutStatus(p.Home)
+	if err != nil {
+		return false, err
+	}
+	if layout.Mode != "scoped" {
 		return false, nil
 	}
-	parts := strings.SplitN(status.Holder, ":", 5)
-	if len(parts) != 5 {
+	store, err := OpenReadOnly(p.Home)
+	if err != nil {
+		return false, err
+	}
+	w, err := store.Get(workID)
+	if err != nil {
+		return false, err
+	}
+	if w.GitDelivery == nil {
 		return false, nil
 	}
-	return parts[4] == workID, nil
+	key, err := store.LandingResourceKey(workID)
+	if err != nil {
+		return false, err
+	}
+	resource, err := landlease.OpenResource(p.Home, key)
+	if err != nil {
+		return false, err
+	}
+	status, err = resource.StatusReadOnly(p.Now())
+	if err != nil {
+		return false, err
+	}
+	return status.Held && holderNamesWork(status.Holder, workID), nil
+}
+
+func holderNamesWork(holder, workID string) bool {
+	for _, part := range strings.Split(holder, ":") {
+		if part == workID {
+			return true
+		}
+	}
+	return false
 }
 
 // SweepStalePlan diagnoses every reclaim candidate and returns the operator-

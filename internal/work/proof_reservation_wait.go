@@ -55,13 +55,13 @@ func (s *Store) ReserveProofResourceWhenFree(
 	deadline := started.Add(wait)
 	announced := ""
 	for {
-		status, err := landlease.StatusReadOnly(s.home, clk.Now())
+		status, err := landlease.ProofResource(s.home).StatusReadOnly(clk.Now())
 		if err == nil && status.Held && status.Holder != announced && progress != nil {
 			announced = status.Holder
 			fmt.Fprintf(progress, "proof resource busy: waiting for %s (lease expires %s)\n", status.Holder, status.ExpiresAt)
 		}
 		waitStarted := clk.Now()
-		if _, err := landlease.WaitUntilFree(ctx, s.home, clk, deadline.Sub(clk.Now()), proofResourceWaitPoll); err != nil {
+		if _, err := landlease.ProofResource(s.home).WaitUntilFree(ctx, clk, deadline.Sub(clk.Now()), proofResourceWaitPoll); err != nil {
 			return ProofResourceReserveResult{}, fmt.Errorf("proof resource wait: %w", err)
 		}
 		waiting += clk.Now().Sub(waitStarted)

@@ -19,7 +19,7 @@ This skill replaces re-deriving the "standing session rules" from
 - Check for a live concurrent lane: `git status --short` in the MAIN worktree (uncommitted work
   that isn't yours = a lane mid-ceremony — coordinate, do not land on top of it), plus the
   private worklog tail referenced from `docs_private/plan/HANDOFF.md` when present.
-- Check the land-lease: `compound land-lease status --json` — read `holder`, `held`, `is_expired`,
+- Check the land-lease: `compound land-lease status --work <work_id> --json` — read `holder`, `held`, `is_expired`,
   and (if present) `prior_holder`/`steal_reason` before starting. `free` (no holder) means clear to
   proceed to §3's acquire; `held by <holder>` means another lane is mid-ceremony — coordinate, or
   let §3's `--wait` block for it; a holder with no matching live lane and a stale/expired lease is
@@ -32,7 +32,7 @@ This skill replaces re-deriving the "standing session rules" from
   `git rev-list --left-right --count main...<sha>` in the holder's worktree. A holder whose SHA is
   a real tip **ahead of main** is a live lane in its guard+merge window — queue on `--wait`, do NOT
   steal. A `proof:pfr_*:ratt_*:<work_id>:<actor>` holder is a LIVE certifying battery holding the
-  resource for its gate run (§1) — queue for that too; if its run is provably dead, the takeover
+  proof resource for its gate run (§1). In legacy layout it also blocks landing; scoped layout separates the two. Queue on proof capacity when running another proof; if its run is provably dead, the takeover
   door is proof-check's own `--steal --terminated-run` admission path, not `land-lease steal`.
   Only a holder whose SHA resolves to nothing, or to a commit already contained in main, is the
   stale case. Matching a symptom to a filed defect is a hypothesis; the SHA is the evidence.
@@ -84,14 +84,14 @@ go run ./cmd/compound proof-check --json --base "$PRE_LAND_BASE_SHA" \
 ```
 
 - The actor must already hold the named WorkEnvelope's work lease. Full local proof is a
-  `canonical_full` profile: Compound reserves the existing scarce land-lease resource and binds it
+  `canonical_full` profile: Compound reserves canonical proof capacity (the shared lease before cutover) and binds it
   to that `work_id`, exact `ratt_*`, repo/base, and gate digest before the first subprocess. A
   conflicting run is refused before execution, and that refusal still mints an abandoned
   `ratt_*` that close must acknowledge; add `--wait DURATION` (e.g. `--wait 60m`) to queue
   instead — it waits, writing nothing, until the resource frees, then reserves. Custom `--ttl`
   values below 30s are refused before reservation; accepted values refresh at `min(TTL/3, 5s)`
   and monitor holder loss continuously.
-  Each gate inherits the shared land-lease kernel execution barrier. Lease loss, SIGINT/SIGTERM, or
+  Each gate inherits its proof resource kernel execution barrier. Lease loss, SIGINT/SIGTERM, or
   a governed steal request cancels and waits the whole gate process group; generic landing acquire,
   expiry, and `run-attempt sweep` cannot bypass a live descendant. A first live-steal request may
   refuse while it asks the predecessor to stop; retry the exact command after that audited release.
@@ -269,13 +269,14 @@ git worktree add --detach /tmp/land-rehearsal <your-branch>
 
 Acquire the land-lease AFTER the certifying battery completes green and before touching the real
 main — it serializes the guard+merge window (complementary to, not a replacement for, the
-`MAIN_SHA` guard below, which is the real correctness check). The battery itself must find the
-lease FREE: certifying proof-check reserves the land-lease under its own `proof:` holder for the
-whole gate run (§1), so there is no unserialized gap to cover before it — see the
-poisoned-predecessor bullet below for what a pre-battery generic hold does:
+`MAIN_SHA` guard below, which is the real correctness check). Before resource cutover, the battery must find
+the shared lease free. After cutover, it reserves independent proof capacity and
+other landings can advance main during the battery; always re-read main for the
+fresh-SHA guard. Check `compound land-lease status --proof --json` for proof
+capacity. Scoped landing mutations require their work and actor:
 
 ```bash
-compound land-lease acquire --holder "<harness>:<session>:<work_id>" --wait --timeout 120
+compound land-lease acquire --work <work_id> --actor "<harness>:<lane>" --holder "<harness>:<session>:<work_id>" --wait --timeout 120
 ```
 
 Use a structured holder string — `<harness>:<session>:<work_id>` (e.g.
@@ -285,7 +286,7 @@ be traced back to a lane or reasoned about later if it goes stale. A LIVE compet
 until the lease frees or `--timeout` elapses — either way you are blocked from landing until it
 clears; that block is the point, not a bug to route around. If the printed holder is provably
 stale (its lane is dead/gone), the escape hatch is
-`compound land-lease steal --holder "<harness>:<session>:<work_id>" --reason "<why>"` — a reason is
+`compound land-lease steal --work <work_id> --actor "<harness>:<lane>" --holder "<harness>:<session>:<work_id>" --reason "<why>"` — a reason is
 required and the steal is auditable (`prior_holder`/`steal_reason` show up in the next `status`).
 
 Then land on the real main:
@@ -315,10 +316,10 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   If main moves in between, the guard trips and you loop — the loop is the design.
   When the loop provably cannot converge — a concurrent lane lands FASTER than your battery cycle
   (lived 2026-07-17, rebaseline land: two trips in a row, ~15-min lands vs ~13-min batteries) —
-  remember the battery already IS the hold: certifying proof-check reserves the land-lease for
-  the entire gate run, so the exposed race window is only battery-green → guard+merge. Acquire
-  the lease manually for THAT short window only; lease-respecting lanes queue instead of racing.
-- **Never acquire the land-lease BEFORE a certifying battery — the poisoned-predecessor trap**
+  acquire the target landing lease only for the guard+merge window. Scoped proof
+  capacity does not hold main still. A changed candidate/base needs fresh canonical
+  proof; the lease does not replace the SHA guard.
+- **Legacy layout: never acquire the land-lease BEFORE a certifying battery — the poisoned-predecessor trap**
   (lived 2026-07-28, Jaynes docs land): admission renames a pre-held generic
   `<harness>:<session>:<work_id>` lease into its `proof:` reservation holder and records the
   generic holder as the reservation's predecessor — and the predecessor recovery walk parses only
@@ -389,7 +390,7 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   merge/push succeeds and before the rest of post-land duties, so the next lane's `status`/`acquire`
   sees it free:
   ```bash
-  compound land-lease release --holder "<harness>:<session>:<work_id>"
+  compound land-lease release --work <work_id> --actor "<harness>:<lane>" --holder "<harness>:<session>:<work_id>"
   ```
   A non-holder release is refused (someone else's lease is never dropped by accident), and
   releasing with nothing held is an idempotent no-op — safe to run even if acquire never happened
@@ -471,3 +472,12 @@ new remote still requires explicit confirmation.
   tail's `0`, a MEDIUM-flagged scan read as green, and the push fired; findings were benign
   loopback URLs, but the gate did not gate). Same zsh-no-pipefail trap as the battery (§1).
   Run redact unpiped as its own command, READ the verdict, then push as a separate command.
+
+## Coordination resource cutover
+
+Resource migration is explicit, governed, and requires an actual short all-writer
+pause. See `docs/architecture/runtime.md`, “Scoped proof and landing resources.”
+Install the new binary in every participating home before migration; bind them to
+one shared backing home. Do not assert `--writers-paused` from general task
+authorization. Keep every writer paused until all homes have migrated and scoped
+proof/landing status is verified. Old clients refuse on the permanent legacy fence.
