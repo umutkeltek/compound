@@ -643,6 +643,20 @@ func (s *Store) Get(id string) (RunAttempt, error) {
 }
 
 func (s *Store) getFresh(id string) (RunAttempt, error) {
+	ra, err := s.readFresh(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	s.mu.Lock()
+	s.cache[id] = cloneExecutionPosture(ra)
+	s.mu.Unlock()
+	return ra, nil
+}
+
+// readFresh checks the current main record and rooted launch evidence without
+// retaining a cache copy. List uses it for complete censuses; callers that
+// need the store cache continue through getFresh.
+func (s *Store) readFresh(id string) (RunAttempt, error) {
 	if !Valid(id) {
 		return RunAttempt{}, fmt.Errorf("runattempt get: id %q does not match %s pattern", id, Prefix)
 	}
@@ -667,9 +681,6 @@ func (s *Store) getFresh(id string) (RunAttempt, error) {
 	if err := validateDecodedRunAttempt(ra); err != nil {
 		return RunAttempt{}, fmt.Errorf("runattempt get %s: %w", id, err)
 	}
-	s.mu.Lock()
-	s.cache[id] = cloneExecutionPosture(ra)
-	s.mu.Unlock()
 	return ra, nil
 }
 
@@ -1968,8 +1979,7 @@ func (s *Store) list(skip func(id string) bool) ([]RunAttempt, error) {
 		}
 		return nil, fmt.Errorf("runattempt list: %w", err)
 	}
-	var out []RunAttempt
-	var issues []RunAttemptReadIssue
+	ids := make([]string, 0, len(entries))
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), ".json") {
 			continue
@@ -1981,16 +1991,52 @@ func (s *Store) list(skip func(id string) bool) ([]RunAttempt, error) {
 		if skip != nil && skip(id) {
 			continue
 		}
-		ra, gerr := s.getFresh(id)
-		if gerr != nil {
-			issues = append(issues, RunAttemptReadIssue{ID: id, Cause: gerr})
+		ids = append(ids, id)
+	}
+	// File and sidecar reads are independent. Keep parallelism small so a
+	// census does not overwhelm the home filesystem or unrelated callers.
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	out := make([]RunAttempt, len(ids))
+	readErrors := make([]error, len(ids))
+	const maxReaders = 4
+	readers := min(maxReaders, len(ids))
+	jobs := make(chan int)
+	var workers sync.WaitGroup
+	workers.Add(readers)
+	for range readers {
+		go func() {
+			defer workers.Done()
+			for i := range jobs {
+				out[i], readErrors[i] = s.readFresh(ids[i])
+			}
+		}()
+	}
+	for i := range ids {
+		jobs <- i
+	}
+	close(jobs)
+	workers.Wait()
+	var issues []RunAttemptReadIssue
+	write := 0
+	for i, id := range ids {
+		if readErrors[i] != nil {
+			issues = append(issues, RunAttemptReadIssue{ID: id, Cause: readErrors[i]})
 			continue
 		}
-		if ra.ID != id {
-			issues = append(issues, RunAttemptReadIssue{ID: id, Cause: fmt.Errorf("embedded identity %q contradicts named record %q", ra.ID, id)})
+		if out[i].ID != id {
+			issues = append(issues, RunAttemptReadIssue{ID: id, Cause: fmt.Errorf("embedded identity %q contradicts named record %q", out[i].ID, id)})
 			continue
 		}
-		out = append(out, ra)
+		out[write] = out[i]
+		write++
+	}
+	clear(out[write:])
+	if write == 0 {
+		out = nil
+	} else {
+		out = out[:write]
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
