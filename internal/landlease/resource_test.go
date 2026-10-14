@@ -297,3 +297,37 @@ func TestProofResourceDefersInvalidHomeError(t *testing.T) {
 		t.Fatal("invalid home did not fail on use")
 	}
 }
+
+func TestScopedStealExpectedRejectsStalePredecessor(t *testing.T) {
+	home, backing := t.TempDir(), t.TempDir()
+	key, err := LandingResourceKey(strings.Repeat("d", 64), "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource := migratedResource(t, home, backing, key)
+	if _, err := resource.Acquire(laneBeta, time.Minute, baseNow); err != nil {
+		t.Fatal(err)
+	}
+
+	replaced, err := resource.StealExpected(laneGamma, laneBeta, "first approved takeover", baseNow)
+	if err != nil {
+		t.Fatalf("exact predecessor steal: %v", err)
+	}
+	if replaced.Holder != laneGamma || replaced.PriorHolder != laneBeta {
+		t.Fatalf("unexpected audited transfer: %+v", replaced)
+	}
+	before, err := resource.StatusReadOnly(baseNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resource.StealExpected(laneAlpha, laneBeta, "stale approved takeover", baseNow); err == nil {
+		t.Fatal("stale approval stole from replacement holder")
+	}
+	after, err := resource.StatusReadOnly(baseNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != before || after.Holder != laneGamma || !after.Held {
+		t.Fatalf("stale steal changed replacement lease: before=%+v after=%+v", before, after)
+	}
+}

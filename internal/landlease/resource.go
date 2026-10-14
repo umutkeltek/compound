@@ -351,6 +351,14 @@ func (r *Resource) Steal(newHolder, reason string, now time.Time) (Lease, error)
 	return selectedCall(r, func(root string) (Lease, error) { return Steal(root, newHolder, reason, now) })
 }
 
+// StealExpected binds a governed takeover to the exact predecessor observed
+// before approval; another holder cannot be silently substituted at execution.
+func (r *Resource) StealExpected(newHolder, expectedPriorHolder, reason string, now time.Time) (Lease, error) {
+	return selectedCall(r, func(root string) (Lease, error) {
+		return StealExpected(root, newHolder, expectedPriorHolder, reason, now)
+	})
+}
+
 func (r *Resource) AttestExecutionTerminated(holder string) (ExecutionTerminationAttestation, error) {
 	return selectedCall(r, func(root string) (ExecutionTerminationAttestation, error) {
 		return AttestExecutionTerminated(root, holder)
