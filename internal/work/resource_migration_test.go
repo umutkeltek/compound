@@ -505,3 +505,39 @@ func TestResourceMigrationPreparedWithoutMarkerNeedsFreshApproval(t *testing.T) 
 		t.Fatalf("recovery published marker: %+v %v", layout, err)
 	}
 }
+
+func installBroadResourceGrant(t *testing.T, s *Store) {
+	t.Helper()
+	body := []byte("standing_grants:\n  - id: broad_home_grant\n    capability: coordination.resources\n    mutation_class: security\n    reversibility: irreversible\n    blast_radius: host\n")
+	if err := os.MkdirAll(filepath.Join(s.home, "config"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.home, "config", "policy.yaml"), body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := policy.LoadConfig(s.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := policy.Evaluate(envelope.ActionIntent{Capability: "coordination.resources", MutationClass: "security", Reversibility: "irreversible", BlastRadius: "host"}, cfg, fixedNow)
+	if !policy.Allowed(decision) || decision.StandingGrantID != "broad_home_grant" {
+		t.Fatalf("fixture must exercise broad grant allowance: %+v", decision)
+	}
+}
+
+func TestResourceMigrationRequiresExactApprovalDespiteStandingGrant(t *testing.T) {
+	s := newStore(t)
+	w := claimedProofWork(t, s, "migration broad grant", proofActorAlpha, fixedNow)
+	installBroadResourceGrant(t, s)
+	now := fixedNow.Add(time.Minute)
+	in := ResourceMigrationInput{BackingHome: s.home, Actor: proofActorAlpha, Operator: "operator:fixture", EvidenceRef: "test://pause", WritersPaused: true, ExpiresAt: now.Add(time.Minute)}
+	_, held := s.MigrateCoordinationResources(w.ID, in, now)
+	layout, err := landlease.LayoutStatus(s.home)
+	if err != nil || layout.Mode != "legacy" {
+		t.Fatalf("unapproved cutover: %+v %v", layout, err)
+	}
+	approveResourceAction(t, s, held, now)
+	if _, err := s.MigrateCoordinationResources(w.ID, in, now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+}

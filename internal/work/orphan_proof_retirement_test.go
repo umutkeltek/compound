@@ -405,3 +405,19 @@ func TestOrphanProofRetirementRefusesLiveOriginalHolderAndTamperedPending(t *tes
 		}
 	})
 }
+
+func TestOrphanProofRetirementRequiresExactApprovalDespiteStandingGrant(t *testing.T) {
+	s, input, journal, journalBefore, _ := orphanProofRetirementFixture(t)
+	installBroadResourceGrant(t, s)
+	now := fixedNow.Add(7 * time.Minute)
+	_, held := s.RetireOrphanProofCompletion(input.Plan.RecoveryWorkID, input, now)
+	after, err := os.ReadFile(journal)
+	if err != nil || string(after) != string(journalBefore) {
+		t.Fatalf("journal changed before exact approval: %v", err)
+	}
+	approveResourceAction(t, s, held, now)
+	decision, err := s.RetireOrphanProofCompletion(input.Plan.RecoveryWorkID, input, now.Add(3*time.Second))
+	if err != nil || !decision.FailedResultUncertified {
+		t.Fatalf("approved retirement: %+v %v", decision, err)
+	}
+}

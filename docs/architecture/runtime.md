@@ -1037,6 +1037,10 @@ proof or landing exclusivity, cache acceptance, or scheduling.
 
 ### Scoped proof and landing resources
 
+One-way resource migration and orphan retirement require exact one-use operator approval,
+even when a broad standing grant covers home writes or the actor is an operator. The
+adapter preserves policy denies and binds approval to the full current policy, including grants.
+
 Git remains the source-control authority. A governed cutover separates one canonical
 proof-capacity lease from landing leases keyed by the WorkEnvelope's validated
 repository fingerprint and canonical target ref. Linked worktrees share a landing

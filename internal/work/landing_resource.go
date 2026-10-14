@@ -157,6 +157,16 @@ func (s *Store) authorizeResourceMutationLocked(w envelope.WorkEnvelope, action 
 		return empty, err
 	}
 	decision := policy.Evaluate(action, cfg, now)
+	// These one-way operations require approval of their exact current inputs,
+	// even when a standing grant covers security writes to the whole home.
+	// Keep the original config for approval binding, and never relax a deny.
+	if action.MutationClass == "security" && action.Reversibility == "irreversible" && policy.Allowed(decision) {
+		decision.Outcome = "hold"
+		decision.StandingGrantID = ""
+		decision.ExpiresAt = ""
+		decision.Obligations = nil
+		decision.Reasons = append(decision.Reasons, "one-way coordination mutation requires exact one-use operator approval")
+	}
 	if decision.Outcome == "hold" {
 		decision, _, err = policy.NewExactActionApprovalStore(s.home).ApplyMatchingLocked(action, cfg, decision, now)
 		if err != nil {
