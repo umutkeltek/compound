@@ -2018,6 +2018,13 @@ func (s *Store) list(skip func(id string) bool) ([]RunAttempt, error) {
 	}
 	close(jobs)
 	workers.Wait()
+	// A census must also retire older same-Store snapshots: Get after List
+	// must not resurrect a record that List saw changed or unreadable.
+	s.mu.Lock()
+	for _, id := range ids {
+		delete(s.cache, id)
+	}
+	s.mu.Unlock()
 	var issues []RunAttemptReadIssue
 	write := 0
 	for i, id := range ids {
