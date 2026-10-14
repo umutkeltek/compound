@@ -848,17 +848,17 @@ func Status(home string, now time.Time) (StatusResult, error) {
 	return result, nil
 }
 
-// newLease builds a CLEAN lease record (no steal fields) for holder, timed from now. Timestamps are
-// canonicalized to UTC RFC3339, and ExpiresAt is derived from the same whole-second TTL that is stored,
-// so ttl_seconds and expires_at can never disagree.
+// newLease builds a CLEAN lease record (no steal fields) for holder, timed from now. UTC
+// RFC3339Nano preserves distinct subsecond acquisitions; ExpiresAt uses the same
+// whole-second TTL that is stored, so ttl_seconds and expires_at cannot disagree.
 func newLease(holder string, ttlSecs int64, now time.Time) Lease {
 	nowUTC := now.UTC()
 	return Lease{
 		SchemaVersion: SchemaVersion,
 		Holder:        holder,
-		AcquiredAt:    nowUTC.Format(time.RFC3339),
+		AcquiredAt:    nowUTC.Format(time.RFC3339Nano),
 		TTLSeconds:    ttlSecs,
-		ExpiresAt:     nowUTC.Add(time.Duration(ttlSecs) * time.Second).Format(time.RFC3339),
+		ExpiresAt:     nowUTC.Add(time.Duration(ttlSecs) * time.Second).Format(time.RFC3339Nano),
 	}
 }
 

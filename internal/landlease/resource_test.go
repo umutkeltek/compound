@@ -382,3 +382,43 @@ func TestScopedStealObservedRejectsSameHolderReacquisition(t *testing.T) {
 		t.Fatalf("unexpected audited transfer: %+v", stolen)
 	}
 }
+
+func TestScopedStealObservedRejectsSameSecondReacquisition(t *testing.T) {
+	home, backing := t.TempDir(), t.TempDir()
+	key, err := LandingResourceKey(strings.Repeat("f", 64), "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource := migratedResource(t, home, backing, key)
+	if _, err := resource.Acquire(laneBeta, time.Minute, baseNow); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := resource.StatusReadOnly(baseNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resource.Release(laneBeta, baseNow); err != nil {
+		t.Fatal(err)
+	}
+	reacquiredAt := baseNow.Add(time.Nanosecond)
+	if _, err := resource.Acquire(laneBeta, time.Minute, reacquiredAt); err != nil {
+		t.Fatal(err)
+	}
+	current, err := resource.StatusReadOnly(reacquiredAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale.Holder != current.Holder || stale.AcquiredAt == current.AcquiredAt || stale.ExpiresAt == current.ExpiresAt {
+		t.Fatalf("nanosecond reacquisition must have distinct durable timestamps: stale=%+v current=%+v", stale, current)
+	}
+	if _, err := resource.StealObserved(laneGamma, stale, "stale same-second approval", reacquiredAt); err == nil {
+		t.Fatal("same-second stale snapshot stole replacement lease")
+	}
+	after, err := resource.StatusReadOnly(reacquiredAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != current || !after.Held {
+		t.Fatalf("stale steal changed same-second replacement: before=%+v after=%+v", current, after)
+	}
+}
