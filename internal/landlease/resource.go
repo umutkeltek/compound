@@ -150,7 +150,7 @@ func selectedRootLocked(home string, key ResourceKey) (string, bool, error) {
 		SchemaVersion string `json:"schema_version"`
 	}
 	if err := json.Unmarshal(data, &header); err != nil {
-		return "", false, fmt.Errorf("parse landlease layout: %w", err)
+		return "", false, fmt.Errorf("parse land-lease state %s layout: %w", path, err)
 	}
 	if header.SchemaVersion == layoutSchema {
 		marker, err := strictLayout(data)

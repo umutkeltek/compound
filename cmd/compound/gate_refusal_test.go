@@ -240,8 +240,8 @@ func TestConvertedGateSitesStayConverted(t *testing.T) {
 		{"work_advance_execute.go", "workspace_resolution", "no workspace before any state change"},
 		{"act_cli.go", "service_entity_resolution", "governed infra write at an unknown service"},
 		{"act_cli.go", "policy_decision", "no standing grant allows the outbound write"},
-		{"landlease_cli.go", "land_lease_contention", "a live lease is held by another lane"},
-		{"landlease_cli.go", "land_lease_holder", "release/steal by a non-holder"},
+		{"../../internal/work/landing_resource_cli.go", "land_lease_contention", "a live lease is held by another lane"},
+		{"../../internal/work/landing_resource_cli.go", "land_lease_holder", "release/steal by a non-holder"},
 		{"main.go", "finding_body_bound", "a body larger than the direct-write bound"},
 		{"work_lease_refusal.go", "work_lease_holder", "claim/close against another actor's lease"},
 	}
