@@ -10,6 +10,7 @@ import (
 
 	"compound/internal/home"
 	"compound/internal/landlease"
+	"compound/internal/work"
 )
 
 // cmdLandLease is the operator/orchestrator door onto the land-lease — the single-holder, TTL-bounded,
@@ -25,18 +26,21 @@ func cmdLandLease(args []string) {
 
 func landLeaseUsage() string {
 	return "usage:\n" +
-		"  compound land-lease acquire --holder H [--ttl S] [--wait] [--timeout S] [--home P] [--json]\n" +
+		"  compound land-lease acquire --holder H [--work work_ID --actor A] [--ttl S] [--wait] [--timeout S] [--home P] [--json]\n" +
 		"    take (or refresh) the land-lease for holder H (default ttl 300s). Without --wait, a live lease\n" +
 		"    held by a DIFFERENT holder exits non-zero with the current holder printed; --wait polls until the\n" +
 		"    lease is free or --timeout (default 120s) elapses. A steal never happens here — only `steal` does.\n" +
-		"  compound land-lease release --holder H [--home P] [--json]\n" +
+		"  compound land-lease release --holder H [--work work_ID --actor A] [--home P] [--json]\n" +
 		"    free the lease ONLY if H holds it; a non-holder release is refused (someone else's lease is never\n" +
 		"    dropped), and a release with nothing held is an idempotent no-op\n" +
-		"  compound land-lease status [--home P] [--json]\n" +
+		"  compound land-lease status [--work work_ID|--proof] [--home P] [--json]\n" +
 		"    show the current holder, acquired_at, expires_at, remaining seconds, and is_expired\n" +
-		"  compound land-lease steal --holder H --reason R [--home P] [--json]\n" +
+		"  compound land-lease steal --holder H --reason R [--work work_ID --actor A] [--home P] [--json]\n" +
 		"    transfer the lease to H and RECORD prior_holder + reason + stolen_at (auditable). A reason is\n" +
 		"    REQUIRED — this is the only path that takes over a LIVE lease.\n" +
+		" compound land-lease migrate --work W --actor A --operator operator:ID --evidence REF --writers-paused --expires RFC3339 [--backing-home P]\n" +
+		" cut over after governed writer quiescence and legacy resource validation.\n" +
+		"after scoped cutover, landing verbs require --work and --actor; holder includes exact work_id as a colon-delimited component. The key comes from bound Git delivery; status --proof selects the separate proof resource.\n" +
 		"the land-lease is a COORDINATION HINT (it records who holds the right to land); it never mutates repo\n" +
 		"state and the compound-land ceremony is the consumer that acts on it. No provider/network calls."
 }
@@ -55,89 +59,23 @@ func runLandLease(args []string, stdout, stderr io.Writer) int {
 		return runLandLeaseStatus(args[1:], stdout, stderr)
 	case "steal":
 		return runLandLeaseSteal(args[1:], stdout, stderr)
+	case "migrate":
+		return work.RunResourceMigrationCLI(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintln(stderr, landLeaseUsage())
 		return 2
 	}
 }
 
-// landLeaseContentionRefusal renders the acquire refusal when a DIFFERENT lane holds a live
-// lease. The recovery is a ladder, not a single command, and the rungs are not
-// interchangeable: waiting is correct when the holder is mid-ceremony, stealing is correct
-// only when it is not — so the refusal names both and makes the steal's audit cost visible
-// rather than presenting it as the obvious fix.
-func landLeaseContentionRefusal(holder string, held *landlease.HeldError, waited bool, observed error) gateRefusal {
-	me := firstNonEmptyRefusalValue(holder, "<holder>")
-	// The trace quotes the observed error verbatim rather than re-describing it: the plain
-	// and the --wait paths fail for different reasons (held now vs still held when the wait
-	// window ran out) and only the real error distinguishes them.
-	attempt := fmt.Sprintf("acquire for %s: %v", me, observed)
-	if waited {
-		attempt = fmt.Sprintf("acquire --wait for %s: %v", me, observed)
-	}
-	return gateRefusal{
-		Command: "compound land-lease acquire",
-		Gate:    "land_lease_contention",
-		Refused: fmt.Sprintf("the land-lease is held by %q, so %q did not take it", held.Holder, me),
-		Tried: []string{
-			attempt,
-			"transfer it anyway: not attempted — acquire never takes over a LIVE lease, only steal does",
-		},
-		DoThis: []string{
-			"compound land-lease status   # the holder, remaining seconds, and any prior steal on the record",
-			fmt.Sprintf("compound land-lease acquire --holder %s --wait --timeout 120   # block until the holder finishes or the window elapses", me),
-			fmt.Sprintf("compound land-lease steal --holder %s --reason \"<why the holder cannot finish>\"   # records prior_holder + reason; only when the holder is NOT mid-ceremony", me),
-		},
-		Prevents: "two lanes landing to main inside the same window. The lease serializes the landing act; taking it from a live holder without a recorded reason turns a merge collision into one with no trail back to who decided to override whom.",
-	}
-}
-
-// landLeaseHolderRefusal renders the release refusal for a caller who is not the holder.
-// verb is the attempted operation so the same renderer can serve a future non-holder path
-// without a second copy of this text.
-func landLeaseHolderRefusal(verb, holder string, st landlease.StatusResult) gateRefusal {
-	me := firstNonEmptyRefusalValue(holder, "<holder>")
-	return gateRefusal{
-		Command: "compound land-lease " + verb,
-		Gate:    "land_lease_holder",
-		Refused: fmt.Sprintf("%q does not hold the land-lease, so %s left %q's lease in place", me, verb, st.Holder),
-		Tried: []string{
-			fmt.Sprintf("--holder %s against the recorded holder %q: not the holder", me, st.Holder),
-			fmt.Sprintf("current lease: holder=%s held=%v expired=%v remaining=%ds", st.Holder, st.Held, st.IsExpired, st.RemainingSeconds),
-		},
-		DoThis: []string{
-			"compound land-lease status   # confirm who holds it and how long is left",
-			fmt.Sprintf("compound land-lease release --holder %s   # the holder's own release is the ordinary path", firstNonEmptyRefusalValue(st.Holder, "<current-holder>")),
-			fmt.Sprintf("compound land-lease steal --holder %s --reason \"<why the holder cannot finish>\"   # the auditable takeover, when the holder cannot release it themselves", me),
-		},
-		Prevents: "one lane silently dropping another lane's lease. A release that ignored the holder would let a lane that never landed anything clear the mutex out from under a lane mid-ceremony, with nothing recorded to say it happened.",
-	}
-}
-
-// landLeaseStealAuditRefusal renders the steal refusal when no --reason was supplied. The
-// missing reason is not a typo to correct: a steal without one is the same act as a steal
-// with one, minus the only thing that makes it reviewable afterwards.
-func landLeaseStealAuditRefusal(holder string, st landlease.StatusResult) gateRefusal {
-	me := firstNonEmptyRefusalValue(holder, "<holder>")
-	current := "nobody holds it right now"
-	if st.Holder != "" {
-		current = fmt.Sprintf("%q holds it (held=%v expired=%v remaining=%ds)", st.Holder, st.Held, st.IsExpired, st.RemainingSeconds)
-	}
-	return gateRefusal{
-		Command: "compound land-lease steal",
-		Gate:    "land_lease_steal_audit",
-		Refused: fmt.Sprintf("no --reason was given, so the lease was not transferred to %q", me),
-		Tried: []string{
-			"--reason: not passed (or empty)",
-			"current lease: " + current,
-		},
-		DoThis: []string{
-			fmt.Sprintf("compound land-lease steal --holder %s --reason \"<why the current holder cannot finish>\"   # the reason lands on the record as prior_holder + reason + stolen_at", me),
-			fmt.Sprintf("compound land-lease acquire --holder %s   # if the lease is free or already expired, this is the right verb — a steal is not needed", me),
-			"compound land-lease status   # check whether the lease already aged out before overriding a live holder",
-		},
-		Prevents: "an unattributable takeover. steal is the ONLY path that overrides a live holder; without a recorded reason the audit trail cannot distinguish a justified override from a lane that simply did not wait.",
-	}
+func writeLandingRefusal(out io.Writer, refusal work.LandingCLIRefusal) {
+	gateRefusal{
+		Command:  refusal.Command,
+		Gate:     refusal.Gate,
+		Refused:  refusal.Refused,
+		Tried:    refusal.Tried,
+		DoThis:   refusal.DoThis,
+		Prevents: refusal.Prevents,
+	}.writeTo(out)
 }
 
 // secondsFlag reads an integer-seconds flag, returning fallback when absent.
@@ -153,8 +91,25 @@ func secondsFlag(args []string, name string, fallback int) (time.Duration, error
 	return time.Duration(n) * time.Second, nil
 }
 
+func landingLeaseResource(homePath string, args []string, status bool) (*landlease.Resource, error) {
+	return work.ResolveLandingCLIResource(homePath, work.LandingCLISelection{
+		WorkID: strings.TrimSpace(flagValue(args, "--work")),
+		Proof:  hasFlag(args, "--proof"),
+		Status: status,
+	})
+}
+
+func mutateScopedLanding(homePath string, args []string, in work.LandingResourceMutation, now time.Time) (work.LandingResourceMutationResult, error) {
+	return work.MutateLandingCLI(homePath, flagValue(args, "--work"), flagValue(args, "--actor"), in, now)
+}
+
 func runLandLeaseAcquire(args []string, stdout, stderr io.Writer) int {
 	homePath, err := home.Resolve(flagValue(args, "--home"))
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	resource, err := landingLeaseResource(homePath, args, false)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
@@ -173,9 +128,17 @@ func runLandLeaseAcquire(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "error:", tErr)
 			return 1
 		}
-		lease, err = landlease.AcquireWait(homePath, holder, ttl, landlease.RealClock{}, timeout, 2*time.Second)
+		if resource == nil {
+			lease, err = landlease.AcquireWait(homePath, holder, ttl, landlease.RealClock{}, timeout, 2*time.Second)
+		} else {
+			lease, err = work.AcquireLandingCLI(homePath, flagValue(args, "--work"), flagValue(args, "--actor"), holder, ttl, timeout, true)
+		}
 	} else {
-		lease, err = landlease.Acquire(homePath, holder, ttl, time.Now())
+		if resource == nil {
+			lease, err = landlease.Acquire(homePath, holder, ttl, time.Now())
+		} else {
+			lease, err = work.AcquireLandingCLI(homePath, flagValue(args, "--work"), flagValue(args, "--actor"), holder, ttl, 0, false)
+		}
 	}
 	if err != nil {
 		// Contention is the ONE outcome here that is a gate rather than a fault: another lane
@@ -185,7 +148,7 @@ func runLandLeaseAcquire(args []string, stdout, stderr io.Writer) int {
 		// a plain error and stays one.
 		var held *landlease.HeldError
 		if errors.As(err, &held) {
-			landLeaseContentionRefusal(holder, held, hasFlag(args, "--wait"), err).writeTo(stderr)
+			writeLandingRefusal(stderr, work.LandingContentionRefusal(holder, held, hasFlag(args, "--wait"), err, flagValue(args, "--work"), flagValue(args, "--actor")))
 			return 1
 		}
 		fmt.Fprintln(stderr, "error:", err)
@@ -209,14 +172,33 @@ func runLandLeaseRelease(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
+	resource, err := landingLeaseResource(homePath, args, false)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
 	holder := flagValue(args, "--holder")
-	res, err := landlease.Release(homePath, holder, time.Now())
+	var res landlease.ReleaseResult
+	if resource == nil {
+		res, err = landlease.Release(homePath, holder, time.Now())
+	} else {
+		var result work.LandingResourceMutationResult
+		result, err = mutateScopedLanding(homePath, args, work.LandingResourceMutation{Holder: holder, Operation: "release"}, time.Now())
+		res = result.Release
+	}
 	if err != nil {
 		// Release refuses exactly one thing on purpose: dropping a lease the caller does not
 		// hold. Which case fired is decided by re-reading the lease, not by matching Release's
 		// error text -- a non-holder release and an unreadable home must not share a remedy.
-		if st, sErr := landlease.Status(homePath, time.Now()); sErr == nil && st.Holder != "" && st.Holder != strings.TrimSpace(holder) {
-			landLeaseHolderRefusal("release", holder, st).writeTo(stderr)
+		var st landlease.StatusResult
+		var sErr error
+		if resource == nil {
+			st, sErr = landlease.Status(homePath, time.Now())
+		} else {
+			st, sErr = resource.Status(time.Now())
+		}
+		if sErr == nil && st.Holder != "" && st.Holder != strings.TrimSpace(holder) {
+			writeLandingRefusal(stderr, work.LandingHolderRefusal("release", holder, st, flagValue(args, "--work"), flagValue(args, "--actor")))
 			return 1
 		}
 		fmt.Fprintln(stderr, "error:", err)
@@ -239,7 +221,17 @@ func runLandLeaseStatus(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	st, err := landlease.Status(homePath, time.Now())
+	resource, err := landingLeaseResource(homePath, args, true)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	var st landlease.StatusResult
+	if resource == nil {
+		st, err = landlease.StatusReadOnly(homePath, time.Now())
+	} else {
+		st, err = resource.StatusReadOnly(time.Now())
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
@@ -251,12 +243,18 @@ func runLandLeaseStatus(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
+	label := "land-lease"
+	if hasFlag(args, "--proof") {
+		label = "proof resource"
+	} else if workID := strings.TrimSpace(flagValue(args, "--work")); workID != "" {
+		label = "landing resource for " + workID
+	}
 	if st.Holder == "" {
-		fmt.Fprintln(stdout, "land-lease: none held")
+		fmt.Fprintf(stdout, "%s: none held\n", label)
 		return 0
 	}
-	fmt.Fprintf(stdout, "land-lease: holder=%s held=%v expired=%v remaining=%ds expires=%s\n",
-		st.Holder, st.Held, st.IsExpired, st.RemainingSeconds, st.ExpiresAt)
+	fmt.Fprintf(stdout, "%s: holder=%s held=%v expired=%v remaining=%ds expires=%s\n",
+		label, st.Holder, st.Held, st.IsExpired, st.RemainingSeconds, st.ExpiresAt)
 	if st.PriorHolder != "" {
 		fmt.Fprintf(stdout, "  (stolen from %s at %s: %s)\n", st.PriorHolder, st.StolenAt, st.StealReason)
 	}
@@ -269,16 +267,33 @@ func runLandLeaseSteal(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
+	resource, err := landingLeaseResource(homePath, args, false)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
 	holder := flagValue(args, "--holder")
 	// The reason is the whole difference between a steal and a silent takeover: it is what
 	// makes the transfer auditable afterwards. Checked here, before Steal, so the refusal can
 	// name the alternative (acquire, for an uncontested lease) rather than repeat the rule.
 	if strings.TrimSpace(flagValue(args, "--reason")) == "" && strings.TrimSpace(holder) != "" {
-		st, _ := landlease.Status(homePath, time.Now())
-		landLeaseStealAuditRefusal(holder, st).writeTo(stderr)
+		var st landlease.StatusResult
+		if resource == nil {
+			st, _ = landlease.Status(homePath, time.Now())
+		} else {
+			st, _ = resource.Status(time.Now())
+		}
+		writeLandingRefusal(stderr, work.LandingStealAuditRefusal(holder, st, flagValue(args, "--work"), flagValue(args, "--actor")))
 		return 1
 	}
-	lease, err := landlease.Steal(homePath, holder, flagValue(args, "--reason"), time.Now())
+	var lease landlease.Lease
+	if resource == nil {
+		lease, err = landlease.Steal(homePath, holder, flagValue(args, "--reason"), time.Now())
+	} else {
+		var result work.LandingResourceMutationResult
+		result, err = mutateScopedLanding(homePath, args, work.LandingResourceMutation{Holder: holder, Operation: "steal", Reason: flagValue(args, "--reason")}, time.Now())
+		lease = result.Lease
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1

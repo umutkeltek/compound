@@ -64,18 +64,24 @@ type doctorPermissionPosture struct {
 }
 
 type doctorReport struct {
-	Home               string       `json:"home"`
-	Hooks              []doctorHook `json:"hooks"`
-	HookHint           string       `json:"hook_hint,omitempty"`
-	LeaseHeld          bool         `json:"lease_held"`
-	LeaseHolder        string       `json:"lease_holder,omitempty"`
-	LeaseExpiresAt     string       `json:"lease_expires_at,omitempty"`
-	LeaseStealReason   string       `json:"lease_steal_reason,omitempty"`
-	FindingsTotal      int          `json:"findings_total"`
-	FindingsLive       int          `json:"findings_live"`
-	FindingsSuperseded int          `json:"findings_superseded"`
-	PlacementMode      string       `json:"placement_guard_mode"`
-	PlacementNote      string       `json:"placement_note,omitempty"`
+	Home                   string       `json:"home"`
+	Hooks                  []doctorHook `json:"hooks"`
+	HookHint               string       `json:"hook_hint,omitempty"`
+	LeaseHeld              bool         `json:"lease_held"`
+	LeaseHolder            string       `json:"lease_holder,omitempty"`
+	LeaseExpiresAt         string       `json:"lease_expires_at,omitempty"`
+	LeaseStealReason       string       `json:"lease_steal_reason,omitempty"`
+	LeaseLayout            string       `json:"lease_layout,omitempty"`
+	ProofLeaseHeld         bool         `json:"proof_lease_held"`
+	ProofLeaseHolder       string       `json:"proof_lease_holder,omitempty"`
+	ProofLeaseExpiresAt    string       `json:"proof_lease_expires_at,omitempty"`
+	LandingLeaseStatusHint string       `json:"landing_lease_status_hint,omitempty"`
+	LeaseStatusError       string       `json:"lease_status_error,omitempty"`
+	FindingsTotal          int          `json:"findings_total"`
+	FindingsLive           int          `json:"findings_live"`
+	FindingsSuperseded     int          `json:"findings_superseded"`
+	PlacementMode          string       `json:"placement_guard_mode"`
+	PlacementNote          string       `json:"placement_note,omitempty"`
 
 	// UnattendedExecute — one row per lane the route plan names for
 	// work.continue.unattended (R3A slice 2 deliverable 6). Each row
@@ -301,12 +307,28 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	// the failure mode with no other signal anywhere.
 	rep.HookEnforcement, rep.HookEnforcementFailing = buildHookEnforcementRows(rep.Hooks)
 
-	// 2) Land-lease — who (if anyone) holds the right to land right now.
-	if st, lerr := landlease.Status(homePath, time.Now()); lerr == nil {
-		rep.LeaseHeld = st.Held
-		rep.LeaseHolder = st.Holder
-		rep.LeaseExpiresAt = st.ExpiresAt
-		rep.LeaseStealReason = st.StealReason
+	// 2) The legacy layout has one shared lease. After cutover, proof has
+	// one selected resource and landing must be queried for a bound work; there
+	// is no truthful home-wide landing holder to project into the old fields.
+	if layout, lerr := landlease.LayoutStatus(homePath); lerr == nil {
+		rep.LeaseLayout = layout.Mode
+		if st, serr := landlease.ProofResource(homePath).StatusReadOnly(time.Now()); serr == nil {
+			if layout.Mode == "legacy" {
+				rep.LeaseHeld = st.Held
+				rep.LeaseHolder = st.Holder
+				rep.LeaseExpiresAt = st.ExpiresAt
+				rep.LeaseStealReason = st.StealReason
+			} else {
+				rep.ProofLeaseHeld = st.Held
+				rep.ProofLeaseHolder = st.Holder
+				rep.ProofLeaseExpiresAt = st.ExpiresAt
+				rep.LandingLeaseStatusHint = "compound land-lease status --work <work_id>"
+			}
+		} else {
+			rep.LeaseStatusError = serr.Error()
+		}
+	} else {
+		rep.LeaseStatusError = lerr.Error()
 	}
 
 	// 3) Findings — total, superseded (any id named by another finding's Supersedes), live.
@@ -589,14 +611,25 @@ func printDoctor(stdout io.Writer, rep doctorReport) {
 	printHookEnforcement(stdout, rep)
 
 	fmt.Fprintln(stdout, "\n## land-lease (concurrent landing)")
-	if rep.LeaseHeld {
-		fmt.Fprintf(stdout, "- HELD by %q until %s\n", rep.LeaseHolder, rep.LeaseExpiresAt)
-		fmt.Fprintln(stdout, "  -> wait, or `compound land-lease steal --reason ...` if stale")
+	if rep.LeaseStatusError != "" {
+		fmt.Fprintf(stdout, "- status unavailable: %s\n", rep.LeaseStatusError)
+	} else if rep.LeaseLayout == "scoped" {
+		if rep.ProofLeaseHeld {
+			fmt.Fprintf(stdout, "- proof: HELD by %q until %s\n", rep.ProofLeaseHolder, rep.ProofLeaseExpiresAt)
+		} else {
+			fmt.Fprintln(stdout, "- proof: free")
+		}
+		fmt.Fprintf(stdout, "- landing: per repository/ref; use `%s`\n", rep.LandingLeaseStatusHint)
 	} else {
-		fmt.Fprintln(stdout, "- free")
-	}
-	if rep.LeaseStealReason != "" {
-		fmt.Fprintf(stdout, "  last steal: %s\n", rep.LeaseStealReason)
+		if rep.LeaseHeld {
+			fmt.Fprintf(stdout, "- HELD by %q until %s\n", rep.LeaseHolder, rep.LeaseExpiresAt)
+			fmt.Fprintln(stdout, "  -> wait, or `compound land-lease steal --reason ...` if stale")
+		} else {
+			fmt.Fprintln(stdout, "- free")
+		}
+		if rep.LeaseStealReason != "" {
+			fmt.Fprintf(stdout, "  last steal: %s\n", rep.LeaseStealReason)
+		}
 	}
 
 	fmt.Fprintln(stdout, "\n## findings (operational evidence)")

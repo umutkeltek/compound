@@ -271,13 +271,14 @@ func buildDelegateLivenessProbeWithRunner(homePath string, runner work.SessionRu
 		}
 	}
 	return func(ra runattempt.RunAttempt) (bool, error) {
-		status, statusErr := landlease.Status(homePath, time.Now().UTC())
+		proof := landlease.ProofResource(homePath)
+		status, statusErr := proof.Status(time.Now().UTC())
 		if statusErr != nil {
 			return false, statusErr
 		}
 		parts := strings.SplitN(status.Holder, ":", 5)
 		if len(parts) == 5 && parts[0] == "proof" && parts[2] == ra.ID {
-			pending, pendingErr := landlease.ExecutionPending(homePath, status.Holder)
+			pending, pendingErr := proof.ExecutionPending(status.Holder)
 			if pendingErr != nil {
 				return false, pendingErr
 			}

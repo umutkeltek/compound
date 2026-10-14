@@ -2502,7 +2502,9 @@ func TestProofCheckCommandRejectsUnsafeTTLBeforeAdmission(t *testing.T) {
 }
 
 func TestProofCheckCommandMinimumTTLHeartbeatPreventsConcurrentRunner(t *testing.T) {
-	t.Parallel()
+	// This test gives the child three seconds to reach its runner. Keep the
+	// paired runners isolated from unrelated package tests so that deadline
+	// measures heartbeat admission rather than host scheduler contention.
 	if os.Getenv(proofCheckMinimumTTLCLISubEnv) == "1" {
 		if path := os.Getenv("COMPOUND_PROOF_MINIMUM_TTL_ENTERED"); path != "" {
 			if err := os.WriteFile(path, []byte("process-entered\n"), 0o600); err != nil {
