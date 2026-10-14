@@ -2501,6 +2501,64 @@ func TestProofCheckCommandRejectsUnsafeTTLBeforeAdmission(t *testing.T) {
 	}
 }
 
+func TestScopedProofHeartbeatAndSweepKeepReservedHolder(t *testing.T) {
+	homePath, _, _, _ := scopedLandingCLIFixture(t) // publishes the real cutover marker
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	const actor = "codex:scoped-proof-heartbeat"
+	item := createClaimedProofWork(t, store, "scoped proof heartbeat", actor, now)
+	reserved, err := store.ReserveProofResource(item.ID, work.ProofResourceReserveInput{
+		Actor: actor, TTL: time.Minute, Workspace: "/synthetic/proof-repo",
+		Command: "compound proof-check --out /synthetic/scoped-proof.json",
+		Profile: syntheticAdmissionProfile(t, "/synthetic/proof-repo"),
+	}, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reserved.ExecutionBarrier == nil {
+		t.Fatal("scoped reservation did not return its execution barrier")
+	}
+	t.Cleanup(func() { _ = reserved.ExecutionBarrier.Close() })
+
+	var ticks, cancelled atomic.Int32
+	stop, heartbeatResult := startProofCheckReservationHeartbeat(store, proofCheckAdmissionInput{
+		HomePath: homePath, WorkID: item.ID, Actor: actor, TTL: time.Minute,
+		Now: func() time.Time {
+			ticks.Add(1)
+			return time.Now().UTC()
+		},
+	}, reserved.Reservation, func() { cancelled.Add(1) })
+	t.Cleanup(stop)
+	deadline := time.Now().Add(2 * time.Second)
+	for ticks.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if ticks.Load() == 0 {
+		t.Fatal("scoped proof holder watcher did not tick")
+	}
+	if err := heartbeatResult(); err != nil || cancelled.Load() != 0 {
+		t.Fatalf("scoped proof watcher lost its holder: err=%v cancelled=%d", err, cancelled.Load())
+	}
+	status, err := landlease.ProofResource(homePath).StatusReadOnly(time.Now())
+	if err != nil || !status.Held || status.Holder != reserved.Reservation.Holder {
+		t.Fatalf("scoped proof holder after watcher tick: %+v %v", status, err)
+	}
+	probe := &work.DefaultSweepStaleProbe{Home: homePath, Now: time.Now}
+	if held, err := probe.LeaseHeld(item.ID); err != nil || !held {
+		t.Fatalf("sweep lost scoped proof reservation: held=%v err=%v", held, err)
+	}
+	attempt, err := runattempt.Open(homePath).Get(reserved.Reservation.RunAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live, err := buildDelegateLivenessProbeWithRunner(homePath, newDelegateCLIFakeRunner())(attempt); err != nil || !live {
+		t.Fatalf("CLI sweep probe lost scoped proof attempt: live=%v err=%v", live, err)
+	}
+}
+
 func TestProofCheckCommandMinimumTTLHeartbeatPreventsConcurrentRunner(t *testing.T) {
 	// This test gives the child three seconds to reach its runner. Keep the
 	// paired runners isolated from unrelated package tests so that deadline
