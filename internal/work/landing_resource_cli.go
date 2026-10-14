@@ -2,8 +2,10 @@ package work
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -184,4 +186,47 @@ func LandingStealAuditRefusal(holder string, st landlease.StatusResult, workID, 
 		},
 		Prevents: "an unattributable takeover. steal is the ONLY path that overrides a live holder; without a recorded reason the audit trail cannot distinguish a justified override from a lane that simply did not wait.",
 	}
+}
+
+// RunLandingStatus resolves and renders the same owner-selected resource for CLI consumers.
+func RunLandingStatus(homePath string, selected LandingCLISelection, asJSON bool, stdout, stderr io.Writer, now time.Time) int {
+	resource, err := ResolveLandingCLIResource(homePath, selected)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	var status landlease.StatusResult
+	if resource == nil {
+		status, err = landlease.StatusReadOnly(homePath, now)
+	} else {
+		status, err = resource.StatusReadOnly(now)
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	if asJSON {
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(status); err != nil {
+			fmt.Fprintln(stderr, "error:", err)
+			return 1
+		}
+		return 0
+	}
+	label := "land-lease"
+	if selected.Proof {
+		label = "proof resource"
+	} else if selected.WorkID != "" {
+		label = "landing resource for " + selected.WorkID
+	}
+	if status.Holder == "" {
+		fmt.Fprintf(stdout, "%s: none held\n", label)
+		return 0
+	}
+	fmt.Fprintf(stdout, "%s: holder=%s held=%v expired=%v remaining=%ds expires=%s\n", label, status.Holder, status.Held, status.IsExpired, status.RemainingSeconds, status.ExpiresAt)
+	if status.PriorHolder != "" {
+		fmt.Fprintf(stdout, "  (stolen from %s at %s: %s)\n", status.PriorHolder, status.StolenAt, status.StealReason)
+	}
+	return 0
 }

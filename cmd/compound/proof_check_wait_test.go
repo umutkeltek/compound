@@ -99,7 +99,7 @@ func TestProofCheckAdmissionWaitQueuesBehindALiveBattery(t *testing.T) {
 // --wait runs on, so the report falls inside its reservation window.
 func realTimeProofCheckReport(repo string) proofCheckReport {
 	report := successfulProofCheckReport()
-	report.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
+	report.GeneratedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	report.Repo = repo
 	return report
 }

@@ -221,44 +221,9 @@ func runLandLeaseStatus(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	resource, err := landingLeaseResource(homePath, args, true)
-	if err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		return 1
-	}
-	var st landlease.StatusResult
-	if resource == nil {
-		st, err = landlease.StatusReadOnly(homePath, time.Now())
-	} else {
-		st, err = resource.StatusReadOnly(time.Now())
-	}
-	if err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		return 1
-	}
-	if hasFlag(args, "--json") {
-		if err := encodeJSON(stdout, st); err != nil {
-			fmt.Fprintln(stderr, "error:", err)
-			return 1
-		}
-		return 0
-	}
-	label := "land-lease"
-	if hasFlag(args, "--proof") {
-		label = "proof resource"
-	} else if workID := strings.TrimSpace(flagValue(args, "--work")); workID != "" {
-		label = "landing resource for " + workID
-	}
-	if st.Holder == "" {
-		fmt.Fprintf(stdout, "%s: none held\n", label)
-		return 0
-	}
-	fmt.Fprintf(stdout, "%s: holder=%s held=%v expired=%v remaining=%ds expires=%s\n",
-		label, st.Holder, st.Held, st.IsExpired, st.RemainingSeconds, st.ExpiresAt)
-	if st.PriorHolder != "" {
-		fmt.Fprintf(stdout, "  (stolen from %s at %s: %s)\n", st.PriorHolder, st.StolenAt, st.StealReason)
-	}
-	return 0
+	return work.RunLandingStatus(homePath, work.LandingCLISelection{
+		WorkID: strings.TrimSpace(flagValue(args, "--work")), Proof: hasFlag(args, "--proof"), Status: true,
+	}, hasFlag(args, "--json"), stdout, stderr, time.Now())
 }
 
 func runLandLeaseSteal(args []string, stdout, stderr io.Writer) int {

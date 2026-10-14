@@ -127,6 +127,7 @@ type Store struct {
 	holdEvidenceFileReads         atomic.Int64
 	experimentalDelegateMutations atomic.Bool
 	sweepStaleFault               func(stage string) error
+	resourceMigrationFault        func(stage string) error
 }
 
 // HomePath returns the COMPOUND_HOME root the store reads from and writes

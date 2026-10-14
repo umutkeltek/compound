@@ -20,7 +20,7 @@ func RunResourceMigrationCLI(args []string, stdout, stderr io.Writer) int {
 	evidence := flags.String("evidence", "", "actual all-writer pause evidence")
 	paused := flags.Bool("writers-paused", false, "all participating writers are paused")
 	expires := flags.String("expires", "", "pause expiry RFC3339, at most five minutes")
-	backing := flags.String("backing-home", "", "shared owning home for host proof capacity")
+	backing := flags.String("backing-home", "", "required shared owning home for host proof capacity")
 	flags.Bool("json", false, "emit JSON")
 	if err := flags.Parse(args); err != nil {
 		return 2

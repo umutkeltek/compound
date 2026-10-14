@@ -2888,7 +2888,7 @@ func injectedCanonicalProofCheckReport(repo, baseRef string, now time.Time) (pro
 		SchemaVersion: proofCheckSchemaVersion,
 		ProfileKind:   work.ProofResourceProfileCanonicalFull,
 		Status:        "ok",
-		GeneratedAt:   now.UTC().Format(time.RFC3339),
+		GeneratedAt:   now.UTC().Format(time.RFC3339Nano),
 		Repo:          repo,
 		BaseRef:       baseRef,
 		ProofRefs:     make([]string, 0, len(steps)),

@@ -1056,8 +1056,24 @@ transactions hold only their own resource lock. Finalizers must not recursively
 invoke methods on that same resource.
 
 `compound land-lease migrate --work W --actor A --operator operator:ID
---evidence REF --writers-paused --expires RFC3339 [--backing-home P]` requires a
+--evidence REF --writers-paused --expires RFC3339 --backing-home P` requires a
 current, at-most-five-minute all-writer pause with real operator provenance.
+The backing home is required and must be the same canonical home for every
+participating client. Migration is a security/irreversible action: its held
+ActionIntent is reviewed through `policy action-plan` and `policy action-approve`.
+Retry the same arguments after approval, within the pause window. Approval binds
+the complete WorkEnvelope generation, canonical backing root, operator, evidence,
+and expiry; any drift requires a new approval. Landing steals also bind the
+observed durable lease image and compare it under the resource lock. Nanosecond timestamps distinguish subsecond reacquisitions. Allowed proposals
+persist before mutation; result events distinguish success, failure, and a
+missing outcome after a crash. Failed transitions do not enter performed history. A durable preparation at
+`work/resource-leases/migration-preparation.json` bridges marker publication
+and outcome/Work writes. An identical retry reconciles only that exact published
+marker and its persisted action/decision, even after the pause expires; it cannot
+publish again or overwrite a newer Work generation. Keep the work and its owner fixed until reconciliation finishes. An interruption before marker
+publication requires a fresh approval. Completed preparation remains as cutover
+evidence.
+
 Upgrade and quiesce every participating writer/home first; mixed old/new clients
 are unsupported. The shared root is owned at `work/resource-leases` under the
 chosen backing home, not a cwd or arbitrary cache. An unmigrated external home is

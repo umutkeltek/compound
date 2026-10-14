@@ -1092,7 +1092,7 @@ func runProofCheckWithRangeContext(
 		SchemaVersion:  work.ProofCheckSchemaVersion,
 		ProfileKind:    work.ProofResourceProfileCanonicalFull,
 		Status:         "ok",
-		GeneratedAt:    now.UTC().Format(time.RFC3339),
+		GeneratedAt:    now.UTC().Format(time.RFC3339Nano),
 		Repo:           repo,
 		BaseRef:        baseRef,
 		SourceSnapshot: source,

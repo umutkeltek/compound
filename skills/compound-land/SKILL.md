@@ -19,7 +19,7 @@ This skill replaces re-deriving the "standing session rules" from
 - Check for a live concurrent lane: `git status --short` in the MAIN worktree (uncommitted work
   that isn't yours = a lane mid-ceremony — coordinate, do not land on top of it), plus the
   private worklog tail referenced from `docs_private/plan/HANDOFF.md` when present.
-- Check the land-lease: `compound land-lease status --work <work_id> --json` — read `holder`, `held`, `is_expired`,
+- Check the land-lease: `compound land-lease status --json --work <work_id>` — read `holder`, `held`, `is_expired`,
   and (if present) `prior_holder`/`steal_reason` before starting. `free` (no holder) means clear to
   proceed to §3's acquire; `held by <holder>` means another lane is mid-ceremony — coordinate, or
   let §3's `--wait` block for it; a holder with no matching live lane and a stale/expired lease is
@@ -276,7 +276,7 @@ fresh-SHA guard. Check `compound land-lease status --proof --json` for proof
 capacity. Scoped landing mutations require their work and actor:
 
 ```bash
-compound land-lease acquire --work <work_id> --actor "<harness>:<lane>" --holder "<harness>:<session>:<work_id>" --wait --timeout 120
+compound land-lease acquire --holder "<harness>:<session>:<work_id>" --work <work_id> --actor "<harness>:<lane>" --wait --timeout 120
 ```
 
 Use a structured holder string — `<harness>:<session>:<work_id>` (e.g.
@@ -390,7 +390,7 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   merge/push succeeds and before the rest of post-land duties, so the next lane's `status`/`acquire`
   sees it free:
   ```bash
-  compound land-lease release --work <work_id> --actor "<harness>:<lane>" --holder "<harness>:<session>:<work_id>"
+  compound land-lease release --holder "<harness>:<session>:<work_id>" --work <work_id> --actor "<harness>:<lane>"
   ```
   A non-holder release is refused (someone else's lease is never dropped by accident), and
   releasing with nothing held is an idempotent no-op — safe to run even if acquire never happened
@@ -478,6 +478,9 @@ new remote still requires explicit confirmation.
 Resource migration is explicit, governed, and requires an actual short all-writer
 pause. See `docs/architecture/runtime.md`, “Scoped proof and landing resources.”
 Install the new binary in every participating home before migration; bind them to
-one shared backing home. Do not assert `--writers-paused` from general task
+one explicitly supplied shared backing home. The first migration call returns a
+held security/irreversible ActionIntent; use the existing exact action-plan and
+action-approve protocol, then retry identical arguments before pause expiry.
+Work generation or predecessor drift invalidates an old approval. Do not assert `--writers-paused` from general task
 authorization. Keep every writer paused until all homes have migrated and scoped
-proof/landing status is verified. Old clients refuse on the permanent legacy fence.
+proof/landing status and audit reconciliation are verified. Keep the migration work generation and its lease owner unchanged until reconciliation completes; a changed generation refuses recovery and preserves newer authority. Old clients refuse on the permanent legacy fence.

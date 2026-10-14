@@ -1812,7 +1812,7 @@ func (s *Store) RefreshProofResource(workID, reservationID, actor string, ttl ti
 			RunAttemptID:     ra.ID,
 			Holder:           reservation.Holder,
 			WindowOpenedAt:   reservation.AcquiredAt,
-			RequestedAt:      now.UTC().Format(time.RFC3339),
+			RequestedAt:      now.UTC().Format(time.RFC3339Nano),
 			TTLSeconds:       int64(ttl / time.Second),
 			ActionIntentID:   action.ID,
 			PolicyDecisionID: decision.ID,
