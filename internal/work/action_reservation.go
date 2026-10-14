@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/policy"
 )
 
 const receiptedActionReservationSchemaVersion = "compound.receipted_action_reservation.v0.2"
@@ -79,10 +80,18 @@ func (s *Store) ReserveReceiptedAction(workID string, in ReceiptedActionInput, a
 		} else if present {
 			return fmt.Errorf("work %s has pending receipted action %s; cannot reserve %s", workID, pending.ActionID, in.Action.ID)
 		}
-		if _, present, err := s.preflightReceiptedAction(in.Action); err != nil {
+		if _, completed, _, err := s.preflightReceiptedActionCompletion(workID, in.Action.ID); err != nil {
+			return err
+		} else if completed {
+			return fmt.Errorf("work %s completed receipted action %s; cannot reserve again", workID, in.Action.ID)
+		}
+		if published, present, err := s.preflightReceiptedAction(in.Action); err != nil {
 			return err
 		} else if present {
-			return fmt.Errorf("receipted action %s was already published before reservation", in.Action.ID)
+			if in.PreEvaluatedDecision == nil || !reflect.DeepEqual(published, in.Action) ||
+				policy.NewExactActionApprovalStore(s.home).ValidateConsumedDecision(in.Action, *in.PreEvaluatedDecision) != nil {
+				return fmt.Errorf("receipted action %s was already published before reservation", in.Action.ID)
+			}
 		}
 		expected, err := newReceiptedActionReservation(workID, in, authorizedAt)
 		if err != nil {

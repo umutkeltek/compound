@@ -38,6 +38,10 @@ func landLeaseUsage() string {
 		"  compound land-lease steal --holder H --reason R [--work work_ID --actor A] [--home P] [--json]\n" +
 		"    transfer the lease to H and RECORD prior_holder + reason + stolen_at (auditable). A reason is\n" +
 		"    REQUIRED — this is the only path that takes over a LIVE lease.\n" +
+		"  compound land-lease orphan-plan --work W --reservation pfr_ID [--home P]\n" +
+		"    read-only exact plan for a failed orphan proof-completion journal.\n" +
+		"  compound land-lease orphan-apply --work W --plan FILE --actor A --operator operator:ID --evidence REF --writers-paused --expires RFC3339 [--home P]\n" +
+		"    retire only the approved exact orphan journal under a current writer pause.\n" +
 		" compound land-lease migrate --work W --actor A --operator operator:ID --evidence REF --writers-paused --expires RFC3339 [--backing-home P]\n" +
 		" cut over after governed writer quiescence and legacy resource validation.\n" +
 		"after scoped cutover, landing verbs require --work and --actor; holder includes exact work_id as a colon-delimited component. The key comes from bound Git delivery; status --proof selects the separate proof resource.\n" +
@@ -61,6 +65,8 @@ func runLandLease(args []string, stdout, stderr io.Writer) int {
 		return runLandLeaseSteal(args[1:], stdout, stderr)
 	case "migrate":
 		return work.RunResourceMigrationCLI(args[1:], stdout, stderr)
+	case "orphan-plan", "orphan-apply":
+		return work.RunOrphanProofRetirementCLI(args[0], args[1:], stdout, stderr)
 	default:
 		fmt.Fprintln(stderr, landLeaseUsage())
 		return 2

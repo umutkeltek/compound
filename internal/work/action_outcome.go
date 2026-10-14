@@ -445,7 +445,11 @@ func validatePreEvaluatedReceiptedAction(s *Store, w envelope.WorkEnvelope, acti
 
 func validatePreEvaluatedReceiptedActionStatic(s *Store, w envelope.WorkEnvelope, action envelope.ActionIntent, decision envelope.PolicyDecision) error {
 	dangerous := preEvaluatedReceiptedActionIsDangerous(action.MutationClass)
-	if dangerous && !policy.HasOperatorProvenance(action.Actor) {
+	exactApproved := false
+	if dangerous {
+		exactApproved = policy.NewExactActionApprovalStore(s.home).ValidateConsumedDecision(action, decision) == nil
+	}
+	if dangerous && !policy.HasOperatorProvenance(action.Actor) && !exactApproved {
 		return fmt.Errorf("pre-evaluated %s action requires operator provenance", action.MutationClass)
 	}
 	lease, err := s.readLease(w.ID)
@@ -464,8 +468,8 @@ func validatePreEvaluatedReceiptedActionStatic(s *Store, w envelope.WorkEnvelope
 	if !policy.Allowed(decision) {
 		return fmt.Errorf("pre-evaluated policy decision is not allowed: %s", decision.Outcome)
 	}
-	if dangerous && strings.TrimSpace(decision.StandingGrantID) == "" {
-		return fmt.Errorf("pre-evaluated %s action requires standing-grant authority", action.MutationClass)
+	if dangerous && strings.TrimSpace(decision.StandingGrantID) == "" && !exactApproved {
+		return fmt.Errorf("pre-evaluated %s action requires standing-grant or consumed exact-approval authority", action.MutationClass)
 	}
 	return nil
 }

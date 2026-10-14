@@ -24,6 +24,12 @@ The reservation remains until Receipt, Transition and work links converge; exact
 replay cannot alter the sealed outcome. Omitted false preserves existing input
 digests. The index-lock recovery adapter is this seam's production consumer.
 
+A dangerous action admitted through a consumed exact approval may reuse its
+durably published ActionIntent and issued PolicyDecision only when both bind
+byte-for-byte to the consumed grant. A completed action cannot reserve again:
+the completion marker is checked before the authorization callback or a new
+reservation can run.
+
 ## Evidence of later benefit
 
 A completed changed receipt and its transition establish a **proof-backed change**.

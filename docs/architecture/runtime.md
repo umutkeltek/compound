@@ -1074,6 +1074,19 @@ publish again or overwrite a newer Work generation. Keep the work and its owner 
 publication requires a fresh approval. Completed preparation remains as cutover
 evidence.
 
+A failed proof-completion journal left by a departed Work has a separate, narrow
+recovery. `land-lease orphan-plan` reads the exact historical journal,
+active or archived predecessor Work, and terminal RunAttempt bytes; it does
+not certify the failed result.
+`orphan-apply` requires an active recovery Work, exact operator approval, and
+a current all-writer pause. It archives the journal bytes before removing the
+active journal, records an explicitly uncertified retirement decision, and
+retains a migration-blocking pending marker until the receipt converges.
+Replay verifies the exact archive, absent active journal, and full decision
+before clearing that marker. Applying a plan never edits the predecessor Work.
+Before resource cutover, use `orphan-plan` and `orphan-apply` for a stranded
+failed journal; never remove that journal by hand.
+
 Upgrade and quiesce every participating writer/home first; mixed old/new clients
 are unsupported. The shared root is owned at `work/resource-leases` under the
 chosen backing home, not a cwd or arbitrary cache. An unmigrated external home is

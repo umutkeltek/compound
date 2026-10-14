@@ -96,6 +96,9 @@ func buildHabitatEntries() []HabitatEntry {
 		child("work.runs", "work/runs", HabitatClassOperational, true, true, false),
 		child("work.leases", "work/leases", HabitatClassOperational, true, true, false),
 		child("work.resource-leases", "work/resource-leases", HabitatClassOperational, false, true, false),
+		child("work.proof-resource-retirement-archives", "work/proof-resource-retirement-archives", HabitatClassEvidence, false, true, false),
+		child("work.proof-resource-retirements", "work/proof-resource-retirements", HabitatClassEvidence, false, true, false),
+		child("work.proof-resource-retirement-pending", "work/proof-resource-retirement-pending", HabitatClassOperational, false, true, false),
 		// Advisory contention observations, owned by work; never lease or proof authority.
 		child("work.proof-resource-timings", "work/proof-resource-timings.json", HabitatClassOperational, false, false, false),
 		child("work.checkpoints", "work/checkpoints", HabitatClassOperational, true, true, false),

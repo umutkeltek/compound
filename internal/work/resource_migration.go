@@ -127,7 +127,7 @@ func (s *Store) MigrateCoordinationResources(workID string, in ResourceMigration
 
 func (s *Store) validateResourceMigrationCensus() error {
 	// Journals are authority even if their associated lease or attempt was lost.
-	for _, area := range []string{"proof-resource-completions", "proof-resource-legacy-recoveries"} {
+	for _, area := range []string{"proof-resource-completions", "proof-resource-legacy-recoveries", "proof-resource-retirement-pending"} {
 		entries, err := os.ReadDir(filepath.Join(s.home, "work", area))
 		if errors.Is(err, os.ErrNotExist) {
 			continue

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/policy"
 )
 
 // SealReceiptedActionOutcome replaces a pending-outcome reservation once, after
@@ -58,10 +59,13 @@ func (s *Store) SealReceiptedActionOutcome(workID string, pending, final Receipt
 		} else if published {
 			return fmt.Errorf("receipt publication already began")
 		}
-		if _, published, err := s.preflightReceiptedAction(final.Action); err != nil {
+		if publishedAction, published, err := s.preflightReceiptedAction(final.Action); err != nil {
 			return err
 		} else if published {
-			return fmt.Errorf("action already published")
+			if final.PreEvaluatedDecision == nil || !reflect.DeepEqual(publishedAction, final.Action) ||
+				policy.NewExactActionApprovalStore(s.home).ValidateConsumedDecision(final.Action, *final.PreEvaluatedDecision) != nil {
+				return fmt.Errorf("action already published")
+			}
 		}
 		w, err := s.recoverPendingClaimBeforeMutation(workID)
 		if err != nil {
