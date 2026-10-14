@@ -708,7 +708,7 @@ func ReleaseAfter(home, holder string, now time.Time, finalize func() error) (Re
 // (which never transfers a live lease). The stolen lease inherits the prior record's TTL (or the
 // package default when there is no prior record), timed from now.
 func Steal(home, newHolder, reason string, now time.Time) (Lease, error) {
-	return stealExpected(home, newHolder, "", reason, now, false, nil)
+	return stealExpected(home, newHolder, "", reason, now, false, nil, nil)
 }
 
 // StealExpected has Steal's transfer semantics but refuses unless the current holder exactly matches
@@ -720,7 +720,7 @@ func StealExpected(home, newHolder, expectedPriorHolder, reason string, now time
 	if expectedPriorHolder == "" {
 		return Lease{}, fmt.Errorf("land-lease expected prior holder required")
 	}
-	return stealExpected(home, newHolder, expectedPriorHolder, reason, now, true, nil)
+	return stealExpected(home, newHolder, expectedPriorHolder, reason, now, true, nil, nil)
 }
 
 // StealExpectedPrepared is StealExpected plus a pre-publication durability barrier. prepare sees
@@ -737,7 +737,7 @@ func StealExpectedPrepared(
 	if prepare == nil {
 		return Lease{}, fmt.Errorf("land-lease steal prepare callback required")
 	}
-	return stealExpected(home, newHolder, expectedPriorHolder, reason, now, true, prepare)
+	return stealExpected(home, newHolder, expectedPriorHolder, reason, now, true, prepare, nil)
 }
 
 func stealExpected(
@@ -745,6 +745,7 @@ func stealExpected(
 	now time.Time,
 	requireExpected bool,
 	prepare func(Lease) error,
+	observed *StatusResult,
 ) (Lease, error) {
 	newHolder = strings.TrimSpace(newHolder)
 	if newHolder == "" {
@@ -771,6 +772,9 @@ func stealExpected(
 			if current.Holder != expectedPriorHolder {
 				return fmt.Errorf("land-lease holder changed from expected %q to %q; refusing governed steal", expectedPriorHolder, current.Holder)
 			}
+		}
+		if observed != nil && !sameDurableLeaseStatus(*current, *observed) {
+			return fmt.Errorf("land-lease predecessor changed since observation; refusing governed steal")
 		}
 		if exists {
 			pending, err := executionBarrierPending(home, current.Holder)
@@ -804,6 +808,23 @@ func stealExpected(
 		return Lease{}, err
 	}
 	return stolen, nil
+}
+
+// sameDurableLeaseStatus compares only persisted lease fields. Held,
+// RemainingSeconds, and IsExpired depend on the caller's clock and cannot
+// identify a lease generation.
+func sameDurableLeaseStatus(current Lease, observed StatusResult) bool {
+	return current.SchemaVersion == observed.SchemaVersion &&
+		current.Holder == observed.Holder &&
+		current.AcquiredAt == observed.AcquiredAt &&
+		current.ExpiresAt == observed.ExpiresAt &&
+		current.TTLSeconds == observed.TTLSeconds &&
+		current.PriorHolder == observed.PriorHolder &&
+		current.StealReason == observed.StealReason &&
+		current.StolenAt == observed.StolenAt &&
+		current.TerminationRequestedBy == observed.TerminationRequestedBy &&
+		current.TerminationRequestReason == observed.TerminationRequestReason &&
+		current.TerminationRequestedAt == observed.TerminationRequestedAt
 }
 
 // Status returns the current lease read-model at now. A missing lease is a clean "nothing held".

@@ -359,6 +359,17 @@ func (r *Resource) StealExpected(newHolder, expectedPriorHolder, reason string, 
 	})
 }
 
+// StealObserved binds an exceptional transfer to the durable lease snapshot
+// that was reviewed. A release/reacquire by the same holder invalidates it.
+func (r *Resource) StealObserved(newHolder string, expected StatusResult, reason string, now time.Time) (Lease, error) {
+	if strings.TrimSpace(expected.Holder) == "" {
+		return Lease{}, fmt.Errorf("land-lease observed holder required")
+	}
+	return selectedCall(r, func(root string) (Lease, error) {
+		return stealExpected(root, newHolder, expected.Holder, reason, now, true, nil, &expected)
+	})
+}
+
 func (r *Resource) AttestExecutionTerminated(holder string) (ExecutionTerminationAttestation, error) {
 	return selectedCall(r, func(root string) (ExecutionTerminationAttestation, error) {
 		return AttestExecutionTerminated(root, holder)

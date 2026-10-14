@@ -331,3 +331,54 @@ func TestScopedStealExpectedRejectsStalePredecessor(t *testing.T) {
 		t.Fatalf("stale steal changed replacement lease: before=%+v after=%+v", before, after)
 	}
 }
+
+func TestScopedStealObservedRejectsSameHolderReacquisition(t *testing.T) {
+	home, backing := t.TempDir(), t.TempDir()
+	key, err := LandingResourceKey(strings.Repeat("e", 64), "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource := migratedResource(t, home, backing, key)
+	if _, err := resource.Acquire(laneBeta, time.Minute, baseNow); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := resource.StatusReadOnly(baseNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resource.Release(laneBeta, baseNow); err != nil {
+		t.Fatal(err)
+	}
+	reacquiredAt := baseNow.Add(2 * time.Second)
+	if _, err := resource.Acquire(laneBeta, time.Minute, reacquiredAt); err != nil {
+		t.Fatal(err)
+	}
+	current, err := resource.StatusReadOnly(reacquiredAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale.Holder != current.Holder || stale.AcquiredAt == current.AcquiredAt {
+		t.Fatalf("test needs same holder in a new lease generation: stale=%+v current=%+v", stale, current)
+	}
+	if _, err := resource.StealObserved(laneGamma, stale, "stale approval", reacquiredAt); err == nil {
+		t.Fatal("stale snapshot stole a same-holder replacement lease")
+	}
+	after, err := resource.StatusReadOnly(reacquiredAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != current || !after.Held {
+		t.Fatalf("stale steal changed replacement lease: before=%+v after=%+v", current, after)
+	}
+	// Clock-derived fields are not lease identity and need not match.
+	current.Held = false
+	current.RemainingSeconds = -1
+	current.IsExpired = true
+	stolen, err := resource.StealObserved(laneGamma, current, "fresh approval", reacquiredAt)
+	if err != nil {
+		t.Fatalf("fresh durable snapshot refused: %v", err)
+	}
+	if stolen.Holder != laneGamma || stolen.PriorHolder != laneBeta {
+		t.Fatalf("unexpected audited transfer: %+v", stolen)
+	}
+}
