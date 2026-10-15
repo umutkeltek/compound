@@ -60,7 +60,19 @@ func TestLaunchDetachedViaDoorSpawnsTheGovernedDoorAsItsOwnGroup(t *testing.T) {
 
 	recorded := filepath.Join(t.TempDir(), "door-argv.txt")
 	fakeDoor := filepath.Join(t.TempDir(), "fake-compound")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + recorded + "\nprintf 'home=%s cwd=%s\\n' \"$COMPOUND_HOME\" \"$(pwd)\" >> " + recorded + "\necho door-ran\nsleep 2\n"
+	// Publish readiness only after the complete argv/home and required log output
+	// exist. Seeing an earlier partial record raced the detached child's next write.
+	recordedShell := "'" + strings.ReplaceAll(recorded, "'", "'\"'\"'") + "'"
+	script := `#!/bin/sh
+recorded=` + recordedShell + `
+printf '%s\n' "$@" > "$recorded.pending"
+printf 'home=%s cwd=%s\n' "$COMPOUND_HOME" "$(pwd)" >> "$recorded.pending"
+# Keep setup observably incomplete before publishing the ready marker.
+sleep 0.25
+echo door-ran
+mv "$recorded.pending" "$recorded"
+sleep 2
+`
 	if err := os.WriteFile(fakeDoor, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -77,6 +89,24 @@ func TestLaunchDetachedViaDoorSpawnsTheGovernedDoorAsItsOwnGroup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LaunchDetachedViaDoor: %v", err)
 	}
+	t.Cleanup(func() {
+		// The fake door has a bounded two-second lifetime. Join it before its
+		// fixture directories disappear; no unrelated process is signalled.
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			var status syscall.WaitStatus
+			pid, err := syscall.Wait4(launch.PID, &status, syscall.WNOHANG, nil)
+			if pid == launch.PID || errors.Is(err, syscall.ECHILD) {
+				return
+			}
+			if err != nil && !errors.Is(err, syscall.EINTR) {
+				t.Errorf("join test-owned detached door: %v", err)
+				return
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		t.Errorf("test-owned detached door %d did not exit", launch.PID)
+	})
 	if launch.PID <= 0 || launch.PGID != launch.PID {
 		t.Fatalf("door must be its own process-group leader: %+v", launch)
 	}
