@@ -17,7 +17,8 @@
  * COMPOUND_BIN to a fresh build, or this smoke builds one to a temp path.
  */
 import assert from "node:assert/strict";
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import * as childProcess from "node:child_process";
+import { spyOn } from "bun:test";
 import { existsSync, mkdirSync, appendFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +26,7 @@ import { createTestTempScope } from "../../tools/test_support.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "..", "..");
+const { execFileSync, spawnSync } = childProcess;
 
 function log(msg) {
   console.log(`stream-door-smoke: ${msg}`);
@@ -87,9 +89,48 @@ async function readUntil(reader, predicate, timeoutMs) {
   return text;
 }
 
-// Keep roots until natural process exit, after referenced stream children close.
-// The scope's exit fallback also covers startup or build failures.
+// Roots are released explicitly after startup and owned children settle.
+// The scope exit fallback still covers early build/startup failures.
+async function waitForChildren(children, timeoutMs) {
+  let timer;
+  try {
+    return await Promise.race([
+      Promise.all(children.map((entry) => entry.closed)).then(() => true),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function stopChildren(children) {
+  for (const entry of children) {
+    if (!entry.done) entry.child.kill("SIGTERM");
+  }
+  if (await waitForChildren(children, 1000)) return;
+  for (const entry of children) {
+    if (!entry.done) entry.child.kill("SIGKILL");
+  }
+  assert.ok(await waitForChildren(children, 2000), "owned smoke children did not close after SIGKILL");
+}
+
+// Observe real spawn calls, never search for or signal another process's child.
+// Capturing the function by value avoids recursion through Bun's live binding.
+const originalSpawn = childProcess.spawn;
+const children = [];
+const spawnErrors = [];
+const spawnObserver = spyOn(childProcess, "spawn").mockImplementation((...args) => {
+  const child = originalSpawn(...args);
+  const entry = { child, done: false, closed: null };
+  entry.closed = new Promise((resolve) => child.once("close", () => { entry.done = true; resolve(); }));
+  child.once("error", (error) => spawnErrors.push(error));
+  children.push(entry);
+  return child;
+});
+
 const temporary = createTestTempScope();
+const startupReads = [];
+let snapshotObserver = null;
 let decoy = null;
 let controller = null;
 let failure = null;
@@ -115,7 +156,7 @@ try {
   // as an orphan and fails; the PID-delta proof must leave it alive.
   let baseline = followPids(binary);
   if (baseline !== null) {
-    decoy = spawn(binary, ["stream", "--follow", "--cursor", "1"], {
+    decoy = childProcess.spawn(binary, ["stream", "--follow", "--cursor", "1"], {
       env: { ...process.env, COMPOUND_HOME: home },
       stdio: "ignore",
     });
@@ -131,6 +172,13 @@ try {
     log(`baseline follower live (pid ${decoy.pid}) before the route opens`);
   }
 
+  const compound = await import("../src/lib/compound.ts");
+  const originalRunJson = compound.runJson;
+  snapshotObserver = spyOn(compound, "runJson").mockImplementation((...args) => {
+    const pending = originalRunJson(...args);
+    startupReads.push(pending);
+    return pending;
+  });
   const { GET } = await import("../src/app/api/stream/route.ts");
 
   const NEW_WORK_ID = "work_streamed42";
@@ -164,6 +212,8 @@ try {
 
   // (3) the follow children this run spawned die on disconnect, while the
   // legitimate baseline follower (same binary — override mode) survives.
+  assert.ok(children.some(({ child }) => child.spawnargs.includes("--follow") && child.spawnargs.includes("--json")),
+    "real route follow child was not observed");
   const during = followPids(binary);
   if (baseline === null || during === null) {
     if (baseline !== null) {
@@ -196,12 +246,23 @@ try {
 } catch (error) {
   failure = error;
 } finally {
-  controller?.abort(); // startup may fail before the controller exists
-  await new Promise((r) => setTimeout(r, 200));
-  if (decoy?.pid && decoy.exitCode === null && decoy.signalCode === null) {
-    const closed = new Promise((resolve) => decoy.once("close", resolve));
-    decoy.kill("SIGTERM"); // only the follower this smoke created
-    await closed;
+  try {
+    // start() awaits the snapshot before spawning. Settle that continuation
+    // before abort/drain, even if the transition-read assertion timed out first.
+    await Promise.allSettled(startupReads);
+    controller?.abort();
+    await stopChildren(children);
+    log(`owned children closed ${JSON.stringify(children.map(({ child }) => ({
+      pid: child.pid, route: child.spawnargs.includes("--json"),
+    })))}`);
+    if (spawnErrors.length) throw spawnErrors[0];
+    temporary.cleanup();
+  } catch (error) {
+    if (failure) console.error(`stream-door-smoke cleanup FAILED: ${error.message}`);
+    else failure = error;
+  } finally {
+    snapshotObserver?.mockRestore();
+    spawnObserver.mockRestore();
   }
 }
 
