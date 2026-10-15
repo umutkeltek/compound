@@ -217,6 +217,9 @@ func backupStreamedVersionOptions(homePath, targetPath string, now time.Time, sc
 	if err != nil {
 		return ArchiveReport{}, err
 	}
+	if snapshotEvents {
+		return backupCapturedStreamedArchive(homePath, targetPath, now, schema)
+	}
 	var report ArchiveReport
 	err = WithAutonomyAdmissionLock(homePath, func() error {
 		if err := prepareArchiveTarget(homePath, targetPath, includeBackupPath); err != nil {
@@ -237,12 +240,16 @@ func writeStreamedHomeArchiveVersion(homePath, targetPath string, now time.Time,
 }
 
 func writeStreamedHomeArchiveOptions(homePath, targetPath string, now time.Time, schema string, snapshotEvents bool) (ArchiveReport, error) {
-
-	if schema == ArchiveStreamSchemaV3 {
-		if err := validateArchiveLinkSourceHome(homePath); err != nil {
-			return ArchiveReport{}, err
-		}
+	source, err := openLiveArchiveStreamSource(homePath, schema, snapshotEvents)
+	if err != nil {
+		return ArchiveReport{}, err
 	}
+	defer source.close()
+	return writeStreamedArchiveSource(homePath, targetPath, now, schema, source)
+}
+
+func writeStreamedArchiveSource(homePath, targetPath string, now time.Time, schema string, source *archiveStreamSource) (ArchiveReport, error) {
+
 	metadataLimits := defaultArchiveStreamMetadataLimits
 	if err := validateArchiveStreamMetadataLimits(metadataLimits); err != nil {
 		return ArchiveReport{}, err
@@ -256,17 +263,6 @@ func writeStreamedHomeArchiveOptions(homePath, targetPath string, now time.Time,
 	if err != nil {
 		return ArchiveReport{}, err
 	}
-	root, err := openStableArchiveRoot(homePath)
-	if err != nil {
-		return ArchiveReport{}, err
-	}
-	defer root.Close()
-	if err := archiveStreamRootOpened(homePath); err != nil {
-		return ArchiveReport{}, err
-	}
-	if err := validateStreamedSourceHealth(root); err != nil {
-		return ArchiveReport{}, err
-	}
 	header, err := json.Marshal(archiveStreamHeader{SchemaVersion: schema, Kind: ArchiveKindBackup})
 	if err != nil {
 		return ArchiveReport{}, err
@@ -277,18 +273,7 @@ func writeStreamedHomeArchiveOptions(homePath, targetPath string, now time.Time,
 	if _, err := writeBytesEntry(tw, ArchiveStreamHeaderName, header, 0o600); err != nil {
 		return ArchiveReport{}, err
 	}
-	pinnedManifestBytes, err := readRootedHomeManifestBounded(root)
-	if err != nil {
-		return ArchiveReport{}, fmt.Errorf("pin home manifest for archive: %w", err)
-	}
-	pinnedManifest, err := decodeHomeManifest(pinnedManifestBytes)
-	if err != nil {
-		return ArchiveReport{}, err
-	}
-	if err := archiveAfterHomeManifestPinned(filepath.Join(homePath, ManifestName)); err != nil {
-		return ArchiveReport{}, err
-	}
-	manifestEntry, err := writeBytesEntry(tw, ManifestName, pinnedManifestBytes, 0o644)
+	manifestEntry, err := writeBytesEntry(tw, ManifestName, source.manifest, 0o644)
 	if err != nil {
 		return ArchiveReport{}, err
 	}
@@ -300,7 +285,8 @@ func writeStreamedHomeArchiveOptions(homePath, targetPath string, now time.Time,
 	var links []archiveLink
 	seen := make(map[[sha256.Size]byte]struct{})
 	seen[sha256.Sum256([]byte(ManifestName))] = struct{}{}
-	err = walkArchiveRootBatched(root, ".", func(rel string, info fs.FileInfo) error {
+	err = source.walk(func(item archiveStreamItem) error {
+		rel, info := item.rel, item.info
 		if rel == ManifestName {
 			return nil
 		}
@@ -322,7 +308,7 @@ func writeStreamedHomeArchiveOptions(homePath, targetPath string, now time.Time,
 			if len(links) >= archiveStreamMaxLinks {
 				return fmt.Errorf("archive link count exceeds %d", archiveStreamMaxLinks)
 			}
-			link, err := captureArchiveLink(root, homePath, rel, info)
+			link, err := item.link()
 			if err != nil {
 				return err
 			}
@@ -339,13 +325,7 @@ func writeStreamedHomeArchiveOptions(homePath, targetPath string, now time.Time,
 		if err := chunks.reserve(rel, info.Size()); err != nil {
 			return err
 		}
-		var entry ArchiveEntry
-		var entryErr error
-		if snapshotEvents && strings.HasPrefix(rel, "events/") {
-			entry, entryErr = writeRootedArchiveEventSnapshot(tw, root, rel, info)
-		} else {
-			entry, entryErr = writeRootedArchiveFile(tw, root, rel, info)
-		}
+		entry, entryErr := item.write(tw)
 		if entryErr != nil {
 			return entryErr
 		}
@@ -363,7 +343,7 @@ func writeStreamedHomeArchiveOptions(homePath, targetPath string, now time.Time,
 		SchemaVersion:     schema,
 		Kind:              ArchiveKindBackup,
 		CreatedAt:         now.UTC().Format(time.RFC3339),
-		HomeSchemaVersion: pinnedManifest.SchemaVersion,
+		HomeSchemaVersion: source.homeSchema,
 		ExcludedRoots:     append([]string(nil), backupExcludedRoots...),
 		Files:             files,
 		Bytes:             bytesWritten,

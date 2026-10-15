@@ -85,17 +85,26 @@ legacy-only read publishes canonical schema and authority without deleting the b
 family a reversible migration path and a visible `degraded` doctor state until the bridge is independently proven
 unnecessary.
 
-The opt-in streamed-v3-event-snapshot backup profile captures event files through
-immutable native clones inside the owned temporary root. Live appends continue
-on the original bodies. Each clone seals one file's observed bytes, and the
-export still rejects source path replacement and snapshot drift. Other source
-families and existing backup profiles retain their strict copy checks. This is
-a collection of per-file observations, not a global transactional snapshot.
-The clone is private, short-lived, and removed only by its backup invocation.
-Unsupported clone support fails closed; it never falls back to an unstable read.
+The opt-in streamed-v3-event-snapshot backup profile captures all included regular
+files through native clones under the home admission lock, then releases admission
+before compression. A bounded, file-backed journal seals entry metadata and clone
+identities. The shared streamed serializer consumes only that private capture;
+the archive format, chunk budgets, link records, and restore contract stay v0.3.
+Source identity must remain stable through clone completion. Non-event files also
+require stable size and modification time; event appends may continue while their
+inode is pinned. Successful capture is the consistency boundary: later live-file
+renames, replacements, and appends cannot affect or invalidate the captured archive.
+Admission fences cooperating writers, not every home writer, so this remains a
+collection of per-file observations rather than a globally transactional snapshot.
+The legacy profiles retain their live copy checks, including the direct event
+snapshot helper's through-streaming identity check.
 
-The realistic live-append test uses a 120 MiB file and a file-backed tar archive.
-Fixture I/O stays bounded so discarded byte buffers do not pollute later heap measurements.
+The stage is private and short-lived, with rooted replay, sealed journal digest,
+clone modification/change-time checks, and identity-checked cleanup by its owning invocation.
+Unsupported clone support fails closed without a copying fallback. The admission
+release test uses a file-backed 64 MiB body, a multi-file admission writer, and more
+than one directory batch; it measures capture separately from total compression.
+The direct event helper also retains its 120 MiB live-append falsifier.
 
 Native archive verification also hashes the exact compressed source through the
 same verified file descriptor. A checksum is returned only after file identity,
