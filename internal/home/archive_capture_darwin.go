@@ -18,6 +18,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/sys/unix"
 )
@@ -57,6 +58,22 @@ type archiveCaptureRecord struct {
 	Body   int
 	Stamp  archiveCaptureStamp
 }
+
+func marshalArchiveCaptureRecord(record archiveCaptureRecord) ([]byte, error) {
+	// JSON replaces invalid UTF-8; refuse rather than silently rename a path.
+	if !utf8.ValidString(record.Header.Name) {
+		return nil, fmt.Errorf("capture path must be valid UTF-8")
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		return nil, err
+	}
+	if len(data)+1 > archiveCaptureRecordBytes {
+		return nil, fmt.Errorf("capture record exceeds limit")
+	}
+	return append(data, '\n'), nil
+}
+
 type capturedArchive struct {
 	root, tmp, stage   *os.Root
 	stageName          string
@@ -138,7 +155,6 @@ func captureStreamedArchive(homePath string) (_ *capturedArchive, resultErr erro
 	defer journal.Close()
 	digest := sha256.New()
 	bounded := &boundedArchiveOutput{writer: io.MultiWriter(journal, digest), remaining: archiveStreamTotalMeta, limit: archiveStreamTotalMeta, kind: "capture journal"}
-	encoder := json.NewEncoder(bounded)
 	budget := archiveEntryBudget{limits: archiveStreamTarLimits()}
 	links := 0
 	err = walkArchiveRootBatched(root, ".", func(rel string, info fs.FileInfo) error {
@@ -191,14 +207,11 @@ func captureStreamedArchive(homePath string) (_ *capturedArchive, resultErr erro
 				budget.expandedBytes += delta
 			}
 		}
-		data, err := json.Marshal(record)
+		data, err := marshalArchiveCaptureRecord(record)
 		if err != nil {
 			return err
 		}
-		if len(data)+1 > archiveCaptureRecordBytes {
-			return fmt.Errorf("capture record exceeds limit")
-		}
-		if err := encoder.Encode(record); err != nil {
+		if _, err := bounded.Write(data); err != nil {
 			return err
 		}
 		c.records++

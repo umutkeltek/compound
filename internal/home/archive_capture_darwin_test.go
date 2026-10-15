@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -448,4 +449,32 @@ func TestCapturedBodyRejectsDriftDuringReplay(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "capture body changed") {
 		t.Fatalf("replay mutation accepted: %v", err)
 	}
+}
+
+// Test metadata admission directly: the host filesystem may reject opaque-byte
+// names before the walker can observe them, while mounted filesystems may not.
+func TestCapturedJournalPathEncoding(t *testing.T) {
+	t.Run("invalid directory name", func(t *testing.T) {
+		record := archiveCaptureRecord{Header: tar.Header{Name: "ledger/opaque-\xff", Typeflag: tar.TypeDir}}
+		if data, err := marshalArchiveCaptureRecord(record); err == nil || !strings.Contains(err.Error(), "UTF-8") || len(data) != 0 {
+			t.Fatalf("invalid path admitted: bytes=%q err=%v", data, err)
+		}
+	})
+	t.Run("Unicode directory round trip", func(t *testing.T) {
+		record := archiveCaptureRecord{Header: tar.Header{Name: "ledger/目录/é-Δ", Typeflag: tar.TypeDir}}
+		data, err := marshalArchiveCaptureRecord(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(data) == 0 || data[len(data)-1] != '\n' {
+			t.Fatalf("missing journal line terminator: %q", data)
+		}
+		var decoded archiveCaptureRecord
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if decoded.Header.Name != record.Header.Name || decoded.Header.Typeflag != tar.TypeDir {
+			t.Fatalf("path changed during encoding: %#v", decoded.Header)
+		}
+	})
 }

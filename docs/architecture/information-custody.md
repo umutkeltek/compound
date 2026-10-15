@@ -88,7 +88,8 @@ unnecessary.
 The opt-in streamed-v3-event-snapshot backup profile captures all included regular
 files through native clones under the home admission lock, then releases admission
 before compression. A bounded, file-backed journal seals entry metadata and clone
-identities. The shared streamed serializer consumes only that private capture;
+identities. Journal paths must be valid UTF-8; encoding rejects unsupported
+path bytes rather than silently renaming entries. The shared streamed serializer consumes only that private capture;
 the archive format, chunk budgets, link records, and restore contract stay v0.3.
 Source identity must remain stable through clone completion. Non-event files also
 require stable size and modification time; event appends may continue while their
