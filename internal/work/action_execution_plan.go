@@ -135,6 +135,9 @@ func (s *Store) ActionExecutionPlan(workID string, now time.Time, opts ActionExe
 		return s.maybeRecordActionExecutionPlan(plan, opts.Record)
 	}
 	ai := s.actionExecutionIntent(w, actionContext, actor, now, opts)
+	if err := s.validateSourceActionAdmission(w, ai); err != nil {
+		return ActionExecutionPlan{}, err
+	}
 	cfg, source, err := policy.LoadConfig(s.home)
 	if err != nil {
 		return ActionExecutionPlan{}, err

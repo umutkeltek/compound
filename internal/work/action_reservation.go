@@ -107,6 +107,9 @@ func (s *Store) ReserveReceiptedAction(workID string, in ReceiptedActionInput, a
 			}
 			return nil
 		}
+		if err := s.validateSourceActionAdmission(w, in.Action); err != nil {
+			return err
+		}
 		if err := authorize(); err != nil {
 			return err
 		}
@@ -183,6 +186,9 @@ func (s *Store) ReauthorizeReceiptedActionReservation(workID string, previous Re
 		if !receiptedActionReservationEqual(actual, priorReservation) && !receiptedActionReservationEqual(actual, nextReservation) &&
 			(actual.ReauthorizationDigest == "" || actual.ReauthorizationDigest != nextReservation.ReauthorizationDigest) {
 			return fmt.Errorf("work %s receipted action reservation %s conflicts with reauthorization", workID, actual.ActionID)
+		}
+		if err := s.validateSourceActionAdmission(w, next.Action); err != nil {
+			return err
 		}
 		if err := authorize(); err != nil {
 			return err

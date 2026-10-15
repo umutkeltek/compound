@@ -78,6 +78,22 @@ func ResolveCanonicalProofPlan(
 	source gitrepository.Snapshot,
 	compoundInventory CanonicalProofInventory,
 ) (CanonicalProofPlan, error) {
+	return resolveCanonicalProofPlan(repo, source, compoundInventory, false)
+}
+
+// ValidateCanonicalProofProfile checks the real committed profile declaration
+// without running gates or manufacturing an inventory or proof certificate.
+func ValidateCanonicalProofProfile(repo string, source gitrepository.Snapshot) error {
+	_, err := resolveCanonicalProofPlan(repo, source, nil, true)
+	return err
+}
+
+func resolveCanonicalProofPlan(
+	repo string,
+	source gitrepository.Snapshot,
+	compoundInventory CanonicalProofInventory,
+	profileOnly bool,
+) (CanonicalProofPlan, error) {
 	resolvedRepo, err := resolveCanonicalProofRepo(repo)
 	if err != nil {
 		return CanonicalProofPlan{}, err
@@ -186,10 +202,13 @@ func ResolveCanonicalProofPlan(
 		if !isCanonicalCompoundModule(moduleBody) {
 			return CanonicalProofPlan{}, fmt.Errorf("canonical Compound proof requires tracked root go.mod declaring `module compound`")
 		}
+		plan.ID = CanonicalProofPlanCompoundV1
+		if profileOnly {
+			return cloneCanonicalProofPlan(plan), nil
+		}
 		if compoundInventory == nil {
 			return CanonicalProofPlan{}, fmt.Errorf("canonical Compound proof inventory is unavailable")
 		}
-		plan.ID = CanonicalProofPlanCompoundV1
 		plan.Steps, err = compoundInventory(source.BaseSHA, source.HeadSHA)
 		if err != nil {
 			return CanonicalProofPlan{}, err

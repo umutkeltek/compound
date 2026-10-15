@@ -251,3 +251,34 @@ never an ambient production DSN. These controls are not a hostile-code sandbox
 or an attestation of pytest executable bytes. Existing source-review, sealed
 checkout, drift, deadline, process-group/EOF, custody and 32-MiB fences apply.
 Adding support is not product certification or deployment acceptance.
+
+## Source action admission
+
+Declared source effects require complete Git delivery authority before performed
+recording or fresh receipted-action reservation. Admission compares repository
+fingerprints, so an execution linked worktree may differ from the landing checkout.
+Operator-only same-state legacy binding and final landed-proof gates are unchanged.
+
+Covered declarations are `source.edit`, repository-targeted `build-implement`, and
+`file.write` against Git-contained files/directories. The incident's `file.write`
++ `directory` + repository-root shape is included. Read actions, explicit private
+runtime/worktree-retirement/package targets, and ignored runtime destinations
+without tracked source descendants retain existing authority/evidence rules. Git cwd alone, free-form action names,
+generic shell commands and harness prompts do not declare source purpose; this
+gate does not claim to classify their contents.
+
+Public repository-target actions and explicit `git-amplify-deployment` or
+`shell.git_push_existing_remote` declarations additionally require a clean
+committed candidate with a supported native canonical proof profile. This checks
+the real profile declaration, not test success: canonical proof, publication,
+land-check and closure remain separate requirements. Local source edits may enroll
+the profile before publication. Already admitted receipted transactions retain
+exact reservation/replay recovery semantics.
+
+The exact native redaction-review capability/action pair
+`proof.redaction.review_public` / `classify_public_redaction_findings` classifies
+findings; its public mutation class expresses authority rather than source
+publication. Source admission therefore does not add a native profile prerequisite
+to this preparation step. Existing native review, exact approval, source binding
+and proof-consumption checks still apply; the capability alone does not exempt a
+different public action.

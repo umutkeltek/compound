@@ -122,6 +122,14 @@ func (s *Store) AdvancePlan(workID string, now time.Time, opts AdvancePlanOption
 	if err := ai.Validate(); err != nil {
 		return AdvancePlan{}, err
 	}
+	candidate := w
+	if gitDelivery != nil {
+		candidate.GitDelivery = gitDelivery
+		candidate.ExpectedBaseSHA = ""
+	}
+	if err := s.validateSourceActionAdmission(candidate, ai); err != nil {
+		return AdvancePlan{}, err
+	}
 	cfg, source, err := policy.LoadConfig(s.home)
 	if err != nil {
 		return AdvancePlan{}, err

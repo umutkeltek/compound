@@ -459,6 +459,9 @@ func (s *Store) finishCreatePlan(w envelope.WorkEnvelope, now time.Time, opts Cr
 	if err := ai.Validate(); err != nil {
 		return CreatePlan{}, err
 	}
+	if err := s.validateSourceActionAdmission(w, ai); err != nil {
+		return CreatePlan{}, err
+	}
 	cfg, source, err := policy.LoadConfig(s.home)
 	if err != nil {
 		return CreatePlan{}, err
@@ -541,6 +544,9 @@ func (s *Store) admitWorkLocked(plan CreatePlan, now time.Time, note string, ext
 		return w, err
 	}
 	if err := s.validateBoundGitDelivery(w); err != nil {
+		return w, err
+	}
+	if err := s.validateSourceActionAdmission(w, plan.ActionIntent); err != nil {
 		return w, err
 	}
 	// The existence check must live inside the same critical section as the

@@ -2342,6 +2342,9 @@ func (s *Store) recordActionLocked(workID string, ai envelope.ActionIntent, pd e
 	if pd.Outcome != "allow" && pd.Outcome != "allow_with_obligations" {
 		return w, fmt.Errorf("cannot record action %s: policy %s (a mutating adapter requires an allowing PolicyDecision)", ai.ID, pd.Outcome)
 	}
+	if err := s.validateSourceActionAdmission(w, ai); err != nil {
+		return w, err
+	}
 	if err := s.writeEventJSON(ai.ID, &ai); err != nil {
 		return w, err
 	}

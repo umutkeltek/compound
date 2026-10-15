@@ -555,10 +555,7 @@ func TestRepoTargetActionEvidenceCannotDisappearBeforeClose(t *testing.T) {
 			if err := action.Validate(); err != nil {
 				t.Fatal(err)
 			}
-			// S1: the post-RunAttempt mechanism for attaching an ActionIntent to a work is
-			// RecordAction (not the pre-S1 AdvanceInput.RunID hack that pre-wrote the action
-			// to disk and then referenced it via RunID). RecordAction validates the action +
-			// policy decision, persists both events, and appends action.ID to ActionIntentIDs.
+			// Load pre-admission historical evidence for the late-close corruption check.
 			policyDecision := envelope.PolicyDecision{
 				Header:         newHeader(envelope.SVPolicyDecision, "pol_repo_evidence_"+mutate, now.Add(3*time.Minute), w.ID, "", "private", "tier1"),
 				ActionIntentID: action.ID,
@@ -567,9 +564,7 @@ func TestRepoTargetActionEvidenceCannotDisappearBeforeClose(t *testing.T) {
 			if err := policyDecision.Validate(); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.RecordAction(w.ID, action, policyDecision, now.Add(3*time.Minute)); err != nil {
-				t.Fatalf("RecordAction: %v", err)
-			}
+			attachHistoricalSourceAction(t, store, w, action, policyDecision, now.Add(3*time.Minute))
 			// The action is now in ActionIntentIDs and the action event is on disk. Mutate
 			// the event without rewriting older append-only history, and Close must catch
 			// the corruption.

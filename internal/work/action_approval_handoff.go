@@ -60,6 +60,9 @@ func (s *Store) EvaluateAndRecordAction(workID string, ai envelope.ActionIntent,
 				return fmt.Errorf("action %s already recorded", ai.ID)
 			}
 		}
+		if err := s.validateSourceActionAdmission(w, ai); err != nil {
+			return err
+		}
 		// This immutable put also rejects same-id/different-body retries BEFORE
 		// looking for a grant, so a conflict cannot consume approval authority.
 		if err := s.writeEventJSON(ai.ID, ai); err != nil {

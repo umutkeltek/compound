@@ -385,6 +385,17 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 		transactionComplete = transactionComplete && stage.present
 	}
 
+	// The direct writer passes pendingReplaysAuthority=true: an ActionIntent
+	// alone may be only an approval proposal, so fresh source still needs
+	// admission. The only false caller is RecordReservedReceiptedAction, after
+	// authenticating the exact reservation already admitted before its effect.
+	// Matching pending recovery and fully complete transactions retain their
+	// sealed admission, rather than reclassifying a completed effect.
+	if pendingReplaysAuthority && !pendingPresent && !transactionComplete {
+		if err := s.validateSourceActionAdmission(w, action); err != nil {
+			return out, err
+		}
+	}
 	receiptedActionBeforeCommit()
 	markerOwned := pendingPresent
 	if !transactionComplete && !markerOwned {
