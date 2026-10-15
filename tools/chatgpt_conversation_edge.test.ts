@@ -1,6 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -8,7 +7,10 @@ import {
   buildChatGPTKnowledgeExport,
   normalizeConversations,
 } from "./chatgpt_conversation_edge.ts";
-import { initializeCompoundHome } from "./test_support.ts";
+import { createTestTempScope, initializeCompoundHome } from "./test_support.ts";
+
+const temporary = createTestTempScope();
+afterAll(() => temporary.cleanup());
 
 const openAIExportFixture = {
   conversations: [
@@ -141,7 +143,7 @@ describe("chatgpt_conversation_edge", () => {
   });
 
   test("generated export imports idempotently through compound knowledge import", () => {
-    const root = mkdtempSync(join(tmpdir(), "compound-chatgpt-edge-"));
+    const root = temporary.dir("compound-chatgpt-edge-");
     const inputPath = join(root, "conversations.json");
     const exportPath = join(root, "chatgpt-export.json");
     const homePath = join(root, "home");
@@ -185,7 +187,7 @@ describe("chatgpt_conversation_edge", () => {
   });
 
   test("CLI accepts normalized JSONL corpus directories", () => {
-    const root = mkdtempSync(join(tmpdir(), "compound-chatgpt-jsonl-"));
+    const root = temporary.dir("compound-chatgpt-jsonl-");
     const inputDir = join(root, "openai-conversations");
     const cleanOutput = join(inputDir, "clean_output");
     mkdirSync(cleanOutput, { recursive: true });
@@ -266,15 +268,18 @@ describe("chatgpt_conversation_edge", () => {
 // timeout measures is the import, not the toolchain. Widening the budget would only move the
 // threshold; taking the compile out of the measured window removes the dependency.
 function buildCompound(): string {
-  const bin = join(mkdtempSync(join(tmpdir(), "compound-chatgpt-edge-bin-")), "compound");
-  const build = spawnSync("go", ["build", "-o", bin, "./cmd/compound"], { encoding: "utf8" });
+  const bin = join(temporary.dir("compound-chatgpt-edge-bin-"), "compound");
+  const build = spawnSync("go", ["build", "-o", bin, "./cmd/compound"], { encoding: "utf8", timeout: 120_000 });
   if (build.status !== 0) throw new Error(build.stderr || build.stdout);
   return bin;
 }
 
-// Built at module scope, not inside a test: bun evaluates the module before any per-test timeout
-// applies, so the toolchain never competes with the assertion for the budget.
-const COMPOUND_BIN = buildCompound();
+// Setup keeps compilation outside the per-test timeout and still reaches teardown
+// on failure; Bun can skip teardown after an error during module evaluation.
+let COMPOUND_BIN: string;
+beforeAll(() => {
+  COMPOUND_BIN = buildCompound();
+}, 120_000);
 
 function runKnowledgeImport(homePath: string, exportPath: string) {
   const result = spawnSync(

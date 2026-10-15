@@ -1,7 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { parseConfig } from "./asc_daily_signals.ts";
@@ -10,7 +8,10 @@ import {
   parseMetricList,
   planSalesSeriesApplications,
 } from "./asc_sales_series_bridge.ts";
-import { initializeCompoundHome } from "./test_support.ts";
+import { createTestTempScope, initializeCompoundHome } from "./test_support.ts";
+
+const temporary = createTestTempScope();
+afterAll(() => temporary.cleanup());
 
 const seriesPath = "fixtures/product/asc-sales-series.jsonl";
 
@@ -98,8 +99,8 @@ describe("asc_sales_series_bridge edge", () => {
   });
 
   test("apply invokes Compound sales-series adapter idempotently in temp home", () => {
-    const home = mkdtempSync(join(tmpdir(), "compound-asc-bridge-home-"));
-    const bin = join(mkdtempSync(join(tmpdir(), "compound-asc-bridge-bin-")), "compound");
+    const home = temporary.dir("compound-asc-bridge-home-");
+    const bin = join(temporary.dir("compound-asc-bridge-bin-"), "compound");
     const build = spawnSync("go", ["build", "-o", bin, "./cmd/compound"], {
       encoding: "utf8",
     });

@@ -18,10 +18,10 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, appendFileSync, writeFileSync, mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, appendFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createTestTempScope } from "../../tools/test_support.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "..", "..");
@@ -34,7 +34,7 @@ function log(msg) {
 function resolveBinary() {
   const fromEnv = process.env.COMPOUND_BIN;
   if (fromEnv && existsSync(fromEnv)) return fromEnv;
-  const out = path.join(mkdtempSync(path.join(tmpdir(), "stream-door-bin-")), "compound");
+  const out = path.join(temporary.dir("stream-door-bin-"), "compound");
   log(`building compound -> ${out}`);
   try {
     execFileSync("go", ["build", "-o", out, "./cmd/compound"], {
@@ -87,50 +87,54 @@ async function readUntil(reader, predicate, timeoutMs) {
   return text;
 }
 
-const binary = resolveBinary();
-
-const home = mkdtempSync(path.join(tmpdir(), "stream-door-home-"));
-mkdirSync(path.join(home, "events"), { recursive: true });
-mkdirSync(path.join(home, "ledger"), { recursive: true });
-const workLog = path.join(home, "events", "work.jsonl");
-writeFileSync(workLog, `{"ts":"t1","work_id":"work_seed","from":"","to":"open"}\n`);
-writeFileSync(path.join(home, "ledger", "seq"), "1");
-
-// Freeze the module-pinned env BEFORE importing the route (compound.ts resolves
-// COMPOUND_HOME/COMPOUND_BIN once at module load).
-process.env.COMPOUND_HOME = home;
-process.env.COMPOUND_BIN = binary;
-delete process.env.COMPOUND_CONSOLE_PRIVATE_FALLBACKS; // THE falsifier condition
-
-// FALSIFIER (override mode): a legitimate follower already runs with the SAME
-// binary this smoke uses. A count-based or binary-scoped-count proof counts it
-// as an orphan and fails; the PID-delta proof must leave it alive.
+// Keep roots until natural process exit, after referenced stream children close.
+// The scope's exit fallback also covers startup or build failures.
+const temporary = createTestTempScope();
 let decoy = null;
-let baseline = followPids(binary);
-if (baseline !== null) {
-  decoy = spawn(binary, ["stream", "--follow", "--cursor", "1"], {
-    env: { ...process.env, COMPOUND_HOME: home },
-    stdio: "ignore",
-  });
-  for (let i = 0; i < 20; i++) {
-    baseline = followPids(binary);
-    if (baseline !== null && baseline.has(String(decoy.pid))) break;
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  assert.ok(
-    baseline !== null && baseline.has(String(decoy.pid)),
-    "baseline follower never became visible to process inspection",
-  );
-  log(`baseline follower live (pid ${decoy.pid}) before the route opens`);
-}
-
-const { GET } = await import("../src/app/api/stream/route.ts");
-
-const NEW_WORK_ID = "work_streamed42";
-const controller = new AbortController();
+let controller = null;
 let failure = null;
-
 try {
+  const binary = resolveBinary();
+
+  const home = temporary.dir("stream-door-home-");
+  mkdirSync(path.join(home, "events"), { recursive: true });
+  mkdirSync(path.join(home, "ledger"), { recursive: true });
+  const workLog = path.join(home, "events", "work.jsonl");
+  writeFileSync(workLog, `{"ts":"t1","work_id":"work_seed","from":"","to":"open"}\n`);
+  writeFileSync(path.join(home, "ledger", "seq"), "1");
+
+  // Freeze the module-pinned env BEFORE importing the route (compound.ts resolves
+  // COMPOUND_HOME/COMPOUND_BIN once at module load).
+  process.env.COMPOUND_HOME = home;
+  process.env.COMPOUND_BIN = binary;
+  process.env.TMPDIR = home; // contain the route's derived runJson cache too
+  delete process.env.COMPOUND_CONSOLE_PRIVATE_FALLBACKS; // THE falsifier condition
+
+  // FALSIFIER (override mode): a legitimate follower already runs with the SAME
+  // binary this smoke uses. A count-based or binary-scoped-count proof counts it
+  // as an orphan and fails; the PID-delta proof must leave it alive.
+  let baseline = followPids(binary);
+  if (baseline !== null) {
+    decoy = spawn(binary, ["stream", "--follow", "--cursor", "1"], {
+      env: { ...process.env, COMPOUND_HOME: home },
+      stdio: "ignore",
+    });
+    for (let i = 0; i < 20; i++) {
+      baseline = followPids(binary);
+      if (baseline !== null && baseline.has(String(decoy.pid))) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(
+      baseline !== null && baseline.has(String(decoy.pid)),
+      "baseline follower never became visible to process inspection",
+    );
+    log(`baseline follower live (pid ${decoy.pid}) before the route opens`);
+  }
+
+  const { GET } = await import("../src/app/api/stream/route.ts");
+
+  const NEW_WORK_ID = "work_streamed42";
+  controller = new AbortController();
   const request = new Request("https://compound.invalid/api/stream", { signal: controller.signal });
   const response = await GET(request);
   assert.equal(response.headers.get("Content-Type"), "text/event-stream", "must be an SSE response");
@@ -192,16 +196,18 @@ try {
 } catch (error) {
   failure = error;
 } finally {
-  controller.abort(); // ensure no orphan even if an assertion threw
+  controller?.abort(); // startup may fail before the controller exists
   await new Promise((r) => setTimeout(r, 200));
-  if (decoy) decoy.kill("SIGTERM"); // the smoke owns its decoy; never leaves it behind
+  if (decoy?.pid && decoy.exitCode === null && decoy.signalCode === null) {
+    const closed = new Promise((resolve) => decoy.once("close", resolve));
+    decoy.kill("SIGTERM"); // only the follower this smoke created
+    await closed;
+  }
 }
 
 if (failure) {
   console.error(`stream-door-smoke FAILED: ${failure.message}`);
-  process.exit(1);
-}
-
-console.log(
+  process.exitCode = 1;
+} else console.log(
   "stream-door smoke ok: default launch (flag unset) streams live via `compound stream`, delivers appended transitions, and kills the follow child on disconnect",
 );

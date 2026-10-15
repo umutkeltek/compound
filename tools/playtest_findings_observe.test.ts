@@ -1,31 +1,36 @@
-import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
 import { buildPlaytestBatch, emitPlaytestObservations } from "./playtest_findings_observe.ts";
-import { initializeCompoundHome } from "./test_support.ts";
+import { createTestTempScope, initializeCompoundHome } from "./test_support.ts";
+
+const temporary = createTestTempScope();
+afterAll(() => temporary.cleanup());
 
 // Built once per test process rather than via `go run` per invocation: `go run` puts a compile and
 // link inside the per-test timeout, so the budget ends up measuring machine load instead of the
 // observe-batch behaviour under test. See the same helper in chatgpt_conversation_edge.test.ts.
 function buildCompound(): string {
-  const bin = join(mkdtempSync(join(tmpdir(), "compound-playtest-observe-bin-")), "compound");
-  const build = spawnSync("go", ["build", "-o", bin, "./cmd/compound"], { encoding: "utf8" });
+  const bin = join(temporary.dir("compound-playtest-observe-bin-"), "compound");
+  const build = spawnSync("go", ["build", "-o", bin, "./cmd/compound"], { encoding: "utf8", timeout: 120_000 });
   if (build.status !== 0) throw new Error(build.stderr || build.stdout);
   return bin;
 }
 
-// Built at module scope, not inside a test — see chatgpt_conversation_edge.test.ts.
-const COMPOUND_BIN = buildCompound();
+// Build in setup, not module loading: Bun runs teardown when setup fails.
+let COMPOUND_BIN: string;
+beforeAll(() => {
+  COMPOUND_BIN = buildCompound();
+}, 120_000);
 
 const SAMPLE_RUN = "fixtures/playtest/run-sample";
 const UNKNOWN_TYPE_RUN = "fixtures/playtest/run-unknown-type";
 const CAPTURED_AT = "2026-07-13T00:00:00Z";
 
 function tempHome(): string {
-  return mkdtempSync(join(tmpdir(), "compound-playtest-observe-"));
+  return temporary.dir("compound-playtest-observe-");
 }
 
 // Falsifier 1: a run dir with a paired finding (pf1 + rec-pf1) AND an orphan finding

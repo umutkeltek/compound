@@ -1,8 +1,11 @@
-import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { afterAll, describe, expect, test } from "bun:test";
+import { createTestTempScope } from "./test_support.ts";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+
+const temporary = createTestTempScope();
+afterAll(() => temporary.cleanup());
 
 const conversationFixture = {
   conversations: [
@@ -65,7 +68,7 @@ const conversationFixture = {
 
 describe("chatgpt_conversation_preflight", () => {
   test("proves temp-home import idempotency and emits operator-only live actions", () => {
-    const root = mkdtempSync(join(tmpdir(), "compound-chatgpt-preflight-test-"));
+    const root = temporary.dir("compound-chatgpt-preflight-test-");
     const inputPath = join(root, "conversations.json");
     const compoundPath = join(root, "compound");
     writeFileSync(inputPath, JSON.stringify(conversationFixture), "utf8");
@@ -94,7 +97,7 @@ describe("chatgpt_conversation_preflight", () => {
         "--captured-at",
         "2026-07-04T00:00:00Z",
       ],
-      { cwd: process.cwd(), encoding: "utf8" },
+      { cwd: process.cwd(), encoding: "utf8", env: { ...process.env, TMPDIR: `${root}/` } },
     );
     expect(result.status).toBe(0);
 
@@ -153,7 +156,7 @@ describe("chatgpt_conversation_preflight", () => {
   }, 15000);
 
   test("accepts normalized JSONL corpus directories through the existing edge", () => {
-    const root = mkdtempSync(join(tmpdir(), "compound-chatgpt-preflight-jsonl-"));
+    const root = temporary.dir("compound-chatgpt-preflight-jsonl-");
     const inputDir = join(root, "openai-conversations");
     const cleanOutput = join(inputDir, "clean_output");
     const compoundPath = join(root, "compound");
@@ -196,7 +199,7 @@ describe("chatgpt_conversation_preflight", () => {
         "--min-chars",
         "40",
       ],
-      { cwd: process.cwd(), encoding: "utf8" },
+      { cwd: process.cwd(), encoding: "utf8", env: { ...process.env, TMPDIR: `${root}/` } },
     );
     expect(result.status).toBe(0);
     const report = JSON.parse(result.stdout);

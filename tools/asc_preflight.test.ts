@@ -1,28 +1,30 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { buildPreflightReport, expandASCCommand } from "./asc_preflight.ts";
-import { initializeCompoundHome } from "./test_support.ts";
+import { createTestTempScope, initializeCompoundHome } from "./test_support.ts";
+
+const temporary = createTestTempScope();
+afterAll(() => temporary.cleanup());
 
 function buildCompound(): string {
-  const bin = join(mkdtempSync(join(tmpdir(), "compound-asc-preflight-bin-")), "compound");
+  const bin = join(temporary.dir("compound-asc-preflight-bin-"), "compound");
   const build = spawnSync("go", ["build", "-o", bin, "./cmd/compound"], { encoding: "utf8" });
   if (build.status !== 0) throw new Error(build.stderr || build.stdout);
   return bin;
 }
 
 function writeConfig(apps: unknown[]): string {
-  const path = join(mkdtempSync(join(tmpdir(), "compound-asc-preflight-config-")), "asc-products.json");
+  const path = join(temporary.dir("compound-asc-preflight-config-"), "asc-products.json");
   writeFileSync(path, `${JSON.stringify({ apps }, null, 2)}\n`);
   return path;
 }
 
 describe("asc_preflight edge", () => {
   test("passes private mapping, product authority, smoke, and scheduler checks without applying", () => {
-    const home = mkdtempSync(join(tmpdir(), "compound-asc-preflight-home-"));
+    const home = temporary.dir("compound-asc-preflight-home-");
     const bin = buildCompound();
     const env = initializeCompoundHome(bin, home);
     const imported = spawnSync(bin, ["product", "import", "fixtures/product/market-loop.yaml"], {
@@ -92,7 +94,7 @@ describe("asc_preflight edge", () => {
   }, 15000);
 
   test("fails when private ASC mapping references an unregistered product", () => {
-    const home = mkdtempSync(join(tmpdir(), "compound-asc-preflight-home-"));
+    const home = temporary.dir("compound-asc-preflight-home-");
     const bin = buildCompound();
     const env = initializeCompoundHome(bin, home);
     const configPath = writeConfig([

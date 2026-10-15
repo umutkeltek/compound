@@ -1,6 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
@@ -8,20 +7,27 @@ import {
   normalizeHFCandidates,
   normalizeSemanticCandidates,
 } from "./paper_selection_edge.ts";
-import { initializeCompoundHome } from "./test_support.ts";
+import { createTestTempScope, initializeCompoundHome } from "./test_support.ts";
+
+const temporary = createTestTempScope();
+afterAll(() => temporary.cleanup());
 
 function buildCompound(): string {
-  const bin = join(mkdtempSync(join(tmpdir(), "compound-paper-selection-bin-")), "compound");
+  const bin = join(temporary.dir("compound-paper-selection-bin-"), "compound");
   const build = spawnSync("go", ["build", "-o", bin, "./cmd/compound"], {
     cwd: process.cwd(),
     encoding: "utf8",
+    timeout: 120_000,
   });
   if (build.status !== 0) throw new Error(build.stderr || build.stdout);
   return bin;
 }
 
-// Keep compilation outside the per-test timeout so the test measures the import path.
-const COMPOUND_BIN = buildCompound();
+// Keep compilation in setup, outside the per-test timeout, so failed builds get teardown.
+let COMPOUND_BIN: string;
+beforeAll(() => {
+  COMPOUND_BIN = buildCompound();
+}, 120_000);
 
 const hfFixture = [
   {
@@ -125,7 +131,7 @@ describe("paper_selection_edge", () => {
 });
 
 test("cli export imports idempotently through generic Compound knowledge import", () => {
-  const root = mkdtempSync(join(tmpdir(), "compound-paper-selection-test-"));
+  const root = temporary.dir("compound-paper-selection-test-");
   const hfPath = join(root, "hf-daily.json");
   const semanticPath = join(root, "semantic-scholar.json");
   const exportPath = join(root, "paper-selection-export.json");
