@@ -1040,15 +1040,20 @@ func TestProofCheckAdmissionRejectsSecondBeforeRunnerStarts(t *testing.T) {
 
 func TestProofCheckAdmissionStealCancelsPredecessorProcessBeforeSuccessorStarts(t *testing.T) {
 	t.Parallel()
-	testProofCheckAdmissionStealCancelsPredecessor(t, false)
+	testProofCheckAdmissionStealCancelsPredecessor(t, false, false)
 }
 
 func TestProofCheckAdmissionStealWithDelayedAdmissionPreservesProcessReadinessBudget(t *testing.T) {
 	t.Parallel()
-	testProofCheckAdmissionStealCancelsPredecessor(t, true)
+	testProofCheckAdmissionStealCancelsPredecessor(t, true, false)
 }
 
-func testProofCheckAdmissionStealCancelsPredecessor(t *testing.T, delayAdmission bool) {
+func TestProofCheckAdmissionSlowFinalizationPreservesProcessTerminationBudget(t *testing.T) {
+	t.Parallel()
+	testProofCheckAdmissionStealCancelsPredecessor(t, false, true)
+}
+
+func testProofCheckAdmissionStealCancelsPredecessor(t *testing.T, delayAdmission, holdFinalization bool) {
 	t.Helper()
 	homePath := t.TempDir()
 	now := time.Now().UTC()
@@ -1084,6 +1089,16 @@ func testProofCheckAdmissionStealCancelsPredecessor(t *testing.T, delayAdmission
 	testCtx, cancel := context.WithDeadline(context.Background(), deadline)
 	firstFinished := make(chan struct{})
 	processStarted := make(chan struct{})
+	processTerminated := make(chan error, 1)
+	completionGate := make(chan struct{})
+	gateReleased := false
+	releaseCompletion := func() {
+		if !gateReleased {
+			close(completionGate)
+			gateReleased = true
+		}
+	}
+	defer releaseCompletion()
 	firstDone := make(chan error, 1)
 	t.Cleanup(func() {
 		cancel()
@@ -1126,10 +1141,12 @@ func testProofCheckAdmissionStealCancelsPredecessor(t *testing.T, delayAdmission
 			}
 			close(processStarted)
 			runErr := cmd.Wait()
-			if err := os.WriteFile(terminatedPath, []byte("terminated\n"), 0o644); err != nil {
-				return proofCheckReport{}, errors.Join(runErr, err)
+			sentinelErr := os.WriteFile(terminatedPath, []byte("terminated\n"), 0o644)
+			processTerminated <- sentinelErr
+			if holdFinalization {
+				<-completionGate
 			}
-			return proofCheckReport{}, runErr
+			return proofCheckReport{}, errors.Join(runErr, sentinelErr)
 		})
 		firstDone <- runErr
 	}()
@@ -1163,13 +1180,34 @@ func testProofCheckAdmissionStealCancelsPredecessor(t *testing.T, delayAdmission
 		status, _ := landlease.Status(homePath, time.Now())
 		t.Fatalf("successor runner starts = %d, want zero until predecessor termination; admission error=%v status=%+v", successorStarts.Load(), secondErr, status)
 	}
+	// Process lifetime and durable audit completion have separate budgets.
+	// Keep the process termination bound unchanged even when finalization is slow.
 	select {
-	case firstErr := <-firstDone:
-		if firstErr == nil || !strings.Contains(firstErr.Error(), "heartbeat") {
-			t.Fatalf("predecessor completion error = %v, want audited holder-loss heartbeat failure", firstErr)
+	case processErr := <-processTerminated:
+		if processErr != nil {
+			t.Fatalf("record predecessor termination: %v", processErr)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("predecessor runner did not terminate after lease loss")
+	}
+	if holdFinalization {
+		select {
+		case <-firstFinished:
+			t.Fatal("completion gate failed to hold finalization")
+		default:
+		}
+	}
+	releaseCompletion()
+	completionCtx, stopCompletion := context.WithTimeout(testCtx, minimumProofCheckReservationTTL)
+	defer stopCompletion()
+	select {
+	case <-firstFinished:
+	case <-completionCtx.Done():
+		t.Fatal("predecessor process exited but governed finalization did not finish")
+	}
+	firstErr := <-firstDone
+	if firstErr == nil || !strings.Contains(firstErr.Error(), "heartbeat") {
+		t.Fatalf("predecessor completion error = %v, want audited holder-loss heartbeat failure", firstErr)
 	}
 	if _, err := os.Stat(terminatedPath); err != nil {
 		t.Fatalf("predecessor process termination sentinel missing: %v", err)
