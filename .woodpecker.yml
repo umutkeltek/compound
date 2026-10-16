@@ -26,10 +26,13 @@ steps:
     volumes:
       - compound-go-build-cache:/cache/go-build
       - compound-go-mod-cache:/cache/go-mod
-    backend_options:
-      docker:
-        user: "1000:1000"
+    # Runs as root on purpose: the harness suite needs a fixed-path Node
+    # interpreter (/usr/bin/node) that only apt can place, and a fresh named
+    # cache volume is root-owned until something chowns it. Both are
+    # container-local; nothing here touches the agent host.
     commands:
+      - apt-get update -qq && apt-get install -y -qq --no-install-recommends nodejs >/dev/null
+      - test -x /usr/bin/node && /usr/bin/node --version
       - mkdir -p "$HOME" "$GOCACHE" "$GOMODCACHE"
       - export PATH="$CI_WORKSPACE/.ci/bin:$PATH"
       - export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$CI_WORKSPACE"
