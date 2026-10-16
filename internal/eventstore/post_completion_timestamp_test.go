@@ -3,6 +3,7 @@ package eventstore
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -38,7 +39,10 @@ func TestLegacyStreamEqualCompletionTimestampFailsClosed(t *testing.T) {
 	if err := os.Link(marker, stream); err != nil {
 		t.Fatal(err)
 	}
-	if active, err := store.LegacyWriterActive(); err != nil || !active {
+	if active, err := store.engine.legacyStreamRegrew(); err != nil || !active {
 		t.Fatalf("new stream read as quiet: active=%v err=%v", active, err)
+	}
+	if _, err := store.CreatePostCompletionRepairPlan(repairNow, 0); err == nil || !strings.Contains(err.Error(), "compatibility writer is active") {
+		t.Fatalf("plan accepted ambiguous stream timestamp: %v", err)
 	}
 }
