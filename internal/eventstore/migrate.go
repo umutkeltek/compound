@@ -324,12 +324,10 @@ func (s *Store) LegacyWriterActive() (bool, error) {
 // any difference, growth or shrink, is a regression, and an unchanged size is
 // never flagged regardless of mtime (a legitimate mtime bump, e.g. a backup
 // restore or filesystem migration, no longer false-reds the doctor). A stream
-// the sidecar has no entry for (it did not exist at the moment the sidecar was
-// last written) falls back to the mtime boundary, exactly as before the
-// sidecar existed at all — this keeps already-completed legacy homes (no
-// sidecar) and freshly-completed homes whose streams were empty at completion
-// behaving identically to today. Absent streams are the healthy pure-segment
-// case and never flag.
+// the sidecar has no entry for, or a legacy home without a sidecar, falls back
+// to the mtime boundary. Only a timestamp strictly before completion proves
+// that a stream was frozen: equality is ambiguous on coarse filesystem clocks
+// and fails closed. Absent streams remain healthy.
 func (e *engine) legacyStreamRegrew() (bool, error) {
 	if err := e.failIfRebaselinePending(); err != nil {
 		return false, err
@@ -362,7 +360,7 @@ func (e *engine) legacyStreamRegrew() (bool, error) {
 				continue
 			}
 		}
-		if info.ModTime().After(boundary) {
+		if !info.ModTime().Before(boundary) {
 			return true, nil
 		}
 	}

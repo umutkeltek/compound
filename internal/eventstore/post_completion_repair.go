@@ -388,6 +388,7 @@ type postCompletionRepairFileSeal struct {
 	Exists      bool
 	Size        int64
 	ModTimeNano int64
+	SHA256      string
 }
 
 type postCompletionRepairPlanOptions struct {
@@ -494,8 +495,8 @@ func (s *Store) createPostCompletionRepairPlan(now time.Time, opts postCompletio
 			return PostCompletionRepairPlanRecord{}, err
 		}
 	}
-	if opts.observationInterval > 0 {
-		time.Sleep(opts.observationInterval)
+	if err := observePostCompletionRepairClock(s.engine.migrationRoot(), opts.observationInterval); err != nil {
+		return PostCompletionRepairPlanRecord{}, err
 	}
 	m := &migrator{store: s, engine: s.engine}
 	loose, err := m.enumerateLoose()
@@ -746,8 +747,8 @@ func (s *Store) reviewPostCompletionRepair(planPath, reviewer, decision string, 
 			return PostCompletionRepairReviewRecord{}, err
 		}
 	}
-	if opts.observationInterval > 0 {
-		time.Sleep(opts.observationInterval)
+	if err := observePostCompletionRepairClock(s.engine.migrationRoot(), opts.observationInterval); err != nil {
+		return PostCompletionRepairReviewRecord{}, err
 	}
 	after, err := s.postCompletionRepairWriterSnapshot(&plan, false)
 	if err != nil {
@@ -1323,7 +1324,32 @@ func postCompletionRepairSeal(path string) (postCompletionRepairFileSeal, error)
 	if err != nil {
 		return postCompletionRepairFileSeal{}, err
 	}
-	return postCompletionRepairFileSeal{Exists: true, Size: info.Size(), ModTimeNano: info.ModTime().UnixNano()}, nil
+	seal := postCompletionRepairFileSeal{Exists: true, Size: info.Size(), ModTimeNano: info.ModTime().UnixNano()}
+	if info.IsDir() {
+		return seal, nil
+	}
+	if !info.Mode().IsRegular() {
+		return postCompletionRepairFileSeal{}, fmt.Errorf("post-completion repair seal requires a regular file: %s", path)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return postCompletionRepairFileSeal{}, err
+	}
+	hash := sha256.New()
+	n, readErr := io.Copy(hash, file)
+	after, statErr := file.Stat()
+	closeErr := file.Close()
+	named, nameErr := os.Stat(path)
+	if err := errors.Join(readErr, statErr, closeErr, nameErr); err != nil {
+		return postCompletionRepairFileSeal{}, err
+	}
+	if !os.SameFile(info, after) || !os.SameFile(info, named) || n != info.Size() ||
+		after.Size() != info.Size() || named.Size() != info.Size() ||
+		!after.ModTime().Equal(info.ModTime()) || !named.ModTime().Equal(info.ModTime()) {
+		return postCompletionRepairFileSeal{}, fmt.Errorf("post-completion repair source changed while sealing: %s", path)
+	}
+	seal.SHA256 = "sha256:" + hex.EncodeToString(hash.Sum(nil))
+	return seal, nil
 }
 
 func (c *postCompletionRepairSourceCensus) sourceBytes(entry PostCompletionRepairEntry) ([]byte, error) {
