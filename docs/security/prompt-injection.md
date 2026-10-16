@@ -162,7 +162,7 @@ segments pass. Directory-changing or control-flow writes and unmodelled options 
 closed rather than guessing their write targets.
 
 Python, Node, Bun, Deno, Ruby, Perl, AppleScript, and `go run` may run inline
-programs or script paths inside cwd as `script.run.local`, with manual
+programs or script paths inside cwd as `script.run.local_program`, with manual
 reversibility and local blast radius (desktop for AppleScript). This is a
 classification of an opaque program, not a sandbox or a claim that its body
 cannot access the network. Module/package entrypoints, remote program paths,

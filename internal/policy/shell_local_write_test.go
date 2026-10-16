@@ -106,7 +106,7 @@ func TestShellLocalWritesStayClosed(t *testing.T) {
 	for _, command := range []string{
 		"cp a /etc/hosts", "cp ~/.ssh/id_rsa /tmp/x", "mv a ../../outside",
 		"echo x > ~/.compound/registries/standing-grants.json", "touch ~/.gnupg/config",
-		"cp a ~/.aws/config", "cp a .git/config", "touch .env", "touch .env.local",
+		"cp a ~/.aws/config", "cp a .git/config", "touch .env", "touch .env.test",
 		"touch server.key", "touch id_rsa.pub", "touch my-secret-file", "touch /usr/f",
 		"touch /bin/f", "touch /sbin/f", "touch /Library/f", "touch /System/f",
 		"cp a /home/example-other/f", "cp a $(pwd)/f", "cp a `pwd`/f",
@@ -186,7 +186,7 @@ func TestShellLocalWriteInterpreters(t *testing.T) {
 			if strings.Contains(command, "osascript") {
 				blast = "desktop"
 			}
-			if !got.Known || got.MutationClass != "local_reversible" || got.Capability != "script.run.local" ||
+			if !got.Known || got.MutationClass != "local_reversible" || got.Capability != "script.run.local_program" ||
 				got.Reversibility != "manual" || got.BlastRadius != blast || got.TargetKind != "path" || got.Destination != "path:"+request.Cwd {
 				t.Fatalf("local interpreter: %+v", got)
 			}

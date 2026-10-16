@@ -116,8 +116,8 @@ func shellLocalWriteCommand(base ActionClassification, segments []shellSegment, 
 	base.Known, base.TargetKind, base.Reversibility = true, "path", "manual"
 	base.Destination = "path:" + shellCommonLocalTarget(targets)
 	if script {
-		base.Capability = "script.run.local"
-		base.Operation = "script.run.local"
+		base.Capability = "script.run.local_program"
+		base.Operation = "script.run.local_program"
 	}
 	if desktop {
 		base.BlastRadius = "desktop"
