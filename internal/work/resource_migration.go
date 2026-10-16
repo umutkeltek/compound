@@ -18,6 +18,8 @@ import (
 type ResourceMigrationInput struct {
 	Actor, Operator, EvidenceRef, BackingHome string
 	WritersPaused                             bool
+	ProofClasses                              bool
+	ProofHomes                                []string
 	ExpiresAt                                 time.Time
 }
 
@@ -54,6 +56,9 @@ func (s *Store) MigrateCoordinationResources(workID string, in ResourceMigration
 	backingRoot, err := home.HabitatPath(backingHome, "work.resource-leases")
 	if err != nil {
 		return landlease.LayoutStatusResult{}, err
+	}
+	if in.ProofClasses {
+		return s.migrateProofCoordinationResources(workID, in, backingRoot, currentTime, validateWindow)
 	}
 	err = s.withLifecycleMutation(func() error {
 		w, err := s.resourceMutationOwner(workID, in.Actor)

@@ -70,8 +70,9 @@ type ExecutionTerminationAttestation struct {
 // exits or closes, so liveness does not rely on a reusable PID or RunAttempt
 // status label.
 type ExecutionBarrier struct {
-	id   string
-	file *os.File
+	id         string
+	file       *os.File
+	additional []*os.File
 }
 
 func (b *ExecutionBarrier) ID() string {
@@ -82,6 +83,9 @@ func (b *ExecutionBarrier) ID() string {
 }
 
 func (b *ExecutionBarrier) DuplicateForChild() (*os.File, error) {
+	if b != nil && len(b.additional) != 0 {
+		return nil, fmt.Errorf("composite execution barrier requires DuplicateFilesForChild")
+	}
 	if b == nil || b.file == nil {
 		return nil, fmt.Errorf("land-lease execution barrier is closed")
 	}
@@ -92,26 +96,60 @@ func (b *ExecutionBarrier) DuplicateForChild() (*os.File, error) {
 	return os.NewFile(uintptr(fd), b.file.Name()), nil
 }
 
-// InheritableFile returns the owned descriptor for exec.Cmd.ExtraFiles.
-// os/exec duplicates it into the child; the caller must not close this file
-// separately from Close.
-func (b *ExecutionBarrier) InheritableFile() *os.File {
-	if b == nil {
-		return nil
-	}
-	return b.file
-}
-
-func (b *ExecutionBarrier) Close() error {
+// InheritableFiles returns every owned barrier for exec.Cmd.ExtraFiles.
+// os/exec duplicates them into the child. Callers must inherit the entire set.
+func (b *ExecutionBarrier) InheritableFiles() []*os.File {
 	if b == nil || b.file == nil {
 		return nil
 	}
-	file := b.file
+	return append([]*os.File{b.file}, b.additional...)
+}
+
+func (b *ExecutionBarrier) DuplicateFilesForChild() ([]*os.File, error) {
+	files := b.InheritableFiles()
+	if len(files) == 0 {
+		return nil, fmt.Errorf("land-lease execution barrier is closed")
+	}
+	out := make([]*os.File, 0, len(files))
+	for _, file := range files {
+		fd, err := syscall.Dup(int(file.Fd()))
+		if err != nil {
+			for _, duplicate := range out {
+				_ = duplicate.Close()
+			}
+			return nil, fmt.Errorf("duplicate execution barriers: %w", err)
+		}
+		syscall.CloseOnExec(fd)
+		out = append(out, os.NewFile(uintptr(fd), file.Name()))
+	}
+	return out, nil
+}
+
+// include transfers ownership; never unlock inherited open-file descriptions.
+func (b *ExecutionBarrier) include(other *ExecutionBarrier) error {
+	if b == nil || b.file == nil || other == nil || other.file == nil || b == other {
+		return fmt.Errorf("two distinct open execution barriers required")
+	}
+	b.additional = append(b.additional, other.InheritableFiles()...)
+	other.file = nil
+	other.additional = nil
+	return nil
+}
+
+func (b *ExecutionBarrier) Close() error {
+	if b == nil {
+		return nil
+	}
+	files := b.InheritableFiles()
 	b.file = nil
-	// Do not issue LOCK_UN: duplicates inherited by child processes share the
-	// same open-file description, and an explicit unlock here would release
-	// their protection too. Closing the final descriptor releases the lock.
-	return file.Close()
+	b.additional = nil
+	var errs []error
+	// Closing the final duplicate releases each lock. Explicit LOCK_UN would
+	// release descendants' protection, so it must never be used here.
+	for _, file := range files {
+		errs = append(errs, file.Close())
+	}
+	return errors.Join(errs...)
 }
 
 const (
@@ -134,17 +172,18 @@ const (
 // Lease is the persisted land-lease record. The steal-audit fields (PriorHolder/StealReason/StolenAt)
 // are set ONLY on a lease produced by Steal; a plain Acquire always leaves them empty.
 type Lease struct {
-	TerminationRequestedBy   string `json:"termination_requested_by,omitempty"`
-	TerminationRequestReason string `json:"termination_request_reason,omitempty"`
-	TerminationRequestedAt   string `json:"termination_requested_at,omitempty"`
-	SchemaVersion            string `json:"schema_version"`
-	Holder                   string `json:"holder"`
-	AcquiredAt               string `json:"acquired_at"` // RFC3339 (UTC)
-	TTLSeconds               int64  `json:"ttl_seconds"`
-	ExpiresAt                string `json:"expires_at"` // RFC3339 (UTC)
-	PriorHolder              string `json:"prior_holder,omitempty"`
-	StealReason              string `json:"steal_reason,omitempty"`
-	StolenAt                 string `json:"stolen_at,omitempty"`
+	ProofCoordination        *ProofCoordinationIdentity `json:"proof_coordination,omitempty"`
+	TerminationRequestedBy   string                     `json:"termination_requested_by,omitempty"`
+	TerminationRequestReason string                     `json:"termination_request_reason,omitempty"`
+	TerminationRequestedAt   string                     `json:"termination_requested_at,omitempty"`
+	SchemaVersion            string                     `json:"schema_version"`
+	Holder                   string                     `json:"holder"`
+	AcquiredAt               string                     `json:"acquired_at"` // RFC3339 (UTC)
+	TTLSeconds               int64                      `json:"ttl_seconds"`
+	ExpiresAt                string                     `json:"expires_at"` // RFC3339 (UTC)
+	PriorHolder              string                     `json:"prior_holder,omitempty"`
+	StealReason              string                     `json:"steal_reason,omitempty"`
+	StolenAt                 string                     `json:"stolen_at,omitempty"`
 }
 
 // live reports whether the lease is still held at now (now strictly before expiry). An unparseable
@@ -196,20 +235,21 @@ type ReleaseResult struct {
 // lease; the record's fields (Holder/AcquiredAt/ExpiresAt + any steal audit) are surfaced even when
 // expired so an operator can see what just aged out.
 type StatusResult struct {
-	TerminationRequestedBy   string `json:"termination_requested_by,omitempty"`
-	TerminationRequestReason string `json:"termination_request_reason,omitempty"`
-	TerminationRequestedAt   string `json:"termination_requested_at,omitempty"`
-	SchemaVersion            string `json:"schema_version"`
-	Held                     bool   `json:"held"`
-	Holder                   string `json:"holder,omitempty"`
-	AcquiredAt               string `json:"acquired_at,omitempty"`
-	ExpiresAt                string `json:"expires_at,omitempty"`
-	TTLSeconds               int64  `json:"ttl_seconds,omitempty"`
-	RemainingSeconds         int64  `json:"remaining_seconds"`
-	IsExpired                bool   `json:"is_expired"`
-	PriorHolder              string `json:"prior_holder,omitempty"`
-	StealReason              string `json:"steal_reason,omitempty"`
-	StolenAt                 string `json:"stolen_at,omitempty"`
+	ProofCoordination        *ProofCoordinationIdentity `json:"proof_coordination,omitempty"`
+	TerminationRequestedBy   string                     `json:"termination_requested_by,omitempty"`
+	TerminationRequestReason string                     `json:"termination_request_reason,omitempty"`
+	TerminationRequestedAt   string                     `json:"termination_requested_at,omitempty"`
+	SchemaVersion            string                     `json:"schema_version"`
+	Held                     bool                       `json:"held"`
+	Holder                   string                     `json:"holder,omitempty"`
+	AcquiredAt               string                     `json:"acquired_at,omitempty"`
+	ExpiresAt                string                     `json:"expires_at,omitempty"`
+	TTLSeconds               int64                      `json:"ttl_seconds,omitempty"`
+	RemainingSeconds         int64                      `json:"remaining_seconds"`
+	IsExpired                bool                       `json:"is_expired"`
+	PriorHolder              string                     `json:"prior_holder,omitempty"`
+	StealReason              string                     `json:"steal_reason,omitempty"`
+	StolenAt                 string                     `json:"stolen_at,omitempty"`
 }
 
 // AcquireOutcome exposes the predecessor observed inside the same advisory-lock transaction that
@@ -269,11 +309,17 @@ func AcquireWithOutcomePrepared(
 	return acquireWithOutcomePrepared(home, holder, ttl, now, prepare)
 }
 
-func acquireWithOutcomePrepared(
+func acquireWithOutcomePrepared(home, holder string, ttl time.Duration, now time.Time, prepare func(AcquireOutcome) error) (AcquireOutcome, error) {
+	return acquireWithProofIdentityPrepared(home, holder, ttl, now, prepare, nil)
+}
+
+func acquireWithProofIdentityPrepared(
 	home, holder string,
 	ttl time.Duration,
 	now time.Time,
 	prepare func(AcquireOutcome) error,
+	requested *ProofCoordinationIdentity,
+	bindings ...*leaseBinding,
 ) (AcquireOutcome, error) {
 	holder = strings.TrimSpace(holder)
 	if holder == "" {
@@ -284,7 +330,7 @@ func acquireWithOutcomePrepared(
 		return AcquireOutcome{}, fmt.Errorf("land-lease ttl must be at least one second")
 	}
 	var outcome AcquireOutcome
-	err := withLock(home, func() error {
+	err := withLeaseBindingLock(home, singleLeaseBinding(bindings), func() error {
 		statePath, sErr := statePath(home)
 		if sErr != nil {
 			return sErr
@@ -292,6 +338,10 @@ func acquireWithOutcomePrepared(
 		current, exists, rErr := readLease(statePath)
 		if rErr != nil {
 			return rErr
+		}
+		coordination, identityErr := proofLeaseIdentity(current, holder, requested)
+		if identityErr != nil {
+			return identityErr
 		}
 		if exists && current.live(now) && current.Holder != holder {
 			return &HeldError{
@@ -314,6 +364,7 @@ func acquireWithOutcomePrepared(
 			outcome.ExpiredPredecessor = &expired
 		}
 		outcome.Lease = newLease(holder, ttlSecs, now)
+		outcome.Lease.ProofCoordination = coordination
 		if prepare != nil {
 			if err := prepare(outcome); err != nil {
 				return err
@@ -331,6 +382,9 @@ func acquireWithOutcomePrepared(
 // record, so a proof heartbeat that arrives after its TTL cannot reopen an exclusive window that a
 // successor was already entitled to take.
 func Refresh(home, holder string, ttl time.Duration, now time.Time) (Lease, error) {
+	return refreshBound(home, holder, ttl, now, nil)
+}
+func refreshBound(home, holder string, ttl time.Duration, now time.Time, binding *leaseBinding) (Lease, error) {
 	holder = strings.TrimSpace(holder)
 	if holder == "" {
 		return Lease{}, fmt.Errorf("land-lease holder required")
@@ -340,7 +394,7 @@ func Refresh(home, holder string, ttl time.Duration, now time.Time) (Lease, erro
 		return Lease{}, fmt.Errorf("land-lease ttl must be at least one second")
 	}
 	var refreshed Lease
-	err := withLock(home, func() error {
+	err := withLeaseBindingLock(home, binding, func() error {
 		statePath, sErr := statePath(home)
 		if sErr != nil {
 			return sErr
@@ -359,6 +413,7 @@ func Refresh(home, holder string, ttl time.Duration, now time.Time) (Lease, erro
 			return fmt.Errorf("land-lease for %q expired at %s; refusing refresh", holder, current.ExpiresAt)
 		}
 		refreshed = newLease(holder, ttlSecs, now)
+		refreshed.ProofCoordination = cloneProofCoordination(current.ProofCoordination)
 		return writeLeaseAtomic(statePath, refreshed)
 	})
 	if err != nil {
@@ -373,11 +428,17 @@ func Refresh(home, holder string, ttl time.Duration, now time.Time) (Lease, erro
 // the lease lock, and the holder's execution barrier must attest clear. A successor, refresh,
 // termination request, or any other record change therefore makes recovery fail closed.
 func RearmExpiredExact(home string, expected StatusResult, now time.Time) (Lease, error) {
+	return rearmExpiredExactBound(home, expected, now, nil)
+}
+func rearmExpiredExactBound(home string, expected StatusResult, now time.Time, binding *leaseBinding) (Lease, error) {
 	if expected.Held || !expected.IsExpired || strings.TrimSpace(expected.Holder) == "" {
 		return Lease{}, fmt.Errorf("land-lease exact expired status required for finalizer recovery")
 	}
 	var rearmed Lease
-	err := withLock(home, func() error {
+	err := withLeaseBindingLock(home, binding, func() error {
+		if err := binding.repositoryReleased(); err != nil {
+			return err
+		}
 		statePath, err := statePath(home)
 		if err != nil {
 			return err
@@ -407,6 +468,7 @@ func RearmExpiredExact(home string, expected StatusResult, now time.Time) (Lease
 			ttlSecs = DefaultTTLSeconds
 		}
 		rearmed = *current
+		rearmed.ProofCoordination = cloneProofCoordination(current.ProofCoordination)
 		rearmed.AcquiredAt = now.UTC().Format(time.RFC3339)
 		rearmed.TTLSeconds = ttlSecs
 		rearmed.ExpiresAt = now.UTC().Add(time.Duration(ttlSecs) * time.Second).Format(time.RFC3339)
@@ -419,7 +481,8 @@ func RearmExpiredExact(home string, expected StatusResult, now time.Time) (Lease
 }
 
 func leaseMatchesStatus(lease Lease, status StatusResult, now time.Time) bool {
-	return lease.SchemaVersion == status.SchemaVersion &&
+	return sameProofCoordination(lease.ProofCoordination, status.ProofCoordination) &&
+		lease.SchemaVersion == status.SchemaVersion &&
 		lease.Holder == status.Holder &&
 		lease.AcquiredAt == status.AcquiredAt &&
 		lease.ExpiresAt == status.ExpiresAt &&
@@ -609,12 +672,18 @@ func (s *leaseSleeper) close() {
 // silently dropped); a release when nothing is held is an idempotent Freed=false no-op. A held lease
 // is removed (Status then shows nothing held).
 func Release(home, holder string, now time.Time) (ReleaseResult, error) {
+	return releaseBound(home, holder, now, nil)
+}
+func releaseBound(home, holder string, now time.Time, binding *leaseBinding) (ReleaseResult, error) {
 	holder = strings.TrimSpace(holder)
 	if holder == "" {
 		return ReleaseResult{}, fmt.Errorf("land-lease holder required")
 	}
 	var result ReleaseResult
-	err := withLock(home, func() error {
+	err := withLeaseBindingLock(home, binding, func() error {
+		if err := binding.repositoryReleased(); err != nil {
+			return err
+		}
 		statePath, sErr := statePath(home)
 		if sErr != nil {
 			return sErr
@@ -661,6 +730,9 @@ func Release(home, holder string, now time.Time) (ReleaseResult, error) {
 // a governed proof completion cannot become valid merely because its old record still names holder.
 // Callers must not recursively call landlease operations from finalize; the advisory flock is held.
 func ReleaseAfter(home, holder string, now time.Time, finalize func() error) (ReleaseResult, error) {
+	return releaseAfterBound(home, holder, now, finalize, nil)
+}
+func releaseAfterBound(home, holder string, now time.Time, finalize func() error, binding *leaseBinding) (ReleaseResult, error) {
 	holder = strings.TrimSpace(holder)
 	if holder == "" {
 		return ReleaseResult{}, fmt.Errorf("land-lease holder required")
@@ -669,7 +741,10 @@ func ReleaseAfter(home, holder string, now time.Time, finalize func() error) (Re
 		return ReleaseResult{}, fmt.Errorf("land-lease release finalizer required")
 	}
 	var result ReleaseResult
-	err := withLock(home, func() error {
+	err := withLeaseBindingLock(home, binding, func() error {
+		if err := binding.repositoryReleased(); err != nil {
+			return err
+		}
 		statePath, sErr := statePath(home)
 		if sErr != nil {
 			return sErr
@@ -749,12 +824,18 @@ func StealExpectedPrepared(
 	return stealExpected(home, newHolder, expectedPriorHolder, reason, now, true, prepare, nil)
 }
 
-func stealExpected(
+func stealExpected(home, newHolder, expectedPriorHolder, reason string, now time.Time, requireExpected bool, prepare func(Lease) error, observed *StatusResult) (Lease, error) {
+	return stealWithProofIdentityExpected(home, newHolder, expectedPriorHolder, reason, now, requireExpected, prepare, observed, nil)
+}
+
+func stealWithProofIdentityExpected(
 	home, newHolder, expectedPriorHolder, reason string,
 	now time.Time,
 	requireExpected bool,
 	prepare func(Lease) error,
 	observed *StatusResult,
+	requested *ProofCoordinationIdentity,
+	bindings ...*leaseBinding,
 ) (Lease, error) {
 	newHolder = strings.TrimSpace(newHolder)
 	if newHolder == "" {
@@ -765,7 +846,7 @@ func stealExpected(
 		return Lease{}, fmt.Errorf("land-lease steal requires a reason (a steal is auditable; use acquire for an uncontested lease)")
 	}
 	var stolen Lease
-	err := withLock(home, func() error {
+	err := withLeaseBindingLock(home, singleLeaseBinding(bindings), func() error {
 		statePath, sErr := statePath(home)
 		if sErr != nil {
 			return sErr
@@ -802,7 +883,12 @@ func stealExpected(
 				ttlSecs = current.TTLSeconds
 			}
 		}
+		coordination, identityErr := proofLeaseIdentity(current, newHolder, requested)
+		if identityErr != nil {
+			return identityErr
+		}
 		stolen = newLease(newHolder, ttlSecs, now)
+		stolen.ProofCoordination = coordination
 		stolen.PriorHolder = priorHolder
 		stolen.StealReason = reason
 		stolen.StolenAt = now.UTC().Format(time.RFC3339)
@@ -823,7 +909,8 @@ func stealExpected(
 // RemainingSeconds, and IsExpired depend on the caller's clock and cannot
 // identify a lease generation.
 func sameDurableLeaseStatus(current Lease, observed StatusResult) bool {
-	return current.SchemaVersion == observed.SchemaVersion &&
+	return sameProofCoordination(current.ProofCoordination, observed.ProofCoordination) &&
+		current.SchemaVersion == observed.SchemaVersion &&
 		current.Holder == observed.Holder &&
 		current.AcquiredAt == observed.AcquiredAt &&
 		current.ExpiresAt == observed.ExpiresAt &&
@@ -838,8 +925,11 @@ func sameDurableLeaseStatus(current Lease, observed StatusResult) bool {
 
 // Status returns the current lease read-model at now. A missing lease is a clean "nothing held".
 func Status(home string, now time.Time) (StatusResult, error) {
+	return statusBound(home, now, nil)
+}
+func statusBound(home string, now time.Time, binding *leaseBinding) (StatusResult, error) {
 	result := StatusResult{SchemaVersion: SchemaVersion}
-	err := withLock(home, func() error {
+	err := withLeaseBindingLock(home, binding, func() error {
 		statePath, sErr := statePath(home)
 		if sErr != nil {
 			return sErr
@@ -876,6 +966,9 @@ func newLease(holder string, ttlSecs int64, now time.Time) Lease {
 // released with the descriptor even on a crash (advisory flock semantics). Mirrors
 // home.WithAutonomyAdmissionLock; Darwin + Linux are compound's supported runtime targets.
 func withLock(home string, fn func() error) error {
+	return withLockMode(home, false, fn)
+}
+func withLockMode(home string, nonblocking bool, fn func() error) error {
 	home = strings.TrimSpace(home)
 	if home == "" {
 		return fmt.Errorf("COMPOUND_HOME required")
@@ -889,7 +982,14 @@ func withLock(home string, fn func() error) error {
 		return err
 	}
 	defer file.Close()
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+	flags := syscall.LOCK_EX
+	if nonblocking {
+		flags |= syscall.LOCK_NB
+	}
+	if err := syscall.Flock(int(file.Fd()), flags); err != nil {
+		if nonblocking && (errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN)) {
+			return &ProofAdmissionBusyError{Reason: "class mutation in progress"}
+		}
 		return err
 	}
 	defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
@@ -918,6 +1018,11 @@ func readLease(statePath string) (*Lease, bool, error) {
 	var lease Lease
 	if err := json.Unmarshal(data, &lease); err != nil {
 		return nil, false, fmt.Errorf("parse land-lease state %s: %w", statePath, err)
+	}
+	if lease.ProofCoordination != nil {
+		if err := lease.ProofCoordination.Validate(); err != nil {
+			return nil, false, fmt.Errorf("parse land-lease proof coordination: %w", err)
+		}
 	}
 	return &lease, true, nil
 }
@@ -961,17 +1066,23 @@ func writeLeaseAtomic(statePath string, lease Lease) error {
 // AcquireWithExecutionBarrierPrepared is AcquireWithOutcomePrepared plus an
 // inherited process-tree barrier. Ordinary acquire and steal consult the same
 // barrier before replacing this holder.
-func AcquireWithExecutionBarrierPrepared(
+func AcquireWithExecutionBarrierPrepared(home, holder string, ttl time.Duration, now time.Time, prepare func(AcquireOutcome) error) (AcquireOutcome, *ExecutionBarrier, error) {
+	return acquireWithProofIdentityAndBarrierPrepared(home, holder, ttl, now, prepare, nil)
+}
+
+func acquireWithProofIdentityAndBarrierPrepared(
 	home, holder string,
 	ttl time.Duration,
 	now time.Time,
 	prepare func(AcquireOutcome) error,
+	requested *ProofCoordinationIdentity,
+	bindings ...*leaseBinding,
 ) (AcquireOutcome, *ExecutionBarrier, error) {
 	if prepare == nil {
 		return AcquireOutcome{}, nil, fmt.Errorf("land-lease acquire prepare callback required")
 	}
 	var barrier *ExecutionBarrier
-	outcome, err := acquireWithOutcomePrepared(
+	outcome, err := acquireWithProofIdentityPrepared(
 		home,
 		holder,
 		ttl,
@@ -984,6 +1095,7 @@ func AcquireWithExecutionBarrierPrepared(
 			}
 			return prepare(outcome)
 		},
+		requested, bindings...,
 	)
 	if err != nil {
 		if barrier != nil {
@@ -997,10 +1109,16 @@ func AcquireWithExecutionBarrierPrepared(
 // StealExpectedWithExecutionBarrierPrepared performs an exact governed steal
 // only after the predecessor execution barrier is released, and installs a
 // new inherited barrier before the successor lease becomes visible.
-func StealExpectedWithExecutionBarrierPrepared(
+func StealExpectedWithExecutionBarrierPrepared(home, newHolder, expectedPriorHolder, reason string, now time.Time, prepare func(Lease) error) (Lease, *ExecutionBarrier, error) {
+	return stealWithProofIdentityAndBarrierPrepared(home, newHolder, expectedPriorHolder, reason, now, prepare, nil)
+}
+
+func stealWithProofIdentityAndBarrierPrepared(
 	home, newHolder, expectedPriorHolder, reason string,
 	now time.Time,
 	prepare func(Lease) error,
+	requested *ProofCoordinationIdentity,
+	bindings ...*leaseBinding,
 ) (Lease, *ExecutionBarrier, error) {
 	newHolder = strings.TrimSpace(newHolder)
 	expectedPriorHolder = strings.TrimSpace(expectedPriorHolder)
@@ -1010,7 +1128,7 @@ func StealExpectedWithExecutionBarrierPrepared(
 	}
 	var stolen Lease
 	var barrier *ExecutionBarrier
-	err := withLock(home, func() error {
+	err := withLeaseBindingLock(home, singleLeaseBinding(bindings), func() error {
 		statePath, err := statePath(home)
 		if err != nil {
 			return err
@@ -1036,7 +1154,12 @@ func StealExpectedWithExecutionBarrierPrepared(
 		if ttlSecs <= 0 {
 			ttlSecs = DefaultTTLSeconds
 		}
+		coordination, identityErr := proofLeaseIdentity(current, newHolder, requested)
+		if identityErr != nil {
+			return identityErr
+		}
 		stolen = newLease(newHolder, ttlSecs, now)
+		stolen.ProofCoordination = coordination
 		stolen.PriorHolder = current.Holder
 		stolen.StealReason = reason
 		stolen.StolenAt = now.UTC().Format(time.RFC3339)
@@ -1137,6 +1260,9 @@ func RequestExecutionTermination(
 	home, expectedHolder, requestedBy, reason string,
 	now time.Time,
 ) (Lease, error) {
+	return requestExecutionTerminationBound(home, expectedHolder, requestedBy, reason, now, nil)
+}
+func requestExecutionTerminationBound(home, expectedHolder, requestedBy, reason string, now time.Time, binding *leaseBinding) (Lease, error) {
 	expectedHolder = strings.TrimSpace(expectedHolder)
 	requestedBy = strings.TrimSpace(requestedBy)
 	reason = strings.TrimSpace(reason)
@@ -1144,7 +1270,7 @@ func RequestExecutionTermination(
 		return Lease{}, fmt.Errorf("land-lease termination request requires expected holder, requester, and reason")
 	}
 	var updated Lease
-	err := withLock(home, func() error {
+	err := withLeaseBindingLock(home, binding, func() error {
 		statePath, err := statePath(home)
 		if err != nil {
 			return err

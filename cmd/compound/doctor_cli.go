@@ -64,24 +64,25 @@ type doctorPermissionPosture struct {
 }
 
 type doctorReport struct {
-	Home                   string       `json:"home"`
-	Hooks                  []doctorHook `json:"hooks"`
-	HookHint               string       `json:"hook_hint,omitempty"`
-	LeaseHeld              bool         `json:"lease_held"`
-	LeaseHolder            string       `json:"lease_holder,omitempty"`
-	LeaseExpiresAt         string       `json:"lease_expires_at,omitempty"`
-	LeaseStealReason       string       `json:"lease_steal_reason,omitempty"`
-	LeaseLayout            string       `json:"lease_layout,omitempty"`
-	ProofLeaseHeld         bool         `json:"proof_lease_held"`
-	ProofLeaseHolder       string       `json:"proof_lease_holder,omitempty"`
-	ProofLeaseExpiresAt    string       `json:"proof_lease_expires_at,omitempty"`
-	LandingLeaseStatusHint string       `json:"landing_lease_status_hint,omitempty"`
-	LeaseStatusError       string       `json:"lease_status_error,omitempty"`
-	FindingsTotal          int          `json:"findings_total"`
-	FindingsLive           int          `json:"findings_live"`
-	FindingsSuperseded     int          `json:"findings_superseded"`
-	PlacementMode          string       `json:"placement_guard_mode"`
-	PlacementNote          string       `json:"placement_note,omitempty"`
+	Home                   string                       `json:"home"`
+	Hooks                  []doctorHook                 `json:"hooks"`
+	HookHint               string                       `json:"hook_hint,omitempty"`
+	LeaseHeld              bool                         `json:"lease_held"`
+	LeaseHolder            string                       `json:"lease_holder,omitempty"`
+	LeaseExpiresAt         string                       `json:"lease_expires_at,omitempty"`
+	LeaseStealReason       string                       `json:"lease_steal_reason,omitempty"`
+	LeaseLayout            string                       `json:"lease_layout,omitempty"`
+	ProofLeaseHeld         bool                         `json:"proof_lease_held"`
+	ProofCapacities        []landlease.ProofClassStatus `json:"proof_capacities,omitempty"`
+	ProofLeaseHolder       string                       `json:"proof_lease_holder,omitempty"`
+	ProofLeaseExpiresAt    string                       `json:"proof_lease_expires_at,omitempty"`
+	LandingLeaseStatusHint string                       `json:"landing_lease_status_hint,omitempty"`
+	LeaseStatusError       string                       `json:"lease_status_error,omitempty"`
+	FindingsTotal          int                          `json:"findings_total"`
+	FindingsLive           int                          `json:"findings_live"`
+	FindingsSuperseded     int                          `json:"findings_superseded"`
+	PlacementMode          string                       `json:"placement_guard_mode"`
+	PlacementNote          string                       `json:"placement_note,omitempty"`
 
 	// UnattendedExecute — one row per lane the route plan names for
 	// work.continue.unattended (R3A slice 2 deliverable 6). Each row
@@ -312,7 +313,11 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	// is no truthful home-wide landing holder to project into the old fields.
 	if layout, lerr := landlease.LayoutStatus(homePath); lerr == nil {
 		rep.LeaseLayout = layout.Mode
-		if st, serr := landlease.ProofResource(homePath).StatusReadOnly(time.Now()); serr == nil {
+		rows, serr := landlease.ProofResourceStatuses(homePath, time.Now())
+		if serr != nil {
+			rep.LeaseStatusError = serr.Error()
+		} else if len(rows) == 1 {
+			st := rows[0].Status
 			if layout.Mode == "legacy" {
 				rep.LeaseHeld = st.Held
 				rep.LeaseHolder = st.Holder
@@ -325,7 +330,11 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 				rep.LandingLeaseStatusHint = "compound land-lease status --work <work_id>"
 			}
 		} else {
-			rep.LeaseStatusError = serr.Error()
+			rep.ProofCapacities = rows
+			for _, row := range rows {
+				rep.ProofLeaseHeld = rep.ProofLeaseHeld || row.Status.Held
+			}
+			rep.LandingLeaseStatusHint = "compound land-lease status --work <work_id>"
 		}
 	} else {
 		rep.LeaseStatusError = lerr.Error()
@@ -614,7 +623,11 @@ func printDoctor(stdout io.Writer, rep doctorReport) {
 	if rep.LeaseStatusError != "" {
 		fmt.Fprintf(stdout, "- status unavailable: %s\n", rep.LeaseStatusError)
 	} else if rep.LeaseLayout == "scoped" {
-		if rep.ProofLeaseHeld {
+		if len(rep.ProofCapacities) != 0 {
+			for _, row := range rep.ProofCapacities {
+				fmt.Fprintf(stdout, "- proof %s: held=%v holder=%q expires=%s\n", row.Class, row.Status.Held, row.Status.Holder, row.Status.ExpiresAt)
+			}
+		} else if rep.ProofLeaseHeld {
 			fmt.Fprintf(stdout, "- proof: HELD by %q until %s\n", rep.ProofLeaseHolder, rep.ProofLeaseExpiresAt)
 		} else {
 			fmt.Fprintln(stdout, "- proof: free")

@@ -1340,20 +1340,23 @@ func TestProofResourceFailedStealRetainsTerminationBarrierAcrossExpiry(t *testin
 }
 
 func TestProofResourceAcquisitionFailureAfterMintIsTerminalAndReachable(t *testing.T) {
-	t.Parallel()
 	s := newStore(t)
 	w := claimedProofWork(t, s, "non-contention acquisition failure", proofActorAlpha, fixedNow)
 	before, err := s.Get(w.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(s.home, "state"), 0o755); err != nil {
-		t.Fatal(err)
+	originalAcquire := proofResourceAcquireWithExecutionBarrierPrepared
+	t.Cleanup(func() { proofResourceAcquireWithExecutionBarrierPrepared = originalAcquire })
+	proofResourceAcquireWithExecutionBarrierPrepared = func(home, holder string, ttl time.Duration, now time.Time, prepare func(landlease.AcquireOutcome) error) (landlease.AcquireOutcome, *landlease.ExecutionBarrier, error) {
+		if err := os.MkdirAll(filepath.Join(home, "state"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(home, "state", "land-lease.json"), []byte("{malformed"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		return originalAcquire(home, holder, ttl, now, prepare)
 	}
-	if err := os.WriteFile(filepath.Join(s.home, "state", "land-lease.json"), []byte("{malformed"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
 	failed, err := reserveProofResource(t, s, w.ID, ProofResourceReserveInput{
 		Actor:     proofActorAlpha,
 		TTL:       time.Minute,

@@ -459,7 +459,7 @@ func startProofCheckReservationHeartbeat(
 					return
 				}
 			case <-holderTicker.C:
-				status, err := landlease.ProofResource(in.HomePath).Status(in.Now())
+				status, err := landlease.ProofResourceForIdentity(in.HomePath, reservation.ProofCoordination).Status(in.Now())
 				if err != nil {
 					fail(err)
 					return

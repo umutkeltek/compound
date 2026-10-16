@@ -1078,8 +1078,8 @@ adapter preserves policy denies and binds approval to the full current policy, i
 Git remains the source-control authority. A governed cutover separates one canonical
 proof-capacity lease from landing leases keyed by the WorkEnvelope's validated
 repository fingerprint and canonical target ref. Linked worktrees share a landing
-slot; different repositories or refs can land independently. Proof capacity remains
-one per shared backing root, including across homes that bind that same root.
+slot; different repositories or refs can land independently. Proof capacity remains one per shared backing
+root until the explicit two-class cutover below, including across homes that bind that same root.
 Gate subprocesses retain the inherited kernel execution barrier. TTL expiry does
 not authorize overlap with surviving descendants.
 
@@ -1136,6 +1136,69 @@ The holder includes the exact work ID as a colon-delimited component. `status
 --work W` selects that landing slot, while `status --proof` reports proof capacity.
 The fresh-main-SHA guard, exact candidate proof, and post-land proof remain required:
 a landing can now advance main while another candidate is being tested.
+
+### Source-derived proof capacities and conflict FIFO
+
+An optional second, one-way cutover enables exactly one `system_full` and one
+`native_consumer` slot in the same shared backing root. Core and Rust inventories
+use the system slot. Native consumer classification requires the complete ordered
+canonical profile rederived from its clean sealed source, including authenticated
+redaction review when present. Neither a caller flag nor a plan name selects the
+cheaper slot. Both classes retain `canonical_full` certification semantics.
+
+Coordinated reservations use `compound.work_proof_reservation.v0.3` and require
+immutable generation, class, repository fingerprint and repository barrier
+identity. Historical v0.2 reservations remain on the historical singleton route;
+missing identity is never filled from current configuration. Heartbeat, completion,
+rearm, termination, recovery, stale sweep and doctor resolve persisted identity.
+
+A descriptor-backed FIFO ticket precedes every immediate or waiting admission.
+An earlier live ticket blocks successors sharing its class **or** repository;
+the independent other class and repository can progress. Cancellation and deadline
+checks occur after lock acquisition and before reservation or RunAttempt creation.
+Expired/dead tickets are pruned, and failed preparation releases its ticket.
+A capacity lease and repository barrier are both inherited by gate descendants.
+The same repository remains exclusive across classes and homes, including an
+expired other-class holder until exact recovery. An expired predecessor whose
+lineage is absent from the requesting home is preserved for its original owner's
+recovery before any successor attempt or lease is created.
+
+The lock order is work admission, queue/domain admission, home layout selection,
+class lease, capacity barrier; repository barriers are nonblocking. Heartbeats and
+finalization do not reenter the domain lock. The admission callback drains any
+already-started acquisition before releasing the domain, so an escaping goroutine
+cannot acquire after its ticket turn ends.
+
+The migration command adds `--proof-classes` and repeated
+`--participating-home PATH` to `land-lease migrate`. Every participating home must
+already be scoped to the same `--backing-home`, have the new binary installed and
+be included in a real all-writer pause. Census covers every listed home's pending
+proof completion/recovery/retirement journals and proof attempts/reservations.
+A pause assertion is evidence supplied by the operator, not inferred from task
+authorization or an empty lease. An unlisted independent legacy home is outside
+the fence; the operator must establish exhaustive enrollment.
+
+The cutover fences the exact shared historical `canonical-full` lease endpoint
+with an object-valued holder before publishing its prepared manifest. Thus old
+scoped clients, including omitted scoped homes, cannot acquire a parallel slot.
+An interruption before the manifest still leaves a detectable fence. Prepared
+state refuses typed admission, and active state requires the matching permanent
+fence. New clients from unenrolled homes refuse. Neither startup nor installation
+activates the cutover.
+
+The distinct `work/resource-leases/proof-domain-preparation.json` journal binds
+exact Work generation, enrollment, action, consumed one-use approval and policy
+revision. A scoped legacy marker cannot certify this cutover. Prepared recovery
+rechecks current pause, approval expiry, policy revision, stop signals and census
+before activation. Expired/changed pause or approval requires fresh exact approval;
+a changed policy requires a newly approved action. Physical completion may be
+reconciled after approval expiry, but never overwrites newer Work authority.
+
+`land-lease status --proof` reports generation and both resources after activation.
+Doctor reports each capacity separately; historical output stays unchanged before
+cutover. This removes the single-slot conflict between independent native and
+system proofs. It does not remove global work-admission costs, shorten full system
+gates, or establish an aggregate duration bound from individual gate timeouts.
 
 The RunAttempt census remains a complete fresh read. Prepared reverse-only intents
 can exist without a per-work frame, so an absent frame or stale index cannot prove

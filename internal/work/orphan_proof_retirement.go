@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"compound/internal/envelope"
-	"compound/internal/landlease"
 	"compound/internal/policy"
 	"compound/internal/runattempt"
 )
@@ -178,7 +177,7 @@ func (s *Store) PlanOrphanProofRetirement(recoveryWorkID, reservationID string) 
 		return plan, err
 	}
 	var reservation ProofResourceReservation
-	if err := s.readEventJSON(reservationID, &reservation); err != nil {
+	if err := s.readProofReservationInto(reservationID, &reservation); err != nil {
 		return plan, err
 	}
 	if reservation.WorkID != pending.WorkID || reservation.RunAttemptID != attempt.ID || reservation.Holder == "" {
@@ -237,14 +236,19 @@ func (s *Store) PlanOrphanProofRetirement(recoveryWorkID, reservationID string) 
 }
 
 func (s *Store) checkOrphanProofRetirementSafety(plan OrphanProofRetirementPlan, now time.Time) error {
-	status, err := landlease.ProofResource(s.home).Status(now)
+	resource, resolveErr := s.proofResourceForHolder(plan.OriginalHolder)
+	if resolveErr != nil {
+		return resolveErr
+	}
+
+	status, err := resource.ObserveHistoricalHolder(plan.OriginalHolder, now)
 	if err != nil {
 		return err
 	}
 	if status.Holder == plan.OriginalHolder {
 		return fmt.Errorf("exact original proof holder can still use normal completion recovery")
 	}
-	live, err := landlease.ProofResource(s.home).ExecutionPending(plan.OriginalHolder)
+	live, err := resource.HistoricalExecutionPending(plan.OriginalHolder)
 	if err != nil {
 		return err
 	}

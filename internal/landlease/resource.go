@@ -87,9 +87,11 @@ type layoutMarker struct {
 // Resource is a bound lease handle. The caller supplies identity once; every
 // operation rechecks the home's layout. No caller can redirect scoped storage.
 type Resource struct {
-	home    string
-	key     ResourceKey
-	initErr error
+	home           string
+	key            ResourceKey
+	initErr        error
+	proofIdentity  *ProofCoordinationIdentity
+	proofAdmission *proofAdmissionGuard
 }
 
 // ProofResource binds the one canonical full-proof resource without an error
@@ -171,8 +173,9 @@ func selectedRootLocked(home string, key ResourceKey) (string, bool, error) {
 
 // LayoutStatus reports the selected storage generation without creating state.
 type LayoutStatusResult struct {
-	Mode        string `json:"mode"`
-	BackingRoot string `json:"backing_root,omitempty"`
+	Mode            string `json:"mode"`
+	BackingRoot     string `json:"backing_root,omitempty"`
+	ProofGeneration string `json:"proof_generation,omitempty"`
 }
 
 func LayoutStatus(home string) (LayoutStatusResult, error) {
@@ -258,7 +261,11 @@ func selectedCall[T any](r *Resource, fn func(string) (T, error)) (T, error) {
 	var root string
 	err := withLock(r.home, func() error {
 		var selectErr error
-		root, _, selectErr = selectedRootLocked(r.home, r.key)
+		var scoped bool
+		root, scoped, selectErr = selectedRootLocked(r.home, r.key)
+		if selectErr == nil {
+			root, selectErr = r.selectProofRoot(root, scoped)
+		}
 		return selectErr
 	})
 	if err != nil {
@@ -281,26 +288,43 @@ func selectedReadCall[T any](r *Resource, fn func(string) (T, error)) (T, error)
 		return zero, err
 	}
 	if layout.Mode == "legacy" {
-		return fn(r.home)
+		root, err := r.selectProofRoot(r.home, false)
+		if err != nil {
+			return zero, err
+		}
+		return fn(root)
 	}
-	return fn(scopedRoot(layout.BackingRoot, r.key))
+	root, err := r.selectProofRoot(scopedRoot(layout.BackingRoot, r.key), true)
+	if err != nil {
+		return zero, err
+	}
+	return fn(root)
 }
 
 func (r *Resource) Status(now time.Time) (StatusResult, error) {
-	return selectedCall(r, func(root string) (StatusResult, error) { return Status(root, now) })
+	return selectedCall(r, func(root string) (StatusResult, error) { return statusBound(root, now, r.binding(root, false)) })
 }
 
 func (r *Resource) StatusReadOnly(now time.Time) (StatusResult, error) {
-	return selectedReadCall(r, func(root string) (StatusResult, error) { return StatusReadOnly(root, now) })
+	return selectedReadCall(r, func(root string) (StatusResult, error) { return statusReadOnlyBound(root, now, r.binding(root, false)) })
 }
 
 func (r *Resource) Acquire(holder string, ttl time.Duration, now time.Time) (Lease, error) {
-	return selectedCall(r, func(root string) (Lease, error) { return Acquire(root, holder, ttl, now) })
+	return selectedCall(r, func(root string) (Lease, error) {
+		if err := r.rejectBarrierlessProof(); err != nil {
+			return Lease{}, err
+		}
+		out, err := acquireWithProofIdentityPrepared(root, holder, ttl, now, nil, r.proofIdentity, r.binding(root, true))
+		return out.Lease, err
+	})
 }
 
 func (r *Resource) AcquireWithOutcomePrepared(holder string, ttl time.Duration, now time.Time, prepare func(AcquireOutcome) error) (AcquireOutcome, error) {
 	return selectedCall(r, func(root string) (AcquireOutcome, error) {
-		return AcquireWithOutcomePrepared(root, holder, ttl, now, prepare)
+		if err := r.rejectBarrierlessProof(); err != nil {
+			return AcquireOutcome{}, err
+		}
+		return acquireWithProofIdentityPrepared(root, holder, ttl, now, prepare, r.proofIdentity, r.binding(root, true))
 	})
 }
 
@@ -311,26 +335,32 @@ type BarrierAcquire struct {
 
 func (r *Resource) AcquireWithExecutionBarrierPrepared(holder string, ttl time.Duration, now time.Time, prepare func(AcquireOutcome) error) (AcquireOutcome, *ExecutionBarrier, error) {
 	out, err := selectedCall(r, func(root string) (BarrierAcquire, error) {
-		o, b, err := AcquireWithExecutionBarrierPrepared(root, holder, ttl, now, prepare)
+		o, b, err := r.acquireProofBarrier(root, holder, ttl, now, prepare)
 		return BarrierAcquire{Outcome: o, Barrier: b}, err
 	})
 	return out.Outcome, out.Barrier, err
 }
 
 func (r *Resource) Refresh(holder string, ttl time.Duration, now time.Time) (Lease, error) {
-	return selectedCall(r, func(root string) (Lease, error) { return Refresh(root, holder, ttl, now) })
+	return selectedCall(r, func(root string) (Lease, error) { return refreshBound(root, holder, ttl, now, r.binding(root, false)) })
 }
 
 func (r *Resource) RearmExpiredExact(expected StatusResult, now time.Time) (Lease, error) {
-	return selectedCall(r, func(root string) (Lease, error) { return RearmExpiredExact(root, expected, now) })
+	return selectedCall(r, func(root string) (Lease, error) {
+		return rearmExpiredExactBound(root, expected, now, r.binding(root, false))
+	})
 }
 
 func (r *Resource) Release(holder string, now time.Time) (ReleaseResult, error) {
-	return selectedCall(r, func(root string) (ReleaseResult, error) { return Release(root, holder, now) })
+	return selectedCall(r, func(root string) (ReleaseResult, error) {
+		return releaseBound(root, holder, now, r.binding(root, false))
+	})
 }
 
 func (r *Resource) ReleaseAfter(holder string, now time.Time, finalize func() error) (ReleaseResult, error) {
-	return selectedCall(r, func(root string) (ReleaseResult, error) { return ReleaseAfter(root, holder, now, finalize) })
+	return selectedCall(r, func(root string) (ReleaseResult, error) {
+		return releaseAfterBound(root, holder, now, finalize, r.binding(root, false))
+	})
 }
 
 func (r *Resource) StealExpectedWithExecutionBarrierPrepared(newHolder, expectedPriorHolder, reason string, now time.Time, prepare func(Lease) error) (Lease, *ExecutionBarrier, error) {
@@ -338,7 +368,7 @@ func (r *Resource) StealExpectedWithExecutionBarrierPrepared(newHolder, expected
 		Lease   Lease
 		Barrier *ExecutionBarrier
 	}, error) {
-		l, b, err := StealExpectedWithExecutionBarrierPrepared(root, newHolder, expectedPriorHolder, reason, now, prepare)
+		l, b, err := r.stealProofBarrier(root, newHolder, expectedPriorHolder, reason, now, prepare)
 		return struct {
 			Lease   Lease
 			Barrier *ExecutionBarrier
@@ -348,14 +378,22 @@ func (r *Resource) StealExpectedWithExecutionBarrierPrepared(newHolder, expected
 }
 
 func (r *Resource) Steal(newHolder, reason string, now time.Time) (Lease, error) {
-	return selectedCall(r, func(root string) (Lease, error) { return Steal(root, newHolder, reason, now) })
+	return selectedCall(r, func(root string) (Lease, error) {
+		if err := r.rejectBarrierlessProof(); err != nil {
+			return Lease{}, err
+		}
+		return stealWithProofIdentityExpected(root, newHolder, "", reason, now, false, nil, nil, r.proofIdentity, r.binding(root, true))
+	})
 }
 
 // StealExpected binds a governed takeover to the exact predecessor observed
 // before approval; another holder cannot be silently substituted at execution.
 func (r *Resource) StealExpected(newHolder, expectedPriorHolder, reason string, now time.Time) (Lease, error) {
 	return selectedCall(r, func(root string) (Lease, error) {
-		return StealExpected(root, newHolder, expectedPriorHolder, reason, now)
+		if err := r.rejectBarrierlessProof(); err != nil {
+			return Lease{}, err
+		}
+		return stealWithProofIdentityExpected(root, newHolder, expectedPriorHolder, reason, now, true, nil, nil, r.proofIdentity, r.binding(root, true))
 	})
 }
 
@@ -366,23 +404,26 @@ func (r *Resource) StealObserved(newHolder string, expected StatusResult, reason
 		return Lease{}, fmt.Errorf("land-lease observed holder required")
 	}
 	return selectedCall(r, func(root string) (Lease, error) {
-		return stealExpected(root, newHolder, expected.Holder, reason, now, true, nil, &expected)
+		if err := r.rejectBarrierlessProof(); err != nil {
+			return Lease{}, err
+		}
+		return stealWithProofIdentityExpected(root, newHolder, expected.Holder, reason, now, true, nil, &expected, r.proofIdentity, r.binding(root, true))
 	})
 }
 
 func (r *Resource) AttestExecutionTerminated(holder string) (ExecutionTerminationAttestation, error) {
 	return selectedCall(r, func(root string) (ExecutionTerminationAttestation, error) {
-		return AttestExecutionTerminated(root, holder)
+		return attestExecutionTerminatedBound(root, holder, r.binding(root, false))
 	})
 }
 
 func (r *Resource) ExecutionPending(holder string) (bool, error) {
-	return selectedCall(r, func(root string) (bool, error) { return ExecutionPending(root, holder) })
+	return selectedCall(r, func(root string) (bool, error) { return executionPendingBound(root, holder, r.binding(root, false)) })
 }
 
 func (r *Resource) RequestExecutionTermination(expectedHolder, requestedBy, reason string, now time.Time) (Lease, error) {
 	return selectedCall(r, func(root string) (Lease, error) {
-		return RequestExecutionTermination(root, expectedHolder, requestedBy, reason, now)
+		return requestExecutionTerminationBound(root, expectedHolder, requestedBy, reason, now, r.binding(root, false))
 	})
 }
 

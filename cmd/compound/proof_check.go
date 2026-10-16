@@ -1824,9 +1824,7 @@ func proofCheckGitNULListContext(ctx context.Context, repo string, args ...strin
 func proofCheckCommandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, name, args...)
 	if barrier, ok := ctx.Value(proofCheckExecutionBarrierContextKey{}).(*landlease.ExecutionBarrier); ok {
-		if file := barrier.InheritableFile(); file != nil {
-			cmd.ExtraFiles = append(cmd.ExtraFiles, file)
-		}
+		cmd.ExtraFiles = append(cmd.ExtraFiles, barrier.InheritableFiles()...)
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {

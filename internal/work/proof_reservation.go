@@ -1,6 +1,7 @@
 package work
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -20,6 +21,8 @@ import (
 	"compound/internal/policy"
 	"compound/internal/runattempt"
 )
+
+const ProofResourceCoordinatedReservationSchemaVersion = "compound.work_proof_reservation.v0.3"
 
 const (
 	ProofResourceReservationSchemaVersion           = "compound.work_proof_reservation.v0.2"
@@ -66,7 +69,11 @@ type ProofResourceReserveInput struct {
 	busyWhenHeld bool
 	// waitCheck revalidates a queued caller after admission-lock contention and
 	// immediately before creating its RunAttempt. It is never persisted.
-	waitCheck func() error
+	waitCheck        func() error
+	coordination     *landlease.ProofCoordinationIdentity
+	resource         *landlease.Resource
+	admission        *landlease.ProofAdmission
+	admissionContext context.Context
 }
 
 // ProofResourceResumeInput identifies the canonical command boundary that may finish an existing
@@ -161,37 +168,38 @@ func normalizeProofResourceProfile(profile ProofResourceProfile) (ProofResourceP
 // no second scheduler, lock file, or authority: Holder is the exact landlease holder, RunAttemptID
 // is the concrete proof execution, and work_id remains the multiplayer root.
 type ProofResourceReservation struct {
-	SchemaVersion             string               `json:"schema_version"`
-	ID                        string               `json:"id"`
-	Kind                      string               `json:"kind"`
-	Status                    string               `json:"status"`
-	CreatedAt                 string               `json:"created_at"`
-	WorkID                    string               `json:"work_id"`
-	Actor                     string               `json:"actor"`
-	Resource                  string               `json:"resource"`
-	Holder                    string               `json:"holder"`
-	RunAttemptID              string               `json:"run_attempt_id,omitempty"`
-	Workspace                 string               `json:"workspace"`
-	Command                   string               `json:"command"`
-	Profile                   ProofResourceProfile `json:"proof_profile"`
-	AcquiredAt                string               `json:"acquired_at,omitempty"`
-	ExpiresAt                 string               `json:"expires_at,omitempty"`
-	TTLSeconds                int64                `json:"ttl_seconds,omitempty"`
-	ConflictingHolder         string               `json:"conflicting_holder,omitempty"`
-	RecoveredHolder           string               `json:"recovered_holder,omitempty"`
-	RecoveredExpiresAt        string               `json:"recovered_expires_at,omitempty"`
-	RecoveredRunAttemptID     string               `json:"recovered_run_attempt_id,omitempty"`
-	PriorHolder               string               `json:"prior_holder,omitempty"`
-	PriorRunAttemptID         string               `json:"prior_run_attempt_id,omitempty"`
-	StealReason               string               `json:"steal_reason,omitempty"`
-	StolenAt                  string               `json:"stolen_at,omitempty"`
-	TerminatedRunAttemptID    string               `json:"terminated_run_attempt_id,omitempty"`
-	TerminationEvidenceRef    string               `json:"termination_evidence_ref,omitempty"`
-	TerminationConfirmedAt    string               `json:"termination_confirmed_at,omitempty"`
-	TerminationConfirmationID string               `json:"termination_confirmation_id,omitempty"`
-	FailureReason             string               `json:"failure_reason,omitempty"`
-	ActionIntentID            string               `json:"action_intent_id"`
-	PolicyDecisionID          string               `json:"policy_decision_id"`
+	SchemaVersion             string                               `json:"schema_version"`
+	ID                        string                               `json:"id"`
+	Kind                      string                               `json:"kind"`
+	Status                    string                               `json:"status"`
+	CreatedAt                 string                               `json:"created_at"`
+	WorkID                    string                               `json:"work_id"`
+	Actor                     string                               `json:"actor"`
+	Resource                  string                               `json:"resource"`
+	Holder                    string                               `json:"holder"`
+	RunAttemptID              string                               `json:"run_attempt_id,omitempty"`
+	Workspace                 string                               `json:"workspace"`
+	Command                   string                               `json:"command"`
+	Profile                   ProofResourceProfile                 `json:"proof_profile"`
+	ProofCoordination         *landlease.ProofCoordinationIdentity `json:"proof_coordination,omitempty"`
+	AcquiredAt                string                               `json:"acquired_at,omitempty"`
+	ExpiresAt                 string                               `json:"expires_at,omitempty"`
+	TTLSeconds                int64                                `json:"ttl_seconds,omitempty"`
+	ConflictingHolder         string                               `json:"conflicting_holder,omitempty"`
+	RecoveredHolder           string                               `json:"recovered_holder,omitempty"`
+	RecoveredExpiresAt        string                               `json:"recovered_expires_at,omitempty"`
+	RecoveredRunAttemptID     string                               `json:"recovered_run_attempt_id,omitempty"`
+	PriorHolder               string                               `json:"prior_holder,omitempty"`
+	PriorRunAttemptID         string                               `json:"prior_run_attempt_id,omitempty"`
+	StealReason               string                               `json:"steal_reason,omitempty"`
+	StolenAt                  string                               `json:"stolen_at,omitempty"`
+	TerminatedRunAttemptID    string                               `json:"terminated_run_attempt_id,omitempty"`
+	TerminationEvidenceRef    string                               `json:"termination_evidence_ref,omitempty"`
+	TerminationConfirmedAt    string                               `json:"termination_confirmed_at,omitempty"`
+	TerminationConfirmationID string                               `json:"termination_confirmation_id,omitempty"`
+	FailureReason             string                               `json:"failure_reason,omitempty"`
+	ActionIntentID            string                               `json:"action_intent_id"`
+	PolicyDecisionID          string                               `json:"policy_decision_id"`
 }
 
 type ProofResourceReserveResult struct {
@@ -582,10 +590,29 @@ func (s *Store) ReserveProofResource(workID string, in ProofResourceReserveInput
 			s.observeProofAdmission(result.Reservation, observedAt.Sub(observedStart), observedAt, in.busyWhenHeld)
 		}
 	}()
+	owned, prepareErr := s.prepareProofAdmission(&in)
+	if prepareErr != nil {
+		return ProofResourceReserveResult{}, prepareErr
+	}
+	if owned {
+		defer func() { err = errors.Join(err, in.admission.Cancel()) }()
+	}
 	err = s.withLifecycleMutation(func() error {
-		var err error
-		result, err = s.reserveProofResourceLocked(strings.TrimSpace(workID), in, now)
-		return err
+		if in.admission == nil {
+			in.resource = landlease.ProofResource(s.home)
+			result, err = s.reserveProofResourceLocked(strings.TrimSpace(workID), in, now)
+			return err
+		}
+		ctx := in.admissionContext
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		return in.admission.WithTurn(ctx, in.Steal, func(resource *landlease.Resource) error {
+			in.resource = resource
+			in.busyWhenHeld = true
+			result, err = s.reserveProofResourceLocked(strings.TrimSpace(workID), in, time.Now())
+			return err
+		})
 	})
 	if err != nil {
 		return result, err
@@ -609,7 +636,7 @@ func (s *Store) ReserveProofResource(workID string, in ProofResourceReserveInput
 	waitErr := s.awaitRecoveredProofAttempt(predecessorHolders[0], grace)
 	checkAt := now.Add(time.Since(waitStarted))
 	if waitErr == nil {
-		status, statusErr := landlease.ProofResource(s.home).Status(checkAt)
+		status, statusErr := landlease.ProofResourceForIdentity(s.home, result.Reservation.ProofCoordination).Status(checkAt)
 		if statusErr != nil {
 			waitErr = statusErr
 		} else if !status.Held || status.Holder != result.Reservation.Holder {
@@ -717,7 +744,7 @@ func (s *Store) RecoverLegacyProofResourceCompletion(
 			return err
 		}
 
-		status, err := landlease.ProofResource(s.home).Status(now)
+		status, err := s.proofStatusForWork(workID, now)
 		if err != nil {
 			return err
 		}
@@ -732,7 +759,7 @@ func (s *Store) RecoverLegacyProofResourceCompletion(
 		found = true
 
 		var reservation ProofResourceReservation
-		if err := s.readEventJSON(reservationID, &reservation); err != nil {
+		if err := s.readProofReservationInto(reservationID, &reservation); err != nil {
 			return fmt.Errorf("read retained legacy proof reservation %s: %w", reservationID, err)
 		}
 		pending, present, _, err := s.readProofResourceCompletionPending(reservationID)
@@ -743,7 +770,7 @@ func (s *Store) RecoverLegacyProofResourceCompletion(
 			found = false
 			return nil
 		}
-		if reservation.SchemaVersion != ProofResourceReservationSchemaVersion ||
+		if !proofReservationSchemaValid(reservation) ||
 			reservation.ID != reservationID ||
 			reservation.Kind != "work.proof_resource.reservation" ||
 			reservation.Status != ProofResourceAcquired ||
@@ -889,7 +916,7 @@ func (s *Store) ResumeProofResourceCompletion(
 	in.Actor = strings.TrimSpace(in.Actor)
 	in.Workspace = strings.TrimSpace(in.Workspace)
 	in.Command = strings.TrimSpace(in.Command)
-	status, err := landlease.ProofResource(s.home).Status(now)
+	status, err := s.proofStatusForWork(workID, now)
 	if err != nil {
 		return ProofResourceCompleteResult{}, false, err
 	}
@@ -902,7 +929,7 @@ func (s *Store) ResumeProofResourceCompletion(
 		return ProofResourceCompleteResult{}, false, nil
 	}
 	var reservation ProofResourceReservation
-	if err := s.readEventJSON(reservationID, &reservation); err != nil {
+	if err := s.readProofReservationInto(reservationID, &reservation); err != nil {
 		return ProofResourceCompleteResult{}, true, fmt.Errorf("read retained proof reservation %s: %w", reservationID, err)
 	}
 	pending, present, _, err := s.readProofResourceCompletionPending(reservationID)
@@ -1067,7 +1094,7 @@ func (s *Store) rearmExpiredProofResourceCompletion(
 			return fmt.Errorf("expired proof completion rearm requires work lease held by %q", in.Actor)
 		}
 		var currentReservation ProofResourceReservation
-		if err := s.readEventJSON(reservation.ID, &currentReservation); err != nil {
+		if err := s.readProofReservationInto(reservation.ID, &currentReservation); err != nil {
 			return err
 		}
 		currentPending, present, pendingPath, err := s.readProofResourceCompletionPending(reservation.ID)
@@ -1133,7 +1160,7 @@ func (s *Store) rearmExpiredProofResourceCompletion(
 		); err != nil {
 			return err
 		}
-		rearmed, err := landlease.ProofResource(s.home).RearmExpiredExact(expiredStatus, now)
+		rearmed, err := landlease.ProofResourceForIdentity(s.home, reservation.ProofCoordination).RearmExpiredExact(expiredStatus, now)
 		if err != nil {
 			return fmt.Errorf("rearm exact expired proof completion holder: %w", err)
 		}
@@ -1174,7 +1201,7 @@ func (s *Store) reconcileRearmedProofResourceCompletion(
 		return nil
 	}
 	return s.withLifecycleMutation(func() error {
-		currentStatus, err := landlease.ProofResource(s.home).Status(now)
+		currentStatus, err := landlease.ProofResourceForIdentity(s.home, reservation.ProofCoordination).Status(now)
 		if err != nil {
 			return err
 		}
@@ -1190,7 +1217,7 @@ func (s *Store) reconcileRearmedProofResourceCompletion(
 			return fmt.Errorf("rearmed proof completion reconciliation requires work lease held by %q", in.Actor)
 		}
 		var currentReservation ProofResourceReservation
-		if err := s.readEventJSON(reservation.ID, &currentReservation); err != nil {
+		if err := s.readProofReservationInto(reservation.ID, &currentReservation); err != nil {
 			return err
 		}
 		currentPending, present, _, err := s.readProofResourceCompletionPending(reservation.ID)
@@ -1288,7 +1315,7 @@ func (s *Store) reconcileRearmedProofResourceCompletion(
 		if !prepared {
 			return fmt.Errorf("prepared rearm governance has no reachable pre-mutation event")
 		}
-		if _, err := landlease.ProofResource(s.home).AttestExecutionTerminated(currentReservation.Holder); err != nil {
+		if _, err := landlease.ProofResourceForIdentity(s.home, reservation.ProofCoordination).AttestExecutionTerminated(currentReservation.Holder); err != nil {
 			return fmt.Errorf("reconcile rearmed proof execution termination: %w", err)
 		}
 		refresh := ProofResourceRefresh{
@@ -1386,7 +1413,7 @@ func (s *Store) reserveProofResourceLocked(workID string, in ProofResourceReserv
 		return ProofResourceReserveResult{}, fmt.Errorf("public redaction review admission: %w", err)
 	}
 	if in.busyWhenHeld && !in.Steal {
-		status, statusErr := landlease.ProofResource(s.home).StatusReadOnly(now)
+		status, statusErr := in.resource.AdmissionStatus(now)
 		if statusErr != nil {
 			return ProofResourceReserveResult{}, statusErr
 		}
@@ -1395,10 +1422,25 @@ func (s *Store) reserveProofResourceLocked(workID string, in ProofResourceReserv
 		}
 	}
 
+	if in.coordination != nil {
+		predecessor, err := in.resource.AdmissionStatus(now)
+		if err != nil {
+			return ProofResourceReserveResult{}, err
+		}
+		if predecessor.Holder != "" {
+			blocker, err := s.proofRecoveryOldestNonterminal(predecessor.Holder)
+			if err != nil {
+				return ProofResourceReserveResult{}, &landlease.ProofAdmissionBusyError{Holder: predecessor.Holder, Reason: "exact predecessor owner recovery required: " + err.Error()}
+			}
+			if !in.Steal && blocker.RunAttemptID != "" {
+				return ProofResourceReserveResult{}, &landlease.ProofAdmissionBusyError{Holder: predecessor.Holder, Reason: "predecessor run requires owner recovery"}
+			}
+		}
+	}
 	reservationID := idFor("pfr_", workID, in.Actor, ts(now))
 	priorHolder := ""
 	if in.Steal {
-		status, statusErr := landlease.ProofResource(s.home).Status(now)
+		status, statusErr := in.resource.AdmissionStatus(now)
 		if statusErr != nil {
 			return ProofResourceReserveResult{}, statusErr
 		}
@@ -1468,12 +1510,16 @@ func (s *Store) reserveProofResourceLocked(workID string, in ProofResourceReserv
 		Workspace:              in.Workspace,
 		Command:                in.Command,
 		Profile:                in.Profile,
+		ProofCoordination:      in.coordination,
 		PriorHolder:            priorHolder,
 		StealReason:            in.StealReason,
 		TerminatedRunAttemptID: in.TerminatedRunAttemptID,
 		TerminationEvidenceRef: in.TerminationEvidenceRef,
 		ActionIntentID:         action.ID,
 		PolicyDecisionID:       decision.ID,
+	}
+	if in.coordination != nil {
+		reservation.SchemaVersion = ProofResourceCoordinatedReservationSchemaVersion
 	}
 	if err := checkProofWaitAdmission(in); err != nil {
 		return ProofResourceReserveResult{}, err
@@ -1548,12 +1594,20 @@ func (s *Store) reserveProofResourceLocked(workID string, in ProofResourceReserv
 		}
 	}()
 	prepareExactReservation := func(preparedLease landlease.Lease, preparedRecovered *landlease.Lease) error {
+		if !reflect.DeepEqual(preparedLease.ProofCoordination, reservation.ProofCoordination) {
+			return fmt.Errorf("proof lease coordination changed before reservation preparation")
+		}
+
 		applyProofResourceLease(&reservation, preparedLease, preparedRecovered)
 		return nil
 	}
 	if in.Steal && priorHolder != "" {
 		if in.TerminatedRunAttemptID == "" {
-			if _, requestErr := landlease.ProofResource(s.home).RequestExecutionTermination(priorHolder,
+			predecessorResource, resolveErr := s.proofResourceForHolder(priorHolder)
+			if resolveErr != nil {
+				return s.failProofResourceAcquisition(&w, action, decision, reservation, proofRun, resolveErr, now)
+			}
+			if _, requestErr := predecessorResource.TryRequestExecutionTermination(priorHolder,
 				reservation.Holder,
 				in.StealReason,
 				now,
@@ -1561,7 +1615,7 @@ func (s *Store) reserveProofResourceLocked(workID string, in ProofResourceReserv
 				return s.failProofResourceAcquisition(&w, action, decision, reservation, proofRun, requestErr, now)
 			}
 		}
-		lease, executionBarrier, err = landlease.ProofResource(s.home).StealExpectedWithExecutionBarrierPrepared(reservation.Holder,
+		lease, executionBarrier, err = in.resource.StealExpectedWithExecutionBarrierPrepared(reservation.Holder,
 			priorHolder,
 			in.StealReason,
 			now,
@@ -1571,7 +1625,13 @@ func (s *Store) reserveProofResourceLocked(workID string, in ProofResourceReserv
 		)
 	} else {
 		var outcome landlease.AcquireOutcome
-		outcome, executionBarrier, err = proofResourceAcquireWithExecutionBarrierPrepared(
+		acquire := proofResourceAcquireWithExecutionBarrierPrepared
+		if in.coordination != nil {
+			acquire = func(_ string, holder string, ttl time.Duration, at time.Time, prepare func(landlease.AcquireOutcome) error) (landlease.AcquireOutcome, *landlease.ExecutionBarrier, error) {
+				return in.resource.AcquireWithExecutionBarrierPrepared(holder, ttl, at, prepare)
+			}
+		}
+		outcome, executionBarrier, err = acquire(
 			s.home,
 			reservation.Holder,
 			in.TTL,
@@ -1587,7 +1647,7 @@ func (s *Store) reserveProofResourceLocked(workID string, in ProofResourceReserv
 		var held *landlease.HeldError
 		var executionPending *landlease.ExecutionPendingError
 		if errors.As(err, &executionPending) {
-			status, statusErr := landlease.ProofResource(s.home).Status(now)
+			status, statusErr := in.resource.AdmissionStatus(now)
 			if statusErr != nil {
 				return s.failProofResourceAcquisition(&w, action, decision, reservation, proofRun, errors.Join(err, statusErr), now)
 			}
@@ -1625,14 +1685,14 @@ func (s *Store) reserveProofResourceLocked(workID string, in ProofResourceReserv
 		if executionBarrier != nil {
 			_ = executionBarrier.Close()
 		}
-		_, _ = landlease.ProofResource(s.home).Release(reservation.Holder, now)
+		_, _ = in.resource.Release(reservation.Holder, now)
 		return s.failProofResourceAcquisition(&w, action, decision, reservation, proofRun, err, now)
 	}
 	if err := s.persistProofReservation(&w, action, decision, reservation, "proof resource acquired before execution", now); err != nil {
 		if executionBarrier != nil {
 			_ = executionBarrier.Close()
 		}
-		_, _ = landlease.ProofResource(s.home).Release(reservation.Holder, now)
+		_, _ = in.resource.Release(reservation.Holder, now)
 		return s.failProofResourceAcquisition(&w, action, decision, reservation, proofRun, err, now)
 	}
 	s.supersedeClaimReservations(existingRunIDs, []string{proofRun.ID}, now)
@@ -1738,7 +1798,7 @@ func (s *Store) failProofResourceAcquisition(
 	var persistErr error
 	if existenceErr == nil && reservationExists {
 		var stored ProofResourceReservation
-		if err := s.readEventJSON(reservation.ID, &stored); err != nil {
+		if err := s.readProofReservationInto(reservation.ID, &stored); err != nil {
 			persistErr = err
 		} else if stored.WorkID != reservation.WorkID ||
 			stored.Actor != reservation.Actor ||
@@ -1790,7 +1850,7 @@ func (s *Store) RefreshProofResource(workID, reservationID, actor string, ttl ti
 		if err != nil || claim.By != actor {
 			return fmt.Errorf("proof refresh requires work lease held by %q", actor)
 		}
-		if err := s.readEventJSON(reservationID, &reservation); err != nil {
+		if err := s.readProofReservationInto(reservationID, &reservation); err != nil {
 			return err
 		}
 		ra, err := s.activeProofRunAttempt(reservation, workID, actor)
@@ -1829,7 +1889,7 @@ func (s *Store) RefreshProofResource(workID, reservationID, actor string, ttl ti
 			return err
 		}
 		windowOpenedAt := reservation.AcquiredAt
-		lease, err := landlease.ProofResource(s.home).Refresh(reservation.Holder, ttl, now)
+		lease, err := landlease.ProofResourceForIdentity(s.home, reservation.ProofCoordination).Refresh(reservation.Holder, ttl, now)
 		if err != nil {
 			return err
 		}
@@ -1889,7 +1949,7 @@ func (s *Store) terminalizeProofCompletionErrorLocked(
 		return nil
 	}
 	var reservation ProofResourceReservation
-	if err := s.readEventJSON(strings.TrimSpace(in.ReservationID), &reservation); err != nil {
+	if err := s.readProofReservationInto(strings.TrimSpace(in.ReservationID), &reservation); err != nil {
 		return nil
 	}
 	if reservation.WorkID != workID || reservation.Actor != strings.TrimSpace(in.Actor) {
@@ -1947,14 +2007,14 @@ func (s *Store) completeProofResourceLocked(workID string, in ProofResourceCompl
 		return ProofResourceCompleteResult{}, fmt.Errorf("proof completion requires work lease held by %q", in.Actor)
 	}
 	var reservation ProofResourceReservation
-	if err := s.readEventJSON(in.ReservationID, &reservation); err != nil {
+	if err := s.readProofReservationInto(in.ReservationID, &reservation); err != nil {
 		return ProofResourceCompleteResult{}, err
 	}
 	reservation, err = s.proofReservationWithLatestRefresh(reservation)
 	if err != nil {
 		return ProofResourceCompleteResult{}, err
 	}
-	leaseStatus, err := landlease.ProofResource(s.home).Status(now)
+	leaseStatus, err := landlease.ProofResourceForIdentity(s.home, reservation.ProofCoordination).Status(now)
 	if err != nil {
 		return ProofResourceCompleteResult{}, err
 	}
@@ -2098,7 +2158,7 @@ func (s *Store) completeProofResourceLocked(workID string, in ProofResourceCompl
 
 	finalWork := w
 	var terminal runattempt.RunAttempt
-	released, releaseErr := landlease.ProofResource(s.home).ReleaseAfter(reservation.Holder, now, func() error {
+	released, releaseErr := landlease.ProofResourceForIdentity(s.home, reservation.ProofCoordination).ReleaseAfter(reservation.Holder, now, func() error {
 		// ReleaseAfter checks the inherited execution barrier under the same
 		// resource lock before entering this finalizer.
 		if err := s.persistPreparedProofCompletion(&finalWork, pending); err != nil {
@@ -2308,10 +2368,10 @@ func (s *Store) validateCommittedProofResourceChainStatus(
 		return fmt.Errorf("result identity or terminal projection is incomplete for status %s", expectedStatus)
 	}
 	var reservation ProofResourceReservation
-	if err := s.readEventJSON(result.ReservationID, &reservation); err != nil {
+	if err := s.readProofReservationInto(result.ReservationID, &reservation); err != nil {
 		return fmt.Errorf("reservation: %w", err)
 	}
-	if reservation.SchemaVersion != ProofResourceReservationSchemaVersion ||
+	if !proofReservationSchemaValid(reservation) ||
 		reservation.ID != result.ReservationID ||
 		reservation.Kind != "work.proof_resource.reservation" ||
 		reservation.Status != ProofResourceAcquired ||
@@ -2956,7 +3016,7 @@ func (s *Store) validateProofResourceLegacyRecoveryPending(
 	if err != nil {
 		return fmt.Errorf("legacy proof recovery journal created_at: %w", err)
 	}
-	if reservation.SchemaVersion != ProofResourceReservationSchemaVersion ||
+	if !proofReservationSchemaValid(reservation) ||
 		reservation.ID != pending.ReservationID ||
 		reservation.Kind != "work.proof_resource.reservation" ||
 		reservation.Status != ProofResourceAcquired ||
@@ -3195,7 +3255,7 @@ func (s *Store) resumeLegacyProofResourceRecovery(
 	now time.Time,
 ) (ProofResourceLegacyRecoveryResult, error) {
 	var reservation ProofResourceReservation
-	if err := s.readEventJSON(pending.ReservationID, &reservation); err != nil {
+	if err := s.readProofReservationInto(pending.ReservationID, &reservation); err != nil {
 		return ProofResourceLegacyRecoveryResult{}, fmt.Errorf("read legacy proof recovery reservation: %w", err)
 	}
 	if err := s.validateProofResourceLegacyRecoveryPending(pending, reservation, in); err != nil {
@@ -3212,7 +3272,7 @@ func (s *Store) resumeLegacyProofResourceRecovery(
 	if completionPresent && !reflect.DeepEqual(completion, pending.Completion) {
 		return ProofResourceLegacyRecoveryResult{}, fmt.Errorf("legacy proof recovery completion differs sealed journal")
 	}
-	status, err := landlease.ProofResource(s.home).Status(now)
+	status, err := landlease.ProofResourceForIdentity(s.home, reservation.ProofCoordination).Status(now)
 	if err != nil {
 		return ProofResourceLegacyRecoveryResult{}, err
 	}
@@ -3226,7 +3286,7 @@ func (s *Store) resumeLegacyProofResourceRecovery(
 			if !status.IsExpired {
 				return ProofResourceLegacyRecoveryResult{}, fmt.Errorf("legacy proof recovery exact holder is neither held nor expired")
 			}
-			if _, err := landlease.ProofResource(s.home).RearmExpiredExact(status, now); err != nil {
+			if _, err := landlease.ProofResourceForIdentity(s.home, reservation.ProofCoordination).RearmExpiredExact(status, now); err != nil {
 				return ProofResourceLegacyRecoveryResult{}, fmt.Errorf("rearm exact expired legacy proof holder: %w", err)
 			}
 			proofResourceAfterScarceMutation("legacy_recovery_rearm")
@@ -3249,10 +3309,16 @@ func (s *Store) resumeLegacyProofResourceRecovery(
 				return ProofResourceLegacyRecoveryResult{}, fmt.Errorf("terminalize retained legacy proof RunAttempt: %w", err)
 			}
 		}
-		if _, err := landlease.ProofResource(s.home).AttestExecutionTerminated(pending.Holder); err != nil {
+		if _, err := landlease.ProofResourceForIdentity(s.home, reservation.ProofCoordination).AttestExecutionTerminated(pending.Holder); err != nil {
 			return ProofResourceLegacyRecoveryResult{}, fmt.Errorf("legacy proof recovery execution termination: %w", err)
 		}
-		release, err := proofResourceReleaseLegacyRecoveryAfter(
+		releaseAfter := proofResourceReleaseLegacyRecoveryAfter
+		if reservation.ProofCoordination != nil {
+			releaseAfter = func(_ string, holder string, at time.Time, finalize func() error) (landlease.ReleaseResult, error) {
+				return landlease.ProofResourceForIdentity(s.home, reservation.ProofCoordination).ReleaseAfter(holder, at, finalize)
+			}
+		}
+		release, err := releaseAfter(
 			s.home,
 			pending.Holder,
 			now,
@@ -4495,7 +4561,11 @@ func (s *Store) prepareTrustedProofTerminationEvidence(
 	holder, runAttemptID, actor string,
 	now time.Time,
 ) (string, []byte, error) {
-	attestation, err := landlease.ProofResource(s.home).AttestExecutionTerminated(holder)
+	resource, resolveErr := s.proofResourceForHolder(holder)
+	if resolveErr != nil {
+		return "", nil, resolveErr
+	}
+	attestation, err := resource.TryAttestHistoricalExecutionTerminated(holder)
 	if err != nil {
 		return "", nil, fmt.Errorf("proof resource trusted termination producer: %w", err)
 	}
@@ -4557,7 +4627,11 @@ func (s *Store) validateProofTerminationEvidenceBody(
 	if err := json.Unmarshal(body, &evidence); err != nil {
 		return fmt.Errorf("proof resource termination evidence %q is malformed: %w", ref, err)
 	}
-	attestation, err := landlease.ProofResource(s.home).AttestExecutionTerminated(holder)
+	resource, resolveErr := s.proofResourceForHolder(holder)
+	if resolveErr != nil {
+		return resolveErr
+	}
+	attestation, err := resource.TryAttestHistoricalExecutionTerminated(holder)
 	if err != nil {
 		return fmt.Errorf("proof resource termination evidence %q cannot be re-attested: %w", ref, err)
 	}
@@ -4843,7 +4917,7 @@ func (s *Store) proofRecoveryOldestNonterminalFrom(
 	defer delete(path, node)
 
 	var reservation ProofResourceReservation
-	if err := s.readEventJSON(reservationID, &reservation); err != nil {
+	if err := s.readProofReservationInto(reservationID, &reservation); err != nil {
 		exists, existsErr := s.events.Exists(reservationID)
 		if existsErr != nil {
 			return proofRecoveryBlocker{}, errors.Join(err, existsErr)

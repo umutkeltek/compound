@@ -195,6 +195,34 @@ func RunLandingStatus(homePath string, selected LandingCLISelection, asJSON bool
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
+	if selected.Proof {
+		generation, generationErr := landlease.ProofCoordinationGeneration(homePath)
+		if generationErr != nil {
+			fmt.Fprintln(stderr, "error:", generationErr)
+			return 1
+		}
+		if generation != "" {
+			rows, err := landlease.ProofResourceStatuses(homePath, now)
+			if err != nil {
+				fmt.Fprintln(stderr, "error:", err)
+				return 1
+			}
+			if asJSON {
+				if err := json.NewEncoder(stdout).Encode(struct {
+					Generation string                       `json:"generation"`
+					Resources  []landlease.ProofClassStatus `json:"resources"`
+				}{generation, rows}); err != nil {
+					fmt.Fprintln(stderr, "error:", err)
+					return 1
+				}
+			} else {
+				for _, row := range rows {
+					fmt.Fprintf(stdout, "proof %s: holder=%s held=%v expired=%v expires=%s\n", row.Class, row.Status.Holder, row.Status.Held, row.Status.IsExpired, row.Status.ExpiresAt)
+				}
+			}
+			return 0
+		}
+	}
 	var status landlease.StatusResult
 	if resource == nil {
 		status, err = landlease.StatusReadOnly(homePath, now)

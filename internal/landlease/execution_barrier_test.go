@@ -1,7 +1,9 @@
 package landlease
 
 import (
+	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"testing"
@@ -298,4 +300,104 @@ func testBarrierChildCommand(t *testing.T, barrier *ExecutionBarrier) *exec.Cmd 
 	cmd.Env = append(os.Environ(), "COMPOUND_LANDLEASE_BARRIER_CHILD=1")
 	cmd.ExtraFiles = []*os.File{childFile}
 	return cmd
+}
+
+func TestCompositeExecutionBarrierSurvivesInRealChild(t *testing.T) {
+	if os.Getenv("COMPOUND_COMPOSITE_BARRIER_CHILD") == "1" {
+		for _, fd := range []uintptr{3, 4} {
+			file := os.NewFile(fd, "barrier")
+			if file == nil {
+				os.Exit(2)
+			}
+			if _, err := file.Stat(); err != nil {
+				os.Exit(3)
+			}
+		}
+		_, _ = os.Stdout.Write([]byte("ready"))
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		os.Exit(0)
+	}
+	capacityRoot, repositoryRoot := t.TempDir(), t.TempDir()
+	capacity, err := lockExecutionBarrier(capacityRoot, "capacity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer capacity.Close()
+	repository, err := lockExecutionBarrier(repositoryRoot, "repository")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	if err := capacity.include(repository); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capacity.DuplicateForChild(); err == nil {
+		t.Fatal("singular API silently dropped repository barrier")
+	}
+	files, err := capacity.DuplicateFilesForChild()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		for _, file := range files {
+			_ = file.Close()
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestCompositeExecutionBarrierSurvivesInRealChild$")
+	cmd.Env = append(os.Environ(), "COMPOUND_COMPOSITE_BARRIER_CHILD=1")
+	cmd.ExtraFiles = files
+	input, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	joined := false
+	defer func() {
+		if !joined {
+			cancel()
+			_ = cmd.Wait()
+		}
+	}()
+	ready := make([]byte, 5)
+	if _, err := io.ReadFull(output, ready); err != nil {
+		t.Fatal(err)
+	}
+	if string(ready) != "ready" {
+		t.Fatalf("child readiness = %q", ready)
+	}
+	for _, file := range files {
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := capacity.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for root, holder := range map[string]string{capacityRoot: "capacity", repositoryRoot: "repository"} {
+		pending, err := executionBarrierPending(root, holder)
+		if err != nil || !pending {
+			t.Fatalf("descendant protection lost for %s: %v", holder, err)
+		}
+	}
+	if err := input.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	joined = true
+	for root, holder := range map[string]string{capacityRoot: "capacity", repositoryRoot: "repository"} {
+		pending, err := executionBarrierPending(root, holder)
+		if err != nil || pending {
+			t.Fatalf("barrier retained after child exit for %s: %v", holder, err)
+		}
+	}
 }

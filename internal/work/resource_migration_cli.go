@@ -21,6 +21,9 @@ func RunResourceMigrationCLI(args []string, stdout, stderr io.Writer) int {
 	paused := flags.Bool("writers-paused", false, "all participating writers are paused")
 	expires := flags.String("expires", "", "pause expiry RFC3339, at most five minutes")
 	backing := flags.String("backing-home", "", "required shared owning home for host proof capacity")
+	proofClasses := flags.Bool("proof-classes", false, "one-way two-class proof domain cutover")
+	var proofHomes []string
+	flags.Func("participating-home", "every installed paused home sharing this backing (repeatable)", func(value string) error { proofHomes = append(proofHomes, value); return nil })
 	flags.Bool("json", false, "emit JSON")
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -46,6 +49,7 @@ func RunResourceMigrationCLI(args []string, stdout, stderr io.Writer) int {
 	}
 	result, err := store.MigrateCoordinationResources(*workID, ResourceMigrationInput{
 		Actor: *actor, Operator: *operator, EvidenceRef: *evidence,
+		ProofClasses: *proofClasses, ProofHomes: proofHomes,
 		BackingHome: *backing, WritersPaused: *paused, ExpiresAt: end,
 	}, time.Now())
 	if err != nil {

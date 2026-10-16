@@ -20,12 +20,13 @@ const resourceMigrationPendingSchema = "compound.resource_migration_preparation.
 // The marker is the physical outcome; neither this record nor an absent result
 // alone proves publication.
 type resourceMigrationPending struct {
-	SchemaVersion string
-	Work          envelope.WorkEnvelope
-	Input         ResourceMigrationInput
-	BackingRoot   string
-	Action        envelope.ActionIntent
-	Decision      envelope.PolicyDecision
+	PolicyRevision string
+	SchemaVersion  string
+	Work           envelope.WorkEnvelope
+	Input          ResourceMigrationInput
+	BackingRoot    string
+	Action         envelope.ActionIntent
+	Decision       envelope.PolicyDecision
 }
 
 type ResourceMigrationRecoveryRequired struct {
@@ -89,10 +90,25 @@ func (s *Store) validateResourceMigrationPreparation(p resourceMigrationPending)
 	if err != nil {
 		return err
 	}
+	operation := "coordination.migrate"
+	if p.Input.ProofClasses {
+		operation = "coordination.proof-migrate"
+		if p.Action.Preview != proofMigrationPreview(p.Input, p.PolicyRevision) {
+			return fmt.Errorf("proof migration input authority mismatch")
+		}
+	}
 	if p.Action.IDs.WorkID != p.Work.ID || p.Action.Actor != p.Input.Actor ||
-		p.Action.Action != "coordination.migrate" || p.Action.Target.Path != p.BackingRoot ||
+		p.Action.Action != operation || p.Action.Target.Path != p.BackingRoot ||
 		p.Action.ArgumentsHash != before || p.Decision.ActionIntentID != p.Action.ID || !policy.Allowed(p.Decision) {
 		return fmt.Errorf("migration preparation authority mismatch")
+	}
+	if p.Input.ProofClasses {
+		if p.PolicyRevision == "" {
+			return fmt.Errorf("proof migration lacks policy revision")
+		}
+		if err := policy.NewExactActionApprovalStore(s.home).ValidateConsumedDecision(p.Action, p.Decision); err != nil {
+			return err
+		}
 	}
 	if err := p.Action.Validate(); err != nil {
 		return err
@@ -133,6 +149,15 @@ func (s *Store) finishResourceMigrationLocked(w envelope.WorkEnvelope, p resourc
 	}
 	if layout.Mode != "scoped" || layout.BackingRoot != p.BackingRoot {
 		return fmt.Errorf("exact published migration marker is absent or changed")
+	}
+	if p.Input.ProofClasses {
+		status, err := landlease.ReadProofDomainStatus(p.BackingRoot)
+		if err != nil {
+			return err
+		}
+		if status.Phase != "active" || status.Generation != landlease.ProofDomainMigrationGeneration(p.BackingRoot, p.Input.ProofHomes) || !reflect.DeepEqual(status.Homes, p.Input.ProofHomes) {
+			return fmt.Errorf("exact active proof-domain cutover is absent or changed")
+		}
 	}
 	before, err := workEnvelopeSHA256(p.Work)
 	if err != nil {

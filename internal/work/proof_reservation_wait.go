@@ -68,6 +68,13 @@ func (s *Store) ReserveProofResourceWhenFree(
 		}
 		return nil
 	}
+	identity, identityErr := s.proofCoordinationForProfile(in.Profile)
+	if identityErr != nil {
+		return ProofResourceReserveResult{}, identityErr
+	}
+	if identity != nil {
+		return s.reserveCoordinatedProofWhenFree(ctx, workID, in, identity, clk, deadline, progress)
+	}
 	announced := ""
 	for {
 		status, err := landlease.ProofResource(s.home).StatusReadOnly(clk.Now())

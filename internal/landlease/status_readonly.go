@@ -14,6 +14,9 @@ import (
 // the lock directory or file. When the writer-owned lock exists it takes a
 // shared flock, so the state read is atomic with Status/Acquire/Refresh writes.
 func StatusReadOnly(home string, now time.Time) (StatusResult, error) {
+	return statusReadOnlyBound(home, now, nil)
+}
+func statusReadOnlyBound(home string, now time.Time, binding *leaseBinding) (StatusResult, error) {
 	home = strings.TrimSpace(home)
 	if home == "" {
 		return StatusResult{}, fmt.Errorf("COMPOUND_HOME required")
@@ -49,6 +52,9 @@ func StatusReadOnly(home string, now time.Time) (StatusResult, error) {
 	if err != nil {
 		return StatusResult{}, err
 	}
+	if err := binding.validate(current); err != nil {
+		return StatusResult{}, err
+	}
 	return leaseStatusResult(current, exists, now), nil
 }
 
@@ -57,6 +63,7 @@ func leaseStatusResult(current *Lease, exists bool, now time.Time) StatusResult 
 	if !exists || current == nil {
 		return result
 	}
+	result.ProofCoordination = cloneProofCoordination(current.ProofCoordination)
 	result.Holder = current.Holder
 	result.AcquiredAt = current.AcquiredAt
 	result.ExpiresAt = current.ExpiresAt

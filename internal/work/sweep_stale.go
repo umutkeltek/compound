@@ -238,20 +238,23 @@ func (p *DefaultSweepStaleProbe) LiveDelegate(workID string) (bool, error) {
 // LeaseHeld checks both proof capacity and the work's authoritative landing
 // slot. A held lease is liveness evidence even when no delegate is visible.
 func (p *DefaultSweepStaleProbe) LeaseHeld(workID string) (bool, error) {
-	status, err := landlease.ProofResource(p.Home).StatusReadOnly(p.Now())
+	statuses, err := landlease.ProofResourceStatuses(p.Home, p.Now())
 	if err != nil {
 		return false, fmt.Errorf("sweep-stale proof resource: %w", err)
 	}
-	if status.Held {
-		_, _, heldWork, ok := parseProofResourceHolder(status.Holder)
-		if ok && heldWork == workID {
-			return true, nil
-		}
-		// Legacy landing holders encode work_id as a complete component.
-		if holderNamesWork(status.Holder, workID) {
-			return true, nil
+	for _, row := range statuses {
+		status := row.Status
+		if status.Held || (status.ProofCoordination != nil && status.IsExpired) {
+			_, _, heldWork, ok := parseProofResourceHolder(status.Holder)
+			if ok && heldWork == workID {
+				return true, nil
+			}
+			if holderNamesWork(status.Holder, workID) {
+				return true, nil
+			}
 		}
 	}
+
 	layout, err := landlease.LayoutStatus(p.Home)
 	if err != nil {
 		return false, err
@@ -278,7 +281,7 @@ func (p *DefaultSweepStaleProbe) LeaseHeld(workID string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	status, err = resource.StatusReadOnly(p.Now())
+	status, err := resource.StatusReadOnly(p.Now())
 	if err != nil {
 		return false, err
 	}
