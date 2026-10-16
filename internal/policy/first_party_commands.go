@@ -202,6 +202,15 @@ func (c FirstPartyCommandCatalog) RequireHomeCompatibility(command string, args 
 	if command == "proof-check" && (firstPartyFlagPresent(args, "--ci") || firstPartyFlagPresent(args, "--ci-console")) {
 		return nil
 	}
+	// cmdProofCheck refuses a malformed --redact-review invocation (missing or
+	// flag-shaped ActionIntent ID, or a review combined with a lightweight or
+	// recovery mode) with a usage error and exit 2 before it resolves any home
+	// or runs a gate. Bind that exemption to the exact refusal shape so a bare
+	// machine (CI runner, fresh checkout) gets the same usage refusal instead
+	// of a missing-manifest error; a well-formed review keeps full admission.
+	if command == "proof-check" && firstPartyProofCheckReviewRefused(args) {
+		return nil
+	}
 	homePath, err := homepkg.Resolve("")
 	if command == "home" {
 		if explicitHome, ok, selectionErr := firstPartyHomeFlagValue(args); selectionErr != nil {
@@ -269,6 +278,38 @@ func firstPartyRuntimeHook(subcommand string, args []string) bool {
 	default:
 		return false
 	}
+}
+
+// firstPartyProofCheckReviewRefused mirrors cmdProofCheck's pre-home usage
+// refusals for --redact-review exactly: the flag without an ID (or with a
+// flag-shaped value), or an ID combined with --dev/--dry-run/--ci/
+// --ci-console/--recover-legacy-retained/--timings. Any other shape is not a
+// refusal and must keep the ordinary home admission.
+func firstPartyProofCheckReviewRefused(args []string) bool {
+	if !firstPartyFlagPresent(args, "--redact-review") {
+		return false
+	}
+	id := ""
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--redact-review" && i+1 < len(args) {
+			id = strings.TrimSpace(args[i+1])
+			break
+		}
+	}
+	if id == "" || strings.HasPrefix(id, "--") {
+		return true
+	}
+	for _, flag := range []string{"--dry-run", "--ci", "--ci-console", "--recover-legacy-retained", "--timings"} {
+		if firstPartyFlagPresent(args, flag) {
+			return true
+		}
+	}
+	for _, arg := range args {
+		if arg == "--dev" || strings.HasPrefix(arg, "--dev=") {
+			return true
+		}
+	}
+	return false
 }
 
 func firstPartyFlagPresent(args []string, flag string) bool {

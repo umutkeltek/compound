@@ -73,3 +73,38 @@ func TestRequireHomeCompatibilityExemptsPortableProofCheckSubsets(t *testing.T) 
 		t.Fatalf("RequireHomeCompatibility(proof-check, canonical) = %v, want missing-manifest refusal", err)
 	}
 }
+
+func TestRequireHomeCompatibilityExemptsMalformedProofCheckReviewInvocations(t *testing.T) {
+	// A bare machine has no home manifest. cmdProofCheck refuses these
+	// shapes with a usage error before touching any home, so admission must
+	// let them reach that refusal instead of replacing it with a
+	// missing-manifest error (the CI runner saw exactly that replacement).
+	t.Setenv("COMPOUND_HOME", t.TempDir())
+
+	catalog := NewFirstPartyCommandCatalog(map[string]FirstPartyCommandAdmission{
+		"proof-check": FirstPartyCommandGoverned,
+	})
+
+	for _, args := range [][]string{
+		{"--redact-review"},
+		{"--redact-review", "--ci"},
+		{"--redact-review", "act_unapproved", "--dev"},
+		{"--redact-review", "act_unapproved", "--dev=lane"},
+		{"--redact-review", "act_unapproved", "--ci"},
+		{"--redact-review", "act_unapproved", "--ci-console"},
+		{"--redact-review", "act_unapproved", "--dry-run"},
+		{"--redact-review", "act_unapproved", "--timings"},
+		{"--redact-review", "act_unapproved", "--recover-legacy-retained"},
+	} {
+		if err := catalog.RequireHomeCompatibility("proof-check", args); err != nil {
+			t.Fatalf("RequireHomeCompatibility(proof-check, %v) = %v, want nil (usage refusal owns this shape)", args, err)
+		}
+	}
+
+	// A well-formed review is a real canonical proof request and keeps the
+	// full mutation admission.
+	err := catalog.RequireHomeCompatibility("proof-check", []string{"--redact-review", "act_approved", "--work", "work_x", "--actor", "operator:y"})
+	if err == nil || !strings.Contains(err.Error(), "home manifest is missing") {
+		t.Fatalf("RequireHomeCompatibility(proof-check, well-formed review) = %v, want missing-manifest refusal", err)
+	}
+}
