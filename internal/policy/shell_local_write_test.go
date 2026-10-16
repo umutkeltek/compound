@@ -109,7 +109,7 @@ func TestShellLocalWritesStayClosed(t *testing.T) {
 		"cp a ~/.aws/config", "cp a .git/config", "touch .env", "touch .env.test",
 		"touch server.key", "touch id_rsa.pub", "touch my-secret-file", "touch /usr/f",
 		"touch /bin/f", "touch /sbin/f", "touch /Library/f", "touch /System/f",
-		"cp a /home/example-other/f", "cp a $(pwd)/f", "cp a `pwd`/f",
+		"cp a /srv/elsewhere/f", "cp a $(pwd)/f", "cp a `pwd`/f",
 		"cp a $DEST", "cp a *.txt", "c''p a b", "cp a -t b", "touch --reference=.env f",
 		"PATH=. cp a b", "HOME=/etc cp a $HOME/f", "env PWD=/etc touch $PWD/f",
 		"cd /etc && cp a b", "cd /etc | touch f", "while cd /etc; do touch f; done",
