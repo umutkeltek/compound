@@ -63,3 +63,128 @@ steps:
       - console-gates
     commands:
       - gitleaks dir . --config .gitleaks.toml --no-banner --redact
+
+  release-build:
+    image: docker.io/library/golang:1.27.2-bookworm
+    depends_on: [secret-scan]
+    when:
+      - event: manual
+        evaluate: 'RELEASE_VERSION != ""'
+    environment:
+      GOCACHE: /cache/go-build
+      GOMODCACHE: /cache/go-mod
+      HOME: /tmp/compound-ci-home
+    volumes:
+      - compound-go-build-cache:/cache/go-build
+      - compound-go-mod-cache:/cache/go-mod
+    commands:
+      - mkdir -p "$HOME" "$GOCACHE" "$GOMODCACHE"
+      - chown -R 1000:1000 "$HOME" "$GOCACHE" "$GOMODCACHE" "$CI_WORKSPACE"
+      - |
+        setpriv --reuid=1000 --regid=1000 --clear-groups \
+          env HOME="$HOME" GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" \
+              GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$CI_WORKSPACE" \
+          bash -euo pipefail -c '
+            test "$CI_PIPELINE_EVENT" = manual
+            test -n "$RELEASE_VERSION"
+            version_re="^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
+            [[ "$RELEASE_VERSION" =~ $version_re ]] || { echo "RELEASE_VERSION must be strict stable SemVer" >&2; exit 1; }
+            git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
+            main_sha=$(git rev-parse refs/remotes/origin/main)
+            test "$CI_COMMIT_SHA" = "$main_sha" || { echo "candidate must equal the exact origin/main tip" >&2; exit 1; }
+            test "$(git rev-parse HEAD)" = "$CI_COMMIT_SHA"
+            # Only generated CI files are excluded; tracked changes still refuse the build.
+            printf "\n/.ci/\n" >> "$(git rev-parse --git-path info/exclude)"
+            root="$CI_WORKSPACE/.ci/release"
+            mkdir "$root"
+            go mod verify
+            .ci/bin/compound release export-public --repo "$CI_WORKSPACE" --target "$root/compound-public-source.tar.gz" --prefix compound-source --json
+            test -s "$root/compound-public-source.tar.gz"
+            tar -tzf "$root/compound-public-source.tar.gz" >/dev/null
+            mkdir "$root/tools"
+            GOBIN="$root/tools" go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.10.0
+            for build in a b; do
+              VERSION="$RELEASE_VERSION" SOURCE_ROOT="$CI_WORKSPACE" DIST="$root/$build" SBOM_TOOL="$root/tools/cyclonedx-gomod" go run ./scripts/release-artifacts.go
+            done
+            cmp "$root/a/SHA256SUMS" "$root/b/SHA256SUMS"
+            names=(RELEASE SHA256SUMS install-release.sh)
+            for platform in darwin_arm64 linux_amd64; do
+              names+=("compound_$RELEASE_VERSION"_"$platform.tar.gz" "compound_$RELEASE_VERSION"_"$platform.cdx.json" "compound_$RELEASE_VERSION"_"$platform"_compound-breadth-engine.cdx.json)
+            done
+            for build in a b; do
+              test "$(find "$root/$build" -mindepth 1 -maxdepth 1 -print | wc -l)" -eq 9
+              for name in "$${names[@]}"; do
+                test -f "$root/$build/$name" && test ! -L "$root/$build/$name"
+                cmp "$root/a/$name" "$root/b/$name"
+              done
+              (cd "$root/$build" && sha256sum --check SHA256SUMS)
+            done
+            # A real parent generation exercises rollback even before a first publication.
+            prior_commit=$(git rev-parse HEAD~1)
+            printf "%s\n" "$prior_commit" > "$root/PRIOR_COMMIT"
+            git clone --shared --no-checkout "$CI_WORKSPACE" "$root/prior-source"
+            git archive "$prior_commit" | tar -xf - -C "$root/prior-source"
+            git -C "$root/prior-source" reset --mixed "$prior_commit"
+            prior_version=$(cd "$root/prior-source" && go run ./cmd/compound version | cut -d " " -f 2)
+            VERSION="$prior_version" SOURCE_ROOT="$root/prior-source" DIST="$root/prior" SBOM_TOOL="$root/tools/cyclonedx-gomod" go run ./scripts/release-artifacts.go
+          '
+
+  release-linux-drill:
+    image: docker.io/library/node:22-bookworm
+    depends_on: [release-build]
+    when:
+      - event: manual
+        evaluate: 'RELEASE_VERSION != ""'
+    backend_options:
+      docker:
+        user: "1000:1000"
+    environment:
+      HOME: /tmp/compound-release-drill-home
+    commands:
+      - |
+        set -eu
+        test "$CI_PIPELINE_EVENT" = manual
+        test -n "$RELEASE_VERSION"
+        mkdir -p "$HOME"
+        root="$CI_WORKSPACE/.ci/release"
+        install_root=$(mktemp -d)
+        COMPOUND_RELEASE_TARBALL="$root/a/compound_$RELEASE_VERSION"_linux_amd64.tar.gz \
+          COMPOUND_HOME="$install_root/home" GOBIN="$install_root/bin" sh "$root/a/install-release.sh"
+        test "$("$install_root/bin/compound" version)" = "compound $RELEASE_VERSION (build $CI_COMMIT_SHA)"
+        test -x "$install_root/bin/compound-breadth-engine"
+        node scripts/installed-release-acceptance.mjs "$root/a" "$CI_COMMIT_SHA" \
+          "$root/linux-acceptance" "$root/prior" "$(cat "$root/PRIOR_COMMIT")"
+
+  release-stage:
+    image: docker.io/library/node:22-bookworm
+    depends_on: [release-linux-drill]
+    when:
+      - event: manual
+        evaluate: 'RELEASE_VERSION != ""'
+    backend_options:
+      docker:
+        user: "1000:1000"
+    volumes:
+      - /srv/appdata/woodpecker/releases:/releases
+    commands:
+      - |
+        set -eu
+        test "$(id -u)" -ne 0
+        test "$CI_PIPELINE_EVENT" = manual
+        test -n "$RELEASE_VERSION"
+        printf '%s\n' "$RELEASE_VERSION" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+        candidate="$CI_WORKSPACE/.ci/release/a"
+        destination="/releases/$RELEASE_VERSION"
+        # mkdir is exclusive: existing directories and symlinks are never retried in place.
+        mkdir "$destination" || { echo "release candidate already exists or stage is unavailable; operator must inspect it" >&2; exit 1; }
+        test "$(find "$candidate" -mindepth 1 -maxdepth 1 -print | wc -l)" -eq 9
+        (cd "$candidate" && sha256sum --check SHA256SUMS)
+        for file in "$candidate"/*; do
+          test -f "$file" && test ! -L "$file"
+          cp "$file" "$destination/"
+        done
+        (cd "$destination" && sha256sum --check SHA256SUMS)
+        sums_sha=$(sha256sum "$destination/SHA256SUMS" | cut -d ' ' -f 1)
+        # Written last; an interrupted copy is not a complete candidate.
+        printf 'version %s\ncommit %s\npipeline %s\nsha256sums_sha256 %s\n' \
+          "$RELEASE_VERSION" "$CI_COMMIT_SHA" "$CI_PIPELINE_NUMBER" "$sums_sha" > "$destination/CANDIDATE"
