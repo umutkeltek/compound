@@ -123,6 +123,10 @@ type MonitoredAction struct {
 // ClassifyToolAction is deterministic and conservative. Classification can
 // increase policy burden, but no classifier result directly grants authority.
 func ClassifyToolAction(request ToolActionRequest) ActionClassification {
+	return classifyToolAction(request, DefaultConfig())
+}
+
+func classifyToolAction(request ToolActionRequest, cfg Config) ActionClassification {
 	tool := strings.ToLower(strings.TrimSpace(request.Tool))
 	operation := toolOperation(tool)
 	destination := actionDestination(request.Arguments)
@@ -226,6 +230,7 @@ func ClassifyToolAction(request ToolActionRequest) ActionClassification {
 			stringArgument(request.Arguments, "chars"),
 			request.FirstPartyCommands,
 			request.Cwd,
+			cfg.ForbiddenPaths,
 		)
 	case isShellTool(tool):
 		classification.Domain = ActionDomainShell
@@ -236,6 +241,7 @@ func ClassifyToolAction(request ToolActionRequest) ActionClassification {
 			stringArgument(request.Arguments, "command", "cmd"),
 			request.FirstPartyCommands,
 			request.Cwd,
+			cfg.ForbiddenPaths,
 		)
 	default:
 		classification.Known = false
@@ -259,7 +265,7 @@ func ClassifyToolAction(request ToolActionRequest) ActionClassification {
 }
 
 func MonitorToolAction(request ToolActionRequest, cfg Config, now time.Time) MonitoredAction {
-	classification := ClassifyToolAction(request)
+	classification := classifyToolAction(request, cfg)
 	argumentsHash := hashActionArguments(request.Arguments)
 	inputBindings := make([]envelope.SourceBinding, 0, len(request.Sources))
 	inputRefs := make([]string, 0, len(request.Sources))
@@ -692,6 +698,7 @@ func classifyPTYAction(
 	chars string,
 	firstPartyCommands FirstPartyCommandCatalog,
 	cwd string,
+	forbiddenPaths []string,
 ) ActionClassification {
 	switch chars {
 	case "":
@@ -705,7 +712,7 @@ func classifyPTYAction(
 		classification.Reversibility = "easy"
 		classification.BlastRadius = "local"
 	default:
-		classification = classifyShellAction(classification, chars, firstPartyCommands, cwd)
+		classification = classifyShellAction(classification, chars, firstPartyCommands, cwd, forbiddenPaths)
 	}
 	return classification
 }

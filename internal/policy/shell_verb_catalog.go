@@ -792,11 +792,27 @@ func RunClassifyCLI(args []string, firstPartyCommands FirstPartyCommandCatalog, 
 		return 2
 	}
 	_, source, catalogErr := ActiveShellVerbCatalog()
-	classification := ClassifyToolAction(ToolActionRequest{
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(stderr, "policy classify: resolve cwd:", err)
+		return 1
+	}
+	homePath, err := homepkg.Resolve("")
+	if err != nil {
+		fmt.Fprintln(stderr, "policy classify: resolve home:", err)
+		return 1
+	}
+	cfg, _, err := LoadConfig(homePath)
+	if err != nil {
+		fmt.Fprintln(stderr, "policy classify: load policy:", err)
+		return 1
+	}
+	classification := classifyToolAction(ToolActionRequest{
 		Tool:               "Bash",
 		Arguments:          map[string]any{"command": command},
 		FirstPartyCommands: firstPartyCommands,
-	})
+		Cwd:                cwd,
+	}, cfg)
 	report := ShellClassifyReport{
 		Command:       command,
 		Capability:    actionCapability(classification),

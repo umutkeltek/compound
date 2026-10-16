@@ -49,7 +49,7 @@ func monitorShellInDirtyRepo(t *testing.T, cfg Config, cwd, command string, sc S
 // hold, everything else runs.
 func TestForeignDirtyRepoHoldsOnlyWorkCapturingShapes(t *testing.T) {
 	scope := t.TempDir()
-	repo := filepath.Join(scope, "codexbar")
+	repo := filepath.Join(scope, "example-app")
 	if err := os.MkdirAll(filepath.Join(repo, "src"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,9 @@ func TestForeignDirtyRepoHoldsOnlyWorkCapturingShapes(t *testing.T) {
 		{name: "git diff", command: "git diff"},
 		{name: "go test", command: "go test ./..."},
 		{name: "bun install", command: "bun install"},
-		{name: "python", command: `python3 -c "print(1)"`},
+		// Inline scripts now name cwd as a path mutation. Their opaque body
+		// cannot prove that foreign dirty files are untouched.
+		{name: "python path mutation", command: `python3 -c "print(1)"`, hold: true},
 		{name: "plain commit is index-only", command: "git commit -m msg"},
 		{name: "commit with an explicit pathspec", command: "git commit -am msg -- main.go"},
 		{name: "add a named file", command: "git add main.go"},

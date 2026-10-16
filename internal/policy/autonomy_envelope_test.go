@@ -111,8 +111,9 @@ func TestAutonomyEnvelopeClearsOrdinaryProjectWorkInScope(t *testing.T) {
 		{command: "go test ./...", class: "local_reversible"},
 		{command: "git commit -am x", class: "local_reversible"},
 		{command: "bun install", class: "security"},
-		{command: `python3 -c "print(1)"`, class: "security", viaEnvelope: true},
-		{command: "echo hi > out.txt", class: "security", viaEnvelope: true},
+		{command: `python3 -c "print(1)"`, class: "local_reversible"},
+		{command: "echo hi > out.txt", class: "local_reversible"},
+		{command: "python3 -m example_module", class: "security", viaEnvelope: true},
 		{command: "git push origin main", class: "external_side_effect", viaEnvelope: true},
 	} {
 		t.Run(tc.command, func(t *testing.T) {
@@ -153,7 +154,7 @@ func TestAutonomyEnvelopeStopsAtItsEdge(t *testing.T) {
 	outside := t.TempDir()
 	cfg := envelopeConfig(scope)
 
-	for _, command := range []string{"bun install", `python3 -c "print(1)"`, "rm -rf build"} {
+	for _, command := range []string{"bun install", "python3 -m example_module", "rm -rf build"} {
 		t.Run(command, func(t *testing.T) {
 			got := monitorShell(t, cfg, outside, command)
 			if Allowed(got.Decision) {
@@ -292,14 +293,14 @@ func TestUnreadableCommandIsNotAClearedCommand(t *testing.T) {
 // TestAutonomyEnvelopeNeedsTheOperatorToHaveSetIt: the envelope is the
 // operator's decision, not a default. Below L3, or without the authority ref
 // that says who set the level, nothing clears.
-// The probe is `python3 -c` on purpose: it is one of the commands the ordinary
+// The probe uses an unclassified module run: it is one of the commands the ordinary
 // grant match genuinely cannot reach (hard reversibility), so only the envelope
 // can clear it, and each subtest below is therefore actually testing the
 // envelope rather than the grant path underneath it.
 func TestAutonomyEnvelopeNeedsTheOperatorToHaveSetIt(t *testing.T) {
 	scope := t.TempDir()
 	cwd := filepath.Join(scope, "repo")
-	const probe = `python3 -c "print(1)"`
+	const probe = "python3 -m example_module"
 
 	t.Run("L2 does not clear", func(t *testing.T) {
 		cfg := envelopeConfig(scope)

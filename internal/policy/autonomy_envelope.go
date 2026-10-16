@@ -244,6 +244,11 @@ func shellTargetPath(classification ActionClassification, cwd string) string {
 	if classification.Domain != ActionDomainShell {
 		return ""
 	}
+	if classification.TargetKind == "path" && strings.HasPrefix(classification.Destination, "path:") {
+		if path := strings.TrimPrefix(classification.Destination, "path:"); filepath.IsAbs(path) {
+			return filepath.Clean(path)
+		}
+	}
 	if cwd = strings.TrimSpace(cwd); cwd == "" {
 		return ""
 	}

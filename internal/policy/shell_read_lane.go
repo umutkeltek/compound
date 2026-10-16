@@ -2,16 +2,16 @@ package policy
 
 import (
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
-// The routine-read lane for shell commands.
+// The routine-read and scoped local-write lanes for shell commands.
 //
-// classifyShellAction answers one question: does every executable segment of a
-// command — including the bodies of its command substitutions — name a
-// read-only local verb? An allowlist answers it. Anything else leaves the
-// routine lane and is classified by its worst consequence, so the boundary
-// still fails closed on what it does not recognize.
+// classifyShellAction first checks the operator roster, then recognizes scoped
+// local writes and routine reads. Everything else is classified by its worst
+// segment, including executable command substitutions, and unknown verbs keep
+// their security classification.
 //
 // Why the verb and not the command text: substring matching cannot tell
 // `grep "^func Test"` (which contains "nc ") from netcat, and cannot tell
@@ -22,10 +22,9 @@ import (
 // promises that routine reads stay automatic; holding them trains the operator
 // to click through holds, which defeats the boundary it is protecting.
 //
-// Decomposition is deliberately quote-blind. A `;` or `|` inside a quoted
-// string splits a segment the shell would have kept whole, producing MORE
-// segments that each must pass the allowlist. Over-splitting can only
-// over-restrict, never admit something the shell would run differently.
+// Decomposition respects quotes and separates executable substitutions from
+// arguments. Heredoc bodies are stdin, not additional command segments. The
+// local-write recognizer adds scoped mutations without expanding the read table.
 //
 // Adding a verb to any read table requires that the verb cannot write, execute,
 // or egress — including through its own flags (`sed -i`, `find -exec`).
@@ -243,6 +242,7 @@ func classifyShellAction(
 	command string,
 	firstPartyCommands FirstPartyCommandCatalog,
 	cwd string,
+	forbiddenPaths ...[]string,
 ) ActionClassification {
 	if strings.TrimSpace(command) == "" {
 		classification.Known = false
@@ -273,6 +273,14 @@ func classifyShellAction(
 			classification.CapturesWorkInProgress = true
 		}
 	}
+	paths := DefaultConfig().ForbiddenPaths
+	if len(forbiddenPaths) > 0 {
+		paths = append(paths, forbiddenPaths[0]...)
+	}
+	if local, ok := shellLocalWriteCommand(classification, segments, firstPartyCommands, cwd, paths); ok {
+		local.EvidenceRefs = []string{"command:" + actionHash([]byte(command))}
+		return local
+	}
 	if len(segments) == 1 {
 		if shellExistingRemotePush(segments[0]) {
 			classification = shellClassificationFor(classification, shellClassNetwork)
@@ -280,13 +288,13 @@ func classifyShellAction(
 			classification.Destination = "git-remote:existing"
 			return classification
 		}
-		if destination, ok := shellNoClobberWorkspaceCopyDestination(segments[0]); ok {
+		if destination, ok := shellNoClobberWorkspaceCopyDestination(segments[0]); ok && cwd == "" {
 			classification = shellClassificationFor(classification, shellClassGoverned)
 			classification.TargetKind = "path"
 			classification.Destination = destination
 			return classification
 		}
-		if destination, ok := shellWorkspaceMkdirDestination(segments[0]); ok {
+		if destination, ok := shellWorkspaceMkdirDestination(segments[0]); ok && cwd == "" {
 			classification = shellClassificationFor(classification, shellClassGoverned)
 			classification.TargetKind = "path"
 			classification.Destination = destination
@@ -448,10 +456,10 @@ type shellSegment struct {
 	writes     bool
 	obfuscated bool
 	dynamic    bool
+	stdin      bool
 	// writeTargets are the literal redirection destinations this segment keeps
-	// data in. Recorded only for the operator-gated roster, which must be able
-	// to name WHICH file a write lands on: the routine-read lane itself never
-	// needs the target, because any keeping write already leaves the lane.
+	// data in. The operator-gated roster runs first; the local-write recognizer
+	// then validates every target before admitting a reversible write.
 	writeTargets []string
 }
 
@@ -474,6 +482,7 @@ func shellLex(command string) ([]shellSegment, bool) {
 	current := shellSegment{}
 	word := strings.Builder{}
 	trailing := []shellSegment{}
+	heredocs := []shellHeredoc{}
 
 	endWord := func() {
 		if word.Len() > 0 {
@@ -576,6 +585,21 @@ func shellLex(command string) ([]shellSegment, bool) {
 		case '(', ')':
 			return nil, false // grouping and zsh executable glob qualifiers
 		case '<', '>':
+			if r == '<' && i+1 < len(runes) && runes[i+1] == '<' && (i+2 == len(runes) || runes[i+2] != '<') {
+				if shellAllDigits(word.String()) {
+					word.Reset()
+				} else {
+					endWord()
+				}
+				doc, end, ok := shellReadHeredoc(runes, i)
+				if !ok {
+					return nil, false
+				}
+				heredocs = append(heredocs, doc)
+				current.stdin = true
+				i = end
+				continue
+			}
 			if i+1 < len(runes) && runes[i+1] == '(' {
 				return nil, false // process substitution runs a command
 			}
@@ -610,8 +634,18 @@ func shellLex(command string) ([]shellSegment, bool) {
 			if i+1 < len(runes) && runes[i+1] == '|' {
 				i++
 			}
-		case ';', '\n', '\r':
+		case ';', '\r':
 			endSegment()
+		case '\n':
+			endSegment()
+			if len(heredocs) > 0 {
+				end, ok := shellConsumeHeredocs(runes, i+1, heredocs)
+				if !ok {
+					return nil, false
+				}
+				i = end - 1
+				heredocs = nil
+			}
 		case ' ', '\t':
 			endWord()
 		default:
@@ -619,6 +653,9 @@ func shellLex(command string) ([]shellSegment, bool) {
 		}
 	}
 	endSegment()
+	if len(heredocs) > 0 {
+		return nil, false
+	}
 	return append(segments, trailing...), true
 }
 
@@ -792,7 +829,7 @@ func shellReadRedirection(runes []rune, start int, word *strings.Builder, curren
 		if (next == '=' || next == '<' || next == '>') && i+2 < len(runes) && runes[i+2] == '(' {
 			return 0, false, false
 		}
-		if strings.ContainsRune("*?[]{}()#^~", next) {
+		if strings.ContainsRune("*?[]()#^", next) {
 			return 0, false, false
 		}
 		if next == '\'' || next == '"' {
@@ -800,21 +837,21 @@ func shellReadRedirection(runes []rune, start int, word *strings.Builder, curren
 			if !ok {
 				return 0, false, false
 			}
-			if next == '"' && (strings.ContainsRune(body, '$') || strings.ContainsRune(body, '`')) {
+			if target.Len() > 0 || shellWordContinues(runes, end) {
 				current.obfuscated = true
 			}
 			target.WriteString(body)
 			i = end
 			continue
 		}
-		if next == '$' || next == '`' {
-			current.obfuscated = true
-		}
 		i++
 		target.WriteRune(next)
 	}
 	if target.Len() == 0 {
 		return i, false, false
+	}
+	if !shellLiteralLocalPath(target.String()) {
+		current.obfuscated = true
 	}
 	if descriptorDuplication {
 		targetValue := target.String()
@@ -1053,6 +1090,12 @@ func shellStripCommandPrefixes(fields []string) ([]string, bool) {
 				return nil, false
 			}
 			fields = fields[1:]
+			for len(fields) > 0 && fields[0] == "-u" {
+				if len(fields) < 3 || !shellEnvironmentName(fields[1]) {
+					return nil, false
+				}
+				fields = fields[2:]
+			}
 			if len(fields) > 0 && strings.HasPrefix(fields[0], "-") {
 				return nil, false
 			}
@@ -1070,11 +1113,20 @@ func shellStripCommandPrefixes(fields []string) ([]string, bool) {
 				return nil, false
 			}
 			continue
-		case "nice", "stdbuf", "time", "command", "builtin", "exec":
+		case "nice", "nohup", "stdbuf", "time", "command", "builtin", "exec":
 			if !shellWrapperExecutableTrusted(head, wrapper) {
 				return nil, false
 			}
 			fields = fields[1:]
+			if wrapper == "nice" && len(fields) > 0 && fields[0] == "-n" {
+				if len(fields) < 3 {
+					return nil, false
+				}
+				if _, err := strconv.Atoi(fields[1]); err != nil {
+					return nil, false
+				}
+				fields = fields[2:]
+			}
 			if len(fields) == 0 || strings.HasPrefix(fields[0], "-") {
 				return nil, false
 			}
@@ -1083,6 +1135,13 @@ func shellStripCommandPrefixes(fields []string) ([]string, bool) {
 		break
 	}
 	return fields, true
+}
+
+func shellEnvironmentName(name string) bool {
+	if name == "" || strings.ContainsRune(name, '=') || (name[0] >= '0' && name[0] <= '9') {
+		return false
+	}
+	return shellLooksLikeAssignment(name + "=value")
 }
 
 func shellWrapperExecutableTrusted(token, wrapper string) bool {
