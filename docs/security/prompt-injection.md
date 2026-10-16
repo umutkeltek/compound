@@ -138,14 +138,47 @@ the install sink and cannot inherit the generic governed lane.
 Local verification admission is syntax-bounded too. The repo-local
 `./node_modules/.bin/tsc --noEmit`, Compound console `scripts/*smoke.mjs`
 commands through Bun or Node's TypeScript-strip mode, and read-only `xattr`
-inspection remain automatic. Other JavaScript entrypoints, TypeScript emit
-modes, and `xattr` write/delete/clear flags remain held. The same command
+inspection remain automatic. TypeScript emit modes and `xattr`
+write/delete/clear flags remain held. The same command
 registry marks `profiles check` read-only and `profiles generate` governed.
 Routine health faces follow the same split: `home doctor|where|verify`,
 `architecture doctor`, and `contract hooks-authority` are reads; `home init`,
 `runtime doctor` (which can opt into writeback), and contract
 compile/import are governed. Backup, restore, compaction, runtime repair, and
 unknown neighbors remain held.
+
+With an explicit command cwd, literal `cp`, `mv`, `mkdir`, `touch`, `chmod`,
+`ln`, and `tee` operations enter the local reversible lane when every source
+and destination resolves inside cwd or the user's home. Literal leading `~`,
+`$HOME`, `$PWD`, and `$TMPDIR` are expanded before checking those roots; the
+temporary directory is not an additional allowed root. Existing symlink
+ancestors are resolved, including for destinations that do not exist yet.
+Default and configured forbidden paths still exclude Git metadata, environment
+files, keys, and secret paths. Credential directories, Compound's own home,
+and system directories remain excluded. Routine reads with literal output
+redirections use the same destination checks. These mutations carry manual
+reversibility and a path destination; several writes may compose when all
+segments pass. Directory-changing or control-flow writes and unmodelled options stay
+closed rather than guessing their write targets.
+
+Python, Node, Bun, Deno, Ruby, Perl, AppleScript, and `go run` may run inline
+programs or script paths inside cwd as `script.run.local`, with manual
+reversibility and local blast radius (desktop for AppleScript). This is a
+classification of an opaque program, not a sandbox or a claim that its body
+cannot access the network. Module/package entrypoints, remote program paths,
+and install commands retain their existing classification. The path target
+also preserves the policy checks on dirty working trees.
+
+`env -u NAME` pairs, ordinary environment assignments, `nice -n N`, `time`,
+and `nohup` can wrap these recognized commands. Execution-changing or
+root-changing assignments and `env -i/-S/-C/-P` remain closed. Heredoc bodies
+are consumed as stdin up to their literal delimiter; commands after the
+delimiter are still classified. Unquoted heredocs containing shell expansion
+remain unreadable. Operator-gated, destructive, network, install, obfuscated,
+`eval`/`exec`/`source`, and write-through-`xargs` shapes gain no exception.
+Catalog reservations and its restriction on combining distinct write
+capabilities remain unchanged. Classification still feeds the existing
+ActionIntent and PolicyDecision gates; it does not grant authority itself.
 
 A held action can use a durable, exact, one-use approval. Only an
 adapter-enforced, direct single-action baseline hold with no security floor,
