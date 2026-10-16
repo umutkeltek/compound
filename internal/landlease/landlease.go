@@ -524,19 +524,28 @@ func waitUntilFree(ctx context.Context, home string, clk Clock, timeout, poll ti
 	defer sleeper.close()
 
 	deadline := clk.Now().Add(timeout)
+	var status StatusResult
+	checkWait := func() error {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("land-lease wait for %q stopped: %w", status.Holder, err)
+		}
+		if !clk.Now().Before(deadline) {
+			return fmt.Errorf("land-lease wait for %q timed out after %s: %w", status.Holder, timeout, context.DeadlineExceeded)
+		}
+		return nil
+	}
 	for {
-		now := clk.Now()
-		status, err := StatusReadOnly(home, now)
-		if err != nil || !status.Held {
+		if err := checkWait(); err != nil {
 			return status, err
 		}
-		if err := ctx.Err(); err != nil {
-			return status, fmt.Errorf("land-lease wait for %q stopped: %w", status.Holder, err)
+		status, err = StatusReadOnly(home, clk.Now())
+		if err != nil {
+			return status, err
 		}
-		if !now.Before(deadline) {
-			return status, fmt.Errorf("land-lease still held by %q after waiting %s", status.Holder, timeout)
+		if !status.Held {
+			return status, checkWait()
 		}
-		sleeper.sleep(now, deadline)
+		sleeper.sleep(clk.Now(), deadline)
 	}
 }
 

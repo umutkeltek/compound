@@ -612,6 +612,12 @@ execution door, not proof that unattended scheduling or any provider lane is rea
 
 ### Scarce full-proof admission
 
+Queued proof admission checks cancellation and its absolute deadline before treating
+a vacancy as available, after waiting for the work admission lock, and immediately
+before minting its RunAttempt. A cancellation or timeout observed at those boundaries
+must leave no new attempt. This guard does not by itself establish FIFO ordering.
+
+
 Full local proof extends the existing `work` and `landlease` owners. Before the canonical runner
 enters its first subprocess, `work` records an allowing reservation ActionIntent/PolicyDecision,
 mints and durably links one same-work `ratt_*`, then acquires the existing TTL lease with a

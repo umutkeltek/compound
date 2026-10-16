@@ -93,3 +93,38 @@ func TestWaitUntilFreeStopsWhenCancelled(t *testing.T) {
 		t.Fatalf("cancelled wait slept %d times", clk.sleeps)
 	}
 }
+
+func TestWaitUntilFreeCancelledVacancy(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	clk := &countingClock{t: baseNow}
+	_, err := waitUntilFree(ctx, t.TempDir(), clk, time.Minute, time.Second, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("free lease admitted cancelled waiter: %v", err)
+	}
+	if clk.sleeps != 0 {
+		t.Fatal("cancelled waiter slept")
+	}
+}
+
+func TestWaitUntilFreeDeadlineAtRelease(t *testing.T) {
+	home := t.TempDir()
+	if _, err := Acquire(home, laneAlpha, time.Hour, baseNow); err != nil {
+		t.Fatal(err)
+	}
+	clk := &fakeClock{t: baseNow}
+	fw := &fakeWatcher{onWait: func(time.Duration) error {
+		clk.t = baseNow.Add(30 * time.Second)
+		_, err := Release(home, laneAlpha, clk.Now())
+		return err
+	}}
+	factory := func(string) (leaseWatcher, error) { return fw, nil }
+	_, err := waitUntilFree(context.Background(), home, clk, 30*time.Second, time.Second, factory)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("release at deadline admitted expired waiter: %v", err)
+	}
+	status, err := StatusReadOnly(home, clk.Now())
+	if err != nil || status.Held {
+		t.Fatalf("test release did not occur: %+v %v", status, err)
+	}
+}

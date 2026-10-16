@@ -64,6 +64,9 @@ type ProofResourceReserveInput struct {
 	// busyWhenHeld makes a live lease under another holder a quiet busy result, checked
 	// under the admission lock before anything is minted. Only the queued path sets it.
 	busyWhenHeld bool
+	// waitCheck revalidates a queued caller after admission-lock contention and
+	// immediately before creating its RunAttempt. It is never persisted.
+	waitCheck func() error
 }
 
 // ProofResourceResumeInput identifies the canonical command boundary that may finish an existing
@@ -1310,6 +1313,9 @@ func (s *Store) reconcileRearmedProofResourceCompletion(
 }
 
 func (s *Store) reserveProofResourceLocked(workID string, in ProofResourceReserveInput, now time.Time) (ProofResourceReserveResult, error) {
+	if err := checkProofWaitAdmission(in); err != nil {
+		return ProofResourceReserveResult{}, err
+	}
 	in.Actor = strings.TrimSpace(in.Actor)
 	in.Workspace = strings.TrimSpace(in.Workspace)
 	in.Command = strings.TrimSpace(in.Command)
@@ -1468,6 +1474,9 @@ func (s *Store) reserveProofResourceLocked(workID string, in ProofResourceReserv
 		TerminationEvidenceRef: in.TerminationEvidenceRef,
 		ActionIntentID:         action.ID,
 		PolicyDecisionID:       decision.ID,
+	}
+	if err := checkProofWaitAdmission(in); err != nil {
+		return ProofResourceReserveResult{}, err
 	}
 	existingRunIDs := append([]string(nil), w.RunAttemptIDs...)
 	proofRun, err := s.prepareProofRunAttempt(w, action.ID, in, now)

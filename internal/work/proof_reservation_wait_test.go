@@ -175,3 +175,21 @@ func runAttemptCount(t *testing.T, s *Store, workID string) int {
 	}
 	return len(w.RunAttemptIDs)
 }
+
+func TestReserveProofResourceWhenFreeCancelledVacancyMintsNothing(t *testing.T) {
+	s := newStore(t)
+	w := claimedProofWork(t, s, "cancelled free proof resource", proofActorAlpha, time.Now().UTC())
+	before := runAttemptCount(t, s, w.ID)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result, err := s.ReserveProofResourceWhenFree(ctx, w.ID, queuedProofInput(t), time.Minute, landlease.RealClock{}, nil)
+	if result.ExecutionBarrier != nil {
+		_ = closeProofFixtureExecutionBarrier(result.ExecutionBarrier)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("cancelled free queue returned %v", err)
+	}
+	if added := runAttemptCount(t, s, w.ID) - before; added != 0 {
+		t.Errorf("cancelled queue minted %d attempts", added)
+	}
+}

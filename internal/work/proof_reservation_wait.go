@@ -46,6 +46,12 @@ func (s *Store) ReserveProofResourceWhenFree(
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if ctx == nil {
+		return ProofResourceReserveResult{}, fmt.Errorf("proof resource wait requires a context")
+	}
+	if err := ctx.Err(); err != nil {
+		return ProofResourceReserveResult{}, fmt.Errorf("proof resource wait: %w", err)
+	}
 	if clk == nil {
 		return ProofResourceReserveResult{}, fmt.Errorf("proof resource wait requires a clock")
 	}
@@ -53,6 +59,15 @@ func (s *Store) ReserveProofResourceWhenFree(
 	started := clk.Now()
 	var waiting time.Duration
 	deadline := started.Add(wait)
+	in.waitCheck = func() error {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("proof resource admission stopped: %w", err)
+		}
+		if !clk.Now().Before(deadline) {
+			return fmt.Errorf("proof resource admission wait expired: %w", context.DeadlineExceeded)
+		}
+		return nil
+	}
 	announced := ""
 	for {
 		status, err := landlease.ProofResource(s.home).StatusReadOnly(clk.Now())
@@ -79,4 +94,11 @@ func (s *Store) ReserveProofResourceWhenFree(
 		}
 		return result, err
 	}
+}
+
+func checkProofWaitAdmission(in ProofResourceReserveInput) error {
+	if in.waitCheck != nil {
+		return in.waitCheck()
+	}
+	return nil
 }
