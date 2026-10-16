@@ -13,7 +13,7 @@ lenses behind, and the next session starts smarter. Read the
 
 ## Prerequisites
 
-- **Go 1.26.4+**
+- **Go 1.27.1+** (the version declared in `go.mod`; `go version` must print at least that)
 - **Git**
 - Optional: **Bun** (for console work), **Ollama** (for semantic memory tests)
 
@@ -21,8 +21,9 @@ lenses behind, and the next session starts smarter. Read the
 
 ```sh
 make install          # builds binary, inits home, runs doctor
-# or manually:
+# or manually (then create a runtime home before any other command):
 go build ./cmd/compound
+COMPOUND_HOME="$HOME/.compound" ./compound home init
 ```
 
 ## Test
@@ -158,8 +159,12 @@ skills/                   Agent ceremony definitions
    tip.
 4. **One logical change per PR.** If your change teaches something about the
    architecture, update the docs/contracts/tests in the same change.
-5. **CI runs automatically** on push/PR: `proof-check --ci` (Go gates) +
-   `proof-check --ci-console` (TypeScript gates) + gitleaks (secret scan).
+5. **CI runs the fresh-clone subsets, not the certifying battery.**
+   `.github/workflows/proof.yml` runs `proof-check --ci` (Go gates) and
+   `proof-check --ci-console` (TypeScript gates) on GitHub-hosted runners when
+   the account allows it; `.woodpecker.yml` runs the same two subsets plus
+   gitleaks on the owned Woodpecker agent. Landing is certified locally by the
+   full `proof-check` battery, never by CI alone.
 
 A rebase, replay, or new HEAD invalidates prior proof and requires a fresh battery.
 For source-controlled work, a committed stored successful proof is required:

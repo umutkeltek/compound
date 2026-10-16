@@ -39,7 +39,7 @@ alpha.
 
 ## Supported versions
 
-Security fixes are made for the latest tagged public-alpha release only. The
+Security fixes are made for the latest tagged public-alpha release only. No tag has been published yet, so until the first one there is no supported version. The
 `main` branch and historical prerelease artifacts are development surfaces,
 not supported distributions. Install only the immutable tag artifacts listed
 in the release's verified `RELEASE` manifest, and verify the matching

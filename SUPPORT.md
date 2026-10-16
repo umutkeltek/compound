@@ -12,12 +12,12 @@ private channel but must contain no vulnerability detail.
 |---|---|
 | Storage | File backend under one `COMPOUND_HOME` |
 | Trust model | One trusted OS account, one local disk |
-| Prebuilt artifacts | macOS arm64 and Linux amd64 |
+| Prebuilt artifacts | macOS arm64 and Linux amd64, built by the tag-triggered release workflow. No stable tag has been published yet |
 | Source build | Go version declared by `go.mod` |
 | Home authority | Explicit `--home`, `COMPOUND_HOME`, `--local`, or the global default |
 | Interactive hooks | Observation by default; enforcement only where `compound doctor` proves the exact installed posture |
 | Console | Loopback, projection-only default; the capability-gated mutation extension is unsupported, and direct private reads are unavailable |
-| Upgrades | Latest tagged public alpha, after a verified backup |
+| Upgrades | Latest tagged public alpha, after a verified backup (no tag exists yet; `main` is a development surface) |
 
 The authoritative boundary and current runtime caveats live in
 [`docs/security/supported-scope.md`](docs/security/supported-scope.md).

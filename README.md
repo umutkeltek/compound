@@ -302,9 +302,10 @@ Execution and policy:
   refusal, red-battery, and recovery contract:
   [Proof-Check and the Land-Lease](docs/architecture/proof-check.md).
 - `.woodpecker.yml` runs the portable core, console, and gitleaks gates on the
-  owned Woodpecker agent. A scheduled/manual run is the reliable trigger while
-  the forge cannot reach the LAN-only webhook; GitHub-hosted Actions are
-  intentionally not part of the runtime contract.
+  owned Woodpecker agent; `.github/workflows/proof.yml` runs the same two
+  portable subsets on GitHub-hosted runners when the account allows it. Both
+  are fresh-machine evidence, not certification: a change lands only after
+  the full local `proof-check` battery.
 - `compound reviews [--json]` reads owner-review artifacts without applying
   them.
 - `compound policy evaluate` turns ActionIntent into an enforceable

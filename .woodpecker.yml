@@ -16,7 +16,7 @@ steps:
       - chmod 0755 .ci/bin/bun
 
   proof-gates:
-    image: docker.io/library/golang:1.26.4-bookworm
+    image: docker.io/library/golang:1.27.2-bookworm
     depends_on:
       - prepare-bun
     environment:

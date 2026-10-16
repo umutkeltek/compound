@@ -14,7 +14,7 @@ Durable history is not the same as automatic memory promotion or measured benefi
 
 | You want to… | Start here |
 |---|---|
-| Install a published release | Option A below; no Go required |
+| Install a published release | Option A below; no Go required. **No stable release is published yet**, so this path fails on purpose today |
 | Build an authenticated release from source | Option B below |
 | Try unreleased source | Reviewed contributor checkout below |
 | Connect your existing agent after installation | [First useful session](#first-useful-session) |
@@ -24,7 +24,7 @@ Durable history is not the same as automatic memory promotion or measured benefi
 ## Prerequisites
 
 - **Git** (Compound uses git for delivery proof).
-- **Go 1.26.4+** — only required if you build from source (the prebuilt binary
+- **Go 1.27.1+** (the version in `go.mod`) — only required if you build from source (the prebuilt binary
   path needs no Go).
 - For a prebuilt release: `curl`, `gh`, `sha256sum` or `shasum`, `gzip`, and
   `tar`. The installer also requires FD-mode `lockf -s -t 0 9` on macOS 15 or
@@ -263,8 +263,9 @@ reported separately; a failed refresh fails installation.
 
 Before initializing the home or publishing artifacts, the staged CLI runs
 `compound harness refresh-lane --preflight`. This read-only check validates every
-required native hook writer before any profile is refreshed. `ready` means the
-writer is available; it does not certify activation or provider acceptance.
+required native hook writer before any profile is refreshed. It prints nothing
+and exits 0 when every writer is available; a nonzero exit carries the reason.
+It does not certify activation or provider acceptance.
 An absent home needs no initialization for this check; an existing home must
 have a compatible manifest. Ordinary refresh retains mutation admission.
 OpenCode registration belongs to `adapters/opencode/install.ts`; oh-my-pi shim
@@ -326,6 +327,9 @@ Run these checks before starting work:
 compound version
 compound home doctor
 ```
+
+If you built with `go build` instead of `make install`, no runtime home exists yet: run
+`compound home init` once first, or every command above reports a missing manifest.
 
 A failed doctor is not a clean home. Follow its reported issue before recovery
 or upgrade; do not delete runtime data to clear a warning. The source-setup

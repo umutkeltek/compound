@@ -392,8 +392,8 @@ compound contract hooks-authority
 # Run the full orientation and see what context your agent would get:
 compound orient --harness claude-code --cwd /path/to/your/project --task "my task"
 
-# Check the harness registry:
-compound harness observe --os-entrypoints
+# Check the harness registry (bundled registry; pass a registry.yaml to observe another):
+compound harness observe
 ```
 
 ## The harness registry
@@ -402,7 +402,7 @@ Compound maintains a **HarnessRegistry** that records what each harness
 actually supports (native blocking hooks, fallback adapters, etc.):
 
 ```sh
-compound harness observe --os-entrypoints   # detect installed harnesses
+compound harness observe                     # observe the bundled harness registry
 ```
 
 This is evidence-only — it observes what's installed, never configures or

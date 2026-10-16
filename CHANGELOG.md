@@ -20,6 +20,13 @@ for tagged releases, subject to the public-alpha compatibility policy in
   too-dense card to a plain count-and-reply line rather than shipping
   jargon.
 
+
+- A file-backed, single-user public-alpha support and security contract.
+- A fail-closed vulnerability-disclosure gate, compatibility policy, and
+  recovery procedure. Private reporting remains a pre-tag operational gate
+  until its reporter-side route is verified.
+- Private artifact custody and explicit custody diagnosis/repair surfaces.
+
 ### Fixed
 
 - The generic "a new record needs your read" fallback card is gone. Queue
@@ -41,13 +48,13 @@ for tagged releases, subject to the public-alpha compatibility policy in
   inference table also recognizes `qwen3-embedding`, `bge-m3`, and the
   `gemini-embedding` family.
 
-### Added
 
-- A file-backed, single-user public-alpha support and security contract.
-- A fail-closed vulnerability-disclosure gate, compatibility policy, and
-  recovery procedure. Private reporting remains a pre-tag operational gate
-  until its reporter-side route is verified.
-- Private artifact custody and explicit custody diagnosis/repair surfaces.
+- Backup collision, retention, archive-identity, and restore publication gaps.
+- RunAttempt launch ambiguity gaps.
+- Invented harness and working-directory identities no longer produce a false
+  successful orientation.
+
+No release has been published from this changelog entry yet.
 
 ### Changed
 
@@ -58,12 +65,3 @@ for tagged releases, subject to the public-alpha compatibility policy in
 - The console is projection-only by default. Its unsupported mutation
   extension requires an explicit home and an out-of-band capability; direct
   private document reads are unavailable.
-
-### Fixed
-
-- Backup collision, retention, archive-identity, and restore publication gaps.
-- RunAttempt launch ambiguity gaps.
-- Invented harness and working-directory identities no longer produce a false
-  successful orientation.
-
-No release has been published from this changelog entry yet.
