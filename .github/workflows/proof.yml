@@ -1,3 +1,5 @@
+# Inactive in this repository since 2026-10-16; retained as a test reference.
+# Active owned-CI and maintainer publication procedure: docs/release.md.
 name: Proof
 
 # Fresh-clone-portable subset (proof-check --ci) plus the console/TS subset
