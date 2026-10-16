@@ -26,20 +26,27 @@ steps:
     volumes:
       - compound-go-build-cache:/cache/go-build
       - compound-go-mod-cache:/cache/go-mod
-    # Runs as root on purpose: the harness suite needs a fixed-path Node
-    # interpreter (/usr/bin/node) that only apt can place, and a fresh named
-    # cache volume is root-owned until something chowns it. Both are
-    # container-local; nothing here touches the agent host.
+    # The container starts as root only to place the fixed-path Node
+    # interpreter (/usr/bin/node, needed by the harness suite) and to own the
+    # fresh named cache volumes; the gates themselves run as an unprivileged
+    # user via setpriv, because the suite injects permission failures that
+    # root cannot observe (pipeline 551). Nothing here touches the agent host.
     commands:
       - apt-get update -qq && apt-get install -y -qq --no-install-recommends nodejs >/dev/null
       - test -x /usr/bin/node && /usr/bin/node --version
       - mkdir -p "$HOME" "$GOCACHE" "$GOMODCACHE"
-      - export PATH="$CI_WORKSPACE/.ci/bin:$PATH"
-      - export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$CI_WORKSPACE"
-      - git config --global --add safe.directory "$CI_WORKSPACE"
-      - mkdir -p .ci/bin
-      - go build -o .ci/bin/compound ./cmd/compound
-      - .ci/bin/compound proof-check --ci
+      - chown -R 1000:1000 "$HOME" "$GOCACHE" "$GOMODCACHE" "$CI_WORKSPACE"
+      - |
+        setpriv --reuid=1000 --regid=1000 --clear-groups \
+          env HOME="$HOME" GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" \
+              PATH="$CI_WORKSPACE/.ci/bin:$PATH" \
+              GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$CI_WORKSPACE" \
+          sh -euc '
+            git config --global --add safe.directory "$CI_WORKSPACE"
+            mkdir -p .ci/bin
+            go build -o .ci/bin/compound ./cmd/compound
+            .ci/bin/compound proof-check --ci
+          '
       - rm -f .ci/bin/bun
 
   console-gates:
