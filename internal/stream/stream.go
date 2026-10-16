@@ -131,7 +131,7 @@ func ReadAvailable(home string, cursor int64) ([]Frame, int64, error) {
 
 // ReadAvailableStrict is the finite replay form for projections that must
 // observe one complete sampled log. Unlike Follow and ReadAvailable, it rejects
-// a non-newline-terminated tail rather than buffering it for a future read.
+// a tail that has no trailing newline rather than buffering it for a future read.
 func ReadAvailableStrict(home string, cursor int64) ([]Frame, int64, error) {
 	return readAvailable(home, cursor, true)
 }

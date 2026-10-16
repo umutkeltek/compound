@@ -15,7 +15,7 @@ import (
 // running under a non-reaping pid 1 (docker, containerd sidecars) waits out
 // its grace window and reports forced-shutdown failure for a group that is
 // in fact dead. Zombies are dead; they are not alive. Found by the
-// console-supervisor falsifiers in containers (CI run 35376991764 follow-up).
+// console-supervisor falsifiers in containers (CI follow-up, 2026-09-19).
 func ProcessGroupAlive(pgid int) (bool, error) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {

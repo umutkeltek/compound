@@ -3,7 +3,7 @@ package schedule
 // Flag validation for the schedule surface, platform-neutral so the darwin
 // CLI and the not-darwin stub enforce the SAME dialect (see run_notdarwin.go):
 // an unknown flag must be refused identically everywhere, or the
-// flag-validation ratchet census splits across platforms (run 35376991764).
+// flag-validation ratchet census splits across platforms (CI follow-up, 2026-09-19).
 
 import (
 	"fmt"

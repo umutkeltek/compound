@@ -17,7 +17,7 @@ import (
 // flag dialect is identical on every platform: without this, linux builds
 // "refuse" unknown flags only incidentally (via the exit-2 platform error)
 // while darwin silently accepted them — a split the flag-validation ratchet
-// census cannot pin (run 35376991764).
+// census cannot pin (CI follow-up, 2026-09-19).
 func Run(args []string) {
 	if len(args) > 0 {
 		switch args[0] {
