@@ -59,3 +59,18 @@ A release candidate is not supported until its repository proof battery,
 clean-room install, backup/verify/restore drill, and supported-scope live flow
 have passed for the exact tagged commit. The recovery procedure is documented
 in [`docs/operations/recovery.md`](docs/operations/recovery.md).
+
+## Release signing
+
+The dedicated release SSH key fingerprint is
+`SHA256:iAb0Eaq9vv9CrfNRy/YbitZVbaSpwqE0wY8uf5jftRE`.
+The trust anchor is [`release/allowed_signers`](release/allowed_signers); rotation
+requires replacing it in a reviewed commit and updating the fingerprint and
+publisher together. The private key remains on the maintainer's machine.
+
+Before executing release bytes, compare the tag-bound key fingerprint above,
+verify `SHA256SUMS.sig` with `ssh-keygen -Y verify` using identity and namespace
+`compound-release`, then check the signed `SHA256SUMS` against the downloads.
+This proves signing by the key the repository publishes; it does not independently
+establish who controls that key beyond the repository. See
+[Getting Started](docs/getting-started.md) for exact commands.
