@@ -301,11 +301,12 @@ Execution and policy:
   predecessor fails closed behind a kernel execution barrier. The full lease,
   refusal, red-battery, and recovery contract:
   [Proof-Check and the Land-Lease](docs/architecture/proof-check.md).
-- `.woodpecker.yml` runs the portable core, console, and gitleaks gates on the
-  owned Woodpecker agent; `.github/workflows/proof.yml` runs the same two
-  portable subsets on GitHub-hosted runners when the account allows it. Both
-  are fresh-machine evidence, not certification: a change lands only after
-  the full local `proof-check` battery.
+- GitHub-hosted Actions are disabled in this repository. `.woodpecker.yml` runs
+  routine CI and gated release builds on the owned Woodpecker agent. Publication
+  starts on the maintainer's Mac as a draft; the maintainer reviews and publishes
+  it explicitly. Tracked GitHub workflow files are inactive references kept for
+  tests. See [Release procedure](docs/release.md). CI subsets remain fresh-machine
+  evidence; landing requires the full local `proof-check` battery.
 - `compound reviews [--json]` reads owner-review artifacts without applying
   them.
 - `compound policy evaluate` turns ActionIntent into an enforceable

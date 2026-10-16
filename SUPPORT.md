@@ -12,7 +12,7 @@ private channel but must contain no vulnerability detail.
 |---|---|
 | Storage | File backend under one `COMPOUND_HOME` |
 | Trust model | One trusted OS account, one local disk |
-| Prebuilt artifacts | macOS arm64 and Linux amd64, built by the tag-triggered release workflow. No stable tag has been published yet |
+| Prebuilt artifacts | macOS arm64 and Linux amd64, built by the manual Woodpecker release pipeline. No stable tag has been published yet |
 | Source build | Go version declared by `go.mod` |
 | Home authority | Explicit `--home`, `COMPOUND_HOME`, `--local`, or the global default |
 | Interactive hooks | Observation by default; enforcement only where `compound doctor` proves the exact installed posture |
@@ -73,3 +73,12 @@ Include the tagged version, OS/architecture, storage mode, exact command,
 synthetic reproduction, and redacted output. Say whether `compound home doctor
 --json` passes. Never attach a complete `COMPOUND_HOME`, credentials, database
 connection strings, or raw private prompts.
+
+## Release delivery
+
+GitHub-hosted Actions are disabled in this repository. Routine CI and release
+builds run on the owned Woodpecker agent. Publication starts on the maintainer's
+machine as a draft and requires explicit review and publication. The tracked
+GitHub workflow files are inactive references kept for tests. See
+[Release procedure](docs/release.md) and the SSH verification instructions in
+[Getting Started](docs/getting-started.md).

@@ -159,11 +159,13 @@ skills/                   Agent ceremony definitions
    tip.
 4. **One logical change per PR.** If your change teaches something about the
    architecture, update the docs/contracts/tests in the same change.
-5. **CI runs the fresh-clone subsets, not the certifying battery.**
-   `.github/workflows/proof.yml` runs `proof-check --ci` (Go gates) and
-   `proof-check --ci-console` (TypeScript gates) on GitHub-hosted runners when
-   the account allows it; `.woodpecker.yml` runs the same two subsets plus
-   gitleaks on the owned Woodpecker agent. Landing is certified locally by the
+5. **CI runs fresh-clone subsets, not the certifying battery.** GitHub-hosted
+   Actions are disabled in this repository. `.woodpecker.yml` runs routine CI and
+   gated release builds on the owned Woodpecker agent. Publication starts on the
+   maintainer's machine as a draft, then requires explicit operator review and
+   publication. The tracked `.github/workflows/proof.yml` and
+   `.github/workflows/release.yml` files are inactive references kept for tests.
+   See [Release procedure](docs/release.md). Landing is certified locally by the
    full `proof-check` battery, never by CI alone.
 
 A rebase, replay, or new HEAD invalidates prior proof and requires a fresh battery.

@@ -11,7 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestReleaseWorkflowHasReadOnlyBuildsAndIsolatedPublishAuthority(t *testing.T) {
+func TestInactiveGitHubReleaseWorkflowHasReadOnlyBuildsAndIsolatedPublishAuthority(t *testing.T) {
 	body, err := os.ReadFile("../../.github/workflows/release.yml")
 	if err != nil {
 		t.Fatal(err)
@@ -77,7 +77,7 @@ func TestReleaseWorkflowHasReadOnlyBuildsAndIsolatedPublishAuthority(t *testing.
 	}
 }
 
-func TestReleaseWorkflowProvesRealReproducibilityAndExactPublication(t *testing.T) {
+func TestInactiveGitHubReleaseWorkflowProvesRealReproducibilityAndExactPublication(t *testing.T) {
 	body, err := os.ReadFile("../../.github/workflows/release.yml")
 	if err != nil {
 		t.Fatal(err)
@@ -143,7 +143,7 @@ func TestReleaseWorkflowProvesRealReproducibilityAndExactPublication(t *testing.
 	}
 }
 
-func TestReleaseWorkflowRunsCanonicalPublicGatesBeforeBuilding(t *testing.T) {
+func TestInactiveGitHubReleaseWorkflowRunsCanonicalPublicGatesBeforeBuilding(t *testing.T) {
 	body, err := os.ReadFile("../../.github/workflows/release.yml")
 	if err != nil {
 		t.Fatal(err)
@@ -193,7 +193,7 @@ func TestReleaseWorkflowRunsCanonicalPublicGatesBeforeBuilding(t *testing.T) {
 	}
 }
 
-func TestReleaseWorkflowResumesOnlyExactDraftWithoutNetwork(t *testing.T) {
+func TestInactiveGitHubReleaseWorkflowResumesOnlyExactDraftWithoutNetwork(t *testing.T) {
 	for _, test := range []struct {
 		name       string
 		state      string
@@ -227,7 +227,7 @@ func TestReleaseWorkflowResumesOnlyExactDraftWithoutNetwork(t *testing.T) {
 	}
 }
 
-func TestReleaseWorkflowCountsEveryCandidateEntryAndRejectsSymlinks(t *testing.T) {
+func TestInactiveGitHubReleaseWorkflowCountsEveryCandidateEntryAndRejectsSymlinks(t *testing.T) {
 	body, err := os.ReadFile("../../.github/workflows/release.yml")
 	if err != nil {
 		t.Fatal(err)
@@ -244,7 +244,7 @@ func TestReleaseWorkflowCountsEveryCandidateEntryAndRejectsSymlinks(t *testing.T
 	}
 }
 
-func TestGettingStartedSourceInstallIsBoundToAttestedTagAndCommit(t *testing.T) {
+func TestGettingStartedSourceInstallIsBoundToSignedTagAndCommit(t *testing.T) {
 	body, err := os.ReadFile("../../docs/getting-started.md")
 	if err != nil {
 		t.Fatal(err)
@@ -255,11 +255,15 @@ func TestGettingStartedSourceInstallIsBoundToAttestedTagAndCommit(t *testing.T) 
 		`VERSION must be strict stable SemVer`,
 		`TAG="v${VERSION}"`,
 		`REPOSITORY=${COMPOUND_RELEASE_REPOSITORY:?`,
-		`/releases/download/${TAG}/RELEASE`,
-		`gh attestation verify`,
-		`--repo "$REPOSITORY"`,
-		`--signer-workflow "$REPOSITORY/.github/workflows/release.yml"`,
-		`--source-ref "refs/tags/$TAG"`,
+		`/releases/download/${TAG}`,
+		`for ASSET in RELEASE SHA256SUMS SHA256SUMS.sig`,
+		`https://raw.githubusercontent.com/${REPOSITORY}/${TAG}/release/allowed_signers`,
+		`ssh-keygen -Y verify`,
+		`-I compound-release`,
+		`-n compound-release`,
+		`SHA256:iAb0Eaq9vv9CrfNRy/YbitZVbaSpwqE0wY8uf5jftRE`,
+		`sha256sum --check RELEASE.sha256`,
+		`shasum -a 256 --check RELEASE.sha256`,
 		`COMMIT=`,
 		`git init compound`,
 		`refs/tags/$TAG:refs/tags/$TAG`,
@@ -273,12 +277,20 @@ func TestGettingStartedSourceInstallIsBoundToAttestedTagAndCommit(t *testing.T) 
 	}
 	for _, forbidden := range []string{
 		`releases/latest`,
-		`raw.githubusercontent.com/`,
+		`gh attestation verify`,
+		`/${REPOSITORY}/main/`,
 		`git clone `,
 	} {
 		if strings.Contains(text, forbidden) {
 			t.Errorf("source-install instructions retain mutable selector %q", forbidden)
 		}
+	}
+	if strings.Count(text, `https://raw.githubusercontent.com/${REPOSITORY}/${TAG}/release/allowed_signers`) != 2 || strings.Count(text, `ssh-keygen -Y verify`) != 2 {
+		t.Error("both installation paths must verify the signature against the release tag's trust anchor")
+	}
+	source := text[strings.Index(text, "### Option B"):]
+	if !(strings.Index(source, "ssh-keygen -Y verify") < strings.Index(source, "sha256sum --check") && strings.Index(source, "sha256sum --check") < strings.Index(source, "COMMIT=")) {
+		t.Error("source commit must be read only after SSH and checksum verification")
 	}
 	if regexp.MustCompile(`github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+`).MatchString(text) {
 		t.Error("source-install instructions hardcode a repository owner instead of using the explicit identity seam")
@@ -333,7 +345,7 @@ func TestGettingStartedDoesNotClaimAnUnpublishedArtifactExists(t *testing.T) {
 	}
 }
 
-func TestReleaseWorkflowPinsEveryThirdPartyAction(t *testing.T) {
+func TestInactiveGitHubReleaseWorkflowPinsEveryThirdPartyAction(t *testing.T) {
 	body, err := os.ReadFile("../../.github/workflows/release.yml")
 	if err != nil {
 		t.Fatal(err)
@@ -360,7 +372,7 @@ func TestReleaseWorkflowPinsEveryThirdPartyAction(t *testing.T) {
 	}
 }
 
-func TestReleaseWorkflowPublicBoundaryNamesHostedReleaseException(t *testing.T) {
+func TestInactiveGitHubReleaseWorkflowPublicBoundaryNamesHostedReleaseException(t *testing.T) {
 	body, err := os.ReadFile("../../docs/BOUNDARIES.md")
 	if err != nil {
 		t.Fatal(err)
@@ -372,6 +384,11 @@ func TestReleaseWorkflowPublicBoundaryNamesHostedReleaseException(t *testing.T) 
 		"read-only Linux job builds the candidate twice",
 		"`ubuntu-24.04` → `linux_amd64` and `macos-15` → `darwin_arm64` jobs clean-install the exact candidate",
 		"draft-publication job receives write authority",
+		"historical description applies only to the inactive GitHub reference workflow",
+		"GitHub-hosted Actions are disabled in this repository.",
+		"Routine CI and release builds run on the owned Woodpecker agent.",
+		"creates a draft",
+		"Publication requires the maintainer's explicit review and click.",
 	} {
 		if !strings.Contains(text, required) {
 			t.Errorf("public boundary does not describe release workflow fact %q", required)

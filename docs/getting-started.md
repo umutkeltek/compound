@@ -50,9 +50,9 @@ Optional (for semantic memory): a local **Ollama** server — see
 ## 1. Install
 
 Release acceptance uses the shipped nine-file bundle, absolute installed binary
-paths and explicit disposable homes. The existing Proof workflow runs the native
-Linux/amd64 drill; the same drill must also pass natively on Darwin/arm64 before
-release approval. It covers initialized first use, goal continuity, owned-process
+paths and explicit disposable homes. The owned Woodpecker release pipeline runs
+the native Linux/amd64 drill; the Mac publisher runs it natively on Darwin/arm64
+before creating a draft. It covers initialized first use, goal continuity, owned-process
 interruption and fresh resume, rejected result acceptance, installer rollback,
 and a restored-home product/decision consumer with the original home unavailable.
 The report is candidate-bound evidence, not authorization to publish:
@@ -92,7 +92,7 @@ Choose an explicit stable release version and download its exact nine-file
 inventory into a fresh directory. Do not pipe an installer from the mutable
 `main` branch into a shell. Set `COMPOUND_RELEASE_REPOSITORY` to the exact
 `owner/repository` identity shown on the public release page; the same value
-binds downloads, attestations, and the source remote below.
+binds downloads, the signing key, and the source remote below.
 
 ```sh
 set -eu
@@ -134,22 +134,30 @@ archives are internally consistent with one release set. Because the checksum
 file comes from the same release location as those files, checksums alone do
 **not** authenticate who published them.
 
-Before executing the installer, use GitHub's signed build attestation to check
-every downloaded file against the expected repository and release workflow:
+Before executing the installer, download the detached SSH signature and the trust
+anchor from the same release tag. Compare its fingerprint with `SECURITY.md`:
+`SHA256:iAb0Eaq9vv9CrfNRy/YbitZVbaSpwqE0wY8uf5jftRE`.
 
 ```sh
-for ASSET in $ASSETS; do
-  gh attestation verify "$RELEASE_DIR/$ASSET" \
-    --repo "$REPOSITORY" \
-    --signer-workflow "$REPOSITORY/.github/workflows/release.yml" \
-    --source-ref "refs/tags/$TAG"
-done
+curl --fail --location --output "$RELEASE_DIR/SHA256SUMS.sig" "$BASE_URL/SHA256SUMS.sig"
+curl --fail --location --output "$RELEASE_DIR/allowed_signers" \
+  "https://raw.githubusercontent.com/${REPOSITORY}/${TAG}/release/allowed_signers"
+FINGERPRINT=$(awk '{print $3, $4}' "$RELEASE_DIR/allowed_signers" | ssh-keygen -lf - | awk '{print $2}')
+test "$FINGERPRINT" = 'SHA256:iAb0Eaq9vv9CrfNRy/YbitZVbaSpwqE0wY8uf5jftRE'
+ssh-keygen -Y verify -f "$RELEASE_DIR/allowed_signers" -I compound-release \
+  -n compound-release -s "$RELEASE_DIR/SHA256SUMS.sig" < "$RELEASE_DIR/SHA256SUMS"
+(cd "$RELEASE_DIR" && if command -v sha256sum >/dev/null 2>&1; then
+  sha256sum --check SHA256SUMS
+else
+  shasum -a 256 --check SHA256SUMS
+fi)
 ```
 
-This is the authenticated provenance step. The installer does not run or
-enforce `gh attestation verify`, and verification does not make a Git tag or
-GitHub release immutable. It proves that the bytes you checked have an
-attestation from the expected repository workflow.
+This proves that the checksum bytes were signed by the key the repository
+publishes, and that the downloaded bytes match those checksums. It does not
+independently establish who controls that key beyond the repository. The
+installer does not enforce this SSH signature check. Neither the signature nor
+checksums make a Git tag or GitHub release immutable.
 
 Select the archive for the current supported platform and run the verified
 installer from its regular file. Defaults install to `~/.local/bin` and
@@ -191,9 +199,10 @@ invocation acquires the lock and deterministically restores or reconciles the
 journaled generation. Consumers that cannot tolerate that bounded interval must
 stop invoking either binary until recovery completes.
 
-For an offline or air-gapped installation, verify the attestations on a
-connected machine before transfer, then carry the unchanged, exact nine-file
-directory listed above. Keep all names unchanged and all files colocated. The
+For an offline or air-gapped installation, verify the SSH signature and checksums
+on a connected machine before transfer, then carry the unchanged nine-file bundle
+plus `SHA256SUMS.sig` and the tag-bound `allowed_signers` verification evidence.
+Keep all names unchanged and all files colocated. The
 offline installer reads these four files directly:
 
 - `install-release.sh`
@@ -224,15 +233,27 @@ set -eu
 VERSION=0.1.0
 REPOSITORY=${COMPOUND_RELEASE_REPOSITORY:?set the public owner/repository identity}
 TAG="v${VERSION}"
-SOURCE_EVIDENCE="compound-${VERSION}-RELEASE"
-curl --fail --location \
-  --output "$SOURCE_EVIDENCE" \
-  "https://github.com/${REPOSITORY}/releases/download/${TAG}/RELEASE"
-gh attestation verify "$SOURCE_EVIDENCE" \
-  --repo "$REPOSITORY" \
-  --signer-workflow "$REPOSITORY/.github/workflows/release.yml" \
-  --source-ref "refs/tags/$TAG"
-
+SOURCE_EVIDENCE="compound-${VERSION}-source-evidence"
+mkdir "$SOURCE_EVIDENCE"
+BASE_URL="https://github.com/${REPOSITORY}/releases/download/${TAG}"
+for ASSET in RELEASE SHA256SUMS SHA256SUMS.sig; do
+  curl --fail --location --output "$SOURCE_EVIDENCE/$ASSET" "$BASE_URL/$ASSET"
+done
+curl --fail --location --output "$SOURCE_EVIDENCE/allowed_signers" \
+  "https://raw.githubusercontent.com/${REPOSITORY}/${TAG}/release/allowed_signers"
+# Compare this fingerprint with SECURITY.md before accepting the signature.
+FINGERPRINT=$(awk '{print $3, $4}' "$SOURCE_EVIDENCE/allowed_signers" | ssh-keygen -lf - | awk '{print $2}')
+test "$FINGERPRINT" = 'SHA256:iAb0Eaq9vv9CrfNRy/YbitZVbaSpwqE0wY8uf5jftRE'
+ssh-keygen -Y verify -f "$SOURCE_EVIDENCE/allowed_signers" -I compound-release \
+  -n compound-release -s "$SOURCE_EVIDENCE/SHA256SUMS.sig" < "$SOURCE_EVIDENCE/SHA256SUMS"
+# Only RELEASE is needed for a source build; verify its one signed checksum.
+awk '$2 == "RELEASE" { print; n++ } END { if (n != 1) exit 1 }' \
+  "$SOURCE_EVIDENCE/SHA256SUMS" > "$SOURCE_EVIDENCE/RELEASE.sha256"
+(cd "$SOURCE_EVIDENCE" && if command -v sha256sum >/dev/null 2>&1; then
+  sha256sum --check RELEASE.sha256
+else
+  shasum -a 256 --check RELEASE.sha256
+fi)
 COMMIT=$(awk '
   NR == 1 { if (NF != 2 || $1 != "schema" || $2 != "compound.release.v0.2") exit 1; next }
   NR == 2 { if (NF != 2 || $1 != "version" || $2 != version) exit 1; next }
@@ -242,7 +263,7 @@ COMMIT=$(awk '
   NR == 6 { if (NF != 6 || $1 != "artifact" || $2 != "linux" || $3 != "amd64") exit 1; next }
   { exit 1 }
   END { if (NR != 6) exit 1 }
-' version="$VERSION" "$SOURCE_EVIDENCE")
+' version="$VERSION" "$SOURCE_EVIDENCE/RELEASE")
 
 mkdir compound
 git init compound

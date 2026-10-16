@@ -58,10 +58,17 @@ contamination check plus a redact scan gate every commit.
 
 Routine CI (`.woodpecker.yml`) runs on the owned Woodpecker agent for scheduled/manual builds (and
 push/pull-request events when a forge webhook is reachable), so ordinary verification does not
-consume GitHub-hosted Actions minutes. Stable release tags use the separate, commit-pinned
+consume GitHub-hosted Actions minutes.
+
+The following historical description applies only to the inactive GitHub
+reference workflow, retained for tests since Actions were disabled on 2026-10-16:
+
+Stable release tags use the separate, commit-pinned
 `.github/workflows/release.yml`: a read-only Linux job builds the candidate twice, read-only
 `ubuntu-24.04` → `linux_amd64` and `macos-15` → `darwin_arm64` jobs clean-install the exact
-candidate, and only the final attestation and draft-publication job receives write authority. Routine CI
+candidate, and only the final attestation and draft-publication job receives write authority.
+
+Routine CI
 enforces the fresh-clone-portable subset of `compound proof-check`
 (run via `proof-check --ci`, single-sourced from `cmd/compound/proof_check.go` — go test/vet/build,
 gofmt, `git diff --check`, `architecture doctor --strict` including the armed doc-leak gate, and
@@ -76,14 +83,20 @@ private-tool names a generic scanner misses) and remains required before a publi
 Woodpecker gitleaks step complements it because `redact` is a local tool not installed on the CI
 runner.
 
-The release workflow separately proves the exact stable tag resolves to the workflow SHA, that SHA
-is contained in freshly fetched remote `main`, the canonical `proof-check --ci` gates pass, a real
-`release export-public` succeeds, and the pinned gitleaks scan is clean before release artifacts are
-built. A rerun can resume only an unpublished draft with the exact tag, full-SHA target, and sealed
-nine-file inventory; published or mismatched releases fail closed. Tag immutability, protected-main
-rules, and activation of a private vulnerability-reporting channel remain repository-administrator
-pre-tag gates. The workflow documents and verifies those prerequisites but does not pretend it can
-activate external repository policy.
+GitHub-hosted Actions are disabled in this repository. Routine CI and release
+builds run on the owned Woodpecker agent. The three release steps require a manual
+pipeline with `RELEASE_VERSION` set and the exact fetched main tip. After the
+portable gates, export-public check, two identical builds, and native Linux drill,
+the agent stages an immutable candidate. The maintainer's machine rebuilds it,
+runs the native Darwin drill, signs checksums, and creates a draft. Publication
+requires the maintainer's explicit review and click. Both tracked GitHub workflow
+files are inactive references kept for tests; their attestation and automatic
+publication steps do not run. See [Release procedure](release.md).
+
+Tag immutability, protected-main rules, and activation of the private
+vulnerability-reporting channel remain repository-administrator pre-tag gates.
+The release tooling checks prerequisites but cannot activate external repository
+policy.
 
 ## Adapter Contract
 
