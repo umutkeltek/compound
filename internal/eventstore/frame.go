@@ -85,17 +85,9 @@ var idPrefixFamilies = []struct{ prefix, family string }{
 	// unmapped prefix disables routing entirely -- that scan then parses every
 	// segment in the store, in every concurrent lane, on every tool call.
 	{"approval_", "approval"},
-	// pfrh_/pfrp_ (proof-resource refresh outcomes and preparations) carry
-	// work-owned schemas familyOf's schema switch never matches, so every
-	// record with these ids has always fallen through to the historical
-	// "other" family on BOTH the write path (familyOf(record, id)) and the
-	// read path (familyOf(nil, id)). Mapping them explicitly changes no
-	// record's family; it only lets scanFamilyRestriction prove a pfrh_/pfrp_
-	// prefix cannot live in any routed family, so prefix scans and exact
-	// prefix enumeration (EnumerateIDs) stop walking all 24GB of routed
-	// history to find one reservation's refresh evidence (measured
-	// 2026-10-15: unmapped prefixes forced the proof admission lock into
-	// full-store parses).
+	// Proof refresh outcomes and preparations historically fall through to
+	// "other". Explicit routing preserves that storage family while allowing
+	// prefix reads to exclude unrelated families.
 	{"pfrh_", "other"},
 	{"pfrp_", "other"},
 }

@@ -131,8 +131,8 @@ func (e *engine) readSegment(path string, tolerateFinalTorn bool, regularKind st
 // public API. A falsifier installs it to prove an incremental ScanFrom
 // decodes ONLY frames appended since its cursor while a full Scan re-decodes
 // everything (counter-seam precedent: segmentParseObserver in hotcache.go),
-// and that prefix enumeration never decodes a segment with no matching index
-// keys. A skipped fully-consumed segment never fires it — 0 work is 0 events.
+// and that warm prefix enumeration skips segments whose complete inventory
+// has no matching keys. A skipped fully-consumed segment never fires it — 0 work is 0 events.
 var scanSegmentObserver func(path string, frames int, bytes int64)
 
 func notifyScanParse(path string, frames int, bytes int64) {

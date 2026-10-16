@@ -109,6 +109,10 @@ func TestEnumerateIDsStopsParsingSealedSegmentsWithoutCandidates(t *testing.T) {
 	// candidates, so the sealed segment must never be parsed — only the hot
 	// segment is allowed to appear.
 	sealedPath := segmentPath(store.engine.segRoot, "other", sealedDay, 0)
+	// Establish the complete inventory once before measuring the warm path.
+	if _, err := store.EnumerateIDs("pfrh_nocand_", true); err != nil {
+		t.Fatal(err)
+	}
 	parsed := observedSegmentPaths(t)
 	got, err := store.EnumerateIDs("pfrh_othereservation_", true)
 	if err != nil {

@@ -15,7 +15,6 @@ import (
 
 	"compound/internal/authority/gitrepository"
 	"compound/internal/envelope"
-	"compound/internal/eventstore"
 	"compound/internal/home"
 	"compound/internal/landlease"
 	"compound/internal/policy"
@@ -4193,18 +4192,13 @@ func proofRefreshActionTime(reservation ProofResourceReservation) (time.Time, er
 
 func (s *Store) proofRefreshRefs(reservation ProofResourceReservation) ([]string, bool, error) {
 	prefix := proofRefreshOutcomePrefix(reservation.ID)
-	entries, err := s.events.Scan(eventstore.ScanOptions{Prefixes: []string{prefix}, RegularOnly: true})
+	scopedRefs, err := s.events.EnumerateIDs(prefix, true)
 	if err != nil {
 		return nil, false, err
 	}
-	if len(entries) > 0 {
-		refs := make([]string, 0, len(entries))
-		for _, entry := range entries {
-			refs = append(refs, entry.ID)
-		}
-		return refs, true, nil
+	if len(scopedRefs) > 0 {
+		return scopedRefs, true, nil
 	}
-
 	// Compatibility path for reservations refreshed by pre-bounded runtimes.
 	// Once one reservation-scoped outcome exists it is necessarily newer than
 	// those historical lifecycle attachments, so the hot path never re-scans

@@ -1405,7 +1405,7 @@ func (s *Store) recoverPendingClaimBeforeLifecycleMutation(workID string, allowP
 }
 
 func (s *Store) preparedCloseIntentForWork(workID string) (*runattempt.TerminalizationIntent, error) {
-	attempts, err := s.runAttempts().List()
+	attempts, err := s.runAttempts().ForWork(workID)
 	if err != nil {
 		return nil, fmt.Errorf("scan prepared close for work %s: %w", workID, err)
 	}

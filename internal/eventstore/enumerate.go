@@ -12,26 +12,20 @@ import (
 // need the exact id SET behind a prefix (one proof reservation's refresh
 // outcomes) without paying for unrelated record content: sealed segments are
 // screened through their validated sidecar index KEYS, and only a segment
-// whose index actually holds matching ids has its bytes read (one rooted,
+// whose complete inventory holds matching ids has its bytes read (one rooted,
 // strict parse validating every matching frame). Segments with no matching
-// index keys are never opened for content — the difference between reading a
-// family's index directory and parsing its history. The hot (still-written)
+// index keys are skipped after their first complete validation. Enumeration
+// still reads the family's index inventory. The hot (still-written)
 // segment has no sidecar index yet and is parsed directly, bounded by
 // rotation. While the migration completion gate is open, legacy loose records
 // matching the prefix are unioned in, with the same fail-closed rule Scan
 // applies to an invalid loose filename that matches the requested prefix.
 //
-// Completeness contract: a sealed segment's index is loaded through
-// loadOrBuildIndex, which rebuilds it from segment truth whenever it is
-// absent, undecodable, or drifted (see validateLoadedIndex), so an absent or
-// invalid index degrades to a one-time rebuild rather than a lost id. A
-// matching index key is reported only after the segment's bytes validate the
-// frame (strict parse; disagreement with the index triggers the same rebuild
-// readIndexedFrame performs for point reads). Corruption that survives a
-// rebuild fails closed with an error, exactly like Scan. There is
-// deliberately no result cache: enumeration reads live segment/index truth on
-// every call, so a record written by any writer generation — directly, after
-// a crash, or through a loose legacy put — is discovered on the next call.
+// Completeness contract: the enumeration-specific inventory marker binds the
+// complete id/offset/length map to validated sealed frames. Source-only
+// .verified markers are insufficient. Missing or changed inventory proof
+// triggers a full strict validation and repairs incomplete indexes. There is
+// no cached result set: older writers and changed segments remain visible.
 //
 // Newest-segment precedence: like Scan, the id set is the union across
 // segments; per-id byte-level precedence (newest segment wins) remains owned
@@ -81,7 +75,7 @@ func (e *engine) enumeratePrefixIDs(prefix string, regularOnly bool) ([]string, 
 			}
 			// Sealed segment: screen by index keys; only parse when at least
 			// one candidate key matches.
-			segIndex, err := e.loadOrBuildIndex(family, segment)
+			segIndex, err := e.loadCompleteEnumerationIndex(family, segment, regularKind)
 			if err != nil {
 				return nil, err
 			}
@@ -98,8 +92,8 @@ func (e *engine) enumeratePrefixIDs(prefix string, regularOnly bool) ([]string, 
 			if err != nil {
 				return nil, err
 			}
-			for _, id := range candidates {
-				if present[id] {
+			for id, exists := range present {
+				if exists && matchesPrefix(id, []string{prefix}) {
 					seen[id] = true
 				}
 			}
@@ -180,9 +174,7 @@ func (e *engine) segmentContainsIDs(segment segmentFile, regularKind string, can
 		present[id] = false
 	}
 	for _, frame := range frames {
-		if _, asked := present[frame.Frame.ID]; asked {
-			present[frame.Frame.ID] = true
-		}
+		present[frame.Frame.ID] = true
 	}
 	return present, nil
 }

@@ -638,6 +638,21 @@ window without false `acquired` evidence.
 
 Refresh governance is durably Work-linked before the lease is extended; only the later `pfrh_*`
 record can extend the certifying window, so a crash cannot turn an unaudited heartbeat into proof.
+
+Proof-refresh lookup enumerates the historical event family through complete sealed
+segment inventories, preserving hot segments and loose legacy records. Inventory
+attestation is separate from point-read index verification: missing or changed
+attestation forces a strict source parse and repairs incomplete disposable indexes.
+The first inventory check still reads sealed family history; warm lookup skips
+unrelated sealed bodies. Reservations without scoped outcomes retain the legacy
+work-log fallback, including older writers.
+
+Prepared-close lookup discovers membership freshly from primary RunAttempt records
+and validates launch sidecars only for the requested work. Reverse-only attempts and
+older writers remain discoverable; unreadable primary authority still fails closed.
+This removes unrelated sidecar reads, but intentionally retains the global primary
+record census. These changes do not add FIFO admission or separate proof capacity.
+
 Completion accepts only an exact owned `canonical_full` report generated inside the continuous
 evidenced window with direct producer exit. An `ok` report requires every reserved gate `ok` and
 publishes `proof-check:pfrs_*` only after result, Work, lifecycle, completion, and terminal
