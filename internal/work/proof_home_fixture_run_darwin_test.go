@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -18,11 +19,27 @@ import (
 
 func TestHomeFixtureRestrictedRunnerExecutesThenReuses(t *testing.T) {
 	f := newHomeProofFixture(t)
+	temporary := newIsolatedHomeFixtureTestRoot(t)
+	cacheRoot, err := filepath.EvalSymlinks(temporary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := filepath.Join(cacheRoot, "fixture-cache")
 	_, file, _, _ := runtime.Caller(0)
 	helper, err := os.ReadFile(filepath.Join(filepath.Dir(file), "../../scripts/testbattery/home_fixture.py"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Give the committed synthetic fixture stable ancestor inputs while the real
+	// sandbox, controls, execution and native reuse lifecycle remain exercised.
+	// The unmodified helper's full host observations are tested separately below;
+	// ResolveHomeFixtureReuse also rejects any changed ancestor fingerprint.
+	needle := "    rows = []\n    for path in sorted(paths):"
+	if strings.Count(string(helper), needle) != 1 {
+		t.Fatal("synthetic ancestor observation seam changed")
+	}
+	scoped := "    boundary = Path(" + strconv.Quote(cacheRoot) + ")\n    paths = {path for path in paths if path == boundary or boundary in path.parents}\n" + needle
+	helper = []byte(strings.Replace(string(helper), needle, scoped, 1))
 	fixtures := map[string][]byte{
 		"go.mod":                              []byte("module compound\n\ngo 1.23\n"),
 		"SCHEMA.md":                           []byte("synthetic schema fixture\n"),
@@ -62,12 +79,6 @@ func TestFixture(t *testing.T){
 	if err != nil {
 		t.Fatal(err)
 	}
-	temporary := newIsolatedHomeFixtureTestRoot(t)
-	cacheRoot, err := filepath.EvalSymlinks(temporary)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cache := filepath.Join(cacheRoot, "fixture-cache")
 	originalCache, originalNow := homeFixtureCacheBase, homeFixtureNow
 	homeFixtureCacheBase = func() (string, error) { return cache, nil }
 	homeFixtureNow = func() time.Time { return fixedNow.Add(20 * time.Second) }
@@ -100,6 +111,16 @@ func TestFixture(t *testing.T){
 		t.Fatal(err)
 	}
 	ctx = ContextWithHomeFixtureReuse(t.Context(), f.store.home, f.workID, &f.source, f.repo)
+	// This sibling is outside the synthetic fixture's observation boundary.
+	unrelated, err := os.MkdirTemp(filepath.Dir(cacheRoot), "ambient-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Remove(unrelated); err != nil {
+			t.Error(err)
+		}
+	})
 	second, reused, err := RunHomeFixtureGate(ctx, f.repo, homeProofTestGate(f.source), os.Environ(), command)
 	if err != nil {
 		t.Fatalf("second phase: %v\n%s", err, second)
@@ -149,15 +170,16 @@ func TestHomeFixtureHelperFilesystemSafety(t *testing.T) {
 	}
 }
 
-// Keep test churn below a stable private OS-cache directory. It never creates
-// or removes entries in the production fixture's user-home ancestor.
+// Initialize a stable private sibling before sealing a production fixture.
+// Later per-run churn changes neither production ancestors nor the OS cache;
+// first-time parent creation legitimately invalidates any older home seal.
 func newIsolatedHomeFixtureTestRoot(t *testing.T) string {
 	t.Helper()
-	cache, err := os.UserCacheDir()
+	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := filepath.Join(cache, "compound-proof-fixture-tests")
+	base := filepath.Join(home, ".compound-proof-fixture-tests")
 	if err := os.Mkdir(base, 0700); err != nil && !os.IsExist(err) {
 		t.Fatal(err)
 	}
@@ -189,12 +211,12 @@ func TestHomeFixtureTestCachePreservesProductionAncestors(t *testing.T) {
 	}
 	t.Setenv("HOME", home)
 	t.Run("initialize", func(t *testing.T) { newIsolatedHomeFixtureTestRoot(t) })
-	before, err := os.Stat(cache)
+	before, err := os.Stat(home)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Run("next-run", func(t *testing.T) { newIsolatedHomeFixtureTestRoot(t) })
-	after, err := os.Stat(cache)
+	after, err := os.Stat(home)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +230,11 @@ func TestHomeFixtureTestCachePreservesProductionAncestors(t *testing.T) {
 // OS-managed cache churn must not change any directory observable by the
 // production fixture. Its own input and ancestor seals remain unchanged.
 func TestHomeFixtureProductionRootAvoidsSystemCacheChurn(t *testing.T) {
-	home := t.TempDir()
+	temporary := newIsolatedHomeFixtureTestRoot(t)
+	home := filepath.Join(temporary, "synthetic-home")
+	if err := os.Mkdir(home, 0700); err != nil {
+		t.Fatal(err)
+	}
 	cache := filepath.Join(home, "Library", "Caches")
 	if err := os.MkdirAll(cache, 0700); err != nil {
 		t.Fatal(err)
@@ -222,6 +248,7 @@ func TestHomeFixtureProductionRootAvoidsSystemCacheChurn(t *testing.T) {
 	if err := os.MkdirAll(stage, 0700); err != nil {
 		t.Fatal(err)
 	}
+	testStage := newIsolatedHomeFixtureTestRoot(t)
 	_, file, _, _ := runtime.Caller(0)
 	helper := filepath.Join(filepath.Dir(file), "../../scripts/testbattery/home_fixture.py")
 	script := `import importlib.util, sys
@@ -230,7 +257,7 @@ sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("fixture", sys.argv[1])
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
-stage, hot = [Path(value).resolve() for value in sys.argv[2:]]
+stage, test_stage, hot = [Path(value).resolve() for value in sys.argv[2:]]
 home = hot.parents[1]
 legacy = hot / "legacy-fixture" / "stage"
 legacy.mkdir(parents=True)
@@ -246,16 +273,21 @@ def owned_rows(path):
     m.ancestor_digest(path)
     return [row for row in collected
             if Path(row[0]) == home or home in Path(row[0]).parents]
-before, legacy_before = owned_rows(stage), owned_rows(legacy)
-assert before and legacy_before, "no synthetic ancestors observed"
-(home.parent / "unrelated-run").mkdir(exist_ok=True)
+before, test_before, legacy_before = owned_rows(stage), owned_rows(test_stage), owned_rows(legacy)
+assert before and test_before and legacy_before, "no synthetic ancestors observed"
+full_before = m.ancestor_digest(stage)
+(home.parent / "unrelated-run").mkdir()
+assert m.ancestor_digest(stage) != full_before, "production helper ignored host ancestor changes"
 (hot / "system-cache").write_bytes(b"replacement")
 assert owned_rows(stage) == before, "OS cache churn invalidated the production fixture"
+assert owned_rows(test_stage) == test_before, "OS cache churn invalidated the test fixture"
 assert owned_rows(legacy) != legacy_before, "legacy layout failed to observe cache churn"
 (stage / "observable-entry").write_bytes(b"changed")
 assert owned_rows(stage) != before, "production fixture stopped observing its own directory"
+(test_stage / "observable-entry").write_bytes(b"changed")
+assert owned_rows(test_stage) != test_before, "test fixture stopped observing its own directory"
 `
-	cmd := exec.Command("/usr/bin/python3", "-I", "-c", script, helper, stage, cache)
+	cmd := exec.Command("/usr/bin/python3", "-I", "-c", script, helper, stage, testStage, cache)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("production ancestor isolation: %v\n%s", err, output)
 	}
