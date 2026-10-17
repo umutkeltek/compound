@@ -141,6 +141,11 @@ or termination assertions to accommodate setup latency.
    publication is atomic within the captured parent, and timing warnings are sealed before the
    file, installed artifact, and JSON agree.
 
+   Selected console dependency prerequisites are checked before any gate starts.
+   A missing dependency or unavailable TypeScript compiler refuses the run without
+   claiming completed gate evidence; the full gate inventory and per-gate checks
+   remain required. Dry runs still describe the planned inventory.
+
    Canonical gates execute from a detached temporary checkout of the sealed HEAD,
    with only the five ceremony-owned ignored inputs copied as snapshots; the
    mutable caller worktree is never the gate execution surface.

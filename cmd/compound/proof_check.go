@@ -1081,6 +1081,9 @@ func runProofCheckWithRangeContext(
 		steps = ciPortableSteps(steps)
 	}
 	if !dryRun {
+		if err := work.ValidateConsoleProofPrerequisites(repo, steps); err != nil {
+			return proofCheckReport{}, err
+		}
 		var cleanupRuntimeExecutable func()
 		ctx, cleanupRuntimeExecutable, err = work.PinProofRuntimeExecutable(ctx, proofCheckRuntimeExecutable)
 		if err != nil {

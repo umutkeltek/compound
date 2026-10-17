@@ -1,6 +1,7 @@
 package work
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -142,4 +143,32 @@ func classifyLoopbackProxy(raw string) string {
 		return "proxy_env_blocks_bun"
 	}
 	return ""
+}
+
+// ValidateConsoleProofPrerequisites checks the selected inventory before any gate
+// starts. Per-gate checks remain necessary because readiness can change afterward.
+// This is an admission diagnostic, never completed gate evidence.
+func ValidateConsoleProofPrerequisites(repo string, steps []ProofCheckStep) error {
+	for _, step := range steps {
+		compiler := step.Dir == "console" && len(step.Command) > 0 && step.Command[0] == "./node_modules/.bin/tsc"
+		if !compiler && !isBunConsoleStep(step) {
+			continue
+		}
+		reason := ""
+		if !hasConsoleNodeModules(repo) {
+			reason = "console_deps_missing"
+		} else if compiler {
+			info, err := os.Stat(filepath.Join(repo, "console", "node_modules", ".bin", "tsc"))
+			switch {
+			case os.IsNotExist(err):
+				reason = "console_compiler_missing"
+			case err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0:
+				reason = "console_compiler_unavailable"
+			}
+		}
+		if reason != "" {
+			return fmt.Errorf("proof prerequisites: %s: gate=%s; populate the selected console dependencies before retrying", reason, step.Name)
+		}
+	}
+	return nil
 }

@@ -3,6 +3,7 @@ package work
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -195,5 +196,45 @@ func mustMkdir(t *testing.T, dir string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+}
+
+func TestConsoleProofPrerequisitesRespectSelectedInventory(t *testing.T) {
+	repo := t.TempDir()
+	unrelated := []ProofCheckStep{
+		{Name: "go-test", Command: []string{"go", "test", "./..."}},
+		{Name: "root-tools", Command: []string{"bun", "test"}},
+		{Name: "node-smoke", Dir: "console", Command: []string{"node", "scripts/smoke.mjs"}},
+	}
+	if err := ValidateConsoleProofPrerequisites(repo, unrelated); err != nil {
+		t.Fatal(err)
+	}
+	selected := append(unrelated, ProofCheckStep{Name: "console-bun", Dir: "console", Command: []string{"bun", "scripts/smoke.mjs"}})
+	if err := ValidateConsoleProofPrerequisites(repo, selected); err == nil || !strings.Contains(err.Error(), "console_deps_missing") {
+		t.Fatalf("selected console gate must require dependencies: %v", err)
+	}
+	bin := filepath.Join(repo, "console", "node_modules", ".bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConsoleProofPrerequisites(repo, selected); err != nil {
+		t.Fatal(err)
+	}
+	selected = append(selected, ProofCheckStep{Name: "console-tsc", Dir: "console", Command: []string{"./node_modules/.bin/tsc", "--noEmit"}})
+	if err := ValidateConsoleProofPrerequisites(repo, selected); err == nil || !strings.Contains(err.Error(), "console_compiler_missing") {
+		t.Fatalf("selected compiler must exist: %v", err)
+	}
+	compiler := filepath.Join(bin, "tsc")
+	if err := os.WriteFile(compiler, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConsoleProofPrerequisites(repo, selected); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(compiler); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConsoleProofPrerequisites(repo, selected); err == nil {
+		t.Fatal("removed dependency must invalidate readiness")
 	}
 }

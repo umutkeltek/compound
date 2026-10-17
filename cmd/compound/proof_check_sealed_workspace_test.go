@@ -20,6 +20,17 @@ import (
 func TestCanonicalProofGatesReadSealedHeadDuringTransientCallerMutation(t *testing.T) {
 	t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "")
 	repo := initCompoundCommandGitRepo(t)
+	compiler := filepath.Join(repo, "console", "node_modules", ".bin", "tsc")
+	if err := os.MkdirAll(filepath.Dir(compiler), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(compiler, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("console/node_modules/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runCommandGit(t, repo, "add", ".gitignore")
 	sentinelPath := filepath.Join(repo, "sealed-sentinel.txt")
 	const sealedBody = "sealed candidate bytes\n"
 	const transientBody = "transient caller mutation\n"
