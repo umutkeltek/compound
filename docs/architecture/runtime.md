@@ -684,9 +684,10 @@ fixture and seals its binary, source/metadata, restricted environment, sandbox,
 system policy, host identity and observable ancestor metadata and directory entries. Literal
 ancestor-directory reads support the home code's rooted no-follow opens; names,
 inodes and entry types exposed by enumeration are sealed, so unrelated directory
-changes may conservatively prevent reuse. The sandbox denies outside file bodies,
-input writes and network. Its positive control opens every ancestor without
-following symlinks; negative controls still prove outside bodies are unreadable.
+changes may conservatively prevent reuse. The sandbox permits designated system runtime files and devices, and denies
+other outside file bodies, input writes and network. Its positive control opens
+every ancestor without following symlinks; negative controls still prove
+prohibited outside bodies are unreadable.
 Only native proof-barrier descriptors survive the Python/process boundary;
 a deliberate leaked descriptor is the negative control. Direct tests retain
 Go's early-exit panic behavior. When the complete restricted suite passes but
@@ -705,9 +706,9 @@ excluding any observable ancestor from the seal.
 Pinned no-follow directory descriptors, exact ownership, a cooperating-helper
 lock and bounded relative cleanup protect preparation and retirement. Identical
 source/binary/policy files retain their identities. Build caches stay outside
-the fixture scratch directory. Integration-test roots live below a separate stable private directory under
-the user home, so repeated test creation and cleanup do not change sealed
-production ancestors. A successful home gate in the admitted canonical
+the fixture scratch directory. Integration-test roots live below a separate stable private
+`.compound-proof-fixture-tests` directory under the user home, so repeated test
+creation and cleanup do not change sealed production ancestors. A successful home gate in the admitted canonical
 target checkout retires its exact payload while the governed attempt is still
 live; the small owner marker remains. This also applies to successful fresh
 fallback when its prepared seal still validates. Cleanup exhaustion or drift
