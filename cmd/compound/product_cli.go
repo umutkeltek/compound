@@ -169,7 +169,7 @@ func cmdProduct(args []string) {
 		fmt.Fprintln(os.Stderr, productUsage())
 		os.Exit(2)
 	}
-	if args[0] == "--help" || args[0] == "-h" {
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
 		fmt.Println(productUsage())
 		return
 	}
