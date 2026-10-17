@@ -80,6 +80,11 @@ func coordinatedStoreFixture(t *testing.T) *Store {
 }
 func capacitySystemProfile(t *testing.T, rust bool) ProofResourceProfile {
 	t.Helper()
+	return capacitySystemProfileForOrigin(t, rust, "")
+}
+
+func capacitySystemProfileForOrigin(t *testing.T, rust bool, origin string) ProofResourceProfile {
+	t.Helper()
 	repo := t.TempDir()
 	files := map[string]string{"go.mod": "module compound\n\ngo 1.24\n"}
 	if rust {
@@ -93,6 +98,9 @@ func capacitySystemProfile(t *testing.T, rust bool) ProofResourceProfile {
 	nodeGit(t, repo, "init", "-q")
 	nodeGit(t, repo, "add", ".")
 	nodeGit(t, repo, "commit", "-qm", "fixture")
+	if origin != "" {
+		nodeGit(t, repo, "remote", "add", "origin", origin)
+	}
 	source, err := gitrepository.CaptureCleanSnapshot(repo, nodeGit(t, repo, "rev-parse", "HEAD"))
 	if err != nil {
 		t.Fatal(err)
@@ -403,6 +411,10 @@ func (c proofCancelOnSleepClock) Sleep(time.Duration) { c.cancel() }
 
 // Occupied capacity must not fold the global lifecycle log on every poll.
 func TestCoordinatedProofBusyWaitDoesNotReadLifecycleLog(t *testing.T) {
+	// Git timestamps define fixture lineage, not proof freshness. Pin them so
+	// the foreign-repository case cannot accidentally depend on crossing a second.
+	t.Setenv("GIT_AUTHOR_DATE", "2001-01-01T00:00:00Z")
+	t.Setenv("GIT_COMMITTER_DATE", "2001-01-01T00:00:00Z")
 	for _, foreign := range []bool{false, true} {
 		name := "same-repository"
 		if foreign {
@@ -420,7 +432,7 @@ func TestCoordinatedProofBusyWaitDoesNotReadLifecycleLog(t *testing.T) {
 			}
 			defer first.ExecutionBarrier.Close()
 			if foreign {
-				input.Profile = capacitySystemProfile(t, false)
+				input.Profile = capacitySystemProfileForOrigin(t, false, "https://other.example/proof-fixture.git")
 				input.Workspace = input.Profile.Repo
 				if input.Profile.SourceSnapshot.RepositoryFingerprint == profile.SourceSnapshot.RepositoryFingerprint {
 					t.Fatal("fixture repositories are not distinct")
