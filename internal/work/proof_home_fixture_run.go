@@ -81,7 +81,7 @@ func RunHomeFixtureGate(ctx context.Context, repo string, step ProofCheckStep, e
 	}
 	base, err := homeFixtureCacheBase()
 	if err != nil {
-		return nil, nil, err
+		return fresh("shared fixture parent unavailable: " + err.Error())
 	}
 	identity := sha256.Sum256([]byte(scope.homePath + "\x00" + scope.workID + "\x00" + scope.source.RepositoryFingerprint))
 	identityText := hex.EncodeToString(identity[:])

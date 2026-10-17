@@ -241,12 +241,19 @@ func TestHomeFixtureProductionRootAvoidsHarnessAndSystemCacheChurn(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := filepath.Join("/Users/Shared", ".compound-proof-cache-"+strconv.Itoa(os.Getuid()))
-	if base != expected {
-		t.Fatalf("production cache remains exposed to harness home churn: got %s, want %s", base, expected)
-	}
 	shared := filepath.Join(temporary, "Shared")
-	stage := filepath.Join(shared, filepath.Base(base), "synthetic-stage")
+	if err := os.Mkdir(shared, 0700); err != nil {
+		t.Fatal(err)
+	}
+	var stage string
+	switch filepath.Dir(base) {
+	case "/Users/Shared":
+		stage = filepath.Join(shared, filepath.Base(base), "synthetic-stage")
+	case home:
+		stage = filepath.Join(base, "synthetic-stage")
+	default:
+		t.Fatalf("unsupported production fixture ancestry: %s", base)
+	}
 	if err := os.MkdirAll(stage, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +267,7 @@ spec = importlib.util.spec_from_file_location("fixture", sys.argv[1])
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 stage, test_stage, home, root = [Path(value).resolve() for value in sys.argv[2:]]
-shared = stage.parents[1]
+shared = root / "Shared"
 hot = home / "Library" / "Caches"
 legacy_home = home / ".legacy-proof-cache" / "stage"
 legacy_cache = hot / "legacy-fixture" / "stage"
@@ -308,5 +315,53 @@ assert test_before != owned_rows(test_stage), "test stage changes were not obser
 	cmd := exec.CommandContext(t.Context(), "/usr/bin/python3", "-I", "-c", script, helper, stage, testStage, home, temporary)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("fixture placement: %v\n%s", err, output)
+	}
+}
+
+func TestHomeFixtureUnavailableSharedParentExecutesFresh(t *testing.T) {
+	f := newHomeProofFixture(t)
+	t.Setenv("GOFLAGS", "")
+	previous := homeFixtureCacheBase
+	resolved := 0
+	homeFixtureCacheBase = func() (string, error) {
+		resolved++
+		return "", os.ErrPermission
+	}
+	t.Cleanup(func() { homeFixtureCacheBase = previous })
+	step := homeProofTestGate(f.source)
+	ctx := ContextWithHomeFixtureReuse(t.Context(), f.store.home, f.workID, &f.source)
+	for _, tc := range []struct {
+		name, script string
+		success      bool
+	}{
+		{"fresh success", "printf fresh-source-result", true},
+		{"fresh failure remains failure", "printf fresh-source-result; exit 7", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			command := func(ctx context.Context, name string, args ...string) *exec.Cmd {
+				calls++
+				if name != step.Command[0] || strings.Join(args, "\x00") != strings.Join(step.Command[1:], "\x00") {
+					t.Fatal("fallback changed the admitted source command")
+				}
+				return exec.CommandContext(ctx, "/bin/sh", "-c", tc.script)
+			}
+			output, evidence, err := RunHomeFixtureGate(ctx, f.repo, step, os.Environ(), command)
+			if calls != 1 || evidence != nil || (err == nil) != tc.success {
+				t.Fatalf("fresh fallback: calls=%d evidence=%v err=%v", calls, evidence, err)
+			}
+			if !strings.Contains(string(output), "executed fresh") || !strings.Contains(string(output), "fresh-source-result") {
+				t.Fatalf("missing truthful fresh output: %s", output)
+			}
+			if !tc.success {
+				exit, ok := err.(*exec.ExitError)
+				if !ok || exit.ExitCode() != 7 {
+					t.Fatalf("fresh exit was not preserved: %v", err)
+				}
+			}
+		})
+	}
+	if resolved != 2 {
+		t.Fatalf("shared parent checked %d times, want 2", resolved)
 	}
 }
