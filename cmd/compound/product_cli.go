@@ -169,6 +169,10 @@ func cmdProduct(args []string) {
 		fmt.Fprintln(os.Stderr, productUsage())
 		os.Exit(2)
 	}
+	if args[0] == "--help" || args[0] == "-h" {
+		fmt.Println(productUsage())
+		return
+	}
 	store, homePath := openMemStore()
 	switch args[0] {
 	case "authority":
