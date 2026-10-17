@@ -108,13 +108,23 @@ func TestPrivateSourceReviewClassifiesExactSyntheticAndOperationalFindings(t *te
 		{"pii.cc", "private_nonsecret_operational_setting", true},
 		{"pii.email", "private_nonsecret_operational_setting", true},
 		{"env.kv", "private_nonsecret_operational_setting", true},
+		// Version literals, geometry decimals and local database filenames may
+		// match these shapes without being an address or service hostname.
+		{"internal.hostname", "private_nonsecret_operational_setting", true},
+		{"pii.ip_public", "private_nonsecret_operational_setting", true},
+		{"internal.hostname", "private_service_hostname", true},
+		{"pii.ip_public", "private_operational_ip", true},
+		{"internal.hostname", "private_operational_ip", false},
+		{"pii.ip_public", "private_service_hostname", false},
+		{"pii.ip_public", "private_synthetic_fixture", false},
+		{"pii.ip_public", "private_anything", false},
 		{"internal.hostname", "private_synthetic_fixture", false},
 		{"internal.url_private", "private_nonsecret_operational_setting", false},
 		{"pii.unknown", "private_synthetic_fixture", false},
 		{"env.kv", "private_synthetic_fixture", false},
 	} {
 		t.Run(tc.id+"/"+tc.class, func(t *testing.T) {
-			for _, condition := range []string{"exact", "missing-evidence", "unclassified", "high"} {
+			for _, condition := range []string{"exact", "missing-evidence", "unclassified", "high", "degraded", "mismatched-finding", "duplicate-approval"} {
 				var review PrivateSourceReview
 				if err := json.Unmarshal(publicReviewJSON(t, f.review), &review); err != nil {
 					t.Fatal(err)
@@ -127,6 +137,10 @@ func TestPrivateSourceReviewClassifiesExactSyntheticAndOperationalFindings(t *te
 					flagged.Tier, flagged.Severity = "HIGH", "HIGH"
 					counts["HIGH"], counts["MEDIUM"], file.ExitCode = 1, 0, 3
 				}
+				if condition == "degraded" {
+					flagged.Severity, flagged.ToolFenceDegraded = "WARN", true
+					counts["MEDIUM"], counts["WARN"], file.ExitCode = 0, 1, 0
+				}
 				file.Report = publicReviewJSON(t, map[string]any{"findings": []PublicRedactionFinding{flagged}, "counts": counts, "repoVisibility": "public", "oversize": false})
 				file.Approvals[0].Finding, file.Approvals[0].Classification = flagged, tc.class
 				if condition == "missing-evidence" {
@@ -134,6 +148,12 @@ func TestPrivateSourceReviewClassifiesExactSyntheticAndOperationalFindings(t *te
 				}
 				if condition == "unclassified" {
 					file.Approvals = nil
+				}
+				if condition == "mismatched-finding" {
+					file.Approvals[0].Finding.Col++
+				}
+				if condition == "duplicate-approval" {
+					file.Approvals = append(file.Approvals, file.Approvals[0])
 				}
 				parsed, err := ParsePrivateSourceReview(publicReviewJSON(t, review), time.Now())
 				want := tc.allowed && condition == "exact"

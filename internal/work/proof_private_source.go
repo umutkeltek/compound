@@ -49,11 +49,11 @@ type PrivateSourceAuthority struct {
 func supportedPrivateSourceClassification(id, classification string) bool {
 	switch id {
 	case "internal.hostname":
-		return classification == "private_service_hostname"
+		return classification == "private_service_hostname" || classification == "private_nonsecret_operational_setting"
 	case "internal.url_private":
 		return classification == "private_service_endpoint"
 	case "pii.ip_public":
-		return classification == "private_operational_ip"
+		return classification == "private_operational_ip" || classification == "private_nonsecret_operational_setting"
 	case "pii.email":
 		return classification == "private_support_contact" || classification == "private_synthetic_fixture" || classification == "private_nonsecret_operational_setting"
 	case "pii.phone.e164", "pii.cc":
