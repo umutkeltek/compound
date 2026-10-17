@@ -95,6 +95,59 @@ func TestPrivateSourceReviewRejectsHighUnknownAndUnmatchedClassifications(t *tes
 	}
 }
 
+func TestPrivateSourceReviewClassifiesExactSyntheticAndOperationalFindings(t *testing.T) {
+	f := newPrivateSourceFixture(t, "public", false)
+	for _, tc := range []struct {
+		id, class string
+		allowed   bool
+	}{
+		{"pii.phone.e164", "private_synthetic_fixture", true},
+		{"pii.cc", "private_synthetic_fixture", true},
+		{"pii.email", "private_synthetic_fixture", true},
+		{"pii.phone.e164", "private_nonsecret_operational_setting", true},
+		{"pii.cc", "private_nonsecret_operational_setting", true},
+		{"pii.email", "private_nonsecret_operational_setting", true},
+		{"env.kv", "private_nonsecret_operational_setting", true},
+		{"internal.hostname", "private_synthetic_fixture", false},
+		{"internal.url_private", "private_nonsecret_operational_setting", false},
+		{"pii.unknown", "private_synthetic_fixture", false},
+		{"env.kv", "private_synthetic_fixture", false},
+	} {
+		t.Run(tc.id+"/"+tc.class, func(t *testing.T) {
+			for _, condition := range []string{"exact", "missing-evidence", "unclassified", "high"} {
+				var review PrivateSourceReview
+				if err := json.Unmarshal(publicReviewJSON(t, f.review), &review); err != nil {
+					t.Fatal(err)
+				}
+				file := &review.Files[0]
+				flagged := file.Approvals[0].Finding
+				flagged.ID = tc.id
+				counts := map[string]int{"HIGH": 0, "MEDIUM": 1, "LOW": 0, "WARN": 0}
+				if condition == "high" {
+					flagged.Tier, flagged.Severity = "HIGH", "HIGH"
+					counts["HIGH"], counts["MEDIUM"], file.ExitCode = 1, 0, 3
+				}
+				file.Report = publicReviewJSON(t, map[string]any{"findings": []PublicRedactionFinding{flagged}, "counts": counts, "repoVisibility": "public", "oversize": false})
+				file.Approvals[0].Finding, file.Approvals[0].Classification = flagged, tc.class
+				if condition == "missing-evidence" {
+					file.Approvals[0].EvidenceRefs = nil
+				}
+				if condition == "unclassified" {
+					file.Approvals = nil
+				}
+				parsed, err := ParsePrivateSourceReview(publicReviewJSON(t, review), time.Now())
+				want := tc.allowed && condition == "exact"
+				if (err == nil) != want {
+					t.Fatalf("%s allowed=%v want=%v: %v", condition, err == nil, want, err)
+				}
+				if want && (!bytesEqualJSON(parsed.Files[0].Report, file.Report) || parsed.Files[0].ExitCode != 2) {
+					t.Fatal("classification changed the raw blocking scanner evidence")
+				}
+			}
+		})
+	}
+}
+
 func TestPrivateSourceDestinationDriftAndOfflineFailClosed(t *testing.T) {
 	f := newPrivateSourceFixture(t, "public", true)
 	previous := privateSourceLiveDestination

@@ -55,9 +55,9 @@ func supportedPrivateSourceClassification(id, classification string) bool {
 	case "pii.ip_public":
 		return classification == "private_operational_ip"
 	case "pii.email":
-		return classification == "private_support_contact"
+		return classification == "private_support_contact" || classification == "private_synthetic_fixture" || classification == "private_nonsecret_operational_setting"
 	case "pii.phone.e164", "pii.cc":
-		return classification == "private_provider_identifier"
+		return classification == "private_provider_identifier" || classification == "private_synthetic_fixture" || classification == "private_nonsecret_operational_setting"
 	case "env.kv":
 		return classification == "private_nonsecret_operational_setting"
 	default:

@@ -97,6 +97,10 @@ including files after a blocking scanner exit. All HIGH findings block. Exact
 MEDIUM findings may be classified as private service hostnames/endpoints,
 operational IPs, support contacts, nonsecret provider identifiers or nonsecret
 operational settings only under their supported per-finding classification.
+Exact email and numeric findings also support `private_synthetic_fixture` and
+`private_nonsecret_operational_setting` when evidence identifies a synthetic
+fixture or nonsecret configuration value. These labels do not apply to other
+detector IDs or waive any individual finding, evidence reference, or HIGH block.
 This is neither a category waiver nor permission to include credentials. Raw
 findings and blocking exit codes remain in `private_source_evidence`; partial or
 overflow evidence may explain a failed run but cannot certify a green one.
@@ -139,6 +143,32 @@ private observation artifact. Visibility/configuration cannot be locked
 atomically with a remote push, so preflight/postflight drift remains an explicit
 uncertain outcome rather than a claimed rollback. Completed actions replay their
 verified native receipt without repeating the effect.
+
+Immutable lightweight release tags have a distinct metadata action:
+
+```sh
+compound work private-source-publish --release-tag v1.2.3 \
+  --request completed-publication.json --json
+compound work private-source-publish --apply --request release-tag.json --json
+```
+
+The plan requires the complete original publication request and its verified
+native completed Receipt/Transition. It reopens the exact full certificate and
+historical source review as evidence, observes the same authenticated PRIVATE
+repository, and requires its main target to equal the certified source commit.
+Read-only completion verification reads the current WorkEnvelope without claim
+recovery; a crashed claim's work, lease and pending marker stay untouched.
+Writable native replay retains its existing owned recovery behavior.
+Only one numeric `vMAJOR.MINOR.PATCH` tag is supported, absent or already pointing
+at that exact commit. The tag needs its own exact one-use release-class approval;
+source review or source publication approval cannot authorize this action.
+Apply rechecks the private destination, source, published main commit, exact tag,
+native reservation and unexpired decision before a fixed single-ref non-force
+push. It creates no local tag, follows no extra tags, pushes no submodules, and
+never rewrites an existing tag. Successful empty authenticated `ls-remote`
+output proves absence; an offline/error response does not. Identical existing
+tags require no push. Postflight and pending retries only observe the exact
+main/tag state; a lost response never triggers an automatic second push.
 
 ## The execution barrier
 

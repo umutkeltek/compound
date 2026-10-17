@@ -763,7 +763,15 @@ func (s *Store) replayCompletedReceiptedAction(workID string, in ReceiptedAction
 	if transitionDigest != completion.TransitionSHA256 {
 		return out, fmt.Errorf("completed receipted action %s transition digest conflicts with completion identity", completion.ActionID)
 	}
-	w, err := s.recoverPendingClaimBeforeMutation(workID)
+	// Historical completion verification through a read-only store must never
+	// recover an unrelated claim transaction. Writable replay retains its
+	// existing lifecycle recovery boundary.
+	var w envelope.WorkEnvelope
+	if s.readOnly {
+		w, err = s.Get(workID)
+	} else {
+		w, err = s.recoverPendingClaimBeforeMutation(workID)
+	}
 	if err != nil {
 		return out, err
 	}

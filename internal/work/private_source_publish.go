@@ -148,6 +148,33 @@ func (s *Store) validatePrivatePublication(ctx context.Context, request PrivateS
 	if !samePrivateSourceDestination(request.Destination, authority.Destination) {
 		return fmt.Errorf("publication authenticated destination changed")
 	}
+	if err := s.validatePrivateSourceCertificate(w, request, source, authority); err != nil {
+		return err
+	}
+	// Preserve canonical-checkout WIP: read the target ref without checking out
+	// or staging anything in that worktree.
+	local, err := privateSourcePublishCommand(ctx, w.GitDelivery.TargetWorktreeRoot, "git", "rev-parse", "--verify", w.GitDelivery.TargetLocalRef+"^{commit}")
+	if err != nil || strings.TrimSpace(string(local)) != source.HeadSHA {
+		return fmt.Errorf("publication source has not landed on exact local target")
+	}
+	if _, err := privateSourcePublishCommand(ctx, request.Repo, "git", "merge-base", "--is-ancestor", source.BaseSHA, request.ExpectedRemoteSHA); err != nil {
+		return fmt.Errorf("private source publication includes an uncertified pre-base range")
+	}
+	if _, err := privateSourcePublishCommand(ctx, request.Repo, "git", "merge-base", "--is-ancestor", request.ExpectedRemoteSHA, source.HeadSHA); err != nil {
+		return fmt.Errorf("private source publication is not a known non-force fast-forward")
+	}
+	if err := privateSourceTransport(ctx, request, privateSourcePublishCommand); err != nil {
+		return err
+	}
+	tip, err := observePrivateSourceTip(ctx, request.Repo, authority.Destination, privateSourcePublishCommand)
+	if err != nil || (tip != request.ExpectedRemoteSHA && (!remoteMayHaveAdvanced || tip != source.HeadSHA)) {
+		return fmt.Errorf("publication remote branch changed")
+	}
+	return nil
+}
+
+// This reopens certificate evidence; it never grants a publication action.
+func (s *Store) validatePrivateSourceCertificate(w envelope.WorkEnvelope, request PrivateSourcePublishRequest, source gitrepository.Snapshot, authority PrivateSourceAuthority) error {
 	result, found, err := s.latestSourceBoundProofResult(w)
 	if err != nil || !found || result.VerificationRef != request.ProofRef || !strings.HasPrefix(request.ProofRef, "proof-check:pfrs_") || result.SourceSnapshot == nil || !reflect.DeepEqual(*result.SourceSnapshot, source) {
 		return fmt.Errorf("publication native proof changed or is unavailable")
@@ -190,25 +217,6 @@ func (s *Store) validatePrivatePublication(ctx context.Context, request PrivateS
 	}
 	if privateSteps != 1 {
 		return fmt.Errorf("publication requires one full private source scan")
-	}
-	// Preserve canonical-checkout WIP: read the target ref without checking out
-	// or staging anything in that worktree.
-	local, err := privateSourcePublishCommand(ctx, w.GitDelivery.TargetWorktreeRoot, "git", "rev-parse", "--verify", w.GitDelivery.TargetLocalRef+"^{commit}")
-	if err != nil || strings.TrimSpace(string(local)) != source.HeadSHA {
-		return fmt.Errorf("publication source has not landed on exact local target")
-	}
-	if _, err := privateSourcePublishCommand(ctx, request.Repo, "git", "merge-base", "--is-ancestor", source.BaseSHA, request.ExpectedRemoteSHA); err != nil {
-		return fmt.Errorf("private source publication includes an uncertified pre-base range")
-	}
-	if _, err := privateSourcePublishCommand(ctx, request.Repo, "git", "merge-base", "--is-ancestor", request.ExpectedRemoteSHA, source.HeadSHA); err != nil {
-		return fmt.Errorf("private source publication is not a known non-force fast-forward")
-	}
-	if err := privateSourceTransport(ctx, request, privateSourcePublishCommand); err != nil {
-		return err
-	}
-	tip, err := observePrivateSourceTip(ctx, request.Repo, authority.Destination, privateSourcePublishCommand)
-	if err != nil || (tip != request.ExpectedRemoteSHA && (!remoteMayHaveAdvanced || tip != source.HeadSHA)) {
-		return fmt.Errorf("publication remote branch changed")
 	}
 	return nil
 }
@@ -335,18 +343,7 @@ func (s *Store) ApplyPrivateSourcePublication(ctx context.Context, request Priva
 		return out, err
 	}
 	if completed {
-		var receipt envelope.Receipt
-		var decision envelope.PolicyDecision
-		if err := s.readEventJSON(completion.ReceiptID, &receipt); err != nil {
-			return out, err
-		}
-		if err := s.readEventJSON(completion.PolicyDecisionID, &decision); err != nil {
-			return out, err
-		}
-		final := ReceiptedActionInput{Action: request.Action, PreEvaluatedDecision: &decision, ExpectedWorkState: "running", Outcome: "completed", Changed: request.ExpectedRemoteSHA != request.Source.HeadSHA,
-			Summary: privatePublicationSuccessSummary, MoveType: "outward_delta", ProofRefs: receipt.ProofRefs,
-			BeforeRefs: []string{"git:" + request.Destination.FullName + "@" + request.ExpectedRemoteSHA}, AfterRefs: []string{"git:" + request.Destination.FullName + "@" + request.Source.HeadSHA}}
-		result, err := s.replayCompletedReceiptedAction(request.WorkID, final, completion)
+		result, err := s.replayPrivateSourcePublication(request, completion)
 		out.Status, out.Action = "receipted", &result
 		return out, err
 	}
@@ -385,6 +382,21 @@ func (s *Store) ApplyPrivateSourcePublication(ctx context.Context, request Priva
 	}
 	_, pushErr := privateSourcePublishCommand(ctx, request.Repo, "git", privateSourcePushArguments(request)...)
 	return s.finishPrivatePublication(ctx, request, pending, now, true, pushErr == nil)
+}
+
+func (s *Store) replayPrivateSourcePublication(request PrivateSourcePublishRequest, completion receiptedActionCompletion) (ReceiptedActionResult, error) {
+	var receipt envelope.Receipt
+	var decision envelope.PolicyDecision
+	if err := s.readEventJSON(completion.ReceiptID, &receipt); err != nil {
+		return ReceiptedActionResult{}, err
+	}
+	if err := s.readEventJSON(completion.PolicyDecisionID, &decision); err != nil {
+		return ReceiptedActionResult{}, err
+	}
+	final := ReceiptedActionInput{Action: request.Action, PreEvaluatedDecision: &decision, ExpectedWorkState: "running", Outcome: "completed", Changed: request.ExpectedRemoteSHA != request.Source.HeadSHA,
+		Summary: privatePublicationSuccessSummary, MoveType: "outward_delta", ProofRefs: receipt.ProofRefs,
+		BeforeRefs: []string{"git:" + request.Destination.FullName + "@" + request.ExpectedRemoteSHA}, AfterRefs: []string{"git:" + request.Destination.FullName + "@" + request.Source.HeadSHA}}
+	return s.replayCompletedReceiptedAction(request.WorkID, final, completion)
 }
 
 func (s *Store) finishPrivatePublication(ctx context.Context, request PrivateSourcePublishRequest, pending ReceiptedActionInput, authorizedAt time.Time, attempted, transportOK bool) (PrivateSourcePublishResult, error) {

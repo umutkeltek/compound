@@ -11,11 +11,11 @@ import (
 	"time"
 )
 
-const PrivateSourcePublishUsage = "usage: compound work private-source-publish --work WORK --actor ACTOR --repo CLEAN_SOURCE --review-action ACT [--json]\n   or: compound work private-source-publish --apply --request FILE [--json]"
+const PrivateSourcePublishUsage = "usage: compound work private-source-publish --work WORK --actor ACTOR --repo CLEAN_SOURCE --review-action ACT [--json]\n   or: compound work private-source-publish --release-tag vMAJOR.MINOR.PATCH --request COMPLETED_PUBLICATION [--json]\n   or: compound work private-source-publish --apply --request FILE [--json]"
 
 type privateSourcePublishCLIOptions struct {
-	work, actor, repo, review, request string
-	apply                              bool
+	work, actor, repo, review, request, releaseTag string
+	apply                                          bool
 }
 
 func parsePrivateSourcePublishCLI(args []string) (privateSourcePublishCLIOptions, error) {
@@ -27,6 +27,7 @@ func parsePrivateSourcePublishCLI(args []string) (privateSourcePublishCLIOptions
 	flags.StringVar(&opts.repo, "repo", "", "clean certified source workspace")
 	flags.StringVar(&opts.review, "review-action", "", "exact native private review")
 	flags.StringVar(&opts.request, "request", "", "reviewed publication request")
+	flags.StringVar(&opts.releaseTag, "release-tag", "", "plan separate immutable release tag for a completed publication")
 	flags.BoolVar(&opts.apply, "apply", false, "perform governed exact publication")
 	flags.Bool("json", false, "structured result")
 	seen := map[string]bool{}
@@ -47,8 +48,12 @@ func parsePrivateSourcePublishCLI(args []string) (privateSourcePublishCLIOptions
 		return opts, fmt.Errorf("unexpected publication argument")
 	}
 	if opts.apply {
-		if opts.request == "" || opts.work != "" || opts.actor != "" || opts.repo != "" || opts.review != "" {
+		if opts.request == "" || opts.work != "" || opts.actor != "" || opts.repo != "" || opts.review != "" || opts.releaseTag != "" {
 			return opts, fmt.Errorf("apply requires only a concrete request")
+		}
+	} else if opts.releaseTag != "" {
+		if opts.request == "" || opts.work != "" || opts.actor != "" || opts.repo != "" || opts.review != "" || len(opts.releaseTag) > 64 || !privateReleaseVersion.MatchString(opts.releaseTag) {
+			return opts, fmt.Errorf("release tag planning requires only a completed publication request and numeric version")
 		}
 	} else if opts.request != "" || opts.work == "" || opts.actor == "" || opts.repo == "" || opts.review == "" {
 		return opts, fmt.Errorf("planning requires work, actor, clean source, and exact review")
@@ -70,7 +75,7 @@ func RunPrivateSourcePublishCLI(store *Store, args []string, stdout, stderr io.W
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	var result any
-	if opts.apply {
+	if opts.apply || opts.releaseTag != "" {
 		file, openErr := os.Open(opts.request)
 		if openErr != nil {
 			fmt.Fprintln(stderr, "error: publication request unavailable")
@@ -78,12 +83,36 @@ func RunPrivateSourcePublishCLI(store *Store, args []string, stdout, stderr io.W
 		}
 		body, readErr := io.ReadAll(io.LimitReader(file, 1<<20+1))
 		closeErr := file.Close()
-		var request PrivateSourcePublishRequest
-		if readErr != nil || closeErr != nil || len(body) > 1<<20 || publicReviewStrictJSON(body, &request) != nil {
+		var identity struct {
+			SchemaVersion string `json:"schema_version"`
+		}
+		if readErr != nil || closeErr != nil || len(body) > 1<<20 || json.Unmarshal(body, &identity) != nil {
 			fmt.Fprintln(stderr, "error: invalid bounded publication request")
 			return 2
 		}
-		result, err = store.ApplyPrivateSourcePublication(ctx, request, time.Now())
+		switch identity.SchemaVersion {
+		case PrivateSourcePublishSchema:
+			var request PrivateSourcePublishRequest
+			if publicReviewStrictJSON(body, &request) != nil {
+				fmt.Fprintln(stderr, "error: invalid strict source publication request")
+				return 2
+			}
+			if opts.releaseTag != "" {
+				result, err = store.PrivateReleaseTagPlan(ctx, request, opts.releaseTag, time.Now())
+			} else {
+				result, err = store.ApplyPrivateSourcePublication(ctx, request, time.Now())
+			}
+		case PrivateReleaseTagSchema:
+			var request PrivateReleaseTagRequest
+			if !opts.apply || publicReviewStrictJSON(body, &request) != nil {
+				fmt.Fprintln(stderr, "error: invalid strict release tag request")
+				return 2
+			}
+			result, err = store.ApplyPrivateReleaseTag(ctx, request, time.Now())
+		default:
+			fmt.Fprintln(stderr, "error: unsupported publication request schema")
+			return 2
+		}
 	} else {
 		result, err = store.PrivateSourcePublishPlan(ctx, opts.work, opts.actor, opts.repo, opts.review, time.Now())
 	}
