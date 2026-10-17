@@ -70,8 +70,12 @@ func runReviewedPrivateSourceRedaction(ctx context.Context, repo string, step Pr
 		output := proofRedactionBoundedOutput{Limit: finding.MaxBodyBytes}
 		cmd.Stdout, cmd.Stderr = &output, &output
 		scanErr := cmd.Run()
+		exit := 0
+		if scanErr != nil {
+			exit = ExitCodeFromRunErr(scanErr)
+		}
 		hash := sha256.Sum256(input.Body)
-		scan := PublicRedactionScan{Path: input.Path, SHA256: hex.EncodeToString(hash[:]), ExitCode: ExitCodeFromRunErr(scanErr), Report: append([]byte(nil), output.Bytes()...)}
+		scan := PublicRedactionScan{Path: input.Path, SHA256: hex.EncodeToString(hash[:]), ExitCode: exit, Report: append([]byte(nil), output.Bytes()...)}
 		retained += len(scan.Report) + len(scan.Path) + len(scan.SHA256)
 		evidence.Scans = append(evidence.Scans, scan)
 		if retained > publicRedactionEvidenceLimit || output.Exceeded {
