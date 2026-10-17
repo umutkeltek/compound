@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -61,15 +62,7 @@ func TestFixture(t *testing.T){
 	if err != nil {
 		t.Fatal(err)
 	}
-	systemCache, err := os.UserCacheDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	temporary, err := os.MkdirTemp(systemCache, "compound-fixture-test-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(temporary) })
+	temporary := newIsolatedHomeFixtureTestRoot(t)
 	cacheRoot, err := filepath.EvalSymlinks(temporary)
 	if err != nil {
 		t.Fatal(err)
@@ -153,5 +146,61 @@ func TestHomeFixtureHelperFilesystemSafety(t *testing.T) {
 	cmd := exec.CommandContext(t.Context(), "/usr/bin/python3", "-I", helper)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("fixture safety: %v\n%s", err, output)
+	}
+}
+
+// Keep test churn below a stable sibling of the production cache. Creating
+// children directly in UserCacheDir changes an ancestor sealed by the real gate.
+func newIsolatedHomeFixtureTestRoot(t *testing.T) string {
+	t.Helper()
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := filepath.Join(cache, "compound-proof-fixture-tests")
+	if err := os.Mkdir(base, 0700); err != nil && !os.IsExist(err) {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || !info.IsDir() || info.Mode().Perm() != 0700 || stat.Uid != uint32(os.Geteuid()) {
+		t.Fatal("test fixture parent is not a private owned directory")
+	}
+	temporary, err := os.MkdirTemp(base, "run-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(temporary); err != nil {
+			t.Error(err)
+		}
+	})
+	return temporary
+}
+
+func TestHomeFixtureTestCachePreservesProductionAncestors(t *testing.T) {
+	home := t.TempDir()
+	cache := filepath.Join(home, "Library", "Caches")
+	if err := os.MkdirAll(cache, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Run("initialize", func(t *testing.T) { newIsolatedHomeFixtureTestRoot(t) })
+	before, err := os.Stat(cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("next-run", func(t *testing.T) { newIsolatedHomeFixtureTestRoot(t) })
+	after, err := os.Stat(cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous, current := before.Sys().(*syscall.Stat_t), after.Sys().(*syscall.Stat_t)
+	if before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) ||
+		previous.Ino != current.Ino || previous.Ctimespec != current.Ctimespec {
+		t.Fatal("test fixture creation or cleanup changed a sealed production ancestor")
 	}
 }

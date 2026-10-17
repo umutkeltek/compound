@@ -193,7 +193,18 @@ func (s *Store) reserveCoordinatedProofWhenFree(ctx context.Context, workID stri
 		if err := checkProofWaitAdmission(in); err != nil {
 			return result, err
 		}
-		result, err = s.ReserveProofResource(workID, in, clk.Now())
+		// Occupied capacity cannot admit work. Avoid folding the lifecycle log
+		// under the home guard merely to rediscover the same busy class.
+		// Vacancy is only a hint: ReserveProofResource retains every locked check.
+		status, statusErr := admission.WaitingStatus(clk.Now())
+		if statusErr != nil {
+			return result, statusErr
+		}
+		if status.Held {
+			err = &landlease.ProofAdmissionBusyError{Holder: status.Holder, Reason: "capacity occupied"}
+		} else {
+			result, err = s.ReserveProofResource(workID, in, clk.Now())
+		}
 		if err == nil {
 			s.observeProofQueue(result.Reservation.ID, clk.Now().Sub(started), clk.Now().Sub(started))
 			return result, nil

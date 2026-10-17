@@ -6,6 +6,7 @@ import (
 	"compound/internal/landlease"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -390,6 +391,57 @@ func TestCoordinatedProofStealDoesNotHoldDomainWhileFinalizerRuns(t *testing.T) 
 			_, err = s.CompleteProofResource(systemWork.ID, ProofResourceCompleteInput{Actor: proofActorAlpha, ReservationID: independent.Reservation.ID, FailureReason: "fixture", ProducerExitKnown: true, ProducerExitCode: 1}, time.Now())
 			if err != nil {
 				t.Fatal(err)
+			}
+		})
+	}
+}
+
+type proofCancelOnSleepClock struct{ cancel context.CancelFunc }
+
+func (c proofCancelOnSleepClock) Now() time.Time      { return time.Now() }
+func (c proofCancelOnSleepClock) Sleep(time.Duration) { c.cancel() }
+
+// Occupied capacity must not fold the global lifecycle log on every poll.
+func TestCoordinatedProofBusyWaitDoesNotReadLifecycleLog(t *testing.T) {
+	for _, foreign := range []bool{false, true} {
+		name := "same-repository"
+		if foreign {
+			name = "other-repository"
+		}
+		t.Run(name, func(t *testing.T) {
+			s := coordinatedStoreFixture(t)
+			firstWork := claimedProofWork(t, s, "active proof", proofActorAlpha, time.Now())
+			waiter := claimedProofWork(t, s, "waiting proof", proofActorAlpha, time.Now())
+			profile := capacitySystemProfile(t, false)
+			input := ProofResourceReserveInput{Actor: proofActorAlpha, TTL: time.Minute, Workspace: profile.Repo, Command: "compound proof-check", Profile: profile}
+			first, err := s.ReserveProofResource(firstWork.ID, input, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer first.ExecutionBarrier.Close()
+			if foreign {
+				input.Profile = capacitySystemProfile(t, false)
+				input.Workspace = input.Profile.Repo
+				if input.Profile.SourceSnapshot.RepositoryFingerprint == profile.SourceSnapshot.RepositoryFingerprint {
+					t.Fatal("fixture repositories are not distinct")
+				}
+			}
+			before := runAttemptCount(t, s, waiter.ID)
+			reads := s.eventLogReads.Load()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			result, err := s.ReserveProofResourceWhenFree(ctx, waiter.ID, input, time.Minute, proofCancelOnSleepClock{cancel}, nil)
+			if result.ExecutionBarrier != nil {
+				_ = result.ExecutionBarrier.Close()
+			}
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("busy cancellation = %v", err)
+			}
+			if added := s.eventLogReads.Load() - reads; added != 0 {
+				t.Fatalf("occupied capacity read lifecycle log %d times", added)
+			}
+			if after := runAttemptCount(t, s, waiter.ID); after != before {
+				t.Fatalf("busy wait minted attempt: %d -> %d", before, after)
 			}
 		})
 	}

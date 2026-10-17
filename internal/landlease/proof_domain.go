@@ -253,6 +253,21 @@ func (a *ProofAdmission) Identity() *ProofCoordinationIdentity {
 	}
 	return cloneProofCoordination(&a.identity)
 }
+
+// WaitingStatus is an advisory atomic class snapshot, never admission. It
+// preserves this ticket's generation while accepting a foreign repository's
+// same-class holder. It takes no class lock, so a finalizer cannot block waiting
+// cancellation. WithTurn must still revalidate every admission fence.
+func (a *ProofAdmission) WaitingStatus(now time.Time) (StatusResult, error) {
+	if a == nil || a.ticket == nil {
+		return StatusResult{}, fmt.Errorf("proof waiting status requires an admission ticket")
+	}
+	resource := ProofResourceForIdentity(a.home, &a.identity)
+	return selectedReadCall(resource, func(root string) (StatusResult, error) {
+		return proofAdmissionSnapshot(root, now, resource.binding(root, true))
+	})
+}
+
 func (a *ProofAdmission) WithTurn(ctx context.Context, steal bool, fn func(*Resource) error) error {
 	if a == nil || fn == nil {
 		return fmt.Errorf("proof admission and callback required")

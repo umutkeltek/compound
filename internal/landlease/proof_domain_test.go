@@ -435,3 +435,46 @@ func TestProofDomainHistoricalEvidenceDoesNotBlockSuccessorRepository(t *testing
 		t.Fatalf("successor changed: %+v %v", status, err)
 	}
 }
+
+func TestProofDomainWaitingSnapshotIsForeignAwareAndDoesNotBlockFinalizer(t *testing.T) {
+	homes, backing, generation := proofDomainFixture(t)
+	first := beginDomainTicket(t, homes[0], ProofCapacitySystemFull, "2")
+	_, barrier := acquireDomainProof(t, first, "waiting-snapshot-holder")
+	defer barrier.Close()
+	waiter := beginDomainTicket(t, homes[1], ProofCapacitySystemFull, "3")
+	root := proofClassRoot(backing, generation, ProofCapacitySystemFull)
+	held, release, unlocked := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() { unlocked <- withLock(root, func() error { close(held); <-release; return nil }) }()
+	<-held
+	type result struct {
+		status StatusResult
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() { status, err := waiter.WaitingStatus(time.Now()); done <- result{status, err} }()
+	var observed result
+	blocked := false
+	select {
+	case observed = <-done:
+	case <-time.After(2 * time.Second):
+		blocked = true
+	}
+	close(release)
+	if err := <-unlocked; err != nil {
+		t.Fatal(err)
+	}
+	if blocked {
+		observed = <-done
+		t.Fatal("advisory waiting snapshot blocked on finalizer class lock")
+	}
+	if observed.err != nil || !observed.status.Held || observed.status.Holder != "waiting-snapshot-holder" {
+		t.Fatalf("foreign capacity snapshot: %+v %v", observed.status, observed.err)
+	}
+	if observed.status.ProofCoordination == nil || observed.status.ProofCoordination.RepositoryFingerprint != first.identity.RepositoryFingerprint {
+		t.Fatal("waiting snapshot replaced the actual holder identity")
+	}
+	waiter.identity.Generation = strings.Repeat("9", 64)
+	if _, err := waiter.WaitingStatus(time.Now()); err == nil {
+		t.Fatal("waiting snapshot accepted stale generation")
+	}
+}

@@ -659,6 +659,13 @@ older writers remain discoverable; unreadable primary authority still fails clos
 This removes unrelated sidecar reads, but intentionally retains the global primary
 record census. These changes do not add FIFO admission or separate proof capacity.
 
+Queued coordinated proofs observe occupied class capacity through an atomic,
+generation-bound snapshot before entering lifecycle mutation. This avoids
+re-reading the complete work log while waiting, accepts same-class holders from
+other repositories, and does not wait on a finalizer's class lock. A vacant
+snapshot authorizes nothing: the existing FIFO, source, Work, policy, generation
+and execution-barrier checks still run at reservation.
+
 Canonical proof v0.6 splits the existing Go inventory into general/release and
 home phases. Together they run every original package exactly once, with the
 same count and timeout. General, release, runtime, policy, installation and
@@ -695,7 +702,9 @@ Fixture files are an accelerator in the ordinary user cache, never authority.
 Pinned no-follow directory descriptors, exact ownership, a cooperating-helper
 lock and bounded relative cleanup protect preparation and retirement. Identical
 source/binary/policy files retain their identities. Build caches stay outside
-the fixture scratch directory. A successful home gate in the admitted canonical
+the fixture scratch directory. Integration-test roots live below a stable
+private sibling of the production cache, so repeated test creation and cleanup
+do not change sealed production ancestors. A successful home gate in the admitted canonical
 target checkout retires its exact payload while the governed attempt is still
 live; the small owner marker remains. This also applies to successful fresh
 fallback when its prepared seal still validates. Cleanup exhaustion or drift
