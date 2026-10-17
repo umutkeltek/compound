@@ -568,15 +568,16 @@ type ownedProofReport struct {
 	CIConsole      bool                    `json:"ci_console,omitempty"`
 	ProofRefs      []string                `json:"proof_refs"`
 	Steps          []struct {
-		Name              string                     `json:"name"`
-		Command           []string                   `json:"command"`
-		Dir               string                     `json:"dir,omitempty"`
-		SkipIfMissing     string                     `json:"skip_if_missing,omitempty"`
-		ProofRef          string                     `json:"proof_ref"`
-		Status            string                     `json:"status"`
-		FailureFacts      []string                   `json:"failure_facts,omitempty"`
-		ConsumerEvidence  *CanonicalConsumerEvidence `json:"consumer_evidence,omitempty"`
-		RedactionEvidence *PublicRedactionEvidence   `json:"redaction_evidence,omitempty"`
+		Name                  string                     `json:"name"`
+		Command               []string                   `json:"command"`
+		Dir                   string                     `json:"dir,omitempty"`
+		SkipIfMissing         string                     `json:"skip_if_missing,omitempty"`
+		ProofRef              string                     `json:"proof_ref"`
+		Status                string                     `json:"status"`
+		FailureFacts          []string                   `json:"failure_facts,omitempty"`
+		ConsumerEvidence      *CanonicalConsumerEvidence `json:"consumer_evidence,omitempty"`
+		RedactionEvidence     *PublicRedactionEvidence   `json:"redaction_evidence,omitempty"`
+		PrivateSourceEvidence *PrivateSourceEvidence     `json:"private_source_evidence,omitempty"`
 	} `json:"steps"`
 }
 
@@ -1412,6 +1413,10 @@ func (s *Store) reserveProofResourceLocked(workID string, in ProofResourceReserv
 	if err := s.validatePublicRedactionProfileAuthority(workID, in.Actor, in.Profile, now); err != nil {
 		return ProofResourceReserveResult{}, fmt.Errorf("public redaction review admission: %w", err)
 	}
+	if err := s.validatePrivateSourceProfileAuthority(workID, in.Actor, in.Profile, now); err != nil {
+		return ProofResourceReserveResult{}, err
+	}
+
 	if in.busyWhenHeld && !in.Steal {
 		status, statusErr := in.resource.AdmissionStatus(now)
 		if statusErr != nil {
@@ -2154,6 +2159,9 @@ func (s *Store) completeProofResourceLocked(workID string, in ProofResourceCompl
 		if err := s.writeProofResourceCompletionPending(pendingPath, pending); err != nil {
 			return ProofResourceCompleteResult{}, err
 		}
+	}
+	if err := s.validatePrivateSourceProfileAuthority(workID, in.Actor, reservation.Profile, now); err != nil {
+		return ProofResourceCompleteResult{}, err
 	}
 
 	finalWork := w
@@ -4168,18 +4176,26 @@ func validateOwnedProofReportAgainstReservation(report ownedProofReport, reserva
 		}
 		redactionStep := ProofCheckStep{
 			Name: step.Name, Command: step.Command, ProofRef: step.ProofRef,
-			Status: step.Status, RedactionEvidence: step.RedactionEvidence,
+			Status: step.Status, RedactionEvidence: step.RedactionEvidence, PrivateSourceEvidence: step.PrivateSourceEvidence,
 		}
 		_, reviewed, reviewErr := PublicRedactionBindingForStep(redactionStep)
 		if reviewErr != nil {
 			return fmt.Errorf("gate %q review binding: %w", gate.Name, reviewErr)
 		}
-		if reviewed && report.SchemaVersion != "compound.proof_check_report.v0.5" {
+		_, privatelyReviewed, privateReviewErr := PrivateSourceBindingForStep(redactionStep)
+		if privateReviewErr != nil {
+			return fmt.Errorf("gate %q private review binding: %w", gate.Name, privateReviewErr)
+		}
+		if (reviewed || privatelyReviewed) && report.SchemaVersion != "compound.proof_check_report.v0.5" {
 			return fmt.Errorf("reviewed redaction requires proof report v0.5")
 		}
 		if err := ValidatePublicRedactionEvidence(redactionStep, profile.SourceSnapshot, reservation.WorkID); err != nil {
 			return fmt.Errorf("gate %q redaction evidence: %w", gate.Name, err)
 		}
+		if err := ValidatePrivateSourceEvidence(redactionStep, profile.SourceSnapshot, reservation.WorkID); err != nil {
+			return fmt.Errorf("gate %q private source evidence: %w", gate.Name, err)
+		}
+
 		if strings.HasPrefix(gate.Name, "consumer:") && step.Status == "ok" {
 			if err := ValidateCanonicalConsumerEvidence(ProofCheckStep{
 				Name: step.Name, Command: step.Command, Dir: step.Dir, SkipIfMissing: step.SkipIfMissing,

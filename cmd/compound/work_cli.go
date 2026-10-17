@@ -113,9 +113,13 @@ type workVerbHelp struct {
 	Example string
 }
 
-const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|reconcile-run-attempts|run-attempt-link|continue|dispatch-plan|dispatch-claim|dispatch-execute|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|delivery-capture|advance-plan|advance|delegate|steer|attach|collaborate|observe-run|land-check|salvage-plan|action-plan|act|close-plan|close|set-aside|sweep-stale|reseal> ..."
+const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|reconcile-run-attempts|run-attempt-link|continue|dispatch-plan|dispatch-claim|dispatch-execute|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|delivery-capture|advance-plan|advance|delegate|steer|attach|collaborate|observe-run|land-check|salvage-plan|private-source-publish|action-plan|act|close-plan|close|set-aside|sweep-stale|reseal> ..."
 
 var workVerbHelpByName = map[string]workVerbHelp{
+	"private-source-publish": {
+		Usage:   work.PrivateSourcePublishUsage,
+		Example: "compound work private-source-publish --work work_example --actor codex:example --repo /clean/source --review-action act_example --json",
+	},
 	"delivery-capture": {
 		Usage:   "usage: compound work delivery-capture <work_id> --request <file> --by <actor> [--json]",
 		Example: "compound work delivery-capture work_example --request capture.json --by operator:example --json",
@@ -304,6 +308,9 @@ func previewDispatchClaim(store *work.Store, now time.Time, opts work.DispatchPl
 // The command owner parses any mixed read/write surface so invalid and read-only
 // requests cannot materialize the work habitat.
 func workCommandNeedsWritableStore(sub string, args []string) bool {
+	if sub == "private-source-publish" {
+		return work.PrivateSourcePublishCLIRequiresWritableStore(args)
+	}
 	if sub == "sweep-stale" {
 		return work.SweepStaleCLIRequiresWritableStore(args)
 	}
@@ -561,6 +568,10 @@ func cmdWork(args []string) {
 	}
 
 	switch sub {
+	case "private-source-publish":
+		if code := work.RunPrivateSourcePublishCLI(store, rest, os.Stdout, os.Stderr); code != 0 {
+			os.Exit(code)
+		}
 	case "delegate", "steer", "attach":
 		// Capture pane output. Without it a delegate's entire record dies
 		// with its tmux pane, which is how a 55-session burst on

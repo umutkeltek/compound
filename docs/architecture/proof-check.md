@@ -73,6 +73,73 @@ cannot admit a fresh run. Unreviewed v0.1–v0.4 reports remain readable; review
 evidence requires v0.5. This proof does not authorize source publication or product
 deployment: those remain separate governed actions.
 
+## Exact private-source audience and publication
+
+`--redact-review <act_ID>` also accepts the distinct native capability
+`proof.redaction.review_private_source` and action
+`classify_private_source_redaction_findings`. The finding body is
+`compound.private_source_review.v1`: the exact work, complete clean source
+snapshot, original unreviewed profile digest, complete ordered scan inventory,
+per-finding classifications and evidence references, and authenticated destination.
+This remains a `public` release-class action. Local editing permission and a
+WorkEnvelope's privacy label cannot authorize it.
+
+The destination observation binds GitHub's immutable repository ID and name,
+authenticated viewer ID/login, actual single configured push URL, canonical
+HTTPS URL, remote, target/publication refs, and observed private visibility.
+Unknown hosts, credentials in URLs, multiple push URLs, archived repositories,
+missing push permission, offline observations and identity/visibility drift fail.
+Observation uses the existing authenticated `gh` session; no credentials or raw
+account responses enter the evidence.
+
+The full PUBLIC scanner still runs on every complete changed committed body,
+including files after a blocking scanner exit. All HIGH findings block. Exact
+MEDIUM findings may be classified as private service hostnames/endpoints,
+operational IPs, support contacts, nonsecret provider identifiers or nonsecret
+operational settings only under their supported per-finding classification.
+This is neither a category waiver nor permission to include credentials. Raw
+findings and blocking exit codes remain in `private_source_evidence`; partial or
+overflow evidence may explain a failed run but cannot certify a green one.
+The gate retains the name `redact-public` and proves
+`redact-private-source-reviewed`, never a public-clean certificate. Public and
+default review semantics remain unchanged.
+
+`compound work private-source-publish` is the corresponding narrow publisher:
+
+```sh
+compound work private-source-publish --work work_example --actor codex:example \
+  --repo /clean/source --review-action act_example --json
+compound work private-source-publish --apply --request publication.json --json
+```
+
+The first form is a read-only concrete proposal. Save its complete JSON request
+for review. The apply form requires running work and its own exact one-use
+approval, even if a broader standing grant exists. It reopens the owned full
+proof/finalizer chain and exact source/profile/review, observes the authenticated
+private destination and expected remote tip again, verifies the landed canonical
+target ref, and rejects rewritten transport URLs or non-fast-forward ancestry.
+The certified base must be an ancestor of the expected remote tip, which must
+itself be an ancestor of the certified head; an unscanned pre-base publication
+gap requires a new complete certificate rather than implicit trust.
+The source workspace must be clean and share the bound repository identity;
+unrelated preserved work in the canonical checkout is not staged, scanned as the
+publication payload, reset, or checked out.
+
+The adapter owns a fixed non-force `SHA:refs/heads/branch` push to the canonical
+HTTPS URL, with existing authenticated GitHub credentials and ordinary hooks.
+Automatic tag following and submodule pushes are explicitly disabled, so local
+Git configuration cannot add those effects. It changes no global Git/auth
+settings. A durable pending native action precedes
+the effect. Authenticated GitHub API postflight must confirm the same private
+repository and exact target commit before a local tracking-ref CAS and native
+receipt can complete. Transport success alone never proves publication.
+Pending retries only observe/reconcile; they never repush after a lost response.
+Unconfirmed remote state or failed bookkeeping retains the pending action and a
+private observation artifact. Visibility/configuration cannot be locked
+atomically with a remote push, so preflight/postflight drift remains an explicit
+uncertain outcome rather than a claimed rollback. Completed actions replay their
+verified native receipt without repeating the effect.
+
 ## The execution barrier
 
 Expiry alone never makes a successor executable: every proof gate inherits a

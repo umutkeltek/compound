@@ -29,7 +29,8 @@ func sourceActionAdmissionScope(ai envelope.ActionIntent) (root string, publicat
 	// it does not publish or edit the repository. Requiring publication readiness
 	// here would make proof preparation depend on an unrelated source profile.
 	// Its exact owner pair still passes the existing native policy/review gates.
-	if cap == PublicRedactionReviewCapability && ai.Action == PublicRedactionReviewAction {
+	if (cap == PublicRedactionReviewCapability && ai.Action == PublicRedactionReviewAction) ||
+		(cap == PrivateSourceReviewCapability && ai.Action == PrivateSourceReviewAction) {
 		return "", false, nil
 	}
 	repoTarget := kind == "repository" || kind == "git_repository"

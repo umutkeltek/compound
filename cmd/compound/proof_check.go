@@ -244,7 +244,7 @@ func cmdProofCheck(args []string) {
 			os.Exit(2)
 		}
 		if reviewActionID != "" {
-			plan, err = work.BindNativePublicRedactionReview(plan, homePath, workID, actor, reviewActionID)
+			plan, err = work.BindNativeSourceRedactionReview(plan, homePath, workID, actor, reviewActionID)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "proof-check: public redaction review:", err)
 				os.Exit(2)
@@ -1390,14 +1390,10 @@ func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckS
 	if strings.HasPrefix(step.Name, "consumer:") {
 		output, result.ConsumerEvidence, err = work.RunCanonicalConsumer(ctx, repo, step, headRefs, proofCheckCommandContext, proofCheckRuntimeExecutable)
 	} else if step.Name == "redact-public" {
-		_, reviewed, bindingErr := work.PublicRedactionBindingForStep(step)
-		if bindingErr != nil {
-			err = bindingErr
-		} else if reviewed {
-			output, result.RedactionEvidence, err = work.RunReviewedPublicRedaction(ctx, repo, step, baseRef, headRefs, proofCheckRedactInputsAtSnapshotContext, proofCheckCommandContext)
-		} else {
-			output, err = runProofCheckRedactContext(ctx, repo, baseRef, headRefs...)
-		}
+		output, result.RedactionEvidence, result.PrivateSourceEvidence, err = work.RunSourceRedaction(
+			ctx, repo, step, baseRef, headRefs, proofCheckRedactInputsAtSnapshotContext,
+			proofCheckCommandContext, runProofCheckRedactContext,
+		)
 	} else if step.Name == "gofmt" {
 		output, err = runProofCheckGofmtContext(ctx, repo)
 	} else if step.Name == "bun-tools-test" {
