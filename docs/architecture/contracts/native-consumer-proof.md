@@ -282,3 +282,12 @@ publication. Source admission therefore does not add a native profile prerequisi
 to this preparation step. Existing native review, exact approval, source binding
 and proof-consumption checks still apply; the capability alone does not exempt a
 different public action.
+
+## Reviewed redaction and native capacity
+
+Native-consumer capacity reconstruction uses the same exact private redaction
+gate binder as canonical proof planning. Public and private review suffixes keep
+the consumer commands and capacity class unchanged. Admission still compares the
+entire sealed source and ordered gate inventory. Capacity classification grants
+no review ownership: the native Store independently authenticates the current
+work, actor, policy, finding and source before reserving proof resources.

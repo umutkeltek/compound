@@ -27,7 +27,7 @@ func CanonicalProofCapacityClass(profile ProofResourceProfile) (landlease.ProofC
 	if plan.ID == CanonicalProofPlanCompoundV1 || plan.ID == CanonicalProofPlanRustWorkspaceV1 {
 		return landlease.ProofCapacitySystemFull, nil
 	}
-	// A reviewed redaction suffix changes neither consumer execution nor class.
+	// Public and private reviewed redaction suffixes change neither consumers nor class.
 	// Reproduce its exact typed shape here; Store still authenticates its owner
 	// before minting any reservation.
 	for _, gate := range profile.Gates {
@@ -37,6 +37,16 @@ func CanonicalProofCapacityClass(profile ProofResourceProfile) (landlease.ProofC
 		}
 		if reviewed {
 			plan, err = BindPublicRedactionReview(plan, binding)
+			if err != nil {
+				return "", err
+			}
+		}
+		binding, reviewed, err = PrivateSourceBindingForStep(ProofCheckStep{Name: gate.Name, Command: gate.Command, ProofRef: gate.ProofRef})
+		if err != nil {
+			return "", err
+		}
+		if reviewed {
+			plan, err = bindPrivateSourceReview(plan, binding)
 			if err != nil {
 				return "", err
 			}

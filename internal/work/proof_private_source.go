@@ -155,6 +155,10 @@ func BindNativeSourceRedactionReview(plan CanonicalProofPlan, homePath, workID, 
 	if err != nil || digest != authority.Review.SourceProfileDigest {
 		return plan, fmt.Errorf("private source review does not bind this exact native source profile")
 	}
+	return bindPrivateSourceReview(plan, authority.Binding)
+}
+
+func bindPrivateSourceReview(plan CanonicalProofPlan, binding PublicRedactionReviewBinding) (CanonicalProofPlan, error) {
 	plan = cloneCanonicalProofPlan(plan)
 	found := false
 	for i := range plan.Steps {
@@ -166,7 +170,6 @@ func BindNativeSourceRedactionReview(plan CanonicalProofPlan, homePath, workID, 
 			return plan, fmt.Errorf("private source review requires one unchanged full public scanner gate")
 		}
 		found = true
-		binding := authority.Binding
 		step.Command = append(step.Command, privateSourceReviewMarker, binding.ActionID, binding.PolicyID, binding.FindingID, binding.CID)
 		step.ProofRef = "redact-private-source-reviewed"
 	}
