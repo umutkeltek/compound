@@ -501,6 +501,15 @@ func walkArchiveRootBatched(root *os.Root, dir string, visit func(string, fs.Fil
 	if err != nil || before.Mode()&os.ModeSymlink != 0 || !before.IsDir() || !os.SameFile(before, openedInfo) {
 		return fmt.Errorf("archive directory identity changed: %s: %w", dir, err)
 	}
+	local, err := root.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer local.Close()
+	localInfo, err := local.Stat(".")
+	if err != nil || !os.SameFile(before, localInfo) {
+		return fmt.Errorf("archive directory identity changed while pinning children: %s: %w", dir, err)
+	}
 	for {
 		batch, readErr := opened.ReadDir(archiveWalkBatch)
 		for _, child := range batch {
@@ -511,7 +520,7 @@ func walkArchiveRootBatched(root *os.Root, dir string, visit func(string, fs.Fil
 			if err := validateArchivePath(rel); err != nil {
 				return err
 			}
-			info, err := root.Lstat(filepath.FromSlash(rel))
+			info, err := local.Lstat(child.Name())
 			if err != nil {
 				return err
 			}

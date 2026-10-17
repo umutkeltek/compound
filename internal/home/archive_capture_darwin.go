@@ -23,12 +23,20 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Capture is the source-consistency boundary. Admission fences cooperating
-// writers only; event files and other independently locked families remain
-// per-file observations. No live source is consulted after capture succeeds.
+// Reconciliation under admission is the source-consistency boundary. Warm
+// clones are only a cache. Independently locked writers remain per-file
+// observations. No live source is consulted after final capture succeeds.
 var archiveCaptureBeforeClone = func(string) error { return nil }
 var archiveCaptureClone = unix.Fclonefileat
 var archiveStreamCaptureReady = func(*capturedArchive) error { return nil }
+var archiveWarmCaptureReady = func(*capturedArchive) error { return nil }
+var archiveCaptureReconcileStarted = func(*capturedArchive) error { return nil }
+var archiveCaptureNow = time.Now
+var archiveCaptureReconciled = func(*capturedArchive, error) {}
+
+// Cooperative deadline: checked between entries and after each clone. A single
+// blocked filesystem syscall cannot be preempted; no unlimited fallback exists.
+const archiveCaptureReconcileBudget = 30 * time.Second
 
 const archiveCaptureRecordBytes = 128 << 10
 
@@ -52,11 +60,23 @@ func (s archiveCaptureStamp) matches(info fs.FileInfo) bool {
 		s.Mode == other.Mode && s.Modified.Equal(other.Modified) && s.Changed.Equal(other.Changed)
 }
 
+type archiveCaptureReference struct {
+	Path      string `json:"path"`
+	SourceKey string `json:"source_key"`
+	Offset    int64  `json:"offset"`
+	Length    int    `json:"length"`
+	Body      int    `json:"body"`
+	Size      int64  `json:"size"`
+}
+
 type archiveCaptureRecord struct {
-	Header tar.Header
-	Link   *archiveLink
-	Body   int
-	Stamp  archiveCaptureStamp
+	Cached    *archiveCaptureReference `json:"cached,omitempty"`
+	SourceKey string                   `json:"source_key,omitempty"`
+	encoded   []byte
+	Header    tar.Header
+	Link      *archiveLink
+	Body      int
+	Stamp     archiveCaptureStamp
 }
 
 func marshalArchiveCaptureRecord(record archiveCaptureRecord) ([]byte, error) {
@@ -75,6 +95,10 @@ func marshalArchiveCaptureRecord(record archiveCaptureRecord) ([]byte, error) {
 }
 
 type capturedArchive struct {
+	shards             *archiveCaptureShards
+	admissionDuration  time.Duration
+	cache              *archiveCaptureCache
+	references         int
 	root, tmp, stage   *os.Root
 	stageName          string
 	stageInfo, tmpInfo fs.FileInfo
@@ -86,30 +110,44 @@ type capturedArchive struct {
 	closed             bool
 }
 
-func captureBodyName(n int) string { return fmt.Sprintf("body-%09d", n) }
-
 func backupCapturedStreamedArchive(homePath, targetPath string, now time.Time, schema string) (report ArchiveReport, resultErr error) {
-	var captured *capturedArchive
-	err := WithAutonomyAdmissionLock(homePath, func() error {
-		if err := prepareArchiveTarget(homePath, targetPath, includeBackupPath); err != nil {
-			return err
-		}
-		var err error
-		captured, err = captureStreamedArchive(homePath)
-		return err
-	})
+	if err := WithAutonomyAdmissionLock(homePath, func() error {
+		return prepareArchiveTarget(homePath, targetPath, includeBackupPath)
+	}); err != nil {
+		return ArchiveReport{}, err
+	}
+	captured, err := captureStreamedArchive(homePath)
 	if err != nil {
 		return ArchiveReport{}, err
 	}
 	defer func() { resultErr = errors.Join(resultErr, captured.close()) }()
-	// This hook is also the falsifier seam: compression has no admission lock.
+	if err := captured.cache.seal(captured.stage, captured.journalHash); err != nil {
+		return ArchiveReport{}, err
+	}
+	if err := archiveWarmCaptureReady(captured); err != nil {
+		return ArchiveReport{}, err
+	}
+	if err := captured.cache.verify(captured.stage, true); err != nil {
+		return ArchiveReport{}, err
+	}
+	reconcileErr := WithAutonomyAdmissionLock(homePath, func() error {
+		if err := prepareArchiveTarget(homePath, targetPath, includeBackupPath); err != nil {
+			return err
+		}
+		return captured.reconcile(homePath)
+	})
+	archiveCaptureReconciled(captured, reconcileErr)
+	if reconcileErr != nil {
+		return ArchiveReport{}, reconcileErr
+	}
+	// Hashing and cleanup stay outside admission, including on failed attempts.
+	if err := captured.cache.verify(captured.stage, true); err != nil {
+		return ArchiveReport{}, err
+	}
 	if err := archiveStreamCaptureReady(captured); err != nil {
 		return ArchiveReport{}, err
 	}
-	source := &archiveStreamSource{
-		manifest: captured.manifest, homeSchema: captured.homeSchema,
-		walk: captured.walk, close: captured.close,
-	}
+	source := &archiveStreamSource{manifest: captured.manifest, homeSchema: captured.homeSchema, walk: captured.walk, close: captured.close}
 	return writeStreamedArchiveSource(homePath, targetPath, now, schema, source)
 }
 
@@ -148,16 +186,47 @@ func captureStreamedArchive(homePath string) (_ *capturedArchive, resultErr erro
 	if err := c.createStage(); err != nil {
 		return nil, err
 	}
-	journal, err := c.stage.OpenFile("journal", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	c.shards, err = newArchiveCaptureShards(c.stage)
 	if err != nil {
 		return nil, err
 	}
+	c.cache, err = newArchiveCaptureCache(c.stage)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.writeCaptureJournal(homePath, true, time.Time{}); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func (c *capturedArchive) writeCaptureJournal(homePath string, warm bool, deadline time.Time) error {
+	journal, err := c.stage.OpenFile("journal", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
 	defer journal.Close()
 	digest := sha256.New()
-	bounded := &boundedArchiveOutput{writer: io.MultiWriter(journal, digest), remaining: archiveStreamTotalMeta, limit: archiveStreamTotalMeta, kind: "capture journal"}
+	buffered := bufio.NewWriterSize(journal, 1<<20)
+	bounded := &boundedArchiveOutput{writer: io.MultiWriter(buffered, digest), remaining: archiveStreamTotalMeta, limit: archiveStreamTotalMeta, kind: "capture journal"}
 	budget := archiveEntryBudget{limits: archiveStreamTarLimits()}
+	c.records, c.references = 0, 0
 	links := 0
-	err = walkArchiveRootBatched(root, ".", func(rel string, info fs.FileInfo) error {
+	var offset int64
+	checkDeadline := func() error {
+		if !deadline.IsZero() && !archiveCaptureNow().Before(deadline) {
+			return fmt.Errorf("snapshot_busy: backup reconciliation exceeded admission budget")
+		}
+		return nil
+	}
+	walk := walkArchiveRootBatched
+	if !warm {
+		walk = walkCaptureRootConcurrent
+	}
+	err = walk(c.root, ".", func(rel string, info fs.FileInfo) error {
+		if err := checkDeadline(); err != nil {
+			return err
+		}
 		if rel == ManifestName {
 			return nil
 		}
@@ -175,7 +244,6 @@ func captureStreamedArchive(homePath string) (_ *capturedArchive, resultErr erro
 			return err
 		}
 		header.Name = rel
-		// Check bounds before doing any native clone work.
 		if err := budget.observe(header); err != nil {
 			return err
 		}
@@ -185,20 +253,66 @@ func captureStreamedArchive(homePath string) (_ *capturedArchive, resultErr erro
 			if links > archiveStreamMaxLinks {
 				return fmt.Errorf("archive link count exceeds %d", archiveStreamMaxLinks)
 			}
-			link, err := captureArchiveLink(root, homePath, rel, info)
+			link, err := captureArchiveLink(c.root, homePath, rel, info)
 			if err != nil {
 				return err
 			}
 			record.Link = &link
 		} else if info.Mode().IsRegular() {
-			c.bodies++
-			record.Body = c.bodies
-			metadata, stamp, err := c.clone(rel, info, captureBodyName(record.Body))
+			key, err := captureCacheKey(rel, info)
 			if err != nil {
 				return err
 			}
-			record.Header, record.Stamp = *metadata, stamp
-			// Appends may enlarge an event between traversal and its clone.
+			record.SourceKey = hex.EncodeToString(key[:])
+			reused := false
+			if !warm {
+				cached, found, err := c.cache.lookup(rel, info)
+				if err != nil {
+					return err
+				}
+				if found {
+					if cached.Body > c.bodies {
+						return fmt.Errorf("capture cache body out of range")
+					}
+					// The unchanged warm journal binds the expected clone stamp.
+					// Mandatory replay checks it before and during serialization, before
+					// publication. Repeating that private-body stat under admission adds
+					// no source consistency and makes the fence grow with cold metadata.
+					record.Body = cached.Body
+					record.Header.Size = cached.Size
+					record.encoded, err = json.Marshal(struct {
+						Cached *archiveCaptureReference `json:"cached"`
+					}{&cached.Reference})
+					if err != nil {
+						return err
+					}
+					record.encoded = append(record.encoded, '\n')
+					if len(record.encoded) > archiveCaptureRecordBytes {
+						return fmt.Errorf("capture reference exceeds limit")
+					}
+					reused = true
+				}
+			}
+			if !reused {
+				if _, bulk := info.(*captureBulkFileInfo); bulk {
+					current, err := c.root.Lstat(filepath.FromSlash(rel))
+					if err != nil {
+						return err
+					}
+					if !captureStamp(info).matches(current) {
+						return fmt.Errorf("capture source changed after bulk observation: %s", rel)
+					}
+					info = current
+				}
+				c.bodies++
+				record.Body = c.bodies
+				metadata, stamp, err := c.clone(rel, info, record.Body)
+				if err != nil {
+					return err
+				}
+				record.Header, record.Stamp = *metadata, stamp
+			}
+			c.references++
 			delta := record.Header.Size - header.Size
 			if delta > 0 {
 				if record.Header.Size > budget.limits.MaxEntryBytes || budget.expandedBytes > budget.limits.MaxExpandedBytes-delta {
@@ -207,31 +321,97 @@ func captureStreamedArchive(homePath string) (_ *capturedArchive, resultErr erro
 				budget.expandedBytes += delta
 			}
 		}
-		data, err := marshalArchiveCaptureRecord(record)
-		if err != nil {
+		if err := checkDeadline(); err != nil {
 			return err
+		}
+		data := record.encoded
+		if data == nil {
+			data, err = marshalArchiveCaptureRecord(record)
+			if err != nil {
+				return err
+			}
 		}
 		if _, err := bounded.Write(data); err != nil {
 			return err
 		}
+		if warm && info.Mode().IsRegular() {
+			if err := c.cache.add(rel, info, offset, len(data), record.Body, record.Header.Size); err != nil {
+				return err
+			}
+		}
+		offset += int64(len(data))
 		c.records++
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return err
+	}
+	if err := checkDeadline(); err != nil {
+		return err
+	}
+	if err := buffered.Flush(); err != nil {
+		return err
 	}
 	if err := journal.Close(); err != nil {
-		return nil, err
+		return err
 	}
 	c.journalInfo, err = c.stage.Lstat("journal")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	c.journalHash = hex.EncodeToString(digest.Sum(nil))
 	if err := c.validateStage(); err != nil {
-		return nil, err
+		return err
 	}
-	return c, nil
+	return checkDeadline()
+}
+
+func (c *capturedArchive) reconcile(homePath string) error {
+	started := time.Now()
+	defer func() { c.admissionDuration = time.Since(started) }()
+	deadline := archiveCaptureNow().Add(archiveCaptureReconcileBudget)
+	current, err := os.Lstat(homePath)
+	if err != nil {
+		return err
+	}
+	opened, err := c.root.Stat(".")
+	if err != nil {
+		return err
+	}
+	if !current.IsDir() || current.Mode()&os.ModeSymlink != 0 || !os.SameFile(current, opened) {
+		return fmt.Errorf("capture source home identity changed")
+	}
+	if err := c.validateStage(); err != nil {
+		return err
+	}
+	if err := c.cache.verify(c.stage, false); err != nil {
+		return err
+	}
+	if err := validateStreamedSourceHealth(c.root); err != nil {
+		return err
+	}
+	c.manifest, err = readRootedHomeManifestBounded(c.root)
+	if err != nil {
+		return err
+	}
+	manifest, err := decodeHomeManifest(c.manifest)
+	if err != nil {
+		return err
+	}
+	c.homeSchema = manifest.SchemaVersion
+	if err := archiveCaptureReconcileStarted(c); err != nil {
+		return err
+	}
+	if err := c.writeCaptureJournal(homePath, false, deadline); err != nil {
+		return err
+	}
+	if err := c.cache.verify(c.stage, false); err != nil {
+		return err
+	}
+	if !archiveCaptureNow().Before(deadline) {
+		return fmt.Errorf("snapshot_busy: backup reconciliation exceeded admission budget")
+	}
+	return nil
 }
 
 func (c *capturedArchive) createStage() error {
@@ -291,6 +471,9 @@ func (c *capturedArchive) validateStage() error {
 		!os.SameFile(c.stageInfo, stage) || !os.SameFile(c.stageInfo, opened) {
 		return fmt.Errorf("capture stage identity or permissions changed")
 	}
+	if c.shards != nil {
+		return c.shards.validate()
+	}
 	return nil
 }
 
@@ -298,7 +481,7 @@ func sameCaptureSource(before, after fs.FileInfo, event bool) bool {
 	return after.Mode().IsRegular() && os.SameFile(before, after) &&
 		(event || captureStamp(before).matches(after))
 }
-func (c *capturedArchive) clone(rel string, before fs.FileInfo, name string) (_ *tar.Header, _ archiveCaptureStamp, resultErr error) {
+func (c *capturedArchive) clone(rel string, before fs.FileInfo, body int) (_ *tar.Header, _ archiveCaptureStamp, resultErr error) {
 	source, err := c.root.Open(filepath.FromSlash(rel))
 	if err != nil {
 		return nil, archiveCaptureStamp{}, err
@@ -319,12 +502,11 @@ func (c *capturedArchive) clone(rel string, before fs.FileInfo, name string) (_ 
 	if err := archiveCaptureBeforeClone(rel); err != nil {
 		return nil, archiveCaptureStamp{}, err
 	}
-	dir, err := c.stage.Open(".")
-	if err != nil {
+	if err := c.shards.ensure(body); err != nil {
 		return nil, archiveCaptureStamp{}, err
 	}
-	cloneErr := archiveCaptureClone(int(source.Fd()), int(dir.Fd()), name, 0)
-	if err := errors.Join(cloneErr, dir.Close()); err != nil {
+	bodyRoot, dir, name := c.shards.body(body)
+	if err := archiveCaptureClone(int(source.Fd()), int(dir.Fd()), name, 0); err != nil {
 		return nil, archiveCaptureStamp{}, fmt.Errorf("immutable capture clone unavailable for %s: %w", rel, err)
 	}
 	after, err := c.root.Lstat(filepath.FromSlash(rel))
@@ -338,7 +520,7 @@ func (c *capturedArchive) clone(rel string, before fs.FileInfo, name string) (_ 
 	if !sameCaptureSource(before, after, event) || !sameCaptureSource(before, end, event) {
 		return nil, archiveCaptureStamp{}, fmt.Errorf("capture source changed during clone: %s", rel)
 	}
-	metadata, err := c.stage.Lstat(name)
+	metadata, err := bodyRoot.Lstat(name)
 	if err != nil {
 		return nil, archiveCaptureStamp{}, err
 	}
@@ -350,10 +532,10 @@ func (c *capturedArchive) clone(rel string, before fs.FileInfo, name string) (_ 
 		return nil, archiveCaptureStamp{}, err
 	}
 	header.Name = rel
-	if err := c.stage.Chmod(name, 0o600); err != nil {
+	if err := bodyRoot.Chmod(name, 0o600); err != nil {
 		return nil, archiveCaptureStamp{}, err
 	}
-	sealed, err := c.stage.Lstat(name)
+	sealed, err := bodyRoot.Lstat(name)
 	if err != nil {
 		return nil, archiveCaptureStamp{}, err
 	}
@@ -392,6 +574,23 @@ func (c *capturedArchive) walk(visit func(archiveStreamItem) error) error {
 		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
 			return err
 		}
+		if record.Cached != nil {
+			if record.Header.Name != "" || record.Body != 0 || record.Link != nil || record.SourceKey != "" {
+				return fmt.Errorf("mixed capture reference and full record")
+			}
+			ref := *record.Cached
+			data, err := c.cache.readReference(ref)
+			if err != nil {
+				return err
+			}
+			record = archiveCaptureRecord{}
+			if err := json.Unmarshal(data, &record); err != nil {
+				return err
+			}
+			if record.Cached != nil || record.Link != nil || record.Header.Typeflag != tar.TypeReg || record.Header.Name != ref.Path || record.SourceKey != ref.SourceKey || record.Body != ref.Body || record.Header.Size != ref.Size {
+				return fmt.Errorf("capture warm reference identity mismatch")
+			}
+		}
 		item := archiveStreamItem{rel: record.Header.Name, info: record.Header.FileInfo()}
 		if record.Header.Typeflag == tar.TypeSymlink {
 			if record.Link == nil || record.Link.Path != item.rel || record.Body != 0 {
@@ -403,11 +602,14 @@ func (c *capturedArchive) walk(visit func(archiveStreamItem) error) error {
 				return fmt.Errorf("invalid captured body")
 			}
 			bodies++
-			if record.Body != bodies {
-				return fmt.Errorf("capture body order changed")
+			if record.Body < 1 || record.Body > c.bodies {
+				return fmt.Errorf("capture body identifier out of range")
 			}
-			name := captureBodyName(bodies)
-			before, err := c.stage.Lstat(name)
+			bodyRoot, _, name := c.shards.body(record.Body)
+			if bodyRoot == nil {
+				return fmt.Errorf("capture body shard missing")
+			}
+			before, err := bodyRoot.Lstat(name)
 			if err != nil {
 				return err
 			}
@@ -415,7 +617,7 @@ func (c *capturedArchive) walk(visit func(archiveStreamItem) error) error {
 				return fmt.Errorf("capture body changed before replay: %s", item.rel)
 			}
 			item.write = func(tw archiveEntryWriter) (ArchiveEntry, error) {
-				return writeRootedArchiveFileAt(tw, c.stage, name, item.rel, before, record.Header.FileInfo())
+				return writeRootedArchiveFileAt(tw, bodyRoot, name, item.rel, before, record.Header.FileInfo())
 			}
 		} else if record.Header.Typeflag != tar.TypeDir || record.Link != nil || record.Body != 0 {
 			return fmt.Errorf("invalid capture entry type")
@@ -424,7 +626,11 @@ func (c *capturedArchive) walk(visit func(archiveStreamItem) error) error {
 			return err
 		}
 		if record.Body != 0 {
-			after, err := c.stage.Lstat(captureBodyName(record.Body))
+			bodyRoot, _, name := c.shards.body(record.Body)
+			if bodyRoot == nil {
+				return fmt.Errorf("capture body shard missing")
+			}
+			after, err := bodyRoot.Lstat(name)
 			if err != nil {
 				return err
 			}
@@ -444,7 +650,7 @@ func (c *capturedArchive) walk(visit func(archiveStreamItem) error) error {
 	if err != nil {
 		return err
 	}
-	if count != c.records || bodies != c.bodies || hex.EncodeToString(digest.Sum(nil)) != c.journalHash ||
+	if count != c.records || bodies != c.references || hex.EncodeToString(digest.Sum(nil)) != c.journalHash ||
 		!os.SameFile(c.journalInfo, after) || !captureStamp(c.journalInfo).matches(after) || !captureStamp(c.journalInfo).matches(end) {
 		return fmt.Errorf("capture journal changed during replay")
 	}
@@ -452,6 +658,9 @@ func (c *capturedArchive) walk(visit func(archiveStreamItem) error) error {
 		return err
 	}
 	if err := journal.Close(); err != nil {
+		return err
+	}
+	if err := c.cache.verify(c.stage, true); err != nil {
 		return err
 	}
 	// Reclaim our private inputs before publication, including on cleanup error.
@@ -464,15 +673,31 @@ func (c *capturedArchive) close() error {
 	}
 	c.closed = true
 	var result error
+	if c.cache != nil {
+		result = errors.Join(result, c.cache.close())
+	}
 	if c.stage != nil {
-		for n := 0; n <= c.bodies; n++ {
-			name := "journal"
-			if n > 0 {
-				name = captureBodyName(n)
-			}
+		for _, name := range []string{"cache-index", "warm-journal"} {
 			if err := c.stage.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
 				result = errors.Join(result, err)
 			}
+		}
+	}
+	if c.stage != nil {
+		if err := c.stage.Remove("journal"); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			result = errors.Join(result, err)
+		}
+		if c.shards != nil {
+			for n := 1; n <= c.bodies; n++ {
+				bodyRoot, _, name := c.shards.body(n)
+				if bodyRoot == nil {
+					continue
+				}
+				if err := bodyRoot.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+					result = errors.Join(result, err)
+				}
+			}
+			result = errors.Join(result, c.shards.close())
 		}
 		result = errors.Join(result, c.stage.Close())
 	}

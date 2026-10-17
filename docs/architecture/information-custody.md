@@ -85,27 +85,57 @@ legacy-only read publishes canonical schema and authority without deleting the b
 family a reversible migration path and a visible `degraded` doctor state until the bridge is independently proven
 unnecessary.
 
-The opt-in streamed-v3-event-snapshot backup profile captures all included regular
-files through native clones under the home admission lock, then releases admission
-before compression. A bounded, file-backed journal seals entry metadata and clone
-identities. Journal paths must be valid UTF-8; encoding rejects unsupported
-path bytes rather than silently renaming entries. The shared streamed serializer consumes only that private capture;
-the archive format, chunk budgets, link records, and restore contract stay v0.3.
-Source identity must remain stable through clone completion. Non-event files also
-require stable size and modification time; event appends may continue while their
-inode is pinned. Successful capture is the consistency boundary: later live-file
-renames, replacements, and appends cannot affect or invalidate the captured archive.
-Admission fences cooperating writers, not every home writer, so this remains a
-collection of per-file observations rather than a globally transactional snapshot.
-The legacy profiles retain their live copy checks, including the direct event
-snapshot helper's through-streaming identity check.
+The opt-in streamed-v3-event-snapshot backup profile warms native clones outside
+home admission, then freshly enumerates the namespace under admission. It reuses
+a warm clone only when its exact path, device, inode, size, mode, modification
+time and change time still match. Changed/new bodies are cloned again and deleted
+entries are omitted. Selection is sealed before admission is released; replay,
+hashing, serialization, verification and cleanup run outside admission. The
+existing 30-second cooperative admission deadline is unchanged. A blocked
+filesystem syscall cannot be interrupted by that deadline; there is no unlimited
+locked fallback.
 
-The stage is private and short-lived, with rooted replay, sealed journal digest,
-clone modification/change-time checks, and identity-checked cleanup by its owning invocation.
-Unsupported clone support fails closed without a copying fallback. The admission
-release test uses a file-backed 64 MiB body, a multi-file admission writer, and more
-than one directory batch; it measures capture separately from total compression.
-The direct event helper also retains its 120 MiB live-append falsifier.
+Final reconciliation uses Darwin bulk metadata with aligned 128 KiB buffers and
+at most four traversal workers. Visits are serialized, each parent joins its
+descendants before checking its pinned identity, and delayed child opens retain
+the observed directory identity. Unsupported bulk metadata falls back to the
+existing rooted walker only before any entry is emitted; the original directory
+fence still applies. Malformed or late errors refuse the capture. Unsupported
+native clones fail closed without a copying fallback. Other backup profiles
+retain their existing behavior.
+
+The disk index is fixed at 128 MiB. Each of the warm and selection journals keeps
+its existing 1 GiB limit, giving an aggregate temporary metadata ceiling of
+2 GiB plus 128 MiB. Both cache sizes are checked before hashing. Warm and final
+inventories each retain their existing 1.5-million-entry and 64 GiB logical-body
+limits; a completely changed selection can temporarily retain two inventories
+(up to 128 GiB of logical clone data). Physical clone allocation depends on
+filesystem sharing and subsequent writes. Body storage uses 256 lazy shards,
+up to 512 retained shard descriptors, plus four depth-bounded traversal chains.
+Descriptor exhaustion fails closed. These temporary resources are removed by
+the owning invocation through pinned, identity-checked handles.
+
+Bounded journals seal entry metadata, source keys, references and clone
+identities. Replay checks references against sealed warm records and rechecks
+the cache digests. Paths must be valid UTF-8. The shared serializer consumes
+only the selected private capture; archive format, chunk budgets, link records
+and restore remain v0.3. Source identity stays stable through clone completion;
+non-event files also retain size/modification time, while an event append may
+continue on its pinned inode. Admission fences cooperating writers, so this is
+a collection of per-file observations, not a globally transactional snapshot.
+Later live-file replacements or appends cannot alter the selected archive.
+
+Falsifiers cover changed membership/generations, admission release/deadline,
+cache/reference tampering, replaced shards, unsupported bulk fallback, delayed
+child and ancestor replacement, and joined worker failure. The cardinality
+benchmark supports an exclusive caller-owned retained fixture so large synthetic
+cleanup is a separate operation, outside the application deadline. A million-file
+run reached archive publication and all-body restore checks with 14.04 seconds
+of reconciliation while 6,797 writer transactions completed during warming.
+That attempt timed out during synthetic cleanup and remains failed. A separate
+fresh restore of its retained archive passed every body and paired-generation
+check; this evidence does not relabel the timed-out attempt. The existing
+64 MiB admission-release and 120 MiB live-append falsifiers remain.
 
 Native archive verification also hashes the exact compressed source through the
 same verified file descriptor. A checksum is returned only after file identity,

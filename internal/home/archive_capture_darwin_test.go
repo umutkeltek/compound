@@ -40,8 +40,12 @@ func captureTestHome(t *testing.T) (string, string) {
 func captureTestHooks(t *testing.T) {
 	t.Helper()
 	before, clone, ready := archiveCaptureBeforeClone, archiveCaptureClone, archiveStreamCaptureReady
+	warm, reconcile, clock := archiveWarmCaptureReady, archiveCaptureReconcileStarted, archiveCaptureNow
+	reconciled := archiveCaptureReconciled
 	t.Cleanup(func() {
 		archiveCaptureBeforeClone, archiveCaptureClone, archiveStreamCaptureReady = before, clone, ready
+		archiveWarmCaptureReady, archiveCaptureReconcileStarted, archiveCaptureNow = warm, reconcile, clock
+		archiveCaptureReconciled = reconciled
 	})
 }
 func requireCaptureClean(t *testing.T, root string) {
@@ -53,7 +57,7 @@ func requireCaptureClean(t *testing.T, root string) {
 }
 
 // A file-backed, incompressible body exercises real capture and gzip I/O.
-// The admission writer starts during capture, then must finish while the
+// The admission writer starts during final reconciliation, then must finish while the
 // serializer is deliberately held at its first boundary.
 func TestCapturedBackupReleasesAdmissionAndSealsInputs(t *testing.T) {
 	captureTestHooks(t)
@@ -101,10 +105,7 @@ func TestCapturedBackupReleasesAdmissionAndSealsInputs(t *testing.T) {
 			}
 		}
 	})
-	archiveCaptureBeforeClone = func(rel string) error {
-		if rel != "ledger/a.json" {
-			return nil
-		}
+	archiveCaptureReconcileStarted = func(*capturedArchive) error {
 		held, err := AutonomyAdmissionLockHeld(root)
 		if err != nil || !held {
 			return fmt.Errorf("capture is not admission fenced: held=%v err=%v", held, err)
@@ -157,7 +158,7 @@ func TestCapturedBackupReleasesAdmissionAndSealsInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	total := time.Since(start)
-	t.Logf("64 MiB plus batched metadata: capture/admission=%s total=%s", captureDuration, total)
+	t.Logf("64 MiB plus batched metadata: warm+reconciliation=%s total=%s", captureDuration, total)
 	if captureDuration <= 0 || total <= captureDuration {
 		t.Fatal("missing separate capture and compression observations")
 	}
