@@ -237,6 +237,14 @@ func TestHomeFixtureProductionRootAvoidsHarnessAndSystemCacheChurn(t *testing.T)
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
+	previousStat := homeFixtureSharedParentStat
+	homeFixtureSharedParentStat = func(path string) (os.FileInfo, error) {
+		if path != "/Users/Shared" {
+			t.Fatalf("unexpected shared parent: %s", path)
+		}
+		return fixtureParentInfo{mode: os.ModeDir | os.ModeSticky | 0777, uid: 0}, nil
+	}
+	t.Cleanup(func() { homeFixtureSharedParentStat = previousStat })
 	base, err := homeFixtureCacheBase()
 	if err != nil {
 		t.Fatal(err)
@@ -321,13 +329,16 @@ assert test_before != owned_rows(test_stage), "test stage changes were not obser
 func TestHomeFixtureUnavailableSharedParentExecutesFresh(t *testing.T) {
 	f := newHomeProofFixture(t)
 	t.Setenv("GOFLAGS", "")
-	previous := homeFixtureCacheBase
+	previous := homeFixtureSharedParentStat
 	resolved := 0
-	homeFixtureCacheBase = func() (string, error) {
+	homeFixtureSharedParentStat = func(path string) (os.FileInfo, error) {
+		if path != "/Users/Shared" {
+			t.Fatalf("unexpected shared parent: %s", path)
+		}
 		resolved++
-		return "", os.ErrPermission
+		return nil, os.ErrPermission
 	}
-	t.Cleanup(func() { homeFixtureCacheBase = previous })
+	t.Cleanup(func() { homeFixtureSharedParentStat = previous })
 	step := homeProofTestGate(f.source)
 	ctx := ContextWithHomeFixtureReuse(t.Context(), f.store.home, f.workID, &f.source)
 	for _, tc := range []struct {

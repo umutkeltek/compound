@@ -8,11 +8,13 @@ import (
 	"syscall"
 )
 
+var homeFixtureSharedParentStat = os.Lstat
+
 // A harness can atomically replace files directly under HOME. Keep the
 // accelerator outside that observable ancestor without dropping any seal input.
 func defaultHomeFixtureCacheBase() (string, error) {
 	const parent = "/Users/Shared"
-	info, err := os.Lstat(parent)
+	info, err := homeFixtureSharedParentStat(parent)
 	if err != nil {
 		return "", err
 	}
