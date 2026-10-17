@@ -705,9 +705,9 @@ excluding any observable ancestor from the seal.
 Pinned no-follow directory descriptors, exact ownership, a cooperating-helper
 lock and bounded relative cleanup protect preparation and retirement. Identical
 source/binary/policy files retain their identities. Build caches stay outside
-the fixture scratch directory. Integration-test roots live below a stable
-private directory in the OS cache, so repeated test creation and cleanup
-do not change sealed production ancestors. A successful home gate in the admitted canonical
+the fixture scratch directory. Integration-test roots live below a separate stable private directory under
+the user home, so repeated test creation and cleanup do not change sealed
+production ancestors. A successful home gate in the admitted canonical
 target checkout retires its exact payload while the governed attempt is still
 live; the small owner marker remains. This also applies to successful fresh
 fallback when its prepared seal still validates. Cleanup exhaustion or drift
