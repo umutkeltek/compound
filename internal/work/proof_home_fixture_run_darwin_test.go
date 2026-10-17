@@ -149,8 +149,8 @@ func TestHomeFixtureHelperFilesystemSafety(t *testing.T) {
 	}
 }
 
-// Keep test churn below a stable sibling of the production cache. Creating
-// children directly in UserCacheDir changes an ancestor sealed by the real gate.
+// Keep test churn below a stable private OS-cache directory. It never creates
+// or removes entries in the production fixture's user-home ancestor.
 func newIsolatedHomeFixtureTestRoot(t *testing.T) string {
 	t.Helper()
 	cache, err := os.UserCacheDir()
@@ -202,5 +202,31 @@ func TestHomeFixtureTestCachePreservesProductionAncestors(t *testing.T) {
 	if before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) ||
 		previous.Ino != current.Ino || previous.Ctimespec != current.Ctimespec {
 		t.Fatal("test fixture creation or cleanup changed a sealed production ancestor")
+	}
+}
+
+// OS-managed cache churn must not change any directory observable by the
+// production fixture. Its own input and ancestor seals remain unchanged.
+func TestHomeFixtureProductionRootAvoidsSystemCacheChurn(t *testing.T) {
+	home := t.TempDir()
+	cache := filepath.Join(home, "Library", "Caches")
+	if err := os.MkdirAll(cache, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	base, err := homeFixtureCacheBase()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage := filepath.Join(base, "synthetic-stage")
+	if err := os.MkdirAll(stage, 0700); err != nil {
+		t.Fatal(err)
+	}
+	_, file, _, _ := runtime.Caller(0)
+	helper := filepath.Join(filepath.Dir(file), "../../scripts/testbattery/home_fixture.py")
+	script := "import importlib.util, sys\nfrom pathlib import Path\nsys.dont_write_bytecode = True\nspec = importlib.util.spec_from_file_location(\"fixture\", sys.argv[1])\nm = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(m)\nstage, hot = map(Path, sys.argv[2:])\nbefore = m.ancestor_digest(stage)\n(hot / \"system-cache\").write_bytes(b\"replacement\")\nassert m.ancestor_digest(stage) == before, \"OS cache churn invalidated the production fixture\"\n"
+	cmd := exec.Command("/usr/bin/python3", "-I", "-c", script, helper, stage, cache)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("production ancestor isolation: %v\n%s", err, output)
 	}
 }

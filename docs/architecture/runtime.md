@@ -698,12 +698,15 @@ execution without a reuse certificate. The two narrowly classified existing
 skips are the opt-in retained scale test and the non-root foreign-ownership
 fixture with its expected permission-denied reason.
 
-Fixture files are an accelerator in the ordinary user cache, never authority.
+Fixture files are an accelerator in the owned `.compound-proof-cache` directory
+under the user home, never authority. The cache root and each stage must be
+owned private directories. This avoids OS-managed cache-directory churn without
+excluding any observable ancestor from the seal.
 Pinned no-follow directory descriptors, exact ownership, a cooperating-helper
 lock and bounded relative cleanup protect preparation and retirement. Identical
 source/binary/policy files retain their identities. Build caches stay outside
 the fixture scratch directory. Integration-test roots live below a stable
-private sibling of the production cache, so repeated test creation and cleanup
+private directory in the OS cache, so repeated test creation and cleanup
 do not change sealed production ancestors. A successful home gate in the admitted canonical
 target checkout retires its exact payload while the governed attempt is still
 live; the small owner marker remains. This also applies to successful fresh

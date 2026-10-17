@@ -34,6 +34,19 @@ class FixtureSafety(unittest.TestCase):
     def assertOutside(self):
         self.assertEqual((self.outside / "sentinel").read_bytes(), b"preserve outside")
 
+    def test_cache_root_permissions_are_required(self):
+        self.pin.close()
+        self.stage.parent.chmod(0o755)
+        try:
+            with self.assertRaises(RuntimeError):
+                fixture.PinnedStage(self.stage)
+            absent = self.stage.parent / "not-created"
+            with self.assertRaises(RuntimeError):
+                fixture.PinnedStage(absent, create=True)
+            self.assertFalse(absent.exists())
+        finally:
+            self.stage.parent.chmod(0o700)
+
     def test_scratch_swap_never_traverses_outside(self):
         scratch = self.stage / "scratch"
         fixture.write_leaf(scratch / "owned", b"owned")

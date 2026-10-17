@@ -43,7 +43,7 @@ func ContextWithHomeFixtureReuse(ctx context.Context, homePath, workID string, s
 var homeFixtureNow = time.Now
 
 var homeFixtureCacheBase = func() (string, error) {
-	root, err := os.UserCacheDir()
+	root, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
@@ -51,7 +51,10 @@ var homeFixtureCacheBase = func() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(root, "compound-proof-home-fixture"), nil
+	// The OS cache directory churns during ordinary desktop activity. Keep this
+	// disposable, owned accelerator directly under the user home so those
+	// unrelated changes are outside the fixture's fully sealed ancestors.
+	return filepath.Join(root, ".compound-proof-cache"), nil
 }
 
 // RunHomeFixtureGate executes or reuses only the restricted home source gate.

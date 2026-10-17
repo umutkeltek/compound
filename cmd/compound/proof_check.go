@@ -377,7 +377,7 @@ func cmdProofCheck(args []string) {
 // The `!ciOnly && !ciConsole` clauses are a CORRECTNESS fix, not tidiness.
 // recordProofCheckRuntimeArtifact writes four hardcoded "adjacent Workbench action verified" lines
 // regardless of which gates actually ran, and Workbench's adjacent-action consumption then treats
-// those claims as satisfied. But `--ci` runs only the 7 fresh-clone-portable gates and
+// those claims as satisfied. But `--ci` runs only the 8 fresh-clone-portable gates and
 // `--ci-console` only the console subset — neither includes `workbench-projection` or
 // `codex-pretooluse-native-gate`. So a green `--ci` was minting an artifact asserting that two
 // gates it never executed had passed: a proof that certifies work nobody did, which is worse than

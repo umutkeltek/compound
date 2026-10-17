@@ -69,12 +69,13 @@ class PinnedStage:
                         pass
                 child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
                 self.fds.append(child)
+                if index >= len(parts) - 2:
+                    st = os.fstat(child)
+                    if st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) != 0o700:
+                        raise RuntimeError("fixture directory identity/permissions")
                 self.links.append((fd, name, child))
                 fd = child
             self.fd = fd
-            st = os.fstat(fd)
-            if st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) != 0o700:
-                raise RuntimeError("fixture directory identity/permissions")
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as error:

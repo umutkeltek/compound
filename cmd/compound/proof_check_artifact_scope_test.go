@@ -40,7 +40,7 @@ func TestProofCheckArtifactScopeTruthTable(t *testing.T) {
 //
 // recordProofCheckRuntimeArtifact writes its four "adjacent Workbench action verified" lines
 // unconditionally (proof_check.go:301-305), with no reference to which gates the report actually
-// contains. A `--ci` run executes only the 7 fresh-clone-portable gates — `workbench-projection`
+// contains. A `--ci` run executes only the 8 fresh-clone-portable gates — `workbench-projection`
 // and `codex-pretooluse-native-gate` are NOT among them. So before the guard, a green `--ci`
 // minted an artifact claiming both had been verified, and the artifact's own closing line tells
 // the consumer not to rerun them. A proof that certifies work nobody did, and then suppresses the
