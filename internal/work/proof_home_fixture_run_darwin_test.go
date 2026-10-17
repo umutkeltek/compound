@@ -224,7 +224,37 @@ func TestHomeFixtureProductionRootAvoidsSystemCacheChurn(t *testing.T) {
 	}
 	_, file, _, _ := runtime.Caller(0)
 	helper := filepath.Join(filepath.Dir(file), "../../scripts/testbattery/home_fixture.py")
-	script := "import importlib.util, sys\nfrom pathlib import Path\nsys.dont_write_bytecode = True\nspec = importlib.util.spec_from_file_location(\"fixture\", sys.argv[1])\nm = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(m)\nstage, hot = map(Path, sys.argv[2:])\nbefore = m.ancestor_digest(stage)\n(hot / \"system-cache\").write_bytes(b\"replacement\")\nassert m.ancestor_digest(stage) == before, \"OS cache churn invalidated the production fixture\"\n"
+	script := `import importlib.util, sys
+from pathlib import Path
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("fixture", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+stage, hot = [Path(value).resolve() for value in sys.argv[2:]]
+home = hot.parents[1]
+legacy = hot / "legacy-fixture" / "stage"
+legacy.mkdir(parents=True)
+# Observe the real collector without changing its seal calculation. Ancestors
+# outside synthetic HOME belong to the host and may churn during this test.
+encode = m.encoded
+collected = []
+def capture(rows):
+    collected[:] = rows
+    return encode(rows)
+m.encoded = capture
+def owned_rows(path):
+    m.ancestor_digest(path)
+    return [row for row in collected
+            if Path(row[0]) == home or home in Path(row[0]).parents]
+before, legacy_before = owned_rows(stage), owned_rows(legacy)
+assert before and legacy_before, "no synthetic ancestors observed"
+(home.parent / "unrelated-run").mkdir(exist_ok=True)
+(hot / "system-cache").write_bytes(b"replacement")
+assert owned_rows(stage) == before, "OS cache churn invalidated the production fixture"
+assert owned_rows(legacy) != legacy_before, "legacy layout failed to observe cache churn"
+(stage / "observable-entry").write_bytes(b"changed")
+assert owned_rows(stage) != before, "production fixture stopped observing its own directory"
+`
 	cmd := exec.Command("/usr/bin/python3", "-I", "-c", script, helper, stage, cache)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("production ancestor isolation: %v\n%s", err, output)
