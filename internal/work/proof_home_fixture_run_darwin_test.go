@@ -227,14 +227,11 @@ func TestHomeFixtureTestCachePreservesProductionAncestors(t *testing.T) {
 	}
 }
 
-// OS-managed cache churn must not change any directory observable by the
-// production fixture. Its own input and ancestor seals remain unchanged.
-func TestHomeFixtureProductionRootAvoidsSystemCacheChurn(t *testing.T) {
+// Concurrent harness state and OS caches must not invalidate the production
+// fixture; every directory it can actually observe remains sealed.
+func TestHomeFixtureProductionRootAvoidsHarnessAndSystemCacheChurn(t *testing.T) {
 	temporary := newIsolatedHomeFixtureTestRoot(t)
 	home := filepath.Join(temporary, "synthetic-home")
-	if err := os.Mkdir(home, 0700); err != nil {
-		t.Fatal(err)
-	}
 	cache := filepath.Join(home, "Library", "Caches")
 	if err := os.MkdirAll(cache, 0700); err != nil {
 		t.Fatal(err)
@@ -244,25 +241,33 @@ func TestHomeFixtureProductionRootAvoidsSystemCacheChurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stage := filepath.Join(base, "synthetic-stage")
+	expected := filepath.Join("/Users/Shared", ".compound-proof-cache-"+strconv.Itoa(os.Getuid()))
+	if base != expected {
+		t.Fatalf("production cache remains exposed to harness home churn: got %s, want %s", base, expected)
+	}
+	shared := filepath.Join(temporary, "Shared")
+	stage := filepath.Join(shared, filepath.Base(base), "synthetic-stage")
 	if err := os.MkdirAll(stage, 0700); err != nil {
 		t.Fatal(err)
 	}
 	testStage := newIsolatedHomeFixtureTestRoot(t)
 	_, file, _, _ := runtime.Caller(0)
 	helper := filepath.Join(filepath.Dir(file), "../../scripts/testbattery/home_fixture.py")
-	script := `import importlib.util, sys
+	script := `import importlib.util, os, sys
 from pathlib import Path
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("fixture", sys.argv[1])
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
-stage, test_stage, hot = [Path(value).resolve() for value in sys.argv[2:]]
-home = hot.parents[1]
-legacy = hot / "legacy-fixture" / "stage"
-legacy.mkdir(parents=True)
-# Observe the real collector without changing its seal calculation. Ancestors
-# outside synthetic HOME belong to the host and may churn during this test.
+stage, test_stage, home, root = [Path(value).resolve() for value in sys.argv[2:]]
+shared = stage.parents[1]
+hot = home / "Library" / "Caches"
+legacy_home = home / ".legacy-proof-cache" / "stage"
+legacy_cache = hot / "legacy-fixture" / "stage"
+legacy_home.mkdir(parents=True)
+legacy_cache.mkdir(parents=True)
+state = home / "harness-state.json"
+state.write_bytes(b"old state")
 encode = m.encoded
 collected = []
 def capture(rows):
@@ -272,23 +277,36 @@ m.encoded = capture
 def owned_rows(path):
     m.ancestor_digest(path)
     return [row for row in collected
-            if Path(row[0]) == home or home in Path(row[0]).parents]
-before, test_before, legacy_before = owned_rows(stage), owned_rows(test_stage), owned_rows(legacy)
-assert before and test_before and legacy_before, "no synthetic ancestors observed"
-full_before = m.ancestor_digest(stage)
-(home.parent / "unrelated-run").mkdir()
-assert m.ancestor_digest(stage) != full_before, "production helper ignored host ancestor changes"
+            if Path(row[0]) == root or root in Path(row[0]).parents]
+before = owned_rows(stage)
+old_home_before = owned_rows(legacy_home)
+assert before and old_home_before, "synthetic ancestor observation missing"
+replacement = home / "next-state.json"
+replacement.write_bytes(b"new state")
+os.replace(replacement, state)
+assert before == owned_rows(stage), "harness home replacement invalidated shared fixture"
+assert old_home_before != owned_rows(legacy_home), "control missed harness home replacement"
+before, test_before, old_cache_before = owned_rows(stage), owned_rows(test_stage), owned_rows(legacy_cache)
 (hot / "system-cache").write_bytes(b"replacement")
-assert owned_rows(stage) == before, "OS cache churn invalidated the production fixture"
-assert owned_rows(test_stage) == test_before, "OS cache churn invalidated the test fixture"
-assert owned_rows(legacy) != legacy_before, "legacy layout failed to observe cache churn"
+assert before == owned_rows(stage), "OS cache churn invalidated shared fixture"
+assert test_before == owned_rows(test_stage), "OS cache churn invalidated test fixture"
+assert old_cache_before != owned_rows(legacy_cache), "control missed OS cache churn"
+full_before = m.ancestor_digest(stage)
+(root.parent / ("external-" + root.name)).mkdir()
+assert m.ancestor_digest(stage) != full_before, "production helper ignored host ancestors"
+(root.parent / ("external-" + root.name)).rmdir()
+before = owned_rows(stage)
+(shared / "observable-entry").write_bytes(b"changed")
+assert before != owned_rows(stage), "shared parent changes were not sealed"
+before = owned_rows(stage)
 (stage / "observable-entry").write_bytes(b"changed")
-assert owned_rows(stage) != before, "production fixture stopped observing its own directory"
+assert before != owned_rows(stage), "fixture stage changes were not sealed"
+test_before = owned_rows(test_stage)
 (test_stage / "observable-entry").write_bytes(b"changed")
-assert owned_rows(test_stage) != test_before, "test fixture stopped observing its own directory"
+assert test_before != owned_rows(test_stage), "test stage changes were not observed"
 `
-	cmd := exec.Command("/usr/bin/python3", "-I", "-c", script, helper, stage, testStage, cache)
+	cmd := exec.CommandContext(t.Context(), "/usr/bin/python3", "-I", "-c", script, helper, stage, testStage, home, temporary)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("production ancestor isolation: %v\n%s", err, output)
+		t.Fatalf("fixture placement: %v\n%s", err, output)
 	}
 }

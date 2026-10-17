@@ -699,10 +699,14 @@ execution without a reuse certificate. The two narrowly classified existing
 skips are the opt-in retained scale test and the non-root foreign-ownership
 fixture with its expected permission-denied reason.
 
-Fixture files are an accelerator in the owned `.compound-proof-cache` directory
-under the user home, never authority. The cache root and each stage must be
-owned private directories. This avoids OS-managed cache-directory churn without
-excluding any observable ancestor from the seal.
+Fixture files are an accelerator in a per-user `.compound-proof-cache-<uid>`
+directory below macOS `/Users/Shared`, never authority. The shared parent must
+be a real, root-owned directory; group/other write permission requires the sticky
+bit. The cache root and each stage remain owned private directories. This avoids
+OS cache churn and atomic harness-state replacements under HOME without excluding
+any observable ancestor from the seal. An unavailable or unsafe shared parent
+uses ordinary fresh proof, never a HOME cache fallback. Prior HOME cache payloads
+remain untouched until successful shared-cache proof permits exact owned cleanup.
 Pinned no-follow directory descriptors, exact ownership, a cooperating-helper
 lock and bounded relative cleanup protect preparation and retirement. Identical
 source/binary/policy files retain their identities. Build caches stay outside
