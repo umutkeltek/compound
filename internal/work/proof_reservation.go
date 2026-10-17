@@ -578,6 +578,7 @@ type ownedProofReport struct {
 		ConsumerEvidence      *CanonicalConsumerEvidence `json:"consumer_evidence,omitempty"`
 		RedactionEvidence     *PublicRedactionEvidence   `json:"redaction_evidence,omitempty"`
 		PrivateSourceEvidence *PrivateSourceEvidence     `json:"private_source_evidence,omitempty"`
+		HomeFixtureEvidence   *HomeFixtureEvidence       `json:"home_fixture_evidence,omitempty"`
 	} `json:"steps"`
 }
 
@@ -1041,6 +1042,9 @@ func (s *Store) deriveProofResourceCompletionExpectation(
 		}
 		if err := validateOwnedProofReportAgainstReservation(report, reservation); err != nil {
 			return proofResourceCompletionExpectation{}, fmt.Errorf("proof report profile: %w", err)
+		}
+		if err := s.validateHomeFixtureReport(workID, report); err != nil {
+			return proofResourceCompletionExpectation{}, fmt.Errorf("home fixture proof: %w", err)
 		}
 		reportStatus = report.Status
 		ownedReport = true
@@ -2395,6 +2399,9 @@ func (s *Store) validateCommittedProofResourceChainStatus(
 	}
 	if err := validateOwnedProofReportAgainstReservation(report, reservation); err != nil {
 		return fmt.Errorf("report/reservation: %w", err)
+	}
+	if err := s.validateHomeFixtureReport(w.ID, report); err != nil {
+		return fmt.Errorf("home fixture proof: %w", err)
 	}
 	if reservation.Profile.SourceSnapshot == nil ||
 		result.SourceSnapshot == nil ||
@@ -4006,10 +4013,10 @@ func decodeOwnedProofReport(body []byte) (ownedProofReport, error) {
 		report.SchemaVersion != "compound.proof_check_report.v0.2" &&
 		report.SchemaVersion != "compound.proof_check_report.v0.3" &&
 		report.SchemaVersion != "compound.proof_check_report.v0.4" &&
-		report.SchemaVersion != "compound.proof_check_report.v0.5" {
+		report.SchemaVersion != "compound.proof_check_report.v0.5" && report.SchemaVersion != ProofCheckSchemaVersion {
 		return ownedProofReport{}, fmt.Errorf("unsupported schema_version %q", report.SchemaVersion)
 	}
-	if report.SchemaVersion == "compound.proof_check_report.v0.3" || report.SchemaVersion == "compound.proof_check_report.v0.4" || report.SchemaVersion == "compound.proof_check_report.v0.5" {
+	if report.SchemaVersion == "compound.proof_check_report.v0.3" || report.SchemaVersion == "compound.proof_check_report.v0.4" || report.SchemaVersion == "compound.proof_check_report.v0.5" || report.SchemaVersion == ProofCheckSchemaVersion {
 		if report.SourceSnapshot != nil {
 			if err := gitrepository.ValidateSnapshotShape(*report.SourceSnapshot); err != nil {
 				return ownedProofReport{}, fmt.Errorf("source_snapshot: %w", err)
@@ -4145,8 +4152,8 @@ func validateOwnedProofReportAgainstReservation(report ownedProofReport, reserva
 	if !reflect.DeepEqual(report.SourceSnapshot, profile.SourceSnapshot) {
 		return fmt.Errorf("source_snapshot mismatch between report and reservation profile")
 	}
-	if profile.SourceSnapshot != nil && report.SchemaVersion != "compound.proof_check_report.v0.3" && report.SchemaVersion != "compound.proof_check_report.v0.4" && report.SchemaVersion != "compound.proof_check_report.v0.5" {
-		return fmt.Errorf("source-bound proof requires compound.proof_check_report.v0.3, v0.4 or v0.5")
+	if profile.SourceSnapshot != nil && report.SchemaVersion != "compound.proof_check_report.v0.3" && report.SchemaVersion != "compound.proof_check_report.v0.4" && report.SchemaVersion != "compound.proof_check_report.v0.5" && report.SchemaVersion != ProofCheckSchemaVersion {
+		return fmt.Errorf("source-bound proof requires compound.proof_check_report.v0.3, v0.4, v0.5 or v0.6")
 	}
 	if len(report.Steps) != len(profile.Gates) {
 		return fmt.Errorf("gate inventory mismatch: report=%d profile=%d", len(report.Steps), len(profile.Gates))
@@ -4186,8 +4193,8 @@ func validateOwnedProofReportAgainstReservation(report ownedProofReport, reserva
 		if privateReviewErr != nil {
 			return fmt.Errorf("gate %q private review binding: %w", gate.Name, privateReviewErr)
 		}
-		if (reviewed || privatelyReviewed) && report.SchemaVersion != "compound.proof_check_report.v0.5" {
-			return fmt.Errorf("reviewed redaction requires proof report v0.5")
+		if (reviewed || privatelyReviewed) && report.SchemaVersion != "compound.proof_check_report.v0.5" && report.SchemaVersion != ProofCheckSchemaVersion {
+			return fmt.Errorf("reviewed redaction requires proof report v0.5 or v0.6")
 		}
 		if err := ValidatePublicRedactionEvidence(redactionStep, profile.SourceSnapshot, reservation.WorkID); err != nil {
 			return fmt.Errorf("gate %q redaction evidence: %w", gate.Name, err)

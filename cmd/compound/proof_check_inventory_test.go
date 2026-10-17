@@ -155,7 +155,7 @@ func TestGoTestGateCarriesExplicitDeliberateTimeout(t *testing.T) {
 		if !s.CIPortable {
 			t.Fatalf("go-test gate must stay CIPortable so the explicit timeout budget governs CI runs too; got CIPortable=false")
 		}
-		if want := []string{"go", "run", "./scripts/testbattery"}; !reflect.DeepEqual(s.Command, want) {
+		if want := []string{"go", "run", "./scripts/testbattery", "general-release"}; !reflect.DeepEqual(s.Command, want) {
 			t.Fatalf("go-test command = %v; want budget-owning driver %v", s.Command, want)
 		}
 		return
@@ -170,9 +170,10 @@ func TestCanonicalGoGatesShareSourceInventoryDriver(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string][]string{
-		"go-test":  {"go", "run", "./scripts/testbattery"},
-		"go-vet":   {"go", "run", "./scripts/testbattery", "vet"},
-		"go-build": {"go", "run", "./scripts/testbattery", "build"},
+		"go-test":      {"go", "run", "./scripts/testbattery", "general-release"},
+		"go-test-home": {"go", "run", "./scripts/testbattery", "home"},
+		"go-vet":       {"go", "run", "./scripts/testbattery", "vet"},
+		"go-build":     {"go", "run", "./scripts/testbattery", "build"},
 	}
 	for _, step := range steps {
 		command, ok := want[step.Name]
@@ -196,23 +197,21 @@ func TestCanonicalGoGatesBindEveryInventoryToSealedHead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	modes := map[string]string{"go-test": "general-release", "go-test-home": "home", "go-vet": "vet", "go-build": "build"}
 	count := 0
 	for _, step := range steps {
-		if step.Name != "go-test" && step.Name != "go-vet" && step.Name != "go-build" {
+		mode, ok := modes[step.Name]
+		if !ok {
 			continue
 		}
 		count++
-		want := []string{"go", "run", "./scripts/testbattery"}
-		if step.Name != "go-test" {
-			want = append(want, strings.TrimPrefix(step.Name, "go-"))
-		}
-		want = append(want, "--source-head", head)
+		want := []string{"go", "run", "./scripts/testbattery", mode, "--source-head", head}
 		if !reflect.DeepEqual(step.Command, want) {
 			t.Errorf("%s lost sealed source authority: %v; want %v", step.Name, step.Command, want)
 		}
 	}
-	if count != 3 {
-		t.Fatalf("sealed source gates = %d; want 3", count)
+	if count != 4 {
+		t.Fatalf("sealed source gates = %d; want 4", count)
 	}
 }
 
@@ -224,7 +223,8 @@ func TestProofCheckPackageIsolationPreservesCanonicalGateInventory(t *testing.T)
 		t.Fatal(err)
 	}
 	want := [][2]string{
-		{"go-test", "go-test-count-1-all"},
+		{"go-test", "go-test-count-1-general-release"},
+		{"go-test-home", "go-test-count-1-home"},
 		{"go-vet", "go-vet-all"},
 		{"go-build", "go-build-all"},
 		{"gofmt", "gofmt-check"},

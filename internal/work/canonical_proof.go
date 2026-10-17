@@ -52,6 +52,7 @@ type ProofCheckStep struct {
 	ConsumerEvidence      *CanonicalConsumerEvidence `json:"consumer_evidence,omitempty"`
 	RedactionEvidence     *PublicRedactionEvidence   `json:"redaction_evidence,omitempty"`
 	PrivateSourceEvidence *PrivateSourceEvidence     `json:"private_source_evidence,omitempty"`
+	HomeFixtureEvidence   *HomeFixtureEvidence       `json:"home_fixture_evidence,omitempty"`
 	// CIPortable marks a fresh-clone CI gate: no external non-Go binary, installed binary,
 	// or COMPOUND_HOME body. It is runtime inventory metadata, not serialized proof output.
 	CIPortable bool `json:"-"`

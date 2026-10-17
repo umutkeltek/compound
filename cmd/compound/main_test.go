@@ -448,7 +448,8 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 		t.Fatalf("bad proof-check report: %+v", report)
 	}
 	wantProofs := []string{
-		"go-test-count-1-all",
+		"go-test-count-1-general-release",
+		"go-test-count-1-home",
 		"go-vet-all",
 		"go-build-all",
 		"gofmt-check",
@@ -537,7 +538,8 @@ func TestProofCheckCIFlagRunsOnlyPortableGates(t *testing.T) {
 	// exactly the fresh-clone-portable gates, in order, and nothing that needs the external
 	// redact binary, the installed binary, or a bun/node console runner.
 	wantCIProofs := []string{
-		"go-test-count-1-all",
+		"go-test-count-1-general-release",
+		"go-test-count-1-home",
 		"go-vet-all",
 		"go-build-all",
 		"gofmt-check",
@@ -642,7 +644,7 @@ func TestProofCheckCIConsoleFlagRunsOnlyConsoleGates(t *testing.T) {
 	// stay local-battery-only. Re-adding it here reds the CI console job, not this test, so it is
 	// pinned out explicitly.
 	for _, banned := range []string{
-		"go-test-count-1-all", "go-vet-all", "go-build-all", "gofmt-check", "diff-check",
+		"go-test-count-1-general-release", "go-test-count-1-home", "go-vet-all", "go-build-all", "gofmt-check", "diff-check",
 		"architecture-doctor-strict", "memory-doctor", "redact-public-clean",
 		"profiles-check-installed-only", "codex-pretooluse-native-gate-proof", "workbench-projection-refresh",
 		"bun-tools-test",

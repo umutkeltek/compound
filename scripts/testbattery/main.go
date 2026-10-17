@@ -20,6 +20,13 @@ import (
 type commandRunner func(context.Context, []string, io.Writer, io.Writer) error
 
 func runBattery(ctx context.Context, run commandRunner, stdout, stderr io.Writer) error {
+	return runBatteryPhase(ctx, "test", run, stdout, stderr)
+}
+
+func runBatteryPhase(ctx context.Context, mode string, run commandRunner, stdout, stderr io.Writer) error {
+	if mode != "test" && mode != "general-release" && mode != "home" {
+		return fmt.Errorf("unsupported test phase %q", mode)
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -35,6 +42,12 @@ func runBattery(ctx context.Context, run commandRunner, stdout, stderr io.Writer
 	phases := [][]string{parallel}
 	for _, pkg := range isolated {
 		phases = append(phases, []string{pkg})
+	}
+	switch mode {
+	case "general-release":
+		phases = phases[:2]
+	case "home":
+		phases = phases[2:]
 	}
 	var failures []error
 	for i, packages := range phases {
@@ -114,9 +127,9 @@ func main() {
 	flags := flag.NewFlagSet("testbattery", flag.ContinueOnError)
 	sourceHead := flags.String("source-head", "", "require this sealed commit and clean source before and after the gate")
 	if flags.Parse(args) != nil || flags.NArg() != 0 ||
-		(mode != "test" && mode != "vet" && mode != "build") ||
+		(mode != "test" && mode != "general-release" && mode != "home" && mode != "vet" && mode != "build") ||
 		(*sourceHead != "" && !sourceCommit.MatchString(*sourceHead)) {
-		fmt.Fprintln(os.Stderr, "usage: testbattery [test|vet|build] [--source-head SHA] (all source packages; no selectors)")
+		fmt.Fprintln(os.Stderr, "usage: testbattery [test|general-release|home|vet|build] [--source-head SHA] (all source packages; no selectors)")
 		os.Exit(2)
 	}
 	// Only prevent subsequent launches after the owner's signal; children

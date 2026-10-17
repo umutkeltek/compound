@@ -22,6 +22,7 @@ func CIPortableGateNames() []string {
 		"diff-check",
 		"go-build",
 		"go-test",
+		"go-test-home",
 		"go-vet",
 		"gofmt",
 		"memory-doctor",

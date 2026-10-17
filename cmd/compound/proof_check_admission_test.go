@@ -3385,3 +3385,32 @@ func TestPrepareProofCheckRuntimeExecutableSurvivesTemporarySourceRemoval(t *tes
 		t.Fatalf("staged candidate output = %q", got)
 	}
 }
+
+func TestRetainedV05ProofReportRestoresExactOwnedBytes(t *testing.T) {
+	root := t.TempDir()
+	if err := home.Init(root, "test", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := home.NewArtifactStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("{\"schema_version\":\"compound.proof_check_report.v0.5\",\"status\":\"ok\",\"steps\":[]}\n")
+	ref, err := artifacts.Put(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "retained.json")
+	custody, err := proofCheckCaptureOutPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := restoreOwnedProofCheckReport(root, ref, path, &custody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := os.ReadFile(path)
+	if err != nil || string(restored) != string(body) || report.SchemaVersion != "compound.proof_check_report.v0.5" {
+		t.Fatalf("legacy retained report changed or refused: %+v %s %v", report, restored, err)
+	}
+}

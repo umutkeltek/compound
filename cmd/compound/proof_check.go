@@ -1207,7 +1207,8 @@ func proofCheckSteps(baseRef string, headRefs ...string) ([]proofCheckStep, erro
 		// Run every package once with the unchanged -count=1 and -timeout=40m
 		// budget. The driver isolates all home tests after other packages finish;
 		// it never filters tests or hides an earlier failure behind a later pass.
-		{Name: "go-test", Command: append([]string{"go", "run", "./scripts/testbattery"}, goSourceArgs...), ProofRef: "go-test-count-1-all", CIPortable: true},
+		{Name: "go-test", Command: append([]string{"go", "run", "./scripts/testbattery", "general-release"}, goSourceArgs...), ProofRef: "go-test-count-1-general-release", CIPortable: true},
+		{Name: "go-test-home", Command: append([]string{"go", "run", "./scripts/testbattery", "home"}, goSourceArgs...), ProofRef: "go-test-count-1-home", CIPortable: true},
 		{Name: "go-vet", Command: append([]string{"go", "run", "./scripts/testbattery", "vet"}, goSourceArgs...), ProofRef: "go-vet-all", CIPortable: true},
 		{Name: "go-build", Command: append([]string{"go", "run", "./scripts/testbattery", "build"}, goSourceArgs...), ProofRef: "go-build-all", CIPortable: true},
 		{Name: "gofmt", Command: []string{"gofmt", "-l", "<tracked *.go>"}, ProofRef: "gofmt-check", CIPortable: true},
@@ -1389,6 +1390,8 @@ func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckS
 	}
 	if strings.HasPrefix(step.Name, "consumer:") {
 		output, result.ConsumerEvidence, err = work.RunCanonicalConsumer(ctx, repo, step, headRefs, proofCheckCommandContext, proofCheckRuntimeExecutable)
+	} else if step.Name == work.HomeFixtureGateName {
+		output, result.HomeFixtureEvidence, err = work.RunHomeFixtureGate(ctx, repo, step, proofCheckCommandEnv(ctx, repo), proofCheckCommandContext)
 	} else if step.Name == "redact-public" {
 		output, result.RedactionEvidence, result.PrivateSourceEvidence, err = work.RunSourceRedaction(
 			ctx, repo, step, baseRef, headRefs, proofCheckRedactInputsAtSnapshotContext,

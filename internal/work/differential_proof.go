@@ -31,7 +31,7 @@ func ProofFailureFacts(gate string, output []byte, runErr error) []string {
 			if normalized == "" {
 				continue
 			}
-			if gate == "go-test" {
+			if gate == "go-test" || gate == HomeFixtureGateName {
 				if semantic, keep := semanticGoTestFallbackLine(normalized); !keep {
 					continue
 				} else if semantic != "" {
@@ -89,7 +89,7 @@ func semanticGoTestFallbackLine(line string) (string, bool) {
 }
 
 func semanticProofFailureLabels(gate, output string) ([]string, bool) {
-	if gate != "go-test" || !strings.Contains(output, "panic: test timed out after") {
+	if (gate != "go-test" && gate != HomeFixtureGateName) || !strings.Contains(output, "panic: test timed out after") {
 		return nil, false
 	}
 	labels := map[string]bool{}

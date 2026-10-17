@@ -216,7 +216,7 @@ func sourceDirectories(ctx context.Context, stderr io.Writer) ([]string, error) 
 }
 
 func runSourceGate(ctx context.Context, mode string, discover func(context.Context, io.Writer) (sourcePackageInventory, error), run commandRunner, stdout, stderr io.Writer) error {
-	if mode != "test" && mode != "vet" && mode != "build" {
+	if mode != "test" && mode != "general-release" && mode != "home" && mode != "vet" && mode != "build" {
 		return fmt.Errorf("unsupported source gate %q", mode)
 	}
 	if err := ctx.Err(); err != nil {
@@ -229,10 +229,10 @@ func runSourceGate(ctx context.Context, mode string, discover func(context.Conte
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if mode == "test" {
+	if mode == "test" || mode == "general-release" || mode == "home" {
 		// Adapt the resolved inventory to the existing phase driver; its launch,
 		// aggregation and cancellation behavior stays unchanged.
-		return runBattery(ctx, func(ctx context.Context, args []string, out, errOut io.Writer) error {
+		return runBatteryPhase(ctx, mode, func(ctx context.Context, args []string, out, errOut io.Writer) error {
 			if args[0] == "list" {
 				_, err := io.WriteString(out, strings.Join(inventory.All, "\n")+"\n")
 				return err

@@ -659,6 +659,51 @@ older writers remain discoverable; unreadable primary authority still fails clos
 This removes unrelated sidecar reads, but intentionally retains the global primary
 record census. These changes do not add FIFO admission or separate proof capacity.
 
+Canonical proof v0.6 splits the existing Go inventory into general/release and
+home phases. Together they run every original package exactly once, with the
+same count and timeout. General, release, runtime, policy, installation and
+consumer gates always execute freshly. Earlier report versions, including
+v0.5, remain readable.
+
+Only the home phase can reuse source evidence, and only from the same Work's
+linked, directly executed, successful committed full proof. The owned artifact,
+reservation, action/policy, terminal attempt, completion marker, Work link,
+source fingerprint/base/head/tree and input seal must agree. A reused report
+cannot donate transitively. Selection, completion and later proof-chain
+consumption revalidate the origin. Output JSON alone is never a donor.
+
+On supported Darwin hosts, the native adapter builds a tracked-source-only
+fixture and seals its binary, source/metadata, restricted environment, sandbox,
+system policy, host identity and observable ancestor metadata and directory entries. Literal
+ancestor-directory reads support the home code's rooted no-follow opens; names,
+inodes and entry types exposed by enumeration are sealed, so unrelated directory
+changes may conservatively prevent reuse. The sandbox denies outside file bodies,
+input writes and network. Its positive control opens every ancestor without
+following symlinks; negative controls still prove outside bodies are unreadable.
+Only native proof-barrier descriptors survive the Python/process boundary;
+a deliberate leaked descriptor is the negative control. Direct tests retain
+Go's early-exit panic behavior. When the complete restricted suite passes but
+observable ancestors drift during execution, the fresh pass is retained without
+a reuse certificate; the suite is not replayed. The helper reserves this
+disposition and normalizes nonzero test process exits so a test cannot manufacture
+success. Source-integrity drift and cancellation remain failures. Unexpected skips trigger ordinary fresh
+execution without a reuse certificate. The two narrowly classified existing
+skips are the opt-in retained scale test and the non-root foreign-ownership
+fixture with its expected permission-denied reason.
+
+Fixture files are an accelerator in the ordinary user cache, never authority.
+Pinned no-follow directory descriptors, exact ownership, a cooperating-helper
+lock and bounded relative cleanup protect preparation and retirement. Identical
+source/binary/policy files retain their identities. Build caches stay outside
+the fixture scratch directory. A successful home gate in the admitted canonical
+target checkout retires its exact payload while the governed attempt is still
+live; the small owner marker remains. This also applies to successful fresh
+fallback when its prepared seal still validates. Cleanup exhaustion or drift
+retains the exact stage and reports it. Incomplete candidate work retains its
+pre-land fixture until target proof or explicit exact cleanup. No global cache
+scan or new registry is introduced, and later runtime failure still fails the
+overall proof.
+
 Completion accepts only an exact owned `canonical_full` report generated inside the continuous
 evidenced window with direct producer exit. An `ok` report requires every reserved gate `ok` and
 publishes `proof-check:pfrs_*` only after result, Work, lifecycle, completion, and terminal

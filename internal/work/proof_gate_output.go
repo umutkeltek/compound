@@ -16,10 +16,10 @@ import (
 // ProofCheckSchemaVersion is the canonical schema version stamped on every freshly produced
 // proof-check report. The accept-list in IsAcceptedProofCheckSchemaVersion keeps every
 // previously shipped version readable so an in-flight batch can survive a code upgrade.
-const ProofCheckSchemaVersion = "compound.proof_check_report.v0.5"
+const ProofCheckSchemaVersion = "compound.proof_check_report.v0.6"
 
 // IsAcceptedProofCheckSchemaVersion reports whether v is one of the schema versions the
-// admission path can decode — the four legacy versions plus the canonical one supplied by
+// admission path can decode — the five legacy versions plus the canonical one supplied by
 // the caller. Centralising the list keeps the source-bound proof version checks
 // from drifting away from the equivalent accept-list in decodeOwnedProofCheckReport.
 func IsAcceptedProofCheckSchemaVersion(v, canonical string) bool {
@@ -28,7 +28,7 @@ func IsAcceptedProofCheckSchemaVersion(v, canonical string) bool {
 		"compound.proof_check_report.v0.2",
 		"compound.proof_check_report.v0.3",
 		"compound.proof_check_report.v0.4",
-		canonical:
+		"compound.proof_check_report.v0.5", canonical:
 		return true
 	}
 	return false
@@ -182,7 +182,7 @@ func AttachFailedGateOutput(
 			result.OutputPath = persisted
 		}
 	}
-	if stepName == "go-test" {
+	if stepName == "go-test" || stepName == HomeFixtureGateName {
 		result.FailureLines = ExtractGoTestFailureLines(output)
 	}
 }
