@@ -700,7 +700,7 @@ skips are the opt-in retained scale test and the non-root foreign-ownership
 fixture with its expected permission-denied reason.
 
 Fixture files are an accelerator in a per-user `.compound-proof-cache-<uid>`
-directory below macOS `/Users/Shared`, never authority. The shared parent must
+directory below the standard macOS shared-user directory, never authority. The shared parent must
 be a real, root-owned directory; group/other write permission requires the sticky
 bit. The cache root and each stage remain owned private directories. This avoids
 OS cache churn and atomic harness-state replacements under HOME without excluding

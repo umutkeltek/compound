@@ -34,6 +34,15 @@ func IsAcceptedProofCheckSchemaVersion(v, canonical string) bool {
 	return false
 }
 
+// ProofGateOutputTail bounds the displayed gate output while preserving full persisted output.
+func ProofGateOutputTail(output []byte, max int) string {
+	out := strings.TrimSpace(string(output))
+	if len(out) <= max {
+		return out
+	}
+	return out[len(out)-max:]
+}
+
 // ProofGateFailureLineCap bounds the per-gate failure_lines array. A red go-test run over
 // ~150 packages can emit dozens of FAIL lines per package; 200 keeps the report JSON bounded
 // while still covering every named failing test in any realistic battery run.

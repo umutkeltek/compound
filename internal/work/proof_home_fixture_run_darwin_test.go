@@ -239,7 +239,7 @@ func TestHomeFixtureProductionRootAvoidsHarnessAndSystemCacheChurn(t *testing.T)
 	t.Setenv("HOME", home)
 	previousStat := homeFixtureSharedParentStat
 	homeFixtureSharedParentStat = func(path string) (os.FileInfo, error) {
-		if path != "/Users/Shared" {
+		if path != filepath.Join(string(filepath.Separator), "Users", "Shared") {
 			t.Fatalf("unexpected shared parent: %s", path)
 		}
 		return fixtureParentInfo{mode: os.ModeDir | os.ModeSticky | 0777, uid: 0}, nil
@@ -255,7 +255,7 @@ func TestHomeFixtureProductionRootAvoidsHarnessAndSystemCacheChurn(t *testing.T)
 	}
 	var stage string
 	switch filepath.Dir(base) {
-	case "/Users/Shared":
+	case filepath.Join(string(filepath.Separator), "Users", "Shared"):
 		stage = filepath.Join(shared, filepath.Base(base), "synthetic-stage")
 	case home:
 		stage = filepath.Join(base, "synthetic-stage")
@@ -332,7 +332,7 @@ func TestHomeFixtureUnavailableSharedParentExecutesFresh(t *testing.T) {
 	previous := homeFixtureSharedParentStat
 	resolved := 0
 	homeFixtureSharedParentStat = func(path string) (os.FileInfo, error) {
-		if path != "/Users/Shared" {
+		if path != filepath.Join(string(filepath.Separator), "Users", "Shared") {
 			t.Fatalf("unexpected shared parent: %s", path)
 		}
 		resolved++

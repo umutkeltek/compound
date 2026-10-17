@@ -1381,7 +1381,7 @@ func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckS
 	if reason := work.ConsoleBatteryFastFailReason(repo, step); reason != "" {
 		failOutput := fmt.Sprintf("proof-check console battery fast-fail: %s — step=%s; documented in REPORT (2026-08-14): unset HTTPS_PROXY/https_proxy OR populate console/node_modules before re-running\n", reason, step.Name)
 		result.Status = "failed"
-		result.OutputTail = proofCheckTail([]byte(failOutput), 4000)
+		result.OutputTail = work.ProofGateOutputTail([]byte(failOutput), 4000)
 		result.FailureFacts = work.CanonicalProofFailureFacts(repo, step.Name, []byte(failOutput), errors.New(reason))
 		result.ExitCode = 1
 		work.AttachFailedGateOutput(&result, ctx, step.Name, []byte(failOutput), false)
@@ -1424,7 +1424,7 @@ func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckS
 		output, err = cmd.CombinedOutput()
 	}
 	result.DurationMS = time.Since(start).Milliseconds()
-	result.OutputTail = proofCheckTail(output, 4000)
+	result.OutputTail = work.ProofGateOutputTail(output, 4000)
 	if err != nil {
 		result.Status = "failed"
 		if strings.TrimSpace(result.OutputTail) == "" {
@@ -1853,14 +1853,6 @@ func proofCheckContextWithExecutionBarrier(ctx context.Context, barrier *landlea
 		return ctx
 	}
 	return context.WithValue(ctx, proofCheckExecutionBarrierContextKey{}, barrier)
-}
-
-func proofCheckTail(output []byte, max int) string {
-	out := strings.TrimSpace(string(output))
-	if len(out) <= max {
-		return out
-	}
-	return out[len(out)-max:]
 }
 
 func printProofCheck(report proofCheckReport) {
