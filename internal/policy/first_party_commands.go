@@ -166,6 +166,10 @@ func (c FirstPartyCommandCatalog) LookupSubcommandWithFlags(
 func (c FirstPartyCommandCatalog) RequireHomeCompatibility(command string, args []string) error {
 	command = strings.ToLower(strings.TrimSpace(command))
 	subcommand := firstPartySubcommand(args)
+	// Product's root parser accepts only a sole help token before any mutation.
+	if command == "product" && len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+		return nil
+	}
 	// cmdHome and cmdHookInstall check hasUsageFlag before resolving a home or
 	// dispatching any mutation. Bind these exemptions to those exact parsers
 	// instead of treating help as a global admission bypass for handlers that

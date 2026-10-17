@@ -9,48 +9,45 @@ import (
 	"testing"
 )
 
-const productHelpChildEnv = "COMPOUND_PRODUCT_HELP_CHILD"
-
-// A subprocess exposes os.Exit and verifies that help needs no usable home.
+// Run the real CLI so startup admission and the product parser are both tested.
 func TestProductHelpExitsZeroAndDoesNotOpenHome(t *testing.T) {
-	if mode := os.Getenv(productHelpChildEnv); mode != "" {
-		switch mode {
-		case "help-long":
-			cmdProduct([]string{"--help"})
-		case "help-short":
-			cmdProduct([]string{"-h"})
-		case "empty":
-			cmdProduct(nil)
-		case "unknown":
-			cmdProduct([]string{"unknown-subcommand"})
-		case "malformed":
-			cmdProduct([]string{"authority", "--unknown-flag"})
-		default:
-			t.Fatalf("unknown child mode %q", mode)
-		}
-		os.Exit(0)
-	}
 	t.Parallel()
+	binary := compoundTestBinary(t)
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("blocked"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	unusableHome := filepath.Join(blocker, "unusable-home")
+	validHome := initializedTestHome(t)
 	tests := []struct {
-		mode        string
-		exit        int
-		initialized bool
-		stderr      string
+		name      string
+		args      []string
+		exit      int
+		validHome bool
+		stderr    string
 	}{
-		{mode: "help-long"},
-		{mode: "help-short"},
-		{mode: "empty", exit: 2, stderr: "usage: compound product"},
-		{mode: "unknown", exit: 2, initialized: true, stderr: "usage: compound product"},
-		{mode: "malformed", exit: 2, initialized: true, stderr: "usage: compound product authority"},
+		{name: "help-long", args: []string{"--help"}},
+		{name: "help-short", args: []string{"-h"}},
+		{name: "empty-valid", exit: 2, validHome: true, stderr: "usage: compound product"},
+		{name: "unknown-valid", args: []string{"unknown-subcommand"}, exit: 2, validHome: true, stderr: "usage: compound product"},
+		{name: "malformed-valid", args: []string{"authority", "--unknown-flag"}, exit: 2, validHome: true, stderr: "usage: compound product authority"},
+		{name: "help-extra-valid", args: []string{"--help", "import", "payload"}, exit: 2, validHome: true, stderr: "usage: compound product"},
+		{name: "empty-unusable", exit: 1},
+		{name: "unknown-unusable", args: []string{"unknown-subcommand"}, exit: 1},
+		{name: "malformed-unusable", args: []string{"authority", "--unknown-flag"}, exit: 1},
+		{name: "trailing-help", args: []string{"import", "payload", "--help"}, exit: 1},
+		{name: "help-before-mutation", args: []string{"--help", "import", "payload"}, exit: 1},
+		{name: "help-extra-flag", args: []string{"--help", "--unknown"}, exit: 1},
+		{name: "short-help-extra", args: []string{"-h", "import", "payload"}, exit: 1},
 	}
 	for _, tt := range tests {
-		t.Run(tt.mode, func(t *testing.T) {
-			homePath := filepath.Join(t.TempDir(), "missing-home")
-			if tt.initialized {
-				homePath = initializedTestHome(t)
+		t.Run(tt.name, func(t *testing.T) {
+			homePath := unusableHome
+			if tt.validHome {
+				homePath = validHome
 			}
-			cmd := exec.Command(os.Args[0], "-test.run=^TestProductHelpExitsZeroAndDoesNotOpenHome$")
-			cmd.Env = append(os.Environ(), productHelpChildEnv+"="+tt.mode, "COMPOUND_HOME="+homePath)
+			cmd := exec.Command(binary, append([]string{"product"}, tt.args...)...)
+			cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
 			var stdout, stderr bytes.Buffer
 			cmd.Stdout, cmd.Stderr = &stdout, &stderr
 			err := cmd.Run()
@@ -58,7 +55,7 @@ func TestProductHelpExitsZeroAndDoesNotOpenHome(t *testing.T) {
 			if err != nil {
 				failure, ok := err.(*exec.ExitError)
 				if !ok {
-					t.Fatalf("run child: %v", err)
+					t.Fatalf("run CLI: %v", err)
 				}
 				exit = failure.ExitCode()
 			}
@@ -69,12 +66,13 @@ func TestProductHelpExitsZeroAndDoesNotOpenHome(t *testing.T) {
 				if stdout.String() != productUsage()+"\n" || stderr.Len() != 0 {
 					t.Fatalf("help streams: stdout=%q stderr=%q", &stdout, &stderr)
 				}
-			} else if stdout.Len() != 0 || !strings.Contains(stderr.String(), tt.stderr) {
-				t.Fatalf("failure streams: stdout=%q stderr=%q", &stdout, &stderr)
-			}
-			if !tt.initialized {
-				if _, err := os.Lstat(homePath); !os.IsNotExist(err) {
-					t.Fatalf("unexpected home materialization: %v", err)
+			} else {
+				want := tt.stderr
+				if !tt.validHome {
+					want = "not a directory"
+				}
+				if stdout.Len() != 0 || !strings.Contains(stderr.String(), want) {
+					t.Fatalf("failure streams: stdout=%q stderr=%q, want %q", &stdout, &stderr, want)
 				}
 			}
 		})

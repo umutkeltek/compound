@@ -108,3 +108,23 @@ func TestRequireHomeCompatibilityExemptsMalformedProofCheckReviewInvocations(t *
 		t.Fatalf("RequireHomeCompatibility(proof-check, well-formed review) = %v, want missing-manifest refusal", err)
 	}
 }
+
+func TestRequireHomeCompatibilityExemptsOnlySoleProductRootHelp(t *testing.T) {
+	t.Setenv("COMPOUND_HOME", filepath.Join(t.TempDir(), "missing-home"))
+	catalog := NewFirstPartyCommandCatalog(map[string]FirstPartyCommandAdmission{
+		"product": FirstPartyCommandGoverned,
+	})
+	for _, args := range [][]string{{"--help"}, {"-h"}} {
+		if err := catalog.RequireHomeCompatibility("product", args); err != nil {
+			t.Fatalf("sole help %v: %v", args, err)
+		}
+	}
+	for _, args := range [][]string{
+		nil, {"unknown"}, {"import", "payload", "--help"},
+		{"--help", "import", "payload"}, {"--help", "--unknown"}, {"-h", "import"},
+	} {
+		if err := catalog.RequireHomeCompatibility("product", args); err == nil {
+			t.Fatalf("non-sole help %v bypassed home admission", args)
+		}
+	}
+}
