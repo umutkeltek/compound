@@ -44,8 +44,8 @@ func attachDispatchRecipe(pack *envelope.ContextPack, workspace, home string) {
 	if os.IsNotExist(err) {
 		return
 	}
-	if err == nil && (!info.Mode().IsRegular() || info.Size() > 64<<10) {
-		err = fmt.Errorf("must be a regular file of at most 65536 bytes (mode %s, %d bytes)", info.Mode(), info.Size())
+	if err == nil && (!info.Mode().IsRegular() || info.Size() > CanonicalConsumerContractLimit) {
+		err = fmt.Errorf("must be a regular file of at most %d bytes (mode %s, %d bytes)", CanonicalConsumerContractLimit, info.Mode(), info.Size())
 	}
 	var body []byte
 	if err == nil {

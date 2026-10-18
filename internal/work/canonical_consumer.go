@@ -15,6 +15,7 @@ import (
 )
 
 const CanonicalConsumerContractPath = "compound-proof.json"
+const CanonicalConsumerContractLimit = 128 << 10
 const CanonicalConsumerReportLimit = 16 << 20
 const CanonicalConsumerEvidenceBudget = 32 << 20
 
@@ -89,8 +90,8 @@ var consumerToolPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
 
 func parseCanonicalConsumerContract(body []byte) (canonicalConsumerContract, error) {
 	var c canonicalConsumerContract
-	if len(body) == 0 || len(body) > 64<<10 {
-		return c, fmt.Errorf("consumer contract must contain 1..65536 bytes")
+	if len(body) == 0 || len(body) > CanonicalConsumerContractLimit {
+		return c, fmt.Errorf("consumer contract must contain 1..%d bytes", CanonicalConsumerContractLimit)
 	}
 	if err := consumerUniqueJSON(body); err != nil {
 		return c, fmt.Errorf("consumer contract: %w", err)

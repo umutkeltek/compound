@@ -7,6 +7,11 @@ their existing inventories; a consumer declaration cannot replace them. Module
 identity checks consume the whole declaration: trailing comments are allowed,
 but a quoted prefix followed by extra tokens is not a Compound module identity.
 
+The sealed declaration must contain 1..131072 bytes. Parsing and dispatch share
+this 128-KiB bound, allowing exhaustive required-test identities without trimming
+their inventory. Oversize declarations fail closed. The 32-consumer, command
+timeout, native-report and aggregate-evidence limits remain unchanged.
+
 ```json
 {
   "schema_version": "compound.proof_consumers.v1",
