@@ -13,7 +13,7 @@ import (
 const scheduleUsage = "usage: compound schedule list [--json] [--source user|system|crontab|all] [--namespace N] [--include-env-values]\n" +
 	"       compound schedule show <label|path> [--json]\n" +
 	"       compound schedule doctor [--json] [--stale-days N]\n" +
-	"  Read-only launchd + crontab projection. No --fix. Migration is C-scope."
+	"  Read-only list/show/doctor; repair plan|review|apply|rollback is exact and governed."
 
 // table-driven and one-source-of-truth so adding a new flag means one row
 // here plus the consume site.

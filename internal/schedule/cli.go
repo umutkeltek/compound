@@ -4,9 +4,8 @@
 // surface (user LaunchAgents, system LaunchAgents, system LaunchDaemons) and
 // the user crontab, grouped by namespace inferred from each launchd label
 // (see inferNamespace; unattributable entries land in "other"). Designed
-// to make "what is scheduled on this box and who owns it" legible without
-// becoming a writer: there is no `apply`, no `--fix` here. Migration of
-// plists INTO compound-owned generation is a separate workstream.
+// to make declared and observed runtime state legible. Exact reviewed repair
+// delegates to authority; the projection itself never writes OS state.
 //
 // Doctrinal anchors:
 //  - Read-only by default; every entry point emits a projection that can be
@@ -20,6 +19,8 @@ package schedule
 
 import (
 	"bufio"
+	"compound/internal/authority"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,24 +42,35 @@ const (
 
 // ScheduleEntry is one row of the read-only projection. JSON-friendly and
 // stable enough to diff across runs.
+type ScheduleRuntimeState struct {
+	Domain              string `json:"domain"`
+	OverrideState       string `json:"override_state"`
+	LoadedState         string `json:"loaded_state"`
+	EffectiveEnablement string `json:"effective_enablement"`
+	Readiness           string `json:"readiness"`
+	Error               string `json:"error,omitempty"`
+}
+
 type ScheduleEntry struct {
-	Label         string            `json:"label"`
-	Path          string            `json:"path"`
-	Source        scheduleSource    `json:"source"`
-	Namespace     string            `json:"namespace"`
-	Disabled      bool              `json:"disabled"`
-	DisabledByExt bool              `json:"disabled_by_extension"` // *.plist.disabled
-	RunAtLoad     bool              `json:"run_at_load"`
-	KeepAlive     bool              `json:"keep_alive"`
-	ProgramArgs   []string          `json:"program_args,omitempty"`
-	EnvKeys       []string          `json:"env_keys,omitempty"` // sorted env var names; populated when Env is redacted out
-	Calendar      *scheduleCalendar `json:"calendar,omitempty"`
-	Env           map[string]string `json:"env,omitempty"`
-	StdOutPath    string            `json:"stdout_path,omitempty"`
-	StdErrPath    string            `json:"stderr_path,omitempty"`
-	MTime         string            `json:"mtime,omitempty"`
-	ModTimeAge    string            `json:"mod_age,omitempty"`
-	Warnings      []string          `json:"warnings,omitempty"`
+	DeclaredDisabledState string                `json:"declared_disabled_state"`
+	Runtime               *ScheduleRuntimeState `json:"runtime,omitempty"`
+	Label                 string                `json:"label"`
+	Path                  string                `json:"path"`
+	Source                scheduleSource        `json:"source"`
+	Namespace             string                `json:"namespace"`
+	Disabled              bool                  `json:"disabled"`
+	DisabledByExt         bool                  `json:"disabled_by_extension"` // *.plist.disabled
+	RunAtLoad             bool                  `json:"run_at_load"`
+	KeepAlive             bool                  `json:"keep_alive"`
+	ProgramArgs           []string              `json:"program_args,omitempty"`
+	EnvKeys               []string              `json:"env_keys,omitempty"` // sorted env var names; populated when Env is redacted out
+	Calendar              *scheduleCalendar     `json:"calendar,omitempty"`
+	Env                   map[string]string     `json:"env,omitempty"`
+	StdOutPath            string                `json:"stdout_path,omitempty"`
+	StdErrPath            string                `json:"stderr_path,omitempty"`
+	MTime                 string                `json:"mtime,omitempty"`
+	ModTimeAge            string                `json:"mod_age,omitempty"`
+	Warnings              []string              `json:"warnings,omitempty"`
 }
 
 type scheduleCalendar struct {
@@ -100,6 +112,8 @@ func Run(args []string) {
 		cmdScheduleShow(args[1:])
 	case "doctor":
 		cmdScheduleDoctor(args[1:])
+	case "repair":
+		os.Exit(runScheduleRepair(args[1:]))
 	default:
 		fmt.Fprintln(os.Stderr, scheduleUsage)
 		os.Exit(2)
@@ -230,6 +244,23 @@ func cmdScheduleDoctor(args []string) {
 	}
 	seen := map[string]int{}
 	for _, e := range entries {
+		if e.Runtime != nil {
+			code, detail := "", ""
+			switch {
+			case e.Runtime.Error != "":
+				code = "runtime-unknown"
+				detail = e.Runtime.Error
+			case e.Runtime.OverrideState == "disabled":
+				code = "disabled-override"
+				detail = "launchctl explicitly disables this label"
+			case e.Runtime.LoadedState == "absent" && !e.Disabled && !e.DisabledByExt:
+				code = "not-loaded"
+				detail = "launchd has no loaded service; plist declaration alone is not runtime readiness"
+			}
+			if code != "" {
+				report.Findings = append(report.Findings, scheduleDoctorFinding{Label: e.Label, Path: e.Path, Source: e.Source, Code: code, Detail: detail})
+			}
+		}
 		seen[e.Label]++
 		if e.Disabled {
 			report.Findings = append(report.Findings, scheduleDoctorFinding{
@@ -342,6 +373,7 @@ func collectSchedule(sourceFilter string) ([]ScheduleEntry, []error) {
 		if err != nil {
 			errs = append(errs, fmt.Errorf("user launchd: %w", err))
 		}
+		projectLaunchdRuntime(es)
 		for i := range es {
 			es[i].Source = scheduleSourceUser
 			entries = append(entries, es[i])
@@ -434,7 +466,9 @@ func collectLaunchAgents(dir string) ([]ScheduleEntry, error) {
 // the launchd surface emits (string, int, bool, array, dict). Unknown keys
 // are ignored on purpose so new launchd keys do not break the projection.
 func readPlistEntry(path string) (ScheduleEntry, error) {
-	cmd := exec.Command("plutil", "-convert", "json", "-o", "-", path)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "/usr/bin/plutil", "-convert", "json", "-o", "-", path)
 	out, err := cmd.Output()
 	if err != nil {
 		return ScheduleEntry{}, fmt.Errorf("plutil: %w", err)
@@ -453,6 +487,17 @@ func readPlistEntry(path string) (ScheduleEntry, error) {
 	}
 	e.Label = stringField(raw, "Label")
 	e.Disabled = boolField(raw, "Disabled")
+	e.DeclaredDisabledState = "absent"
+	if v, present := raw["Disabled"]; present {
+		if b, ok := v.(bool); ok {
+			e.DeclaredDisabledState = "enabled"
+			if b {
+				e.DeclaredDisabledState = "disabled"
+			}
+		} else {
+			e.DeclaredDisabledState = "unknown"
+		}
+	}
 	e.RunAtLoad = boolField(raw, "RunAtLoad")
 	e.KeepAlive = boolField(raw, "KeepAlive")
 	e.ProgramArgs = stringArrayField(raw, "ProgramArguments")
@@ -566,7 +611,10 @@ func collectCrontab() ([]ScheduleEntry, error) {
 
 // printScheduleEntry renders one entry in compact human form.
 func printScheduleEntry(e ScheduleEntry) {
-	state := "active"
+	state := "declared"
+	if e.Runtime != nil {
+		state = e.Runtime.Readiness
+	}
 	switch {
 	case e.DisabledByExt:
 		state = "disabled-by-extension"
@@ -722,6 +770,40 @@ func inferNamespace(label string) string {
 		return parts[0]
 	}
 	return "other"
+}
+
+// projectLaunchdRuntime shares one disabled-override snapshot and places a
+// deadline on the whole projection. Each service probe remains exact-label.
+func projectLaunchdRuntime(entries []ScheduleEntry) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	env := authority.LaunchdEnvironment{UserHome: homeUserHome(), UID: os.Getuid()}
+	disabledCtx, disabledCancel := context.WithTimeout(ctx, 8*time.Second)
+	disabled, disabledErr := authority.ExecuteLaunchdCommand(disabledCtx, "/bin/launchctl", "print-disabled", fmt.Sprintf("gui/%d", env.UID))
+	disabledCancel()
+	env.Run = func(ctx context.Context, name string, args ...string) (authority.LaunchdCommandResult, error) {
+		if len(args) > 0 && args[0] == "print-disabled" {
+			return disabled, disabledErr
+		}
+		return authority.ExecuteLaunchdCommand(ctx, name, args...)
+	}
+	for i := range entries {
+		e := &entries[i]
+		r := authority.ProbeLaunchdRuntime(ctx, env, e.Label)
+		state := &ScheduleRuntimeState{Domain: r.Domain, OverrideState: r.OverrideState, LoadedState: r.LoadedState, EffectiveEnablement: "unknown", Readiness: "unknown", Error: r.Error}
+		if r.Error == "" && r.OverrideState != "unknown" && r.LoadedState != "unknown" && e.DeclaredDisabledState != "unknown" {
+			state.EffectiveEnablement = "enabled"
+			state.Readiness = "unloaded"
+			if r.LoadedState == "loaded" {
+				state.Readiness = "loaded"
+			}
+			if e.Disabled || e.DisabledByExt || r.OverrideState == "disabled" {
+				state.EffectiveEnablement = "disabled"
+				state.Readiness = "disabled"
+			}
+		}
+		e.Runtime = state
+	}
 }
 
 // ---------------- plist JSON helpers (darwin-only) ----------------
