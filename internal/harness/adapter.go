@@ -179,6 +179,8 @@ type RunInput struct {
 	ompNativeVerifier *ompNativeVerifierLaunch
 	// ompPromptOnly is an adapter-owned immutable launch handoff.
 	ompPromptOnly *ompPromptOnlyLaunch
+	// opencodeLaunch is the adapter-owned immutable prompt-only handoff.
+	opencodeLaunch *openCodeLaunch
 }
 
 // RunOutput is the per-Run return contract. Always non-nil RunAttempt;

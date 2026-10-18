@@ -215,6 +215,7 @@ type ModelCapabilityEntry struct {
 	Lane              string                     `json:"lane" yaml:"lane"`
 	Harness           string                     `json:"harness,omitempty" yaml:"harness,omitempty"`
 	ProviderRoute     string                     `json:"provider_route,omitempty" yaml:"provider_route,omitempty"`
+	ProviderEndpoint  string                     `json:"provider_endpoint,omitempty" yaml:"provider_endpoint,omitempty"`
 	ProviderRouteKind string                     `json:"provider_route_kind,omitempty" yaml:"provider_route_kind,omitempty"`
 	Resolution        LaneResolution             `json:"resolution" yaml:"resolution"`
 	EffortDefault     string                     `json:"effort_default,omitempty" yaml:"effort_default,omitempty"`
@@ -261,6 +262,7 @@ type ModelCapabilityProjectionLane struct {
 	Lane              string                           `json:"lane"`
 	Harness           string                           `json:"harness,omitempty"`
 	ProviderRoute     string                           `json:"provider_route,omitempty"`
+	ProviderEndpoint  string                           `json:"provider_endpoint,omitempty"`
 	ProviderRouteKind string                           `json:"provider_route_kind,omitempty"`
 	Resolution        LaneResolution                   `json:"resolution"`
 	EffortDefault     string                           `json:"effort_default,omitempty"`
@@ -548,6 +550,9 @@ func mergeModelCapabilityEntry(existing, incoming ModelCapabilityEntry) ModelCap
 	if strings.TrimSpace(incoming.ProviderRoute) != "" {
 		merged.ProviderRoute = incoming.ProviderRoute
 	}
+	if strings.TrimSpace(incoming.ProviderEndpoint) != "" {
+		merged.ProviderEndpoint = incoming.ProviderEndpoint
+	}
 	if strings.TrimSpace(incoming.ProviderRouteKind) != "" {
 		merged.ProviderRouteKind = incoming.ProviderRouteKind
 	}
@@ -705,6 +710,7 @@ func ProjectModelCapabilities(homePath string, now time.Time) (ModelCapabilities
 			Lane:              strings.TrimSpace(model.Lane),
 			Harness:           strings.TrimSpace(model.Harness),
 			ProviderRoute:     strings.TrimSpace(model.ProviderRoute),
+			ProviderEndpoint:  sanitizeModelCapabilitiesProjectionEndpoint(model.ProviderEndpoint),
 			ProviderRouteKind: strings.TrimSpace(model.ProviderRouteKind),
 			Resolution:        model.Resolution,
 			EffortDefault:     strings.TrimSpace(model.EffortDefault),

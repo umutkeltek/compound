@@ -43,6 +43,62 @@ The interactive harness boundary follows the same split:
   explicit launch inputs to the transport, and can be deleted without moving either authority. The gateway must
   not read Compound policy files, and Compound must not proxy model traffic.
 
+### Native OpenCode prompt-only adapter
+
+The `opencode` adapter is a native, prompt-only consumer of the existing model-router
+authority. A selected entry must have a literal `provider/model` ID, matching
+`provider_route`, executable alias, and clean HTTPS `provider_endpoint`. The
+optional endpoint field round-trips through imports, merge, projections, semantic
+diffs, and authority revisions; lanes that do not use it remain unchanged.
+Sensitive endpoint components are redacted from projections. Native catalog output
+is evidence for admitting a tuple, never route authority.
+
+Preflight freezes the authority revision, executable path and digest, tuple,
+requested workspace, and prompt. The launch guard reloads authority and hashes the
+executable immediately before starting. No caller args, environment, config,
+permission override, or reused session reach the native child. The prompt travels
+on stdin and is limited to 64 KiB. The native process runs in a new scratch cwd,
+with isolated HOME, native search home, and XDG config/data/state/cache directories.
+RunAttempt records the actual sandbox executable and scratch cwd, with separate
+native-executable and requested-workspace digests. It does not claim execution in
+the product repository or observed provider-request identity.
+
+Only the selected saved native API entry is read after RunAttempt mint. Its source
+must be a bounded regular leaf owned by the current UID with exact mode 0600 and a
+nonempty single-line key. The isolated auth snapshot contains only that entry;
+the key never enters argv, environment, config, or receipts. The shared runner
+replaces exact selected-key literals before durable transcript writes. Encoded or
+transformed credentials are outside that literal-redaction guarantee. Cleanup
+must remove the isolated credential/search root before successful terminalization;
+cleanup errors fail the attempt with a content-free code on every exit path.
+
+Config JSON and native `.gitignore` seeds are mode 0400, config/search directories
+are 0500, and the macOS sandbox denies `file-write*` over both complete subtrees.
+Other writes stay inside scratch runtime storage. Tools, plugins, MCP, external
+skills, catalog fetch, updates, sharing, and auto-compaction are disabled. Existing
+late host-managed native config causes refusal because it cannot be isolated by
+this adapter. The sandbox permits outbound port 443 for provider transport; this
+does not enforce a hostname or prove TLS. Immutable validated `baseURL` config
+selects the endpoint. This adapter requires macOS sandbox-exec.
+
+The shared runner owns heartbeats, governed start, process-group cancellation,
+partial capture, and terminalization. The adapter caps total runtime at 90 seconds,
+native output at 800 tokens per request, and durable transcript at 64 KiB plus a
+content-free truncation marker. Truncation, scanner failure, provider JSON errors,
+tool events, missing text, or non-normal finish fail the attempt even after child
+exit zero. Transport completion remains separate from task-quality acceptance.
+
+Installed OpenCode 1.18.34 synthetic TLS controls proved one request on success and
+nonretryable 401, and six requests on retryable 500/429: zero Compound retries,
+SDK `maxRetries: 0`, and up to five native session retries. The native processor
+unconditionally installs that session retry policy; no supported disable option
+was found. Retryable runs remain under the same 90-second total deadline. Real
+request count is unobservable unless native evidence supplies it; these fixture
+counts do not attest arbitrary executables. Admission must review the attested
+binary digest and synthetic controls. The opt-in installed-native test uses only
+a temporary synthetic credential and local TLS provider. No private tuple or
+provider credential is shipped in source.
+
 ### Public browser task adapter
 
 The standalone Jev goal refuses any WorkEnvelope with a saved execution selection until a browser-compatible launch profile is defined; it cannot silently override another harness tuple.

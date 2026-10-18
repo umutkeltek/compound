@@ -522,7 +522,7 @@ func DefaultRegistry() Registry {
 		},
 		"opencode": {
 			Name:                 "opencode",
-			Selection:            noSelectionControl("registry identity only; no executor adapter"),
+			Selection:            openCodeSelection(),
 			Posture:              PostureUnattended,
 			InstructionMechanism: "config instructions + plugins + native skills",
 			Capabilities: Capabilities{
@@ -531,6 +531,8 @@ func DefaultRegistry() Registry {
 				NativeSkills: true, MCP: true,
 			},
 			Limitations: []string{
+				"native hook/native-skills/MCP facts describe the interactive harness; the registered executor is prompt-only and disables those surfaces",
+				"prompt-only execution accepts supplied-text classification or critique; it cannot build, edit a workspace, invoke tools, or reuse sessions",
 				"Compound context injection uses stable chat.message message.system; the system context transform remains experimental and unused",
 				"tool.execute.before cannot deny; the Compound integration does not register it",
 				"injection and observation callbacks fail open",

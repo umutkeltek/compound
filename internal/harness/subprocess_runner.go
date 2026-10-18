@@ -30,6 +30,15 @@ type buildCmdFn func(context.Context, RunInput) *exec.Cmd
 // still-mutable RunAttempt is terminalized. It is deliberately private: a
 // caller must not be able to attach arbitrary proof through RunInput.
 type subprocessRunOptions struct {
+	// CleanupEvidence runs once before terminalization, on success and every
+	// failure path after mint. Adapter errors must be content-free stable codes.
+	CleanupEvidence func() error
+	// Zero leaves legacy capture unchanged. Bounded adapters fail finalization
+	// when capture truncates or a scanner error prevents complete evidence.
+	MaxTranscriptBytes int
+	// SanitizeTranscriptLine is an adapter-owned pure transform applied before
+	// either stream reaches durable transcript storage. Nil preserves raw lines.
+	SanitizeTranscriptLine func(string) string
 	// PrepareEvidence runs after the attempt is minted but before command
 	// construction, for adapter-private pre-start custody such as inherited FDs.
 	PrepareEvidence  func() error
@@ -44,11 +53,13 @@ type subprocessRunOptions struct {
 }
 
 type subprocessEvidenceContext struct {
-	RunAttemptID   string
-	Command        string
-	TranscriptPath string
-	ExitCode       int
-	TimedOut       bool
+	TranscriptTruncated bool
+	CaptureFailed       bool
+	RunAttemptID        string
+	Command             string
+	TranscriptPath      string
+	ExitCode            int
+	TimedOut            bool
 }
 
 // runAttemptStore is the RunAttempt persistence surface that
@@ -157,6 +168,17 @@ func runWithSubprocessOptions(
 	// failTerm closure reads it at call time so the reason is recorded
 	// inline when a transcript exists and as a proof_ref otherwise.
 	transcriptPath := ""
+	cleaned := false
+	var cleanupErr error
+	cleanupEvidence := func() error {
+		if !cleaned {
+			cleaned = true
+			if options.CleanupEvidence != nil {
+				cleanupErr = options.CleanupEvidence()
+			}
+		}
+		return cleanupErr
+	}
 
 	// failTerm terminalizes the minted RunAttempt as failed when an
 	// infrastructure step blows up after Mint. It best-effort records the
@@ -170,6 +192,9 @@ func runWithSubprocessOptions(
 	// terminalizes the same way every later infra failure does, instead of
 	// returning bare RunOutput{} and stranding a pending ratt_ record.
 	failTerm := func(reason string) RunOutput {
+		if err := cleanupEvidence(); err != nil {
+			reason += "; cleanup_private_evidence:" + err.Error()
+		}
 		if transcriptPath != "" {
 			if f, ferr := os.OpenFile(transcriptPath, os.O_WRONLY|os.O_APPEND, 0o644); ferr == nil {
 				_, _ = fmt.Fprintf(f, "infra_error: %s\n", reason)
@@ -274,7 +299,7 @@ func runWithSubprocessOptions(
 		return failTerm("create transcript"), fmt.Errorf("%s: create transcript: %w", harnessName, err)
 	}
 	defer tf.Close()
-	tw := &lockedWriter{w: bufio.NewWriter(tf)}
+	tw := &lockedWriter{w: bufio.NewWriter(tf), sanitize: options.SanitizeTranscriptLine, maxBytes: options.MaxTranscriptBytes}
 
 	if options.PrepareEvidence != nil {
 		if err := options.PrepareEvidence(); err != nil {
@@ -557,11 +582,13 @@ func runWithSubprocessOptions(
 	// their ordinary audit trail but never invoke certification.
 	if options.FinalizeEvidence != nil && status == runattempt.StatusSucceeded && transcriptFlushErr == nil {
 		refs, finalizeErr := options.FinalizeEvidence(subprocessEvidenceContext{
-			RunAttemptID:   ra.ID,
-			Command:        cmd.String(),
-			TranscriptPath: transcriptPath,
-			ExitCode:       exitCode,
-			TimedOut:       timedOut.Load(),
+			TranscriptTruncated: tw.truncated,
+			CaptureFailed:       tw.captureFailed,
+			RunAttemptID:        ra.ID,
+			Command:             cmd.String(),
+			TranscriptPath:      transcriptPath,
+			ExitCode:            exitCode,
+			TimedOut:            timedOut.Load(),
 		})
 		if finalizeErr != nil {
 			if retainErr := retainFailure(); retainErr != nil {
@@ -599,6 +626,11 @@ func runWithSubprocessOptions(
 		// The run produced a transcript on disk but we could not pin it on
 		// the attempt; terminalize failed so the audit is honest.
 		return failTerm("set transcript"), fmt.Errorf("%s: set transcript: %w", harnessName, err)
+	}
+	if err := cleanupEvidence(); err != nil {
+		out := failTerm("cleanup private evidence")
+		out.ExitCode, out.TimedOut, out.Duration = exitCode, timedOut.Load(), time.Since(started)
+		return out, fmt.Errorf("%s: cleanup private evidence: %w", harnessName, err)
 	}
 	terminal, err := store.Complete(ra.ID, status, started.Add(time.Since(started)))
 	if err != nil {
@@ -658,14 +690,45 @@ func validateSubprocessInput(harnessName string, in RunInput) error {
 // use, so unsynchronized writes could interleave or corrupt the
 // transcript. Pinned by TestRunnerConcurrentTranscriptWrites.
 type lockedWriter struct {
-	mu sync.Mutex
-	w  *bufio.Writer
+	mu            sync.Mutex
+	w             *bufio.Writer
+	sanitize      func(string) string
+	maxBytes      int
+	written       int
+	truncated     bool
+	captureFailed bool
 }
 
 func (lw *lockedWriter) writeLine(label, line string) {
+	if lw.sanitize != nil {
+		line = lw.sanitize(line)
+	}
 	lw.mu.Lock()
-	fmt.Fprintf(lw.w, "%s: %s\n", label, line)
-	lw.mu.Unlock()
+	defer lw.mu.Unlock()
+	entry := label + ": " + line + "\n"
+	if lw.maxBytes > 0 {
+		if lw.truncated {
+			return
+		}
+		remaining := lw.maxBytes - lw.written
+		if len(entry) > remaining {
+			if remaining > 0 {
+				_, _ = lw.w.WriteString(entry[:remaining])
+				lw.written += remaining
+			}
+			lw.markTruncatedLocked()
+			return
+		}
+	}
+	_, _ = lw.w.WriteString(entry)
+	lw.written += len(entry)
+}
+
+func (lw *lockedWriter) markTruncatedLocked() {
+	if !lw.truncated {
+		lw.truncated = true
+		_, _ = lw.w.WriteString("\ntranscript: OUTPUT_TRUNCATED\n")
+	}
 }
 
 func (lw *lockedWriter) Flush() error {
@@ -679,6 +742,14 @@ func capture(r io.Reader, label string, lw *lockedWriter) {
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		lw.writeLine(label, scanner.Text())
+	}
+	if scanner.Err() != nil && lw.maxBytes > 0 {
+		lw.mu.Lock()
+		lw.captureFailed = true
+		lw.markTruncatedLocked()
+		lw.mu.Unlock()
+		// An oversized line must not leave the child blocked on its pipe.
+		_, _ = io.Copy(io.Discard, r)
 	}
 }
 

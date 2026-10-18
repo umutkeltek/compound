@@ -2,6 +2,7 @@ package routeevidence
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"sort"
@@ -108,6 +109,7 @@ func sanitizeModelCapabilitiesProjection(manifest *ModelCapabilitiesManifest) {
 	for id, entry := range manifest.Models {
 		entry.Lane = sanitizeModelCapabilitiesProjectionText(entry.Lane)
 		entry.ProviderRoute = sanitizeModelCapabilitiesProjectionText(entry.ProviderRoute)
+		entry.ProviderEndpoint = sanitizeModelCapabilitiesProjectionEndpoint(entry.ProviderEndpoint)
 		entry.ProviderRouteKind = sanitizeModelCapabilitiesProjectionText(entry.ProviderRouteKind)
 		entry.Notes = sanitizeModelCapabilitiesProjectionText(entry.Notes)
 		for i := range entry.Resolution.Targets {
@@ -139,6 +141,14 @@ func sanitizeModelCapabilitiesProjectionText(value string) string {
 // diffModelCapabilities returns a sorted, human-readable list of every semantic
 // difference between authority and view. An empty result means the view is a
 // faithful projection.
+func sanitizeModelCapabilitiesProjectionEndpoint(value string) string {
+	u, err := url.Parse(value)
+	if err != nil || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.String() != value {
+		return "[endpoint-redacted]"
+	}
+	return sanitizeModelCapabilitiesProjectionText(value)
+}
+
 func diffModelCapabilities(authority, view ModelCapabilitiesManifest) []string {
 	var drifts []string
 
@@ -197,6 +207,7 @@ func diffModelEntry(id string, a, v ModelCapabilityEntry) []string {
 	scalar("lane", a.Lane, v.Lane)
 	scalar("harness", a.Harness, v.Harness)
 	scalar("provider_route", a.ProviderRoute, v.ProviderRoute)
+	scalar("provider_endpoint", a.ProviderEndpoint, v.ProviderEndpoint)
 	scalar("provider_route_kind", a.ProviderRouteKind, v.ProviderRouteKind)
 	scalar("tier", a.Tier, v.Tier)
 	scalar("packet_ceiling", a.PacketCeiling, v.PacketCeiling)

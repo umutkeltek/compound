@@ -61,6 +61,15 @@ func codexSelection() *SelectionCapability {
 	}
 }
 
+func openCodeSelection() *SelectionCapability {
+	return &SelectionCapability{
+		ModelPassable:   true,
+		ObservedVia:     "opencode_argv",
+		SessionEvidence: "unsupported:prompt-only adapter creates a fresh isolated run; session reuse is forbidden",
+		Basis:           "native prompt-only adapter binds the Compound provider/model/endpoint tuple; --model argv is launch evidence, not provider-request capture",
+	}
+}
+
 // noSelectionControl is the floor for a harness whose launch places neither
 // model nor effort from the selection.
 func noSelectionControl(basis string) *SelectionCapability {
@@ -180,6 +189,14 @@ func observeLaunch(harnessName string, cmd *exec.Cmd, hookReading HookPostureRea
 		switch capability.ObservedVia {
 		case "argv":
 			obs.ObservedModelID, obs.ObservedEffort, sources = observeCodexArgv(cmd.Args)
+		case "opencode_argv":
+			for i := 1; i+1 < len(cmd.Args); i++ {
+				if cmd.Args[i] == "--model" {
+					obs.ObservedModelID = cmd.Args[i+1]
+					sources = append(sources, "argv:opencode:--model")
+					break
+				}
+			}
 		case "wrapper_env":
 			obs.ObservedModelID, obs.ObservedEffort, sources = observeWrapperEnv(cmd)
 		}
