@@ -231,6 +231,23 @@ func EvaluateWithContext(ai envelope.ActionIntent, cfg Config, ctx EvaluationCon
 	if ctx.Authority != nil {
 		pd = applyAuthorityContext(pd, ai, cfg, *ctx.Authority, now)
 	}
+	pd = applyExactApprovalRequirement(pd, ai, now)
+	return pd
+}
+
+// An explicit exact approval requirement cannot be cleared by a standing grant
+// or an autonomy target envelope. It is not a security floor: the existing
+// exact-approval admission door may clear this hold, while deny and action
+// security floors retain their stronger semantics.
+func applyExactApprovalRequirement(pd envelope.PolicyDecision, ai envelope.ActionIntent, now time.Time) envelope.PolicyDecision {
+	if !ai.RequiresExactApproval || !Allowed(pd) {
+		return pd
+	}
+	pd.Outcome = "hold"
+	pd.Reasons = append(pd.Reasons, "action requires exact one-use operator approval")
+	pd.StandingGrantID = ""
+	pd.ExpiresAt = ""
+	pd.ID = idFor("pol_", ai.ID, "hold", "exact-approval-required", ts(now))
 	return pd
 }
 

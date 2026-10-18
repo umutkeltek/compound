@@ -1260,6 +1260,9 @@ type ActionIntent struct {
 	SchemaRevision       string          `json:"schema_revision,omitempty"`
 	SecurityFloorOutcome string          `json:"security_floor_outcome,omitempty"`
 	SecurityReasons      []string        `json:"security_reasons,omitempty"`
+	// RequiresExactApproval keeps target/autonomy authority separate from a
+	// one-use operator approval. It is included in the full intent binding.
+	RequiresExactApproval bool `json:"requires_exact_approval,omitempty"`
 	// CapturesWorkInProgress marks an action that would COMMIT, STAGE, STASH, or
 	// DESTROY uncommitted working-tree changes rather than merely run beside
 	// them. The source-control gate uses it to tell the actions a foreign dirty

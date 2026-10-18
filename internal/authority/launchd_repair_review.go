@@ -14,19 +14,22 @@ import (
 	"compound/internal/work"
 )
 
+const launchdExactReviewProtocol = "exact-approval-v2"
+
 type LaunchdReviewRequest struct {
-	Purpose        string                `json:"purpose"`
-	RollbackAnchor string                `json:"rollback_anchor,omitempty"`
-	PlanID         string                `json:"plan_id"`
-	PlanDigest     string                `json:"plan_digest"`
-	GrantID        string                `json:"grant_id"`
-	Grant          policy.StandingGrant  `json:"grant"`
-	ConfigRevision string                `json:"config_revision"`
-	ReviewedBy     string                `json:"reviewed_by"`
-	EvidenceRef    string                `json:"evidence_ref"`
-	ExpiresAt      time.Time             `json:"expires_at"`
-	BeforeWork     envelope.WorkEnvelope `json:"before_work"`
-	Action         envelope.ActionIntent `json:"action"`
+	ApprovalProtocol string                `json:"approval_protocol,omitempty"`
+	Purpose          string                `json:"purpose"`
+	RollbackAnchor   string                `json:"rollback_anchor,omitempty"`
+	PlanID           string                `json:"plan_id"`
+	PlanDigest       string                `json:"plan_digest"`
+	GrantID          string                `json:"grant_id"`
+	Grant            policy.StandingGrant  `json:"grant"`
+	ConfigRevision   string                `json:"config_revision"`
+	ReviewedBy       string                `json:"reviewed_by"`
+	EvidenceRef      string                `json:"evidence_ref"`
+	ExpiresAt        time.Time             `json:"expires_at"`
+	BeforeWork       envelope.WorkEnvelope `json:"before_work"`
+	Action           envelope.ActionIntent `json:"action"`
 }
 type LaunchdRepairReview struct {
 	ID         string                  `json:"id"`
@@ -76,6 +79,9 @@ func launchdReviewRequestAction(p LaunchdRepairPlan, r LaunchdReviewRequest) env
 	r.Action = envelope.ActionIntent{}
 	a := launchdAction(p, p.ID+"-review-"+launchdDigest(r), "review_exact_launchd_repair", p.CreatedAt)
 	a.Capability = LaunchdRepairCapability + ".review"
+	if r.ApprovalProtocol == launchdExactReviewProtocol {
+		a.RequiresExactApproval = true
+	}
 	a.ArgumentsHash = launchdDigest(r)
 	a.EvidenceRefs = append(a.EvidenceRefs, r.EvidenceRef, "launchd-grant-revision:"+launchdDigest(r.Grant), "policy-revision:"+r.ConfigRevision)
 	return a
@@ -128,12 +134,14 @@ func reviewLaunchdRepairPlan(home, planID, grantID, reviewedBy, evidence string,
 	if current.State != "running" {
 		return out, fmt.Errorf("running activation work required")
 	}
-	prefix := p.ID + "." + purpose
+	// Keep legacy requests/actions/approvals unchanged as audit evidence.
+	// A new protocol issues a fresh exact-bound action under the same plan.
+	prefix := p.ID + "." + purpose + ".exact-v2"
 	requestName := prefix + ".review-request.json"
 	var req LaunchdReviewRequest
 	err = readLaunchdArtifact(home, requestName, &req)
 	if os.IsNotExist(err) {
-		req = LaunchdReviewRequest{Purpose: purpose, PlanID: p.ID, PlanDigest: p.Digest, GrantID: grantID, Grant: grant, ConfigRevision: launchdDigest(cfg), ReviewedBy: reviewedBy, EvidenceRef: evidence, ExpiresAt: expiry, BeforeWork: current}
+		req = LaunchdReviewRequest{ApprovalProtocol: launchdExactReviewProtocol, Purpose: purpose, PlanID: p.ID, PlanDigest: p.Digest, GrantID: grantID, Grant: grant, ConfigRevision: launchdDigest(cfg), ReviewedBy: reviewedBy, EvidenceRef: evidence, ExpiresAt: expiry, BeforeWork: current}
 		if purpose == "rollback" {
 			anchor, sha, err := launchdRollbackAnchor(home, p)
 			if err != nil {
@@ -162,7 +170,7 @@ func reviewLaunchdRepairPlan(home, planID, grantID, reviewedBy, evidence string,
 	} else if err != nil {
 		return out, err
 	}
-	if req.Purpose != purpose || req.PlanID != p.ID || req.PlanDigest != p.Digest || req.GrantID != grantID || !reflect.DeepEqual(req.Grant, grant) || req.ConfigRevision != launchdDigest(cfg) || req.ReviewedBy != reviewedBy || req.EvidenceRef != evidence || !req.ExpiresAt.Equal(expiry) || !reflect.DeepEqual(req.Action, launchdReviewRequestAction(p, req)) {
+	if req.ApprovalProtocol != launchdExactReviewProtocol || req.Purpose != purpose || req.PlanID != p.ID || req.PlanDigest != p.Digest || req.GrantID != grantID || !reflect.DeepEqual(req.Grant, grant) || req.ConfigRevision != launchdDigest(cfg) || req.ReviewedBy != reviewedBy || req.EvidenceRef != evidence || !req.ExpiresAt.Equal(expiry) || !reflect.DeepEqual(req.Action, launchdReviewRequestAction(p, req)) {
 		return out, fmt.Errorf("review request drift; create a new native plan")
 	}
 	out.ActionIntentID = req.Action.ID
@@ -202,6 +210,9 @@ func reviewLaunchdRepairPlan(home, planID, grantID, reviewedBy, evidence string,
 	return out, nil
 }
 func validateLaunchdReviewEvidence(home string, p LaunchdRepairPlan, r LaunchdRepairReview) error {
+	if r.Request.ApprovalProtocol != "" && r.Request.ApprovalProtocol != launchdExactReviewProtocol {
+		return fmt.Errorf("unknown launchd review approval protocol")
+	}
 	copy := r
 	copy.ID = ""
 	if r.ID != "ldrr_"+launchdDigest(copy)[:24] || r.Request.PlanID != p.ID || r.Request.PlanDigest != p.Digest || !reflect.DeepEqual(r.Request.Action, launchdReviewRequestAction(p, r.Request)) {
