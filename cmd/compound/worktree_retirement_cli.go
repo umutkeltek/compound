@@ -75,7 +75,7 @@ func runAuthorityWorktreeRetire(homePath string, args []string, stdout, stderr i
 			AuthorityRef: values["--authority-ref"], PublicationRef: values["--publication-ref"],
 			OwnerProof: ownerProof, SourceProof: sourceProof, RecoveryRefs: repeated,
 			KeepDecisions: keepDecisions, KeepsUnreadable: keepsUnreadable,
-		}, authority.WorktreeRetirementDependencies{Git: worktreeRetirementCLIGit, Liveness: worktreeRetirementCLILiveness}, now)
+		}, authority.WorktreeRetirementDependencies{Git: worktreeRetirementCLIGit, Liveness: worktreeRetirementCLILiveness, RecoveryInventoryPreflight: work.PreflightRetirementRecoveryInventory}, now)
 		if err != nil {
 			fmt.Fprintln(stderr, "authority worktree-retire plan:", err)
 			return 1
@@ -187,7 +187,8 @@ func runAuthorityWorktreeRetire(homePath string, args []string, stdout, stderr i
 			HomePath: homePath, PlanPath: args[1], ReviewReportPath: reportPath, Actor: values["--actor"],
 			OwnerProof: ownerProof, SourceProof: sourceProof,
 		}, authority.WorktreeRetirementApplyDependencies{
-			Git: worktreeRetirementCLIGit, Liveness: worktreeRetirementCLILiveness,
+			RecoveryInventoryPreflight: work.PreflightRetirementRecoveryInventory,
+			Git:                        worktreeRetirementCLIGit, Liveness: worktreeRetirementCLILiveness,
 			Evaluate: func(action envelope.ActionIntent, at time.Time) (envelope.PolicyDecision, error) {
 				return policy.Evaluate(action, cfg, at), nil
 			},

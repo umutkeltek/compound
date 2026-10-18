@@ -3,7 +3,6 @@ package work
 import (
 	"fmt"
 	"path/filepath"
-	"strings"
 
 	"compound/internal/authority/gitrepository"
 )
@@ -48,28 +47,9 @@ func readRetirementDeliverySnapshot(request WorktreeRetirementDeliveryCaptureReq
 	for _, body := range [][]byte{planBody, authorizationBody, sourceBody, resultBody} {
 		out.Bodies[privateDeliveryArtifactRef(body)] = body
 	}
-	proofs := out.Delivery.Plan.RecoveryProofs
-	if len(proofs) == 0 || len(proofs) > maxPrivateRuntimeDeliveryFiles || len(proofs) != len(out.Delivery.Plan.RecoveryRefs) {
-		return out, fmt.Errorf("retirement recovery inventory out of bounds")
-	}
-	remaining := int64(privateDeliveryCaptureTotalBytes)
-	for i, proof := range proofs {
-		if proof.Kind != "sha256-file" || proof.Reference != out.Delivery.Plan.RecoveryRefs[i] ||
-			!gitrepository.ValidRetirementDigest(proof.Digest) || !filepath.IsAbs(proof.Path) || filepath.Clean(proof.Path) != proof.Path ||
-			proof.Reference != "sha256-file:"+strings.TrimPrefix(proof.Digest, "sha256:")+":"+proof.Path {
-			return out, fmt.Errorf("retirement recovery proof is not an exact supported file")
-		}
-		body, err := readDeliveryCaptureFile(proof.Path, min(remaining, privateDeliveryBodyLimit))
-		if err != nil {
-			return out, err
-		}
-		remaining -= int64(len(body))
-		ref := privateDeliveryArtifactRef(body)
-		if ref != "artifact:"+proof.Digest {
-			return out, fmt.Errorf("retirement recovery bytes differ from sealed proof")
-		}
+	err = readRetirementRecoveryInventory(out.Delivery.Plan, func(ref string, body []byte) {
 		out.Bodies[ref] = body
 		out.Evidence.RecoveryArtifacts = append(out.Evidence.RecoveryArtifacts, ref)
-	}
-	return out, nil
+	})
+	return out, err
 }

@@ -18,7 +18,7 @@ func TestApplyWorktreeRetirementRemovesNonForceThenCASDeletesAndIsIdempotent(t *
 	home, paths, report := authorizedRetirementFixture(t, fixture)
 	runner := &recordingRetirementGit{delegate: ExecWorktreeRetirementGit{}}
 	recorded := 0
-	deps := WorktreeRetirementApplyDependencies{
+	deps := WorktreeRetirementApplyDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 		Git: runner, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 		Evaluate: func(action envelope.ActionIntent, now time.Time) (envelope.PolicyDecision, error) {
 			return policy.Evaluate(action, policy.DefaultConfig(), now), nil
@@ -859,7 +859,7 @@ func (r *recordingRetirementGit) refDeleteCount() int {
 
 func authorizedRetirementFixture(t *testing.T, fixture retirementGitFixture) (string, WorktreeRetirementPlanPaths, WorktreeRetirementReviewReport) {
 	t.Helper()
-	plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 	}, time.Date(2026, 7, 15, 7, 0, 0, 0, time.UTC))
 	if err != nil {
@@ -886,7 +886,7 @@ func authorizedRetirementFixture(t *testing.T, fixture retirementGitFixture) (st
 }
 
 func successfulRetirementApplyDependencies(runner WorktreeRetirementGit, records *int) WorktreeRetirementApplyDependencies {
-	return WorktreeRetirementApplyDependencies{
+	return WorktreeRetirementApplyDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 		Git: runner, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 		Evaluate: func(action envelope.ActionIntent, now time.Time) (envelope.PolicyDecision, error) {
 			return policy.Evaluate(action, policy.DefaultConfig(), now), nil

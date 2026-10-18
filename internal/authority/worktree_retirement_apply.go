@@ -59,11 +59,12 @@ type WorktreeRetirementActionProof struct {
 }
 
 type WorktreeRetirementApplyDependencies struct {
-	Git              WorktreeRetirementGit
-	Liveness         WorktreeRetirementLiveness
-	RecoveryResolver WorktreeRetirementRecoveryResolver
-	Evaluate         func(action envelope.ActionIntent, now time.Time) (envelope.PolicyDecision, error)
-	RecordOutcome    func(outcome WorktreeRetirementActionOutcome, now time.Time) (WorktreeRetirementActionProof, error)
+	Git                        WorktreeRetirementGit
+	Liveness                   WorktreeRetirementLiveness
+	RecoveryResolver           WorktreeRetirementRecoveryResolver
+	RecoveryInventoryPreflight func(WorktreeRetirementPlan) error
+	Evaluate                   func(action envelope.ActionIntent, now time.Time) (envelope.PolicyDecision, error)
+	RecordOutcome              func(outcome WorktreeRetirementActionOutcome, now time.Time) (WorktreeRetirementActionProof, error)
 	// AfterPhase is an injectable crash boundary used to prove durable resume.
 	AfterPhase func(phase string) error
 	// AfterGitMutation injects a crash after Git reports success but before the
@@ -179,6 +180,14 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 		return WorktreeRetirementResult{}, loadErr
 	}
 
+	// Settled completed-result replay above reports historical Git truth without
+	// admitting another mutation or claiming that recovery bytes were custodied.
+	if deps.RecoveryInventoryPreflight == nil {
+		return WorktreeRetirementResult{}, fmt.Errorf("retirement recovery-inventory preflight is required")
+	}
+	if err := deps.RecoveryInventoryPreflight(plan); err != nil {
+		return WorktreeRetirementResult{}, fmt.Errorf("retirement recovery-inventory preflight before apply/resume: %w", err)
+	}
 	pending, pendingExists, err := loadWorktreeRetirementPending(pendingPath)
 	if err != nil {
 		return WorktreeRetirementResult{}, err
@@ -197,7 +206,7 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 				RepoRoot: plan.RepoRoot, WorktreePath: retirementWorktreePath(plan), CandidateRef: plan.CandidateRef,
 				AuthorityRef: plan.AuthorityRef, PublicationRef: plan.PublicationRef,
 				OwnerProof: req.OwnerProof, SourceProof: req.SourceProof, RecoveryRefs: plan.RecoveryRefs,
-			}, WorktreeRetirementDependencies{Git: deps.Git, Liveness: deps.Liveness, RecoveryResolver: deps.RecoveryResolver}, now)
+			}, WorktreeRetirementDependencies{Git: deps.Git, Liveness: deps.Liveness, RecoveryResolver: deps.RecoveryResolver, RecoveryInventoryPreflight: deps.RecoveryInventoryPreflight}, now)
 			if err != nil {
 				return WorktreeRetirementResult{}, err
 			}
@@ -253,7 +262,7 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 			RepoRoot: plan.RepoRoot, WorktreePath: retirementWorktreePath(plan), CandidateRef: plan.CandidateRef,
 			AuthorityRef: plan.AuthorityRef, PublicationRef: plan.PublicationRef,
 			OwnerProof: req.OwnerProof, SourceProof: req.SourceProof, RecoveryRefs: plan.RecoveryRefs,
-		}, WorktreeRetirementDependencies{Git: deps.Git, Liveness: deps.Liveness, RecoveryResolver: deps.RecoveryResolver}, now)
+		}, WorktreeRetirementDependencies{Git: deps.Git, Liveness: deps.Liveness, RecoveryResolver: deps.RecoveryResolver, RecoveryInventoryPreflight: deps.RecoveryInventoryPreflight}, now)
 		if err != nil {
 			return WorktreeRetirementResult{}, err
 		}
@@ -507,7 +516,7 @@ func reconcileRetirementWorktreeRemovalStarted(ctx context.Context, deps Worktre
 		RepoRoot: plan.RepoRoot, WorktreePath: retirementWorktreePath(plan), CandidateRef: plan.CandidateRef,
 		AuthorityRef: plan.AuthorityRef, PublicationRef: plan.PublicationRef,
 		OwnerProof: plan.OwnerProof, SourceProof: req.SourceProof, RecoveryRefs: plan.RecoveryRefs,
-	}, WorktreeRetirementDependencies{Git: deps.Git, Liveness: deps.Liveness, RecoveryResolver: deps.RecoveryResolver}, now)
+	}, WorktreeRetirementDependencies{Git: deps.Git, Liveness: deps.Liveness, RecoveryResolver: deps.RecoveryResolver, RecoveryInventoryPreflight: deps.RecoveryInventoryPreflight}, now)
 	if err != nil {
 		return false, err
 	}

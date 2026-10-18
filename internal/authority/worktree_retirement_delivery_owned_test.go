@@ -91,7 +91,7 @@ func newOwnedRetirementFixtureWithFailure(t *testing.T, failure string) ownedRet
 	fixture := newRetirementGitFixture(t)
 	planRequest := retirementPlanRequest(fixture)
 	planRequest.OwnerProof = retirementTestOwner(t, s, w.ID)
-	plan, err := BuildWorktreeRetirementPlan(context.Background(), planRequest, WorktreeRetirementDependencies{Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused}}, now)
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), planRequest, WorktreeRetirementDependencies{RecoveryInventoryPreflight: work.PreflightRetirementRecoveryInventory, Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused}}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func newOwnedRetirementFixtureWithFailure(t *testing.T, failure string) ownedRet
 		t.Fatal(err)
 	}
 	req := WorktreeRetirementApplyRequest{HomePath: homePath, PlanPath: paths.PlanPath, ReviewReportPath: report.ReviewPath, Actor: "operator:test", OwnerProof: planRequest.OwnerProof, SourceProof: planRequest.SourceProof}
-	deps := WorktreeRetirementApplyDependencies{
+	deps := WorktreeRetirementApplyDependencies{RecoveryInventoryPreflight: work.PreflightRetirementRecoveryInventory,
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 		Evaluate: func(action envelope.ActionIntent, at time.Time) (envelope.PolicyDecision, error) {
 			return policy.Evaluate(action, policy.DefaultConfig(), at), nil

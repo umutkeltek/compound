@@ -17,7 +17,7 @@ import (
 
 func TestWorktreeRetirementReviewSealsExactEligiblePlanAndOperatorYAML(t *testing.T) {
 	fixture := newRetirementGitFixture(t)
-	plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 	}, time.Date(2026, 7, 15, 7, 0, 0, 0, time.UTC))
 	if err != nil {
@@ -76,7 +76,7 @@ func TestWorktreeRetirementReviewRejectsIneligibleAndNonOperatorAuthorization(t 
 	fixture := newRetirementGitFixture(t)
 	req := retirementPlanRequest(fixture)
 	req.RecoveryRefs = nil
-	blocked, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
+	blocked, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 	}, time.Now())
 	if err != nil {
@@ -105,7 +105,7 @@ func TestWorktreeRetirementReviewRejectsIneligibleAndNonOperatorAuthorization(t 
 
 func TestWorktreeRetirementReviewedReportIsCreateExclusiveAndIdempotentForSameContent(t *testing.T) {
 	fixture := newRetirementGitFixture(t)
-	plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 	}, time.Date(2026, 7, 15, 7, 0, 0, 0, time.UTC))
 	if err != nil {
@@ -150,7 +150,7 @@ func TestWorktreeRetirementReviewedReportIsCreateExclusiveAndIdempotentForSameCo
 
 func TestWorktreeRetirementReviewRejectsDifferentSecondReviewWithoutMutatingFirstSource(t *testing.T) {
 	fixture := newRetirementGitFixture(t)
-	plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 	}, time.Date(2026, 7, 15, 7, 0, 0, 0, time.UTC))
 	if err != nil {
@@ -212,7 +212,7 @@ func TestWorktreeRetirementAllowsUniqueBranchSealedInVerifiedBundle(t *testing.T
 	// The cleanup program's source proof is its landed main commit; the
 	// candidate's unique history is instead sealed by the exact bundle ref.
 	req.SourceProof = validRetirementSourceProof(fixture.mainTip)
-	plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 	}, time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC))
 	if err != nil {
@@ -228,7 +228,7 @@ func TestWorktreeRetirementAllowsUniqueBranchSealedInVerifiedBundle(t *testing.T
 
 func TestRecordWorktreeRetirementPlanUsesItsOwnReviewArea(t *testing.T) {
 	fixture := newRetirementGitFixture(t)
-	plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 	}, time.Date(2026, 7, 15, 7, 0, 0, 0, time.UTC))
 	if err != nil {
@@ -290,7 +290,7 @@ func TestRecordWorktreeRetirementPlanUsesItsOwnReviewArea(t *testing.T) {
 // or the split would strand every recorded authorization already on disk.
 func TestWorktreeRetirementReviewStaysInLegacySourceControlCleanupArea(t *testing.T) {
 	fixture := newRetirementGitFixture(t)
-	plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 	}, time.Date(2026, 7, 15, 7, 0, 0, 0, time.UTC))
 	if err != nil {
@@ -393,7 +393,7 @@ func TestBuildWorktreeRetirementPlanContainsCandidateWithoutMutatingGit(t *testi
 		OwnerProof:     validRetirementOwnerProof(),
 		SourceProof:    validRetirementSourceProof(fixture.candidateTip),
 		RecoveryRefs:   []string{fixture.recoveryRef},
-	}, WorktreeRetirementDependencies{
+	}, WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 		Git:      ExecWorktreeRetirementGit{},
 		Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 	}, time.Date(2026, 7, 15, 7, 0, 0, 0, time.UTC))
@@ -436,7 +436,7 @@ func TestWorktreeRetirementPlanAllowsProofCompleteFailedSourceWork(t *testing.T)
 	req.SourceProof.State = "failed"
 	req.SourceProof.ReceiptOutcome = "failed"
 
-	plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 	}, time.Now())
 	if err != nil {
@@ -462,7 +462,7 @@ func TestWorktreeRetirementPlanAllowsPatchEquivalentAndRefusesUniqueCandidate(t 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := newDivergentRetirementGitFixture(t, tc.equivalent)
-			plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{
+			plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 				Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 			}, time.Date(2026, 7, 15, 7, 0, 0, 0, time.UTC))
 			if err != nil {
@@ -509,7 +509,7 @@ func TestWorktreeRetirementPlanFailsClosedOnDirtyLockAndLiveness(t *testing.T) {
 			if tc.prepare != nil {
 				tc.prepare(t, fixture)
 			}
-			plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{
+			plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 				Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: tc.liveness},
 			}, time.Now())
 			if err != nil {
@@ -529,7 +529,7 @@ func TestWorktreeRetirementPlanRefusesAuthorityDriftAndIncompleteProofs(t *testi
 	fixture := newRetirementGitFixture(t)
 	req := retirementPlanRequest(fixture)
 	retirementRunGit(t, fixture.repo, "update-ref", req.PublicationRef, fixture.candidateTip)
-	plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 	}, time.Now())
 	if err != nil {
@@ -560,7 +560,7 @@ func TestWorktreeRetirementPlanRefusesAuthorityDriftAndIncompleteProofs(t *testi
 			fresh := newRetirementGitFixture(t)
 			req := retirementPlanRequest(fresh)
 			tc.mutate(&req)
-			plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
+			plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 				Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 			}, time.Now())
 			if err != nil {
@@ -579,7 +579,7 @@ func TestWorktreeRetirementPlanRefusesAuthorityDriftAndIncompleteProofs(t *testi
 // reason string, not Eligible.
 func TestWorktreeRetirementPlanBlockedByOperatorKeep(t *testing.T) {
 	fixture := newRetirementGitFixture(t)
-	deps := WorktreeRetirementDependencies{
+	deps := WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 	}
 	now := time.Now()
@@ -617,7 +617,7 @@ func TestWorktreeRetirementPlanBlockedWhenKeepsUnreadable(t *testing.T) {
 	fixture := newRetirementGitFixture(t)
 	req := retirementPlanRequest(fixture)
 	req.KeepsUnreadable = true
-	plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 	}, time.Now())
 	if err != nil {
@@ -632,7 +632,7 @@ func TestWorktreeRetirementPlanRejectsMalformedOrProtectedTargets(t *testing.T) 
 	fixture := newRetirementGitFixture(t)
 	req := retirementPlanRequest(fixture)
 	req.CandidateRef = "candidate"
-	if _, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
+	if _, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 	}, time.Now()); err == nil || !strings.Contains(err.Error(), "full canonical") {
 		t.Fatalf("malformed ref error = %v", err)
@@ -642,7 +642,7 @@ func TestWorktreeRetirementPlanRejectsMalformedOrProtectedTargets(t *testing.T) 
 	req.WorktreePath = fixture.repo
 	req.CandidateRef = req.AuthorityRef
 	req.SourceProof = validRetirementSourceProof(fixture.mainTip)
-	plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 	}, time.Now())
 	if err != nil {
@@ -661,7 +661,7 @@ func TestWorktreeRetirementPlanAlwaysRefusesMainCandidateEvenWhenAuthorityIsAnot
 	req.CandidateRef = "refs/heads/main"
 	req.AuthorityRef = "refs/heads/trunk"
 	req.SourceProof = validRetirementSourceProof(fixture.mainTip)
-	plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 	}, time.Now())
 	if err != nil {
@@ -697,7 +697,7 @@ func TestWorktreeRetirementPlanValidatesContentAddressedRecoveryProof(t *testing
 			fixture := newRetirementGitFixture(t)
 			req := retirementPlanRequest(fixture)
 			tc.mutate(t, &req)
-			plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
+			plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 				Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 			}, time.Now())
 			if err != nil {
@@ -713,7 +713,7 @@ func TestWorktreeRetirementPlanValidatesContentAddressedRecoveryProof(t *testing
 func TestWorktreeRetirementPlanIDSealsCompleteCanonicalPayload(t *testing.T) {
 	fixture := newRetirementGitFixture(t)
 	now := time.Date(2026, 7, 15, 7, 0, 0, 0, time.UTC)
-	first, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{
+	first, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 	}, now)
 	if err != nil {
@@ -724,7 +724,7 @@ func TestWorktreeRetirementPlanIDSealsCompleteCanonicalPayload(t *testing.T) {
 	secondRef := writeRetirementRecoveryProof(t, secondPath, []byte("second recovery body"))
 	secondReq := retirementPlanRequest(fixture)
 	secondReq.RecoveryRefs = []string{secondRef}
-	second, err := BuildWorktreeRetirementPlan(context.Background(), secondReq, WorktreeRetirementDependencies{
+	second, err := BuildWorktreeRetirementPlan(context.Background(), secondReq, WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 	}, now)
 	if err != nil {
@@ -744,7 +744,7 @@ func TestWorktreeRetirementPlanIDSealsCompleteCanonicalPayload(t *testing.T) {
 
 func TestWorktreeRetirementArtifactsAreCreateExclusiveAndIdempotentForSameContent(t *testing.T) {
 	fixture := newRetirementGitFixture(t)
-	plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 	}, time.Now())
 	if err != nil {
@@ -789,7 +789,7 @@ func TestWorktreeRetirementPlanSealsCandidateRelationToSourceCommit(t *testing.T
 			fixture := tc.fixture(t)
 			req := retirementPlanRequest(fixture)
 			req.SourceProof = validRetirementSourceProof(tc.sourceTip(fixture))
-			plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
+			plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 				Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 			}, time.Now())
 			if err != nil {
@@ -809,7 +809,7 @@ func TestWorktreeRetirementPlanRefusesCandidateUncontainedBySourceCommit(t *test
 	req := retirementPlanRequest(fixture)
 	req.SourceProof = validRetirementSourceProof(unrelatedSourceTip)
 
-	plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 	}, time.Now())
 	if err != nil {
@@ -832,7 +832,7 @@ func TestWorktreeRetirementPlanSupportsWorktreeOnlyAndBranchOnlyTargets(t *testi
 			fixture := newRetirementGitFixture(t)
 			req := retirementPlanRequest(fixture)
 			tc.mutate(&req)
-			plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
+			plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 				Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 			}, time.Now())
 			if err != nil {
@@ -865,7 +865,7 @@ func TestWorktreeRetirementPlanRefusesMissingAndPrunableWorktree(t *testing.T) {
 			fixture := newRetirementGitFixture(t)
 			req := retirementPlanRequest(fixture)
 			req.WorktreePath = tc.prepare(t, fixture)
-			plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
+			plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 				Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 			}, time.Now())
 			if err != nil {
@@ -1094,3 +1094,7 @@ func writeRetirementJSON(t *testing.T, path string, value any) {
 		t.Fatal(err)
 	}
 }
+
+// testRetirementRecoveryPreflight supplies the independent custody-owner seam
+// for Authority unit tests. Cross-owner delivery tests use Work's real reader.
+func testRetirementRecoveryPreflight(WorktreeRetirementPlan) error { return nil }

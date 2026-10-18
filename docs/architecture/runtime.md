@@ -286,9 +286,17 @@ are shared with Work through `authority/gitrepository`. Capture reads the exact
 reviewed YAML, authenticates the original ActionIntent/PolicyDecision and completed
 Receipt/Transition/lifecycle event, and preserves the original result bytes.
 It does not repeat deletion, infer success from self-consistent digests, or compare
-historical authority tips to today's main. Supported `sha256-file` recovery bytes
-enter private custody (64 MiB each, 128 MiB total); missing, changed or unsupported
-recovery evidence refuses capture. Optional `action_intent_id` selects an earlier
+historical authority tips to today's main. Native retirement PLAN and new/resumed APPLY require a Work-owned read-only
+recovery-inventory preflight, injected into Authority by the CLI. It reads and
+hash-verifies at most 256 recovery files, each at most 64 MiB, charging every
+proof toward 128 MiB of recovery reads even when distinct paths share a digest.
+Capture uses the same bounded reader. Preflight does not custody bytes, reserve
+capacity, or guarantee later capture: file drift can still refuse capture, and
+the four metadata bodies retain their separate 1 MiB limits outside that recovery
+aggregate. Settled completed-result replay reports historical Git truth before
+new capacity admission; it neither repeats effects nor claims successful custody.
+Supported `sha256-file` recovery bytes enter private custody within those limits;
+missing, changed or unsupported recovery evidence refuses capture. Optional `action_intent_id` selects an earlier
 failed retirement action instead of the completed action. Its authentic failed
 receipt must precede the separately validated completion witness in the owned
 lifecycle and bind the same sealed plan/review. Each action needs its own operator

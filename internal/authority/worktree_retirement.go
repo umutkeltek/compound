@@ -86,6 +86,8 @@ type WorktreeRetirementDependencies struct {
 	Git              WorktreeRetirementGit
 	Liveness         WorktreeRetirementLiveness
 	RecoveryResolver WorktreeRetirementRecoveryResolver
+	// RecoveryInventoryPreflight is required and supplied by the custody owner.
+	RecoveryInventoryPreflight func(WorktreeRetirementPlan) error
 }
 
 // WorktreeRetirementRecoveryProof is verified content-addressed recovery
@@ -148,6 +150,9 @@ type retirementWorktreeRecord struct {
 }
 
 func BuildWorktreeRetirementPlan(ctx context.Context, req WorktreeRetirementPlanRequest, deps WorktreeRetirementDependencies, now time.Time) (WorktreeRetirementPlan, error) {
+	if deps.RecoveryInventoryPreflight == nil {
+		return WorktreeRetirementPlan{}, fmt.Errorf("retirement recovery-inventory preflight is required")
+	}
 	if deps.Git == nil {
 		deps.Git = ExecWorktreeRetirementGit{}
 	}
@@ -226,6 +231,9 @@ func BuildWorktreeRetirementPlan(ctx context.Context, req WorktreeRetirementPlan
 			block("recovery_evidence_invalid: " + recoveryErr.Error())
 		} else {
 			plan.RecoveryProofs = proofs
+			if err := deps.RecoveryInventoryPreflight(plan); err != nil {
+				block("recovery_inventory_preflight_failed: " + err.Error())
+			}
 		}
 	}
 
