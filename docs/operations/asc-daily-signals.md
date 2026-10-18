@@ -116,38 +116,33 @@ ProductSignal ledger idempotency.
 
 ## Funnel-Series JSONL Bridge
 
-If an existing collector already writes App Store Connect funnel rows as
-JSONL (impressions, product_page_views, first_time_downloads, proceeds_usd,
-paying_users, each day annotated with a `coverage` object), Compound should
-not fetch that source a second time either. Use this bridge to map the same
-private product config plus existing funnel rows into the
-`compound product signal --asc-funnel-series` adapter.
+The bridge reads existing `compound.asc_app_daily.v2` rows without fetching Apple.
+Select `impressions`, `product_page_views`, `first_time_downloads` or
+`proceeds_usd` explicitly. These are published dimensional counts or explicit USD
+money, not unique people or complete unsuppressed population totals. The shared
+synthetic contract is `fixtures/product/asc-daily-v2-contract.json`.
 
-Two data traps shape this adapter and are load-bearing, not incidental:
+Rows match only exact `asc_app_id`. For every inclusive calendar day in both
+windows, the selected metric must have a finite numeric value and observed v2
+`metric_evidence`: an exact supported population, null reason, matching rows and
+one complete `source_reports` record. The source records its report/instance,
+processing date, closed segment inventory and an exact declared/fetched segment
+bijection with byte counts and SHA-256 hashes. A missing or null metric, missing
+day, duplicate app/date, legacy row, unsupported population or incomplete source
+refuses the comparison. Unknown days are never silently dropped. A published
+zero counts as an observed day; negative explicit USD proceeds are valid refunds.
 
-- **Map by `asc_app_id`, never by display name.** The row schema this bridge
-  reads has no name-based matching path at all: the Go row type
-  (`internal/product/asc_funnel_series.go`) does not even decode a name/slug
-  field, and the bridge's own row filter (`rowsForApp` in
-  `tools/asc_funnel_series_bridge.ts`) matches strictly on `asc_app_id`.
-- **`coverage.complete_funnel` gates every metric.** On days where it is
-  false (or absent, for rows produced before the collector started emitting
-  it), `impressions` and `product_page_views` read as `0` because they are
-  missing, not because nothing happened. The Go adapter aggregates only
-  `coverage.complete_funnel == true` rows and carries the contributing row
-  count through as `asc:funnel_series:before_complete_funnel_rows:N` /
-  `..._after_complete_funnel_rows:N` evidence. The bridge itself pre-checks
-  the same condition per app/window so a "rows exist but none have confirmed
-  coverage" app is skipped with a specific, honest reason
-  (`no_complete_funnel_rows_in_before_window` /
-  `..._after_window`) rather than silently producing a deflated rate or
-  failing the Go call unpredictably.
+The legacy `coverage.complete_funnel` flag does not certify v2 metrics. Evidence
+refs report `before_observed_metric_days:N` and `after_observed_metric_days:N`.
+The bridge reports an explicit per-metric skipped reason before invoking Go;
+Go independently validates the same contract. Historical rows are not rewritten
+or retrospectively certified by either reader.
 
-`first_time_downloads` can exceed `product_page_views` on the same day
-because iOS allows installing directly from the search card. The derived
-`product_page_conversion_rate` metric can therefore legitimately read above
-1.0; the adapter does not treat that as an error, and records a confounder
-note explaining why on every signal it produces for that metric.
+Aggregate first-time downloads and product-page views are unmatched populations:
+installs can happen without visiting a product page. `product_page_conversion_rate`
+and `app_store_product_page_conversion` are explicitly rejected. There is no
+implicit default metric or substitution. `paying_users` remains unsupported;
+unique-user columns do not establish additive person counts.
 
 ```bash
 bun tools/asc_funnel_series_bridge.ts \
@@ -156,18 +151,17 @@ bun tools/asc_funnel_series_bridge.ts \
   --change-event "Describe the product or App Store change being evaluated." \
   --before 2026-07-01/2026-07-07 \
   --after 2026-07-08/2026-07-14 \
-  --metric product_page_conversion_rate,impressions,first_time_downloads \
+  --metric impressions,first_time_downloads \
   --json
 ```
 
-Add `--apply` only when the intended target is the current Compound runtime.
-For tests and rehearsals, use a temporary `COMPOUND_HOME` and pass a
-temp-built `--compound-bin`, same as the sales-series bridge.
-
-Regression proof:
+Add `--apply` only for the intended current Compound runtime. Tests and rehearsals
+use temporary `COMPOUND_HOME` and a temp-built `--compound-bin`. A source change
+alone does not authorize collector installation or actual-series writes.
 
 ```bash
 bun test tools/asc_funnel_series_bridge.test.ts
+go test ./internal/product -run ASCFunnel -count=1
 ```
 
 ## Acquisition Report Bridge

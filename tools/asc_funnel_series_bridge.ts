@@ -9,15 +9,13 @@ type AppConfig = {
   asc_app_id: string;
 };
 
-type FunnelCoverage = {
-  complete_funnel?: boolean;
-};
-
 type FunnelRow = {
   asc_app_id?: string;
   date?: string;
-  coverage?: FunnelCoverage;
-  [key: string]: unknown;
+  schema_version?: string;
+  metric_evidence?: Record<string, {status?:string;reason?:unknown;population?:string;source_report_key?:string;matched_rows?:number}>;
+  source_reports?: Record<string, {report_id?:string;report_name?:string;instance_id?:string;processing_date?:string;granularity?:string;segment_inventory_complete?:boolean;expected_segment_ids?:string[];segments?:Array<{id?:string;sha256?:string;byte_count?:number}>}>;
+  [key:string]:unknown;
 };
 
 type BridgeOptions = {
@@ -61,15 +59,13 @@ const supportedFunnelMetrics = new Set([
   "product_page_views",
   "first_time_downloads",
   "proceeds_usd",
-  "paying_users",
-  "product_page_conversion_rate",
 ]);
 
 function usage(): never {
   console.error(
-    `usage: bun tools/asc_funnel_series_bridge.ts --config <json|yaml> --funnel-series <daily-app-series.jsonl> --change-event <text> [--before YYYY-MM-DD/YYYY-MM-DD --after YYYY-MM-DD/YYYY-MM-DD | --after-end YYYY-MM-DD --days N] [--metric product_page_conversion_rate,impressions] [--compound-bin compound] [--apply] [--json]
+    `usage: bun tools/asc_funnel_series_bridge.ts --config <json|yaml> --funnel-series <daily-app-series.jsonl> --change-event <text> [--before YYYY-MM-DD/YYYY-MM-DD --after YYYY-MM-DD/YYYY-MM-DD | --after-end YYYY-MM-DD --days N] --metric impressions,first_time_downloads [--compound-bin compound] [--apply] [--json]
 
-Bridge an existing App Store Connect funnel daily-app-series JSONL export (impressions, product_page_views, first_time_downloads, proceeds_usd, paying_users, each gated by coverage.complete_funnel) into Compound for every app in --config. Never fetches ASC data itself; it maps by asc_app_id only (never by display name) and invokes the existing adapter:
+Bridge an existing App Store Connect funnel daily-app-series JSONL export (impressions, product_page_views, first_time_downloads, proceeds_usd, requiring v2 selected-metric evidence on every calendar day) into Compound for every app in --config. Never fetches ASC data itself; it maps by asc_app_id only (never by display name) and invokes the existing adapter:
   compound product signal --asc-funnel-series`,
   );
   process.exit(2);
@@ -103,25 +99,21 @@ function loadFunnelRows(path: string): FunnelRow[] {
     });
 }
 
-function parseMetricList(raw: string | undefined): string[] {
-  const metrics = (raw ?? "product_page_conversion_rate")
-    .split(",")
-    .map((metric) => metric.trim())
-    .filter(Boolean);
-  if (metrics.length === 0) throw new Error("at least one metric required");
+function parseMetricList(raw?: string): string[] {
+  if (!raw?.trim()) throw new Error("explicit selected metric required; no default substitution");
+  const metrics = raw.split(",").map(metric => metric.trim());
   for (const metric of metrics) {
-    if (!supportedFunnelMetrics.has(metric)) {
-      throw new Error(`unsupported funnel metric ${metric}; supported=${[...supportedFunnelMetrics].join(",")}`);
-    }
+    if (["product_page_conversion_rate","app_store_product_page_conversion","conversion_rate"].includes(metric)) throw new Error("conversion rejected: unmatched download and product-page populations");
+    if (!supportedFunnelMetrics.has(metric)) throw new Error(`unsupported funnel metric ${metric}`);
   }
-  return metrics;
+  return [...new Set(metrics)];
 }
 
 // planFunnelSeriesApplications is the automatic per-product mapping step: it
 // never asks the caller to look up an asc_app_id by hand and never guesses one
 // from a display name. Skips are explicit and reasoned, distinguishing "no
 // rows for this app at all" from "rows exist but none have confirmed
-// complete-funnel coverage" — the second is the failure mode the naive
+// selected-metric evidence" — the second is the failure mode the naive
 // display-name-mapping incident (and every silently-deflated rate since) would
 // otherwise hide.
 function planFunnelSeriesApplications(
@@ -134,6 +126,8 @@ function planFunnelSeriesApplications(
   before: string;
   after: string;
 } {
+  parseMetricList(opts.metrics.join(","));
+  validateFunnelRows(rows);
   const windows = resolveWindows(rows, opts);
   const commands: PlannedCommand[] = [];
   const skipped: SkippedApp[] = [];
@@ -149,18 +143,14 @@ function planFunnelSeriesApplications(
       });
       continue;
     }
-    const beforeComplete = beforeAny.filter(isCompleteFunnelRow);
-    const afterComplete = afterAny.filter(isCompleteFunnelRow);
-    if (beforeComplete.length === 0 || afterComplete.length === 0) {
-      skipped.push({
-        product_id: app.product_id,
-        asc_app_id: app.asc_app_id,
-        reason: beforeComplete.length === 0 ? "no_complete_funnel_rows_in_before_window" : "no_complete_funnel_rows_in_after_window",
-      });
-      continue;
-    }
-
     for (const metric of opts.metrics) {
+      const beforeProblem = metricWindowProblem(beforeAny, metric, windows.before);
+      const afterProblem = metricWindowProblem(afterAny, metric, windows.after);
+      if (beforeProblem || afterProblem) {
+        skipped.push({product_id:app.product_id,asc_app_id:app.asc_app_id,
+          reason:`unproven_metric_${beforeProblem ? "before" : "after"}_window:${metric}:${beforeProblem || afterProblem}`});
+        continue;
+      }
       commands.push({
         product_id: app.product_id,
         asc_app_id: app.asc_app_id,
@@ -229,8 +219,60 @@ function rowsForApp(rows: FunnelRow[], appID: string, rawWindow: string): Funnel
   });
 }
 
-function isCompleteFunnelRow(row: FunnelRow): boolean {
-  return row.coverage?.complete_funnel === true;
+const metricContracts: Record<string, {population:string;base:string;name:string;signed?:boolean}> = {
+  impressions:{population:"published_impression_counts",base:"app_store_discovery_and_engagement",name:"App Store Discovery and Engagement"},
+  product_page_views:{population:"published_product_page_view_counts",base:"app_store_discovery_and_engagement",name:"App Store Discovery and Engagement"},
+  first_time_downloads:{population:"published_first_time_download_counts",base:"app_downloads",name:"App Downloads"},
+  proceeds_usd:{population:"published_proceeds_usd",base:"app_store_purchases",name:"App Store Purchases",signed:true},
+};
+
+function validIdentity(value:unknown): value is string { return typeof value === "string" && value.length > 0 && value.trim() === value; }
+
+function validateFunnelRows(rows:FunnelRow[]):void {
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (!validIdentity(row.asc_app_id) || typeof row.date !== "string") throw new Error("funnel row missing exact app_id/date");
+    parseISODate(row.date);
+    const key = `${row.asc_app_id}|${row.date}`;
+    if (seen.has(key)) throw new Error(`duplicate funnel app/date ${key}`);
+    seen.add(key);
+  }
+}
+
+function metricWindowProblem(rows:FunnelRow[], metric:string, rawWindow:string):string|null {
+  const range = parseDateRange(rawWindow);
+  const byDate = new Map(rows.map(row => [row.date,row]));
+  for (let day = range.start; day <= range.end; day = addDays(day,1)) {
+    const date=formatDate(day), row=byDate.get(date);
+    if (!row) return `missing_calendar_day:${date}`;
+    const problem = metricProblem(row,metric);
+    if (problem) return `${date}:${problem}`;
+  }
+  return null;
+}
+
+function metricProblem(row:FunnelRow, metric:string):string|null {
+  const contract=metricContracts[metric], value=row[metric], evidence=row.metric_evidence?.[metric];
+  if (row.schema_version !== "compound.asc_app_daily.v2") return "legacy_or_missing_v2_evidence";
+  if (typeof value !== "number" || !Number.isFinite(value) || (!contract.signed && value < 0)) return "null_missing_or_invalid_value";
+  if (!evidence || evidence.status !== "observed" || evidence.reason !== null || evidence.population !== contract.population || !Number.isSafeInteger(evidence.matched_rows) || evidence.matched_rows! < 1) return "unproven_metric_population";
+  const key=evidence.source_report_key, source=key ? row.source_reports?.[key] : undefined;
+  const suffix=key===`${contract.base}_standard` ? "Standard" : key===`${contract.base}_detailed` ? "Detailed" : null;
+  if (!suffix || !source || source.report_name !== `${contract.name} ${suffix}`) return "source_family_mismatch";
+  if (!validIdentity(source.report_id) || !validIdentity(source.instance_id) || source.granularity !== "DAILY" || source.segment_inventory_complete !== true) return "incomplete_source_inventory";
+  try { parseISODate(source.processing_date ?? ""); } catch { return "invalid_processing_date"; }
+  const expected=source.expected_segment_ids, segments=source.segments;
+  if (!Array.isArray(expected) || expected.length===0 || !Array.isArray(segments) || expected.length!==segments.length) return "incomplete_segment_bijection";
+  const remaining = new Set<string>();
+  for (const id of expected) {
+    if (!validIdentity(id) || remaining.has(id)) return "invalid_declared_segment";
+    remaining.add(id);
+  }
+  for (const segment of segments) {
+    if (!segment || !validIdentity(segment.id) || !remaining.has(segment.id) || !/^[0-9a-f]{64}$/.test(segment.sha256 ?? "") || !Number.isSafeInteger(segment.byte_count) || segment.byte_count! <= 0) return "invalid_fetched_segment";
+    remaining.delete(segment.id);
+  }
+  return remaining.size ? "missing_fetched_segment" : null;
 }
 
 function parseDateRange(raw: string): { start: Date; end: Date } {
@@ -245,7 +287,7 @@ function parseDateRange(raw: string): { start: Date; end: Date } {
 function parseISODate(raw: string): Date {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) throw new Error(`date must be YYYY-MM-DD, got ${raw}`);
   const date = new Date(`${raw}T00:00:00Z`);
-  if (Number.isNaN(date.getTime())) throw new Error(`invalid date ${raw}`);
+  if (Number.isNaN(date.getTime()) || formatDate(date) !== raw) throw new Error(`invalid date ${raw}`);
   return date;
 }
 

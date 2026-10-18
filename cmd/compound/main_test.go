@@ -9091,10 +9091,8 @@ func TestProductSignalImportsASCFunnelSeriesCoverageGatedWindows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 300 (=100+200) and 400 (=150+250) are the coverage.complete_funnel-gated
-	// sums; the fixture also plants a 999999-impressions row in each window
-	// with complete_funnel=false. If those leaked in, Before/After would read
-	// in the hundreds of thousands instead.
+	// Every calendar day has observed v2 impressions evidence, including explicit zeros.
+	// The three-day sums remain 300 and 400; no unknown day is silently dropped.
 	if len(tl.Signals) != 1 || tl.Signals[0].MetricName != "app_store_connect_impressions" || tl.Signals[0].Before != 300 || tl.Signals[0].After != 400 {
 		t.Fatalf("ASC funnel signal timeline = %+v", tl.Signals)
 	}
