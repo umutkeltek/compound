@@ -369,7 +369,9 @@ func (a *OpenCodeAdapter) sandboxProfile(l *openCodeLaunch) string {
 	quote := func(s string) string { b, _ := json.Marshal(s); return string(b) }
 	// Port restriction permits provider HTTPS transport. It does not enforce
 	// hostname identity or TLS; the validated immutable baseURL owns endpoint choice.
-	network := `(allow network-outbound (remote ip "*:443"))`
+	// macOS hostname lookup uses this local resolver socket. Keep its exception
+	// literal so unrelated Unix sockets remain denied.
+	network := `(allow network-outbound (remote ip "*:443")) (allow network-outbound (literal "/private/var/run/mDNSResponder"))`
 	if a.testNetworkPort > 0 {
 		network += fmt.Sprintf(` (allow network-outbound (remote ip "localhost:%d"))`, a.testNetworkPort)
 	}

@@ -77,9 +77,14 @@ are 0500, and the macOS sandbox denies `file-write*` over both complete subtrees
 Other writes stay inside scratch runtime storage. Tools, plugins, MCP, external
 skills, catalog fetch, updates, sharing, and auto-compaction are disabled. Existing
 late host-managed native config causes refusal because it cannot be isolated by
-this adapter. The sandbox permits outbound port 443 for provider transport; this
-does not enforce a hostname or prove TLS. Immutable validated `baseURL` config
-selects the endpoint. This adapter requires macOS sandbox-exec.
+this adapter. The sandbox permits outbound IP port 443 for provider transport and
+the exact local `/private/var/run/mDNSResponder` socket for macOS hostname lookup.
+Other outbound connections, including unrelated Unix sockets, remain denied; the
+resolver exception does not open direct DNS network ports. The regression probes
+local socket connections without making a DNS or provider request: loopback TLS
+controls alone do not exercise the system resolver path. Port restriction does not
+enforce a hostname or prove TLS. Immutable validated `baseURL` config selects the
+endpoint. This adapter requires macOS sandbox-exec.
 
 The shared runner owns heartbeats, governed start, process-group cancellation,
 partial capture, and terminalization. The adapter caps total runtime at 90 seconds,
