@@ -665,10 +665,18 @@ func TestApplyWorktreeRetirementReobservesRecoveryProofAtFinalBoundary(t *testin
 	fixture := newRetirementGitFixture(t)
 	home, paths, report := authorizedRetirementFixture(t, fixture)
 	runner := &recordingRetirementGit{delegate: ExecWorktreeRetirementGit{}}
-	resolver := &controlledRetirementRecoveryResolver{delegate: SHA256FileWorktreeRetirementRecoveryResolver{}, mutationCount: runner.mutationCount}
+	resolver := &controlledRetirementRecoveryResolver{delegate: SHA256FileWorktreeRetirementRecoveryResolver{}}
 	records := 0
 	deps := successfulRetirementApplyDependencies(runner, &records)
 	deps.RecoveryResolver = resolver
+	finalBoundaryReached := false
+	deps.AfterPhase = func(phase string) error {
+		if phase == WorktreeRetirementPhaseRefDeleted {
+			finalBoundaryReached = true
+			resolver.fail = true
+		}
+		return nil
+	}
 	result, err := ApplyWorktreeRetirement(context.Background(), WorktreeRetirementApplyRequest{
 		HomePath: home, PlanPath: paths.PlanPath, ReviewReportPath: report.ReviewPath,
 		Actor: "codex:test", OwnerProof: validRetirementOwnerProof(), SourceProof: validRetirementSourceProof(fixture.candidateTip),
@@ -676,7 +684,7 @@ func TestApplyWorktreeRetirementReobservesRecoveryProofAtFinalBoundary(t *testin
 	if err == nil || !strings.Contains(err.Error(), "recovery evidence") || result.Status != "partial" {
 		t.Fatalf("final recovery result=%+v err=%v", result, err)
 	}
-	if runner.worktreeRemoveCount() != 1 || runner.refDeleteCount() != 1 || records != 1 || resolver.calls < 2 {
+	if !finalBoundaryReached || runner.worktreeRemoveCount() != 1 || runner.refDeleteCount() != 1 || records != 1 || resolver.calls < 2 {
 		t.Fatalf("final recovery calls=%+v records=%d resolver=%d", runner.calls, records, resolver.calls)
 	}
 }
@@ -858,8 +866,12 @@ func (r *recordingRetirementGit) refDeleteCount() int {
 }
 
 func authorizedRetirementFixture(t *testing.T, fixture retirementGitFixture) (string, WorktreeRetirementPlanPaths, WorktreeRetirementReviewReport) {
+	return authorizedRetirementRequestFixture(t, retirementPlanRequest(fixture))
+}
+
+func authorizedRetirementRequestFixture(t *testing.T, req WorktreeRetirementPlanRequest) (string, WorktreeRetirementPlanPaths, WorktreeRetirementReviewReport) {
 	t.Helper()
-	plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 	}, time.Date(2026, 7, 15, 7, 0, 0, 0, time.UTC))
 	if err != nil {

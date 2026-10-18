@@ -219,6 +219,34 @@ Governance is enforced at adapters: **a mutating adapter rejects a mutation lack
 
 Current source-delivery close rule (superseding the earlier v0.4 migration wording in the WorkEnvelope row): only a revalidated `landed` `compound.work_land_check.v0.5` report is current close evidence. It binds the candidate tip to the latest attached, owned, content-addressed `proof-check:pfrs_*` source snapshot when one exists. The normal proof observes the bound target checkout. A checkout-independent CAS landing is also certifiable when the bound repository identity remains valid, no worktree checks out the target ref, and the target plus required publication refs already contain the certified candidate; dirt in the active foreign feature checkout is then outside target cleanliness. A target ref checked out in any worktree retains the ordinary checkout gate. Historical v0.3 and v0.4 reports remain readable stale evidence and require a fresh v0.5 check; v0.3 predates repository identity and v0.4 predates sealed proof source identity.
 
+### Worktree retirement source authority
+
+Work projects retirement source authority from the actual terminal WorkEnvelope,
+its matching terminal Receipt and complete proof chain, and its sealed v0.5
+LandCheck revalidated against current repository state. The projection binds the
+source work digest, repository fingerprint, target root/ref, expected base, and
+publication mode/ref. Caller-selected flags and containment booleans do not select
+the publication mode.
+
+The canonical main worktree is the operation root. The bound source delivery
+checkout may be linked or detached, but must remain registered in the same Git
+common directory with the matching repository fingerprint. Retirement protects
+that retained checkout independently of the bound target ref.
+
+An explicitly bound `local_only` source requires containment or patch equivalence
+against its retained local target and carries no publication ref/tip. Required
+publication and historical unbound source evidence retain both local-target and
+remote-publication fences. A later valid target descendant does not invalidate
+the source's historical LandCheck. New APPLY and resume reread the exact source
+projection; source, retained refs, and recovery evidence are checked before each
+effect, with current worktree cleanliness/liveness checked before removal. Ref
+deletion retains its candidate-tip CAS and removal remains non-force.
+
+New retirement plans use `compound.worktree_retirement_plan.v0.2`; v0.1 plans
+cannot carry the new source projection. Historical v0.1 identities and completed
+capture readback remain valid evidence. New review and new/resumed effects need
+fresh v0.2 planning and exact operator review, rather than an in-place migration.
+
 ### Full-proof reservation contract
 
 Full-proof reservation is additive WorkEnvelope evidence over the existing `landlease`, not a

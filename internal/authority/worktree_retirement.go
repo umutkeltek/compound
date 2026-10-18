@@ -175,16 +175,24 @@ func BuildWorktreeRetirementPlan(ctx context.Context, req WorktreeRetirementPlan
 	if err := validateRetirementRef(ctx, deps.Git, root, req.AuthorityRef, "refs/heads/"); err != nil {
 		return WorktreeRetirementPlan{}, fmt.Errorf("authority ref: %w", err)
 	}
-	if err := validateRetirementRef(ctx, deps.Git, root, req.PublicationRef, "refs/remotes/"); err != nil {
-		return WorktreeRetirementPlan{}, fmt.Errorf("publication ref: %w", err)
+	requiresPublication := gitrepository.RetirementRequiresPublication(req.SourceProof)
+	if requiresPublication {
+		if err := validateRetirementRef(ctx, deps.Git, root, req.PublicationRef, "refs/remotes/"); err != nil {
+			return WorktreeRetirementPlan{}, fmt.Errorf("publication ref: %w", err)
+		}
+	} else if req.PublicationRef != "" {
+		return WorktreeRetirementPlan{}, fmt.Errorf("local-only source must not name a publication ref")
 	}
 	authorityTip, err := retirementResolveCommit(ctx, deps.Git, root, req.AuthorityRef)
 	if err != nil {
 		return WorktreeRetirementPlan{}, fmt.Errorf("resolve authority ref: %w", err)
 	}
-	publicationTip, err := retirementResolveCommit(ctx, deps.Git, root, req.PublicationRef)
-	if err != nil {
-		return WorktreeRetirementPlan{}, fmt.Errorf("resolve publication ref: %w", err)
+	publicationTip := ""
+	if requiresPublication {
+		publicationTip, err = retirementResolveCommit(ctx, deps.Git, root, req.PublicationRef)
+		if err != nil {
+			return WorktreeRetirementPlan{}, fmt.Errorf("resolve publication ref: %w", err)
+		}
 	}
 	identity, err := ReadGitRepositoryIdentity(root, authorityTip)
 	if err != nil {
@@ -214,7 +222,7 @@ func BuildWorktreeRetirementPlan(ctx context.Context, req WorktreeRetirementPlan
 		}
 	}
 
-	if authorityTip != publicationTip {
+	if requiresPublication && authorityTip != publicationTip {
 		block("authority_publication_tip_mismatch")
 	}
 	if err := validateRetirementOwnerProof(req.OwnerProof); err != nil {
@@ -222,6 +230,9 @@ func BuildWorktreeRetirementPlan(ctx context.Context, req WorktreeRetirementPlan
 	}
 	if err := validateRetirementSourceProof(req.SourceProof); err != nil {
 		block("source_work_proof_invalid: " + err.Error())
+	}
+	if d := req.SourceProof.Delivery; d != nil && (identity.Fingerprint != d.RepositoryFingerprint || req.AuthorityRef != d.TargetLocalRef || req.PublicationRef != d.PublicationRef) {
+		block("source_delivery_target_mismatch")
 	}
 	if len(plan.RecoveryRefs) == 0 {
 		block("recovery_evidence_required")
@@ -248,6 +259,17 @@ func BuildWorktreeRetirementPlan(ctx context.Context, req WorktreeRetirementPlan
 	if len(records) == 0 || !sameRetirementPath(records[0].Path, root) {
 		return WorktreeRetirementPlan{}, fmt.Errorf("--repo must name the canonical main worktree root")
 	}
+	if d := req.SourceProof.Delivery; d != nil {
+		// The delivery checkout may be linked. It must remain in this exact
+		// repository; it is not the canonical root used to perform retirement.
+		retained, registered, inspectErr := inspectRetirementWorktree(ctx, deps, root, d.TargetWorktreeRoot, records)
+		if inspectErr != nil {
+			return WorktreeRetirementPlan{}, fmt.Errorf("inspect retained source delivery checkout: %w", inspectErr)
+		}
+		if !registered || retained.Prunable || retained.GitDir == "" {
+			block("source_delivery_worktree_unavailable")
+		}
+	}
 
 	candidateTip := ""
 	if strings.TrimSpace(req.WorktreePath) != "" {
@@ -262,6 +284,9 @@ func BuildWorktreeRetirementPlan(ctx context.Context, req WorktreeRetirementPlan
 			candidateTip = worktree.Head
 			if sameRetirementPath(worktree.Path, root) {
 				block("canonical_main_worktree_cannot_be_retired")
+			}
+			if d := req.SourceProof.Delivery; d != nil && sameRetirementPath(worktree.Path, d.TargetWorktreeRoot) {
+				block("source_delivery_worktree_cannot_be_retired")
 			}
 			if worktree.Prunable {
 				block("worktree_prunable_metadata_repair_required")
@@ -594,6 +619,9 @@ func inspectRetirementWorktree(ctx context.Context, deps WorktreeRetirementDepen
 }
 
 func classifyRetirementCandidate(ctx context.Context, git WorktreeRetirementGit, repo, candidate, authority, publication string) (string, error) {
+	if publication == "" {
+		return classifyRetirementCandidateAgainst(ctx, git, repo, candidate, authority)
+	}
 	containedAuthority, err := retirementIsAncestor(ctx, git, repo, candidate, authority)
 	if err != nil {
 		return "", err
@@ -814,7 +842,9 @@ func worktreeRetirementPlanEvidenceRefs(plan WorktreeRetirementPlan) []string {
 		plan.SourceProof.LandCheckFileDigest,
 		"repo-fingerprint:" + plan.RepositoryFingerprint,
 		"git-ref:" + plan.AuthorityRef + "@" + plan.AuthorityTip,
-		"git-ref:" + plan.PublicationRef + "@" + plan.PublicationTip,
+	}
+	if plan.PublicationRef != "" {
+		refs = append(refs, "git-ref:"+plan.PublicationRef+"@"+plan.PublicationTip)
 	}
 	refs = append(refs, plan.RecoveryRefs...)
 	for _, proof := range plan.RecoveryProofs {

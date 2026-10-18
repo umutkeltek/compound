@@ -14,7 +14,8 @@ import (
 )
 
 const (
-	WorktreeRetirementPlanSchemaVersion         = "compound.worktree_retirement_plan.v0.1"
+	LegacyWorktreeRetirementPlanSchemaVersion   = "compound.worktree_retirement_plan.v0.1"
+	WorktreeRetirementPlanSchemaVersion         = "compound.worktree_retirement_plan.v0.2"
 	WorktreeRetirementReviewSchemaVersion       = "compound.worktree_retirement_review.v0.1"
 	WorktreeRetirementReviewReportSchemaVersion = "compound.worktree_retirement_review_report.v0.1"
 	WorktreeRetirementResultSchemaVersion       = "compound.worktree_retirement_result.v0.1"
@@ -47,21 +48,34 @@ type WorktreeRetirementOwnerProof struct {
 }
 
 type WorktreeRetirementSourceProof struct {
-	WorkID                string   `json:"work_id"`
-	State                 string   `json:"state"`
-	ProofComplete         bool     `json:"proof_complete"`
-	ActionIntentIDs       []string `json:"action_intent_ids"`
-	PolicyDecisionID      string   `json:"policy_decision_id"`
-	ReceiptID             string   `json:"receipt_id"`
-	ReceiptOutcome        string   `json:"receipt_outcome"`
-	TransitionID          string   `json:"transition_id"`
-	CommitArtifactRef     string   `json:"commit_artifact_ref"`
-	CommitTip             string   `json:"commit_tip"`
-	LandCheckID           string   `json:"land_check_id"`
-	LandCheckEvidenceRef  string   `json:"land_check_evidence_ref"`
-	LandCheckStatus       string   `json:"land_check_status"`
-	LandCheckCandidateTip string   `json:"land_check_candidate_tip"`
-	LandCheckFileDigest   string   `json:"land_check_file_digest"`
+	WorkID                string                            `json:"work_id"`
+	State                 string                            `json:"state"`
+	ProofComplete         bool                              `json:"proof_complete"`
+	ActionIntentIDs       []string                          `json:"action_intent_ids"`
+	PolicyDecisionID      string                            `json:"policy_decision_id"`
+	ReceiptID             string                            `json:"receipt_id"`
+	ReceiptOutcome        string                            `json:"receipt_outcome"`
+	TransitionID          string                            `json:"transition_id"`
+	CommitArtifactRef     string                            `json:"commit_artifact_ref"`
+	CommitTip             string                            `json:"commit_tip"`
+	LandCheckID           string                            `json:"land_check_id"`
+	LandCheckEvidenceRef  string                            `json:"land_check_evidence_ref"`
+	LandCheckStatus       string                            `json:"land_check_status"`
+	LandCheckCandidateTip string                            `json:"land_check_candidate_tip"`
+	LandCheckFileDigest   string                            `json:"land_check_file_digest"`
+	Delivery              *WorktreeRetirementSourceDelivery `json:"delivery,omitempty"`
+}
+
+// WorktreeRetirementSourceDelivery is projected by Work from the terminal
+// envelope only after its receipt and sealed, current land-check agree.
+type WorktreeRetirementSourceDelivery struct {
+	WorkDigest            string `json:"work_digest"`
+	TargetWorktreeRoot    string `json:"target_worktree_root"`
+	RepositoryFingerprint string `json:"repository_fingerprint"`
+	TargetLocalRef        string `json:"target_local_ref"`
+	ExpectedBaseSHA       string `json:"expected_base_sha"`
+	PublicationMode       string `json:"publication_mode"`
+	PublicationRef        string `json:"publication_ref,omitempty"`
 }
 
 type WorktreeRetirementWorktree struct {
@@ -185,6 +199,23 @@ func ValidateRetirementOwnerProof(proof WorktreeRetirementOwnerProof) error {
 }
 
 func ValidateRetirementSourceProof(proof WorktreeRetirementSourceProof) error {
+	if d := proof.Delivery; d != nil {
+		if !ValidRetirementDigest(d.WorkDigest) || !filepath.IsAbs(d.TargetWorktreeRoot) || filepath.Clean(d.TargetWorktreeRoot) != d.TargetWorktreeRoot || !ValidRetirementHex(d.RepositoryFingerprint, 64) || !strings.HasPrefix(d.TargetLocalRef, "refs/heads/") || !ValidRetirementObjectID(d.ExpectedBaseSHA) {
+			return fmt.Errorf("source delivery identity invalid")
+		}
+		switch d.PublicationMode {
+		case "local_only":
+			if d.PublicationRef != "" {
+				return fmt.Errorf("local-only source delivery must not name publication")
+			}
+		case "required":
+			if !strings.HasPrefix(d.PublicationRef, "refs/remotes/") {
+				return fmt.Errorf("source delivery publication ref required")
+			}
+		default:
+			return fmt.Errorf("source delivery publication mode invalid")
+		}
+	}
 	if strings.TrimSpace(proof.WorkID) == "" || (proof.State != "completed" && proof.State != "failed") || !proof.ProofComplete {
 		return fmt.Errorf("completed or failed terminal proof chain required")
 	}
@@ -204,6 +235,12 @@ func ValidateRetirementSourceProof(proof WorktreeRetirementSourceProof) error {
 		return fmt.Errorf("sealed land-check evidence required")
 	}
 	return nil
+}
+
+// RetirementRequiresPublication fails closed for historical/unbound evidence.
+// A convenience land-check containment boolean is never publication authority.
+func RetirementRequiresPublication(proof WorktreeRetirementSourceProof) bool {
+	return ValidateRetirementSourceProof(proof) != nil || proof.Delivery == nil || proof.Delivery.PublicationMode != "local_only"
 }
 
 func ValidRetirementObjectID(value string) bool {
@@ -232,7 +269,13 @@ func DigestRetirementHex(data []byte) string {
 }
 
 func ValidateWorktreeRetirementPlan(plan WorktreeRetirementPlan) error {
-	if plan.SchemaVersion != WorktreeRetirementPlanSchemaVersion {
+	switch plan.SchemaVersion {
+	case LegacyWorktreeRetirementPlanSchemaVersion:
+		if plan.SourceProof.Delivery != nil {
+			return fmt.Errorf("historical retirement plan cannot carry v0.2 source delivery")
+		}
+	case WorktreeRetirementPlanSchemaVersion:
+	default:
 		return fmt.Errorf("worktree retirement plan schema_version must be %s", WorktreeRetirementPlanSchemaVersion)
 	}
 	if !strings.HasPrefix(plan.ID, "wtr_") || filepath.Base(plan.ID) != plan.ID {
@@ -247,11 +290,24 @@ func ValidateWorktreeRetirementPlan(plan WorktreeRetirementPlan) error {
 	if plan.ID != WorktreeRetirementPlanID(plan) {
 		return fmt.Errorf("worktree retirement plan id invalid")
 	}
-	if !ValidRetirementObjectID(plan.AuthorityTip) || !ValidRetirementObjectID(plan.PublicationTip) {
+	if !ValidRetirementObjectID(plan.AuthorityTip) {
 		return fmt.Errorf("worktree retirement plan requires full sealed authority tips")
 	}
-	if !strings.HasPrefix(plan.AuthorityRef, "refs/heads/") || !strings.HasPrefix(plan.PublicationRef, "refs/remotes/") {
+	if !strings.HasPrefix(plan.AuthorityRef, "refs/heads/") {
 		return fmt.Errorf("worktree retirement plan requires canonical authority/publication refs")
+	}
+	if RetirementRequiresPublication(plan.SourceProof) {
+		if !ValidRetirementObjectID(plan.PublicationTip) || !strings.HasPrefix(plan.PublicationRef, "refs/remotes/") {
+			return fmt.Errorf("worktree retirement plan publication invalid")
+		}
+	} else if plan.PublicationRef != "" || plan.PublicationTip != "" {
+		return fmt.Errorf("local-only retirement plan must not name publication")
+	}
+	if d := plan.SourceProof.Delivery; d != nil && (plan.RepositoryFingerprint != d.RepositoryFingerprint || plan.AuthorityRef != d.TargetLocalRef || plan.PublicationRef != d.PublicationRef) {
+		return fmt.Errorf("retirement target differs from source delivery authority")
+	}
+	if d := plan.SourceProof.Delivery; d != nil && plan.Worktree != nil && filepath.Clean(plan.Worktree.Path) == d.TargetWorktreeRoot {
+		return fmt.Errorf("retained source delivery checkout cannot be retired")
 	}
 	if plan.CandidateRef == "" && plan.Worktree == nil {
 		return fmt.Errorf("worktree retirement plan has no retirement target")

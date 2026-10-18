@@ -119,6 +119,70 @@ func TestAuthorityWorktreeRetireCLIPlansReviewsAppliesAndRecordsWorkChain(t *tes
 	}
 }
 
+func TestAuthorityWorktreeRetireCLILocalOnlyUsesTerminalSourceAuthorityWithoutRemote(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newWorktreeRetirementCLIFixtureWithDeliveryCheckout(t, homePath, "completed", "local_only", true)
+	// The terminal source's sealed land-check predates this legitimate later
+	// descendant. Retirement retains today's target, not the historical tip.
+	if err := os.WriteFile(filepath.Join(fixture.deliveryRoot, "later.txt"), []byte("later descendant\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runLandingCLIGit(t, fixture.deliveryRoot, "add", "later.txt")
+	runLandingCLIGit(t, fixture.deliveryRoot, "commit", "-m", "later retained target")
+	if remote := landingCLIOutput(t, fixture.repo, "remote"); remote != "" {
+		t.Fatalf("local-only fixture has a remote: %s", remote)
+	}
+	previousLiveness := worktreeRetirementCLILiveness
+	worktreeRetirementCLILiveness = cliUnusedWorktreeLiveness{}
+	t.Cleanup(func() { worktreeRetirementCLILiveness = previousLiveness })
+	var stdout, stderr bytes.Buffer
+	code := runAuthorityWorktreeRetire(homePath, []string{
+		"plan", "--repo", fixture.repo, "--worktree", fixture.worktree,
+		"--ref", fixture.candidateRef, "--authority-ref", "refs/heads/main",
+		"--owner-work", fixture.ownerWorkID, "--source-work", fixture.sourceWorkID,
+		"--recovery-ref", fixture.recoveryRef, "--json",
+	}, &stdout, &stderr, cliTestNow.Add(10*time.Minute))
+	if code != 0 {
+		t.Fatalf("explicit terminal local_only plan code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	var planned struct {
+		Plan  authority.WorktreeRetirementPlan      `json:"plan"`
+		Paths authority.WorktreeRetirementPlanPaths `json:"paths"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &planned); err != nil {
+		t.Fatal(err)
+	}
+	if !planned.Plan.Eligible || planned.Plan.PublicationRef != "" || planned.Plan.PublicationTip != "" {
+		t.Fatalf("local-only retirement fabricated publication authority: %+v", planned.Plan)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := runAuthorityWorktreeRetire(homePath, []string{"review", planned.Paths.ReviewYAMLPath,
+		"--decision", "authorize_retirement", "--rationale", "retain the exact local target and recovery body",
+		"--reviewed-by", "operator:test", "--json"}, &stdout, &stderr, cliTestNow.Add(11*time.Minute)); code != 0 {
+		t.Fatalf("review code=%d stderr=%s", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := runAuthorityWorktreeRetire(homePath, []string{"apply", planned.Paths.PlanPath,
+		"--actor", planned.Plan.OwnerProof.LeaseHolder, "--json"}, &stdout, &stderr, cliTestNow.Add(12*time.Minute)); code != 0 {
+		t.Fatalf("apply code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	if _, err := os.Stat(fixture.worktree); !os.IsNotExist(err) || commandRefExists(fixture.repo, fixture.candidateRef) {
+		t.Fatalf("retirement did not remove exact redundant surfaces: %v", err)
+	}
+	if !commandRefExists(fixture.repo, "refs/heads/main") || commandRefExists(fixture.repo, "refs/remotes/origin/main") {
+		t.Fatal("local-only retirement lost retained target or invented a publication ref")
+	}
+	if _, err := os.Stat(fixture.deliveryRoot); err != nil {
+		t.Fatalf("bound linked delivery checkout was not retained: %v", err)
+	}
+}
+
 func TestAuthorityWorktreeRetireCLIRetiresRedundantSurfaceWithoutReclassifyingFailedSource(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
@@ -480,6 +544,7 @@ func (r *cliFailOnceRetirementRefDelete) Run(ctx context.Context, repo string, a
 
 type worktreeRetirementCLIFixture struct {
 	repo         string
+	deliveryRoot string
 	worktree     string
 	candidateRef string
 	candidateTip string
@@ -493,6 +558,14 @@ func newWorktreeRetirementCLIFixture(t *testing.T, homePath string) worktreeReti
 }
 
 func newWorktreeRetirementCLIFixtureWithSourceOutcome(t *testing.T, homePath, sourceOutcome string) worktreeRetirementCLIFixture {
+	return newWorktreeRetirementCLIFixtureWithDelivery(t, homePath, sourceOutcome, "required")
+}
+
+func newWorktreeRetirementCLIFixtureWithDelivery(t *testing.T, homePath, sourceOutcome, publicationMode string) worktreeRetirementCLIFixture {
+	return newWorktreeRetirementCLIFixtureWithDeliveryCheckout(t, homePath, sourceOutcome, publicationMode, false)
+}
+
+func newWorktreeRetirementCLIFixtureWithDeliveryCheckout(t *testing.T, homePath, sourceOutcome, publicationMode string, linked bool) worktreeRetirementCLIFixture {
 	t.Helper()
 	repo, base, candidate := initLandingCLIRepo(t)
 	worktreePath := filepath.Join(filepath.Dir(repo), "candidate-worktree")
@@ -504,9 +577,20 @@ func newWorktreeRetirementCLIFixtureWithSourceOutcome(t *testing.T, homePath, so
 	runLandingCLIGit(t, repo, "add", "main-only.txt")
 	runLandingCLIGit(t, repo, "commit", "-m", "main descendant")
 	mainTip := landingCLIOutput(t, repo, "rev-parse", "HEAD")
-	runLandingCLIGit(t, repo, "update-ref", "refs/remotes/origin/main", mainTip)
+	publicationRef := ""
+	if publicationMode == "required" {
+		publicationRef = "refs/remotes/origin/main"
+		runLandingCLIGit(t, repo, "update-ref", publicationRef, mainTip)
+	}
 	repo, _ = filepath.EvalSymlinks(repo)
 	worktreePath, _ = filepath.EvalSymlinks(worktreePath)
+	deliveryRoot := repo
+	if linked {
+		deliveryRoot = filepath.Join(filepath.Dir(repo), "retained-delivery")
+		runLandingCLIGit(t, repo, "checkout", "-b", "fixture-host")
+		runLandingCLIGit(t, repo, "worktree", "add", deliveryRoot, "main")
+		deliveryRoot, _ = filepath.EvalSymlinks(deliveryRoot)
+	}
 
 	store, err := work.Open(homePath)
 	if err != nil {
@@ -515,8 +599,8 @@ func newWorktreeRetirementCLIFixtureWithSourceOutcome(t *testing.T, homePath, so
 	source, err := store.Create(work.CreateInput{
 		Owner: "source-land", Actor: "codex:source", SuccessPredicate: "candidate landed and published",
 		GitDelivery: &envelope.GitDeliveryContract{
-			TargetWorktreeRoot: repo, TargetLocalRef: "refs/heads/main", ExpectedBaseSHA: base,
-			PublicationMode: "required", PublicationRef: "refs/remotes/origin/main",
+			TargetWorktreeRoot: deliveryRoot, TargetLocalRef: "refs/heads/main", ExpectedBaseSHA: base,
+			PublicationMode: publicationMode, PublicationRef: publicationRef,
 		},
 	}, cliTestNow)
 	if err != nil {
@@ -554,7 +638,7 @@ func newWorktreeRetirementCLIFixtureWithSourceOutcome(t *testing.T, homePath, so
 		t.Fatal(err)
 	}
 	recoveryRef := writeWorktreeRetirementCLIRecoveryProof(t, filepath.Join(filepath.Dir(repo), "recovery.bundle"), []byte("candidate recovery body"))
-	return worktreeRetirementCLIFixture{repo: repo, worktree: worktreePath, candidateRef: "refs/heads/candidate", candidateTip: candidate, ownerWorkID: owner.ID, sourceWorkID: source.ID, recoveryRef: recoveryRef}
+	return worktreeRetirementCLIFixture{repo: repo, deliveryRoot: deliveryRoot, worktree: worktreePath, candidateRef: "refs/heads/candidate", candidateTip: candidate, ownerWorkID: owner.ID, sourceWorkID: source.ID, recoveryRef: recoveryRef}
 }
 
 func completeDetachedSourceBoundProofForCLITest(

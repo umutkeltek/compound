@@ -63,6 +63,7 @@ type WorktreeRetirementApplyDependencies struct {
 	Liveness                   WorktreeRetirementLiveness
 	RecoveryResolver           WorktreeRetirementRecoveryResolver
 	RecoveryInventoryPreflight func(WorktreeRetirementPlan) error
+	SourceProofResolver        func(string) (WorktreeRetirementSourceProof, error)
 	Evaluate                   func(action envelope.ActionIntent, now time.Time) (envelope.PolicyDecision, error)
 	RecordOutcome              func(outcome WorktreeRetirementActionOutcome, now time.Time) (WorktreeRetirementActionProof, error)
 	// AfterPhase is an injectable crash boundary used to prove durable resume.
@@ -128,6 +129,9 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 	if err != nil {
 		return WorktreeRetirementResult{}, err
 	}
+	if plan.SchemaVersion != WorktreeRetirementPlanSchemaVersion {
+		return WorktreeRetirementResult{}, fmt.Errorf("historical retirement plan requires fresh v0.2 planning and review")
+	}
 	if !plan.Eligible {
 		return WorktreeRetirementResult{}, fmt.Errorf("worktree retirement plan is not eligible")
 	}
@@ -145,6 +149,9 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 		return WorktreeRetirementResult{}, err
 	}
 	if err := validateRetirementSourceProof(req.SourceProof); err != nil {
+		return WorktreeRetirementResult{}, err
+	}
+	if err := verifyRetirementSourceCurrent(deps, plan); err != nil {
 		return WorktreeRetirementResult{}, err
 	}
 	if err := VerifyWorktreeRetirementRecoveryProofs(ctx, plan.RecoveryProofs, deps.RecoveryResolver); err != nil {
@@ -319,6 +326,9 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 		baseResult.Phase = pending.Phase
 	}
 	if pending.Phase == WorktreeRetirementPhaseWorktreeRemovalStarted {
+		if err := verifyRetirementMutationBoundary(ctx, deps, plan, true, now); err != nil {
+			return recordWorktreeRetirementFailure(deps, plan, report, pending, baseResult, resultPath, false, "retirement authority changed before worktree removal", err, now)
+		}
 		if _, err := deps.Git.Run(ctx, plan.RepoRoot, "worktree", "remove", plan.Worktree.Path); err != nil {
 			return recordWorktreeRetirementFailure(deps, plan, report, pending, baseResult, resultPath, false, "worktree removal failed", err, now)
 		}
@@ -364,6 +374,9 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 		baseResult.Phase = pending.Phase
 	}
 	if pending.Phase == WorktreeRetirementPhaseRefDeletionStarted {
+		if err := verifyRetirementMutationBoundary(ctx, deps, plan, false, now); err != nil {
+			return recordWorktreeRetirementFailure(deps, plan, report, pending, baseResult, resultPath, baseResult.WorktreeRemoved, "retirement authority changed before ref deletion", err, now)
+		}
 		if _, err := deps.Git.Run(ctx, plan.RepoRoot, "update-ref", "-d", plan.CandidateRef, plan.CandidateTip); err != nil {
 			baseResult.WorktreeRemoved = plan.Worktree != nil
 			return recordWorktreeRetirementFailure(deps, plan, report, pending, baseResult, resultPath, baseResult.WorktreeRemoved, "candidate ref CAS deletion failed", err, now)
@@ -393,6 +406,9 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 
 	if err := verifyRetirementFinalState(ctx, deps.Git, plan); err != nil {
 		return recordWorktreeRetirementFailure(deps, plan, report, pending, baseResult, resultPath, true, "final retirement verification failed", err, now)
+	}
+	if err := verifyRetirementSourceCurrent(deps, plan); err != nil {
+		return recordWorktreeRetirementFailure(deps, plan, report, pending, baseResult, resultPath, true, "final source proof verification failed", err, now)
 	}
 	if err := VerifyWorktreeRetirementRecoveryProofs(ctx, plan.RecoveryProofs, deps.RecoveryResolver); err != nil {
 		return recordWorktreeRetirementFailure(deps, plan, report, pending, baseResult, resultPath, true, "final recovery evidence verification failed", err, now)
@@ -546,10 +562,57 @@ func reconcileRetirementRefDeletionStarted(ctx context.Context, git WorktreeReti
 	return true, nil
 }
 
+func verifyRetirementSourceCurrent(deps WorktreeRetirementApplyDependencies, plan WorktreeRetirementPlan) error {
+	if plan.SourceProof.Delivery == nil {
+		return nil
+	}
+	if deps.SourceProofResolver == nil {
+		return fmt.Errorf("current terminal source proof resolver required")
+	}
+	current, err := deps.SourceProofResolver(plan.SourceProof.WorkID)
+	if err != nil {
+		return fmt.Errorf("current terminal source proof: %w", err)
+	}
+	if !reflect.DeepEqual(current, plan.SourceProof) {
+		return fmt.Errorf("terminal source delivery changed; fresh retirement planning required")
+	}
+	return validateRetirementSourceProof(current)
+}
+
+func verifyRetirementMutationBoundary(ctx context.Context, deps WorktreeRetirementApplyDependencies, plan WorktreeRetirementPlan, worktreePresent bool, now time.Time) error {
+	if err := verifyRetirementSourceCurrent(deps, plan); err != nil {
+		return err
+	}
+	if err := verifyRetirementStableRefs(ctx, deps.Git, plan, "before retirement effect"); err != nil {
+		return err
+	}
+	if err := VerifyWorktreeRetirementRecoveryProofs(ctx, plan.RecoveryProofs, deps.RecoveryResolver); err != nil {
+		return err
+	}
+	if worktreePresent {
+		fresh, err := BuildWorktreeRetirementPlan(ctx, WorktreeRetirementPlanRequest{
+			RepoRoot: plan.RepoRoot, WorktreePath: retirementWorktreePath(plan), CandidateRef: plan.CandidateRef,
+			AuthorityRef: plan.AuthorityRef, PublicationRef: plan.PublicationRef,
+			OwnerProof: plan.OwnerProof, SourceProof: plan.SourceProof, RecoveryRefs: plan.RecoveryRefs,
+		}, WorktreeRetirementDependencies{Git: deps.Git, Liveness: deps.Liveness, RecoveryResolver: deps.RecoveryResolver, RecoveryInventoryPreflight: deps.RecoveryInventoryPreflight}, now)
+		if err != nil {
+			return err
+		}
+		return compareRetirementPlanState(plan, fresh)
+	}
+	return nil
+}
+
 func verifyRetirementStableRefs(ctx context.Context, git WorktreeRetirementGit, plan WorktreeRetirementPlan, boundary string) error {
 	authority, err := retirementResolveCommit(ctx, git, plan.RepoRoot, plan.AuthorityRef)
 	if err != nil || authority != plan.AuthorityTip {
 		return fmt.Errorf("authority ref drift %s", boundary)
+	}
+	if !gitrepository.RetirementRequiresPublication(plan.SourceProof) {
+		if plan.PublicationRef != "" || plan.PublicationTip != "" {
+			return fmt.Errorf("local-only retirement publication authority changed %s", boundary)
+		}
+		return nil
 	}
 	publication, err := retirementResolveCommit(ctx, git, plan.RepoRoot, plan.PublicationRef)
 	if err != nil || publication != plan.PublicationTip {
@@ -585,13 +648,8 @@ func retirementPhaseRequiresGitMutation(plan WorktreeRetirementPlan, phase strin
 }
 
 func verifyRetirementResumeState(ctx context.Context, git WorktreeRetirementGit, plan WorktreeRetirementPlan, phase string) error {
-	authority, err := retirementResolveCommit(ctx, git, plan.RepoRoot, plan.AuthorityRef)
-	if err != nil || authority != plan.AuthorityTip {
-		return fmt.Errorf("authority ref drift before retirement resume")
-	}
-	publication, err := retirementResolveCommit(ctx, git, plan.RepoRoot, plan.PublicationRef)
-	if err != nil || publication != plan.PublicationTip {
-		return fmt.Errorf("publication ref drift before retirement resume")
+	if err := verifyRetirementStableRefs(ctx, git, plan, "before retirement resume"); err != nil {
+		return err
 	}
 	switch phase {
 	case WorktreeRetirementPhaseWorktreeRemoved:
@@ -623,13 +681,8 @@ func verifyRetirementFinalState(ctx context.Context, git WorktreeRetirementGit, 
 			return err
 		}
 	}
-	authority, err := retirementResolveCommit(ctx, git, plan.RepoRoot, plan.AuthorityRef)
-	if err != nil || authority != plan.AuthorityTip {
-		return fmt.Errorf("authority ref changed during retirement")
-	}
-	publication, err := retirementResolveCommit(ctx, git, plan.RepoRoot, plan.PublicationRef)
-	if err != nil || publication != plan.PublicationTip {
-		return fmt.Errorf("publication ref changed during retirement")
+	if err := verifyRetirementStableRefs(ctx, git, plan, "during retirement"); err != nil {
+		return err
 	}
 	if len(plan.RecoveryRefs) == 0 {
 		return fmt.Errorf("recovery evidence disappeared")

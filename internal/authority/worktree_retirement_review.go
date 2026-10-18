@@ -108,7 +108,11 @@ func RenderWorktreeRetirementPlan(plan WorktreeRetirementPlan) string {
 	fmt.Fprintf(&b, "- candidate_tip: %s\n", plan.CandidateTip)
 	fmt.Fprintf(&b, "- relation: %s\n", plan.CandidateRelation)
 	fmt.Fprintf(&b, "- authority: %s @ %s\n", plan.AuthorityRef, plan.AuthorityTip)
-	fmt.Fprintf(&b, "- publication: %s @ %s\n", plan.PublicationRef, plan.PublicationTip)
+	if plan.PublicationRef == "" {
+		fmt.Fprintln(&b, "- publication: local_only; retain the bound authority ref")
+	} else {
+		fmt.Fprintf(&b, "- publication: %s @ %s\n", plan.PublicationRef, plan.PublicationTip)
+	}
 	fmt.Fprintf(&b, "- owner_work: %s\n", plan.OwnerProof.WorkID)
 	fmt.Fprintf(&b, "- source_work: %s\n", plan.SourceProof.WorkID)
 	fmt.Fprintf(&b, "- plan_digest: %s\n", plan.PlanDigest)
@@ -193,6 +197,9 @@ func RecordWorktreeRetirementReview(homePath string, review WorktreeRetirementRe
 	plan, err := LoadWorktreeRetirementPlan(planPath)
 	if err != nil {
 		return WorktreeRetirementReviewReport{}, err
+	}
+	if plan.SchemaVersion != WorktreeRetirementPlanSchemaVersion {
+		return WorktreeRetirementReviewReport{}, fmt.Errorf("historical retirement plan requires fresh v0.2 planning and review")
 	}
 	if review.PlanDigest != plan.PlanDigest {
 		return WorktreeRetirementReviewReport{}, fmt.Errorf("worktree retirement review plan digest mismatch")

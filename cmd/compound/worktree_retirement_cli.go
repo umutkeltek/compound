@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -16,7 +15,6 @@ import (
 	"compound/internal/authority"
 	"compound/internal/decisions"
 	"compound/internal/envelope"
-	"compound/internal/eventstore"
 	"compound/internal/policy"
 	"compound/internal/work"
 )
@@ -24,7 +22,7 @@ import (
 var worktreeRetirementCLILiveness authority.WorktreeRetirementLiveness = authority.LSOFWorktreeRetirementLiveness{}
 var worktreeRetirementCLIGit authority.WorktreeRetirementGit = authority.ExecWorktreeRetirementGit{}
 
-const authorityWorktreeRetireUsage = "usage: compound authority worktree-retire <plan --repo ROOT [--worktree PATH] [--ref refs/heads/NAME] --authority-ref refs/heads/main --publication-ref refs/remotes/origin/main --owner-work WORK --source-work WORK --recovery-ref REF... [--json] | review REVIEW.yaml --decision authorize_retirement --rationale TEXT --reviewed-by operator:ID [--json] | apply PLAN.json --actor LEASE_HOLDER [--json]>"
+const authorityWorktreeRetireUsage = "usage: compound authority worktree-retire <plan --repo ROOT [--worktree PATH] [--ref refs/heads/NAME] --authority-ref refs/heads/main [--publication-ref refs/remotes/origin/main] --owner-work WORK --source-work WORK --recovery-ref REF... [--json] | review REVIEW.yaml --decision authorize_retirement --rationale TEXT --reviewed-by operator:ID [--json] | apply PLAN.json --actor LEASE_HOLDER [--json]>"
 
 func runAuthorityWorktreeRetire(homePath string, args []string, stdout, stderr io.Writer, now time.Time) int {
 	if len(args) == 0 {
@@ -41,7 +39,7 @@ func runAuthorityWorktreeRetire(homePath string, args []string, stdout, stderr i
 			fmt.Fprintln(stderr, "authority worktree-retire plan:", err)
 			return 2
 		}
-		for _, required := range []string{"--repo", "--authority-ref", "--publication-ref", "--owner-work", "--source-work"} {
+		for _, required := range []string{"--repo", "--authority-ref", "--owner-work", "--source-work"} {
 			if strings.TrimSpace(values[required]) == "" {
 				fmt.Fprintf(stderr, "authority worktree-retire plan: %s required\n", required)
 				return 2
@@ -187,6 +185,9 @@ func runAuthorityWorktreeRetire(homePath string, args []string, stdout, stderr i
 			HomePath: homePath, PlanPath: args[1], ReviewReportPath: reportPath, Actor: values["--actor"],
 			OwnerProof: ownerProof, SourceProof: sourceProof,
 		}, authority.WorktreeRetirementApplyDependencies{
+			SourceProofResolver: func(id string) (authority.WorktreeRetirementSourceProof, error) {
+				return store.WorktreeRetirementSourceProof(id, now)
+			},
 			RecoveryInventoryPreflight: work.PreflightRetirementRecoveryInventory,
 			Git:                        worktreeRetirementCLIGit, Liveness: worktreeRetirementCLILiveness,
 			Evaluate: func(action envelope.ActionIntent, at time.Time) (envelope.PolicyDecision, error) {
@@ -305,114 +306,8 @@ func loadWorktreeRetirementOwnerProof(store *work.Store, workID string) (authori
 	return authority.WorktreeRetirementOwnerProof{}, fmt.Errorf("owner work %s has no current lease", w.ID)
 }
 
-func loadWorktreeRetirementSourceProof(store *work.Store, homePath, workID string, now time.Time) (authority.WorktreeRetirementSourceProof, error) {
-	item, err := store.ProofChainForWork(strings.TrimSpace(workID))
-	if err != nil {
-		return authority.WorktreeRetirementSourceProof{}, err
-	}
-	w, err := store.Get(strings.TrimSpace(workID))
-	if err != nil {
-		return authority.WorktreeRetirementSourceProof{}, err
-	}
-	if (w.State != "completed" && w.State != "failed") || !item.ProofComplete {
-		return authority.WorktreeRetirementSourceProof{}, fmt.Errorf("source work %s needs completed or failed terminal proof chain: %v", w.ID, item.Problems)
-	}
-	events, err := eventstore.Open(homePath)
-	if err != nil {
-		return authority.WorktreeRetirementSourceProof{}, err
-	}
-	record, err := events.Read(item.ReceiptID)
-	if err != nil {
-		return authority.WorktreeRetirementSourceProof{}, fmt.Errorf("source work %s receipt %s unreadable: %w", w.ID, item.ReceiptID, err)
-	}
-	var receipt envelope.Receipt
-	if err := json.Unmarshal(record.Bytes, &receipt); err != nil {
-		return authority.WorktreeRetirementSourceProof{}, fmt.Errorf("source work %s receipt %s malformed: %w", w.ID, item.ReceiptID, err)
-	}
-	if err := receipt.Validate(); err != nil {
-		return authority.WorktreeRetirementSourceProof{}, fmt.Errorf("source work %s receipt %s invalid: %w", w.ID, item.ReceiptID, err)
-	}
-	if receipt.IDs.WorkID != w.ID {
-		return authority.WorktreeRetirementSourceProof{}, fmt.Errorf("source work %s receipt %s belongs to work %s", w.ID, item.ReceiptID, receipt.IDs.WorkID)
-	}
-	if receipt.Outcome != w.State {
-		return authority.WorktreeRetirementSourceProof{}, fmt.Errorf("source work %s terminal state %s does not match receipt outcome %s", w.ID, w.State, receipt.Outcome)
-	}
-	commitRef, commitTip, err := latestWorktreeRetirementCommit(w.ArtifactIDs)
-	if err != nil {
-		return authority.WorktreeRetirementSourceProof{}, err
-	}
-	var selected work.LandCheckReport
-	var selectedDigest string
-	for i := len(w.EvidenceRefs) - 1; i >= 0; i-- {
-		ref := w.EvidenceRefs[i]
-		if !strings.HasPrefix(ref, "land-check:landcheck_") {
-			continue
-		}
-		id := strings.TrimPrefix(ref, "land-check:")
-		path := filepath.Join(homePath, "work", "land-checks", id+".json")
-		data, readErr := os.ReadFile(path)
-		if readErr != nil {
-			continue
-		}
-		var report work.LandCheckReport
-		if json.Unmarshal(data, &report) != nil || !validWorktreeRetirementLandCheck(report, id, ref, path, commitTip) {
-			continue
-		}
-		digest := sha256.Sum256(data)
-		selected = report
-		selectedDigest = "sha256:" + hex.EncodeToString(digest[:])
-		break
-	}
-	if selected.ID == "" {
-		return authority.WorktreeRetirementSourceProof{}, fmt.Errorf("source work %s has no sealed landed land-check matching %s", w.ID, commitRef)
-	}
-	live, err := store.LandCheck(w.ID, work.LandCheckOptions{CandidateTipSHA: commitTip}, now)
-	if err != nil || live.Status != "landed" {
-		return authority.WorktreeRetirementSourceProof{}, fmt.Errorf("source work %s land-check is not currently landed: status=%s err=%v", w.ID, live.Status, err)
-	}
-	return authority.WorktreeRetirementSourceProof{
-		WorkID: w.ID, State: w.State, ProofComplete: item.ProofComplete,
-		ActionIntentIDs: append([]string{}, item.ActionIntentIDs...), PolicyDecisionID: item.PolicyDecisionID,
-		ReceiptID: item.ReceiptID, ReceiptOutcome: receipt.Outcome, TransitionID: item.TransitionID,
-		CommitArtifactRef: commitRef, CommitTip: commitTip,
-		LandCheckID: selected.ID, LandCheckEvidenceRef: selected.EvidenceRef,
-		LandCheckStatus: selected.Status, LandCheckCandidateTip: selected.CandidateTipSHA,
-		LandCheckFileDigest: selectedDigest,
-	}, nil
-}
-
-func latestWorktreeRetirementCommit(refs []string) (string, string, error) {
-	for i := len(refs) - 1; i >= 0; i-- {
-		if !strings.HasPrefix(refs[i], "commit:") {
-			continue
-		}
-		sha := strings.TrimPrefix(refs[i], "commit:")
-		if (len(sha) != 40 && len(sha) != 64) || !allLowerHex(sha) {
-			return "", "", fmt.Errorf("source work latest commit artifact malformed")
-		}
-		return refs[i], sha, nil
-	}
-	return "", "", fmt.Errorf("source work needs commit:<full-sha> artifact")
-}
-
-func validWorktreeRetirementLandCheck(report work.LandCheckReport, id, evidenceRef, path, commitTip string) bool {
-	if report.SchemaVersion != work.LandCheckSchemaVersion || !report.Recorded || report.Status != "landed" || report.ID != id || report.EvidenceRef != evidenceRef || report.CandidateTipSHA != commitTip || filepath.Clean(report.ProofPath) != filepath.Clean(path) {
-		return false
-	}
-	sealed := report
-	sealed.ID = ""
-	sealed.ContentSHA256 = ""
-	sealed.Recorded = false
-	sealed.EvidenceRef = ""
-	sealed.ProofPath = ""
-	data, err := json.Marshal(sealed)
-	if err != nil {
-		return false
-	}
-	digest := sha256.Sum256(data)
-	content := hex.EncodeToString(digest[:])
-	return report.ContentSHA256 == content && report.ID == "landcheck_"+content[:12]
+func loadWorktreeRetirementSourceProof(store *work.Store, _ string, workID string, now time.Time) (authority.WorktreeRetirementSourceProof, error) {
+	return store.WorktreeRetirementSourceProof(workID, now)
 }
 
 func findAuthorizedWorktreeRetirementReport(planPath string, plan authority.WorktreeRetirementPlan) (string, error) {

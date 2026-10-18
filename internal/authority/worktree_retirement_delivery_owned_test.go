@@ -126,6 +126,7 @@ func newOwnedRetirementFixtureWithFailure(t *testing.T, failure string) ownedRet
 
 	var first WorktreeRetirementResult
 	var completedEffects *recordingRetirementGit
+	finalBoundaryReached := false
 	if failure != "" {
 		injected := errors.New("transient worktree removal")
 		if failure == "remove" {
@@ -133,8 +134,15 @@ func newOwnedRetirementFixtureWithFailure(t *testing.T, failure string) ownedRet
 		} else {
 			completedEffects = &recordingRetirementGit{delegate: ExecWorktreeRetirementGit{}}
 			deps.Git = completedEffects
-			deps.RecoveryResolver = &controlledRetirementRecoveryResolver{
-				delegate: SHA256FileWorktreeRetirementRecoveryResolver{}, mutationCount: completedEffects.mutationCount}
+			resolver := &controlledRetirementRecoveryResolver{delegate: SHA256FileWorktreeRetirementRecoveryResolver{}}
+			deps.RecoveryResolver = resolver
+			deps.AfterPhase = func(phase string) error {
+				if phase == WorktreeRetirementPhaseRefDeleted {
+					finalBoundaryReached = true
+					resolver.fail = true
+				}
+				return nil
+			}
 		}
 		first, err = ApplyWorktreeRetirement(context.Background(), req, deps, now)
 		if err == nil || first.ReceiptID == "" || first.TransitionID == "" {
@@ -143,11 +151,12 @@ func newOwnedRetirementFixtureWithFailure(t *testing.T, failure string) ownedRet
 		if failure == "remove" && (!errors.Is(err, injected) || first.Status != "failed" || first.WorktreeRemoved) {
 			t.Fatalf("unexpected removal failure: %+v, %v", first, err)
 		}
-		if failure != "remove" && (first.Status != "partial" || !first.WorktreeRemoved || !first.RefDeleted) {
+		if failure != "remove" && (!finalBoundaryReached || first.Status != "partial" || !first.WorktreeRemoved || !first.RefDeleted) {
 			t.Fatalf("unexpected final verification failure: %+v, %v", first, err)
 		}
 		req.OwnerProof = retirementTestOwner(t, s, w.ID)
 		deps.RecoveryResolver = nil
+		deps.AfterPhase = nil
 		now = now.Add(time.Second)
 	}
 	result, err := ApplyWorktreeRetirement(context.Background(), req, deps, now)
