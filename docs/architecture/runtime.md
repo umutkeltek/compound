@@ -681,7 +681,11 @@ consumption revalidate the origin. Output JSON alone is never a donor.
 
 On supported Darwin hosts, the native adapter builds a tracked-source-only
 fixture and seals its binary, source/metadata, restricted environment, sandbox,
-system policy, host identity and observable ancestor metadata and directory entries. Literal
+system policy, host identity and observable ancestor metadata and directory entries.
+Host boot identity uses the kernel boot-session UUID: wall-clock corrections can
+shift the reported boot timestamp during the same live boot. A changed UUID
+invalidates reuse; an unavailable or malformed UUID cannot certify a fixture.
+Other host inputs and every existing source, policy and ancestor seal remain bound. Literal
 ancestor-directory reads support the home code's rooted no-follow opens; names,
 inodes and entry types exposed by enumeration are sealed, so unrelated directory
 changes may conservatively prevent reuse. The sandbox permits designated system runtime files and devices, and denies

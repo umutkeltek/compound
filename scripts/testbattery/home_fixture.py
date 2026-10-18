@@ -446,8 +446,19 @@ def inputs(stage):
         read_only.append([name, metadata(p), digest(read_leaf(p))])
     host = [os.getuid(), os.geteuid(), os.getgid(), os.getegid(), sorted(os.getgroups()), sys.platform, os.uname(), sys.version, str(Path(sys.executable).resolve()),
             digest(Path(sys.executable).resolve().read_bytes()), os.stat(stage).st_dev]
-    for key in ("kern.osversion", "kern.boottime", "hw.machine", "hw.logicalcpu"):
-        host.append([key, run(["/usr/sbin/sysctl", "-n", key]).decode().strip()])
+    # Boot timestamps move with wall-clock corrections; the kernel session UUID
+    # identifies a reboot without treating a clock adjustment as a new host.
+    for key in ("kern.osversion", "kern.bootsessionuuid", "hw.machine", "hw.logicalcpu"):
+        try:
+            value = run(["/usr/sbin/sysctl", "-n", key]).decode().strip()
+        except RuntimeError as error:
+            if key == "kern.bootsessionuuid":
+                raise CacheUnavailable("kernel boot session identity unavailable") from error
+            raise
+        if key == "kern.bootsessionuuid" and not re.fullmatch(
+                r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", value):
+            raise CacheUnavailable("invalid kernel boot session identity")
+        host.append([key, value])
     return {
         "stage_directory": str(stage),
         "binary_sha256": digest(read_leaf(stage / "home.test")),

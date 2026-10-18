@@ -1,11 +1,13 @@
 """Filesystem and direct-test falsifiers for the optional fixture accelerator."""
 import importlib.util
+import contextlib
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("fixture", Path(__file__).with_name("home_fixture.py"))
 fixture = importlib.util.module_from_spec(spec)
@@ -155,6 +157,60 @@ class FixtureSafety(unittest.TestCase):
                 fixture.execute_sealed_tests(self.stage, {})
         finally:
             fixture.execute_tests, fixture.require_inputs = execute, check
+
+
+    @contextlib.contextmanager
+    def host_inputs(self):
+        for name in ("home.test", "probe", "policy.sb"):
+            fixture.write_leaf(self.stage / name, b"synthetic fixture input")
+        fixture.make_directory(self.stage / "source")
+        policy = self.stage / "synthetic-system.sb"
+        fixture.write_leaf(policy, b"synthetic system policy")
+        values = {
+            "kern.osversion": "synthetic-build",
+            "kern.boottime": "{ sec = 1000, usec = 100 }",
+            "kern.bootsessionuuid": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "hw.machine": "arm64",
+            "hw.logicalcpu": "8",
+        }
+
+        def sysctl(args, **kwargs):
+            self.assertEqual(args[:2], ["/usr/sbin/sysctl", "-n"])
+            value = values[args[2]]
+            if isinstance(value, Exception):
+                raise value
+            return value.encode()
+
+        with patch.object(fixture, "run", side_effect=sysctl), patch.object(fixture, "SYSTEM_POLICY", policy):
+            yield values
+
+    def test_host_identity_survives_boot_timestamp_clock_adjustment(self):
+        with self.host_inputs() as values:
+            before = fixture.inputs(self.stage)
+            values["kern.boottime"] = "{ sec = 1000, usec = 64417 }"
+            self.assertEqual(fixture.inputs(self.stage)["host_sha256"], before["host_sha256"])
+
+    def test_host_identity_detects_reboot_even_with_same_boot_timestamp(self):
+        with self.host_inputs() as values:
+            before = fixture.inputs(self.stage)
+            values["kern.bootsessionuuid"] = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
+            after = fixture.inputs(self.stage)
+            self.assertNotEqual(after["host_sha256"], before["host_sha256"])
+
+    def test_host_identity_keeps_other_host_inputs_sealed(self):
+        with self.host_inputs() as values:
+            before = fixture.inputs(self.stage)["host_sha256"]
+            values["kern.osversion"] = "replacement-build"
+            self.assertNotEqual(fixture.inputs(self.stage)["host_sha256"], before)
+
+    def test_host_identity_refuses_unavailable_or_invalid_boot_uuid(self):
+        with self.host_inputs() as values:
+            for value in (RuntimeError("sysctl unavailable"), "", "not-a-uuid"):
+                with self.subTest(value=str(value)):
+                    values["kern.bootsessionuuid"] = value
+                    with self.assertRaises(fixture.CacheUnavailable):
+                        fixture.inputs(self.stage)
+
 
     def test_early_exit_fails_and_unexpected_skip_is_ineligible(self):
         source = self.stage / "source" / "internal" / "home"
