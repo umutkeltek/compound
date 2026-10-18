@@ -743,6 +743,10 @@ func readTypedEnvelopeOrDie(path string) envelope.Envelope {
 // cmdMemory is P6: the owned memory ledger re-bound through the spine. candidate-first
 // (reject|park|promote), MVCC-by-fold (as-of recall), provenance + contradiction-over-delete.
 func cmdKnowledge(args []string) {
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+		fmt.Println("usage: compound knowledge <import|extract> ...")
+		return
+	}
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: compound knowledge <import|extract> ...")
 		os.Exit(2)
@@ -2073,6 +2077,10 @@ func loadActionIntent(path string) envelope.ActionIntent {
 
 // cmdWriteback governs candidate updates to owner surfaces.
 func cmdWriteback(args []string) {
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+		fmt.Println(writebackUsageText())
+		return
+	}
 	if len(args) == 0 {
 		writebackUsage()
 		os.Exit(2)
@@ -2150,10 +2158,14 @@ func cmdWritebackNoPromote(args []string) {
 	printJSON(out)
 }
 
-func writebackUsage() {
-	fmt.Fprintln(os.Stderr, `usage:
+func writebackUsageText() string {
+	return `usage:
 compound writeback gate <gate.json> --policy <policy-decision.json> [--record]
-compound writeback no-promote --candidate C --basis B --evidence E1[,E2] [--kind K] [--owner-kind K --owner-ref R] [--expiry RFC3339]`)
+compound writeback no-promote --candidate C --basis B --evidence E1[,E2] [--kind K] [--owner-kind K --owner-ref R] [--expiry RFC3339]`
+}
+
+func writebackUsage() {
+	fmt.Fprintln(os.Stderr, writebackUsageText())
 }
 
 func loadWritebackGate(path string) writeback.OwnerWritebackGate {
@@ -2370,6 +2382,10 @@ func cmdFinding(args []string) {
 		"                                                                source=finding-home,\n" +
 		"                                                                consumer, and the\n" +
 		"                                                                canonical record command)"
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+		fmt.Println(help)
+		return
+	}
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, help)
 		os.Exit(2)
@@ -2860,6 +2876,10 @@ func cmdCaptureShow(args []string) {
 }
 
 func cmdPlacement(args []string) {
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+		fmt.Println("usage: compound placement <target|resolve> ...")
+		return
+	}
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: compound placement <target|resolve> ...")
 		os.Exit(2)
@@ -3849,6 +3869,10 @@ func cliTS(now time.Time) string {
 // cmdContract compiles the EffectiveContract — the instructions/hooks/policies in force
 // for a harness+repo+task (docs/architecture/contracts/README.md).
 func cmdContract(args []string) {
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+		fmt.Println("usage: compound contract <compile|import-hooks|hooks-authority> ...")
+		return
+	}
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: compound contract <compile|import-hooks|hooks-authority> ...")
 		os.Exit(2)
@@ -4690,6 +4714,10 @@ func printHomeCompactReport(r home.CompactReport) {
 
 // cmdEnvelope validates typed runtime envelopes (docs/architecture/runtime.md).
 func cmdEnvelope(args []string) {
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+		fmt.Println("usage: compound envelope <validate <file>...|kinds>")
+		return
+	}
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: compound envelope <validate <file>...|kinds>")
 		os.Exit(2)
@@ -4731,6 +4759,10 @@ func cmdEnvelope(args []string) {
 }
 
 func cmdSchema(args []string) {
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+		fmt.Println("usage: compound schema <list|export|validate> ...")
+		return
+	}
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: compound schema <list|export|validate> ...")
 		os.Exit(2)
@@ -5105,6 +5137,10 @@ func runDistillerWriteback(report distiller.DoctorReport, now time.Time) (writeb
 }
 
 func cmdRuntime(args []string) {
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+		fmt.Println(runtimeUsage())
+		return
+	}
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, runtimeUsage())
 		os.Exit(2)

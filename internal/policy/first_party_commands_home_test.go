@@ -128,3 +128,34 @@ func TestRequireHomeCompatibilityExemptsOnlySoleProductRootHelp(t *testing.T) {
 		}
 	}
 }
+
+func TestRequireHomeCompatibilityExemptsOnlySoleActiveRootHelp(t *testing.T) {
+	missingParent := filepath.Join(t.TempDir(), "missing-parent")
+	t.Setenv("COMPOUND_HOME", filepath.Join(missingParent, "home"))
+	commands := []string{"finding", "knowledge", "writeback", "placement", "contract", "envelope", "schema", "runtime"}
+	admissions := map[string]FirstPartyCommandAdmission{"unrelated": FirstPartyCommandGoverned}
+	for _, command := range commands {
+		admissions[command] = FirstPartyCommandGoverned
+	}
+	catalog := NewFirstPartyCommandCatalog(admissions)
+	for _, command := range commands {
+		for _, args := range [][]string{{"--help"}, {"-h"}} {
+			if err := catalog.RequireHomeCompatibility(command, args); err != nil {
+				t.Fatalf("%s sole help %v: %v", command, args, err)
+			}
+		}
+		for _, args := range [][]string{nil, {"unknown"}, {"--help", "mutate"}, {"-h", "mutate"}, {"--help", "--unknown"}, {"mutate", "payload", "--help"}, {"mutate", "-h"}} {
+			if err := catalog.RequireHomeCompatibility(command, args); err == nil || !strings.Contains(err.Error(), "home manifest is missing") {
+				t.Fatalf("%s non-sole help %v escaped admission: %v", command, args, err)
+			}
+		}
+	}
+	for _, args := range [][]string{{"--help"}, {"-h"}} {
+		if err := catalog.RequireHomeCompatibility("unrelated", args); err == nil {
+			t.Fatalf("unrelated command help %v bypassed admission", args)
+		}
+	}
+	if _, err := os.Lstat(missingParent); !os.IsNotExist(err) {
+		t.Fatalf("compatibility check created missing home parent: %v", err)
+	}
+}

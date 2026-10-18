@@ -170,6 +170,14 @@ func (c FirstPartyCommandCatalog) RequireHomeCompatibility(command string, args 
 	if command == "product" && len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
 		return nil
 	}
+	// These root parsers now return for sole help before any home access.
+	// Mixed or trailing help keeps the ordinary mutation admission.
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+		switch command {
+		case "finding", "knowledge", "writeback", "placement", "contract", "envelope", "schema", "runtime":
+			return nil
+		}
+	}
 	// cmdHome and cmdHookInstall check hasUsageFlag before resolving a home or
 	// dispatching any mutation. Bind these exemptions to those exact parsers
 	// instead of treating help as a global admission bypass for handlers that
