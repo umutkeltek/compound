@@ -25,6 +25,7 @@ type launchdPhaseStart struct {
 	BeforeWork    envelope.WorkEnvelope     `json:"before_work"`
 	BeforeRuntime LaunchdRuntime            `json:"before_runtime"`
 	BeforeBytes   []byte                    `json:"before_bytes"`
+	BeforeOwner   []byte                    `json:"before_owner,omitempty"`
 	Pending       work.ReceiptedActionInput `json:"pending"`
 	AuthorizedAt  time.Time                 `json:"authorized_at"`
 }
@@ -33,6 +34,7 @@ type launchdPhaseOutcome struct {
 	StartDigest string                    `json:"start_digest"`
 	Runtime     LaunchdRuntime            `json:"runtime"`
 	FileSHA256  string                    `json:"file_sha256"`
+	OwnerSHA256 string                    `json:"owner_sha256,omitempty"`
 	Failure     string                    `json:"failure,omitempty"`
 	Final       work.ReceiptedActionInput `json:"final"`
 }
@@ -196,12 +198,20 @@ func launchdPhaseAuthorize(ctx context.Context, home string, store *work.Store, 
 		if err := validateLaunchdReview(home, p, review, now); err != nil {
 			return err
 		}
+		if review.Request.NoEffectContinuation != nil {
+			if _, err := validateLaunchdNoEffectContinuation(home, p, review); err != nil {
+				return err
+			}
+		}
 		current, err := store.Get(p.WorkID)
 		if err != nil {
 			return err
 		}
 		if launchdWorkDigest(current) != launchdWorkDigest(before) {
 			return fmt.Errorf("unrelated work generation drift")
+		}
+		if err := validateLaunchdPhaseOwner(home, p, action.Action); err != nil {
+			return err
 		}
 		b, r, err := launchdCurrent(ctx, env, p)
 		if err != nil {
@@ -286,7 +296,26 @@ func runLaunchdPhase(ctx context.Context, home string, store *work.Store, p Laun
 			if probeErr != nil {
 				failure += "; " + probeErr.Error()
 			}
-			outcome = makeLaunchdOutcome(start, b, r, fmt.Errorf("%s", failure))
+			cause := fmt.Errorf("%s", failure)
+			if start.Name == "restore_owner" && p.Handoff != nil && bytesEqual(start.BeforeOwner, p.Handoff.Owner) && start.Pending.PreEvaluatedDecision != nil {
+				// Only a proven read-only no-effect observation may be retried.
+				// Recheck fresh authority; this callback can never perform a CAS.
+				authorize := launchdPhaseAuthorize(ctx, home, store, p, review, env, start.BeforeWork, start.BeforeBytes, start.BeforeRuntime, start.Pending.Action, *start.Pending.PreEvaluatedDecision)
+				cause = store.ReauthorizeReceiptedActionReservation(p.WorkID, start.Pending, start.AuthorizedAt, start.Pending, start.AuthorizedAt, func() error {
+					if err := authorize(); err != nil {
+						return err
+					}
+					return observeLaunchdUnchangedOwnership(home, p)
+				})
+				b, r, probeErr = launchdCurrent(ctx, env, p)
+				if cause == nil {
+					cause = probeErr
+				}
+				if cause == nil {
+					cause = launchdStateMatches(p, b, r, p.Original, "disabled", "absent")
+				}
+			}
+			outcome = makeLaunchdPhaseOutcome(home, p, start, b, r, cause)
 			if err = writeLaunchdArtifact(home, stem+".outcome.json", outcome); err != nil {
 				return launchdPhaseCommit{}, err
 			}
@@ -323,20 +352,40 @@ func runLaunchdPhase(ctx context.Context, home string, store *work.Store, p Laun
 		return launchdPhaseCommit{}, fmt.Errorf("exact launchd phase grant denied")
 	}
 	in := work.ReceiptedActionInput{Action: a, PreEvaluatedDecision: &pd, ExpectedWorkState: "running", OutcomePending: true, Outcome: "blocked", Summary: "awaiting observed launchd phase outcome", MoveType: "control_plane_repair", ProofRefs: []string{"launchd-review:" + review.ID, "launchd-plan:" + p.ID}, BeforeRefs: []string{"sha256:" + launchdBytesDigest(beforeBytes), "launchd-runtime:" + launchdDigest(beforeRuntime)}}
+	var owner []byte
+	if name == "handoff" || name == "restore_owner" {
+		owner, err = readLaunchdOwner(home, p)
+		if err != nil {
+			return launchdPhaseCommit{}, err
+		}
+		in.BeforeRefs = append(in.BeforeRefs, "launchd-owner:sha256:"+launchdBytesDigest(owner))
+	}
 	authorize := launchdPhaseAuthorize(ctx, home, store, p, review, env, before, beforeBytes, beforeRuntime, a, pd)
 	if err = store.ReserveReceiptedAction(p.WorkID, in, now, authorize); err != nil {
 		return launchdPhaseCommit{}, err
 	}
-	start = launchdPhaseStart{PlanID: p.ID, ReviewID: review.ID, Direction: direction, Index: index, Name: name, BeforeWork: before, BeforeRuntime: beforeRuntime, BeforeBytes: beforeBytes, Pending: in, AuthorizedAt: now}
+	start = launchdPhaseStart{PlanID: p.ID, ReviewID: review.ID, Direction: direction, Index: index, Name: name, BeforeWork: before, BeforeRuntime: beforeRuntime, BeforeBytes: beforeBytes, BeforeOwner: owner, Pending: in, AuthorizedAt: now}
 	start.Digest = launchdDigest(start)
 	if err = writeLaunchdArtifact(home, stem+".started.json", start); err != nil {
 		return launchdPhaseCommit{}, err
+	}
+	if crash := launchdCheckpoint(env, name+":before_effect"); crash != nil {
+		return launchdPhaseCommit{}, crash
 	}
 	// This store-owned reauthorization fences exact work/lease authority and
 	// re-runs the live policy/readback callback immediately before the effect.
 	err = store.ReauthorizeReceiptedActionReservation(p.WorkID, in, now, in, now, func() error {
 		if err := authorize(); err != nil {
 			return err
+		}
+		if review.Request.NoEffectContinuation != nil {
+			if name != "restore_owner" {
+				return fmt.Errorf("no-effect continuation cannot execute another phase")
+			}
+			return observeLaunchdUnchangedOwnership(home, p)
+		}
+		if name == "handoff" || name == "restore_owner" {
+			return launchdOwnerEffect(home, p, name)
 		}
 		return launchdEffect(ctx, env, p, name)
 	})
@@ -347,10 +396,13 @@ func runLaunchdPhase(ctx context.Context, home string, store *work.Store, p Laun
 	if err == nil {
 		err = readErr
 	}
-	if err == nil {
+	if err == nil && name != "handoff" && name != "restore_owner" {
 		err = launchdPostcondition(p, name, b, r)
 	}
-	outcome = makeLaunchdOutcome(start, b, r, err)
+	if err == nil && (name == "handoff" || name == "restore_owner") {
+		err = launchdStateMatches(p, b, r, p.Original, "disabled", "absent")
+	}
+	outcome = makeLaunchdPhaseOutcome(home, p, start, b, r, err)
 	if saveErr := writeLaunchdArtifact(home, stem+".outcome.json", outcome); saveErr != nil {
 		return launchdPhaseCommit{}, saveErr
 	}
@@ -363,6 +415,9 @@ func runLaunchdPhase(ctx context.Context, home string, store *work.Store, p Laun
 	}
 	if crash := launchdCheckpoint(env, name+":after_receipt"); crash != nil {
 		return commit, crash
+	}
+	if outcome.Final.Outcome != "completed" && err == nil {
+		err = fmt.Errorf("%s", outcome.Failure)
 	}
 	return commit, err
 }
@@ -432,17 +487,19 @@ func executeLaunchdRepair(ctx context.Context, home, planID, reviewID, actor str
 	if err != nil {
 		return result, err
 	}
-	activeName := "active-" + launchdDigest(p.Domain + "/" + p.Label)[:24] + ".json"
+	activeName := launchdActiveName(p)
 	var active struct {
 		PlanID string `json:"plan_id"`
 	}
 	if err = readLaunchdArtifact(home, activeName, &active); err == nil {
 		if active.PlanID != p.ID {
-			return result, fmt.Errorf("another same-label plan requires terminal reconciliation")
+			if p.Handoff == nil || active.PlanID != p.Handoff.FromPlanID || (rollback && !launchdOwnerRestoreStarted(home, p) && launchdUnchangedHandoff(home, p) != nil) {
+				return result, fmt.Errorf("another same-label plan requires terminal reconciliation")
+			}
 		}
 	} else if os.IsNotExist(err) {
-		if rollback {
-			return result, fmt.Errorf("no active owned plan to roll back")
+		if rollback || p.Handoff != nil {
+			return result, fmt.Errorf("no active owned plan to roll back or hand off")
 		}
 		if err = validateLaunchdReview(home, p, review, launchdNow(env)); err != nil {
 			return result, err
@@ -455,14 +512,33 @@ func executeLaunchdRepair(ctx context.Context, home, planID, reviewID, actor str
 		return result, err
 	}
 	expectedWork := review.WorkSHA256
+	continuation := review.Request.NoEffectContinuation
 	names := []string{"replace", "enable", "bootstrap"}
+	if p.Handoff != nil {
+		names = append([]string{"handoff"}, names...)
+	}
 	if rollback {
-		names, err = launchdRollbackPhases(ctx, home, p, env, review)
+		if continuation != nil {
+			result.Phases, err = validateLaunchdNoEffectContinuation(home, p, review)
+			names = []string{"restore_owner"}
+		} else {
+			names, err = launchdRollbackPhases(ctx, home, p, env, review)
+		}
 		if err != nil {
 			return result, err
 		}
+	} else if continuation != nil {
+		return result, fmt.Errorf("no-effect continuation authorizes rollback observation only")
 	}
-	for i, name := range names {
+	for position, name := range names {
+		i := position
+		if continuation != nil {
+			i = continuation.Index
+		}
+		if !rollback && p.Handoff != nil {
+			// Preserve immutable legacy apply indexes; ownership is a prefix phase.
+			i = map[string]int{"handoff": 3, "replace": 0, "enable": 1, "bootstrap": 2}[name]
+		}
 		var committed launchdPhaseCommit
 		stem := launchdPhaseStem(p, result.Direction, i)
 		if err = readLaunchdArtifact(home, stem+".committed.json", &committed); err == nil {
@@ -501,7 +577,7 @@ func executeLaunchdRepair(ctx context.Context, home, planID, reviewID, actor str
 		if os.IsNotExist(startedErr) {
 			if !rollback {
 				switch name {
-				case "replace":
+				case "handoff", "replace":
 					err = launchdStateMatches(p, b, r, p.Original, "disabled", "absent")
 				case "enable":
 					err = launchdStateMatches(p, b, r, p.Candidate, "disabled", "absent")
@@ -546,7 +622,7 @@ func executeLaunchdRepair(ctx context.Context, home, planID, reviewID, actor str
 	}
 	// Keep a successful apply's ownership pointer for explicit rollback. Only a
 	// verified rollback releases it; no automatic inverse effects run on error.
-	if rollback {
+	if rollback && p.Handoff == nil {
 		path, _ := launchdArtifactPath(home, activeName)
 		if err = os.Remove(path); err != nil {
 			return result, err
@@ -578,6 +654,8 @@ func validateLaunchdRollbackPrecondition(p LaunchdRepairPlan, name string, b []b
 		}
 	case "restore":
 		return launchdStateMatches(p, b, r, p.Candidate, "disabled", "absent")
+	case "restore_owner":
+		return launchdStateMatches(p, b, r, p.Original, "disabled", "absent")
 	}
 	return nil
 }
@@ -626,6 +704,9 @@ func launchdRollbackPhases(ctx context.Context, home string, p LaunchdRepairPlan
 	if bytesEqual(b, p.Candidate) && !bytesEqual(p.Candidate, p.Original) {
 		names = append(names, "restore")
 	}
+	if p.Handoff != nil {
+		names = append(names, "restore_owner")
+	}
 	manifest.Names = names
 	manifest.Anchor = anchor
 	if err = writeLaunchdArtifact(home, name, manifest); err != nil {
@@ -635,7 +716,11 @@ func launchdRollbackPhases(ctx context.Context, home string, p LaunchdRepairPlan
 }
 func launchdRollbackAnchor(home string, p LaunchdRepairPlan) (string, string, error) {
 	var commits []launchdPhaseCommit
-	for i := 0; i < 3; i++ {
+	indices := []int{0, 1, 2}
+	if p.Handoff != nil {
+		indices = append([]int{3}, indices...)
+	}
+	for _, i := range indices {
 		var c launchdPhaseCommit
 		err := readLaunchdArtifact(home, launchdPhaseStem(p, "apply", i)+".committed.json", &c)
 		if os.IsNotExist(err) {
@@ -780,10 +865,11 @@ func launchdObservedPhaseDigest(out launchdPhaseOutcome) string {
 		StartDigest  string                 `json:"start_digest"`
 		Runtime      LaunchdRuntime         `json:"runtime"`
 		FileSHA256   string                 `json:"file_sha256"`
+		OwnerSHA256  string                 `json:"owner_sha256,omitempty"`
 		Failure      string                 `json:"failure"`
 		Outcome      string                 `json:"outcome"`
 		Changed      bool                   `json:"changed"`
 		Summary      string                 `json:"summary"`
 		FailureCause *envelope.FailureCause `json:"failure_cause"`
-	}{out.StartDigest, out.Runtime, out.FileSHA256, out.Failure, out.Final.Outcome, out.Final.Changed, out.Final.Summary, out.Final.FailureCause})
+	}{out.StartDigest, out.Runtime, out.FileSHA256, out.OwnerSHA256, out.Failure, out.Final.Outcome, out.Final.Changed, out.Final.Summary, out.Final.FailureCause})
 }

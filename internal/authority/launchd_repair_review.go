@@ -17,19 +17,20 @@ import (
 const launchdExactReviewProtocol = "exact-approval-v2"
 
 type LaunchdReviewRequest struct {
-	ApprovalProtocol string                `json:"approval_protocol,omitempty"`
-	Purpose          string                `json:"purpose"`
-	RollbackAnchor   string                `json:"rollback_anchor,omitempty"`
-	PlanID           string                `json:"plan_id"`
-	PlanDigest       string                `json:"plan_digest"`
-	GrantID          string                `json:"grant_id"`
-	Grant            policy.StandingGrant  `json:"grant"`
-	ConfigRevision   string                `json:"config_revision"`
-	ReviewedBy       string                `json:"reviewed_by"`
-	EvidenceRef      string                `json:"evidence_ref"`
-	ExpiresAt        time.Time             `json:"expires_at"`
-	BeforeWork       envelope.WorkEnvelope `json:"before_work"`
-	Action           envelope.ActionIntent `json:"action"`
+	ApprovalProtocol     string                       `json:"approval_protocol,omitempty"`
+	Purpose              string                       `json:"purpose"`
+	RollbackAnchor       string                       `json:"rollback_anchor,omitempty"`
+	NoEffectContinuation *LaunchdNoEffectContinuation `json:"no_effect_continuation,omitempty"`
+	PlanID               string                       `json:"plan_id"`
+	PlanDigest           string                       `json:"plan_digest"`
+	GrantID              string                       `json:"grant_id"`
+	Grant                policy.StandingGrant         `json:"grant"`
+	ConfigRevision       string                       `json:"config_revision"`
+	ReviewedBy           string                       `json:"reviewed_by"`
+	EvidenceRef          string                       `json:"evidence_ref"`
+	ExpiresAt            time.Time                    `json:"expires_at"`
+	BeforeWork           envelope.WorkEnvelope        `json:"before_work"`
+	Action               envelope.ActionIntent        `json:"action"`
 }
 type LaunchdRepairReview struct {
 	ID         string                  `json:"id"`
@@ -137,13 +138,40 @@ func reviewLaunchdRepairPlan(home, planID, grantID, reviewedBy, evidence string,
 	// Keep legacy requests/actions/approvals unchanged as audit evidence.
 	// A new protocol issues a fresh exact-bound action under the same plan.
 	prefix := p.ID + "." + purpose + ".exact-v2"
+	var continuation *LaunchdNoEffectContinuation
+	var failedPrefix []launchdPhaseCommit
+	if purpose == "rollback" && p.Handoff != nil {
+		var failed launchdPhaseCommit
+		if e := readLaunchdArtifact(home, launchdPhaseStem(p, "rollback", 0)+".committed.json", &failed); e == nil && failed.Outcome == "failed" {
+			failedPrefix, err = launchdNoEffectPrefix(home, p, -1)
+			if err != nil {
+				return out, err
+			}
+			continuation = &LaunchdNoEffectContinuation{Index: len(failedPrefix), PrefixSHA256: launchdNoEffectPrefixDigest(home, p, failedPrefix)}
+			if len(continuation.PrefixSHA256) != 64 {
+				return out, fmt.Errorf("no-effect prefix digest unavailable")
+			}
+			prefix = p.ID + ".rollback.no-effect-" + launchdDigest([]any{continuation, grantID, grant, launchdDigest(cfg), reviewedBy, evidence, expiry})[:24] + ".exact-v2"
+		} else if e != nil && !os.IsNotExist(e) {
+			return out, e
+		}
+	}
 	requestName := prefix + ".review-request.json"
 	var req LaunchdReviewRequest
 	err = readLaunchdArtifact(home, requestName, &req)
 	if os.IsNotExist(err) {
-		req = LaunchdReviewRequest{ApprovalProtocol: launchdExactReviewProtocol, Purpose: purpose, PlanID: p.ID, PlanDigest: p.Digest, GrantID: grantID, Grant: grant, ConfigRevision: launchdDigest(cfg), ReviewedBy: reviewedBy, EvidenceRef: evidence, ExpiresAt: expiry, BeforeWork: current}
+		req = LaunchdReviewRequest{ApprovalProtocol: launchdExactReviewProtocol, Purpose: purpose, NoEffectContinuation: continuation, PlanID: p.ID, PlanDigest: p.Digest, GrantID: grantID, Grant: grant, ConfigRevision: launchdDigest(cfg), ReviewedBy: reviewedBy, EvidenceRef: evidence, ExpiresAt: expiry, BeforeWork: current}
 		if purpose == "rollback" {
 			anchor, sha, err := launchdRollbackAnchor(home, p)
+			if continuation != nil {
+				// A fresh exact approval binds the actual current generation,
+				// including earlier expired review actions. The failed prefix is
+				// separately sealed, linked, and authenticated; it is not replayed.
+				anchor, sha, err = continuation.PrefixSHA256, launchdWorkDigest(current), nil
+				if !launchdContinuationContainsPrefix(home, p, req, failedPrefix) {
+					return out, fmt.Errorf("current work does not retain failed no-effect prefix")
+				}
+			}
 			if err != nil {
 				return out, err
 			}
@@ -170,7 +198,7 @@ func reviewLaunchdRepairPlan(home, planID, grantID, reviewedBy, evidence string,
 	} else if err != nil {
 		return out, err
 	}
-	if req.ApprovalProtocol != launchdExactReviewProtocol || req.Purpose != purpose || req.PlanID != p.ID || req.PlanDigest != p.Digest || req.GrantID != grantID || !reflect.DeepEqual(req.Grant, grant) || req.ConfigRevision != launchdDigest(cfg) || req.ReviewedBy != reviewedBy || req.EvidenceRef != evidence || !req.ExpiresAt.Equal(expiry) || !reflect.DeepEqual(req.Action, launchdReviewRequestAction(p, req)) {
+	if req.ApprovalProtocol != launchdExactReviewProtocol || req.Purpose != purpose || req.PlanID != p.ID || req.PlanDigest != p.Digest || req.GrantID != grantID || !reflect.DeepEqual(req.Grant, grant) || req.ConfigRevision != launchdDigest(cfg) || req.ReviewedBy != reviewedBy || req.EvidenceRef != evidence || !req.ExpiresAt.Equal(expiry) || !reflect.DeepEqual(req.NoEffectContinuation, continuation) || !reflect.DeepEqual(req.Action, launchdReviewRequestAction(p, req)) {
 		return out, fmt.Errorf("review request drift; create a new native plan")
 	}
 	out.ActionIntentID = req.Action.ID
@@ -210,6 +238,9 @@ func reviewLaunchdRepairPlan(home, planID, grantID, reviewedBy, evidence string,
 	return out, nil
 }
 func validateLaunchdReviewEvidence(home string, p LaunchdRepairPlan, r LaunchdRepairReview) error {
+	if c := r.Request.NoEffectContinuation; c != nil && (r.Request.Purpose != "rollback" || p.Handoff == nil || c.Index < 1 || len(c.PrefixSHA256) != 64 || r.Request.RollbackAnchor != c.PrefixSHA256) {
+		return fmt.Errorf("invalid no-effect continuation review")
+	}
 	if r.Request.ApprovalProtocol != "" && r.Request.ApprovalProtocol != launchdExactReviewProtocol {
 		return fmt.Errorf("unknown launchd review approval protocol")
 	}

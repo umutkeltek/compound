@@ -14,11 +14,11 @@ import (
 	homepkg "compound/internal/home"
 )
 
-const repairUsage = "usage: compound schedule repair plan --work W --actor A --plist P --candidate P --source-proofs P | review --plan ID --grant ID --reviewed-by operator:NAME --evidence REF --expires RFC3339 [--rollback] | apply|rollback --plan ID --review ID --actor A [--json]"
+const repairUsage = "usage: compound schedule repair plan --work W --actor A --plist P --candidate P --source-proofs P [--handoff-from OLD_PLAN] | review --plan ID --grant ID --reviewed-by operator:NAME --evidence REF --expires RFC3339 [--rollback] | apply|rollback --plan ID --review ID --actor A [--json]"
 
 type repairFlags struct {
-	work, actor, plist, candidate, proofs, plan, grant, review, reviewedBy, evidence, expires string
-	rollback, json                                                                            bool
+	work, actor, plist, candidate, proofs, plan, grant, review, reviewedBy, evidence, expires, handoff string
+	rollback, json                                                                                     bool
 }
 
 func parseRepairFlags(args []string) (string, repairFlags, error) {
@@ -37,6 +37,7 @@ func parseRepairFlags(args []string) (string, repairFlags, error) {
 		fs.StringVar(&f.plist, "plist", "", "existing plist")
 		fs.StringVar(&f.candidate, "candidate", "", "candidate plist")
 		fs.StringVar(&f.proofs, "source-proofs", "", "explicit executable/script proof JSON")
+		fs.StringVar(&f.handoff, "handoff-from", "", "exact terminal successful predecessor plan")
 	case "review":
 		fs.StringVar(&f.plan, "plan", "", "plan ID")
 		fs.StringVar(&f.grant, "grant", "", "exact grant ID")
@@ -112,7 +113,11 @@ func runScheduleRepair(args []string) int {
 			break
 		}
 		var p authority.LaunchdRepairPlan
-		p, err = authority.BuildLaunchdRepairPlan(ctx, env, f.work, f.actor, f.plist, f.candidate, proofs)
+		if f.handoff == "" {
+			p, err = authority.BuildLaunchdRepairPlan(ctx, env, f.work, f.actor, f.plist, f.candidate, proofs)
+		} else {
+			p, err = authority.BuildLaunchdRepairPlanWithHandoff(ctx, home, env, f.work, f.actor, f.plist, f.candidate, proofs, f.handoff)
+		}
 		if err == nil {
 			err = authority.RecordLaunchdRepairPlan(home, p, time.Now().UTC())
 		}

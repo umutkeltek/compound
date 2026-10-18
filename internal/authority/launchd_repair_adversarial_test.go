@@ -454,6 +454,11 @@ func newAdversarialLiveFixture(t *testing.T) *adversarialLiveFixture {
 
 func (f *adversarialLiveFixture) sealReview(t *testing.T, rollback bool) LaunchdRepairReview {
 	t.Helper()
+	return f.sealReviewGrant(t, rollback, "grant_example_launchd")
+}
+
+func (f *adversarialLiveFixture) sealReviewGrant(t *testing.T, rollback bool, grantID string) LaunchdRepairReview {
+	t.Helper()
 	reviewer := "operator:fixture"
 	expiry := f.now.Add(15 * time.Minute)
 	evidence := "fixture:independent-launchd-review"
@@ -461,7 +466,7 @@ func (f *adversarialLiveFixture) sealReview(t *testing.T, rollback bool) Launchd
 	if rollback {
 		fn = ReviewLaunchdRepairRollbackPlan
 	}
-	r, err := fn(f.home, f.plan.ID, "grant_example_launchd", reviewer, evidence, expiry, f.now)
+	r, err := fn(f.home, f.plan.ID, grantID, reviewer, evidence, expiry, f.now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,7 +500,7 @@ func (f *adversarialLiveFixture) sealReview(t *testing.T, rollback bool) Launchd
 	if !policy.Allowed(recorded.Decision) {
 		t.Fatalf("exact fixture approval refused: %+v", recorded.Decision)
 	}
-	r, err = fn(f.home, f.plan.ID, "grant_example_launchd", reviewer, evidence, expiry, f.now)
+	r, err = fn(f.home, f.plan.ID, grantID, reviewer, evidence, expiry, f.now)
 	if err != nil {
 		t.Fatal(err)
 	}

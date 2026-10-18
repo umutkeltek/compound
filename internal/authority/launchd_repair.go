@@ -31,24 +31,25 @@ type LaunchdSourceProof struct {
 	SHA256       string `json:"sha256"`
 }
 type LaunchdRepairPlan struct {
-	ID                  string               `json:"id"`
-	Digest              string               `json:"digest"`
-	AuthorizationDigest string               `json:"authorization_digest"`
-	WorkID              string               `json:"work_id"`
-	Actor               string               `json:"actor"`
-	CreatedAt           time.Time            `json:"created_at"`
-	UserHome            string               `json:"user_home"`
-	UID                 int                  `json:"uid"`
-	Label               string               `json:"label"`
-	Domain              string               `json:"domain"`
-	PlistPath           string               `json:"plist_path"`
-	Original            []byte               `json:"original"`
-	Candidate           []byte               `json:"candidate"`
-	Mode                uint32               `json:"mode"`
-	OriginalArgs        []string             `json:"original_args"`
-	CandidateArgs       []string             `json:"candidate_args"`
-	Runtime             LaunchdRuntime       `json:"runtime"`
-	SourceProofs        []LaunchdSourceProof `json:"source_proofs"`
+	ID                  string                  `json:"id"`
+	Digest              string                  `json:"digest"`
+	AuthorizationDigest string                  `json:"authorization_digest"`
+	WorkID              string                  `json:"work_id"`
+	Actor               string                  `json:"actor"`
+	CreatedAt           time.Time               `json:"created_at"`
+	UserHome            string                  `json:"user_home"`
+	UID                 int                     `json:"uid"`
+	Label               string                  `json:"label"`
+	Domain              string                  `json:"domain"`
+	PlistPath           string                  `json:"plist_path"`
+	Original            []byte                  `json:"original"`
+	Candidate           []byte                  `json:"candidate"`
+	Mode                uint32                  `json:"mode"`
+	OriginalArgs        []string                `json:"original_args"`
+	CandidateArgs       []string                `json:"candidate_args"`
+	Runtime             LaunchdRuntime          `json:"runtime"`
+	SourceProofs        []LaunchdSourceProof    `json:"source_proofs"`
+	Handoff             *LaunchdTerminalHandoff `json:"handoff,omitempty"`
 }
 
 func launchdDigest(v any) string {
