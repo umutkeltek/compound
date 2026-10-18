@@ -211,7 +211,7 @@ func compoundCommandRegistry() map[string]compoundCommand {
 			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead),
 		"notice": heldCommand(func(args []string) { noticecli.RunWith(args, noticeReviewQueue) }).
 			withSubcommandAdmission("flush", policy.FirstPartyCommandGoverned),
-		"schedule": readCommand(schedulecli.Run).
+		"schedule": governedCommand(schedulecli.Run).
 			withSubcommandAdmission("list", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("show", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead),

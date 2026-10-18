@@ -21,6 +21,8 @@ import (
 func Run(args []string) {
 	if len(args) > 0 {
 		switch args[0] {
+		case "repair":
+			os.Exit(runScheduleRepair(args[1:]))
 		case "list", "show", "doctor":
 			if err := validateScheduleFlags(args[0], args[1:], 0); err != nil {
 				fmt.Fprintln(os.Stderr, "error:", err)

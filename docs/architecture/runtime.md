@@ -41,6 +41,12 @@ This is decision compression, not hidden approval or deletion.
 `compound://registries/operator-state` under `COMPOUND_HOME`; policy evaluation cites that authority and uses
 it as a ceiling, not a bypass for public, spend, destructive, or security holds.
 
+`compound schedule list|show|doctor` projects declared plist settings separately from exact current-user GUI launchctl overrides and loaded state. Unknown/error responses remain unknown; loaded does not mean running or successful. `schedule repair plan|review|apply|rollback` delegates one existing calendar-only LaunchAgent to the authority owner. Plans seal original/candidate bytes (only ProgramArguments may differ, preserving executable/script/subcommand prefix), exact target/work, runtime preimage, and explicitly supplied executable/script proofs. Symlinks, Git-owned targets, additional bootstrap triggers and unknown runtime state refuse.
+
+The OS adapter requires an imported, exact `system.launchd.repair_existing` external-side-effect grant with narrow blast radius, exact plist TargetPath, expiry and Destination `launchd:<gui-domain>/<label>:<work-id>:<authorization-digest>`. Review first returns a stable ActionIntent; existing `policy action-plan`/`policy approve` and `work act --intent` must consume an exact one-use operator approval before repeating review can seal it. Baseline allows, reviewer strings, broadened grants and later policy revisions cannot authorize effects. Each replace/enable/bootstrap phase holds the label lock, journals start before effect, rechecks policy/lease/work/source/runtime authority, probes bounded readback, then seals its native Receipt/Transition and resulting work generation. A started phase without an observed outcome receipts ambiguity and stops; it never blindly replays. Other labels remain independent. No kickstart occurs.
+
+Explicit rollback needs a fresh rollback review following the owned phase receipt anchor. It may boot out only this plan's loaded path/argv, restore the exact disabled override and restore original bytes only over its own candidate. Foreign file/service/override edits refuse every rollback effect. Crash journals and original bytes remain under existing `reviews/launchd-repair`; successful apply and failed/partial results retain exact-plan rollback ownership and block a new same-label plan until verified terminal rollback/reconciliation. No new scheduler, WorkDelivery kind or memory authority is introduced.
+
 ---
 
 ## 1. `COMPOUND_HOME` / `.compound` — the runtime body
