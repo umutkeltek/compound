@@ -187,7 +187,7 @@ func compoundCommandRegistry() map[string]compoundCommand {
 		"behavioral-lens": heldCommand(cmdBehavioralLens),
 		"executor-lens":   heldCommand(executorlenscli.RunCLI),
 		"lens-modulate":   heldCommand(cmdLensModulate),
-		"act":             heldCommand(cmdAct),
+		"act":             heldCommand(cmdAct).withSubcommandAdmission("credential-verify", policy.FirstPartyCommandGoverned),
 		"actuator":        heldCommand(actuatorcli.RunCLI),
 		"capture":         heldCommand(cmdCapture),
 		"intent":          heldCommand(cmdIntent),

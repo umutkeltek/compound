@@ -36,6 +36,7 @@ func actUsage() string {
 	return "usage:\n" +
 		"  compound act repoint --target-path P --target-id KEY --value V --work W [--confirm] [--capability CAP] [--home P] [--json]\n" +
 		"  " + actcli.PaddleSandboxUsage() + "\n" +
+		"  " + actcli.CredentialVerificationUsage() + "\n" +
 		"  compound act post (--from-work W | --draft D --at RFC3339 | --content -) [--work W] --transport NAME [--confirm] [--home P] [--json]\n" +
 		"    Governed outbound write: repoint the dotted KEY inside the YAML/JSON config at P to V.\n" +
 		"    DRY-RUN by default (shows current -> proposed + the PolicyDecision, writes nothing).\n" +
@@ -63,6 +64,8 @@ func runActWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 		return 2
 	}
 	switch args[0] {
+	case "credential-verify":
+		return actcli.RunCredentialVerification(args[1:], stdout, stderr)
 	case "paddle-sandbox-notification":
 		return actcli.RunPaddleSandboxNotification(args[1:], stdout, stderr)
 	case "repoint":
