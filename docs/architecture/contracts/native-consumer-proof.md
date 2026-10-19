@@ -60,6 +60,13 @@ physical-device skip does not prove device behavior.
 Its native flat Failure Message child is retained as diagnostic structure, never
 counted as an additional test; nested cases or hidden result fields are refused.
 
+Passed Test Case nodes may carry flat, passed Arguments children from native parameterized tests.
+Each argument requires a nonblank name unique within that parent, with no node identifier,
+children, or nested test nodes. The same name may appear under different parents. Arguments
+are diagnostic expansions: each logical Test Case still counts once, and summary counts and
+required test identities must agree. Orphan, nested, failed, skipped, unnamed, duplicate, and
+mixed diagnostic arguments are rejected. No expected argument cardinality is inferred.
+
 Xcode consumers also require xcodebuild and xcrun even if omitted from required_tools.
 Before the source-owned command launches, a read-only preflight uses the same
 explicit child environment, including DEVELOPER_DIR only when declared. It checks

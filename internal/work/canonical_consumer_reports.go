@@ -123,6 +123,7 @@ func validateConsumerGoReport(c CanonicalConsumer, body []byte) error {
 type consumerXcodeNode struct {
 	NodeType       string              `json:"nodeType"`
 	NodeIdentifier string              `json:"nodeIdentifier"`
+	Name           string              `json:"name"`
 	Result         string              `json:"result"`
 	Children       []consumerXcodeNode `json:"children"`
 	TestNodes      []consumerXcodeNode `json:"testNodes"`
@@ -170,13 +171,41 @@ func validateConsumerXcodeReport(c CanonicalConsumer, summaryBody, testsBody []b
 			if n.NodeIdentifier == "" || observed[n.NodeIdentifier] != "" || len(n.TestNodes) != 0 {
 				return fmt.Errorf("invalid or duplicate Xcode test leaf")
 			}
-			// Native skipped cases carry a flat Failure Message child (for
-			// example a physical-device-only reason). It is diagnostic, not a
-			// second test. Do not let it conceal nested cases or result fields.
+			// Native Test Case children are flat, diagnostic-only structure.
+			// Skipped cases may carry a Failure Message (for example a
+			// physical-device-only reason); Passed cases may carry flat
+			// Arguments children that describe Swift Testing parameter
+			// expansion. Each logical Test Case still counts exactly once;
+			// the argument children are diagnostic, never additional tests.
+			argumentNames := map[string]bool{}
 			for _, diagnostic := range n.Children {
-				if n.Result != "Skipped" || diagnostic.NodeType != "Failure Message" ||
-					diagnostic.NodeIdentifier != "" || diagnostic.Result != "" ||
-					len(diagnostic.Children)+len(diagnostic.TestNodes) != 0 {
+				switch diagnostic.NodeType {
+				case "Failure Message":
+					if n.Result != "Skipped" || diagnostic.NodeIdentifier != "" || diagnostic.Result != "" ||
+						len(diagnostic.Children)+len(diagnostic.TestNodes) != 0 {
+						return fmt.Errorf("unsupported or nested Xcode test diagnostic")
+					}
+				case "Arguments":
+					if n.Result != "Passed" {
+						return fmt.Errorf("unsupported or nested Xcode test diagnostic")
+					}
+					if strings.TrimSpace(diagnostic.Name) == "" {
+						return fmt.Errorf("Xcode argument node requires a nonblank name")
+					}
+					if diagnostic.Result != "Passed" {
+						return fmt.Errorf("Xcode argument node %q did not pass: %s", diagnostic.Name, diagnostic.Result)
+					}
+					if diagnostic.NodeIdentifier != "" {
+						return fmt.Errorf("Xcode argument node %q must not carry a nodeIdentifier", diagnostic.Name)
+					}
+					if len(diagnostic.Children)+len(diagnostic.TestNodes) != 0 {
+						return fmt.Errorf("Xcode argument node %q must be flat", diagnostic.Name)
+					}
+					if argumentNames[diagnostic.Name] {
+						return fmt.Errorf("duplicate Xcode argument name %q under %s", diagnostic.Name, n.NodeIdentifier)
+					}
+					argumentNames[diagnostic.Name] = true
+				default:
 					return fmt.Errorf("unsupported or nested Xcode test diagnostic")
 				}
 			}
@@ -193,6 +222,15 @@ func validateConsumerXcodeReport(c CanonicalConsumer, summaryBody, testsBody []b
 			}
 			observed[n.NodeIdentifier] = n.Result
 			return nil
+		}
+		// Argument nodes are only meaningful as flat children of a Passed
+		// Test Case. Anywhere else — root, Test Suite, or any group node —
+		// they are rejected.
+		if n.NodeType == "Arguments" {
+			if strings.TrimSpace(n.Name) == "" {
+				return fmt.Errorf("orphan Xcode argument node requires a nonblank name")
+			}
+			return fmt.Errorf("orphan Xcode argument node %q outside Passed Test Case", n.Name)
 		}
 		if n.Result == "Failed" {
 			return fmt.Errorf("failed Xcode test group")
