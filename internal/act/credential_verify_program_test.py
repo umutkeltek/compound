@@ -24,7 +24,7 @@ def request():
         "profile_id": "fixture.invalid", "attempt_id": "20261017t130000z-aaaaaaaaaaaaaaaa",
         "program_sha256": h, "effect_set": "existing-local-postgres-maintenance-auth-v1",
         "witness": {"ref": "rec_fixture_metadata", "sha256": h, "observed_at": "2026-10-17T12:59:00Z"},
-        "resource": {"account": "123456789012", "region": "fixture-region", "instance": "fixture:instance:example", "address": "203.0.113.10"},
+        "resource": {"account": "000000000000", "region": "fixture-region", "instance": "fixture:instance:example", "address": "10.0.0.10"},
         "ssh": {"alias": "target.fixture.invalid", "user": "fixture", "port": 22,
                 "identity_file": "/fixture/identity", "known_hosts_file": "/fixture/known_hosts",
                 "known_hosts_sha256": h, "host_key_sha256": "SHA256:" + "A" * 43,
@@ -227,7 +227,7 @@ class PureProtocolTests(unittest.TestCase):
                     self.assertFalse(any(call[0] in ("positive", "negative") for call in runtime.calls))
 
     def test_post_catalog_correlates_live_positive_sessions_to_pinned_cluster(self):
-        for field, value in (("pid", 9999), ("user", "wrong_role"), ("database", "fixture_db"), ("address", "203.0.113.9")):
+        for field, value in (("pid", 9999), ("user", "wrong_role"), ("database", "fixture_db"), ("address", "10.0.0.9")):
             runtime = MockRuntime(request())
             runtime.cat_mutate = lambda cat, post: cat["sessions"][0].update({field: value}) if post else None
             with self.subTest(field=field), self.assertRaises(program.Refusal):

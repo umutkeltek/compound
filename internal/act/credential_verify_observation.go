@@ -191,7 +191,7 @@ func validateCredentialVerificationObservation(o CredentialVerificationObservati
 			return bad
 		}
 		v := a.Identity
-		if v.User != role.Name || v.SessionUser != role.Name || v.Database != "postgres" || v.Address != "127.0.0.1" || v.Port != 5432 || v.VersionNum != r.Host.VersionNum || v.PID <= 0 || v.PID > 2147483647 {
+		if v.User != role.Name || v.SessionUser != role.Name || v.Database != "postgres" || v.Address != "127.0.0.1" || v.Port != 5432 || v.VersionNum != r.Host.VersionNum || v.PID <= 0 || v.PID > 2_147_483_647 {
 			return bad
 		}
 		s := o.After.Sessions[i/2]

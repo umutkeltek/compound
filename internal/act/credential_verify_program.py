@@ -357,7 +357,7 @@ def catalog_sql(r, pids):
               "\\set app_database '" + r["database"]["name"] + "'\n")
     sessions = "'[]'::pg_catalog.json"
     if pids:
-        require(len(pids) == 2 and all(type(pid) is int and 0 < pid <= 2147483647 for pid in pids))
+        require(len(pids) == 2 and all(type(pid) is int and 0 < pid <= 2_147_483_647 for pid in pids))
         require(pids[0] != pids[1])
         prefix += "\\set pid_one '" + str(pids[0]) + "'\n\\set pid_two '" + str(pids[1]) + "'\n"
         sessions = ("(SELECT pg_catalog.json_agg(pg_catalog.json_build_object('pid',s.pid,'user',s.usename,"
@@ -462,7 +462,7 @@ def run_protocol(r, runtime, generate=secrets.token_urlsafe):
         identity = runtime.positive(r, role, passwords[index])
         exact_keys(identity, "user session_user database address port version_num pid")
         pid = identity["pid"]
-        require(type(pid) is int and 0 < pid <= 2147483647 and pid not in pids)
+        require(type(pid) is int and 0 < pid <= 2_147_483_647 and pid not in pids)
         require(identity == {"user": role["name"], "session_user": role["name"], "database": "postgres",
                              "address": "127.0.0.1", "port": 5432, "version_num": r["host"]["version_num"], "pid": pid})
         pids.append(pid)

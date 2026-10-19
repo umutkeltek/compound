@@ -117,7 +117,7 @@ func newCredentialFixture(t *testing.T) *credentialFixture {
 	digest := strings.Repeat("a", 64)
 	r := policy.CredentialVerificationRequest{SchemaVersion: policy.CredentialVerifySchema, ProfileID: "fixture.invalid", AttemptID: now.Format("20060102t150405z") + "-aaaaaaaaaaaaaaaa", ProgramSHA256: CredentialVerificationProgramSHA256(), EffectSet: policy.CredentialVerifyEffects,
 		Witness:  policy.CredentialVerifyWitness{Ref: "rec_fixture_metadata", ObservedAt: now.Add(-time.Minute).Format(time.RFC3339Nano)},
-		Resource: policy.CredentialVerifyResource{Account: "123456789012", Region: "fixture-region", Instance: "fixture:instance:example", Address: "203.0.113.10"},
+		Resource: policy.CredentialVerifyResource{Account: "000000000000", Region: "fixture-region", Instance: "fixture:instance:example", Address: "10.0.0.10"},
 		SSH:      policy.CredentialVerifySSH{Alias: "target.fixture.invalid", User: "fixture", Port: 22, IdentityFile: "/fixture/identity", KnownHostsFile: "/fixture/known_hosts", KnownHostsSHA256: digest, HostKeySHA256: "SHA256:" + strings.Repeat("A", 43), InterpreterSHA256: digest, ClientPath: "/usr/lib/postgresql/17/bin/psql", ClientSHA256: digest, ClientVersion: "psql (PostgreSQL) 17.11", SudoSHA256: digest},
 		Host:     policy.CredentialVerifyHost{Hostname: "host.fixture.invalid", MachineID: strings.Repeat("a", 32), BootID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", SystemIdentifier: "1234567890123456789", VersionNum: "170011"},
 		File:     policy.CredentialVerifyFile{Path: "/srv/fixture/.env", Device: 1, Inode: 2, Bytes: 300, MtimeNS: "1792197133436814154", CtimeNS: "1792197133436814154", SHA256: digest},
