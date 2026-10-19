@@ -261,6 +261,9 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 		fmt.Fprintf(os.Stderr, "error: bind execution selection: %v; no RunAttempt minted and envelope was not advanced\n", err)
 		workAdvanceExecuteExit(1)
 	}
+	// Capacity preflight and guarded start must see the same bounded run.
+	// The signal-derived context still owns cancellation of the process group.
+	runInput.Timeout = launchTimeout
 	if preflight, ok := adapter.(harness.PreflightAdapter); ok {
 		resolved, err := preflight.Preflight(launchCtx, runInput)
 		if err != nil {
@@ -269,13 +272,6 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 		}
 		runInput = resolved
 	}
-	// A governed run is bounded: the RunInput carries the finite budget
-	// resolved from --timeout (absent = the wire default, capped at
-	// executewire.MaxLaunchTimeout), and the run context is the
-	// signal-derived launch context (SIGINT/SIGTERM cancel the adapter run,
-	// which the shared runner translates into a process-group kill with
-	// cancellation evidence). 2026-09-15 public-CLI cancellation contract.
-	runInput.Timeout = launchTimeout
 	// A hook-governed lane must run the full roster for governed spawn; refuse
 	// (never install) before any state change (hookplan.GovernedFullRosterGate).
 	if gate := hookplan.GovernedFullRosterGate(harnessName); gate != nil {

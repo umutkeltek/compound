@@ -148,13 +148,19 @@ func (a *ClaudeAdapter) resolveRunInput(in RunInput, suppressRefusalEvidence boo
 		return RunInput{}, fmt.Errorf("%s adapter: %w", a.Name(), err)
 	}
 	if tuple.CapacitySource != nil {
+		expectedMinutes := claudeLaneExpectedMinutes(in.Timeout)
+		// The guard converts minutes back to time.Duration; reject an
+		// unrepresentable rounded horizon instead of wrapping into the past.
+		if expectedMinutes > int(time.Duration(1<<63-1)/time.Minute) {
+			return RunInput{}, fmt.Errorf("%s adapter: capacity timeout exceeds supported horizon", a.Name())
+		}
 		decision, err := routeevidence.GuardDeclaredLaneCapacity(
 			a.store.Home(),
 			tuple.ProviderRoute,
 			"build-implement",
 			*tuple.CapacitySource,
 			in.Now,
-			60,
+			expectedMinutes,
 			false,
 			nil,
 			suppressRefusalEvidence,
@@ -177,6 +183,21 @@ func (a *ClaudeAdapter) resolveRunInput(in RunInput, suppressRefusalEvidence boo
 		in.LaneID = a.Name()
 	}
 	return in, nil
+}
+
+// claudeLaneExpectedMinutes rounds positive bounds up to whole minutes.
+// Uncapped inputs retain the historical hour. The caller rejects rounded
+// horizons that cannot be converted back to time.Duration by the guard.
+func claudeLaneExpectedMinutes(timeout time.Duration) int {
+	const uncappedExpectedMinutes = 60
+	if timeout <= 0 {
+		return uncappedExpectedMinutes
+	}
+	minutes := timeout / time.Minute
+	if timeout%time.Minute > 0 {
+		minutes++
+	}
+	return int(minutes)
 }
 
 // validateClaudePermissionMode rejects any RunInput.PermissionMode that is

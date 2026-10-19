@@ -38,7 +38,7 @@ func evaluateDelegateHarnessReadiness(req work.DelegateHarnessReadinessRequest) 
 		WorkID:          req.WorkID, Harness: harnessName, Workspace: req.Workspace,
 		Command: req.Command, Args: append([]string(nil), req.Args...), PermissionMode: "plan",
 		LaneID: req.LaneID, RequestedModelID: req.RequestedModelID,
-		RequestedProviderRoute: req.RequestedProviderRoute, Now: req.Now,
+		RequestedProviderRoute: req.RequestedProviderRoute, Timeout: req.Timeout, Now: req.Now,
 	})
 	var evidence []work.DelegateHarnessReadinessEvidence
 	if req.CommandOverridden {

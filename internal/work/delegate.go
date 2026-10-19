@@ -391,6 +391,7 @@ type DelegateHarnessReadinessRequest struct {
 	Command                string
 	Args                   []string
 	CommandOverridden      bool
+	Timeout                time.Duration // bounded run horizon, preserved through start revalidation
 	Now                    time.Time
 }
 

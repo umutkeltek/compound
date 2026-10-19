@@ -389,7 +389,12 @@ unattended worker. It takes the caller's launch context — production: the sign
 `executewire.LaunchContext()` — so SIGINT/SIGTERM cancel the governed run itself. The shared
 subprocess runner translates cancellation and the RunInput's finite `Timeout` into a
 process-group kill with `cancel:context_cancelled` / `timeout:exceeded` evidence on the
-attempt, then finalizes the envelope failed. A caller passing `context.Background()` forfeits
+attempt, then finalizes the envelope failed. `work advance --execute` binds the resolved
+`--timeout` budget (absent = the wire default, capped at the detached budget) onto RunInput
+BEFORE adapter preflight, so the tuple-backed capacity admission above compares the quota
+reset against the run's actual rounded duration; binding it after preflight would leave the
+adapter admitting against an uncapped horizon. The bound is preserved through readiness and guarded-start
+revalidation; neither may reconstruct an uncapped input. A caller passing `context.Background()` forfeits
 the guarantee: cancellation never reaches the adapter, and the detached worker inherits only
 its own external budget.
 
@@ -550,7 +555,12 @@ model identities or silently disabling existing route consumers.
 Harness execution consumes the same authority instead of maintaining a second wrapper map. Exact
 model id, alias, then harness id form the resolution precedence; ambiguity fails closed. A declared
 `capacity_source` binds quota evidence to its own provider ref (for example
-`codexbar://provider/qwencloud`) even when the execution route has another name. Inline governed
+`codexbar://provider/qwencloud`) even when the execution route has another name. Capacity admission
+answers to the run's own bounded duration: a Claude-family lane preflight and governed start
+revalidation compare the quota reset against `ceil(RunInput.Timeout / minute)` (minimum one minute,
+exact multiples exact), so a bounded run requires quota to outlive that rounded bound,
+while a zero/uncapped timeout keeps the 60-minute horizon and stale, unknown, exhausted, and
+exactly-at-reset evidence still refuses. Unrepresentable rounded horizons fail closed. Inline governed
 execution and experimental delegated tmux sessions both resolve this tuple before work moves or a RunAttempt is
 minted. Delegated activation additionally requires the explicit process-local
 `--experimental-delegate-mutations` gate. A raw command override is not executable authority: delegated activation refuses it

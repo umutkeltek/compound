@@ -822,6 +822,7 @@ func GovernedClaudeReadinessRequestForRun(homePath string, wenv envelope.WorkEnv
 		RequestedProviderRoute: runInput.RequestedProviderRoute,
 		Command:                runInput.Command,
 		Args:                   activationArgs,
+		Timeout:                runInput.Timeout,
 		Now:                    now,
 	}
 }
@@ -1015,6 +1016,7 @@ func revalidateGovernedClaudeLane(ctx context.Context, adapterName string, expec
 		LaunchProfileID:        expected.LaunchProfileID,
 		RequestedModelID:       expected.RequestedModelID,
 		RequestedProviderRoute: expected.RequestedProviderRoute,
+		Timeout:                expected.Timeout,
 		Now:                    time.Now().UTC(),
 	})
 	if err != nil {
