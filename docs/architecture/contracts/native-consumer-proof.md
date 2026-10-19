@@ -62,10 +62,16 @@ counted as an additional test; nested cases or hidden result fields are refused.
 
 Passed Test Case nodes may carry flat, passed Arguments children from native parameterized tests.
 Each argument requires a nonblank name unique within that parent, with no node identifier,
-children, or nested test nodes. The same name may appear under different parents. Arguments
-are diagnostic expansions: each logical Test Case still counts once, and summary counts and
-required test identities must agree. Orphan, nested, failed, skipped, unnamed, duplicate, and
-mixed diagnostic arguments are rejected. No expected argument cardinality is inferred.
+children, or nested test nodes. Merged native reports may also place one Device layer directly
+under a Passed Test Case. Each Device must be Passed, have a nonblank name and nodeIdentifier,
+match a unique root devices[].deviceId, and be unique within its logical parent. Root device
+metadata is required only when Device diagnostics occur; missing, blank, duplicate, or unknown
+IDs fail. A Device has no nested test nodes and may contain only flat Passed Arguments with
+names unique within that Device. Device IDs and argument names may recur under separate parents.
+Devices and Arguments are diagnostic expansions: each logical Test Case still counts once,
+and summary counts and required test identities must agree. Orphan, nested, failed, skipped,
+unnamed, duplicate, or unsupported diagnostics are rejected. Missing required tests still fail
+after valid Device diagnostics are consumed. No expected argument cardinality is inferred.
 
 Xcode consumers also require xcodebuild and xcrun even if omitted from required_tools.
 Before the source-owned command launches, a read-only preflight uses the same

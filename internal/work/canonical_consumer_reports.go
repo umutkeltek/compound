@@ -158,6 +158,9 @@ func validateConsumerXcodeReport(c CanonicalConsumer, summaryBody, testsBody []b
 	}
 	var tree struct {
 		TestNodes []consumerXcodeNode `json:"testNodes"`
+		Devices   []struct {
+			DeviceID string `json:"deviceId"`
+		} `json:"devices"`
 	}
 	if err := json.Unmarshal(testsBody, &tree); err != nil {
 		return err
@@ -165,19 +168,34 @@ func validateConsumerXcodeReport(c CanonicalConsumer, summaryBody, testsBody []b
 	observed := map[string]string{}
 	allowed, _ := consumerUniqueStrings(c.AllowedSkips, false)
 	passed, skipped := 0, 0
+	var deviceIDs map[string]bool
+	validateDeviceMetadata := func() error {
+		if deviceIDs != nil {
+			return nil
+		}
+		deviceIDs = map[string]bool{}
+		for _, device := range tree.Devices {
+			if strings.TrimSpace(device.DeviceID) == "" || deviceIDs[device.DeviceID] {
+				return fmt.Errorf("Xcode device metadata requires nonblank unique deviceId")
+			}
+			deviceIDs[device.DeviceID] = true
+		}
+		if len(deviceIDs) == 0 {
+			return fmt.Errorf("Xcode Device diagnostic requires root devices metadata")
+		}
+		return nil
+	}
 	var visit func(consumerXcodeNode) error
 	visit = func(n consumerXcodeNode) error {
 		if n.NodeType == "Test Case" {
 			if n.NodeIdentifier == "" || observed[n.NodeIdentifier] != "" || len(n.TestNodes) != 0 {
 				return fmt.Errorf("invalid or duplicate Xcode test leaf")
 			}
-			// Native Test Case children are flat, diagnostic-only structure.
-			// Skipped cases may carry a Failure Message (for example a
-			// physical-device-only reason); Passed cases may carry flat
-			// Arguments children that describe Swift Testing parameter
-			// expansion. Each logical Test Case still counts exactly once;
-			// the argument children are diagnostic, never additional tests.
+			// Native diagnostics never add logical tests. A merged report may
+			// wrap flat Passed Arguments in one metadata-bound Device layer.
+			// Skipped cases retain their direct Failure Message behavior.
 			argumentNames := map[string]bool{}
+			parentDeviceIDs := map[string]bool{}
 			for _, diagnostic := range n.Children {
 				switch diagnostic.NodeType {
 				case "Failure Message":
@@ -189,22 +207,31 @@ func validateConsumerXcodeReport(c CanonicalConsumer, summaryBody, testsBody []b
 					if n.Result != "Passed" {
 						return fmt.Errorf("unsupported or nested Xcode test diagnostic")
 					}
-					if strings.TrimSpace(diagnostic.Name) == "" {
-						return fmt.Errorf("Xcode argument node requires a nonblank name")
+					if err := validateConsumerXcodeArgument(diagnostic, argumentNames, n.NodeIdentifier); err != nil {
+						return err
 					}
-					if diagnostic.Result != "Passed" {
-						return fmt.Errorf("Xcode argument node %q did not pass: %s", diagnostic.Name, diagnostic.Result)
+				case "Device":
+					if n.Result != "Passed" || diagnostic.Result != "Passed" ||
+						strings.TrimSpace(diagnostic.Name) == "" || strings.TrimSpace(diagnostic.NodeIdentifier) == "" ||
+						len(diagnostic.TestNodes) != 0 {
+						return fmt.Errorf("invalid Xcode Device diagnostic under %s", n.NodeIdentifier)
 					}
-					if diagnostic.NodeIdentifier != "" {
-						return fmt.Errorf("Xcode argument node %q must not carry a nodeIdentifier", diagnostic.Name)
+					if err := validateDeviceMetadata(); err != nil {
+						return err
 					}
-					if len(diagnostic.Children)+len(diagnostic.TestNodes) != 0 {
-						return fmt.Errorf("Xcode argument node %q must be flat", diagnostic.Name)
+					if !deviceIDs[diagnostic.NodeIdentifier] || parentDeviceIDs[diagnostic.NodeIdentifier] {
+						return fmt.Errorf("unknown or duplicate Xcode Device %q under %s", diagnostic.NodeIdentifier, n.NodeIdentifier)
 					}
-					if argumentNames[diagnostic.Name] {
-						return fmt.Errorf("duplicate Xcode argument name %q under %s", diagnostic.Name, n.NodeIdentifier)
+					parentDeviceIDs[diagnostic.NodeIdentifier] = true
+					deviceArgumentNames := map[string]bool{}
+					for _, argument := range diagnostic.Children {
+						if argument.NodeType != "Arguments" {
+							return fmt.Errorf("unsupported or nested Xcode Device diagnostic")
+						}
+						if err := validateConsumerXcodeArgument(argument, deviceArgumentNames, n.NodeIdentifier); err != nil {
+							return err
+						}
 					}
-					argumentNames[diagnostic.Name] = true
 				default:
 					return fmt.Errorf("unsupported or nested Xcode test diagnostic")
 				}
@@ -223,9 +250,11 @@ func validateConsumerXcodeReport(c CanonicalConsumer, summaryBody, testsBody []b
 			observed[n.NodeIdentifier] = n.Result
 			return nil
 		}
-		// Argument nodes are only meaningful as flat children of a Passed
-		// Test Case. Anywhere else — root, Test Suite, or any group node —
-		// they are rejected.
+		// Devices and Arguments are valid only in the explicit diagnostic
+		// branches above. Never flatten one found at root or under a group.
+		if n.NodeType == "Device" {
+			return fmt.Errorf("orphan Xcode Device node %q outside Passed Test Case", n.NodeIdentifier)
+		}
 		if n.NodeType == "Arguments" {
 			if strings.TrimSpace(n.Name) == "" {
 				return fmt.Errorf("orphan Xcode argument node requires a nonblank name")
@@ -257,5 +286,25 @@ func validateConsumerXcodeReport(c CanonicalConsumer, summaryBody, testsBody []b
 			return fmt.Errorf("required Xcode test %s did not pass", id)
 		}
 	}
+	return nil
+}
+
+func validateConsumerXcodeArgument(n consumerXcodeNode, names map[string]bool, parentID string) error {
+	if strings.TrimSpace(n.Name) == "" {
+		return fmt.Errorf("Xcode argument node requires a nonblank name")
+	}
+	if n.Result != "Passed" {
+		return fmt.Errorf("Xcode argument node %q did not pass: %s", n.Name, n.Result)
+	}
+	if n.NodeIdentifier != "" {
+		return fmt.Errorf("Xcode argument node %q must not carry a nodeIdentifier", n.Name)
+	}
+	if len(n.Children)+len(n.TestNodes) != 0 {
+		return fmt.Errorf("Xcode argument node %q must be flat", n.Name)
+	}
+	if names[n.Name] {
+		return fmt.Errorf("duplicate Xcode argument name %q under %s", n.Name, parentID)
+	}
+	names[n.Name] = true
 	return nil
 }
