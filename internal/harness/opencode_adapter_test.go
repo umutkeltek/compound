@@ -46,10 +46,21 @@ print(json.dumps({'type':'text','part':{'text':'CONTROL_OK '+key}}))
 print(json.dumps({'type':'step_finish','part':{'reason':'stop'}}))
 `
 
-func TestOpenCodePromptOnlySelectionDoesNotClaimInteractiveTools(t *testing.T) {
+// The post-effort floor: opencode now advertises effort-passable for the
+// snapshot (which the adapter narrows to "low" only, before mint), still
+// forbids any session pinning, and still observes through its own argv.
+// "effort supported" here is honest: the narrow supported-value validation
+// lives in adapter/preflight, not the capability row.
+func TestOpenCodePromptOnlySelectionFloor(t *testing.T) {
 	capability, ok := SelectionCapabilityFor("opencode")
-	if !ok || !capability.ModelPassable || capability.EffortPassable || capability.SessionPinnable || capability.ObservedVia != "opencode_argv" {
+	if !ok || !capability.ModelPassable || !capability.EffortPassable || capability.EffortObservable || capability.SessionPinnable || capability.ObservedVia != "opencode_argv" {
 		t.Fatalf("incorrect native selection floor: %+v", capability)
+	}
+	if err := CheckSelectionApplicable("opencode", &runattempt.ExecutionSelectionSnapshot{RequestedModelID: "fixture/control"}); err != nil {
+		t.Fatalf("opencode refused its own model selection: %v", err)
+	}
+	if err := CheckSelectionApplicable("opencode", &runattempt.ExecutionSelectionSnapshot{RequestedEffort: "low"}); err != nil {
+		t.Fatalf("opencode refused an in-scope effort selection: %v", err)
 	}
 	row := DefaultRegistry().Harnesses["opencode"]
 	if !strings.Contains(strings.Join(row.Limitations, " "), "registered executor is prompt-only") {

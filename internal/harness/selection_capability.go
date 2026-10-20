@@ -64,9 +64,10 @@ func codexSelection() *SelectionCapability {
 func openCodeSelection() *SelectionCapability {
 	return &SelectionCapability{
 		ModelPassable:   true,
+		EffortPassable:  true,
 		ObservedVia:     "opencode_argv",
 		SessionEvidence: "unsupported:prompt-only adapter creates a fresh isolated run; session reuse is forbidden",
-		Basis:           "native prompt-only adapter binds the Compound provider/model/endpoint tuple; --model argv is launch evidence, not provider-request capture",
+		Basis:           "native prompt-only adapter binds the Compound provider/model/endpoint tuple; --model argv is launch evidence, not provider-request capture; explicit --effort low places provider.models[model].options.reasoningEffort='low' in the immutable settings file the subprocess reads; any other requested effort is refused before mint",
 	}
 }
 

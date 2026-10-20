@@ -27,12 +27,21 @@ const openCodePromptLimit = 64 << 10
 const openCodeTranscriptLimit = 64 << 10
 const openCodeNativeGitignore = "node_modules\npackage.json\npackage-lock.json\nbun.lock\n.gitignore\n"
 
+// openCodeSupportedEffort is the only requested effort value the opencode
+// adapter carries through today: explicitly "low", which the adapter places
+// as provider.models[model].options.reasoningEffort='low' in the immutable
+// settings file before the subprocess reads it. Any other value (including
+// the empty default or whitespace-padded variants) is refused before mint;
+// high/medium/xhigh are NOT supported in this slice.
+const openCodeSupportedEffort = "low"
+
 var openCodeID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
 type openCodeLaunch struct {
 	WorkID, Workspace, Prompt, Model, Provider, Endpoint, Revision, Profile string
-	Command, CommandSHA, AuthPath, Root                                     string
-	Config                                                                  []byte
+	Effort                                                                     string
+	Command, CommandSHA, AuthPath, Root                                        string
+	Config                                                                     []byte
 }
 
 // OpenCodeAdapter executes one native prompt-only run. It never exposes the
@@ -91,12 +100,38 @@ func (a *OpenCodeAdapter) Preflight(_ context.Context, in RunInput) (RunInput, e
 	if snap := in.ExecutionSelectionSnapshot; snap != nil && snap.RequestedModelID != in.RequestedModelID {
 		return RunInput{}, errors.New("OPENCODE_SELECTION_MISMATCH")
 	}
+	// Selection snapshot is the SOLE effort source for this adapter. We never
+	// introduce caller args/env/permission/config override doors: the request
+	// comes through the snapshot only, and we refuse whitespace/normalization
+	// ambiguity or unsupported values before mint. The empty default preserves
+	// legacy no-effort behavior; "low" is the single supported explicit value.
+	effort := ""
+	if snap := in.ExecutionSelectionSnapshot; snap != nil {
+		requested := snap.RequestedEffort
+		if strings.TrimSpace(requested) != requested {
+			return RunInput{}, errors.New("OPENCODE_EFFORT_NORMALIZATION_FORBIDDEN")
+		}
+		switch requested {
+		case "":
+			// preserve no-effort default; snap keeps whatever
+			// EffortEvidence the caller set (typically empty or
+			// "unsupported:no effort requested" for first-time consumers).
+		case openCodeSupportedEffort:
+			effort = openCodeSupportedEffort
+			in.ExecutionSelectionSnapshot.RequestedEffort = openCodeSupportedEffort
+			in.ExecutionSelectionSnapshot.AppliedEffort = openCodeSupportedEffort
+			in.ExecutionSelectionSnapshot.EffortEvidence = "settings:opencode.json"
+		default:
+			return RunInput{}, errors.New("OPENCODE_EFFORT_UNSUPPORTED")
+		}
+	}
 	launch, err := a.resolve(in)
 	if err != nil {
 		return RunInput{}, err
 	}
 	launch.WorkID, launch.Workspace, launch.Prompt = in.WorkID, workspace, in.Prompt
 	launch.Profile = in.LaunchProfileID
+	launch.Effort = effort
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return RunInput{}, errors.New("OPENCODE_ISOLATION_INVALID")
@@ -178,6 +213,13 @@ func (a *OpenCodeAdapter) validatePrepared(in RunInput) error {
 	if snap := in.ExecutionSelectionSnapshot; snap != nil && snap.RequestedModelID != "" && (snap.Harness != a.Name() || snap.RequestedModelID != in.RequestedModelID || snap.ProviderRoute != in.RequestedProviderRoute || snap.LaunchProfileRevision != in.ExpectedModelRouterRevision || snap.LaunchProfileID != in.LaunchProfileID) {
 		return errors.New("OPENCODE_SELECTION_MISMATCH")
 	}
+	// The applied-effort leg of the snap is the post-mint record of what this
+	// launch will request. It must agree with what Preflight bound onto the
+	// immutable launch: post-preflight mutation here is a drift between the
+	// persisted RunAttempt and the launch, refused before the subprocess runs.
+	if snap := in.ExecutionSelectionSnapshot; snap != nil && snap.AppliedEffort != l.Effort {
+		return errors.New("OPENCODE_LAUNCH_BINDING_DRIFT")
+	}
 	if l == nil || in.Harness != a.Name() || in.Command != l.Command || in.Workspace != l.Workspace || in.WorkID != l.WorkID || in.Prompt != l.Prompt || in.RequestedModelID != l.Model || in.RequestedProviderRoute != l.Provider || in.ExpectedModelRouterRevision != l.Revision || in.Timeout <= 0 || in.Timeout > 90*time.Second || len(in.Args) != 0 || len(in.Env) != 0 || in.Stdin != nil || in.PermissionMode != "" || in.LaunchProfileID != l.Profile {
 		return errors.New("OPENCODE_PREPARED_INPUT_INVALID")
 	}
@@ -186,7 +228,7 @@ func (a *OpenCodeAdapter) validatePrepared(in RunInput) error {
 		return err
 	}
 	current.WorkID, current.Workspace, current.Prompt, current.Root, current.Config = l.WorkID, l.Workspace, l.Prompt, l.Root, l.Config
-	current.Profile = l.Profile
+	current.Profile, current.Effort = l.Profile, l.Effort
 	if !reflect.DeepEqual(current, l) {
 		return errors.New("OPENCODE_LAUNCH_BINDING_DRIFT")
 	}
@@ -279,9 +321,17 @@ func (a *OpenCodeAdapter) Run(ctx context.Context, in RunInput) (RunOutput, erro
 
 func openCodeConfig(l *openCodeLaunch) ([]byte, error) {
 	_, model, _ := strings.Cut(l.Model, "/")
+	modelEntry := map[string]any{"name": model, "limit": map[string]int{"context": 8192, "output": 800}}
+	// Place reasoning_effort='low' on the model entry only when the launch was
+	// bound with explicit low effort. The empty (no-effort default) path keeps
+	// the legacy shape with no `options` key, so a no-effort run is byte-for-byte
+	// indistinguishable from the pre-bounded config.
+	if l.Effort != "" {
+		modelEntry["options"] = map[string]any{"reasoningEffort": l.Effort}
+	}
 	return json.Marshal(map[string]any{
 		"model": l.Model, "small_model": l.Model, "enabled_providers": []string{l.Provider},
-		"provider":   map[string]any{l.Provider: map[string]any{"npm": "@ai-sdk/openai-compatible", "name": l.Provider, "options": map[string]any{"baseURL": l.Endpoint}, "models": map[string]any{model: map[string]any{"name": model, "limit": map[string]int{"context": 8192, "output": 800}}}}},
+		"provider":   map[string]any{l.Provider: map[string]any{"npm": "@ai-sdk/openai-compatible", "name": l.Provider, "options": map[string]any{"baseURL": l.Endpoint}, "models": map[string]any{model: modelEntry}}},
 		"permission": map[string]string{"*": "deny"}, "agent": map[string]any{"compound-prompt-only": map[string]any{"mode": "primary", "permission": map[string]string{"*": "deny"}, "steps": 1}},
 		"plugin": []string{}, "mcp": map[string]any{}, "lsp": false, "formatter": false, "autoupdate": false, "share": "disabled", "compaction": map[string]bool{"auto": false},
 	})
