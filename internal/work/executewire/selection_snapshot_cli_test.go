@@ -94,7 +94,8 @@ func TestBuildSelectionSnapshotSavedConsumesRevisionAndCarriesEffortForClaudeFam
 // harness, and every registered claude lane reads the same row (the old name
 // list covered 5 names, one of them unregistered).
 func TestSelectionSnapshotNeverClearsRequestedEffort(t *testing.T) {
-	for _, name := range []string{"os-harness-entrypoints", "oh_my_pi", "claude_kimi", "claude_deepseek_flash_api", "claude_gpt56_sol_wpcom"} {
+	// Lane names, not credentials; gitleaks reads "..._api", "<next name>" as a key.
+	for _, name := range []string{"os-harness-entrypoints", "oh_my_pi", "claude_kimi", "claude_deepseek_flash_api", "claude_gpt56_sol_wpcom"} { // gitleaks:allow
 		selection := cliSavedSelection()
 		selection.Harness = name
 		selection.RequestedEffort = "xhigh"
