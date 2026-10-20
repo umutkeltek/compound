@@ -163,13 +163,34 @@ func schemaForStruct(t reflect.Type) map[string]any {
 			required = append(required, name)
 		}
 	}
+	if t == reflect.TypeOf(envelope.StateDelta{}) {
+		knownRequired := append([]string(nil), required...)
+		unknownRequired := []string{"change_knowledge"}
+		for _, field := range required {
+			if field != "changed" {
+				unknownRequired = append(unknownRequired, field)
+			}
+		}
+		props["change_knowledge"] = map[string]any{"const": "unknown"}
+		return map[string]any{"type": "object", "properties": props, "additionalProperties": false, "oneOf": []any{
+			map[string]any{"required": knownRequired, "not": map[string]any{"required": []string{"change_knowledge"}}},
+			map[string]any{"required": unknownRequired, "not": map[string]any{"required": []string{"changed"}}},
+		}}
+	}
 	sort.Strings(required)
-	return map[string]any{
+	result := map[string]any{
 		"type":                 "object",
 		"properties":           props,
 		"required":             required,
 		"additionalProperties": false,
 	}
+	if t == reflect.TypeOf(envelope.Receipt{}) {
+		result["allOf"] = []any{map[string]any{
+			"if":   map[string]any{"properties": map[string]any{"outcome": map[string]any{"enum": []string{"completed", "no_op"}}}, "required": []string{"outcome"}},
+			"then": map[string]any{"properties": map[string]any{"state_delta": map[string]any{"not": map[string]any{"required": []string{"change_knowledge"}}}}},
+		}}
+	}
+	return result
 }
 
 func jsonField(field reflect.StructField) (name string, omitEmpty bool, skip bool) {

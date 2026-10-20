@@ -26,7 +26,25 @@ import (
 // running, or verifying WorkEnvelope. The action may advance the run without
 // claiming terminal task success; work close remains the only writer of
 // WorkEnvelope.ids.transition_id.
+type RequiredAttemptCompletion struct {
+	AttemptID string `json:"attempt_id"`
+	Owner     string `json:"owner"`
+	// Frozen before launch; a failed launched attempt needs separate recovery.
+	Recovery *RequiredRecoveryCompletion `json:"recovery,omitempty"`
+}
+
+type RequiredRecoveryCompletion struct {
+	WorkID          string   `json:"work_id"`
+	Owner           string   `json:"owner"`
+	Capability      string   `json:"capability"`
+	ArgumentsHashes []string `json:"arguments_hashes"`
+}
+
 type ReceiptedActionInput struct {
+	// A durable, optional finalizer obligation. The reservation cannot clear
+	// until this native attempt has same-action owner proof. Exact retries and
+	// older callers cannot omit it because it participates in the input digest.
+	RequiredAttemptCompletion *RequiredAttemptCompletion `json:",omitempty"`
 	// OutcomePending reserves authority before an external effect without
 	// predicting success. It must be sealed exactly once before publication.
 	// Omission preserves digests of previously persisted transaction inputs.
@@ -39,6 +57,7 @@ type ReceiptedActionInput struct {
 	PreEvaluatedDecision *envelope.PolicyDecision
 	ExpectedWorkState    string
 	Outcome              string
+	ChangeKnowledge      string `json:",omitempty"`
 	Changed              bool
 	Summary              string
 	MoveType             string
@@ -247,7 +266,7 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 		Header:     newHeader(envelope.SVReceipt, receiptID, transactionNow, workID, w.IDs.ContextPackID, w.Privacy, w.Risk),
 		Outcome:    outcome,
 		MoveType:   moveType,
-		StateDelta: envelope.StateDelta{Changed: changed, Summary: strings.TrimSpace(in.Summary), FilesChanged: mergeUnique(in.FilesChanged), Artifacts: []string{}, Verification: []string{}},
+		StateDelta: envelope.StateDelta{Changed: changed, ChangeKnowledge: in.ChangeKnowledge, Summary: strings.TrimSpace(in.Summary), FilesChanged: mergeUnique(in.FilesChanged), Artifacts: []string{}, Verification: []string{}},
 		Cost:       envelope.ReceiptCost{ModelCalls: []string{}},
 		Skills: envelope.ReceiptSkills{
 			Used: used, Missed: []string{}, Candidate: []string{}, UsedDeclared: true,

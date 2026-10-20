@@ -374,10 +374,11 @@ def catalog_sql(r, pids):
   'name',a.rolname,'login',a.rolcanlogin,'scram_present',a.rolpassword IS NOT NULL AND a.rolpassword LIKE 'SCRAM-SHA-256$%',
   'superuser',a.rolsuper,'createdb',a.rolcreatedb,'createrole',a.rolcreaterole,
   'replication',a.rolreplication,'bypassrls',a.rolbypassrls,'inherit',a.rolinherit,
-  'connection_limit',a.rolconnlimit,'role_config',a.rolconfig,'valid_until',a.rolvaliduntil,
+  'connection_limit',a.rolconnlimit,'role_config',r.rolconfig,'valid_until',a.rolvaliduntil,
   'membership_rows',(SELECT pg_catalog.count(*) FROM pg_catalog.pg_auth_members m WHERE m.roleid=a.oid OR m.member=a.oid))
   ORDER BY CASE WHEN a.rolname=:'app_role' THEN 0 ELSE 1 END)
-  FROM pg_catalog.pg_authid a WHERE a.rolname IN (:'app_role',:'migrator_role')),
+  FROM pg_catalog.pg_authid a JOIN pg_catalog.pg_roles r ON r.oid=a.oid
+  WHERE a.rolname IN (:'app_role',:'migrator_role')),
 'database',(SELECT pg_catalog.json_build_object('name',d.datname,'owner',pg_catalog.pg_get_userbyid(d.datdba),
   'connection_limit',d.datconnlimit,'allow_connections',d.datallowconn,
   'application_connect',pg_catalog.has_database_privilege(:'app_role',d.oid,'CONNECT'),

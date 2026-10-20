@@ -32,7 +32,11 @@ an escape. An allowing class, autonomy level or standing grant cannot authorize
 the verification. The existing native exact-action approval remains one-use,
 expires within fifteen minutes and binds the complete intent and current policy.
 
-Plan requires an explicit native home, running work and its current lease holder.
+Plan requires a resolved native home, running work and its current lease holder.
+The global CLI consumes `--home` and binds `COMPOUND_HOME` before dispatch;
+the typed owner uses the existing home resolver when no direct home option remains.
+Direct callers still reject malformed or duplicated home options. The regression
+test exercises the real global parser followed by both typed owner operations.
 It persists only the metadata ActionIntent, HOLD decision, native approval plan
 and content-addressed plan artifact. Execute accepts only that artifact reference
 and actor. It reloads native records rather than trusting a supplied decision,
@@ -130,3 +134,9 @@ compound act credential-verify execute --plan-ref REF --actor A --home /fixture/
 
 These are synthetic examples. Neither command selects a program, callback,
 credential, transport, query, endpoint override or alternate policy decision.
+
+### PostgreSQL catalog query coverage
+
+The privileged role projection joins `pg_authid` to `pg_roles` by OID: password-format presence comes from `pg_authid`, while role settings come from `pg_roles.rolconfig`. PostgreSQL does not expose `rolconfig` on `pg_authid`. Neither password values nor verifier hashes leave PostgreSQL.
+
+Run the real catalog query regression against an owned disposable PostgreSQL fixture with `COMPOUND_CREDENTIAL_VERIFY_TEST_CONTAINER=<container> python3 internal/act/credential_verify_program_test.py PostgreSQLCatalogTests`. It executes both pre- and post-probe SQL forms, verifies the role-settings projection, and does not create roles or databases. Without this opt-in, the real PostgreSQL case is explicitly skipped; pure protocol tests remain available without Docker.
