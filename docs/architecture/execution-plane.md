@@ -377,6 +377,15 @@ manifest before claim. A removed, ambiguous or foreign alias still refuses.
 
 Claude-family and Codex governed adapter prompts carry the current reserved WorkEnvelope's work/context IDs, desired outcome, success predicate, non-goals, and saved selection. The caller's latest explicit request takes precedence, including on resume. Raw argv commands and prepared prompt-only adapters retain their caller-supplied input contracts.
 
+`work advance --execute` consumes the context already attached to the work.
+A parent `--context-pack` flag is a usage error, including with
+`--resume-verifying`, and refuses before adapter preflight, lifecycle changes,
+or a RunAttempt. Attach the context in a separate same-state advance first,
+for example `compound work advance work_example --to claimed --by codex
+--context-pack ctx_example`, then execute without that flag. For work already
+in `verifying`, use `--to verifying` for the attachment. Arguments after `--`
+belong to the child command; its own `--context-pack` is passed through unchanged.
+
 Codex keeps a fresh isolated `CODEX_HOME` per invocation. Explicit `COMPOUND_CODEX_USE_EXISTING_SUBSCRIPTION=1` binds only a private, owner-owned ChatGPT auth snapshot into that home after RunAttempt mint; it omits refresh authority and API keys, preserves the source refresh timestamp, refuses non-native wrappers and caller auth overrides, and removes the snapshot on return. The child uses native read-only approval/sandbox flags. Native Codex selections require a model ID and supported reasoning effort; legacy wrappers retain their selected model contract but cannot claim a native effort they do not attest.
 
 For opt-in subscription execution, the saved Codex model, route, profile, and revision reach preflight before execution; an owner-selected native model/provider tuple is required. Supported requested effort is applied in native argv and attested there, never inferred from the route. The child ignores user config and execpolicy rules, pins the OpenAI provider, and emits JSONL events. Snapshot cleanup failures are surfaced.
