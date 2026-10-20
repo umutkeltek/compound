@@ -614,6 +614,20 @@ func TestProofCheckCommandSignalCancelsAndWaitsForWholeGateGroup(t *testing.T) {
 		"COMPOUND_PROOF_SIGNAL_OUT="+outPath,
 		"COMPOUND_PROOF_SIGNAL_PID="+pidPath,
 	)
+	// A file, not a pipe: the gate's backgrounded sleep inherits these fds.
+	// On failure, show why the child never reached its gate (Woodpecker 584).
+	childLog, err := os.Create(filepath.Join(t.TempDir(), "proof-check-child.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = childLog.Close()
+		if t.Failed() {
+			output, _ := os.ReadFile(childLog.Name())
+			t.Logf("proof-check child output:\n%s", output)
+		}
+	})
+	cmd.Stdout, cmd.Stderr = childLog, childLog
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
