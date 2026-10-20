@@ -99,7 +99,8 @@ func (f alignmentLinuxVerifyTransport) Start(ctx context.Context, r policy.Crede
 
 type alignmentLinuxAlignTransport struct {
 	alignmentLinuxFixture
-	crashCommit bool
+	crashCommit   bool
+	crashBoundary string
 }
 
 type alignmentLinuxInstallerTransport struct {
@@ -125,8 +126,116 @@ func (f alignmentLinuxAlignTransport) Start(ctx context.Context, r policy.Creden
 		// acknowledgement. No production program/CLI/request has a crash knob.
 		at := strings.LastIndex(program, "if __name__ == \"__main__\":")
 		program = program[:at] + "\ndef fixture_commit_without_ack(self):\n    self.child.stdin.write(b'COMMIT;\\n')\n    self.child.stdin.flush()\n    os._exit(99)\nAlignmentSession.commit=fixture_commit_without_ack\nsys.exit(alignment_main())\n"
+	} else if f.crashBoundary != "" {
+		program = alignmentFixturePrecommitKillProgram(program, action, f.crashBoundary)
 	}
 	return f.start(ctx, program, CredentialPasswordAlignmentProgramSHA256(), map[string]any{"request": r, "action_intent_id": action, "original_action_intent_id": credentialPasswordAlignOriginalAction(r, action), "issued_ns": strconv.FormatInt(time.Now().UnixNano(), 10), "deadline_ns": strconv.FormatInt(deadline.UnixNano(), 10)}, guard)
+}
+
+// This fault transport exists only in the test binary. It kills the real native
+// helper and its actual psql process tree, bypassing Python finally/close and
+// their explicit ROLLBACK. No production program, request or CLI gains a knob.
+func alignmentFixturePrecommitKillProgram(program, action, boundary string) string {
+	at := strings.LastIndex(program, "if __name__ == \"__main__\":")
+	shim := "\nfixture_boundary=" + strconv.Quote(boundary) + "\nfixture_action=" + strconv.Quote(action) + "\n" + `
+from pathlib import Path
+fixture_session=None
+fixture_before=None
+fixture_closes=0
+fixture_alters=0
+fixture_original_init=AlignmentSession.__init__
+fixture_original_exchange=AlignmentSession.exchange
+fixture_original_put=AlignmentCustody.put
+fixture_original_close=AlignmentSession.close
+
+def fixture_clients(root):
+    parents={}
+    commands={}
+    for path in Path('/proc').iterdir():
+        if not path.name.isdigit():
+            continue
+        try:
+            fields=(path/'stat').read_text().rsplit(')',1)[1].split()
+            parents[int(path.name)]=int(fields[1])
+            commands[int(path.name)]=(path/'comm').read_text().strip()
+        except (FileNotFoundError, ProcessLookupError):
+            pass
+    owned={root}
+    while True:
+        more={pid for pid,parent in parents.items() if parent in owned}
+        if more.issubset(owned):
+            break
+        owned.update(more)
+    require(any(commands.get(pid)=='psql' for pid in owned))
+    return sorted(owned)
+
+def fixture_die():
+    current=fixture_session.catalog(fixture_session.fixture_request)
+    require(fixture_closes==0 and fixture_before is not None)
+    changed=sum(a['verifier']!=b['verifier'] for a,b in zip(current['roles'],fixture_before['roles']))
+    parent=Path(fixture_session.fixture_request['file']['path']).parent
+    custody=parent/ALIGN_NAMESPACE/fixture_action
+    clients=fixture_clients(fixture_session.child.pid)
+    marker={'stage':fixture_boundary,'changed_roles':changed,'client_pids':clients,
+            'helper_pid':os.getpid(),'real_psql_present':True,'explicit_close_called':False,
+            'preimage_present':(custody/'PREIMAGE.json').exists(),
+            'postimage_present':(custody/'POSTIMAGE.json').exists(),
+            'commit_intent_present':(custody/'COMMIT_INTENT.json').exists()}
+    fd=os.open(parent/'.fixture-kill-boundary.json',os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    try:
+        raw=json.dumps(marker,sort_keys=True,separators=(',',':')).encode()
+        require(os.write(fd,raw)==len(raw))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    for pid in reversed(clients):
+        try:
+            os.kill(pid,signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    os.kill(os.getpid(),signal.SIGKILL)
+
+def fixture_init(self,r,processes):
+    global fixture_session
+    self.fixture_request=r
+    fixture_original_init(self,r,processes)
+    fixture_session=self
+
+def fixture_exchange(self,sql,passwords=()):
+    global fixture_alters
+    value=fixture_original_exchange(self,sql,passwords)
+    if sql.startswith('\\password '):
+        fixture_alters+=1
+        if ((fixture_boundary=='after_first_alter' and fixture_alters==1) or
+            (fixture_boundary=='after_second_alter' and fixture_alters==2)):
+            fixture_die()
+    return value
+
+def fixture_put(self,name,value):
+    global fixture_before
+    if name=='PREIMAGE.json' and value.get('schema_version')=='compound.credential_password_preimage.v0.1':
+        fixture_before=value['catalog']
+        if fixture_boundary=='before_preimage':
+            fixture_die()
+    if name=='COMMIT_INTENT.json' and fixture_boundary=='after_postimage_before_commit':
+        fixture_die()
+    result=fixture_original_put(self,name,value)
+    if name=='PREIMAGE.json' and fixture_boundary=='after_preimage':
+        fixture_die()
+    return result
+
+def fixture_close(self):
+    global fixture_closes
+    fixture_closes+=1
+    return fixture_original_close(self)
+
+AlignmentSession.__init__=fixture_init
+AlignmentSession.exchange=fixture_exchange
+AlignmentCustody.put=fixture_put
+AlignmentSession.close=fixture_close
+sys.exit(alignment_main())
+`
+	return program[:at] + shim
 }
 
 func nativeAlignmentFixture(t *testing.T, linux alignmentLinuxFixture) *alignmentFixture {
@@ -370,5 +479,105 @@ p.write_text(json.dumps(v))
 	f.freshRecovery(t, p, result, "reconcile")
 	if f.r.Catalog != before {
 		t.Fatal("rejected tampered custody changed the two live role revisions or verifiers")
+	}
+}
+
+func TestCredentialPasswordAlignmentActualPrecommitSIGKILLMatrix(t *testing.T) {
+	for _, boundary := range []struct {
+		name    string
+		changed int
+	}{
+		{"before_preimage", 0},
+		{"after_preimage", 0},
+		{"after_first_alter", 1},
+		{"after_second_alter", 2},
+		{"after_postimage_before_commit", 2},
+	} {
+		t.Run(boundary.name, func(t *testing.T) {
+			linux := alignmentLinux(t)
+			f := nativeAlignmentFixture(t, linux)
+			f.inspect(t)
+			before := f.r.Catalog
+			plan, e := f.owner.Plan(f.r, f.workID, "fixture")
+			if e != nil {
+				t.Fatal(e)
+			}
+			f.approve(t, plan)
+			f.owner.transport = alignmentLinuxAlignTransport{alignmentLinuxFixture: linux, crashBoundary: boundary.name}
+			failed, e := f.owner.Execute(context.Background(), plan.PlanRef, "fixture")
+			if e == nil || failed.State != "recovery_required" || failed.ConfigurationAccepted || failed.ApplicationAccessAccepted || failed.SourceCaptureAccepted || failed.MigrationAccepted || failed.ApplicationActivated || failed.ServiceActivated {
+				t.Fatal("abrupt native client/helper death was accepted or lost uncertainty", e)
+			}
+			markerScript := `import json,sys
+from pathlib import Path
+v=json.loads((Path(sys.argv[1]).parent/'.fixture-kill-boundary.json').read_bytes())
+def dead(pid):
+    try:
+        return Path('/proc',str(pid),'stat').read_text().rsplit(')',1)[1].split()[0] in ('Z','X')
+    except FileNotFoundError:
+        return True
+v['client_dead']=bool(v['client_pids']) and all(dead(pid) for pid in v['client_pids'])
+v['helper_dead']=dead(v['helper_pid'])
+print(json.dumps(v,sort_keys=True,separators=(',',':')))
+`
+			raw, e := exec.Command("docker", "exec", linux.container, "/usr/bin/python3", "-I", "-B", "-c", markerScript, f.r.File.Path).Output()
+			var marker struct {
+				Stage         string `json:"stage"`
+				Changed       int    `json:"changed_roles"`
+				ClientDead    bool   `json:"client_dead"`
+				HelperDead    bool   `json:"helper_dead"`
+				RealPsql      bool   `json:"real_psql_present"`
+				ExplicitClose bool   `json:"explicit_close_called"`
+				Preimage      bool   `json:"preimage_present"`
+				Postimage     bool   `json:"postimage_present"`
+				CommitIntent  bool   `json:"commit_intent_present"`
+			}
+			if e != nil || json.Unmarshal(raw, &marker) != nil || marker.Stage != boundary.name || marker.Changed != boundary.changed || !marker.ClientDead || !marker.HelperDead || !marker.RealPsql || marker.ExplicitClose || marker.Preimage != (boundary.name != "before_preimage") || marker.Postimage != (boundary.name == "after_postimage_before_commit") || marker.CommitIntent {
+				t.Fatal("actual SIGKILL boundary or custody evidence missing/different", boundary.name, e)
+			}
+			t.Logf("SIGKILL boundary=%s in_transaction_changed_roles=%d clients_dead=%t helper_dead=%t preimage=%t postimage=%t commit_intent=%t", marker.Stage, marker.Changed, marker.ClientDead, marker.HelperDead, marker.Preimage, marker.Postimage, marker.CommitIntent)
+			if _, e = credentialPasswordAlignmentInstallerFence(f.owner.home, f.r.File.Path, policy.CredentialVerificationDestination(f.r.CredentialVerificationRequest), time.Now().Add(time.Second)); e == nil {
+				t.Fatal("abrupt uncertain attempt did not hold installer")
+			}
+			f.owner.transport = alignmentLinuxAlignTransport{alignmentLinuxFixture: linux}
+			f.freshRecovery(t, plan, failed, "reconcile")
+			if f.r.Catalog != before {
+				t.Fatal("uncommitted real password changes did not roll back on abrupt client death")
+			}
+			retry := f.r
+			retry.Operation, retry.Origin = "align", nil
+			retry.AttemptID = time.Now().UTC().Format("20060102t150405z") + "-" + credentialPasswordAlignHash(time.Now())[:16]
+			if _, e = f.owner.Plan(retry, alignmentTestWork(t, f.owner.home, time.Now()), "fixture"); e == nil {
+				t.Fatal("abrupt failed attempt admitted blind alignment retry")
+			}
+			recovery, e := f.owner.Plan(f.r, f.workID, "fixture")
+			if e != nil {
+				t.Fatal("separate original-failure recovery plan refused", e)
+			}
+			f.approve(t, recovery)
+			resolved, e := f.owner.Execute(context.Background(), recovery.PlanRef, "fixture")
+			if boundary.name == "before_preimage" {
+				if e == nil || resolved.State != "recovery_required" {
+					t.Fatal("missing original PREIMAGE did not conservatively hold recovery")
+				}
+			} else {
+				if e != nil || resolved.State != "completed" {
+					t.Fatal("durable original preimage did not reconcile exact old/old after SIGKILL", e)
+				}
+				artifacts, _ := NewArtifactStore(f.owner.home)
+				raw, e := artifacts.Get(resolved.ObservationRef)
+				if e != nil {
+					t.Fatal(e)
+				}
+				observation, e := decodeCredentialPasswordAlignmentObservation(raw, recovery.Plan.Request)
+				if e != nil || observation.Effect != "reconciled_old_old" || resolved.ConfigurationAccepted || resolved.ApplicationAccessAccepted || resolved.SourceCaptureAccepted || resolved.MigrationAccepted {
+					t.Fatal("actual old/old reconciliation or acceptance boundary differs", e)
+				}
+			}
+			attempt, e := runattempt.Open(f.owner.home).Get(failed.RunAttemptID)
+			if e != nil || attempt.Status != runattempt.StatusFailed {
+				t.Fatal("original SIGKILL attempt history was rewritten")
+			}
+		})
 	}
 }

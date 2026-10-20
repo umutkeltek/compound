@@ -160,3 +160,13 @@ loss paths and their separate recovery, plus valid-SCRAM OLD2 tampering with and
 without rewritten private self-digests. The mode requires fresh Go JSON run/pass
 events for every case, terminal package success and zero skips. Missing,
 unfinished, failed, duplicate, cached or oversized evidence fails the gate.
+
+The same required inventory includes actual SIGKILL of the genuine psql process
+tree and native helper before PREIMAGE, after its fsync, after the first ALTER,
+after the second ALTER, and after POSTIMAGE fsync before COMMIT_INTENT. Test-only
+transport hooks record safe stage/change-count/process-death evidence; production
+helper interfaces remain unchanged. Fresh catalog inspection proves both live
+roles retain their exact original verifiers and revisions after client death.
+Durable original custody reconciles old/old through a separately approved owner;
+missing PREIMAGE conservatively holds. The explicit-close primitive test proves
+graceful ROLLBACK only and is not counted as abrupt client-death evidence.

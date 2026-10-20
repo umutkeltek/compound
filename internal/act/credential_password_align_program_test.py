@@ -135,7 +135,7 @@ class LinuxPostgresAlignmentTests(unittest.TestCase):
             self.assertNotIn(passwords[index].encode(), result.stderr)
         self.assertEqual(owner.alignment_classify(self.image(), before, after), "new_new")
 
-    def test_uncommitted_two_password_changes_roll_back_on_client_death(self):
+    def test_uncommitted_two_password_changes_roll_back_on_explicit_client_close(self):
         before = self.image()
         session = owner.AlignmentSession(self.r, self.processes)
         session.align(self.r, ["synthetic-never-committed-a", "synthetic-never-committed-m"])

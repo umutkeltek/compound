@@ -6,11 +6,44 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 )
+
+func TestCredentialAlignmentInventoryConsumesEveryActualNativeOwnerTest(t *testing.T) {
+	source, err := parser.ParseFile(token.NewFileSet(), filepath.Join("..", "..", "internal", "act", "credential_password_align_native_test.go"), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual := map[string]bool{}
+	for _, declaration := range source.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if ok && (strings.HasPrefix(function.Name.Name, "TestCredentialPasswordAlignmentActual") || function.Name.Name == "TestCredentialPasswordAlignmentProgramActualLinuxPrimitiveConsumer") {
+			actual[function.Name.Name] = true
+		}
+	}
+	if len(actual) == 0 {
+		t.Fatal("source owns no actual native credential consumers")
+	}
+	for _, required := range credentialAlignmentRequiredTests {
+		if strings.Contains(required, "/") {
+			continue
+		}
+		if !actual[required] {
+			t.Fatal("native gate names an absent source consumer", required)
+		}
+		delete(actual, required)
+	}
+	if len(actual) != 0 {
+		t.Fatal("actual native owner cases are absent from the required release inventory", actual)
+	}
+}
 
 func credentialAlignmentFixtureReport() []byte {
 	var report bytes.Buffer

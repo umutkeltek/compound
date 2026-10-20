@@ -33,6 +33,12 @@ var credentialAlignmentRequiredTests = []string{
 	"TestCredentialPasswordAlignmentActualTamperedOldVerifierSwapHolds",
 	"TestCredentialPasswordAlignmentActualTamperedOldVerifierSwapHolds/rewrite_request_false",
 	"TestCredentialPasswordAlignmentActualTamperedOldVerifierSwapHolds/rewrite_request_true",
+	"TestCredentialPasswordAlignmentActualPrecommitSIGKILLMatrix",
+	"TestCredentialPasswordAlignmentActualPrecommitSIGKILLMatrix/before_preimage",
+	"TestCredentialPasswordAlignmentActualPrecommitSIGKILLMatrix/after_preimage",
+	"TestCredentialPasswordAlignmentActualPrecommitSIGKILLMatrix/after_first_alter",
+	"TestCredentialPasswordAlignmentActualPrecommitSIGKILLMatrix/after_second_alter",
+	"TestCredentialPasswordAlignmentActualPrecommitSIGKILLMatrix/after_postimage_before_commit",
 }
 
 type credentialAlignmentCommandRunner func(context.Context, []string, []string, io.Writer, io.Writer) error
