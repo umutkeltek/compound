@@ -74,6 +74,10 @@ func captureFixtureSourceStat(t *testing.T, path string) map[string]any {
 }
 
 func newCaptureQualifierFixture(t *testing.T, h string, now time.Time, profile policy.RuntimeConfigInstallProfile) *captureQualifierFixture {
+	return newCaptureQualifierFixtureChanges(t, h, now, profile, nil, nil)
+}
+
+func newCaptureQualifierFixtureChanges(t *testing.T, h string, now time.Time, profile policy.RuntimeConfigInstallProfile, bindingChange, privateChange func(map[string]any)) *captureQualifierFixture {
 	t.Helper()
 	dir, err := os.MkdirTemp(".", ".rci-qualifier-test-")
 	if err != nil {
@@ -106,8 +110,22 @@ func newCaptureQualifierFixture(t *testing.T, h string, now time.Time, profile p
 	f.owner.now = func() time.Time { return now }
 	receiver := captureFixtureWrite(t, filepath.Join(recipe, "receiver.py"), map[string]string{"reviewed": "synthetic receiver source; never executed by qualifier"})
 	sampler := captureFixtureWrite(t, filepath.Join(recipe, "sampler.py"), map[string]string{"reviewed": "synthetic sampler source; never executed by qualifier"})
-	containers := map[string]string{"fixture-api": "api", "fixture-worker": "worker", "fixture-provider": "provider-sync"}
+	containers := map[string]any{}
+	for i, service := range []string{"api", "worker", "provider-sync", "web", "tunnel"} {
+		suffix := service
+		var project, owner any
+		if service == "tunnel" {
+			suffix = "cloudflared"
+		}
+		if i < 3 {
+			project, owner = "fixture", service
+		}
+		containers["fixture-"+suffix] = map[string]any{"id": strings.Repeat(fmt.Sprintf("%x", i+1), 64), "image_id": "sha256:" + strings.Repeat("a", 64), "compose_project": project, "compose_service": owner}
+	}
 	binding := map[string]any{"schema_version": "fixture.readonly_source_capture_binding.v1", "mac_transport_root": map[string]any{"path": dir, "uid": os.Geteuid(), "gid": os.Getegid()}, "source": map[string]any{"git_revision": strings.Repeat("a", 40), "containers": containers}}
+	if bindingChange != nil {
+		bindingChange(binding)
+	}
 	bindingRaw, _ := runtimeCaptureCanonical(binding)
 	bindingHash := runtimeConfigBytesHash(bindingRaw)
 	template := map[string]any{"attempt_id": "fixture", "binding": binding, "binding_cid": bindingHash, "expected_boot_id": nil, "expected_machine_id": nil, "native_action_intent_id": nil, "native_policy_decision_id": nil, "receiver_sha256": receiver.SHA256, "sampler_sha256": sampler.SHA256}
@@ -140,12 +158,36 @@ func newCaptureQualifierFixture(t *testing.T, h string, now time.Time, profile p
 	requestRaw, _ := runtimeCaptureCanonical(template)
 	selected := map[string]string{"DEALER_KEY": "synthetic_dealer", "PROVIDER_KEY": f.secret, "USER_AGENT": "fixture agent/<1>&"}
 	provider := map[string]string{"PROVIDER_KEY": f.secret, "USER_AGENT": selected["USER_AGENT"]}
-	services := map[string]any{"api": map[string]any{"record": map[string]any{"selected": selected, "database": "UNRELATED_SYNTHETIC_DATABASE_NEVER_FORWARDED"}}, "worker": map[string]any{"record": map[string]any{"selected": provider}}, "provider-sync": map[string]any{"record": map[string]any{"selected": provider}}}
+	services := map[string]any{}
+	fields := map[string][]string{}
+	selectedServices := map[string]map[string]string{"api": selected, "worker": provider, "provider-sync": provider, "web": {"WEB_API_BASE": "http://api.fixture.invalid:18100"}, "tunnel": {}}
+	for service, values := range selectedServices {
+		name := "fixture-" + service
+		if service == "tunnel" {
+			name = "fixture-cloudflared"
+		}
+		// These identities have the native sampler's complete closed shape.
+		i := map[string]any{"id": strings.Repeat("f", 64), "image_id": "sha256:" + strings.Repeat("a", 64), "name": name, "started_at": "2026-10-17T12:00:00.000Z", "running": true, "restart_count": 0, "compose_project": nil, "compose_service": nil, "compose_files": []string{}, "compose_working_dir": nil, "oci_version": nil, "oci_revision": nil}
+		if c, ok := containers[name].(map[string]any); ok {
+			for k, v := range c {
+				i[k] = v
+			}
+		}
+		services[service] = map[string]any{"identity": i, "record": map[string]any{"selected": values, "database": "UNRELATED_SYNTHETIC_DATABASE_NEVER_FORWARDED"}}
+		fields[service] = []string{}
+		for key := range values {
+			fields[service] = append(fields[service], key)
+		}
+		sort.Strings(fields[service])
+	}
 	equivalence := runtimeProviderEquivalence{Different: []string{}, Equal: true, Scope: "api_worker_provider_sync_runtime_values_only"}
 	private := map[string]any{"schema_version": "fixture.source_runtime_selected_capture.v1", "state": "consistent_source_capture_not_projected", "binding_cid": bindingHash, "source_git_revision": strings.Repeat("a", 40), "services": services, "origins": map[string]any{"source-app": map[string]string{"raw_sha256": strings.Repeat("b", 64)}}, "provider_equivalence": equivalence, "worker_command": map[string]int{"known_flags": 2, "old_safe_flags_matched": 2, "old_safe_flags_total": 2}, "goal": map[string]bool{"defined": true}}
+	if privateChange != nil {
+		privateChange(private)
+	}
 	capturePath := filepath.Join(output, "capture.private.json")
 	captureFixtureWrite(t, capturePath, private)
-	public := runtimeSourcePublic{SchemaVersion: "fixture.source_runtime_capture_public.v1", State: "source_captured_protected_not_projected", Binding: bindingHash, Revision: strings.Repeat("a", 40), Origins: map[string]string{"source-app": strings.Repeat("b", 64)}, Fields: map[string][]string{"api": profile.APIFields, "worker": {"PROVIDER_KEY", "USER_AGENT"}, "provider-sync": {"PROVIDER_KEY", "USER_AGENT"}}, Provider: equivalence, WorkerObserved: true, WorkerFlags: 2, SafeMatched: 2, SafeTotal: 2, GoalDefined: true, GoalAbsent: true}
+	public := runtimeSourcePublic{SchemaVersion: "fixture.source_runtime_capture_public.v1", State: "source_captured_protected_not_projected", Binding: bindingHash, Revision: strings.Repeat("a", 40), Origins: map[string]string{"source-app": strings.Repeat("b", 64)}, Fields: fields, Provider: equivalence, WorkerObserved: true, WorkerFlags: 2, SafeMatched: 2, SafeTotal: 2, GoalDefined: true, GoalAbsent: true}
 	publicFile := captureFixtureWrite(t, filepath.Join(output, "capture.public.json"), public)
 	attempt := captureFixtureWrite(t, filepath.Join(output, "ATTEMPT.json"), runtimeSourceAttempt{SchemaVersion: "fixture.source_capture_attempt.v1", State: "source_capture_pending_no_replay", Binding: bindingHash, Action: ai.ID, Policy: recorded.Decision.ID, Receiver: receiver.SHA256, Sampler: sampler.SHA256, Request: runtimeConfigBytesHash(requestRaw)})
 	result := captureFixtureWrite(t, filepath.Join(output, "RESULT.json"), map[string]any{"schema_version": "fixture.source_capture_result.v1", "state": "protected_source_capture_not_projected", "binding_cid": bindingHash, "native_action_intent_id": ai.ID, "native_policy_decision_id": recorded.Decision.ID, "private_artifact": captureFixtureSourceStat(t, capturePath), "public_artifact": captureFixtureSourceStat(t, publicFile.Path), "local_transport_custody_profile": fmt.Sprintf("actual-mac%d-selected-json-v1", os.Geteuid()), "remote_origin_custody_profile": "actual-source-origin-v1", "target_projection_accepted": false})
@@ -404,6 +446,98 @@ func TestRuntimeCaptureQualificationApprovalBindsCustodyAndPreservesPolicyFloors
 			result, err := f.owner.QualifyCapture(p.PlanRef, actor)
 			if err == nil || result.State == "qualified" || result.ApprovalConsumed {
 				t.Fatalf("refusal lost %+v %v", result, err)
+			}
+		})
+	}
+}
+
+func TestRuntimeCaptureQualificationAcceptsStructuredSourceContainers(t *testing.T) {
+	c := newCredentialFixture(t)
+	f := newCaptureQualifierFixture(t, c.home, c.now, runtimeConfigInstallFixture(c.now).Profile)
+	p := f.plan(t)
+	f.approve(t, p)
+	result, err := f.owner.QualifyCapture(p.PlanRef, "fixture")
+	if err != nil || result.State != "qualified" || !result.ApprovalConsumed {
+		t.Fatalf("native-shaped containers refused: %+v %v", result, err)
+	}
+}
+
+func TestRuntimeCaptureQualificationRejectsContainerBindingDrift(t *testing.T) {
+	for _, kind := range []string{"flat-string", "missing-container", "extra-container", "missing-field", "unknown-field", "null-id", "invalid-id", "invalid-image", "duplicate-id", "wrong-project", "wrong-service", "standalone-owner", "missing-nullable"} {
+		t.Run(kind, func(t *testing.T) {
+			c := newCredentialFixture(t)
+			change := func(binding map[string]any) {
+				containers := binding["source"].(map[string]any)["containers"].(map[string]any)
+				api := containers["fixture-api"].(map[string]any)
+				switch kind {
+				case "flat-string":
+					containers["fixture-api"] = "api"
+				case "missing-container":
+					delete(containers, "fixture-web")
+				case "extra-container":
+					containers["fixture-extra"] = api
+				case "missing-field":
+					delete(api, "image_id")
+				case "unknown-field":
+					api["extra"] = "synthetic"
+				case "null-id":
+					api["id"] = nil
+				case "invalid-id":
+					api["id"] = strings.Repeat("z", 64)
+				case "invalid-image":
+					api["image_id"] = strings.Repeat("a", 64)
+				case "duplicate-id":
+					api["id"] = containers["fixture-worker"].(map[string]any)["id"]
+				case "wrong-project":
+					api["compose_project"] = "other"
+				case "wrong-service":
+					api["compose_service"] = "worker"
+				case "standalone-owner":
+					containers["fixture-web"].(map[string]any)["compose_project"] = "fixture"
+				case "missing-nullable":
+					delete(containers["fixture-cloudflared"].(map[string]any), "compose_service")
+				}
+			}
+			f := newCaptureQualifierFixtureChanges(t, c.home, c.now, runtimeConfigInstallFixture(c.now).Profile, change, nil)
+			s, _ := work.OpenReadOnly(f.home)
+			before, _ := s.Get(f.workID)
+			p, err := f.owner.PlanCaptureQualification(f.request, f.workID, "fixture")
+			if err == nil || p.PlanRef != "" {
+				t.Fatalf("container binding %s accepted: %+v %v", kind, p, err)
+			}
+			w, _ := s.Get(f.workID)
+			if !reflect.DeepEqual(w.ActionIntentIDs, before.ActionIntentIDs) {
+				t.Fatal("rejected binding published qualification action")
+			}
+		})
+	}
+}
+
+func TestRuntimeCaptureQualificationRejectsPrivateContainerIdentityDrift(t *testing.T) {
+	for _, field := range []string{"id", "image_id", "name", "compose_project", "compose_service", "missing-field", "unknown-field", "running"} {
+		t.Run(field, func(t *testing.T) {
+			c := newCredentialFixture(t)
+			change := func(private map[string]any) {
+				i := private["services"].(map[string]any)["api"].(map[string]any)["identity"].(map[string]any)
+				switch field {
+				case "id":
+					i[field] = strings.Repeat("e", 64)
+				case "image_id":
+					i[field] = "sha256:" + strings.Repeat("e", 64)
+				case "missing-field":
+					delete(i, "compose_service")
+				case "unknown-field":
+					i["extra"] = "synthetic"
+				case "running":
+					i[field] = false
+				default:
+					i[field] = "other"
+				}
+			}
+			f := newCaptureQualifierFixtureChanges(t, c.home, c.now, runtimeConfigInstallFixture(c.now).Profile, nil, change)
+			p, err := f.owner.PlanCaptureQualification(f.request, f.workID, "fixture")
+			if err == nil || p.PlanRef != "" {
+				t.Fatalf("private identity %s accepted: %+v %v", field, p, err)
 			}
 		})
 	}

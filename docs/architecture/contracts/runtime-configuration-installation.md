@@ -70,6 +70,16 @@ published before exact approval is consumed. A descriptor-held lock excludes
 concurrent qualification, and local retries recover consumed authority and
 native close evidence. Completed retries return the same consumer result.
 
+The source binding declares five container identity objects, not a container-to-role
+string map. Each object requires exactly `id`, `image_id`, `compose_project`, and
+`compose_service`; null ownership is distinct from an omitted field. The protocol
+prefix names the `api`, `worker`, `provider-sync`, and `web` containers, while the
+`tunnel` role names its `cloudflared` container. The first three require the prefix
+as their Compose project and their exact role as service; web and tunnel require
+null Compose ownership. Missing, extra, ambiguous, or malformed identities refuse.
+Each private service must carry the native closed identity shape and match its
+bound container ID, image ID, name, project, and service before projection.
+
 The installer requires the real terminal Work close and the consumed exact
 qualification decision. Synthetic tests run this production producer before
 exercising the consumer, including drift, false source claims, policy floors,

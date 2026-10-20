@@ -82,6 +82,67 @@ type runtimeSourceCore struct {
 	Template   string   `json:"request_template_sha256"`
 }
 
+type runtimeSourceContainer struct {
+	ID             string  `json:"id"`
+	ImageID        string  `json:"image_id"`
+	ComposeProject *string `json:"compose_project"`
+	ComposeService *string `json:"compose_service"`
+}
+
+// The source protocol has five explicit roles; nullable ownership is meaningful.
+// Container names come from the protocol prefix, never from observed labels.
+func runtimeCaptureContainerNames(prefix string) map[string]string {
+	return map[string]string{"api": prefix + "-api", "worker": prefix + "-worker", "provider-sync": prefix + "-provider-sync", "web": prefix + "-web", "tunnel": prefix + "-cloudflared"}
+}
+
+func runtimeCaptureContainers(raw json.RawMessage, prefix string) (map[string]runtimeSourceContainer, error) {
+	var records map[string]json.RawMessage
+	names := runtimeCaptureContainerNames(prefix)
+	if runtimeCaptureJSON(raw, &records) != nil || len(records) != len(names) {
+		return nil, captureQualificationError()
+	}
+	out := map[string]runtimeSourceContainer{}
+	seen := map[string]bool{}
+	for role, name := range names {
+		var c runtimeSourceContainer
+		body, ok := records[name]
+		if !ok || runtimeCaptureJSON(body, &c) != nil || !runtimeCaptureRequiredFields(body, reflect.TypeOf(c)) || !runtimeCaptureSHA(c.ID) || !strings.HasPrefix(c.ImageID, "sha256:") || !runtimeCaptureSHA(strings.TrimPrefix(c.ImageID, "sha256:")) || seen[c.ID] {
+			return nil, captureQualificationError()
+		}
+		if role == "web" || role == "tunnel" {
+			if c.ComposeProject != nil || c.ComposeService != nil {
+				return nil, captureQualificationError()
+			}
+		} else if c.ComposeProject == nil || *c.ComposeProject != prefix || c.ComposeService == nil || *c.ComposeService != role {
+			return nil, captureQualificationError()
+		}
+		seen[c.ID] = true
+		out[role] = c
+	}
+	return out, nil
+}
+
+func runtimeCaptureServiceIdentity(raw json.RawMessage, expected runtimeSourceContainer, name string) bool {
+	var identity struct {
+		ID                string   `json:"id"`
+		ImageID           string   `json:"image_id"`
+		Name              string   `json:"name"`
+		StartedAt         string   `json:"started_at"`
+		Running           bool     `json:"running"`
+		RestartCount      int      `json:"restart_count"`
+		ComposeProject    *string  `json:"compose_project"`
+		ComposeService    *string  `json:"compose_service"`
+		ComposeFiles      []string `json:"compose_files"`
+		ComposeWorkingDir *string  `json:"compose_working_dir"`
+		OCIVersion        *string  `json:"oci_version"`
+		OCIRevision       *string  `json:"oci_revision"`
+	}
+	return runtimeCaptureJSON(raw, &identity) == nil && runtimeCaptureRequiredFields(raw, reflect.TypeOf(identity)) &&
+		identity.ID == expected.ID && identity.ImageID == expected.ImageID && identity.Name == name &&
+		reflect.DeepEqual(identity.ComposeProject, expected.ComposeProject) && reflect.DeepEqual(identity.ComposeService, expected.ComposeService) &&
+		identity.Running && identity.RestartCount >= 0 && identity.ComposeFiles != nil && regexp.MustCompile(`^[0-9TZ:.+-]{20,40}$`).MatchString(identity.StartedAt)
+}
+
 func runtimeCaptureSHA(s string) bool {
 	b, err := hex.DecodeString(s)
 	return err == nil && len(b) == 32 && hex.EncodeToString(b) == s
@@ -326,11 +387,15 @@ func (v *RuntimeConfigInstaller) validateCaptureQualification(r RuntimeCaptureQu
 			GID  uint32 `json:"gid"`
 		} `json:"mac_transport_root"`
 		Source struct {
-			Revision   string            `json:"git_revision"`
-			Containers map[string]string `json:"containers"`
+			Revision   string          `json:"git_revision"`
+			Containers json.RawMessage `json:"containers"`
 		} `json:"source"`
 	}
 	if json.Unmarshal(bindingRaw, &binding) != nil || binding.Root.Path != filepath.Dir(root) || binding.Root.UID != r.CaptureStat.UID || binding.Root.GID != r.CaptureStat.GID || !strings.HasSuffix(root, request.AttemptID) || request.AttemptID == "" {
+		return out, bad
+	}
+	containers, err := runtimeCaptureContainers(binding.Source.Containers, prefix)
+	if err != nil {
 		return out, bad
 	}
 	var manifest struct {
@@ -405,7 +470,7 @@ func (v *RuntimeConfigInstaller) validateCaptureQualification(r RuntimeCaptureQu
 		return out, bad
 	}
 	defer clear(private)
-	projection, err := runtimeCaptureValidatePrivate(private, public, prefix, binding.Source.Containers)
+	projection, err := runtimeCaptureValidatePrivate(private, public, prefix, containers)
 	if err != nil {
 		return out, bad
 	}
@@ -425,7 +490,7 @@ func (v *RuntimeConfigInstaller) validateCaptureQualification(r RuntimeCaptureQu
 	return out, nil
 }
 
-func runtimeCaptureValidatePrivate(raw []byte, public runtimeSourcePublic, prefix string, containers map[string]string) (string, error) {
+func runtimeCaptureValidatePrivate(raw []byte, public runtimeSourcePublic, prefix string, containers map[string]runtimeSourceContainer) (string, error) {
 	bad := captureQualificationError()
 	if !credentialVerifyUniqueJSON(raw) {
 		return "", bad
@@ -439,7 +504,8 @@ func runtimeCaptureValidatePrivate(raw []byte, public runtimeSourcePublic, prefi
 			SHA string `json:"raw_sha256"`
 		} `json:"origins"`
 		Services map[string]struct {
-			Record struct {
+			Identity json.RawMessage `json:"identity"`
+			Record   struct {
 				Selected map[string]string `json:"selected"`
 			} `json:"record"`
 		} `json:"services"`
@@ -464,8 +530,9 @@ func runtimeCaptureValidatePrivate(raw []byte, public runtimeSourcePublic, prefi
 			return "", bad
 		}
 	}
-	for _, service := range containers {
-		if _, ok := p.Services[service]; !ok {
+	for service, expected := range containers {
+		captured, ok := p.Services[service]
+		if !ok || !runtimeCaptureServiceIdentity(captured.Identity, expected, runtimeCaptureContainerNames(prefix)[service]) {
 			return "", bad
 		}
 	}
