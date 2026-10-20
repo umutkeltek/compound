@@ -62,6 +62,15 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 	harnessName := strings.TrimSpace(valueFlag(rest, "--harness"))
 	prompt := valueFlag(rest, "--prompt")
 	actor := firstNonEmpty(valueFlag(rest, "--by"), valueFlag(rest, "--actor"))
+	if hasFlag(rest, "--context-pack") {
+		state := "<current-state>"
+		if current, err := store.Get(workID); err == nil {
+			state = current.State
+		}
+		fmt.Fprintf(os.Stderr, "error: --context-pack cannot be combined with --execute; attach it with a separate same-state advance first:\n  compound work advance %q --to %s --by %q --context-pack %q\nthen execute without --context-pack\n", workID, state, actor, valueFlag(rest, "--context-pack"))
+		workAdvanceExecuteExit(2)
+		return
+	}
 	// The launch context is the production signal-derived one: SIGINT/SIGTERM
 	// cancel the governed run, and the shared runner kills the adapter's
 	// process group and stamps cancellation evidence on the attempt. Tests
