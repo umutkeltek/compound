@@ -92,7 +92,8 @@ func runCredentialAlignmentProof(ctx context.Context, run credentialAlignmentCom
 	args := credentialAlignmentDocker("run", "--pull", "never", "--detach", "--name", name,
 		"--label", "compound.credential-alignment-fixture="+token,
 		"--label", "compound.work="+workLabel,
-		"--network", "none", "--memory", "512m", "--cpus", "2", "--pids-limit", "256",
+		"--network", "none", "--hostname", name, "--add-host", name+":127.0.0.1",
+		"--memory", "512m", "--cpus", "2", "--pids-limit", "256",
 		"--mount", "type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock,readonly",
 		"--env", "POSTGRES_HOST_AUTH_METHOD=trust", credentialAlignmentPrerequisiteImage)
 	if err := run(ctx, args, environment, &started, stderr); err != nil {
@@ -111,7 +112,9 @@ func runCredentialAlignmentProof(ctx context.Context, run credentialAlignmentCom
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := run(ctx, credentialAlignmentDocker("exec", containerID, "/usr/lib/postgresql/17/bin/pg_isready", "-U", "postgres"), environment, io.Discard, io.Discard); err == nil {
+		// The image entrypoint's temporary initialization server is Unix-only.
+		// Require the final TCP listener before any native authentication case.
+		if err := run(ctx, credentialAlignmentDocker("exec", containerID, "/usr/lib/postgresql/17/bin/pg_isready", "-h", "127.0.0.1", "-p", "5432", "-U", "postgres"), environment, io.Discard, io.Discard); err == nil {
 			break
 		}
 		if !time.Now().Before(readyUntil) {

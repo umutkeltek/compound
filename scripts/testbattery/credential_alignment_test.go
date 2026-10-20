@@ -133,8 +133,15 @@ func (f *credentialAlignmentRunnerFixture) run(_ context.Context, args, environm
 		if !slices.Contains(args, "none") || !slices.Contains(args, "--pull") || !slices.Contains(args, "never") || slices.Contains(args, "--publish") || !slices.Contains(args, "type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock,readonly") {
 			f.t.Fatal("fixture lost no-port/network/socket fences", args)
 		}
+		hostname, alias := slices.Index(args, "--hostname"), slices.Index(args, "--add-host")
+		if hostname < 0 || alias < 0 || args[hostname+1] != f.name || args[alias+1] != f.name+":127.0.0.1" {
+			f.t.Fatal("network-isolated fixture cannot resolve its exact own hostname", args)
+		}
 		_, _ = fmt.Fprintln(stdout, strings.Repeat("a", 64))
 	case "exec":
+		if !slices.Contains(args, "-h") || !slices.Contains(args, "127.0.0.1") || !slices.Contains(args, "5432") {
+			f.t.Fatal("temporary Unix-only initialization server could count as ready", args)
+		}
 		return nil
 	case "container":
 		if args[4] == "inspect" {
