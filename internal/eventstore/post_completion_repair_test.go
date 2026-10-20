@@ -4270,8 +4270,8 @@ func repairTestReauthorizationTransitionLine(t *testing.T, state postCompletionR
 // mtime-sensitive comparison in the engine (engine.legacyStreamRegrew,
 // migrate.go) reads the completion marker's mtime as a lower bound against
 // the hook_events/traces compatibility streams — streams this fixture never
-// creates, and which callers only ever write AFTER the copy, so real wall
-// time already orders them correctly. The fixture's segments are always
+// creates. A stream written after the copy is active even if its timestamp
+// equals the marker's: equality cannot prove it was frozen. The segments are always
 // "today" relative to the fixed migrateNow clock, so they are never sealed
 // and never indexed (no persisted .idx sidecar exists in the tree), which
 // rules out the other mtime hazard: a stale ModifiedUnixNano baked into a

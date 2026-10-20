@@ -1,6 +1,7 @@
 package candidates
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -374,16 +375,26 @@ func readCustodiedCandidateRecord(directory *candidateDirectory, kind Kind, entr
 		_ = file.Close()
 		return Record{}, &Corruption{EntryCursor: EntryCursor(entryCursor), Code: CorruptionRaced, Detail: "entry changed while opening", cause: lstatErr}
 	}
-	candidateAfterOpenHook(entryCursor)
 	data, readErr := io.ReadAll(file)
+	// Stat identity alone cannot distinguish same-size writes in one clock tick.
+	// Compare two descriptor-pinned byte snapshots as well as the metadata/path
+	// identities, so a content change cannot hide behind identical stat results.
+	candidateAfterOpenHook(entryCursor)
+	var verified []byte
+	var verifyErr error
+	if readErr == nil {
+		if _, verifyErr = file.Seek(0, io.SeekStart); verifyErr == nil {
+			verified, verifyErr = io.ReadAll(file)
+		}
+	}
 	afterRead, afterReadErr := candidateIdentityForFile(file)
 	closeErr := file.Close()
 	afterName, afterNameErr := directory.lstat(entryCursor)
-	if readErr != nil || closeErr != nil {
-		joined := errors.Join(readErr, closeErr)
+	if readErr != nil || verifyErr != nil || closeErr != nil {
+		joined := errors.Join(readErr, verifyErr, closeErr)
 		return Record{}, &Corruption{EntryCursor: EntryCursor(entryCursor), Code: CorruptionUnreadable, Detail: joined.Error(), cause: joined}
 	}
-	if afterReadErr != nil || afterNameErr != nil || !opened.same(afterRead) || !opened.same(afterName) {
+	if afterReadErr != nil || afterNameErr != nil || !opened.same(afterRead) || !opened.same(afterName) || !bytes.Equal(data, verified) {
 		return Record{}, &Corruption{EntryCursor: EntryCursor(entryCursor), Code: CorruptionRaced, Detail: "entry changed while reading", cause: errors.Join(afterReadErr, afterNameErr)}
 	}
 	meta, err := decodeCandidateJSONIdentity(data)

@@ -35,6 +35,9 @@ steps:
       - apt-get update -qq && apt-get install -y -qq --no-install-recommends nodejs >/dev/null
       - test -x /usr/bin/node && /usr/bin/node --version
       - mkdir -p "$HOME" "$GOCACHE" "$GOMODCACHE"
+      # ssh-keygen and other tools look the running uid up in passwd; give uid
+      # 1000 an entry so the unprivileged gates behave like a real user account.
+      - getent passwd 1000 >/dev/null || useradd --uid 1000 --no-create-home --home-dir "$HOME" --shell /bin/sh ci
       - chown -R 1000:1000 "$HOME" "$GOCACHE" "$GOMODCACHE" "$CI_WORKSPACE"
       - |
         setpriv --reuid=1000 --regid=1000 --clear-groups \
@@ -79,6 +82,9 @@ steps:
       - compound-go-mod-cache:/cache/go-mod
     commands:
       - mkdir -p "$HOME" "$GOCACHE" "$GOMODCACHE"
+      # ssh-keygen and other tools look the running uid up in passwd; give uid
+      # 1000 an entry so the unprivileged gates behave like a real user account.
+      - getent passwd 1000 >/dev/null || useradd --uid 1000 --no-create-home --home-dir "$HOME" --shell /bin/sh ci
       - chown -R 1000:1000 "$HOME" "$GOCACHE" "$GOMODCACHE" "$CI_WORKSPACE"
       - |
         setpriv --reuid=1000 --regid=1000 --clear-groups \

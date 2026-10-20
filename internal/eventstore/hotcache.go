@@ -22,7 +22,7 @@ import (
 //
 // Stat-guarded: the entry records the hot segment path plus its size+mtime; a
 // different path (rollover/rotation) or any size/mtime move (a concurrent
-// append moves both) is a miss, so a reader never serves a frame set older than
+// append always moves size) is a miss, so a reader never serves a frame set older than
 // the file it just statted. regularKind reads bypass the cache — their rooted
 // validation is part of the read contract.
 //
@@ -143,6 +143,8 @@ func invalidateHotSegment(path string) {
 // foreign writer changed the file between our warm and our append (memo stale),
 // that equality fails and we leave the memo alone — the next put re-parses,
 // which is the correct behavior for a view we cannot account for.
+// The post-append size must also end exactly at our frame. An unchanged mtime
+// is valid for a known append: filesystems may stamp several writes in one tick.
 //
 // The cached entry's byID map is never mutated in place: callers read the map
 // outside the cache lock (hotFrames returns the reference), so we copy-on-write
@@ -152,7 +154,7 @@ func hotSegmentAppend(path string, size int64, mtime time.Time, frame parsedFram
 	sharedHotCache.mu.Lock()
 	defer sharedHotCache.mu.Unlock()
 	entry, ok := sharedHotCache.entries[key]
-	if !ok || entry.path != path || entry.size != frame.Offset || entry.mtime.Equal(mtime) {
+	if !ok || entry.path != path || entry.size != frame.Offset || frame.End != size || frame.End <= frame.Offset {
 		return
 	}
 	byID := make(map[string]parsedFrame, len(entry.byID)+1)

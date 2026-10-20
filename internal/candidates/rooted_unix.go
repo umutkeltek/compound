@@ -48,6 +48,9 @@ type candidateFileIdentity struct {
 
 var candidateReadDirectoryNames = readCandidateDirectoryNames
 
+// Test seam for filesystems whose stat timestamps do not advance on every write.
+var candidateIdentitySnapshot = candidateIdentityFromStat
+
 func openCandidateInbox(homePath, relativePath string, create bool) (*candidateInbox, error) {
 	home, err := openCandidateHome(homePath)
 	if err != nil {
@@ -255,7 +258,7 @@ func (directory *candidateDirectory) lstat(name string) (candidateFileIdentity, 
 	if err := unix.Fstatat(directory.fd, name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		return candidateFileIdentity{}, err
 	}
-	return candidateIdentityFromStat(&stat), nil
+	return candidateIdentitySnapshot(&stat), nil
 }
 
 func candidateIdentityForFD(fd int) (candidateFileIdentity, error) {
@@ -263,7 +266,7 @@ func candidateIdentityForFD(fd int) (candidateFileIdentity, error) {
 	if err := unix.Fstat(fd, &stat); err != nil {
 		return candidateFileIdentity{}, err
 	}
-	return candidateIdentityFromStat(&stat), nil
+	return candidateIdentitySnapshot(&stat), nil
 }
 
 func candidateIdentityForFile(file *os.File) (candidateFileIdentity, error) {
