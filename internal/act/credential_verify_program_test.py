@@ -2,6 +2,7 @@
 import ast
 import copy
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -117,6 +118,105 @@ class PureProtocolTests(unittest.TestCase):
             values = iter(["fixture-wrong-A", "fixture-wrong-B"])
             generator = lambda _: next(values)
         return program.run_protocol(r, runtime, generator)
+
+    def run_main(self, runtime, cleanup=True, signal_cleanup_failure=False):
+        r = runtime.r
+        issued = program.time.time_ns()
+        wire = {"request": r, "issued_ns": str(issued), "deadline_ns": str(issued + 50_000_000_000)}
+        stdout, stderr = io.StringIO(), io.StringIO()
+        cleanups = []
+        def cleanup_processes():
+            cleanups.append(True)
+            return cleanup() if callable(cleanup) else cleanup
+        processes = types.SimpleNamespace(cleanup=cleanup_processes)
+        def timer(_which, seconds):
+            if seconds == 0 and signal_cleanup_failure:
+                raise RuntimeError("fixture-secret-in-signal-cleanup")
+        with patch.object(program.sys, "stdin", types.SimpleNamespace(buffer=io.BytesIO(json.dumps(wire).encode()))), \
+             patch.object(program.sys, "stdout", stdout), patch.object(program.sys, "stderr", stderr), \
+             patch.object(program.sys, "argv", ["fixture", r["program_sha256"]]), \
+             patch.object(program.signal, "signal"), patch.object(program.signal, "setitimer", side_effect=timer), \
+             patch.object(program, "Processes", return_value=processes), \
+             patch.object(program, "NativeRuntime", return_value=runtime):
+            code = program.main()
+        self.assertEqual(cleanups, [True])
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_main_emits_only_bounded_source_format_stage(self):
+        runtime = MockRuntime(request())
+        runtime.raw = b"fixture-secret-must-never-be-rendered"
+        code, stdout, stderr = self.run_main(runtime)
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "credential_verify:refused:source_format\n")
+
+    def test_all_failure_stages_are_content_free_and_cleanup_always_runs(self):
+        cases = {
+            "executable": ("programs", 1), "host_identity": ("host", 1),
+            "protected_file": ("file", 1), "pre_catalog": ("catalog", 1),
+            "app_existing": ("positive", 1), "app_wrong": ("negative", 1),
+            "migrator_existing": ("positive", 2), "migrator_wrong": ("negative", 2),
+            "post_catalog": ("catalog", 2), "postchecks": ("file", 2),
+        }
+        for stage, (method, nth) in cases.items():
+            with self.subTest(stage=stage):
+                runtime = MockRuntime(request())
+                original = getattr(runtime, method)
+                calls = []
+                def injected(*args):
+                    calls.append(True)
+                    if len(calls) == nth:
+                        raise RuntimeError("fixture-secret-never-render-this")
+                    return original(*args)
+                with patch.object(runtime, method, side_effect=injected):
+                    code, stdout, stderr = self.run_main(runtime)
+                self.assertEqual((code, stdout, stderr), (1, "", "credential_verify:refused:" + stage + "\n"))
+        runtime = MockRuntime(request())
+        runtime.r["effect_set"] = "invalid"
+        self.assertEqual(self.run_main(runtime), (1, "", "credential_verify:refused:request_validation\n"))
+        runtime = MockRuntime(request())
+        with patch.object(runtime, "programs", side_effect=program.StageRefusal("deadline")):
+            self.assertEqual(self.run_main(runtime), (1, "", "credential_verify:refused:deadline\n"))
+
+    def test_cleanup_failure_overrides_success_and_other_stage(self):
+        for raw, cleanup in ((None, False), (b"fixture-secret", False), (None, lambda: (_ for _ in ()).throw(RuntimeError("fixture-secret")))):
+            with self.subTest(raw=raw, cleanup=cleanup):
+                runtime = MockRuntime(request())
+                if raw is not None:
+                    runtime.raw = raw
+                self.assertEqual(self.run_main(runtime, cleanup), (1, "", "credential_verify:refused:cleanup\n"))
+        self.assertEqual(self.run_main(MockRuntime(request()), signal_cleanup_failure=True),
+                         (1, "", "credential_verify:refused:cleanup\n"))
+
+    def test_process_deadline_has_only_finite_stage(self):
+        with self.assertRaises(program.StageRefusal) as caught:
+            program.Processes(program.time.monotonic() - 1).remaining()
+        self.assertEqual(caught.exception.stage, "deadline")
+
+    def test_main_success_has_no_stage_or_diagnostic(self):
+        code, stdout, stderr = self.run_main(MockRuntime(request()))
+        self.assertEqual((code, stderr), (0, ""))
+        observation = json.loads(stdout)
+        self.assertNotIn("failure_stage", observation)
+        for secret in PASSWORDS:
+            self.assertNotIn(secret, stdout)
+
+    def test_source_uri_grammar_remains_closed(self):
+        r = request()
+        raw = dotenv(r)
+        changes = [
+            (b"postgresql://", b"postgresql+asyncpg://"), (b":5432/", b"/"),
+            (b":5432/", b":5433/"), (b"source.fixture.invalid", b"other.fixture.invalid"),
+            (r["roles"][0]["name"].encode() + b":", b"other_role:"),
+            (b"/fixture_db?", b"/other_db?"),
+        ]
+        changes += [(b"sslmode=verify-full", (key + "=synthetic").encode()) for key in
+                    ("host", "hostaddr", "port", "dbname", "user", "password", "service", "passfile", "options")]
+        changes.append((b"sslmode=verify-full", b"sslmode=verify-full&sslmode=require"))
+        for before, after in changes:
+            with self.subTest(after=after), self.assertRaises(program.Refusal):
+                program.parse_passwords(raw.replace(before, after, 1), r["roles"])
+        self.assertEqual(program.parse_passwords(raw.replace(b"postgresql://", b"postgres://"), r["roles"]), PASSWORDS)
 
 
     def test_client_version_accepts_only_bounded_bare_or_debian_metadata(self):
@@ -348,15 +448,25 @@ class PureProtocolTests(unittest.TestCase):
                 program.decode_json(raw)
 
 
-@unittest.skipUnless(os.environ.get("COMPOUND_CREDENTIAL_VERIFY_TEST_CONTAINER"),
-                     "set an owned PostgreSQL fixture container for real catalog coverage")
+@unittest.skipUnless(os.environ.get("COMPOUND_CREDENTIAL_VERIFY_TEST_CONTAINER") or os.environ.get("COMPOUND_CREDENTIAL_VERIFY_TEST_PSQL"),
+                     "set an owned PostgreSQL fixture container or local psql/socket for real catalog coverage")
 class PostgreSQLCatalogTests(unittest.TestCase):
     def query(self, sql):
+        local = os.environ.get("COMPOUND_CREDENTIAL_VERIFY_TEST_PSQL")
+        if local:
+            argv = [local, "-h", os.environ["COMPOUND_CREDENTIAL_VERIFY_TEST_SOCKET"],
+                    "-p", os.environ["COMPOUND_CREDENTIAL_VERIFY_TEST_PORT"],
+                    "-U", os.environ["COMPOUND_CREDENTIAL_VERIFY_TEST_ROLE"],
+                    "-d", os.environ["COMPOUND_CREDENTIAL_VERIFY_TEST_DATABASE"],
+                    "-X", "-w", "-A", "-t", "-v", "ON_ERROR_STOP=1"]
+            env = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LC_ALL": "C", "LANG": "C",
+                   "PGPASSFILE": "/nonexistent", "PGSERVICEFILE": "/nonexistent"}
+        else:
+            argv = ["docker", "exec", "-i", os.environ["COMPOUND_CREDENTIAL_VERIFY_TEST_CONTAINER"],
+                    "/bin/sh", "-c", 'exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -A -t -v ON_ERROR_STOP=1']
+            env = None
         result = subprocess.run(
-            ["docker", "exec", "-i", os.environ["COMPOUND_CREDENTIAL_VERIFY_TEST_CONTAINER"],
-             "/bin/sh", "-c",
-             'exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -A -t -v ON_ERROR_STOP=1'],
-            input=sql, capture_output=True, text=True, timeout=15, check=False)
+            argv, env=env, input=sql, capture_output=True, text=True, timeout=15, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 

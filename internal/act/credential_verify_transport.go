@@ -298,6 +298,7 @@ func (b *credentialVerifyLimitedOutput) Write(p []byte) (int, error) {
 type credentialVerifyNativeChild struct {
 	cmd    *exec.Cmd
 	stdout credentialVerifyLimitedOutput
+	stderr credentialVerifyStageOutput
 	done   chan struct{}
 	failed bool
 }
@@ -325,8 +326,9 @@ func (t credentialVerifyNativeTransport) Start(ctx context.Context, r policy.Cre
 	cmd.Stdin = bytes.NewReader(payload)
 	child := &credentialVerifyNativeChild{cmd: cmd, done: make(chan struct{})}
 	cmd.Stdout = &child.stdout
-	// A remote diagnostic is neither an artifact nor a native error message.
-	cmd.Stderr = credentialVerifyDiscard{}
+	// Only a finite singleton marker can become failed-only metadata. Raw remote
+	// diagnostics never become an error message, observation, or artifact.
+	cmd.Stderr = &child.stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.WaitDelay = time.Second
 	cmd.Cancel = func() error {
@@ -365,14 +367,75 @@ func (t credentialVerifyNativeTransport) Start(ctx context.Context, r policy.Cre
 	return child, nil
 }
 
-type credentialVerifyDiscard struct{}
+func credentialVerifyKnownFailureStage(stage string) bool {
+	switch stage {
+	case "request_validation", "executable", "host_identity", "protected_file", "source_format", "pre_catalog", "app_existing", "app_wrong", "migrator_existing", "migrator_wrong", "post_catalog", "postchecks", "deadline", "cleanup":
+		return true
+	}
+	return false
+}
 
-func (credentialVerifyDiscard) Write(p []byte) (int, error) { return len(p), nil }
+type credentialVerifyStageError struct{ stage string }
+
+func (credentialVerifyStageError) Error() string { return "credential_verify:verification_failed" }
+
+func credentialVerifySafeFailureStage(err error) string {
+	var staged credentialVerifyStageError
+	if errors.As(err, &staged) && credentialVerifyKnownFailureStage(staged.stage) && staged.stage != "cleanup" {
+		return staged.stage
+	}
+	return ""
+}
+
+type credentialVerifyStageOutput struct {
+	mu      sync.Mutex
+	data    []byte
+	present bool
+	invalid bool
+}
+
+func (b *credentialVerifyStageOutput) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n := len(p)
+	b.present = b.present || n > 0
+	if b.invalid || n > 96-len(b.data) {
+		b.invalid = true
+		b.data = nil
+		return n, nil
+	}
+	b.data = append(b.data, p...)
+	return n, nil
+}
+
+func (b *credentialVerifyStageOutput) result() (string, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	const prefix = "credential_verify:refused:"
+	if !b.invalid {
+		marker := string(b.data)
+		stage := strings.TrimSuffix(strings.TrimPrefix(marker, prefix), "\n")
+		if credentialVerifyKnownFailureStage(stage) && marker == prefix+stage+"\n" {
+			return stage, true
+		}
+	}
+	return "", b.present
+}
 func (c *credentialVerifyNativeChild) Wait() ([]byte, error) {
 	<-c.done
 	c.stdout.mu.Lock()
 	defer c.stdout.mu.Unlock()
-	if c.failed || c.stdout.overflow {
+	stage, stderr := c.stderr.result()
+	if c.stdout.overflow {
+		return nil, credentialVerifyError("transport_failed")
+	}
+	if c.failed {
+		if stage != "" {
+			return nil, credentialVerifyStageError{stage: stage}
+		}
+		return nil, credentialVerifyError("transport_failed")
+	}
+	if stderr {
 		return nil, credentialVerifyError("transport_failed")
 	}
 	return append([]byte(nil), c.stdout.data...), nil

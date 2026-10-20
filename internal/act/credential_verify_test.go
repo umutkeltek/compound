@@ -39,6 +39,7 @@ type credentialMockTransport struct {
 	startErr  error
 }
 type credentialMockChild struct {
+	native          *credentialVerifyNativeChild
 	raw             []byte
 	waitErr         error
 	stopErr         error
@@ -80,12 +81,107 @@ func (c *credentialMockChild) Wait() ([]byte, error) {
 	if c.beforeWait != nil {
 		c.beforeWait()
 	}
+	if c.native != nil {
+		return c.native.Wait()
+	}
 	return c.raw, c.waitErr
 }
 func (c *credentialMockChild) Stop(ctx context.Context) error {
 	c.stopped = true
 	c.cleanupDeadline, _ = ctx.Deadline()
+	if c.native != nil && c.stopErr == nil {
+		return c.native.Stop(ctx)
+	}
 	return c.stopErr
+}
+
+func TestCredentialVerificationFailureStageIsMetadataOnlyAfterCleanup(t *testing.T) {
+	for _, kind := range []string{"stage", "cleanup-failure", "remote-cleanup", "unknown-stage", "split-marker", "raw-stderr", "duplicate-marker", "oversize-marker", "contradictory-success"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newCredentialFixture(t)
+			const secret = "FIXTURE_FAILED_OUTPUT_SECRET_NEVER_PERSIST"
+			stage, want := "source_format", "source_format"
+			switch kind {
+			case "cleanup-failure":
+				f.transport.child.stopErr = errors.New(secret)
+				want = ""
+			case "remote-cleanup":
+				stage, want = "cleanup", ""
+			case "unknown-stage":
+				stage, want = secret, ""
+			case "split-marker", "raw-stderr", "duplicate-marker", "oversize-marker", "contradictory-success":
+				done := make(chan struct{})
+				close(done)
+				native := &credentialVerifyNativeChild{done: done, failed: kind != "contradictory-success"}
+				native.stdout.data = append([]byte(nil), f.transport.child.raw...)
+				marker := "credential_verify:refused:source_format\n"
+				chunks := []string{marker}
+				want = ""
+				switch kind {
+				case "split-marker":
+					chunks, want = []string{"credential_verify:refused:source_", "format\n"}, "source_format"
+				case "raw-stderr":
+					chunks = []string{secret}
+				case "duplicate-marker":
+					chunks = []string{marker, marker}
+				case "oversize-marker":
+					chunks = []string{strings.Repeat(secret, 10000)}
+				}
+				for _, chunk := range chunks {
+					_, _ = native.stderr.Write([]byte(chunk))
+				}
+				f.transport.child.native = native
+			}
+			f.transport.child.raw = []byte(secret)
+			f.transport.child.waitErr = credentialVerifyStageError{stage: stage}
+			p := f.plan(t)
+			f.approve(t, p)
+			result, err := f.verifier.Execute(context.Background(), p.PlanRef, "fixture")
+			if err == nil || result.State != "failed" || !result.ApprovalConsumed || result.ObservationRef != "" || result.ReceiptID == "" || result.TransitionID == "" || !f.transport.child.stopped || result.ConfigurationAccepted || result.ApplicationAccessAccepted || result.SourceCaptureAccepted || result.MigrationAccepted {
+				t.Fatalf("failure accepted: %+v %v", result, err)
+			}
+			attempt, err := runattempt.Open(f.home).Get(result.RunAttemptID)
+			if err != nil || attempt.Status != runattempt.StatusFailed {
+				t.Fatalf("failure not terminal: %+v %v", attempt, err)
+			}
+			statuses := 0
+			err = filepath.WalkDir(f.home, func(path string, d os.DirEntry, err error) error {
+				if err != nil || d.IsDir() {
+					return err
+				}
+				raw, err := os.ReadFile(path)
+				if err != nil {
+					return err
+				}
+				if strings.Contains(string(raw), secret) {
+					t.Fatal("failed output persisted")
+				}
+				var status map[string]any
+				if json.Unmarshal(raw, &status) == nil && status["schema_version"] == "compound.credential_verification_status.v0.1" {
+					statuses++
+					actual, present := status["failure_stage"]
+					if (want == "" && present) || (want != "" && actual != want) {
+						t.Fatalf("status stage = %v, want %q", actual, want)
+					}
+					if status["state"] != "failed" || status["observation_ref"] != nil {
+						t.Fatal("failed status accepted observation")
+					}
+					for _, field := range []string{"configuration_accepted", "application_access_accepted", "source_capture_accepted", "migration_accepted"} {
+						if status[field] != false {
+							t.Fatalf("failed status accepted %s", field)
+						}
+					}
+				}
+				return nil
+			})
+			if err != nil || statuses == 0 {
+				t.Fatalf("missing failed-only status: %d %v", statuses, err)
+			}
+			if _, err := f.verifier.Execute(context.Background(), p.PlanRef, "fixture"); err == nil || f.transport.starts != 1 {
+				t.Fatal("failed attempt was retried")
+			}
+		})
+	}
 }
 
 func newCredentialFixture(t *testing.T) *credentialFixture {
