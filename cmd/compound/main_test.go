@@ -450,6 +450,7 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 	wantProofs := []string{
 		"go-test-count-1-general-release",
 		"go-test-count-1-home",
+		"credential-password-alignment-native-pg17-no-skips",
 		"go-vet-all",
 		"go-build-all",
 		"gofmt-check",

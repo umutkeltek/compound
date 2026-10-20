@@ -225,6 +225,7 @@ func TestProofCheckPackageIsolationPreservesCanonicalGateInventory(t *testing.T)
 	want := [][2]string{
 		{"go-test", "go-test-count-1-general-release"},
 		{"go-test-home", "go-test-count-1-home"},
+		{"credential-password-alignment-native", "credential-password-alignment-native-pg17-no-skips"},
 		{"go-vet", "go-vet-all"},
 		{"go-build", "go-build-all"},
 		{"gofmt", "gofmt-check"},
