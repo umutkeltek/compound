@@ -1,5 +1,10 @@
 # Kernel Contracts (the lego seams)
 
+Closed PostgreSQL password repair and recovery are owned by
+[closed-credential-password-alignment.md](closed-credential-password-alignment.md).
+The existing verifier stays read-only; native installer admission consumes the
+separate repair/recovery proof and subsequent unchanged-verifier qualification.
+
 Fragmentation happens when seams between pieces are fuzzy: change one and others break. The cure is
 a small explicit contract — port + lifecycle + receipt — with implementations swapped behind it.
 Defined before implementation so agents stop re-deriving them. Implement a contract only when a

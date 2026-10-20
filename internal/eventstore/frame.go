@@ -90,6 +90,9 @@ var idPrefixFamilies = []struct{ prefix, family string }{
 	// prefix reads to exclude unrelated families.
 	{"pfrh_", "other"},
 	{"pfrp_", "other"},
+	// Closed credential alignment launch-intent evidence already belongs to
+	// other. Keep its admission/finalization scan out of unrelated families.
+	{"cpaf_", "other"},
 }
 
 func familyOf(record []byte, id string) string {

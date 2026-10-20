@@ -65,6 +65,8 @@ func runActWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 		return 2
 	}
 	switch args[0] {
+	case "credential-password-align":
+		return actcli.RunCredentialPasswordAlignment(args[1:], stdout, stderr)
 	case "credential-verify":
 		return actcli.RunCredentialVerification(args[1:], stdout, stderr)
 	case "runtime-config-install":

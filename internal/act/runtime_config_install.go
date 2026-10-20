@@ -81,7 +81,7 @@ func NewRuntimeConfigInstaller(homePath string) (*RuntimeConfigInstaller, error)
 	if e != nil {
 		return nil, errors.New("runtime_config_install:home_unavailable")
 	}
-	return &RuntimeConfigInstaller{home: resolved, now: time.Now, transport: runtimeConfigInstallNativeTransport{}}, nil
+	return &RuntimeConfigInstaller{home: resolved, now: time.Now, transport: runtimeConfigInstallNativeTransport{home: resolved}}, nil
 }
 
 func runtimeConfigInstallHash(v any) string {

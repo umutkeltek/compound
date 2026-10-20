@@ -57,7 +57,7 @@ def fixture(parent):
     return request, selected, original
 
 def invoke(request, selected, operation="install", observer=None):
-    return engine.dispatch(dict(request=request,selected=selected if operation=="install" else {},operation=operation,issued_ns="1",deadline_ns="2"),observer or Observer(),engine.Files(request["root"]),verifier)
+    return engine.dispatch(dict(request=request,selected=selected if operation=="install" else {},operation=operation,issued_ns="1",deadline_ns="2",alignment_acceptances=[]),observer or Observer(),engine.Files(request["root"]),verifier)
 
 def model_url(octets=(100, 64, 0, 1), port=11434):
     host = ".".join(str(n) for n in octets)

@@ -354,8 +354,13 @@ class Transaction:
         self.manifest = None
         self.operation = None
         self.changed = False
+        self.alignment_acceptances = []
+        self.alignment_lock = None
 
     def close(self):
+        if self.alignment_lock is not None:
+            os.close(self.alignment_lock)
+            self.alignment_lock = None
         if self.dir is not None:
             os.close(self.dir)
         if self.lock is not None:
@@ -367,10 +372,32 @@ class Transaction:
 
     def guard(self):
         self.fs.check_root()
+        self.lock_alignment()
+        alignment_fence(self.fs, self.alignment_acceptances)
         for item in (self.r["marker"], self.r["lock"]):
             actual, _ = self.fs.read(self.fs.fd, item["basename"], item["stat"]["mode"])
             require(actual == item["stat"])
         return self.runtime.check(self.r)
+
+    def lock_alignment(self):
+        name = ".compound-credential-password-alignment"
+        if self.alignment_lock is None:
+            try:
+                fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=self.fs.fd)
+            except FileNotFoundError:
+                return
+            try:
+                s = os.fstat(fd)
+                require(s.st_uid == self.fs.uid and s.st_gid == self.fs.gid and stat.S_IMODE(s.st_mode) == 0o700)
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.alignment_lock = fd
+            except BaseException:
+                os.close(fd)
+                raise
+        current = os.stat(name, dir_fd=self.fs.fd, follow_symlinks=False)
+        held = os.fstat(self.alignment_lock)
+        require(stat.S_ISDIR(current.st_mode) and current.st_dev == held.st_dev and current.st_ino == held.st_ino
+                and current.st_uid == self.fs.uid and current.st_gid == self.fs.gid and stat.S_IMODE(current.st_mode) == 0o700)
 
     def acquire(self):
         self.guard()
@@ -547,12 +574,111 @@ class Transaction:
         return self.observation("rolled_back", before, after, final)
 
 
+def alignment_fence(files, acceptances):
+    """Read safe RESULT records only. Private SCRAM journals stay unopened."""
+    require(type(acceptances) is list and len(acceptances) <= 64)
+    selected = {}
+    for value in acceptances:
+        exact(value, "action_intent_id original_action_intent_id request_sha256 observation_sha256 operation effect")
+        for key in ("action_intent_id", "original_action_intent_id"):
+            require(type(value[key]) is str and re.fullmatch(r"act_[0-9a-f]{12}", value[key]))
+        for key in ("request_sha256", "observation_sha256"):
+            require(type(value[key]) is str and re.fullmatch(r"[0-9a-f]{64}", value[key]))
+        original = value["original_action_intent_id"]
+        require(original not in selected)
+        selected[original] = value
+
+    def directory(parent, name):
+        fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+        try:
+            s = os.fstat(fd)
+            require(s.st_uid == files.uid and s.st_gid == files.gid and stat.S_IMODE(s.st_mode) == 0o700)
+            return fd
+        except BaseException:
+            os.close(fd)
+            raise
+
+    def records(fd):
+        entries = os.listdir(fd)
+        require(len(entries) <= 68)
+        recoveries = []
+        for name in entries:
+            if re.fullmatch(r"recovery_act_[0-9a-f]{12}", name):
+                recoveries.append(name[len("recovery_"):])
+                continue
+            require(name in ("PREIMAGE.json", "POSTIMAGE.json", "COMMIT_INTENT.json", "RESULT.json"))
+            # This is metadata only, including for private verifier records.
+            s = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            require(stat.S_ISREG(s.st_mode) and s.st_nlink == 1 and s.st_uid == files.uid and s.st_gid == files.gid
+                    and stat.S_IMODE(s.st_mode) == 0o600 and s.st_size <= 1_048_576)
+        return recoveries
+
+    try:
+        namespace = directory(files.fd, ".compound-credential-password-alignment")
+    except FileNotFoundError:
+        require(not selected)
+        return
+    try:
+        originals = os.listdir(namespace)
+        require(len(originals) <= 64 and set(originals) == set(selected))
+        for original in originals:
+            require(re.fullmatch(r"act_[0-9a-f]{12}", original))
+            fd = directory(namespace, original)
+            try:
+                recoveries = records(fd)
+                require("PREIMAGE.json" in os.listdir(fd))
+                for action in recoveries:
+                    child = directory(fd, "recovery_" + action)
+                    try:
+                        require(not records(child))
+                        require("PREIMAGE.json" in os.listdir(child))
+                    finally:
+                        os.close(child)
+                accepted = selected[original]
+                selected_action = accepted["action_intent_id"]
+                result_fd = fd
+                if selected_action != original:
+                    require(selected_action in recoveries)
+                    result_fd = directory(fd, "recovery_" + selected_action)
+                try:
+                    _, raw = files.read(result_fd, "RESULT.json")
+                    result = decode(raw)
+                    exact(result, "schema_version operation action_intent_id original_action_intent_id request_sha256 classification effect closed protected_file_unchanged attributes_unchanged configuration_accepted credential_qualification_accepted catalog resolved_recovery_actions")
+                    require(result["schema_version"] == "compound.credential_password_alignment_observation.v0.1")
+                    for key in ("action_intent_id", "original_action_intent_id", "request_sha256", "operation", "effect"):
+                        require(result[key] == accepted[key])
+                    require(digest(encoded(result)) == accepted["observation_sha256"])
+                    require(result["closed"] is True and result["protected_file_unchanged"] is True and result["attributes_unchanged"] is True
+                            and result["configuration_accepted"] is False and result["credential_qualification_accepted"] is False and result["catalog"] is None)
+                    resolved = result["resolved_recovery_actions"]
+                    require(type(resolved) is list and len(resolved) == len(set(resolved)))
+                    require(set(resolved) == set(recoveries) - {selected_action})
+                    if selected_action == original:
+                        require({"PREIMAGE.json", "POSTIMAGE.json", "COMMIT_INTENT.json", "RESULT.json"}.issubset(os.listdir(fd)))
+                        require(not recoveries and result["operation"] == "align" and result["classification"] == "new_new" and result["effect"] == "committed")
+                    elif result["operation"] == "restore":
+                        require({"PREIMAGE.json", "POSTIMAGE.json", "COMMIT_INTENT.json", "RESULT.json"}.issubset(os.listdir(result_fd)))
+                        require(result["classification"] == "new_new" and result["effect"] == "restored")
+                    else:
+                        require(result["operation"] == "reconcile" and result["classification"] in ("old_old", "new_new")
+                                and result["effect"] == "reconciled_" + result["classification"])
+                finally:
+                    if result_fd != fd:
+                        os.close(result_fd)
+            finally:
+                os.close(fd)
+    finally:
+        os.close(namespace)
+    files.check_root()
+
+
 def dispatch(outer, runtime, files, verifier):
-    exact(outer, "request selected operation issued_ns deadline_ns")
+    exact(outer, "request selected operation issued_ns deadline_ns alignment_acceptances")
     r = outer["request"]
     validate(r, outer["selected"], outer["operation"])
     require(outer["operation"] in ("install", "reconcile", "rollback"))
     transaction = Transaction(r, runtime, files)
+    transaction.alignment_acceptances = outer["alignment_acceptances"]
     transaction.operation = outer["operation"]
     try:
         if outer["operation"] == "install":

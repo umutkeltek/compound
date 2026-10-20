@@ -142,7 +142,21 @@ func (v *RuntimeConfigInstaller) qualification(r policy.RuntimeConfigInstallRequ
 	if s == nil || !runtimeConfigEqualJSON(pr.Host, r.Host) || !runtimeConfigEqualJSON(pr.Resource, r.Resource) || !runtimeConfigEqualJSON(pr.SSH, r.SSH) || !runtimeConfigEqualJSON(pr.Roles, r.Roles) || pr.Database.Name != r.Database.Name || pr.Database.AllowConnections != r.Database.AllowConnections || pr.File.Path != f.Path || pr.File.Device != s.Device || pr.File.Inode != s.Inode || pr.File.Bytes != s.Bytes || pr.File.MtimeNS != s.MtimeNS || pr.File.CtimeNS != s.CtimeNS || pr.File.SHA256 != s.SHA256 {
 		return runtimeConfigInstallError("credential_binding")
 	}
-	return nil
+	_, e = v.alignmentAcceptances(r)
+	return e
+}
+
+func (v *RuntimeConfigInstaller) alignmentAcceptances(r policy.RuntimeConfigInstallRequest) ([]credentialPasswordAlignmentAcceptance, error) {
+	var receipt envelope.Receipt
+	if _, e := v.proof(r.Qualification.Receipt, false, &receipt); e != nil {
+		return nil, e
+	}
+	created, e := time.Parse(time.RFC3339Nano, receipt.CreatedAt)
+	if e != nil {
+		return nil, runtimeConfigInstallError("credential_receipt_time")
+	}
+	return credentialPasswordAlignmentInstallerFence(v.home, r.Files[0].Path,
+		policy.CredentialVerificationDestination(policy.CredentialVerificationRequest{SSH: policy.CredentialVerifySSH{User: r.SSH.User, Alias: r.SSH.Alias}}), created)
 }
 
 func (v *RuntimeConfigInstaller) captureAuthority(r policy.RuntimeConfigInstallRequest) error {

@@ -39,7 +39,7 @@ func RuntimeConfigInstallProgramSHA256() string {
 
 // The owner holds native admission while invoking the exact fixed OS start.
 type runtimeConfigInstallAdmissionGuard func(start func() error) error
-type runtimeConfigInstallNativeTransport struct{}
+type runtimeConfigInstallNativeTransport struct{ home string }
 
 func trustedRuntimeConfigInstallFile(path string, private bool) (os.FileInfo, error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
@@ -296,13 +296,22 @@ func (t runtimeConfigInstallNativeTransport) Start(ctx context.Context, r policy
 	if err != nil {
 		return nil, err
 	}
+	owner := &RuntimeConfigInstaller{home: t.home, now: time.Now}
+	acceptances, err := owner.alignmentAcceptances(r)
+	if err != nil {
+		return nil, err
+	}
+	if acceptances == nil {
+		acceptances = []credentialPasswordAlignmentAcceptance{}
+	}
 	wire := struct {
-		Request    policy.RuntimeConfigInstallRequest `json:"request"`
-		Selected   map[string]string                  `json:"selected"`
-		Operation  string                             `json:"operation"`
-		IssuedNS   string                             `json:"issued_ns"`
-		DeadlineNS string                             `json:"deadline_ns"`
-	}{Request: r, Selected: selected, Operation: operation, IssuedNS: strconv.FormatInt(time.Now().UnixNano(), 10), DeadlineNS: strconv.FormatInt(deadline.UnixNano(), 10)}
+		Request              policy.RuntimeConfigInstallRequest      `json:"request"`
+		Selected             map[string]string                       `json:"selected"`
+		Operation            string                                  `json:"operation"`
+		IssuedNS             string                                  `json:"issued_ns"`
+		DeadlineNS           string                                  `json:"deadline_ns"`
+		AlignmentAcceptances []credentialPasswordAlignmentAcceptance `json:"alignment_acceptances"`
+	}{Request: r, Selected: selected, Operation: operation, IssuedNS: strconv.FormatInt(time.Now().UnixNano(), 10), DeadlineNS: strconv.FormatInt(deadline.UnixNano(), 10), AlignmentAcceptances: acceptances}
 	payload, err := json.Marshal(wire)
 	if err != nil || len(payload) > 131072 {
 		return nil, runtimeConfigInstallError("transport_request")
