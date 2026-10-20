@@ -311,7 +311,9 @@ func TestTmuxRunnerCreatePaneCwdIsWorkspace(t *testing.T) {
 	cr := newCapturingRunner(t, sock)
 	dir := t.TempDir()
 	out := dir + "/pwd.txt"
-	if err := cr.Create("sess-cwd-proof", dir, "/bin/sh", []string{"-c", "pwd > " + out}); err != nil {
+	// Publish by rename: `pwd > out` creates the file before writing it, so a
+	// poll between the two read "" and failed under load.
+	if err := cr.Create("sess-cwd-proof", dir, "/bin/sh", []string{"-c", "pwd > " + out + ".tmp && mv " + out + ".tmp " + out}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	t.Cleanup(func() { _ = cr.Kill("sess-cwd-proof") })
