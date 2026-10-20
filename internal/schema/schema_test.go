@@ -250,3 +250,24 @@ func TestKnowledgeExportContractValidatesFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestReceiptSchemaDistinguishesUnknownFromKnownEffects(t *testing.T) {
+	schema, err := Export("receipt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(schema["allOf"].([]any)) != 1 {
+		t.Fatal("schema lacks completed/no-op known-effect condition")
+	}
+	props := schema["properties"].(map[string]any)
+	delta := props["state_delta"].(map[string]any)
+	branches := delta["oneOf"].([]any)
+	if len(branches) != 2 {
+		t.Fatal("missing known/unknown structural alternatives")
+	}
+	unknown := branches[1].(map[string]any)
+	forbidden := unknown["not"].(map[string]any)["required"].([]string)
+	if len(forbidden) != 1 || forbidden[0] != "changed" {
+		t.Fatal("schema permits a boolean assertion for unknown effects")
+	}
+}

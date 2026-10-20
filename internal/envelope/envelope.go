@@ -1467,11 +1467,13 @@ func (e *TraceEnvelope) Validate() error {
 }
 
 type StateDelta struct {
-	Changed      bool     `json:"changed"`
-	Summary      string   `json:"summary"`
-	FilesChanged []string `json:"files_changed"`
-	Artifacts    []string `json:"artifacts"`
-	Verification []string `json:"verification"`
+	Changed bool `json:"changed"`
+	// Empty preserves legacy known-effect encoding. Unknown omits changed.
+	ChangeKnowledge string   `json:"change_knowledge,omitempty"`
+	Summary         string   `json:"summary"`
+	FilesChanged    []string `json:"files_changed"`
+	Artifacts       []string `json:"artifacts"`
+	Verification    []string `json:"verification"`
 }
 type ReceiptCost struct {
 	ModelCalls   []string `json:"model_calls"`
@@ -1648,6 +1650,18 @@ func (e Receipt) memoryRefs() []string {
 
 func (e *Receipt) Validate() error {
 	v := &verr{}
+	if e.StateDelta.ChangeKnowledge != "" && e.StateDelta.ChangeKnowledge != "unknown" {
+		v.addf("state_delta.change_knowledge must be omitted or unknown")
+	}
+	if e.StateDelta.ChangeKnowledge == "unknown" {
+		if e.StateDelta.Changed {
+			v.addf("unknown effects cannot assert state_delta.changed")
+		}
+		if e.Outcome == "completed" || e.Outcome == "no_op" {
+			v.addf("completed or no_op receipt requires known effects")
+		}
+	}
+
 	if len(e.Skills.Referenced) > 0 && (e.Skills.ObservationMethod != "transcript_reference_scan" || e.Skills.ObservationQuality != "readable") {
 		v.addf("skills.referenced requires readable transcript_reference_scan")
 	}

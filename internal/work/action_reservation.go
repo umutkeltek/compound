@@ -16,6 +16,8 @@ import (
 
 	"compound/internal/envelope"
 	"compound/internal/policy"
+	"compound/internal/runattempt"
+	"slices"
 )
 
 const receiptedActionReservationSchemaVersion = "compound.receipted_action_reservation.v0.2"
@@ -381,6 +383,22 @@ func validateReceiptedActionReservationAdmission(s *Store, w envelope.WorkEnvelo
 }
 
 func newReceiptedActionReservation(workID string, in ReceiptedActionInput, authorizedAt time.Time) (receiptedActionReservation, error) {
+	if required := in.RequiredAttemptCompletion; required != nil {
+		if !strings.HasPrefix(required.AttemptID, "ratt_") || strings.TrimSpace(required.Owner) == "" || required.Owner != strings.TrimSpace(required.Owner) {
+			return receiptedActionReservation{}, fmt.Errorf("invalid required attempt completion")
+		}
+		if recovery := required.Recovery; recovery != nil {
+			if !strings.HasPrefix(recovery.WorkID, "work_") || filepath.Base(recovery.WorkID) != recovery.WorkID || recovery.WorkID == workID || strings.TrimSpace(recovery.Owner) == "" || recovery.Owner != strings.TrimSpace(recovery.Owner) || strings.TrimSpace(recovery.Capability) == "" || len(recovery.ArgumentsHashes) == 0 || len(recovery.ArgumentsHashes) > 2 {
+				return receiptedActionReservation{}, fmt.Errorf("invalid required recovery completion")
+			}
+			for _, digest := range recovery.ArgumentsHashes {
+				decoded, err := hex.DecodeString(strings.TrimPrefix(digest, "sha256:"))
+				if err != nil || len(decoded) != sha256.Size || strings.ToLower(digest) != digest {
+					return receiptedActionReservation{}, fmt.Errorf("invalid required recovery arguments digest")
+				}
+			}
+		}
+	}
 	decisionID := ""
 	if in.PreEvaluatedDecision != nil {
 		decisionID = in.PreEvaluatedDecision.ID
@@ -567,6 +585,99 @@ func (r receiptedActionReservation) validate() error {
 	return nil
 }
 
+// ErrRequiredAttemptCompletion leaves the reservation and its durable outcome
+// intact. The caller may complete the real native attempt with the returned
+// receipt/transition, then retry this exact reserved transaction.
+var ErrRequiredAttemptCompletion = errors.New("required native attempt owner proof is incomplete")
+
+func (s *Store) requiredAttemptCompleted(expected receiptedActionReservation) error {
+	if expected.Input == nil || expected.Input.RequiredAttemptCompletion == nil {
+		return nil
+	}
+	required := expected.Input.RequiredAttemptCompletion
+	attempt, e := runattempt.Open(s.home).Get(required.AttemptID)
+	if e != nil || attempt.ID != required.AttemptID || attempt.WorkID != expected.WorkID || attempt.ActionIntentID != expected.ActionID || attempt.TerminalizationOwner != required.Owner || !runattempt.IsTerminal(attempt.Status) {
+		return ErrRequiredAttemptCompletion
+	}
+	// An interrupted install remains a failed attempt even after a later
+	// separately approved recovery. Its original proof must remain cited.
+	var receipt envelope.Receipt
+	var transition envelope.Transition
+	if s.readEventJSON(attempt.TerminalizationReceiptID, &receipt) != nil || s.readEventJSON(attempt.TerminalizationTransitionID, &transition) != nil || receipt.Validate() != nil || transition.Validate() != nil || receipt.IDs.WorkID != expected.WorkID || transition.IDs.WorkID != expected.WorkID || !slices.Contains(transition.ActionRefs, expected.ActionID) || !slices.Contains(transition.AfterRefs, receipt.ID) {
+		return ErrRequiredAttemptCompletion
+	}
+	if (attempt.Status == runattempt.StatusSucceeded) != (receipt.Outcome == "completed") || (attempt.Status == runattempt.StatusSucceeded && receipt.StateDelta.ChangeKnowledge != "") {
+		return ErrRequiredAttemptCompletion
+	}
+	direct := receipt.ID == expected.ReceiptID && transition.ID == expected.TransitionID
+	if !direct && (!slices.Contains(expected.Input.ProofRefs, receipt.ID) || !slices.Contains(expected.Input.ProofRefs, transition.ID) || expected.Input.Outcome == "completed") {
+		return ErrRequiredAttemptCompletion
+	}
+	// Prepared without committed disposition is uncertain too: the child may
+	// have started before the durable committed write failed. Only a recorded
+	// start error with no committed launch proves that no child started.
+	uncertainLaunch := attempt.Launch != nil && (attempt.Launch.CommittedAt != nil || attempt.Launch.StartErrorAt == nil)
+	if attempt.Status != runattempt.StatusSucceeded && uncertainLaunch && required.Recovery != nil {
+		return s.requiredRecoveryCompleted(expected, receipt, transition)
+	}
+	return nil
+}
+
+// Required recovery is looked up through native stores. No caller-supplied
+// receipt, detached sidecar or original failed owner proof can discharge it.
+func (s *Store) requiredRecoveryCompleted(expected receiptedActionReservation, originalReceipt envelope.Receipt, originalTransition envelope.Transition) error {
+	required := expected.Input.RequiredAttemptCompletion
+	recovery := required.Recovery
+	attempts, err := runattempt.Open(s.home).ForWork(recovery.WorkID)
+	if err != nil {
+		return ErrRequiredAttemptCompletion
+	}
+	for _, candidate := range attempts {
+		if candidate.Status != runattempt.StatusSucceeded || candidate.TerminalizationOwner != recovery.Owner || candidate.Launch == nil || candidate.Launch.CommittedAt == nil || candidate.Launch.StartErrorAt != nil {
+			continue
+		}
+		var ai envelope.ActionIntent
+		var pd envelope.PolicyDecision
+		var receipt envelope.Receipt
+		var transition envelope.Transition
+		completion, exists, _, err := s.preflightReceiptedActionCompletion(recovery.WorkID, candidate.ActionIntentID)
+		if err != nil || !exists || candidate.TerminalizationReceiptID != completion.ReceiptID || candidate.TerminalizationTransitionID != completion.TransitionID {
+			continue
+		}
+		if s.readEventJSON(candidate.ActionIntentID, &ai) != nil || s.readEventJSON(completion.PolicyDecisionID, &pd) != nil || s.readEventJSON(completion.ReceiptID, &receipt) != nil || s.readEventJSON(completion.TransitionID, &transition) != nil {
+			continue
+		}
+		if ai.Validate() != nil || pd.Validate() != nil || receipt.Validate() != nil || transition.Validate() != nil || ai.IDs.WorkID != recovery.WorkID || ai.Capability != recovery.Capability || !slices.Contains(recovery.ArgumentsHashes, ai.ArgumentsHash) || ai.Target != expected.Input.Action.Target || pd.ActionIntentID != ai.ID || (pd.Outcome != "allow" && pd.Outcome != "allow_with_obligations") || receipt.Outcome != "completed" || receipt.IDs.WorkID != recovery.WorkID || transition.IDs.WorkID != recovery.WorkID || !slices.Contains(transition.ActionRefs, ai.ID) || !slices.Contains(transition.AfterRefs, receipt.ID) {
+			continue
+		}
+		if policy.NewExactActionApprovalStore(s.home).ValidateConsumedDecision(ai, pd) != nil {
+			continue
+		}
+		bound := true
+		for _, ref := range []string{required.AttemptID, expected.ActionID, expected.Input.Action.ArgumentsHash, originalReceipt.ID, originalTransition.ID} {
+			if ref == "" || !slices.Contains(receipt.ProofRefs, ref) {
+				bound = false
+			}
+		}
+		if !bound {
+			continue
+		}
+		events, err := s.admissionEventsFor(recovery.WorkID)
+		if err != nil {
+			continue
+		}
+		event, err := completedReceiptedActionEvent(events, ai, pd, receipt, transition)
+		if err != nil {
+			continue
+		}
+		actual, err := newReceiptedActionCompletion(completion.reservation(), receipt, transition, event)
+		if err == nil && reflect.DeepEqual(actual, completion) {
+			return nil
+		}
+	}
+	return ErrRequiredAttemptCompletion
+}
+
 func (s *Store) clearReceiptedActionReservation(path string, expected receiptedActionReservation) error {
 	actual, present, actualPath, err := s.preflightReceiptedActionReservation(expected.WorkID)
 	if err != nil {
@@ -574,6 +685,9 @@ func (s *Store) clearReceiptedActionReservation(path string, expected receiptedA
 	}
 	if !present || actualPath != path || !receiptedActionReservationEqual(actual, expected) {
 		return fmt.Errorf("work %s receipted action reservation %s changed before cleanup", expected.WorkID, expected.ActionID)
+	}
+	if err := s.requiredAttemptCompleted(expected); err != nil {
+		return err
 	}
 	if err := os.Remove(path); err != nil {
 		return err

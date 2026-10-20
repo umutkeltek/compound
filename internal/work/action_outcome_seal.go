@@ -17,11 +17,12 @@ import (
 // never removed, including on partial failure. Replay must match exactly.
 // This is outcome recording, not permission to retry an external effect.
 func (s *Store) SealReceiptedActionOutcome(workID string, pending, final ReceiptedActionInput, authorizedAt time.Time) error {
-	if !pending.OutcomePending || pending.Outcome != "blocked" || pending.Changed || final.OutcomePending || !oneOf(final.Outcome, envelope.ReceiptOutcomes) || strings.TrimSpace(final.Summary) == "" {
+	if !pending.OutcomePending || pending.Outcome != "blocked" || pending.Changed || pending.ChangeKnowledge != "" || final.OutcomePending || !oneOf(final.Outcome, envelope.ReceiptOutcomes) || strings.TrimSpace(final.Summary) == "" {
 		return fmt.Errorf("pending reservation and terminal outcome required")
 	}
 	stable := final
 	stable.OutcomePending, stable.Outcome, stable.Changed, stable.Summary = pending.OutcomePending, pending.Outcome, pending.Changed, pending.Summary
+	stable.ChangeKnowledge = pending.ChangeKnowledge
 	stable.AfterRefs, stable.FilesChanged, stable.FailureCause = pending.AfterRefs, pending.FilesChanged, pending.FailureCause
 	stable.ProofRefs = pending.ProofRefs
 	for _, ref := range pending.ProofRefs {

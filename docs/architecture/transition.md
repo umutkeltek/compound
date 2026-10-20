@@ -22,7 +22,28 @@ outcome once, without changing the action, policy, authorization time, running
 work admission or preimages. Partial failures retain their changed-state evidence.
 The reservation remains until Receipt, Transition and work links converge; exact
 replay cannot alter the sealed outcome. Omitted false preserves existing input
-digests. The index-lock recovery adapter is this seam's production consumer.
+digests. The index-lock recovery adapter consumes this seam.
+
+A remote effect that cannot be observed uses `state_delta.change_knowledge:
+"unknown"` and omits `changed` entirely. Neither boolean is evidence for an
+unknown remote result. Completed and no-op receipts require known effects.
+Known-effect serialization and omitted optional fields retain legacy bytes and
+reservation digests. The schema export exposes the two mutually exclusive
+representations; the native validator enforces their outcome semantics.
+
+An adapter may freeze `RequiredAttemptCompletion` into the reservation before
+launch. Receipt/Transition publication does not release that blocker: the native
+attempt must also carry its same-action terminal owner proof. Exact retries
+cannot omit the obligation. For a failed committed or uncertain prepared launch,
+a frozen recovery requirement additionally names a separate Work, owner,
+capability and exact argument bindings. The finalizer looks up a succeeded,
+committed native recovery attempt and verifies its action, allowing decision,
+receipt, transition, completion hashes and lifecycle event. Its proof must bind
+the original action, attempt, request and failed outcome; its target must match.
+An original failed owner proof alone never discharges required recovery. A
+successful recovery does not rewrite the original attempt's failed terminality.
+A recorded start error with no committed launch is the separate zero-launch
+case. Missing or invalid recovery proof keeps the original Work blocked.
 
 A dangerous action admitted through a consumed exact approval may reuse its
 durably published ActionIntent and issued PolicyDecision only when both bind
