@@ -1,9 +1,11 @@
-"""Pure mocked protocol checks. Never invoke remote main or native processes."""
+"""Protocol checks; optional real PostgreSQL catalog check in an owned container."""
 import ast
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
 import types
 import unittest
 from unittest.mock import patch
@@ -344,6 +346,40 @@ class PureProtocolTests(unittest.TestCase):
         for raw in ('{"a":1,"a":2}', '{"a":NaN}', '{"a":Infinity}'):
             with self.assertRaises(program.Refusal):
                 program.decode_json(raw)
+
+
+@unittest.skipUnless(os.environ.get("COMPOUND_CREDENTIAL_VERIFY_TEST_CONTAINER"),
+                     "set an owned PostgreSQL fixture container for real catalog coverage")
+class PostgreSQLCatalogTests(unittest.TestCase):
+    def query(self, sql):
+        result = subprocess.run(
+            ["docker", "exec", "-i", os.environ["COMPOUND_CREDENTIAL_VERIFY_TEST_CONTAINER"],
+             "/bin/sh", "-c",
+             'exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -A -t -v ON_ERROR_STOP=1'],
+            input=sql, capture_output=True, text=True, timeout=15, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_real_catalog_query_reads_role_settings_from_pg_roles(self):
+        identity = self.query("SELECT json_build_object('role',CURRENT_USER,'database',current_database());\n")
+        r = request()
+        r["roles"][0]["name"] = identity["role"]
+        r["roles"][1]["name"] = "pg_monitor"
+        r["database"]["name"] = identity["database"]
+        settings = self.query("SELECT json_object_agg(rolname,rolconfig) FROM pg_roles "
+                              "WHERE rolname IN (CURRENT_USER,'pg_monitor');\n")
+        for pids in ([], [1, 2]):
+            with self.subTest(pids=pids):
+                actual = self.query(program.catalog_sql(r, pids))
+                self.assertEqual(actual["database"]["name"], identity["database"])
+                self.assertEqual([row["name"] for row in actual["roles"]],
+                                 [identity["role"], "pg_monitor"])
+                for role in actual["roles"]:
+                    self.assertEqual(role["role_config"], settings[role["name"]])
+                    self.assertIs(type(role["scram_present"]), bool)
+                    self.assertNotIn("rolpassword", role)
+                if not pids:
+                    self.assertEqual(actual["sessions"], [])
 
 
 if __name__ == "__main__":

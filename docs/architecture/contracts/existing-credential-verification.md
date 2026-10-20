@@ -134,3 +134,9 @@ compound act credential-verify execute --plan-ref REF --actor A --home /fixture/
 
 These are synthetic examples. Neither command selects a program, callback,
 credential, transport, query, endpoint override or alternate policy decision.
+
+### PostgreSQL catalog query coverage
+
+The privileged role projection joins `pg_authid` to `pg_roles` by OID: password-format presence comes from `pg_authid`, while role settings come from `pg_roles.rolconfig`. PostgreSQL does not expose `rolconfig` on `pg_authid`. Neither password values nor verifier hashes leave PostgreSQL.
+
+Run the real catalog query regression against an owned disposable PostgreSQL fixture with `COMPOUND_CREDENTIAL_VERIFY_TEST_CONTAINER=<container> python3 internal/act/credential_verify_program_test.py PostgreSQLCatalogTests`. It executes both pre- and post-probe SQL forms, verifies the role-settings projection, and does not create roles or databases. Without this opt-in, the real PostgreSQL case is explicitly skipped; pure protocol tests remain available without Docker.
