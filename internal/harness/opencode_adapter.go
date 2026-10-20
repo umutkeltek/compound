@@ -30,18 +30,44 @@ const openCodeNativeGitignore = "node_modules\npackage.json\npackage-lock.json\n
 // openCodeSupportedEffort is the only requested effort value the opencode
 // adapter carries through today: explicitly "low", which the adapter places
 // as provider.models[model].options.reasoningEffort='low' in the immutable
-// settings file before the subprocess reads it. Any other value (including
-// the empty default or whitespace-padded variants) is refused before mint;
-// high/medium/xhigh are NOT supported in this slice.
+// settings file before the subprocess reads it. Any other value — including
+// high/medium/xhigh, "none", and whitespace-padded variants — is refused
+// before mint; there is no normalization and no provider/model default.
+//
+// The empty default is NOT refused. It stays compatible: it leaves the config,
+// and therefore the wire, with no options key and no reasoning_effort at all.
 const openCodeSupportedEffort = "low"
+
+// openCodeEffortBinding is the exact effort state frozen onto an immutable
+// launch at preflight. All three legs are recorded, so afterwards a raised
+// request, a swapped applied value, a rewritten evidence claim, and a snapshot
+// dropped or replaced wholesale all read as the same drift rather than as a
+// fresh instruction — checked on preflight reuse and again immediately before
+// the native subprocess starts.
+type openCodeEffortBinding struct {
+	Requested string
+	Applied   string
+	Evidence  string
+	Bound     bool // a selection snapshot was present when this launch was built
+}
+
+// openCodeEffortBindingOf reads the effort legs of a selection snapshot. A nil
+// snapshot requests nothing and binds nothing.
+func openCodeEffortBindingOf(snap *runattempt.ExecutionSelectionSnapshot) openCodeEffortBinding {
+	if snap == nil {
+		return openCodeEffortBinding{}
+	}
+	return openCodeEffortBinding{Requested: snap.RequestedEffort, Applied: snap.AppliedEffort, Evidence: snap.EffortEvidence, Bound: true}
+}
 
 var openCodeID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
 type openCodeLaunch struct {
 	WorkID, Workspace, Prompt, Model, Provider, Endpoint, Revision, Profile string
-	Effort                                                                     string
-	Command, CommandSHA, AuthPath, Root                                        string
-	Config                                                                     []byte
+	Effort                                                                  string
+	EffortBinding                                                           openCodeEffortBinding
+	Command, CommandSHA, AuthPath, Root                                     string
+	Config                                                                  []byte
 }
 
 // OpenCodeAdapter executes one native prompt-only run. It never exposes the
@@ -105,24 +131,39 @@ func (a *OpenCodeAdapter) Preflight(_ context.Context, in RunInput) (RunInput, e
 	// comes through the snapshot only, and we refuse whitespace/normalization
 	// ambiguity or unsupported values before mint. The empty default preserves
 	// legacy no-effort behavior; "low" is the single supported explicit value.
+	//
+	// The adapter NEVER writes through the caller-owned snapshot pointer. Every
+	// leg it records lands on an owned copy, so the caller's RunInput stays
+	// deeply equal before and after — including on the paths that refuse below,
+	// which is why the copy is taken before the first validation, not after it.
 	effort := ""
 	if snap := in.ExecutionSelectionSnapshot; snap != nil {
-		requested := snap.RequestedEffort
+		owned := *snap
+		in.ExecutionSelectionSnapshot = &owned
+		requested := owned.RequestedEffort
 		if strings.TrimSpace(requested) != requested {
 			return RunInput{}, errors.New("OPENCODE_EFFORT_NORMALIZATION_FORBIDDEN")
 		}
 		switch requested {
 		case "":
-			// preserve no-effort default; snap keeps whatever
-			// EffortEvidence the caller set (typically empty or
-			// "unsupported:no effort requested" for first-time consumers).
+			// preserve the no-effort default: no options key in the config, no
+			// reasoning_effort on the wire, and whatever honest EffortEvidence
+			// the caller set is carried through verbatim.
 		case openCodeSupportedEffort:
 			effort = openCodeSupportedEffort
-			in.ExecutionSelectionSnapshot.RequestedEffort = openCodeSupportedEffort
-			in.ExecutionSelectionSnapshot.AppliedEffort = openCodeSupportedEffort
-			in.ExecutionSelectionSnapshot.EffortEvidence = "settings:opencode.json"
+			// RequestedEffort is the caller's statement and is never rewritten
+			// here: "low" in is "low" recorded, not a normalization of " low".
+			// The evidence names the immutable settings application only — this
+			// adapter never observed the provider request or a provider receipt.
+			owned.AppliedEffort = openCodeSupportedEffort
+			owned.EffortEvidence = "settings:opencode.json"
 		default:
 			return RunInput{}, errors.New("OPENCODE_EFFORT_UNSUPPORTED")
+		}
+		if owned.AppliedEffort != effort {
+			// A launch that carries no effort cannot honestly claim one was
+			// applied, and a launch that carries one has just recorded it.
+			return RunInput{}, errors.New("OPENCODE_EFFORT_APPLIED_MISMATCH")
 		}
 	}
 	launch, err := a.resolve(in)
@@ -132,6 +173,9 @@ func (a *OpenCodeAdapter) Preflight(_ context.Context, in RunInput) (RunInput, e
 	launch.WorkID, launch.Workspace, launch.Prompt = in.WorkID, workspace, in.Prompt
 	launch.Profile = in.LaunchProfileID
 	launch.Effort = effort
+	// Freeze every effort leg now. This is the state the launch is bound to;
+	// anything else observed later is drift.
+	launch.EffortBinding = openCodeEffortBindingOf(in.ExecutionSelectionSnapshot)
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return RunInput{}, errors.New("OPENCODE_ISOLATION_INVALID")
@@ -207,20 +251,26 @@ func (a *OpenCodeAdapter) resolve(in RunInput) (*openCodeLaunch, error) {
 
 func (a *OpenCodeAdapter) validatePrepared(in RunInput) error {
 	l := in.opencodeLaunch
+	// Nil guard FIRST: every leg below dereferences the launch.
+	if l == nil {
+		return errors.New("OPENCODE_PREPARED_INPUT_INVALID")
+	}
 	if err := CheckSelectionApplicable(a.Name(), in.ExecutionSelectionSnapshot); err != nil {
 		return err
 	}
 	if snap := in.ExecutionSelectionSnapshot; snap != nil && snap.RequestedModelID != "" && (snap.Harness != a.Name() || snap.RequestedModelID != in.RequestedModelID || snap.ProviderRoute != in.RequestedProviderRoute || snap.LaunchProfileRevision != in.ExpectedModelRouterRevision || snap.LaunchProfileID != in.LaunchProfileID) {
 		return errors.New("OPENCODE_SELECTION_MISMATCH")
 	}
-	// The applied-effort leg of the snap is the post-mint record of what this
-	// launch will request. It must agree with what Preflight bound onto the
-	// immutable launch: post-preflight mutation here is a drift between the
-	// persisted RunAttempt and the launch, refused before the subprocess runs.
-	if snap := in.ExecutionSelectionSnapshot; snap != nil && snap.AppliedEffort != l.Effort {
+	// All three effort legs were frozen onto the launch at preflight. Comparing
+	// the whole binding — not just the applied leg — refuses a raised request, a
+	// downgraded applied value, a rewritten evidence claim, and a snapshot
+	// dropped or replaced outright, all as the same drift. It runs on preflight
+	// reuse and again inside the start guard, immediately before native start,
+	// so the check is not just a re-read of our own write.
+	if openCodeEffortBindingOf(in.ExecutionSelectionSnapshot) != l.EffortBinding {
 		return errors.New("OPENCODE_LAUNCH_BINDING_DRIFT")
 	}
-	if l == nil || in.Harness != a.Name() || in.Command != l.Command || in.Workspace != l.Workspace || in.WorkID != l.WorkID || in.Prompt != l.Prompt || in.RequestedModelID != l.Model || in.RequestedProviderRoute != l.Provider || in.ExpectedModelRouterRevision != l.Revision || in.Timeout <= 0 || in.Timeout > 90*time.Second || len(in.Args) != 0 || len(in.Env) != 0 || in.Stdin != nil || in.PermissionMode != "" || in.LaunchProfileID != l.Profile {
+	if in.Harness != a.Name() || in.Command != l.Command || in.Workspace != l.Workspace || in.WorkID != l.WorkID || in.Prompt != l.Prompt || in.RequestedModelID != l.Model || in.RequestedProviderRoute != l.Provider || in.ExpectedModelRouterRevision != l.Revision || in.Timeout <= 0 || in.Timeout > 90*time.Second || len(in.Args) != 0 || len(in.Env) != 0 || in.Stdin != nil || in.PermissionMode != "" || in.LaunchProfileID != l.Profile {
 		return errors.New("OPENCODE_PREPARED_INPUT_INVALID")
 	}
 	current, err := a.resolve(in)
@@ -228,7 +278,7 @@ func (a *OpenCodeAdapter) validatePrepared(in RunInput) error {
 		return err
 	}
 	current.WorkID, current.Workspace, current.Prompt, current.Root, current.Config = l.WorkID, l.Workspace, l.Prompt, l.Root, l.Config
-	current.Profile, current.Effort = l.Profile, l.Effort
+	current.Profile, current.Effort, current.EffortBinding = l.Profile, l.Effort, l.EffortBinding
 	if !reflect.DeepEqual(current, l) {
 		return errors.New("OPENCODE_LAUNCH_BINDING_DRIFT")
 	}
