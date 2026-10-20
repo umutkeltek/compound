@@ -38,6 +38,11 @@ steps:
       # ssh-keygen and other tools look the running uid up in passwd; give uid
       # 1000 an entry so the unprivileged gates behave like a real user account.
       - getent passwd 1000 >/dev/null || useradd --uid 1000 --no-create-home --home-dir "$HOME" --shell /bin/sh ci
+      # The clone is group-writable (umask 002). Runtime capture custody refuses
+      # group- or world-writable parent directories by design, and its tests
+      # build fixtures inside the checkout (pipeline 580). Match a umask-022
+      # developer checkout instead of relaxing that check.
+      - chmod -R go-w "$CI_WORKSPACE"
       - chown -R 1000:1000 "$HOME" "$GOCACHE" "$GOMODCACHE" "$CI_WORKSPACE"
       - |
         setpriv --reuid=1000 --regid=1000 --clear-groups \
