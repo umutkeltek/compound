@@ -53,6 +53,15 @@ diffs, and authority revisions; lanes that do not use it remain unchanged.
 Sensitive endpoint components are redacted from projections. Native catalog output
 is evidence for admitting a tuple, never route authority.
 
+A saved execution selection may omit effort or request exactly `low`. The
+adapter freezes the requested/applied effort, evidence and snapshot presence
+with the launch binding, and emits `low` through the isolated model options.
+Omitted effort preserves the existing request. Unsupported effort and selection
+drift refuse before launch; caller argument/config/environment overrides remain
+forbidden. RunAttempt effort evidence attests immutable configuration, not
+provider-observed identity or a guarantee about reasoning behavior. The 800-token
+and 90-second bounds remain unchanged.
+
 Preflight freezes the authority revision, executable path and digest, tuple,
 requested workspace, and prompt. The launch guard reloads authority and hashes the
 executable immediately before starting. No caller args, environment, config,
