@@ -55,15 +55,19 @@ steps:
             go build -o .ci/bin/compound ./cmd/compound
             .ci/bin/compound proof-check --ci
           '
-      - rm -f .ci/bin/bun
 
+  # Node 22 runs the console smokes that use --experimental-strip-types and
+  # node:test (the bun image's node is a bun wrapper), and its image has the
+  # git that fixture seeding calls. Bun is the pinned copy from prepare-bun.
   console-gates:
-    image: docker.io/oven/bun:1.3.9-debian
+    image: docker.io/library/node:22-bookworm
     depends_on:
       - proof-gates
     commands:
+      - export PATH="$CI_WORKSPACE/.ci/bin:$PATH"
       - (cd console && bun install --frozen-lockfile)
       - COMPOUND_BIN="$CI_WORKSPACE/.ci/bin/compound" .ci/bin/compound proof-check --ci-console
+      - rm -f .ci/bin/bun
 
   secret-scan:
     image: ghcr.io/gitleaks/gitleaks:v8.30.1
