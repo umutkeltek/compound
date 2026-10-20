@@ -698,6 +698,33 @@ func TestProofCheckHumanOutputIncludesOnlyFailedStepTail(t *testing.T) {
 	}
 }
 
+// A long Linux run can push an early package's FAIL line out of the bounded tail
+// (pipeline 580 hid internal/act). The human CI report must still name it, and must
+// print the tail once.
+func TestProofCheckHumanOutputNamesFailuresMissingFromTail(t *testing.T) {
+	report := proofCheckReport{
+		Status: "failed",
+		Repo:   "/repo",
+		Steps: []proofCheckStep{{
+			Name:         "go-test",
+			Command:      []string{"go", "run", "./scripts/testbattery", "general-release"},
+			ProofRef:     "go-test-count-1-general-release",
+			Status:       "failed",
+			OutputTail:   "ok  \tcompound/internal/zeta\t1.0s\nFAIL",
+			FailureLines: []string{"--- FAIL: TestEarlyPackage (0.30s)", "FAIL\tcompound/internal/early\t37.2s"},
+		}},
+	}
+	out := captureStdout(t, func() { printProofCheck(report) })
+	for _, want := range []string{"failure_lines:", "--- FAIL: TestEarlyPackage (0.30s)", "FAIL\tcompound/internal/early\t37.2s"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("proof-check human output missing %q:\n%s", want, out)
+		}
+	}
+	if got := strings.Count(out, "compound/internal/zeta"); got != 1 {
+		t.Fatalf("proof-check human output printed the tail %d times, want 1:\n%s", got, out)
+	}
+}
+
 func TestProofCheckChangedFilesIncludesCleanCommittedRange(t *testing.T) {
 	t.Parallel()
 	repo := initCompoundCommandGitRepo(t)

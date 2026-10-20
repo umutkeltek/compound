@@ -1876,10 +1876,10 @@ func printProofCheck(report proofCheckReport) {
 		if step.SkipReason != "" {
 			fmt.Printf("  skip_reason: %s\n", step.SkipReason)
 		}
-		// Surface the captured output of a failed gate so a red CI run (which prints this human
-		// report, not --json) shows WHICH test/check failed, instead of only the summary line.
-		if step.Status == "failed" && strings.TrimSpace(step.OutputTail) != "" {
-			fmt.Printf("  output_tail:\n%s\n", step.OutputTail)
+		// A red CI run prints this human report, not --json. The bounded tail can lose an early
+		// failing package, so also print the extracted FAIL/panic/timeout lines.
+		if step.Status == "failed" && len(step.FailureLines) > 0 {
+			fmt.Printf("  failure_lines:\n    %s\n", strings.Join(step.FailureLines, "\n    "))
 		}
 	}
 	if len(report.ProofRefs) > 0 {
