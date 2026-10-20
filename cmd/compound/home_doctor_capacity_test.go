@@ -58,8 +58,10 @@ func TestHomeDoctorCapacityFeedWarnings(t *testing.T) {
 	}
 
 	// Isolate os.UserHomeDir() so a real ~/Library/Application Support/CodexBar/usage-history.jsonl
-	// on the machine running this test can never leak into the assertion.
-	fakeUserHome := t.TempDir()
+	// on the machine running this test can never leak into the assertion. The doctor child runs
+	// `go version`; a plain TempDir HOME lets Go telemetry write after the child exits and race
+	// the cleanup (5 of 40 runs red in the Linux CI image).
+	fakeUserHome := isolatedTestUserHome(t)
 
 	cmd := exec.Command(os.Args[0], "-test.run=^TestHomeDoctorCapacityFeedWarnings$")
 	cmd.Env = append(os.Environ(),
