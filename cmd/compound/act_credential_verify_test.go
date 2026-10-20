@@ -10,7 +10,7 @@ import (
 
 func TestRunActDispatchesCredentialVerificationWithoutNativeEffects(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := runAct([]string{"credential-verify", "execute", "--plan-ref", "fixture-ref", "--actor", "fixture"}, &stdout, &stderr)
+	code := runAct([]string{"credential-verify", "execute", "--plan-ref", "fixture-ref"}, &stdout, &stderr)
 	if code != 2 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "credential-verify (plan") {
 		t.Fatal("typed owner was not dispatched")
 	}

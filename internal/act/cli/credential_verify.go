@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"compound/internal/act"
+	"compound/internal/home"
 	"compound/internal/policy"
 )
 
@@ -24,7 +25,7 @@ type credentialVerificationOwner interface {
 var newCredentialVerificationOwner = func(h string) (credentialVerificationOwner, error) { return act.NewCredentialVerifier(h) }
 
 func CredentialVerificationUsage() string {
-	return "compound act credential-verify (plan --request-file P.json --work W | execute --plan-ref REF) --actor A --home P [--json]"
+	return "compound act credential-verify (plan --request-file P.json --work W | execute --plan-ref REF) --actor A [--home P] [--json]"
 }
 
 func parseCredentialVerificationOptions(args []string) (string, map[string]string, error) {
@@ -58,6 +59,15 @@ func parseCredentialVerificationOptions(args []string) (string, map[string]strin
 		}
 		i++
 		opts[key] = args[i]
+	}
+	// The process entrypoint consumes --home and binds COMPOUND_HOME before
+	// dispatch. Resolve through the same owner when no direct option remains.
+	if _, explicit := opts["--home"]; !explicit {
+		selected, err := home.Resolve("")
+		if err != nil {
+			return "", nil, bad
+		}
+		opts["--home"] = selected
 	}
 	if opts["--actor"] == "" || strings.TrimSpace(opts["--actor"]) != opts["--actor"] || !filepath.IsAbs(opts["--home"]) || filepath.Clean(opts["--home"]) != opts["--home"] {
 		return "", nil, bad

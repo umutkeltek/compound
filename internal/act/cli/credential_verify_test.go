@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"compound/internal/act"
+	"compound/internal/home"
 	"compound/internal/policy"
 )
 
@@ -66,6 +67,45 @@ func TestCredentialVerificationCLIDispatchesOnlyPlanOrExecuteToNativeOwner(t *te
 	}
 }
 
+func TestCredentialVerificationCLIGlobalHomeSurvivesDispatch(t *testing.T) {
+	t.Setenv("COMPOUND_HOME", t.TempDir())
+	h := t.TempDir()
+	path := filepath.Join(h, "metadata.json")
+	if err := os.WriteFile(path, []byte(`{"roles":[{},{}]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	old := newCredentialVerificationOwner
+	defer func() { newCredentialVerificationOwner = old }()
+	for _, op := range []string{"plan", "execute"} {
+		fixture := &credentialCLIFixtureOwner{}
+		newCredentialVerificationOwner = func(selected string) (credentialVerificationOwner, error) {
+			if selected != h {
+				t.Fatalf("owner selected %q, want global home %q", selected, h)
+			}
+			return fixture, nil
+		}
+		args := []string{"act", "credential-verify", op, "--home", h, "--actor", "fixture", "--json"}
+		if op == "plan" {
+			args = append(args, "--work", "work_fixture", "--request-file", path)
+		} else {
+			args = append(args, "--plan-ref", "fixture-plan-ref")
+		}
+		prepared, err := home.PrepareGlobalCLIArgs(args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, arg := range prepared {
+			if arg == "--home" {
+				t.Fatal("global parser did not consume home option")
+			}
+		}
+		var stdout, stderr bytes.Buffer
+		if code := RunCredentialVerification(prepared[2:], &stdout, &stderr); code != 0 || stderr.Len() != 0 || fixture.operation != op {
+			t.Fatalf("global %s dispatch code=%d stderr=%s", op, code, stderr.String())
+		}
+	}
+}
+
 func TestCredentialVerificationCLIUnknownDuplicateOrCrossPhaseOptionsNeverConstructOwner(t *testing.T) {
 	old := newCredentialVerificationOwner
 	defer func() { newCredentialVerificationOwner = old }()
@@ -74,7 +114,8 @@ func TestCredentialVerificationCLIUnknownDuplicateOrCrossPhaseOptionsNeverConstr
 		return nil, nil
 	}
 	for _, args := range [][]string{
-		{}, {"--help"}, {"execute", "--plan-ref", "ref", "--actor", "fixture"},
+		{}, {"--help"}, {"execute", "--plan-ref", "ref"},
+		{"execute", "--home", "/fixture", "--home", "/fixture/other", "--actor", "fixture", "--plan-ref", "ref"},
 		{"execute", "--home", "/fixture", "--actor", "fixture", "--plan-ref", "ref", "--program", "arbitrary"},
 		{"execute", "--home", "/fixture", "--actor", "fixture", "--plan-ref", "ref", "--request-file", "/fixture/meta.json"},
 		{"execute", "--home", "/fixture", "--actor", "fixture", "--plan-ref", "ref", "--actor", "other"},

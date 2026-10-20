@@ -32,7 +32,11 @@ an escape. An allowing class, autonomy level or standing grant cannot authorize
 the verification. The existing native exact-action approval remains one-use,
 expires within fifteen minutes and binds the complete intent and current policy.
 
-Plan requires an explicit native home, running work and its current lease holder.
+Plan requires a resolved native home, running work and its current lease holder.
+The global CLI consumes `--home` and binds `COMPOUND_HOME` before dispatch;
+the typed owner uses the existing home resolver when no direct home option remains.
+Direct callers still reject malformed or duplicated home options. The regression
+test exercises the real global parser followed by both typed owner operations.
 It persists only the metadata ActionIntent, HOLD decision, native approval plan
 and content-addressed plan artifact. Execute accepts only that artifact reference
 and actor. It reloads native records rather than trusting a supplied decision,
