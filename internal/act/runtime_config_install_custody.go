@@ -29,23 +29,24 @@ import (
 // this exact artifact and the original capture Action/Policy. It cannot create
 // source acceptance by presenting an unrelated successful Receipt.
 type RuntimeConfigCaptureQualification struct {
-	SchemaVersion    string                              `json:"schema_version"`
-	WorkID           string                              `json:"work_id"`
-	Action           policy.RuntimeConfigInstallProofRef `json:"action"`
-	Policy           policy.RuntimeConfigInstallProofRef `json:"policy"`
-	SourceAction     policy.RuntimeConfigInstallProofRef `json:"source_action"`
-	SourcePolicy     policy.RuntimeConfigInstallProofRef `json:"source_policy"`
-	SourceAttempt    policy.RuntimeConfigInstallProofRef `json:"source_attempt"`
-	SourceResult     policy.RuntimeConfigInstallProofRef `json:"source_result"`
-	SourcePublic     policy.RuntimeConfigInstallProofRef `json:"source_public"`
-	SourceBinding    string                              `json:"source_binding"`
-	ReceiverSHA256   string                              `json:"receiver_sha256"`
-	RequestSHA256    string                              `json:"request_sha256"`
-	SamplerSHA256    string                              `json:"sampler_sha256"`
-	CapturePath      string                              `json:"capture_path"`
-	CaptureStat      policy.RuntimeConfigInstallStat     `json:"capture_stat"`
-	ProfileSHA256    string                              `json:"profile_sha256"`
-	ProjectionSHA256 string                              `json:"projection_sha256"`
+	SchemaVersion     string                              `json:"schema_version"`
+	WorkID            string                              `json:"work_id"`
+	SourceInputSHA256 string                              `json:"source_input_sha256"`
+	Action            policy.RuntimeConfigInstallProofRef `json:"action"`
+	Policy            policy.RuntimeConfigInstallProofRef `json:"policy"`
+	SourceAction      policy.RuntimeConfigInstallProofRef `json:"source_action"`
+	SourcePolicy      policy.RuntimeConfigInstallProofRef `json:"source_policy"`
+	SourceAttempt     policy.RuntimeConfigInstallProofRef `json:"source_attempt"`
+	SourceResult      policy.RuntimeConfigInstallProofRef `json:"source_result"`
+	SourcePublic      policy.RuntimeConfigInstallProofRef `json:"source_public"`
+	SourceBinding     string                              `json:"source_binding"`
+	ReceiverSHA256    string                              `json:"receiver_sha256"`
+	RequestSHA256     string                              `json:"request_sha256"`
+	SamplerSHA256     string                              `json:"sampler_sha256"`
+	CapturePath       string                              `json:"capture_path"`
+	CaptureStat       policy.RuntimeConfigInstallStat     `json:"capture_stat"`
+	ProfileSHA256     string                              `json:"profile_sha256"`
+	ProjectionSHA256  string                              `json:"projection_sha256"`
 }
 
 func runtimeConfigBytesHash(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
@@ -175,6 +176,10 @@ func (v *RuntimeConfigInstaller) captureAuthority(r policy.RuntimeConfigInstallR
 	}
 	if e != nil || w.State != "completed" || w.IDs.TransitionID != tr.ID || ai.IDs.WorkID != w.ID || pd.ActionIntentID != ai.ID || !policy.Allowed(pd) || ai.Capability != "runtime.capture_qualification.exact" || ai.ArgumentsHash != "sha256:"+RuntimeConfigCaptureQualificationDigest(q) || rec.IDs.WorkID != w.ID || rec.Outcome != "completed" || rec.Validate() != nil || tr.Validate() != nil || tr.IDs.WorkID != w.ID || !slices.Contains(rec.ProofRefs, c.Qualification.Ref) || !slices.Contains(tr.ActionRefs, ai.ID) || !slices.Contains(tr.AfterRefs, rec.ID) {
 		return runtimeConfigInstallError("capture_chain")
+	}
+	terminal, e := wstore.ReadTerminalCloseProof(q.WorkID)
+	if e != nil || terminal.ReceiptID != rec.ID || terminal.TransitionID != tr.ID || !runtimeCaptureSHA(q.SourceInputSHA256) || !ai.RequiresExactApproval || policy.NewExactActionApprovalStore(v.home).ValidateConsumedDecision(ai, pd) != nil {
+		return runtimeConfigInstallError("capture_native_qualification")
 	}
 	if sourceAI.Validate() != nil || sourcePD.Validate() != nil || sourcePD.ActionIntentID != sourceAI.ID || !policy.Allowed(sourcePD) || !slices.Contains(rec.ProofRefs, sourceAI.ID) || !slices.Contains(rec.ProofRefs, sourcePD.ID) {
 		return runtimeConfigInstallError("source_capture_chain")
@@ -379,7 +384,7 @@ func (v *RuntimeConfigInstaller) captureProjection(r policy.RuntimeConfigInstall
 			return nil, runtimeConfigInstallError("capture_value")
 		}
 	}
-	if runtimeConfigInstallHash(selected) != r.Capture.ProjectionSHA256 {
+	if runtimeConfigProjectionHash(selected) != r.Capture.ProjectionSHA256 {
 		return nil, runtimeConfigInstallError("capture_projection")
 	}
 	return selected, nil

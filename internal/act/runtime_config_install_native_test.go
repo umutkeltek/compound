@@ -144,68 +144,17 @@ func installerRecordAction(t *testing.T, h string, w envelope.WorkEnvelope, now 
 }
 func installCaptureFixture(t *testing.T, f *installerNativeFixture) {
 	t.Helper()
-	h, now := f.credential.home, f.credential.now
-	r := &f.request
-	// Use an owned source-directory temp folder: OS temp ancestors are writable
-	// by unrelated users and production custody correctly rejects those paths.
-	dir, e := os.MkdirTemp(".", ".rci-capture-test-")
-	if e != nil {
-		t.Fatal(e)
+	q := newCaptureQualifierFixture(t, f.credential.home, f.credential.now, f.request.Profile)
+	plan := q.plan(t)
+	q.approve(t, plan)
+	result, err := q.owner.QualifyCapture(plan.PlanRef, "fixture")
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	dir, e = filepath.Abs(dir)
-	if e != nil {
-		t.Fatal(e)
-	}
-	dir, e = filepath.EvalSymlinks(dir)
-	if e != nil {
-		t.Fatal(e)
-	}
-	selected := map[string]string{"DEALER_KEY": "synthetic_dealer", "PROVIDER_KEY": "synthetic_provider", "USER_AGENT": "fixture agent/1.0"}
-	r.Profile.APIFields = []string{"DEALER_KEY", "PROVIDER_KEY", "USER_AGENT"}
-	frozen := r.Profile
-	frozen.Ref = ""
-	frozen.SHA256 = ""
-	profile := installerArtifact(t, h, frozen)
-	r.Profile.Ref = profile.Ref
-	r.Profile.SHA256 = profile.SHA256
-	binding := strings.Repeat("b", 64)
-	payload := map[string]any{"binding_cid": binding, "services": map[string]any{"api": map[string]any{"record": map[string]any{"selected": selected, "database": "SYNTHETIC_UNRELATED_DATABASE_MUST_NOT_FORWARD"}}}}
-	raw, _ := json.Marshal(payload)
-	path := filepath.Join(dir, "capture.private.json")
-	if e = os.WriteFile(path, raw, 0600); e != nil {
-		t.Fatal(e)
-	}
-	info, e := os.Stat(path)
-	if e != nil {
-		t.Fatal(e)
-	}
-	st, e := runtimeConfigLocalStat(info, raw)
-	if e != nil {
-		t.Fatal(e)
-	}
-	sourceWork := nativeInstallerWork(t, h, "synthetic source capture", "", now)
-	sourceAI, sourcePD := installerRecordAction(t, h, sourceWork, now, "source.synthetic_capture", "sha256:"+strings.Repeat("c", 64))
-	sourceAttempt := installerArtifact(t, h, map[string]any{"schema_version": "fixture.source_capture_attempt.v1", "state": "source_capture_pending_no_replay", "binding_cid": binding, "native_action_intent_id": sourceAI.Ref, "native_policy_decision_id": sourcePD.Ref, "receiver_sha256": strings.Repeat("d", 64), "request_sha256": strings.Repeat("e", 64), "sampler_sha256": strings.Repeat("f", 64)})
-	sourceResult := installerArtifact(t, h, map[string]any{"binding_cid": binding, "native_action_intent_id": sourceAI.Ref, "native_policy_decision_id": sourcePD.Ref, "private_artifact": st})
-	sourcePublic := installerArtifact(t, h, map[string]any{"binding_cid": binding, "service_selected_fields": map[string]any{"api": r.Profile.APIFields}})
-	qWork := nativeInstallerWork(t, h, "synthetic source qualification", "", now)
-	q := RuntimeConfigCaptureQualification{SchemaVersion: "compound.runtime_config_capture_qualification.v0.2", WorkID: qWork.ID, SourceAction: sourceAI, SourcePolicy: sourcePD, SourceAttempt: sourceAttempt, SourceResult: sourceResult, SourcePublic: sourcePublic, SourceBinding: binding, ReceiverSHA256: strings.Repeat("d", 64), RequestSHA256: strings.Repeat("e", 64), SamplerSHA256: strings.Repeat("f", 64), CapturePath: path, CaptureStat: st, ProfileSHA256: profile.SHA256, ProjectionSHA256: runtimeConfigInstallHash(selected)}
-	q.Action, q.Policy = installerRecordAction(t, h, qWork, now, "runtime.capture_qualification.exact", "sha256:"+RuntimeConfigCaptureQualificationDigest(q))
-	artifact := installerArtifact(t, h, q)
-	s, e := work.Open(h)
-	if e != nil {
-		t.Fatal(e)
-	}
-	if _, e = s.Advance(qWork.ID, work.AdvanceInput{To: "verifying", Actor: "fixture"}, now); e != nil {
-		t.Fatal(e)
-	}
-	closed, e := s.Close(qWork.ID, work.CloseInput{Outcome: "completed", MoveType: "audit_only", Actor: "fixture", Summary: "verified synthetic protected source metadata", ProofRefs: []string{artifact.Ref, sourceAI.Ref, sourcePD.Ref}}, now)
-	if e != nil {
-		t.Fatal(e)
-	}
-	r.Capture = policy.RuntimeConfigInstallCapture{Qualification: artifact, Receipt: installerProof(t, h, closed.Receipt.ID, false), Transition: installerProof(t, h, closed.Transition.ID, false), Path: path, Stat: st, ProjectionSHA256: q.ProjectionSHA256}
+	f.request.Capture = result.Capture
+	f.request.Profile = result.Profile
 }
+
 func newInstallerNativeFixture(t *testing.T) *installerNativeFixture {
 	t.Helper()
 	c := newCredentialFixture(t)

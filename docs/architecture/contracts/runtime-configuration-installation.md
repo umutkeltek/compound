@@ -32,6 +32,50 @@ credentials come only from the qualified target `.env`, parsed by the exact
 embedded credential verifier. URL construction preserves each role's password
 provenance; no caller can supply final DSNs or staged file contents.
 
+## Callable local capture qualification
+
+`compound act runtime-config-install qualify-capture-plan --request-file Q.json
+--work W --actor A` validates frozen source evidence and creates a native exact
+approval plan. After the operator approves that plan through the existing exact
+approval door, `qualify-capture --plan-ref REF --actor A` consumes it, publishes
+metadata artifacts, and closes the qualification Work through native
+`Work.Advance` and `Work.Close`. Both commands honor the globally resolved home.
+
+The request schema is `compound.runtime_capture_qualification_request.v0.1`.
+It contains `source_action` and `source_policy` native proof references;
+`receiver`, `sampler`, `request`, `request_template`, `manifest`, `attempt`,
+`result`, and `public` file objects, each with an absolute `path` and raw-byte
+`sha256`; exact `capture_path` and `capture_stat`; and the frozen installation
+`profile`, with empty `ref` and `sha256`. No private capture body or selected
+value belongs in the request. The result returns the `capture` and `profile`
+objects consumed directly by the installation request.
+
+The original source Action/Policy may carry a genuine standing grant. It must
+match the original Work, source output directory, receiver/sampler pins, binding,
+manifest, frozen request template, exact argv and supervisor budget. The actual
+request may differ from its template only in the native action/policy IDs. This
+does not invent historical exact approval: a **new one-use exact approval**
+binds the complete local qualification input, private custody, projection digest
+and profile. Generic policy denials, forbidden paths and autonomy halts still
+apply before reading the inputs and again before admission.
+
+The owner checks closed attempt/result/public schemas and successful source
+states, the exact four-file output roster, protected single-link custody, and
+private-to-public field and provider equivalence. It uses the receiver's compact
+ASCII JSON convention without HTML escaping for binding and selected-field
+hashes. It never executes the receiver, sampler, SSH, or any remote operation.
+Only validated source metadata and the consumer profile enter artifacts; private
+selected values remain in memory. No qualification acceptance artifact is
+published before exact approval is consumed. A descriptor-held lock excludes
+concurrent qualification, and local retries recover consumed authority and
+native close evidence. Completed retries return the same consumer result.
+
+The installer requires the real terminal Work close and the consumed exact
+qualification decision. Synthetic tests run this production producer before
+exercising the consumer, including drift, false source claims, policy floors,
+approval absence, duplicate calls and artifact secrecy. Global-parser tests
+route all five operations through `home.PrepareGlobalCLIArgs` to the typed owner.
+
 ## Filesystem transaction and uncertainty
 
 The fixed Python dispatch performs real descriptor-anchored writes. It retains
