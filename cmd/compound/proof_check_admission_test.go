@@ -3146,6 +3146,9 @@ func TestProofCheckCompletionRetainsHolderUntilBackgroundDescendantExits(t *test
 	t.Parallel()
 	homePath := t.TempDir()
 	outPath := filepath.Join(t.TempDir(), "proof-report.json")
+	childDir := t.TempDir()
+	childReady := filepath.Join(childDir, "ready")
+	childRelease := filepath.Join(childDir, "release")
 	now := time.Date(2026, 7, 24, 14, 0, 0, 0, time.UTC)
 	if err := home.Init(homePath, "proof-orphan-descendant-test", now); err != nil {
 		t.Fatal(err)
@@ -3174,9 +3177,27 @@ func TestProofCheckCompletionRetainsHolderUntilBackgroundDescendantExits(t *test
 		// The gate process exits cleanly after spawning a background descendant.
 		// exec.Cmd has finished waiting, so later context cancellation cannot kill
 		// that descendant; only the inherited barrier can prove it is still alive.
-		gate = proofCheckCommandContext(ctx, "sh", "-c", "sleep 0.75 &")
-		if err := gate.Run(); err != nil {
+		// Keep the descendant alive until the retained-holder assertion below.
+		// A fixed sleep can expire while admission/report persistence is slow.
+		gate = proofCheckCommandContext(ctx, "sh", "-c", `( : > "$1"; while [ ! -e "$2" ]; do sleep 0.01; done ) &`, "descendant-fixture", childReady, childRelease)
+		if err := gate.Start(); err != nil {
 			return proofCheckReport{}, err
+		}
+		t.Cleanup(func() { _ = syscall.Kill(-gate.Process.Pid, syscall.SIGKILL) })
+		if err := gate.Wait(); err != nil {
+			return proofCheckReport{}, err
+		}
+		readyDeadline := time.Now().Add(3 * time.Second)
+		for {
+			if _, err := os.Stat(childReady); err == nil {
+				break
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return proofCheckReport{}, err
+			}
+			if time.Now().After(readyDeadline) {
+				return proofCheckReport{}, errors.New("background descendant did not become ready")
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
 		report := successfulProofCheckReport()
 		report.GeneratedAt = now.Add(2 * time.Second).Format(time.RFC3339)
@@ -3203,7 +3224,9 @@ func TestProofCheckCompletionRetainsHolderUntilBackgroundDescendantExits(t *test
 	if gate == nil || gate.Process == nil {
 		t.Fatal("runner did not start the gate process")
 	}
-	t.Cleanup(func() { _ = syscall.Kill(-gate.Process.Pid, syscall.SIGKILL) })
+	if err := os.WriteFile(childRelease, []byte("release\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		pending, err := landlease.ExecutionPending(homePath, status.Holder)
@@ -3235,7 +3258,7 @@ func TestProofCheckCompletionRetainsHolderUntilBackgroundDescendantExits(t *test
 }
 
 func TestProofCheckGoCacheIsPerWorktree(t *testing.T) {
-	t.Parallel()
+	t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "")
 	first, firstOK := work.ProofGoCache(t.TempDir())
 	second, secondOK := work.ProofGoCache(t.TempDir())
 	t.Cleanup(func() {
@@ -3251,7 +3274,7 @@ func TestProofCheckGoCacheIsPerWorktree(t *testing.T) {
 }
 
 func TestProofCheckGoCacheIsStableForOneWorktree(t *testing.T) {
-	t.Parallel()
+	t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "")
 	worktree := t.TempDir()
 	first, firstOK := work.ProofGoCache(worktree)
 	second, secondOK := work.ProofGoCache(worktree)
@@ -3265,7 +3288,7 @@ func TestProofCheckGoCacheIsStableForOneWorktree(t *testing.T) {
 }
 
 func TestProofCheckGoCacheLivesOutsideWorktree(t *testing.T) {
-	t.Parallel()
+	t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "")
 	worktree := t.TempDir()
 	cache, ok := work.ProofGoCache(worktree)
 	t.Cleanup(func() { _ = os.RemoveAll(cache) })
@@ -3288,6 +3311,7 @@ func TestProofCheckGoCacheHonorsSharedOptOut(t *testing.T) {
 // Path selection is insufficient proof: this fails if runProofCheckStep stops injecting the
 // per-worktree cache even while every proofCheckGoCache unit test remains green.
 func TestRunProofCheckStepInjectsWorktreeGoCache(t *testing.T) {
+	t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "")
 	repo := initCompoundCommandGitRepo(t)
 	want, ok := work.ProofGoCache(repo)
 	if !ok {
@@ -3317,6 +3341,7 @@ func TestRunProofCheckStepInjectsWorktreeGoCache(t *testing.T) {
 }
 
 func TestRunProofCheckBunToolsInjectsWorktreeGoCache(t *testing.T) {
+	t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "")
 	repo := t.TempDir()
 	toolsDir := filepath.Join(repo, "tools")
 	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
