@@ -33,8 +33,10 @@ program remains a separate consumer and its digest is not changed here.
 
 Inspection walks every credential ancestor with no-follow directory descriptors
 and takes an anchored metadata-only stat. It does not open/read the credential.
-It supplies role OIDs, xmin/ctid revisions, database OID and a canonical public
-catalog digest. PostgreSQL's `oid` JSON representation is explicitly converted
+It supplies role OIDs, xmin/ctid revisions, database OID and one opaque canonical
+commitment to the complete private catalog, including its two SCRAM verifiers.
+No verifier or private catalog row crosses the boundary. PostgreSQL's `oid`
+JSON representation is explicitly converted
 to numeric pins. A subsequent operation consumes the actual inspection receipt,
 not a supplied catalog assertion.
 
@@ -65,6 +67,10 @@ Each recovery has its own `recovery_<native-action>` journal. Its restored
 postimage records the new catalog row revisions: restored password equality
 alone does not make it the original old row image. Missing, mixed, drifted or
 tampered custody refuses; no guessed rollback or blind retry occurs.
+Recovery binds the original PREIMAGE request digest to the immutable native
+origin request and verifies its complete catalog against that inspection
+commitment before any restore. Swapping valid SCRAM values or rewriting the
+private record's self-digest cannot authorize different old passwords.
 
 Only a safe RESULT observation crosses the program boundary. It contains no
 password, SCRAM verifier, DSN, SQL, stderr or private catalog row. Configuration,
@@ -128,3 +134,29 @@ inspection, repair, unchanged-verifier success, commit acknowledgement loss,
 separate reconciliation, restore acknowledgement loss and restored-row recovery.
 Production installation, real credential alignment and migration acceptance
 still require their own delivered owners, exact grants and actual receipts.
+
+Canonical full proof additionally requires `credential-password-alignment-native`.
+It runs the closed `scripts/testbattery` mode against the exact sealed source
+head, checking clean source before and after execution. Missing Docker or the
+exact prerequisite image fails this gate; there is no skip, pull or package
+installation fallback. The gate uses only the local Docker Unix socket, creates
+a unique labelled container with no network or published ports, and removes only
+that exact container and its anonymous data volume after rechecking ownership.
+
+The prerequisite is immutable image
+`sha256:e9851137192b495dcc67f03d032446a0bfeca905351b4065ba214173dac9a5fa`.
+It is a frozen synthetic test dependency, not a reproducible source build. It
+contains PostgreSQL 17.11, Python 3.13.5, sudo and the root-owned Docker 28 CLI.
+Its mounted PostgreSQL data and Docker socket were excluded from the freeze.
+The test suite copies all current program and fixture bodies from sealed HEAD
+before every native consumer; stale program bytes in the dependency layer cannot
+select execution. This host prerequisite is explicitly classified outside the
+fresh-clone CI subset; it remains mandatory for canonical preland and postland
+proof, alongside every existing gate.
+
+The fixed native inventory covers repair followed by unchanged verification and
+four-file installation, actual Linux/PG17 primitives, both COMMIT acknowledgement
+loss paths and their separate recovery, plus valid-SCRAM OLD2 tampering with and
+without rewritten private self-digests. The mode requires fresh Go JSON run/pass
+events for every case, terminal package success and zero skips. Missing,
+unfinished, failed, duplicate, cached or oversized evidence fails the gate.

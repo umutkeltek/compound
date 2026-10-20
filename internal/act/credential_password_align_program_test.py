@@ -18,6 +18,25 @@ exec(compile((ROOT / "credential_password_align_program.py").read_bytes(), "cred
 
 
 class AlignmentFormatTests(unittest.TestCase):
+    def test_catalog_pin_commits_private_verifiers_and_revisions(self):
+        catalog = {"database": {"oid": "123"}, "roles": [
+            {"oid": 1, "xmin": "1", "ctid": "(1,1)", "verifier": "synthetic-old-a", "attributes": {}},
+            {"oid": 2, "xmin": "1", "ctid": "(1,2)", "verifier": "synthetic-old-m", "attributes": {}}]}
+        request = {"catalog": {"database_oid": 123, "roles": [
+            {k: row[k] for k in ("oid", "xmin", "ctid")} for row in catalog["roles"]],
+            "sha256": owner.canonical_digest(catalog)}}
+        owner.alignment_catalog_pin(catalog, request)
+        tampered = copy.deepcopy(catalog)
+        tampered["roles"][0]["verifier"], tampered["roles"][1]["verifier"] = (
+            tampered["roles"][1]["verifier"], tampered["roles"][0]["verifier"])
+        self.assertEqual(owner.alignment_public_catalog(catalog), owner.alignment_public_catalog(tampered))
+        with self.assertRaises(owner.Refusal):
+            owner.alignment_catalog_pin(tampered, request)
+        tampered = copy.deepcopy(catalog)
+        tampered["roles"][0]["xmin"] = "2"
+        with self.assertRaises(owner.Refusal):
+            owner.alignment_catalog_pin(tampered, request)
+
     def test_mixed_or_revision_drift_never_classifies_as_postimage(self):
         before = {"roles": [{"oid": 1, "xmin": "1", "ctid": "(1,1)", "verifier": "old-a", "attributes": {}},
                             {"oid": 2, "xmin": "1", "ctid": "(1,2)", "verifier": "old-m", "attributes": {}}]}

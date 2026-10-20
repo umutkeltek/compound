@@ -359,7 +359,9 @@ def alignment_runtime_inactive(r, processes):
 def alignment_catalog_pin(value, r):
     require(int(value["database"]["oid"]) == r["catalog"]["database_oid"])
     require([{k: role[k] for k in ("oid", "xmin", "ctid")} for role in value["roles"]] == r["catalog"]["roles"])
-    require(canonical_digest(alignment_public_catalog(value)) == r["catalog"]["sha256"])
+    # Only this opaque commitment crosses the observation boundary. Including
+    # the private verifiers binds later recovery to the genuinely inspected OLD2.
+    require(canonical_digest(value) == r["catalog"]["sha256"])
 
 
 def alignment_file_metadata(r):
@@ -473,7 +475,7 @@ def alignment_protocol(r, operation, action, original_action, processes):
             catalog = session.catalog(r)
             alignment_closed_catalog(catalog, r)
             validate_catalog(runtime.catalog(r, []), r, [])
-            metadata = {"sha256": canonical_digest(alignment_public_catalog(catalog)),
+            metadata = {"sha256": canonical_digest(catalog),
                         "roles": [{k: row[k] for k in ("oid", "xmin", "ctid")} for row in catalog["roles"]],
                         "database_oid": int(catalog["database"]["oid"]), "docker_sha256": r["catalog"]["docker_sha256"]}
             require(runtime.host(r) == host_before)
@@ -534,6 +536,10 @@ def alignment_protocol(r, operation, action, original_action, processes):
             require(pre["schema_version"] == "compound.credential_password_preimage.v0.1")
             require(pre["action_intent_id"] == original_action)
             require(pre["request_sha256"] == canonical_digest(pre["request"]))
+            require(pre["request_sha256"] == r["origin"]["request_sha256"])
+            alignment_validate(pre["request"])
+            alignment_closed_catalog(pre["catalog"], pre["request"])
+            alignment_catalog_pin(pre["catalog"], pre["request"])
             # Recovery must retain every original protected resource/host/profile
             # binding. Only freshness and the separately admitted operation vary.
             for key in ("file", "host", "resource", "ssh", "roles", "database", "profile", "capture", "failure"):

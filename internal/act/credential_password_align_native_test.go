@@ -318,3 +318,57 @@ func TestCredentialPasswordAlignmentActualCommitAckLossAndRestoreAckLoss(t *test
 		}
 	}
 }
+
+func TestCredentialPasswordAlignmentActualTamperedOldVerifierSwapHolds(t *testing.T) {
+	for _, rewrite := range []bool{false, true} {
+		t.Run("rewrite_request_"+strconv.FormatBool(rewrite), func(t *testing.T) {
+			credentialPasswordAlignmentTamperedOldVerifierSwapHolds(t, rewrite)
+		})
+	}
+}
+
+func credentialPasswordAlignmentTamperedOldVerifierSwapHolds(t *testing.T, rewrite bool) {
+	t.Helper()
+	linux := alignmentLinux(t)
+	f := nativeAlignmentFixture(t, linux)
+	f.inspect(t)
+	p, e := f.owner.Plan(f.r, f.workID, "fixture")
+	if e != nil {
+		t.Fatal(e)
+	}
+	f.approve(t, p)
+	result, e := f.owner.Execute(context.Background(), p.PlanRef, "fixture")
+	if e != nil || result.State != "completed" {
+		t.Fatal("legitimate alignment failed", e)
+	}
+	script := `import hashlib,json,sys
+from pathlib import Path
+p=Path(sys.argv[1]).parent/'.compound-credential-password-alignment'/sys.argv[2]/'PREIMAGE.json'
+v=json.loads(p.read_bytes())
+r=v['catalog']['roles']
+r[0]['verifier'],r[1]['verifier']=r[1]['verifier'],r[0]['verifier']
+if sys.argv[3]=='true':
+    digest=lambda value:hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    v['request']['catalog']['sha256']=digest(v['catalog'])
+    v['request_sha256']=digest(v['request'])
+p.write_text(json.dumps(v))
+`
+	if e := exec.Command("docker", "exec", linux.container, "/usr/bin/python3", "-I", "-B", "-c", script, f.r.File.Path, p.Plan.ActionIntentID, strconv.FormatBool(rewrite)).Run(); e != nil {
+		t.Fatal("synthetic custody swap failed")
+	}
+	f.freshRecovery(t, p, result, "restore")
+	before := f.r.Catalog
+	repair, e := f.owner.Plan(f.r, f.workID, "fixture")
+	if e != nil {
+		t.Fatal("separately approved restore plan did not reach native custody checks", e)
+	}
+	f.approve(t, repair)
+	restored, e := f.owner.Execute(context.Background(), repair.PlanRef, "fixture")
+	if e == nil || restored.State != "recovery_required" {
+		t.Fatal("valid SCRAM verifier swap in original PREIMAGE was accepted and restored")
+	}
+	f.freshRecovery(t, p, result, "reconcile")
+	if f.r.Catalog != before {
+		t.Fatal("rejected tampered custody changed the two live role revisions or verifiers")
+	}
+}

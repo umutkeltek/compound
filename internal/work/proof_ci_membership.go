@@ -114,6 +114,10 @@ func HostBoundGatesAllowlist() []HostBoundGate {
 			Reason: "runs the codex harness via work.ProofRuntimeExecutable; the inventory gate is not yet flagged CIPortable and a fence-restricted equal-length edit defers the reclassification",
 		},
 		{
+			Name:   "credential-password-alignment-native",
+			Reason: "requires the local Docker Unix socket and exact frozen synthetic Linux/PostgreSQL17 prerequisite image; full canonical proof fails when either is absent",
+		},
+		{
 			Name:   "profiles-check",
 			Reason: "reads the operator's installed profiles under ~/.claude/agents/ and ~/.codex/agents/; an empty install is not a failing check",
 		},

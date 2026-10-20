@@ -26,6 +26,9 @@ var sourceCommit = regexp.MustCompile("^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 // test-created source package or edited index cannot change later gate inputs
 // silently: each gate must start and finish against that same clean commit.
 func runBoundSourceGate(ctx context.Context, mode, sourceHead string, stdout, stderr io.Writer) error {
+	if mode == credentialAlignmentProofMode && sourceHead == "" {
+		return errors.New("native credential-alignment proof requires an exact sealed source head")
+	}
 	if sourceHead == "" {
 		return runSourceGate(ctx, mode, discoverSourcePackages, runGo, stdout, stderr)
 	}
@@ -216,6 +219,9 @@ func sourceDirectories(ctx context.Context, stderr io.Writer) ([]string, error) 
 }
 
 func runSourceGate(ctx context.Context, mode string, discover func(context.Context, io.Writer) (sourcePackageInventory, error), run commandRunner, stdout, stderr io.Writer) error {
+	if mode == credentialAlignmentProofMode {
+		return runCredentialAlignmentProof(ctx, credentialAlignmentCommand, stdout, stderr)
+	}
 	if mode != "test" && mode != "general-release" && mode != "home" && mode != "vet" && mode != "build" {
 		return fmt.Errorf("unsupported source gate %q", mode)
 	}

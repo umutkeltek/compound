@@ -54,10 +54,11 @@ func TestCISubsetMembershipIsTotal(t *testing.T) {
 			len(hostBound),
 		)
 	}
-	// Sanity: today the inventory has 52 gates; if the inventory rebalances
+	// Sanity: the 52 existing gates plus the required native credential gate;
+	// if the inventory rebalances
 	// (a real change), the test will not silently zero-out — it will fail
 	// loudly with the new count below.
-	const expectedInventorySize = 52
+	const expectedInventorySize = 53
 	if len(inventory) != expectedInventorySize {
 		t.Fatalf(
 			"proof-check inventory size changed: got %d, want %d (update this constant deliberately, never silently)",
@@ -68,10 +69,12 @@ func TestCISubsetMembershipIsTotal(t *testing.T) {
 	// Sanity: the host-bound allowlist is small and intentional. If it grows
 	// past a handful, the rule is being gamed; the test surfaces the growth
 	// so a code-reviewer notices.
-	const expectedHostBoundSize = 5
+	// The five historical host dependencies remain, and the new frozen Docker
+	// fixture is explicitly host-bound. No existing gate changed classification.
+	const expectedHostBoundSize = 6
 	if len(hostBound) != expectedHostBoundSize {
 		t.Fatalf(
-			"host-bound allowlist changed: got %d, want %d (audit LATEST-172 records 5 host-bound gates; update this constant deliberately when the audit reclassifies a gate)",
+			"host-bound allowlist changed: got %d, want %d (five historical dependencies plus the exact frozen native fixture; review every added or reclassified gate)",
 			len(hostBound),
 			expectedHostBoundSize,
 		)

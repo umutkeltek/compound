@@ -127,9 +127,9 @@ func main() {
 	flags := flag.NewFlagSet("testbattery", flag.ContinueOnError)
 	sourceHead := flags.String("source-head", "", "require this sealed commit and clean source before and after the gate")
 	if flags.Parse(args) != nil || flags.NArg() != 0 ||
-		(mode != "test" && mode != "general-release" && mode != "home" && mode != "vet" && mode != "build") ||
+		(mode != "test" && mode != "general-release" && mode != "home" && mode != "vet" && mode != "build" && mode != credentialAlignmentProofMode) ||
 		(*sourceHead != "" && !sourceCommit.MatchString(*sourceHead)) {
-		fmt.Fprintln(os.Stderr, "usage: testbattery [test|general-release|home|vet|build] [--source-head SHA] (all source packages; no selectors)")
+		fmt.Fprintln(os.Stderr, "usage: testbattery [test|general-release|home|vet|build|credential-password-alignment-native] [--source-head SHA] (source-owned inventories; no caller selectors)")
 		os.Exit(2)
 	}
 	// Only prevent subsequent launches after the owner's signal; children

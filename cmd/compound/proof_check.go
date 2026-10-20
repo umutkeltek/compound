@@ -1209,6 +1209,7 @@ func proofCheckSteps(baseRef string, headRefs ...string) ([]proofCheckStep, erro
 		// it never filters tests or hides an earlier failure behind a later pass.
 		{Name: "go-test", Command: append([]string{"go", "run", "./scripts/testbattery", "general-release"}, goSourceArgs...), ProofRef: "go-test-count-1-general-release", CIPortable: true},
 		{Name: "go-test-home", Command: append([]string{"go", "run", "./scripts/testbattery", "home"}, goSourceArgs...), ProofRef: "go-test-count-1-home", CIPortable: true},
+		{Name: "credential-password-alignment-native", Command: append([]string{"go", "run", "./scripts/testbattery", "credential-password-alignment-native"}, goSourceArgs...), ProofRef: "credential-password-alignment-native-pg17-no-skips"},
 		{Name: "go-vet", Command: append([]string{"go", "run", "./scripts/testbattery", "vet"}, goSourceArgs...), ProofRef: "go-vet-all", CIPortable: true},
 		{Name: "go-build", Command: append([]string{"go", "run", "./scripts/testbattery", "build"}, goSourceArgs...), ProofRef: "go-build-all", CIPortable: true},
 		{Name: "gofmt", Command: []string{"gofmt", "-l", "<tracked *.go>"}, ProofRef: "gofmt-check", CIPortable: true},
