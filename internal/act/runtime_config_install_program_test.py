@@ -50,6 +50,7 @@ def fixture(parent):
     selected = {"DEALER_KEY": "synthetic_dealer", "PROVIDER_KEY":"synthetic_provider", "USER_AGENT":"fixture agent/1.0"}
     names = [".env", "service.env", "migration.env", "frontend.env"]
     profile = dict(ref="artifact:synthetic",sha256="a"*64,basenames=names,app_key="APP_URL",api_key="DATABASE_URL",migrator_key="MIGRATION_URL",production_key="MODE",live_fetch_key="FETCH_ENABLED",checkout_key="CHECKOUT_ENABLED",api_fields=sorted(selected),web_api_key="API_BASE",web_dealer_key="DEALER_KEY",web_cookie_key="COOKIE_NAME",web_api_base="http://fixture-api:9000",web_cookie_name="__Host-fixture",web_dealer_source="DEALER_KEY",containers=["fixture-api","fixture-web"])
+    profile["api_endpoint"] = None
     image = lambda name: engine.fingerprint((root/name).stat(), (root/name).read_bytes())
     stat = root.stat()
     request = dict(schema_version=engine.SCHEMA,profile_id="synthetic",attempt_id="20261020t000000z-0123456789abcdef",program_sha256="a"*64,effect_set="inactive-aws-staging-runtime-configuration-v2",witness={},resource={},ssh={},host=dict(hostname="fixture-host",machine_id="a"*32,boot_id="abcdefab-cdef-4abc-8def-abcdefabcdef",system_identifier="1234567890123456789",version_num="170006"),files=[dict(slot=slot,basename=name,path=str(root/name),exists=i==0,stat=image(name) if i==0 else None) for i,(slot,name) in enumerate(zip(engine.SLOTS,names))],roles=[dict(kind=kind,key=key,name=name,source_host="origin-db",source_database="fixture") for kind,key,name in [("application","APP_URL","fixture_app"),("migrator","MIGRATOR_URL","fixture_migrator")]],database=dict(name="fixture",allow_connections=True,endpoint_host="target-db",endpoint_port=5432,scheme="postgresql"),posture=dict(production=True,live_fetch=False,checkout_enabled=False),forced_inactive=True,root=dict(path=str(root),device=stat.st_dev,inode=stat.st_ino,mode="0700"),marker=dict(basename="inactive",stat=image("inactive")),lock=dict(basename="install.lock",stat=image("install.lock")),profile=profile,capture=dict(projection_sha256=engine.digest(engine.encoded(selected))),qualification={})
@@ -57,6 +58,10 @@ def fixture(parent):
 
 def invoke(request, selected, operation="install", observer=None):
     return engine.dispatch(dict(request=request,selected=selected if operation=="install" else {},operation=operation,issued_ns="1",deadline_ns="2"),observer or Observer(),engine.Files(request["root"]),verifier)
+
+def model_url(octets=(100, 64, 0, 1), port=11434):
+    host = ".".join(str(n) for n in octets)
+    return urlunsplit(("http", f"{host}:{port}", "", "", ""))
 
 @unittest.skipUnless(sys.platform.startswith("linux") and os.geteuid()==0,"actual Linux root filesystem acceptance")
 class TransactionAcceptance(unittest.TestCase):
@@ -66,6 +71,30 @@ class TransactionAcceptance(unittest.TestCase):
         self.root = Path(self.r["root"]["path"])
     def tearDown(self):
         self.temp.cleanup()
+    def test_private_model_endpoint_is_bound_and_only_changes_api_routing(self):
+        endpoint = dict(key="FIXTURE_OLLAMA_URL", url=model_url())
+        self.r["profile"]["api_endpoint"] = endpoint
+        result = invoke(self.r, self.selected)
+        self.assertEqual(result["state"], "installed_inactive")
+        api = (self.root/"service.env").read_text()
+        self.assertIn("FIXTURE_OLLAMA_URL=" + model_url() + "\n", api)
+        self.assertIn("PROVIDER_KEY=synthetic_provider\n", api)
+        self.assertIn("FETCH_ENABLED=false\n", api)
+        for name in (".env", "migration.env", "frontend.env"):
+            self.assertNotIn("FIXTURE_OLLAMA_URL", (self.root/name).read_text())
+        self.assertEqual(invoke(self.r, {}, "reconcile")["state"], "installed_inactive")
+        self.assertEqual(invoke(self.r, {}, "rollback")["state"], "rolled_back")
+        self.assertEqual((self.root/".env").read_bytes(), self.original)
+    def test_invalid_model_endpoint_refuses_before_filesystem_effects(self):
+        for key, url in [("DATABASE_URL", model_url()),
+                         ("FIXTURE_OLLAMA_URL", model_url((203, 0, 113, 1))),
+                         ("FIXTURE_OLLAMA_URL", model_url() + "/"),
+                         ("FIXTURE_OLLAMA_URL", model_url(port=5432))]:
+            with self.subTest(key=key, url=url):
+                self.r["profile"]["api_endpoint"] = dict(key=key, url=url)
+                with self.assertRaises(engine.Refusal): invoke(self.r, self.selected)
+                self.assertEqual((self.root/".env").read_bytes(), self.original)
+                self.assertFalse((self.root/"service.env").exists())
     def test_actual_install_and_fresh_reconcile_and_rollback(self):
         # Unrelated operator-owned auth assets are preserved.
         (self.root/"auth.env").write_text("synthetic unrelated\n")

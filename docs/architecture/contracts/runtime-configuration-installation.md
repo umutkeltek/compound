@@ -129,3 +129,13 @@ fsync failures, short writes, no-replace behavior and custody drift. These are
 implementation evidence, not live host installation or database acceptance.
 The credential verifier's own actual PostgreSQL regression remains separate.
 No configuration or application activation is authorized by source delivery.
+
+The frozen profile may include one `api_endpoint` object (or explicit `null`).
+It supplies a reviewed private model route when a captured source relied on a
+LAN default. Its key must end in `_OLLAMA_URL` and cannot collide with any
+database, posture, web or dealer-source key. Its only accepted value is a
+canonical `http://<IPv4>:11434` URL in `100.64.0.0/10`, with no credentials,
+path, query or fragment. The exact install approval binds this routing literal.
+It changes only the API environment; provider credentials, chain, model and
+original source capture remain unchanged. Reachability and inference are still
+separate live acceptance checks. This is not an arbitrary environment editor.

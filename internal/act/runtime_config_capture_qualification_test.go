@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/netip"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -167,6 +170,35 @@ func (f *captureQualifierFixture) approve(t *testing.T, p RuntimeCaptureQualific
 	}
 	if _, _, err = policy.NewExactActionApprovalStore(f.home).Approve(p.Plan.ApprovalPlanID, "operator:fixture", cfg, f.now); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRuntimeCaptureQualificationBindsPrivateModelEndpoint(t *testing.T) {
+	c := newCredentialFixture(t)
+	profile := runtimeConfigInstallFixture(c.now).Profile
+	modelURL := func(last byte) string {
+		return (&url.URL{Scheme: "http", Host: net.JoinHostPort(netip.AddrFrom4([4]byte{100, 64, 0, last}).String(), "11434")}).String()
+	}
+	profile.APIEndpoint = &policy.RuntimeConfigInstallModelEndpoint{Key: "FIXTURE_OLLAMA_URL", URL: modelURL(1)}
+	f := newCaptureQualifierFixture(t, c.home, c.now, profile)
+	planned := f.plan(t)
+	f.approve(t, planned)
+	result, err := f.owner.QualifyCapture(planned.PlanRef, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result.Profile.APIEndpoint, profile.APIEndpoint) {
+		t.Fatal("reviewed model endpoint changed")
+	}
+	if err = f.owner.captureAuthority(policy.RuntimeConfigInstallRequest{Capture: result.Capture, Profile: result.Profile}); err != nil {
+		t.Fatal(err)
+	}
+	tampered := result.Profile
+	endpoint := *tampered.APIEndpoint
+	endpoint.URL = modelURL(2)
+	tampered.APIEndpoint = &endpoint
+	if err = f.owner.captureAuthority(policy.RuntimeConfigInstallRequest{Capture: result.Capture, Profile: tampered}); err == nil {
+		t.Fatal("unapproved endpoint change accepted")
 	}
 }
 

@@ -182,6 +182,9 @@ func runtimeSourceStat(raw json.RawMessage) (string, policy.RuntimeConfigInstall
 }
 
 func runtimeCaptureProfileValid(p policy.RuntimeConfigInstallProfile) bool {
+	if !policy.ValidRuntimeConfigInstallModelEndpoint(p) {
+		return false
+	}
 	key := regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,95}$`)
 	if p.Ref != "" || p.SHA256 != "" || p.Basenames[0] != ".env" || len(p.APIFields) == 0 || len(p.APIFields) > 64 || !slices.IsSorted(p.APIFields) || len(p.Containers) == 0 || len(p.Containers) > 20 {
 		return false

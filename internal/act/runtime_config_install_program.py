@@ -9,6 +9,7 @@ import ctypes
 import errno
 import fcntl
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -245,7 +246,7 @@ def validate(r, selected, operation="install"):
     exact(r["root"], "path device inode mode")
     require(r["root"]["mode"] in ("0700", "0750", "0755"))
     profile = r["profile"]
-    exact(profile, "ref sha256 basenames app_key api_key migrator_key production_key live_fetch_key checkout_key api_fields web_api_key web_dealer_key web_cookie_key web_api_base web_cookie_name web_dealer_source containers")
+    exact(profile, "ref sha256 basenames app_key api_key migrator_key production_key live_fetch_key checkout_key api_fields api_endpoint web_api_key web_dealer_key web_cookie_key web_api_base web_cookie_name web_dealer_source containers")
     require(len(profile["basenames"]) == 4 and profile["basenames"][0] == ".env")
     names = [basename(n) for n in profile["basenames"]]
     require(len(set(names)) == 4)
@@ -270,6 +271,20 @@ def validate(r, selected, operation="install"):
     else:
         require(selected == {})
     forbidden = {role["key"] for role in r["roles"]} | {profile["app_key"], profile["api_key"], profile["migrator_key"]}
+    endpoint = profile["api_endpoint"]
+    if endpoint is not None:
+        exact(endpoint, "key url")
+        require(type(endpoint["key"]) is str and type(endpoint["url"]) is str)
+        require(re.fullmatch(r"[A-Z_][A-Z0-9_]{0,63}", endpoint["key"]) and endpoint["key"].endswith("_OLLAMA_URL") and "DATABASE" not in endpoint["key"])
+        semantic = {profile[k] for k in ("app_key", "api_key", "migrator_key", "production_key", "live_fetch_key", "checkout_key", "web_api_key", "web_dealer_key", "web_cookie_key", "web_dealer_source")}
+        require(endpoint["key"] not in semantic | forbidden)
+        match = re.fullmatch(r"http://([0-9.]+):11434", endpoint["url"])
+        require(match is not None)
+        try:
+            address = ipaddress.IPv4Address(match.group(1))
+        except ValueError:
+            require(False)
+        require(address in ipaddress.ip_network("100.64.0.0/10") and endpoint["url"] == f"http://{address}:11434")
     require(not forbidden.intersection(selected))
     require(all("DATABASE" not in k and not k.endswith("_DSN") for k in selected))
     require(len({profile[k] for k in ("api_key", "production_key", "live_fetch_key", "checkout_key")}) == 4)
@@ -292,6 +307,8 @@ def build_payloads(r, selected, original, verifier):
             urllib.parse.quote(d["name"], safe="") for role, password in zip(r["roles"], passwords)]
     api = dict(selected)
     api.update({p["api_key"]: urls[0], p["production_key"]: "production", p["live_fetch_key"]: "false", p["checkout_key"]: "false"})
+    if p["api_endpoint"] is not None:
+        api[p["api_endpoint"]["key"]] = p["api_endpoint"]["url"]
     return [dotenv({p["app_key"]: urls[0]}), dotenv(api), dotenv({p["migrator_key"]: urls[1]}),
             dotenv({p["web_api_key"]: p["web_api_base"], p["web_dealer_key"]: selected[p["web_dealer_source"]],
                     p["web_cookie_key"]: p["web_cookie_name"]})]

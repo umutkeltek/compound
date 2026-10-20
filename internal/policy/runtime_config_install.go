@@ -119,23 +119,24 @@ type RuntimeConfigInstallAnchor struct {
 
 // Ref and SHA bind the frozen profile artifact; all other fields are metadata.
 type RuntimeConfigInstallProfile struct {
-	Ref             string    `json:"ref"`
-	SHA256          string    `json:"sha256"`
-	Basenames       [4]string `json:"basenames"`
-	AppKey          string    `json:"app_key"`
-	APIKey          string    `json:"api_key"`
-	MigratorKey     string    `json:"migrator_key"`
-	ProductionKey   string    `json:"production_key"`
-	LiveFetchKey    string    `json:"live_fetch_key"`
-	CheckoutKey     string    `json:"checkout_key"`
-	APIFields       []string  `json:"api_fields"`
-	WebAPIKey       string    `json:"web_api_key"`
-	WebDealerKey    string    `json:"web_dealer_key"`
-	WebCookieKey    string    `json:"web_cookie_key"`
-	WebAPIBase      string    `json:"web_api_base"`
-	WebCookieName   string    `json:"web_cookie_name"`
-	WebDealerSource string    `json:"web_dealer_source"`
-	Containers      []string  `json:"containers"`
+	Ref             string                             `json:"ref"`
+	SHA256          string                             `json:"sha256"`
+	Basenames       [4]string                          `json:"basenames"`
+	AppKey          string                             `json:"app_key"`
+	APIKey          string                             `json:"api_key"`
+	MigratorKey     string                             `json:"migrator_key"`
+	ProductionKey   string                             `json:"production_key"`
+	LiveFetchKey    string                             `json:"live_fetch_key"`
+	CheckoutKey     string                             `json:"checkout_key"`
+	APIFields       []string                           `json:"api_fields"`
+	APIEndpoint     *RuntimeConfigInstallModelEndpoint `json:"api_endpoint"`
+	WebAPIKey       string                             `json:"web_api_key"`
+	WebDealerKey    string                             `json:"web_dealer_key"`
+	WebCookieKey    string                             `json:"web_cookie_key"`
+	WebAPIBase      string                             `json:"web_api_base"`
+	WebCookieName   string                             `json:"web_cookie_name"`
+	WebDealerSource string                             `json:"web_dealer_source"`
+	Containers      []string                           `json:"containers"`
 }
 type RuntimeConfigInstallProofRef struct {
 	Ref    string `json:"ref"`
@@ -310,6 +311,9 @@ func validateRuntimeConfigRequest(r RuntimeConfigInstallRequest, programSHA stri
 		seen[anchor.Basename] = true
 	}
 	p := r.Profile
+	if !ValidRuntimeConfigInstallModelEndpoint(p) || (p.APIEndpoint != nil && (p.APIEndpoint.Key == r.Roles[0].Key || p.APIEndpoint.Key == r.Roles[1].Key)) {
+		return bad("model_endpoint")
+	}
 	if !runtimeConfigInstallRef(p.Ref) || !runtimeConfigInstallSHA.MatchString(p.SHA256) || !runtimeConfigInstallURL.MatchString(p.WebAPIBase) || !runtimeConfigInstallCookie.MatchString(p.WebCookieName) {
 		return bad("profile")
 	}
