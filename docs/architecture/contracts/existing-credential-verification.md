@@ -111,11 +111,26 @@ child with its error and the owner stops/reaps it under the outer cleanup deadli
 hard real-time storage or kernel scheduling.
 
 Only a closed, fully populated observation can be persisted. Unknown,
-duplicated, absent, inconsistent or oversized facts refuse. Native transport
+duplicated, absent, inconsistent or oversized facts refuse. Raw native transport
 diagnostics and raw subprocess output are never errors or artifacts. A failed
 admitted attempt consumes its approval, emits sanitized failure evidence where
 storage permits and is never retried under that attempt identity. Persistence
 failure is nonaccepting and leaves native recovery evidence/blockers intact.
+
+Failure diagnostics are a finite protocol, never exception text. The helper may
+emit one exact `credential_verify:refused:<stage>` stderr line, where stage is
+`request_validation`, `executable`, `host_identity`, `protected_file`,
+`source_format`, `pre_catalog`, `app_existing`, `app_wrong`,
+`migrator_existing`, `migrator_wrong`, `post_catalog`, `postchecks`, `deadline`,
+or `cleanup`. The native transport retains at most 96 stderr bytes and recognizes
+only a complete singleton allowlisted marker after a nonzero process exit.
+Unknown, malformed, duplicate, oversized, or additional stderr is generic failure;
+a marker accompanying exit zero also refuses. Failed stdout is never observation
+evidence. After successful native cleanup, an allowed stage may enter only failed
+status metadata as `failure_stage`. Any remote or native cleanup failure takes
+precedence and remains generic. Approval stays consumed, the attempt terminalizes
+failed, observation acceptance stays empty, and no retry occurs. Success evidence
+and the protected source URI grammar are unchanged.
 
 The work owner seals the observed outcome, publishes its Receipt/Transition
 and clears its reservation only after convergence; the RunAttempt receives the
@@ -140,3 +155,10 @@ credential, transport, query, endpoint override or alternate policy decision.
 The privileged role projection joins `pg_authid` to `pg_roles` by OID: password-format presence comes from `pg_authid`, while role settings come from `pg_roles.rolconfig`. PostgreSQL does not expose `rolconfig` on `pg_authid`. Neither password values nor verifier hashes leave PostgreSQL.
 
 Run the real catalog query regression against an owned disposable PostgreSQL fixture with `COMPOUND_CREDENTIAL_VERIFY_TEST_CONTAINER=<container> python3 internal/act/credential_verify_program_test.py PostgreSQLCatalogTests`. It executes both pre- and post-probe SQL forms, verifies the role-settings projection, and does not create roles or databases. Without this opt-in, the real PostgreSQL case is explicitly skipped; pure protocol tests remain available without Docker.
+
+The same catalog regression can use an owned disposable local PostgreSQL fixture:
+set `COMPOUND_CREDENTIAL_VERIFY_TEST_PSQL` to its existing client and supply the
+test-only `COMPOUND_CREDENTIAL_VERIFY_TEST_SOCKET`, `_PORT`, `_ROLE`, and
+`_DATABASE` variables with the same prefix. This branch uses an explicit Unix
+socket, disables client configuration and ambient credential files, and runs
+the same catalog SQL. It does not claim role-authentication or live acceptance.

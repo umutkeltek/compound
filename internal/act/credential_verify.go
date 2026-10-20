@@ -299,8 +299,9 @@ func (v *CredentialVerifier) Execute(ctx context.Context, planRef, actor string)
 	var pd envelope.PolicyDecision
 	var attempt runattempt.RunAttempt
 	var reserved *credentialVerifyReservation
+	var failureStage string
 	finish := func(outcome string, obs *CredentialVerificationObservation, code string) (CredentialVerificationResult, error) {
-		return v.finish(out, p, ai, pd, outcome, obs, code, reserved, outer)
+		return v.finish(out, p, ai, pd, outcome, obs, code, failureStage, reserved, outer)
 	}
 	attempts := runattempt.Open(v.home)
 	// Approval consumption and deterministic attempt mint share native admission.
@@ -420,6 +421,9 @@ func (v *CredentialVerifier) Execute(ctx context.Context, planRef, actor string)
 	raw, waitErr := child.Wait()
 	stopErr := child.Stop(outer)
 	if waitErr != nil || stopErr != nil {
+		if stopErr == nil {
+			failureStage = credentialVerifySafeFailureStage(waitErr)
+		}
 		return finish("failed", nil, "verification_failed")
 	}
 	if workCtx.Err() != nil || !v.now().Before(started.Add(50*time.Second)) {
@@ -432,7 +436,7 @@ func (v *CredentialVerifier) Execute(ctx context.Context, planRef, actor string)
 	return finish("completed", &obs, "verified_existing_maintenance_auth")
 }
 
-func (v *CredentialVerifier) finish(out CredentialVerificationResult, p CredentialVerificationPlan, ai envelope.ActionIntent, pd envelope.PolicyDecision, outcome string, obs *CredentialVerificationObservation, code string, reserved *credentialVerifyReservation, cleanup context.Context) (CredentialVerificationResult, error) {
+func (v *CredentialVerifier) finish(out CredentialVerificationResult, p CredentialVerificationPlan, ai envelope.ActionIntent, pd envelope.PolicyDecision, outcome string, obs *CredentialVerificationObservation, code, failureStage string, reserved *credentialVerifyReservation, cleanup context.Context) (CredentialVerificationResult, error) {
 	out.State = "failed"
 	// Never run the failed work deadline through this writer. The outer context
 	// retains the original ten-second cleanup reserve.
@@ -446,6 +450,9 @@ func (v *CredentialVerifier) finish(out CredentialVerificationResult, p Credenti
 		return out, credentialVerifyError("receipt_unavailable")
 	}
 	status := map[string]any{"schema_version": "compound.credential_verification_status.v0.1", "state": outcome, "code": code, "request_sha256": p.RequestSHA256, "action_intent_id": ai.ID, "policy_decision_id": pd.ID, "approval_consumed": out.ApprovalConsumed, "run_attempt_id": out.RunAttemptID, "configuration_accepted": false, "application_access_accepted": false, "source_capture_accepted": false, "migration_accepted": false}
+	if outcome == "failed" && credentialVerifyKnownFailureStage(failureStage) && failureStage != "cleanup" {
+		status["failure_stage"] = failureStage
+	}
 	if obs != nil {
 		raw, _ := json.Marshal(obs)
 		out.ObservationRef, e = store.Put(raw)

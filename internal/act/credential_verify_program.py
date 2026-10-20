@@ -21,6 +21,19 @@ class Refusal(Exception):
     pass
 
 
+FAILURE_STAGES = frozenset({
+    "request_validation", "executable", "host_identity", "protected_file",
+    "source_format", "pre_catalog", "app_existing", "app_wrong",
+    "migrator_existing", "migrator_wrong", "post_catalog", "postchecks",
+    "deadline", "cleanup",
+})
+
+
+class StageRefusal(Refusal):
+    def __init__(self, stage):
+        self.stage = stage if stage in FAILURE_STAGES else None
+
+
 def require(condition):
     if not condition:
         raise Refusal()
@@ -250,7 +263,8 @@ class Processes:
 
     def remaining(self):
         value = self.deadline - time.monotonic()
-        require(value > 0)
+        if value <= 0:
+            raise StageRefusal("deadline")
         return value
 
     def spawn(self, argv, env):
@@ -448,43 +462,60 @@ class NativeRuntime:
 
 
 def run_protocol(r, runtime, generate=secrets.token_urlsafe):
-    validate_request(r)
-    runtime.programs(r)
-    host_before = runtime.host(r)
-    raw_before = runtime.file(r)
-    passwords = parse_passwords(raw_before, r["roles"])
-    wrong = negative_passwords(passwords, generate)
-    before = runtime.catalog(r, [])
-    validate_catalog(before, r, [])
-    authentication = []
-    sessions = []
-    pids = []
-    for index, role in enumerate(r["roles"]):
-        identity = runtime.positive(r, role, passwords[index])
-        exact_keys(identity, "user session_user database address port version_num pid")
-        pid = identity["pid"]
-        require(type(pid) is int and 0 < pid <= 2_147_483_647 and pid not in pids)
-        require(identity == {"user": role["name"], "session_user": role["name"], "database": "postgres",
-                             "address": "127.0.0.1", "port": 5432, "version_num": r["host"]["version_num"], "pid": pid})
-        pids.append(pid)
-        sessions.append({"pid": pid, "user": role["name"], "database": "postgres", "address": "127.0.0.1"})
-        authentication.append({"kind": role["kind"] + "_existing", "role": role["name"],
-                               "outcome": "authenticated", "identity": identity})
-        runtime.negative(r, role, wrong[index])
-        authentication.append({"kind": role["kind"] + "_wrong", "role": role["name"],
-                               "outcome": "password_rejected", "identity": None})
-    after = runtime.catalog(r, pids)
-    validate_catalog(after, r, sessions)
-    require(runtime.file(r) == raw_before)
-    runtime.recheck(r)
-    host_after = runtime.host(r)
-    require(host_before == r["host"] and host_after == r["host"])
-    return {"schema_version": "compound.credential_verification_observation.v0.1",
-            "request_sha256": canonical_digest(r), "program_sha256": r["program_sha256"],
-            "host_before": host_before, "host_after": host_after, "file_matched": True,
-            "before": before, "after": after, "authentication": authentication,
-            "configuration_accepted": False, "application_access_accepted": False,
-            "source_capture_accepted": False, "migration_accepted": False}
+    stage = "request_validation"
+    try:
+        validate_request(r)
+        stage = "executable"
+        runtime.programs(r)
+        stage = "host_identity"
+        host_before = runtime.host(r)
+        stage = "protected_file"
+        raw_before = runtime.file(r)
+        stage = "source_format"
+        passwords = parse_passwords(raw_before, r["roles"])
+        wrong = negative_passwords(passwords, generate)
+        stage = "pre_catalog"
+        before = runtime.catalog(r, [])
+        validate_catalog(before, r, [])
+        authentication = []
+        sessions = []
+        pids = []
+        for index, role in enumerate(r["roles"]):
+            stage = "app_existing" if index == 0 else "migrator_existing"
+            identity = runtime.positive(r, role, passwords[index])
+            exact_keys(identity, "user session_user database address port version_num pid")
+            pid = identity["pid"]
+            require(type(pid) is int and 0 < pid <= 2_147_483_647 and pid not in pids)
+            require(identity == {"user": role["name"], "session_user": role["name"], "database": "postgres",
+                                 "address": "127.0.0.1", "port": 5432, "version_num": r["host"]["version_num"], "pid": pid})
+            pids.append(pid)
+            sessions.append({"pid": pid, "user": role["name"], "database": "postgres", "address": "127.0.0.1"})
+            authentication.append({"kind": role["kind"] + "_existing", "role": role["name"],
+                                   "outcome": "authenticated", "identity": identity})
+            stage = "app_wrong" if index == 0 else "migrator_wrong"
+            runtime.negative(r, role, wrong[index])
+            authentication.append({"kind": role["kind"] + "_wrong", "role": role["name"],
+                                   "outcome": "password_rejected", "identity": None})
+        stage = "post_catalog"
+        after = runtime.catalog(r, pids)
+        validate_catalog(after, r, sessions)
+        stage = "postchecks"
+        require(runtime.file(r) == raw_before)
+        runtime.recheck(r)
+        host_after = runtime.host(r)
+        require(host_before == r["host"] and host_after == r["host"])
+        return {"schema_version": "compound.credential_verification_observation.v0.1",
+                "request_sha256": canonical_digest(r), "program_sha256": r["program_sha256"],
+                "host_before": host_before, "host_after": host_after, "file_matched": True,
+                "before": before, "after": after, "authentication": authentication,
+                "configuration_accepted": False, "application_access_accepted": False,
+                "source_capture_accepted": False, "migration_accepted": False}
+    except StageRefusal:
+        raise
+    except (TimeoutError, subprocess.TimeoutExpired):
+        raise StageRefusal("deadline") from None
+    except BaseException:
+        raise StageRefusal(stage) from None
 
 
 def remote_budget(issued_ns, deadline_ns, now_ns, monotonic_now):
@@ -504,8 +535,11 @@ def main():
     processes = None
     observation = None
     accepted = False
+    failure_stage = "request_validation"
+
     def interrupted(_signum, _frame):
-        raise Refusal()
+        raise StageRefusal("deadline")
+
     try:
         signal.signal(signal.SIGALRM, interrupted)
         signal.signal(signal.SIGTERM, interrupted)
@@ -517,19 +551,32 @@ def main():
         exact_keys(wire, "request issued_ns deadline_ns")
         r = wire["request"]
         require(len(sys.argv) == 2 and r["program_sha256"] == sys.argv[1])
+        failure_stage = "deadline"
         deadline = remote_budget(wire["issued_ns"], wire["deadline_ns"], time.time_ns(), time.monotonic())
         processes = Processes(deadline)
         signal.setitimer(signal.ITIMER_REAL, max(0.001, deadline - time.monotonic()))
         observation = run_protocol(r, NativeRuntime(processes))
         require(time.monotonic() < deadline)
         accepted = True
-    except BaseException:
+    except BaseException as error:
+        if isinstance(error, StageRefusal):
+            failure_stage = error.stage
         accepted = False
     finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        for signum in (signal.SIGTERM, signal.SIGHUP):
-            signal.signal(signum, signal.SIG_IGN)
-        if processes is not None and not processes.cleanup():
+        cleaned = True
+        try:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            for signum in (signal.SIGTERM, signal.SIGHUP):
+                signal.signal(signum, signal.SIG_IGN)
+        except BaseException:
+            cleaned = False
+        if processes is not None:
+            try:
+                cleaned = processes.cleanup() and cleaned
+            except BaseException:
+                cleaned = False
+        if not cleaned:
+            failure_stage = "cleanup"
             accepted = False
     if accepted:
         try:
@@ -537,9 +584,12 @@ def main():
             sys.stdout.flush()
             return 0
         except BaseException:
-            pass
+            failure_stage = "postchecks"
     try:
-        sys.stderr.write("credential_verify:refused\n")
+        marker = "credential_verify:refused"
+        if failure_stage in FAILURE_STAGES:
+            marker += ":" + failure_stage
+        sys.stderr.write(marker + "\n")
     except BaseException:
         pass
     return 1

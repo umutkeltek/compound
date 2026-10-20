@@ -8,10 +8,69 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestCredentialVerificationTransportAcceptsOnlyOneFiniteFailureMarker(t *testing.T) {
+	const marker = "credential_verify:refused:source_format\n"
+	const secret = "FIXTURE_SECRET_STDERR_NEVER_PERSIST"
+	for _, tc := range []struct {
+		name   string
+		chunks []string
+		failed bool
+		stage  string
+	}{
+		{"exact", []string{marker}, true, "source_format"},
+		{"split", []string{"credential_verify:refused:source_", "format\n"}, true, "source_format"},
+		{"duplicate", []string{marker, marker}, true, ""},
+		{"unknown", []string{"credential_verify:refused:unknown\n"}, true, ""},
+		{"oversize", []string{strings.Repeat(secret, 10000)}, true, ""},
+		{"raw-secret", []string{secret}, true, ""},
+		{"raw-plus-marker", []string{secret, marker}, true, ""},
+		{"missing-newline", []string{strings.TrimSuffix(marker, "\n")}, true, ""},
+		{"crlf", []string{strings.ReplaceAll(marker, "\n", "\r\n")}, true, ""},
+		{"leading-space", []string{" " + marker}, true, ""},
+		{"contradictory-success", []string{marker}, false, ""},
+		{"success-raw-stderr", []string{secret}, false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			done := make(chan struct{})
+			close(done)
+			child := &credentialVerifyNativeChild{done: done, failed: tc.failed}
+			// A failed process cannot offer even an otherwise valid-looking observation.
+			child.stdout.data = []byte(`{"schema_version":"compound.credential_verification_observation.v0.1"}`)
+			for _, chunk := range tc.chunks {
+				if n, err := child.stderr.Write([]byte(chunk)); err != nil || n != len(chunk) {
+					t.Fatal("stderr was not drained")
+				}
+			}
+			raw, err := child.Wait()
+			if err == nil || raw != nil || strings.Contains(err.Error(), secret) {
+				t.Fatal("failed output escaped")
+			}
+			if credentialVerifySafeFailureStage(err) != tc.stage {
+				t.Fatalf("stage = %q, want %q", credentialVerifySafeFailureStage(err), tc.stage)
+			}
+			if len(child.stderr.data) > 96 {
+				t.Fatal("stderr memory bound exceeded")
+			}
+		})
+	}
+	for _, stage := range []string{"request_validation", "executable", "host_identity", "protected_file", "source_format", "pre_catalog", "app_existing", "app_wrong", "migrator_existing", "migrator_wrong", "post_catalog", "postchecks", "deadline", "cleanup"} {
+		var output credentialVerifyStageOutput
+		_, _ = output.Write([]byte("credential_verify:refused:" + stage + "\n"))
+		actual, present := output.result()
+		if !present || actual != stage {
+			t.Fatalf("known stage %s refused", stage)
+		}
+	}
+	if credentialVerifySafeFailureStage(credentialVerifyStageError{stage: "cleanup"}) != "" || credentialVerifySafeFailureStage(errors.New(secret)) != "" {
+		t.Fatal("cleanup or raw diagnostic became stage metadata")
+	}
+}
 
 func credentialKnownHostsFixture(t *testing.T) (*credentialFixture, []byte) {
 	t.Helper()
