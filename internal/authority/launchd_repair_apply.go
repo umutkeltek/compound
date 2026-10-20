@@ -612,8 +612,13 @@ func executeLaunchdRepair(ctx context.Context, home, planID, reviewID, actor str
 	if launchdWorkDigest(current) != expectedWork {
 		return result, fmt.Errorf("unrelated final work generation drift")
 	}
-	_, result.Runtime, err = launchdCurrent(ctx, env, p)
+	b, r, err := launchdCurrent(ctx, env, p)
+	result.Runtime = r
 	if err != nil {
+		return result, err
+	}
+	if err = validateLaunchdTerminalState(home, p, rollback, b, r); err != nil {
+		result.Failure = err.Error()
 		return result, err
 	}
 	result.Outcome = "completed"
@@ -637,6 +642,49 @@ func executeLaunchdRepair(ctx context.Context, home, planID, reviewID, actor str
 		}
 	}
 	return result, nil
+}
+
+// A terminal record is the last irreversible claim that native state matches
+// this plan, so it revalidates the exact expected bytes, runtime/service
+// identity and current ownership after the last phase receipt. Drift refuses
+// completion: it never writes a terminal, rewrites a receipt, or repeats an
+// effect, and a retry under the same drift repeats no OS effect.
+func validateLaunchdTerminalState(home string, p LaunchdRepairPlan, rollback bool, b []byte, r LaunchdRuntime) error {
+	if !rollback {
+		if !bytesEqual(b, p.Candidate) {
+			return fmt.Errorf("final plist is not the exact candidate bytes")
+		}
+		if r.OverrideState != "enabled" || r.LoadedState != "loaded" {
+			return fmt.Errorf("final runtime is not the exact enabled loaded service: override=%s loaded=%s", r.OverrideState, r.LoadedState)
+		}
+		if !launchdServiceOwned(p, r) {
+			return fmt.Errorf("final loaded service identity is not owned by this plan")
+		}
+		return validateLaunchdTerminalOwner(home, p, launchdOwnerBytes(p.ID))
+	}
+	if !bytesEqual(b, p.Original) {
+		return fmt.Errorf("final plist is not the exact original bytes")
+	}
+	if r.OverrideState != "disabled" || r.LoadedState != "absent" {
+		return fmt.Errorf("final runtime is not the exact disabled absent service: override=%s loaded=%s", r.OverrideState, r.LoadedState)
+	}
+	// An authenticated predecessor restoration and a read-only no-effect
+	// continuation both end on the predecessor's pointer. Only an ordinary
+	// rollback releases this plan's own pointer, and it does so just after this.
+	if p.Handoff != nil {
+		return validateLaunchdTerminalOwner(home, p, p.Handoff.Owner)
+	}
+	return validateLaunchdTerminalOwner(home, p, launchdOwnerBytes(p.ID))
+}
+func validateLaunchdTerminalOwner(home string, p LaunchdRepairPlan, expected []byte) error {
+	owner, err := readLaunchdOwner(home, p)
+	if err != nil {
+		return fmt.Errorf("final native ownership unreadable: %v", err)
+	}
+	if !bytesEqual(owner, expected) {
+		return fmt.Errorf("final native ownership sha256:%s is not the exact expected sha256:%s", launchdBytesDigest(owner), launchdBytesDigest(expected))
+	}
+	return nil
 }
 func validateLaunchdRollbackPrecondition(p LaunchdRepairPlan, name string, b []byte, r LaunchdRuntime) error {
 	if !bytesEqual(b, p.Candidate) && !bytesEqual(b, p.Original) {
