@@ -181,7 +181,12 @@ class FixtureSafety(unittest.TestCase):
                 raise value
             return value.encode()
 
-        with patch.object(fixture, "run", side_effect=sysctl), patch.object(fixture, "SYSTEM_POLICY", policy):
+        # These tests assert host identity only. The real ancestor scan lists the
+        # shared TMPDIR, which parallel Go tests churn, so an entry could vanish
+        # between listing and stat (local battery flake). Production stages live
+        # in a quiet shared cache outside TMPDIR instead.
+        with patch.object(fixture, "run", side_effect=sysctl), patch.object(fixture, "SYSTEM_POLICY", policy), \
+                patch.object(fixture, "ancestor_digest", return_value="synthetic-ancestors"):
             yield values
 
     def test_host_identity_survives_boot_timestamp_clock_adjustment(self):
