@@ -22,8 +22,10 @@ import (
 //
 // Stat-guarded: the entry records the hot segment path plus its size+mtime; a
 // different path (rollover/rotation) or any size/mtime move (a concurrent
-// append always moves size) is a miss, so a reader never serves a frame set older than
-// the file it just statted. regularKind reads bypass the cache — their rooted
+// append always moves size) is a miss. Limit: a same-size in-place rewrite by
+// another writer within one filesystem timestamp tick keeps both, so a warm
+// process can serve the pre-rewrite frames. Segments are append-only and short
+// processes start cold; regularKind reads bypass the cache — their rooted
 // validation is part of the read contract.
 //
 // PACKAGE-level, not engine-scoped: real consumers (routeevidence's

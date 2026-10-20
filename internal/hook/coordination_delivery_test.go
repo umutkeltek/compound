@@ -461,9 +461,7 @@ func TestCorruptCoordinationReplayHoldsPreToolUseUntilRepairThenDeliversOnce(t *
 	if bytes.Equal(corrupted, original) {
 		t.Fatal("test did not locate collaboration event in canonical segment")
 	}
-	if err := os.WriteFile(segmentPath, corrupted, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	rewriteSegmentInLaterTick(t, segmentPath, corrupted)
 
 	integrityHold, err := Run(testCase.fixture, Deps{
 		Registry: harness.DefaultRegistry(), HomePath: testCase.homePath, Store: testCase.store,
@@ -481,9 +479,7 @@ func TestCorruptCoordinationReplayHoldsPreToolUseUntilRepairThenDeliversOnce(t *
 			integrityHold.Event, integrityHold.CoordinationDelivery)
 	}
 
-	if err := os.WriteFile(segmentPath, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	rewriteSegmentInLaterTick(t, segmentPath, original)
 	retry, err := Run(testCase.fixture, Deps{
 		Registry: harness.DefaultRegistry(), HomePath: testCase.homePath, Store: testCase.store,
 		Policy: policy.DefaultConfig(),
@@ -658,4 +654,24 @@ func hookInterruptEvidence(workID, actor, runAttemptID string, now time.Time) (e
 		Reasons: []string{"active action invalidated"}, Obligations: []string{},
 	}
 	return action, decision
+}
+
+// rewriteSegmentInLaterTick replaces a segment in place the way a foreign writer
+// in a later filesystem tick would. Hot-segment reads are stat-guarded per
+// process, and the corruption keeps the segment size. On a coarse clock (Linux
+// CI) a same-tick rewrite keeps the mtime too, so this process's warm cache would
+// still serve the old frames. A real hook starts with a cold cache.
+func rewriteSegmentInLaterTick(t *testing.T, path string, data []byte) {
+	t.Helper()
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	later := before.ModTime().Add(time.Second)
+	if err := os.Chtimes(path, later, later); err != nil {
+		t.Fatal(err)
+	}
 }
