@@ -243,6 +243,58 @@ print(engine["digest"](engine["encoded"](json.load(sys.stdin))))`)
 	}
 }
 
+func TestRuntimeCaptureQualificationResumesNativeVerifyingState(t *testing.T) {
+	c := newCredentialFixture(t)
+	f := newCaptureQualifierFixture(t, c.home, c.now, runtimeConfigInstallFixture(c.now).Profile)
+	planned := f.plan(t)
+	f.approve(t, planned)
+	p, ai, err := f.owner.loadCaptureQualificationPlan(planned.PlanRef, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := work.Open(f.home)
+	admitted, err := s.EvaluateAndRecordAction(p.WorkID, ai, f.now)
+	if err != nil || !admitted.Recorded {
+		t.Fatalf("native qualification admission: %v", err)
+	}
+	validated, err := f.owner.validateCaptureQualification(p.Request, p.WorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, _ := NewArtifactStore(f.home)
+	for _, body := range validated.metadata {
+		if _, err = store.Put(body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	q := validated.qualification
+	q.Action, err = f.owner.nativeCaptureProof(ai.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q.Policy, err = f.owner.nativeCaptureProof(admitted.Decision.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(q)
+	ref, err := store.Put(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Advance(p.WorkID, work.AdvanceInput{To: "verifying", Actor: "fixture", ArtifactID: ref}, f.now); err != nil {
+		t.Fatal(err)
+	}
+	// This is the persisted state after metadata publication and Advance, before
+	// Close completes. Only the real producer may complete its terminal proof.
+	result, err := f.owner.QualifyCapture(planned.PlanRef, "fixture")
+	if err != nil || result.State != "qualified" || !result.ApprovalConsumed {
+		t.Fatalf("resume failed: %+v %v", result, err)
+	}
+	if err = f.owner.captureAuthority(policy.RuntimeConfigInstallRequest{Capture: result.Capture, Profile: result.Profile}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRuntimeCaptureQualificationRefusesChangedOrFalseSourceClaims(t *testing.T) {
 	for _, kind := range []string{"receiver", "request", "manifest", "attempt", "failed-result", "false-public", "private-mode", "private-hardlink", "private-symlink", "unknown-metadata", "wrong-action", "wrong-profile", "extra-output"} {
 		t.Run(kind, func(t *testing.T) {

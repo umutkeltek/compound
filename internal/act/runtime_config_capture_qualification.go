@@ -203,7 +203,12 @@ func (v *RuntimeConfigInstaller) QualifyCapture(planRef, actor string) (RuntimeC
 	if w.State == "completed" {
 		return v.completedCaptureQualification(p, ai, s)
 	}
-	if _, err = v.requireWork(p.WorkID, actor); err != nil {
+	if w.State == "verifying" && slices.Contains(w.ActionIntentIDs, ai.ID) {
+		leases, e := s.ListLeases()
+		if e != nil || !slices.ContainsFunc(leases, func(l work.Lease) bool { return l.WorkID == p.WorkID && l.By == actor }) {
+			return out, runtimeConfigInstallError("wrong_lease_owner")
+		}
+	} else if _, err = v.requireWork(p.WorkID, actor); err != nil {
 		return out, err
 	}
 	if _, _, err = v.captureQualificationPolicy(ai, p.Request, v.now().UTC()); err != nil {
@@ -266,7 +271,11 @@ func (v *RuntimeConfigInstaller) QualifyCapture(planRef, actor string) (RuntimeC
 	if err != nil {
 		return out, runtimeConfigInstallError("qualification_artifact")
 	}
-	if _, err = s.Advance(p.WorkID, work.AdvanceInput{To: "verifying", Actor: actor, ArtifactID: ref, Note: "closed owner verified frozen source capture and metadata-only projection"}, v.now().UTC()); err != nil {
+	if w.State == "verifying" {
+		if !slices.Contains(w.ArtifactIDs, ref) {
+			return out, runtimeConfigInstallError("qualification_retry")
+		}
+	} else if _, err = s.Advance(p.WorkID, work.AdvanceInput{To: "verifying", Actor: actor, ArtifactID: ref, Note: "closed owner verified frozen source capture and metadata-only projection"}, v.now().UTC()); err != nil {
 		return out, runtimeConfigInstallError("qualification_advance")
 	}
 	_, err = s.Close(p.WorkID, work.CloseInput{Outcome: "completed", MoveType: "audit_only", Actor: actor, Changed: true, Summary: "Qualified exact frozen protected source capture locally; no capture replay or target effects", ProofRefs: []string{ref, ai.ID, pd.ID, q.SourceAction.Ref, q.SourcePolicy.Ref, planRef}}, v.now().UTC())
