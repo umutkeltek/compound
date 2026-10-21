@@ -482,8 +482,15 @@ func (e *engine) checkID(family, id, hash string) (idPresence, string, error) {
 		return idAbsent, "", err
 	}
 	presence := idAbsent
+	// Sealed segments (index > 0): a negative-membership proof lets the common
+	// brand-new id skip every sealed index load (membership.go). "Maybe
+	// present" runs the exact per-segment scan below.
+	coldPossible := len(segments) > 1 && e.coldMaybeContains(family, id, segments[1:])
 	for index, segment := range segments {
 		if index > 0 {
+			if !coldPossible {
+				continue
+			}
 			frame, found, err := e.readIndexedFrame(family, segment, id, "")
 			if err != nil {
 				return idAbsent, "", err
