@@ -73,9 +73,19 @@ func sourceUsage() string {
 	return "usage: compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | observations [--json] | intake [--limit N] [--json] | connections [--json] | intake-work-plan --card <card_id> [--actor A] [--json] | " + strings.TrimPrefix(sourceManifestCreateUsage, "usage: compound source ") + " | manifest-show <family> [--json] | manifest-doctor <family> [--json] | manifest-advance <family> --to <state> --work <id> --by <actor> --proof <gate>=<ref>... [--confirm] [--json] | manifest-drilldown <family> --item <id> [--json] | manifest-materialize <family> --item <id> --target <path> [--json] | manifest-materialize-dump <family> --target <path> [--json] | canon-observe --family <id> [--file <path>=<node-id> ...] [--cause-class repair|retire|accept|invalidate] [--caused-by <ref> ...] [--next-consumer <who>] [--json] | change-stream-observe --intake <intake.json> [--json] | inventory-observe --intake <intake.json> [--json] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml>"
 }
 
+const sourceObserveUsage = "usage: compound source observe <source-observation.yaml>"
+
 func cmdSourceObserve(args []string) {
+	// Exact sole help returns usage on stdout with exit 0 before any home
+	// access or file read (the landed product root-help admission pattern).
+	// Extra tokens keep the ordinary argument-count refusal below so a
+	// malformed help shape never becomes a successful read or mutation.
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+		fmt.Println(sourceObserveUsage)
+		return
+	}
 	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: compound source observe <source-observation.yaml>")
+		fmt.Fprintln(os.Stderr, sourceObserveUsage)
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")

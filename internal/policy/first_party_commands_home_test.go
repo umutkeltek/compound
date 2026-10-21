@@ -129,6 +129,47 @@ func TestRequireHomeCompatibilityExemptsOnlySoleProductRootHelp(t *testing.T) {
 	}
 }
 
+func TestRequireHomeCompatibilityExemptsOnlySoleSourceObserveHelp(t *testing.T) {
+	missingHome := filepath.Join(t.TempDir(), "missing-home")
+	t.Setenv("COMPOUND_HOME", missingHome)
+	catalog := NewFirstPartyCommandCatalog(map[string]FirstPartyCommandAdmission{
+		"source": FirstPartyCommandHold,
+	})
+	for _, args := range [][]string{{"observe", "--help"}, {"observe", "-h"}} {
+		if err := catalog.RequireHomeCompatibility("source", args); err != nil {
+			t.Fatalf("sole source observe help %v: %v", args, err)
+		}
+	}
+	for _, args := range [][]string{
+		nil, {"unknown"}, {"observe"},
+		{"observe", "obs.yaml"},
+		{"observe", "--help", "obs.yaml"},
+		{"observe", "obs.yaml", "--help"},
+		{"observe", "--help", "--json"},
+		{"--help", "observe"},
+		{"observe-batch", "--help"},
+		{"observations", "--help"},
+	} {
+		err := catalog.RequireHomeCompatibility("source", args)
+		if err == nil || !strings.Contains(err.Error(), "home manifest is missing") {
+			t.Fatalf("non-sole source observe help %v escaped admission: %v", args, err)
+		}
+	}
+	// Mixed help and plain observe keep the mutating classification: the flag
+	// admission table must not grow a blanket observe-help read entry.
+	for _, args := range [][]string{
+		{"observe"},
+		{"observe", "obs.yaml"},
+		{"observe", "obs.yaml", "--help"},
+		{"observe", "--help", "obs.yaml"},
+	} {
+		admission, ok := catalog.LookupSubcommandWithFlags("source", "observe", args)
+		if !ok || admission != FirstPartyCommandHold {
+			t.Fatalf("source observe classification for %v = %q (ok=%t), want hold", args, admission, ok)
+		}
+	}
+}
+
 func TestRequireHomeCompatibilityExemptsOnlySoleActiveRootHelp(t *testing.T) {
 	missingParent := filepath.Join(t.TempDir(), "missing-parent")
 	t.Setenv("COMPOUND_HOME", filepath.Join(missingParent, "home"))
