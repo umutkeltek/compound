@@ -87,7 +87,7 @@ func ExecuteContentPost(homePath, draftID, transport, workID string, at time.Tim
 		if !reflect.DeepEqual(ai, original) {
 			return ContentPostRun{}, fmt.Errorf("persisted outbound intent differs from this exact request or work identity")
 		}
-	} else if !os.IsNotExist(readErr) {
+	} else if !errors.Is(readErr, os.ErrNotExist) {
 		return ContentPostRun{}, readErr
 	}
 	cfg, _, err := policy.LoadConfig(homePath)

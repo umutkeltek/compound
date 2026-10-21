@@ -1831,7 +1831,7 @@ func (s *Store) memoryTransition(claim Claim, prior Claim, hasPrior bool, workID
 
 func (s *Store) persistedPromotionTransition(expected envelope.Transition) (envelope.Transition, bool, error) {
 	record, err := s.eventStore.Read(expected.ID)
-	if os.IsNotExist(err) {
+	if errors.Is(err, os.ErrNotExist) {
 		return envelope.Transition{}, false, nil
 	}
 	if err != nil {

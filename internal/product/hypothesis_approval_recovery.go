@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -245,10 +246,10 @@ func resumeHypothesisApproval(homePath string, in HypothesisApproveInput) (Hypot
 	_, committedErr := events.Read(committed.ID)
 	refusedID := stableID("tr_", "product_hypothesis_approve_refused", snapshot.ProductID, id)
 	refusedRecord, refusedErr := events.Read(refusedID)
-	if committedErr != nil && !os.IsNotExist(committedErr) {
+	if committedErr != nil && !errors.Is(committedErr, os.ErrNotExist) {
 		return approvalRecoveryRequired(result, committedErr)
 	}
-	if refusedErr != nil && !os.IsNotExist(refusedErr) {
+	if refusedErr != nil && !errors.Is(refusedErr, os.ErrNotExist) {
 		return approvalRecoveryRequired(result, refusedErr)
 	}
 	if refusedErr == nil {
@@ -286,7 +287,7 @@ func pendingHypothesisApproval(homePath string, candidate HypothesisCandidate) (
 	}
 	for _, id := range candidate.CommittedApprovalIDs {
 		_, err := events.Read(stableID("tr_", "product_hypothesis_approve", candidate.ProductID, id))
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return id, nil
 		}
 		if err != nil {

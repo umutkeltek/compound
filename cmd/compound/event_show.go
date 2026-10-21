@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -174,7 +175,7 @@ func printEventStoreRecord(stdout io.Writer, homePath, id, kind string, jsonOut 
 	}
 	record, err := store.Read(id)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("%s %q not found in event store", kind, id)
 		}
 		return err

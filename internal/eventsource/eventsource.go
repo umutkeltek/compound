@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -653,7 +654,7 @@ func ShowTrace(homePath, traceID string) (TraceDetail, error) {
 	}
 	record, err := store.Read(ref.String())
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return TraceDetail{}, fmt.Errorf("trace %q not found in event store (unknown trace id — list with `compound event list`)", ref.ID())
 		}
 		return TraceDetail{}, err

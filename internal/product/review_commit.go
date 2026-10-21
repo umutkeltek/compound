@@ -399,10 +399,10 @@ func settleReview(homePath string, snapshot reviewSnapshot, ref string) (ReviewR
 		return reviewRecovery(report, err)
 	}
 	refusalRecord, refusalErr := events.Read(refused.ID)
-	if commitErr != nil && !os.IsNotExist(commitErr) {
+	if commitErr != nil && !errors.Is(commitErr, os.ErrNotExist) {
 		return reviewRecovery(report, commitErr)
 	}
-	if refusalErr != nil && !os.IsNotExist(refusalErr) {
+	if refusalErr != nil && !errors.Is(refusalErr, os.ErrNotExist) {
 		return reviewRecovery(report, refusalErr)
 	}
 	witness := slices.Contains(candidate.CommittedReviewIDs, snapshot.Review.ID)

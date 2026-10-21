@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -53,7 +54,7 @@ func resolveSourceLifecycleEvidenceBinding(homePath string, manifest SourceManif
 	}
 	transitionRecord, err := store.Read(transitionID)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return SourceLifecycleEvidenceBinding{}, fmt.Errorf("evidence transition %s not found", transitionID)
 		}
 		return SourceLifecycleEvidenceBinding{}, fmt.Errorf("read evidence transition %s: %w", transitionID, err)
@@ -88,7 +89,7 @@ func resolveSourceLifecycleEvidenceBinding(homePath string, manifest SourceManif
 	}
 	receiptRecord, err := store.Read(receiptID)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return SourceLifecycleEvidenceBinding{}, fmt.Errorf("evidence receipt %s not found", receiptID)
 		}
 		return SourceLifecycleEvidenceBinding{}, fmt.Errorf("read evidence receipt %s: %w", receiptID, err)
