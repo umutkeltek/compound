@@ -34,17 +34,21 @@ type ClassRule struct {
 // decisions by SETTING THE ENVELOPE, not by being paged each time). A matching
 // unexpired grant allows only while the action stays inside its scope.
 type StandingGrant struct {
-	ID                   string   `yaml:"id" json:"id"`
-	Capability           string   `yaml:"capability" json:"capability"`
-	MutationClass        string   `yaml:"mutation_class" json:"mutation_class"`
-	Reversibility        string   `yaml:"reversibility,omitempty" json:"reversibility,omitempty"`
-	ReversibilityCeiling string   `yaml:"reversibility_ceiling,omitempty" json:"reversibility_ceiling,omitempty"`
-	BlastRadius          string   `yaml:"blast_radius,omitempty" json:"blast_radius,omitempty"`
-	TargetPath           string   `yaml:"target_path,omitempty" json:"target_path,omitempty"`
-	MaxUSD               *float64 `yaml:"max_usd,omitempty" json:"max_usd,omitempty"`
-	MaxTokens            *int     `yaml:"max_tokens,omitempty" json:"max_tokens,omitempty"`
-	Destination          string   `yaml:"destination,omitempty" json:"destination,omitempty"`
-	ExpiresAt            string   `yaml:"expires_at" json:"expires_at"` // RFC3339; empty = no expiry
+	ID                   string `yaml:"id" json:"id"`
+	Capability           string `yaml:"capability" json:"capability"`
+	MutationClass        string `yaml:"mutation_class" json:"mutation_class"`
+	Reversibility        string `yaml:"reversibility,omitempty" json:"reversibility,omitempty"`
+	ReversibilityCeiling string `yaml:"reversibility_ceiling,omitempty" json:"reversibility_ceiling,omitempty"`
+	BlastRadius          string `yaml:"blast_radius,omitempty" json:"blast_radius,omitempty"`
+	TargetPath           string `yaml:"target_path,omitempty" json:"target_path,omitempty"`
+	// DesktopSurface names an operator-desktop surface (operator_browser or
+	// foreground_gui) this grant lets a lane use. It is the only thing that
+	// lifts the desktop-surface hold; no other grant field does.
+	DesktopSurface string   `yaml:"desktop_surface,omitempty" json:"desktop_surface,omitempty"`
+	MaxUSD         *float64 `yaml:"max_usd,omitempty" json:"max_usd,omitempty"`
+	MaxTokens      *int     `yaml:"max_tokens,omitempty" json:"max_tokens,omitempty"`
+	Destination    string   `yaml:"destination,omitempty" json:"destination,omitempty"`
+	ExpiresAt      string   `yaml:"expires_at" json:"expires_at"` // RFC3339; empty = no expiry
 	// NotBefore is the RFC3339 instant the grant becomes eligible; empty =
 	// eligible from import. A grant is eligible only while not_before <= now < expires_at,
 	// so a December set can be imported now and activate itself.

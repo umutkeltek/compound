@@ -16,10 +16,11 @@ import (
 // dimension does.
 //
 // Only operator_browser and foreground_gui can take the desktop away from the
-// operator. On an unattended lane they are held (nobody is there to see the
-// takeover); where the operator is at the keyboard they stay automatic and
-// carry an obligation naming the surface. The isolated rungs and background_gui
-// never change a decision.
+// operator. They are held in EVERY posture, because the operator is at the
+// keyboard precisely when a takeover hurts most: an interactive posture says a
+// human is present, not that the human agreed to lose the screen. The one thing
+// that lifts the hold is a standing grant whose desktop_surface names that
+// surface. The isolated rungs and background_gui never change a decision.
 const (
 	DesktopSurfaceNone             = "none"
 	DesktopSurfaceIsolatedHeadless = "isolated_headless"
@@ -59,7 +60,36 @@ func DesktopSurfaceUnattendedReason(surface string) string {
 	return "desktop_surface:" + surface + ":unattended"
 }
 
-// DesktopSurfaceObligation is the duty an interactive desktop-taking action
+// DesktopSurfaceAttendedReason is the exact hold reason for a desktop-taking
+// action where the operator is (or may be) at the keyboard and no standing
+// grant names the surface. Like the unattended reason it is not clearable by
+// the autonomy envelope.
+func DesktopSurfaceAttendedReason(surface string) string {
+	return "desktop_surface:" + surface + ":attended"
+}
+
+// desktopSurfaceGranted reports whether an eligible standing grant names the
+// surface. Only an explicit desktop_surface match counts; capability, mutation
+// class and every other grant field are irrelevant to this lift.
+func desktopSurfaceGranted(grants []StandingGrant, surface string, now time.Time) bool {
+	for _, g := range grants {
+		if strings.TrimSpace(g.DesktopSurface) != surface {
+			continue
+		}
+		if g.ExpiresAt != "" {
+			if t, err := time.Parse(time.RFC3339, g.ExpiresAt); err != nil || now.After(t) {
+				continue
+			}
+		}
+		if _, inactive := grantNotYetActive(g, now); inactive {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// DesktopSurfaceObligation is the duty a granted desktop-taking action
 // carries. It names the surface so the receipt says which desktop was used.
 func DesktopSurfaceObligation(surface string) string {
 	return "desktop_surface:" + surface + ": operator-live surface; record it on the Receipt"

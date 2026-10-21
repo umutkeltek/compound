@@ -124,9 +124,9 @@ func TestClassifyToolActionDesktopSurface(t *testing.T) {
 
 // TestDesktopSurfacePostureMatrix pins the policy consequence under the shape
 // lanes actually run (an L3 envelope over the project): the same command is
-// held on an unattended lane and stays automatic, with an obligation naming the
-// surface, where the operator is at the keyboard. An empty posture is the
-// pre-existing caller and must keep the interactive answer.
+// held in every posture, with a posture-specific reason, unless a standing grant
+// names the surface. An empty posture is the pre-existing caller and is held as
+// attended.
 func TestDesktopSurfacePostureMatrix(t *testing.T) {
 	scope := t.TempDir()
 	cfg := envelopeConfig(scope)
@@ -155,17 +155,44 @@ func TestDesktopSurfacePostureMatrix(t *testing.T) {
 		t.Fatalf("unattended desktop hold must ride the intent's security floor, got %q", held.Intent.SecurityFloorOutcome)
 	}
 
+	// Falsifier: the operator at the keyboard is not consent to lose the screen.
 	for _, posture := range []string{PostureInteractive, ""} {
-		allowed := monitor(operatorBrowser, posture)
-		if allowed.Decision.Outcome != "allow_with_obligations" {
-			t.Fatalf("(operator_browser, %q) = %q, want allow_with_obligations: %+v",
-				posture, allowed.Decision.Outcome, allowed.Decision)
+		attended := monitor(operatorBrowser, posture)
+		if attended.Decision.Outcome != "hold" ||
+			!containsString(attended.Decision.Reasons, "desktop_surface:operator_browser:attended") {
+			t.Fatalf("(operator_browser, %q) = %+v, want hold with desktop_surface:operator_browser:attended", posture, attended.Decision)
 		}
-		if !obligationNames(allowed.Decision.Obligations, DesktopSurfaceOperatorBrowser) {
-			t.Fatalf("(operator_browser, %q) obligations do not name the surface: %+v", posture, allowed.Decision.Obligations)
+		if attended.Intent.SecurityFloorOutcome != "hold" {
+			t.Fatalf("attended desktop hold must ride the security floor, got %q", attended.Intent.SecurityFloorOutcome)
 		}
-		if containsSubstring(allowed.Intent.SecurityReasons, "desktop_surface:") {
-			t.Fatalf("interactive desktop action raised a desktop floor: %+v", allowed.Intent.SecurityReasons)
+	}
+	fg := monitor("peekaboo click --on B1", PostureInteractive)
+	if fg.Decision.Outcome != "hold" || !containsString(fg.Decision.Reasons, "desktop_surface:foreground_gui:attended") {
+		t.Fatalf("(foreground_gui, interactive) = %+v, want hold with attended reason", fg.Decision)
+	}
+
+	// Only a grant naming the surface lifts the hold, and only that surface.
+	grantCfg := func(surface string) Config {
+		c := envelopeConfig(scope)
+		c.StandingGrants = append(append([]StandingGrant{}, c.StandingGrants...),
+			StandingGrant{ID: "grant_desktop", DesktopSurface: surface})
+		return c
+	}
+	grantedMonitor := func(command, posture string, c Config) MonitoredAction {
+		return MonitorToolAction(ToolActionRequest{
+			WorkID: "work_desktop_surface", Actor: "fixture", Harness: "fixture", Tool: "Bash",
+			Cwd: filepath.Join(scope, "repo"), Arguments: map[string]any{"command": command},
+			ToolSchemaRevision: "builtin:bash", Posture: posture,
+		}, c, envelopeNow())
+	}
+	for _, posture := range []string{PostureInteractive, PostureUnattended} {
+		got := grantedMonitor(operatorBrowser, posture, grantCfg(DesktopSurfaceOperatorBrowser))
+		if got.Decision.Outcome != "allow_with_obligations" || !obligationNames(got.Decision.Obligations, DesktopSurfaceOperatorBrowser) {
+			t.Fatalf("(operator_browser granted, %q) = %+v, want allow_with_obligations naming the surface", posture, got.Decision)
+		}
+		other := grantedMonitor(operatorBrowser, posture, grantCfg(DesktopSurfaceForegroundGUI))
+		if other.Decision.Outcome != "hold" {
+			t.Fatalf("a foreground_gui grant must not lift operator_browser (%q): %+v", posture, other.Decision)
 		}
 	}
 
@@ -240,12 +267,12 @@ func TestDesktopSurfaceInteractiveNeverLowersAHold(t *testing.T) {
 	}
 }
 
-// TestUnattendedDesktopHoldSurvivesEnvelopeAndReevaluation is the depth test:
-// the live hook does not reuse the monitor's decision, it re-evaluates the
-// intent, and an L3 autonomy envelope clears ordinary holds inside its scope.
-// The same command under the same envelope must clear for an interactive
-// session and stay held for an unattended lane, on both paths.
-func TestUnattendedDesktopHoldSurvivesEnvelopeAndReevaluation(t *testing.T) {
+// TestDesktopHoldSurvivesEnvelopeAndReevaluation depth test: the live hook does
+// not reuse the monitor's decision, it re-evaluates the intent, and an L3
+// autonomy envelope clears ordinary holds inside its scope. The desktop hold
+// must survive both in every posture; only a grant naming the surface clears
+// it, on both paths.
+func TestDesktopHoldSurvivesEnvelopeAndReevaluation(t *testing.T) {
 	scope := t.TempDir()
 	cfg := envelopeConfig(scope)
 	request := func(posture string) ToolActionRequest {
@@ -260,30 +287,26 @@ func TestUnattendedDesktopHoldSurvivesEnvelopeAndReevaluation(t *testing.T) {
 			Posture:            posture,
 		}
 	}
+	for _, posture := range []string{PostureInteractive, PostureUnattended} {
+		got := MonitorToolAction(request(posture), cfg, envelopeNow())
+		if Allowed(got.Decision) {
+			t.Fatalf("envelope cleared the desktop hold (%q): %+v", posture, got.Decision)
+		}
+		if again := Evaluate(got.Intent, cfg, envelopeNow()); Allowed(again) {
+			t.Fatalf("re-evaluated intent lost the desktop hold (%q): %+v", posture, again)
+		}
+	}
 
-	interactive := MonitorToolAction(request(PostureInteractive), cfg, envelopeNow())
-	if !Allowed(interactive.Decision) {
-		t.Fatalf("envelope should clear the interactive operator_browser command: %+v", interactive.Decision)
+	granted := envelopeConfig(scope)
+	granted.StandingGrants = append(append([]StandingGrant{}, granted.StandingGrants...),
+		StandingGrant{ID: "grant_desktop", DesktopSurface: DesktopSurfaceOperatorBrowser})
+	got := MonitorToolAction(request(PostureInteractive), granted, envelopeNow())
+	if !Allowed(got.Decision) || !obligationNames(got.Decision.Obligations, DesktopSurfaceOperatorBrowser) {
+		t.Fatalf("grant naming the surface should clear it with an obligation: %+v", got.Decision)
 	}
-	if !obligationNames(interactive.Decision.Obligations, DesktopSurfaceOperatorBrowser) {
-		t.Fatalf("interactive envelope-cleared decision lost the surface obligation: %+v", interactive.Decision.Obligations)
-	}
-	// The hook re-evaluates the intent; the obligation must come back from it.
-	if again := Evaluate(interactive.Intent, cfg, envelopeNow()); !Allowed(again) ||
+	if again := Evaluate(got.Intent, granted, envelopeNow()); !Allowed(again) ||
 		!obligationNames(again.Obligations, DesktopSurfaceOperatorBrowser) {
-		t.Fatalf("re-evaluated interactive intent lost the surface obligation: %+v", again)
-	}
-
-	unattended := MonitorToolAction(request(PostureUnattended), cfg, envelopeNow())
-	if unattended.Decision.Outcome != "hold" {
-		t.Fatalf("autonomy envelope cleared an unattended operator_browser action: %+v", unattended.Decision)
-	}
-	reevaluated := Evaluate(unattended.Intent, cfg, envelopeNow())
-	if reevaluated.Outcome != "hold" {
-		t.Fatalf("re-evaluated intent lost the unattended desktop hold: %+v", reevaluated)
-	}
-	if !containsSubstring(reevaluated.Reasons, "desktop_surface:operator_browser:unattended") {
-		t.Fatalf("re-evaluated hold does not name the desktop surface: %+v", reevaluated.Reasons)
+		t.Fatalf("re-evaluated granted intent lost the clear or the obligation: %+v", again)
 	}
 }
 

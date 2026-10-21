@@ -2740,8 +2740,8 @@ func TestLoadHookFixtureForHomeEmptyStdinReturnsNoOp(t *testing.T) {
 // The live hook is where posture reaches the classifier: the harness name on
 // the hook command line resolves through the registry, and the resulting
 // intent is what the hook re-evaluates. An unattended lane's desktop-taking
-// command must carry the non-clearable floor; the operator's own session must
-// carry the surface without one.
+// command must carry the non-clearable floor; the operator's own session carries
+// it too (attended reason), since the screen is the operator's either way.
 func TestLiveIntentCarriesRegistryPostureIntoDesktopSurfaceHold(t *testing.T) {
 	t.Parallel()
 
@@ -2755,7 +2755,7 @@ func TestLiveIntentCarriesRegistryPostureIntoDesktopSurfaceHold(t *testing.T) {
 	for _, tc := range []struct {
 		harness   string
 		wantFloor bool
-	}{{"claude-minimax", true}, {"claude-code", false}} {
+	}{{"claude-minimax", true}, {"claude-code", true}} {
 		intents, err := liveActionIntents(tc.harness, in, cliTestNow)
 		if err != nil || len(intents) != 1 {
 			t.Fatalf("%s: liveActionIntents = %+v, %v", tc.harness, intents, err)
@@ -2764,7 +2764,11 @@ func TestLiveIntentCarriesRegistryPostureIntoDesktopSurfaceHold(t *testing.T) {
 		if intent.DesktopSurface != policy.DesktopSurfaceOperatorBrowser {
 			t.Fatalf("%s: intent desktop surface = %q", tc.harness, intent.DesktopSurface)
 		}
-		held := intent.SecurityFloorOutcome == "hold" && slices.Contains(intent.SecurityReasons, reason)
+		wantReason := reason
+		if tc.harness == "claude-code" {
+			wantReason = policy.DesktopSurfaceAttendedReason(policy.DesktopSurfaceOperatorBrowser)
+		}
+		held := intent.SecurityFloorOutcome == "hold" && slices.Contains(intent.SecurityReasons, wantReason)
 		if held != tc.wantFloor {
 			t.Fatalf("%s: desktop floor = %v, want %v (%+v)", tc.harness, held, tc.wantFloor, intent.SecurityReasons)
 		}

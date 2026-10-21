@@ -362,8 +362,13 @@ func MonitorToolAction(request ToolActionRequest, cfg Config, now time.Time) Mon
 	case ClassifierRiskSuspicious:
 		constrain("hold", "classifier marked content suspicious; classifier may raise burden but never grant")
 	}
-	if DesktopSurfaceTakesOperatorDesktop(classification.DesktopSurface) && postureUnattended(request.Posture) {
-		constrain("hold", DesktopSurfaceUnattendedReason(classification.DesktopSurface))
+	if DesktopSurfaceTakesOperatorDesktop(classification.DesktopSurface) &&
+		!desktopSurfaceGranted(cfg.StandingGrants, classification.DesktopSurface, now) {
+		if postureUnattended(request.Posture) {
+			constrain("hold", DesktopSurfaceUnattendedReason(classification.DesktopSurface))
+		} else {
+			constrain("hold", DesktopSurfaceAttendedReason(classification.DesktopSurface))
+		}
 	}
 	intent.SecurityFloorOutcome = securityFloor
 	intent.SecurityReasons = append([]string{}, securityReasons...)
