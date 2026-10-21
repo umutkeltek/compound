@@ -11,6 +11,7 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/home"
+	"compound/internal/policy"
 )
 
 // toolOutputDir is the legacy rebuildable location for externalized tool-output bodies.
@@ -39,8 +40,9 @@ type ToolOutputCapture struct {
 }
 
 // CaptureToolOutput externalizes a LARGE tool-output body (captured at the PostToolUse seam) into
-// private artifact custody and mints exactly ONE observed-class memory candidate carrying only a
-// compact pointer. The body never becomes a Claim, so it can never enter ambient recall or resolve as
+// private artifact custody. When adjudication policy would park or propose the pointer it also mints
+// exactly ONE observed-class memory candidate carrying only a compact pointer; when policy files it
+// terminal (the usual case: a bare content id) no candidate file is written. The body never becomes a Claim, so it can never enter ambient recall or resolve as
 // an index_hit; it is retrievable only via ReadToolOutput / `compound memory show-output`.
 //
 // It is idempotent: cid is content-addressed on the body (same body → same cid), and the candidate id
@@ -71,12 +73,6 @@ func (s *Store) CaptureToolOutputDetailed(tool, workID, body string, now time.Ti
 	pointer := fmt.Sprintf("tool-output:%s tool=%s bytes=%d custody=private", cid, tool, len(raw))
 
 	id := idFor("cand_", "tool-output", cid)
-	var existing Candidate
-	if rerr := candidates.ReadCandidate(s.home, candidates.Memory, id, &existing); rerr == nil {
-		return ToolOutputCapture{CID: cid, Pointer: pointer, Ref: ToolOutputPrivateRef(cid)}, nil // skip-if-exists: never reset an adjudication verdict
-	} else if !os.IsNotExist(rerr) {
-		return ToolOutputCapture{}, rerr
-	}
 
 	head := raw
 	if len(head) > toolOutputSnippetHeadBytes {
@@ -101,10 +97,22 @@ func (s *Store) CaptureToolOutputDetailed(tool, workID, body string, now time.Ti
 	if strings.TrimSpace(workID) != "" {
 		c.EvidenceRefs = []string{"work:" + workID}
 	}
-	// Route through admission so the pointer is BORN terminal (auto_file → no_promote): a bare-cid
-	// candidate can never be corroborated, and leaving it proposed strands it in the durable-memory
-	// queue via decay_park (2,580 accumulated by 2026-07-24; see find_ab52cffb9bf5).
-	c, _ = AdmitCandidateAt(c, now)
+	// Ask the adjudication policy (single owner) what this pointer is. A pointer the policy files
+	// terminal (auto_file → no_promote) is a dead row by construction: it can never be corroborated
+	// or promoted, and the private artifact already holds the body. Writing it only fills the inbox
+	// (≈3,000 files/day by 2026-10-21), so no file is written at all. Any other disposition (park,
+	// operator_required) still writes the candidate exactly as before.
+	c, decision := AdmitCandidateAt(c, now)
+	if decision.Disposition == policy.DispositionAutoFile {
+		return ToolOutputCapture{CID: cid, Pointer: pointer, Ref: ToolOutputPrivateRef(cid)}, nil
+	}
+	var existing Candidate
+	if rerr := candidates.ReadCandidate(s.home, candidates.Memory, id, &existing); rerr == nil {
+		return ToolOutputCapture{CID: cid, Pointer: pointer, Ref: ToolOutputPrivateRef(cid)}, nil // skip-if-exists: never reset an adjudication verdict
+	} else if !os.IsNotExist(rerr) {
+		return ToolOutputCapture{}, rerr
+	}
+
 	if err = candidates.WriteCandidate(s.home, candidates.Memory, id, &c); err != nil {
 		return ToolOutputCapture{}, err
 	}

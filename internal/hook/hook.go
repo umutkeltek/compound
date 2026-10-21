@@ -2085,8 +2085,9 @@ func postToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, err
 		ev.SideEffects = append(ev.SideEffects, effect)
 	}
 	// C3: a tool body at or beyond the whole context budget must never flood the window. Externalize
-	// it to the rebuildable, content-addressed blob store and mint ONE observed-class candidate; only
-	// the compact pointer flows back into the summary — never the body. Below-threshold output and
+	// it to private content-addressed custody; a candidate is minted only when adjudication policy would
+	// park or propose the pointer (never for a filed-terminal one). Only the compact pointer flows back into the
+	// summary — never the body. Below-threshold output and
 	// homeless invocations keep the byte-identical legacy path.
 	if body := fx.ToolOutput; len(body) > MaxContextChars && strings.TrimSpace(deps.HomePath) != "" {
 		store, err := mem.Open(deps.HomePath)
@@ -2099,7 +2100,7 @@ func postToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, err
 		}
 		ev.SideEffects = append(ev.SideEffects, capture.Ref)
 		ev.OutputRef = capture.Ref
-		summary = fmt.Sprintf("recorded tool event: %s — externalized %d-byte output as observed candidate (%s); retrieve via `compound memory show-output %s`", orDash(fx.Tool), len(body), capture.Pointer, capture.CID)
+		summary = fmt.Sprintf("recorded tool event: %s — externalized %d-byte output to private custody (%s); retrieve via `compound memory show-output %s`", orDash(fx.Tool), len(body), capture.Pointer, capture.CID)
 	}
 	return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: summary}, nil
 }

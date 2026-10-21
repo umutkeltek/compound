@@ -60,34 +60,21 @@ func TestLargeToolOutputExternalizedAsObservedNotAmbient(t *testing.T) {
 		t.Fatalf("summary must carry the pointer cid, got %q", res.Summary)
 	}
 
-	// (b) Exactly one observed candidate with the tool-output source-trace and no promotion basis.
+	// (b) Policy files a bare-cid pointer terminal (auto_file -> no_promote), so NO candidate file
+	// is written: a dead row can never be corroborated and only fills the inbox. The body is still
+	// externalized (checked below via OutputRef + private custody).
 	candDir := filepath.Join(dir, "inbox", "memory-candidates")
-	entries, err := os.ReadDir(candDir)
-	if err != nil {
+	if entries, err := os.ReadDir(candDir); err == nil {
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".json") {
+				t.Fatalf("policy-terminal tool-output pointer wrote a candidate file: %s", e.Name())
+			}
+		}
+	} else if !os.IsNotExist(err) {
 		t.Fatalf("read candidate inbox: %v", err)
 	}
-	var cand mem.Candidate
-	found := 0
-	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		var c mem.Candidate
-		if err := candidates.ReadCandidate(dir, candidates.Memory, strings.TrimSuffix(e.Name(), ".json"), &c); err != nil {
-			t.Fatalf("read candidate %s: %v", e.Name(), err)
-		}
-		if c.SourceTraceRef == "tool-output:"+cid {
-			cand = c
-			found++
-		}
-	}
-	if found != 1 {
-		t.Fatalf("want exactly 1 observed tool-output candidate, got %d", found)
-	}
-	// Pointer candidates are BORN no_promote (auto_file at admission): a bare-cid pointer can
-	// never be corroborated, so it must never enter the proposed/decay-park queue.
-	if cand.Derivation != "observed" || cand.State != "no_promote" || cand.PromotionBasis != "" {
-		t.Fatalf("candidate not observed/no_promote/no-basis: derivation=%q state=%q basis=%q", cand.Derivation, cand.State, cand.PromotionBasis)
+	if _, err := store.ReadToolOutput(cid); err != nil {
+		t.Fatalf("body must still be retrievable from private custody: %v", err)
 	}
 
 	if res.Event.OutputRef != mem.ToolOutputPrivateRef(cid) {
@@ -146,7 +133,7 @@ func TestLargeToolOutputExternalizedAsObservedNotAmbient(t *testing.T) {
 		t.Fatalf("read round-trip mismatch: %d vs %d bytes", len(got), len(body))
 	}
 
-	// (f) Re-running the identical PostToolUse is idempotent: still exactly one candidate.
+	// (f) Re-running the identical PostToolUse is idempotent: still no candidate file (policy-terminal pointer).
 	if _, err := Run(Fixture{
 		Hook: "post-tool-use", Harness: "claude_code", Cwd: "/repo/x", Tool: "Bash",
 		WorkID: "work_1177cb550af3", ToolOutput: body,
@@ -160,7 +147,62 @@ func TestLargeToolOutputExternalizedAsObservedNotAmbient(t *testing.T) {
 			n++
 		}
 	}
-	if n != 1 {
-		t.Fatalf("re-run must be idempotent; want 1 candidate, got %d", n)
+	if n != 0 {
+		t.Fatalf("re-run must be idempotent; want 0 candidates, got %d", n)
+	}
+}
+
+// TestLargeToolOutputCandidateOnlyWhenPolicyWouldQueueIt drives the same live post-tool-use path
+// twice. A normal tool pointer is filed terminal by adjudication policy, so it writes no
+// candidate file. A pointer that policy would park (cheap-lane provenance) still creates exactly
+// the candidate it created before: the write decision comes from the real policy, not a copy.
+func TestLargeToolOutputCandidateOnlyWhenPolicyWouldQueueIt(t *testing.T) {
+	dir := t.TempDir()
+	if err := home.Init(dir, "test", fixedNow); err != nil {
+		t.Fatalf("home init: %v", err)
+	}
+	deps := baseDeps()
+	deps.HomePath = dir
+	inbox := filepath.Join(dir, "inbox", "memory-candidates")
+	names := func() []string {
+		entries, err := os.ReadDir(inbox)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			t.Fatalf("read inbox: %v", err)
+		}
+		var out []string
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".json") {
+				out = append(out, strings.TrimSuffix(e.Name(), ".json"))
+			}
+		}
+		return out
+	}
+	run := func(tool, body string) {
+		t.Helper()
+		if _, err := Run(Fixture{Hook: "post-tool-use", Harness: "claude_code", Cwd: "/repo/x", Tool: tool, ToolOutput: body}, deps, fixedNow); err != nil {
+			t.Fatalf("post-tool-use %s: %v", tool, err)
+		}
+	}
+
+	run("Bash", strings.Repeat("filed-terminal ", 20000))
+	if got := names(); len(got) != 0 {
+		t.Fatalf("policy no_promote pointer wrote candidate files %v, want none", got)
+	}
+
+	body := strings.Repeat("parked-by-policy ", 20000)
+	run("cheap-lane", body)
+	got := names()
+	if len(got) != 1 {
+		t.Fatalf("policy-parked pointer wrote %d candidate files, want 1", len(got))
+	}
+	var c mem.Candidate
+	if err := candidates.ReadCandidate(dir, candidates.Memory, got[0], &c); err != nil {
+		t.Fatalf("read candidate: %v", err)
+	}
+	if c.State != "parked" || c.SourceTraceRef != "tool-output:"+mem.ToolOutputCID([]byte(body)) || c.PromotionBasis != "" {
+		t.Fatalf("parked pointer candidate changed shape: state=%q trace=%q basis=%q", c.State, c.SourceTraceRef, c.PromotionBasis)
 	}
 }

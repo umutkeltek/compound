@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/policy"
 )
 
 // TestCaptureToolOutputRoundTripObservedNeverLedger proves the C3 contract at the mem seam:
@@ -77,41 +78,11 @@ func TestCaptureToolOutputRoundTripObservedNeverLedger(t *testing.T) {
 		t.Fatalf("ledger digest changed: before=%s after=%s", before, after)
 	}
 
-	// Minted candidate is observed-class, BORN TERMINAL (no_promote), no promotion basis.
-	// A bare-cid pointer can never be corroborated; leaving it proposed strands it in the
-	// durable-memory queue via decay_park (2,580 accumulated by 2026-07-24, find_ab52cffb9bf5).
+	// Policy files a bare-cid pointer terminal (auto_file -> no_promote); a dead row is never
+	// written. The body stays retrievable from private custody (checked above).
 	id := idFor("cand_", "tool-output", cid)
-	var c Candidate
-	if err := candidates.ReadCandidate(home, candidates.Memory, id, &c); err != nil {
-		t.Fatalf("read candidate: %v", err)
-	}
-	if c.Derivation != DerivationObserved {
-		t.Errorf("derivation = %q, want %q", c.Derivation, DerivationObserved)
-	}
-	if c.State != "no_promote" {
-		t.Errorf("state = %q, want no_promote (pointer candidates are born filed, never queued)", c.State)
-	}
-	if !strings.Contains(c.Reason, "pointer") {
-		t.Errorf("reason = %q, want the pointer auto-file reason", c.Reason)
-	}
-	if c.PromotionBasis != "" {
-		t.Errorf("promotion_basis = %q, want empty (never auto-promotes)", c.PromotionBasis)
-	}
-	if c.ProvenanceLane != "Bash" {
-		t.Errorf("provenance_lane = %q, want Bash", c.ProvenanceLane)
-	}
-	if c.SourceTraceRef != "tool-output:"+cid {
-		t.Errorf("source_trace_ref = %q, want tool-output:%s", c.SourceTraceRef, cid)
-	}
-	if c.SnippetHash == "" {
-		t.Error("snippet_hash must be set (bounded head snippet hash)")
-	}
-	if c.Qualifiers["custody"] != "private_artifact" {
-		t.Errorf("custody qualifier = %q, want private_artifact", c.Qualifiers["custody"])
-	}
-	raw, _ := os.ReadFile(filepath.Join(home, "inbox", "memory-candidates", id+".json"))
-	if strings.Contains(string(raw), body[:200]) {
-		t.Error("candidate record leaked the tool-output body")
+	if _, err := os.Stat(filepath.Join(home, "inbox", "memory-candidates", id+".json")); !os.IsNotExist(err) {
+		t.Fatalf("policy-terminal pointer wrote a candidate file: %v", err)
 	}
 
 	// Never ambient: the body is NOT a Claim, so it can never enter recall or resolve as index_hit.
@@ -129,35 +100,96 @@ func TestCaptureToolOutputRoundTripObservedNeverLedger(t *testing.T) {
 	if len(ledgerClaims) != 0 {
 		t.Fatalf("capture must not append ledger claims; got %d", len(ledgerClaims))
 	}
+}
 
-	// Idempotent: an in-flight adjudication verdict is never reset by re-surfacing the same body.
-	c.State = "parked"
+// TestCaptureToolOutputQueuedPointerStillMintsCandidate proves the candidate shape is unchanged for a
+// pointer that adjudication policy would queue (cheap-lane provenance -> decay_park): observed,
+// no promotion basis, bounded snippet hash, no body leak, and skip-if-exists never resets a verdict.
+func TestCaptureToolOutputQueuedPointerStillMintsCandidate(t *testing.T) {
+	home := t.TempDir()
+	s, err := Open(home)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	now := time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC)
+	body := strings.Repeat("ABCDEFGHIJ", 30000)
+	cid, _, err := s.CaptureToolOutput("cheap-lane", "work_1177cb550af3", body, now)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	id := idFor("cand_", "tool-output", cid)
+	var c Candidate
+	if err := candidates.ReadCandidate(home, candidates.Memory, id, &c); err != nil {
+		t.Fatalf("read candidate: %v", err)
+	}
+	if c.Derivation != DerivationObserved {
+		t.Errorf("derivation = %q, want %q", c.Derivation, DerivationObserved)
+	}
+	if c.State != "parked" || c.ExpiresAt == "" {
+		t.Errorf("state=%q expires=%q, want parked with expiry (policy decay_park)", c.State, c.ExpiresAt)
+	}
+	if c.PromotionBasis != "" {
+		t.Errorf("promotion_basis = %q, want empty (never auto-promotes)", c.PromotionBasis)
+	}
+	if c.ProvenanceLane != "cheap-lane" || c.Entity != "cheap-lane" || c.Predicate != "produced_tool_output" || c.Object != cid {
+		t.Errorf("identity fields changed: %+v", c)
+	}
+	if c.SourceTraceRef != "tool-output:"+cid {
+		t.Errorf("source_trace_ref = %q, want tool-output:%s", c.SourceTraceRef, cid)
+	}
+	if c.SnippetHash == "" {
+		t.Error("snippet_hash must be set (bounded head snippet hash)")
+	}
+	if c.Qualifiers["custody"] != "private_artifact" {
+		t.Errorf("custody qualifier = %q, want private_artifact", c.Qualifiers["custody"])
+	}
+	if len(c.EvidenceRefs) != 1 || c.EvidenceRefs[0] != "work:work_1177cb550af3" {
+		t.Errorf("evidence_refs = %v", c.EvidenceRefs)
+	}
+	raw, _ := os.ReadFile(filepath.Join(home, "inbox", "memory-candidates", id+".json"))
+	if strings.Contains(string(raw), body[:200]) {
+		t.Error("candidate record leaked the tool-output body")
+	}
+
+	// Skip-if-exists: an in-flight adjudication verdict is never reset by re-surfacing the same body.
+	c.State = "rejected"
 	if err := candidates.WriteCandidate(home, candidates.Memory, id, &c); err != nil {
 		t.Fatalf("rewrite candidate: %v", err)
 	}
-	cid2, _, err := s.CaptureToolOutput("Bash", "work_1177cb550af3", body, now)
-	if err != nil {
+	if _, _, err := s.CaptureToolOutput("cheap-lane", "work_1177cb550af3", body, now); err != nil {
 		t.Fatalf("recapture: %v", err)
-	}
-	if cid2 != cid {
-		t.Fatalf("idempotent cid mismatch: %q vs %q", cid2, cid)
 	}
 	var c2 Candidate
 	if err := candidates.ReadCandidate(home, candidates.Memory, id, &c2); err != nil {
 		t.Fatalf("read candidate after recapture: %v", err)
 	}
-	if c2.State != "parked" {
-		t.Errorf("recapture reset adjudication verdict: state = %q, want parked (skip-if-exists)", c2.State)
+	if c2.State != "rejected" {
+		t.Errorf("recapture reset adjudication verdict: state = %q, want rejected", c2.State)
 	}
-	entries, _ := os.ReadDir(filepath.Join(home, "inbox", "memory-candidates"))
-	n := 0
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".json") {
-			n++
+}
+
+// TestCaptureToolOutputWriteFollowsRealPolicy ties the write decision to policy.ResolveAdjudication
+// for the exact input the pointer presents: a candidate file exists iff policy does NOT auto-file it.
+// There is no second copy of the rule here, so changing the policy flips this test.
+func TestCaptureToolOutputWriteFollowsRealPolicy(t *testing.T) {
+	now := time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC)
+	for _, tool := range []string{"Bash", "Read", "mcp__x__y", "cheap-lane", "cheap_lane"} {
+		home := t.TempDir()
+		s, err := Open(home)
+		if err != nil {
+			t.Fatalf("open: %v", err)
 		}
-	}
-	if n != 1 {
-		t.Fatalf("want exactly one memory candidate, got %d", n)
+		body := strings.Repeat(tool+" ", 20000)
+		cid, _, err := s.CaptureToolOutput(tool, "", body, now)
+		if err != nil {
+			t.Fatalf("capture %s: %v", tool, err)
+		}
+		disp := policy.ResolveAdjudication(policy.AdjudicationInput{ProvenanceLane: tool, Object: cid})
+		_, statErr := os.Stat(filepath.Join(home, "inbox", "memory-candidates", idFor("cand_", "tool-output", cid)+".json"))
+		wrote := statErr == nil
+		if wrote == (disp.Kind == policy.DispositionAutoFile) {
+			t.Errorf("tool %s: policy=%s but candidate written=%v", tool, disp.Kind, wrote)
+		}
 	}
 }
 
