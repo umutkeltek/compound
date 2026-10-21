@@ -13,6 +13,7 @@ import (
 	"compound/internal/policy"
 	schedulecli "compound/internal/schedule"
 	terminalcli "compound/internal/terminal/cli"
+	"compound/internal/tooltopology"
 )
 
 type compoundCommand struct {
@@ -211,6 +212,7 @@ func compoundCommandRegistry() map[string]compoundCommand {
 			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead),
 		"notice": heldCommand(func(args []string) { noticecli.RunWith(args, noticeReviewQueue) }).
 			withSubcommandAdmission("flush", policy.FirstPartyCommandGoverned),
+		"doors": governedCommand(tooltopology.RunDoors).withSubcommandAdmission("show", policy.FirstPartyCommandRead).withSubcommandAdmission("serve", policy.FirstPartyCommandRead),
 		"schedule": governedCommand(schedulecli.Run).
 			withSubcommandAdmission("list", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("show", policy.FirstPartyCommandRead).

@@ -31,6 +31,7 @@ import (
 	"compound/internal/hookplan"
 	"compound/internal/mem"
 	"compound/internal/policy"
+	"compound/internal/tooltopology"
 	"compound/internal/work"
 )
 
@@ -621,12 +622,26 @@ func sessionStart(name string, fx Fixture, deps Deps, now time.Time) (Result, er
 		Produced:  []envelope.Envelope{&req, &built.Contract, &built.Pack},
 		Summary:   built.Pack.SummaryMD,
 		Injection: injection,
+		// The door map rides the live session-start payload: it is the one seam every
+		// served harness (claude_code and its minimax/zai launchers, codex, opencode)
+		// already runs. It is a cached observation, served as a visible notice when
+		// missing or stale, never as silence.
+		ContextOutput: sessionStartDoorMap(fx, deps, now),
 		Context: &ContextObservation{
 			Input:            built.Input,
 			Pack:             built.Pack,
 			RetrievalLatency: built.RetrievalLatency,
 		},
 	}, nil
+}
+
+// sessionStartDoorMap serves the cached door map on live session starts only; fixture
+// replays stay byte-identical so recorded fixtures do not depend on machine state.
+func sessionStartDoorMap(fx Fixture, deps Deps, now time.Time) string {
+	if !fx.Live || strings.TrimSpace(deps.HomePath) == "" {
+		return ""
+	}
+	return tooltopology.ServeDoorMap(deps.HomePath, now, tooltopology.DefaultDoorMapTTL)
 }
 
 func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {

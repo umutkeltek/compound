@@ -158,6 +158,23 @@ The exact credential-slot lock spans read, replacement, and proof publication. B
 
 `compound browser provider-pricing` pins `jev-1.13.0` and its per-request ceiling in governed browser settings; harness environment cannot override the registered credential or priced model. TypeSafe's published Jev 1.13 price is $0.042 per million input tokens with a 64k-token maximum request, or at most $0.002688 per request; the configured $0.003 ceiling leaves margin. This price admission still requires a separate per-task budget and bounded `browser.goal.jev` financial standing grant. See [TypeSafe models](https://docs.typesafe.ai/models) for the external pricing evidence, which must be revisited if the pinned model or terms change.
 
+## Door map: one cached snapshot served at session start
+
+Every harness used to rediscover its doors (which tools work, which MCP servers exist, which harness
+version is installed, which model each launcher routes to). `compound doors refresh` now observes that
+once into `COMPOUND_HOME/observed/door-map/snapshot.json` (previous snapshot kept as `previous.json`), and
+the live `session-start` hook appends a block of at most 1500 bytes to the harness payload. Every served
+harness already runs that hook, so no per-harness pack is needed.
+
+- Observe, never execute: inputs are a door-doctor JSON report (`--doctor-json` or
+  `COMPOUND_DOOR_DOCTOR_JSON`), MCP config files (server names only, never env/args/URLs), harness binaries
+  resolved on PATH (version inferred from the install path or package metadata, never by running them), and
+  the launch owner's lane projection (`COMPOUND_LANE_PROJECTION_DIR`).
+- Freshness is explicit: the block states when doors were checked. Past a 24h TTL it withholds all door
+  statuses and says how to refresh. A missing or unreadable snapshot is announced, not omitted.
+- `changed_since_last` is the diff against the previous snapshot; `recent_changes` rolls it forward 72h.
+- The snapshot is evidence, not truth. Fixture replays of session-start do not include it.
+
 ## The execution handshake
 
 A harness is not a model; a provider is not a transport; native inference effort is not orchestration; a route
