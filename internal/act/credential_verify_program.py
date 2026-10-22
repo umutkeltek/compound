@@ -458,7 +458,10 @@ class NativeRuntime:
         code, out, err = self.processes.complete(child, b"SELECT 1;\n")
         expected = ('psql: error: connection to server at "127.0.0.1", port 5432 failed: '
                     'FATAL:  password authentication failed for user "' + role["name"] + '"\n').encode("ascii")
-        require(code == 2 and not out and err == expected)
+        # libpq may retry without TLS after a rejected TLS authentication.
+        # Its second exact rejection omits the psql prefix; no other output is valid.
+        fallback_pair = expected + expected[len(b"psql: error: "):]
+        require(code == 2 and not out and err in (expected, fallback_pair))
 
 
 def run_protocol(r, runtime, generate=secrets.token_urlsafe):

@@ -386,6 +386,51 @@ class PureProtocolTests(unittest.TestCase):
         with patch.object(program.os, "open", side_effect=fake_open), patch.object(program.os, "fstat", return_value=bad), patch.object(program.os, "close"), self.assertRaises(program.Refusal):
             program.trusted_open(r["file"]["path"], secret=True)
 
+    def test_negative_auth_accepts_only_exact_libpq_single_or_fallback_rejections(self):
+        r = request()
+
+        class FakeProcesses:
+            result = None
+
+            def spawn(self, argv, env):
+                self.assert_password_not_in_argv = env["PGPASSWORD"] not in argv
+                return object()
+
+            def complete(self, child, payload):
+                assert payload == b"SELECT 1;\n"
+                return self.result
+
+        processes = FakeProcesses()
+        runtime = program.NativeRuntime(processes)
+        for role in r["roles"]:
+            expected = (
+                'psql: error: connection to server at "127.0.0.1", port 5432 failed: '
+                'FATAL:  password authentication failed for user "' + role["name"] + '"\n'
+            ).encode("ascii")
+            second = expected[len(b"psql: error: "):]
+            pair = expected + second
+            for diagnostic in (expected, pair):
+                with self.subTest(role=role["name"], accepted=diagnostic):
+                    processes.result = (2, b"", diagnostic)
+                    runtime.negative(r, role, "fixture-wrong-password")
+                    self.assertTrue(processes.assert_password_not_in_argv)
+            rejected = (
+                (0, b"", pair),
+                (1, b"", pair),
+                (2, b"unexpected\n", pair),
+                (2, b"", expected + expected),
+                (2, b"", pair + second),
+                (2, b"", pair + b"other error\n"),
+                (2, b"", expected + b"connection refused\n"),
+                (2, b"", pair.replace(role["name"].encode("ascii"), b"other_role", 1)),
+                (2, b"", pair.rstrip(b"\n")),
+            )
+            for result in rejected:
+                with self.subTest(role=role["name"], rejected=result):
+                    processes.result = result
+                    with self.assertRaises(program.Refusal):
+                        runtime.negative(r, role, "fixture-wrong-password")
+
     def test_explicit_password_failure_is_required_network_or_generic_errors_refuse(self):
         r = request()
         role = r["roles"][0]

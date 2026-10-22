@@ -192,3 +192,14 @@ roles retain their exact original verifiers and revisions after client death.
 Durable original custody reconciles old/old through a separately approved owner;
 missing PREIMAGE conservatively holds. The explicit-close primitive test proves
 graceful ROLLBACK only and is not counted as abrupt client-death evidence.
+
+## Exact negative-authentication responses
+
+A wrong-password probe must exit 2, emit no stdout, and return either the exact
+role-specific psql password-rejection line or that line followed by the same
+connection rejection without the psql prefix. The second form is libpq's TLS
+fallback response. Extra lines, another role, generic errors, successful exits
+and any stdout still refuse. TLS and PostgreSQL configuration remain unchanged.
+The corrected verifier retains actual positive and negative authentications.
+Earlier failed plans and verifier source remain historical evidence; a new
+alignment request must bind a fresh failure from the currently installed verifier.
