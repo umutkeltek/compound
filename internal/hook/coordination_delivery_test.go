@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/authority"
 	"compound/internal/envelope"
 	"compound/internal/eventstore"
 	"compound/internal/harness"
@@ -93,6 +94,7 @@ func TestLiveHookConsumesLifecycleDeliveryWithoutReadingArtifactBody(t *testing.
 		Hook:    "pre-tool-use",
 		Harness: "codex",
 		Live:    true,
+		Cwd:     hermeticHookRepo(t),
 		WorkID:  item.ID,
 		Action:  &toolAction,
 		CoordinationDelivery: &CoordinationDeliveryInput{
@@ -258,7 +260,7 @@ func TestOverBudgetInterruptHoldsPreToolUseExecution(t *testing.T) {
 	toolAction.Action = "write_file"
 	toolAction.Target = envelope.ActionTarget{Kind: "file", Path: "README.md"}
 	result, err := Run(Fixture{
-		Hook: "pre-tool-use", Harness: "codex", Live: true, WorkID: item.ID, Action: &toolAction,
+		Hook: "pre-tool-use", Harness: "codex", Live: true, Cwd: hermeticHookRepo(t), WorkID: item.ID, Action: &toolAction,
 		CoordinationDelivery: &CoordinationDeliveryInput{
 			CursorKey: "interrupt-overflow",
 			Recipient: hookplan.DeliveryRecipient{
@@ -427,6 +429,17 @@ func TestHookDeliveryPublicationFaultsLeaveInterruptRetryableExactlyOnce(t *test
 			if _, err := os.Stat(filepath.Join(testCase.homePath, retry.CoordinationDelivery.ReportRef)); err != nil {
 				t.Fatalf("retry left dangling delivery report ref: %v", err)
 			}
+			// The retry reuses the fault run's hook_ id (pinned now), so its
+			// source-control evidence must come from the fixture's private repo:
+			// a snapshot of the process cwd drifts between runs and conflicts.
+			snapshot, err := authority.ReadGitSnapshot(filepath.Join(testCase.repo, "README.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if snapshot.GitRoot != testCase.repo || !containsString(retry.Event.SideEffects, snapshot.EvidenceReference()) {
+				t.Fatalf("retry source-control evidence not bound to fixture repo %s: root=%s side_effects=%v",
+					testCase.repo, snapshot.GitRoot, retry.Event.SideEffects)
+			}
 
 			onceMore, err := Run(testCase.fixture, Deps{
 				Registry: harness.DefaultRegistry(), HomePath: testCase.homePath, Store: testCase.store,
@@ -540,15 +553,34 @@ func eventSegmentContaining(t *testing.T, homePath, eventID string) (string, []b
 
 type hookInterruptCase struct {
 	homePath string
+	repo     string
 	store    *work.Store
 	now      time.Time
 	event    work.CollaborationEvent
 	fixture  Fixture
 }
 
+// hermeticHookRepo returns the symlink-resolved root of a private git repository
+// for a live pre-tool-use fixture. A relative action target with no fixture cwd
+// resolves against the TEST PROCESS cwd, so the source-control evidence ref in the
+// hook event would bind to whatever repository the test binary runs in (the
+// proof-check battery's sealed copy, dirtied by concurrent gates). A fault run and
+// its retry share a pinned `now`, hence the same hook_ id: any drift in that ref
+// between the two runs is an id conflict. The repository under test must be one
+// nothing else touches.
+func hermeticHookRepo(t *testing.T) string {
+	t.Helper()
+	repo, err := filepath.EvalSymlinks(initHookGitRepo(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return repo
+}
+
 func newHookInterruptCase(t *testing.T, key string) hookInterruptCase {
 	t.Helper()
 	homePath := t.TempDir()
+	repo := hermeticHookRepo(t)
 	now := time.Date(2026, 7, 24, 15, 0, 0, 0, time.UTC)
 	if err := home.Init(homePath, "test", now); err != nil {
 		t.Fatal(err)
@@ -610,9 +642,9 @@ func newHookInterruptCase(t *testing.T, key string) hookInterruptCase {
 	toolAction.Action = "write_file"
 	toolAction.Target = envelope.ActionTarget{Kind: "file", Path: "README.md"}
 	return hookInterruptCase{
-		homePath: homePath, store: store, now: now, event: recorded.Event,
+		homePath: homePath, repo: repo, store: store, now: now, event: recorded.Event,
 		fixture: Fixture{
-			Hook: "pre-tool-use", Harness: "codex", Live: true, WorkID: item.ID, Action: &toolAction,
+			Hook: "pre-tool-use", Harness: "codex", Live: true, Cwd: repo, WorkID: item.ID, Action: &toolAction,
 			CoordinationDelivery: &CoordinationDeliveryInput{
 				CursorKey: "interrupt-" + key,
 				Recipient: hookplan.DeliveryRecipient{
