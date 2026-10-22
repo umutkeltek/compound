@@ -114,6 +114,10 @@ func (s *Store) RecordReceiptedAction(workID string, in ReceiptedActionInput, no
 }
 
 func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInput, authorityAt, completedAt time.Time, pendingReplaysAuthority bool) (ReceiptedActionResult, error) {
+	return s.recordReceiptedActionWithPublicationLocked(workID, in, authorityAt, completedAt, pendingReplaysAuthority, nil)
+}
+
+func (s *Store) recordReceiptedActionWithPublicationLocked(workID string, in ReceiptedActionInput, authorityAt, completedAt time.Time, pendingReplaysAuthority bool, publication *privatePublicationCompletion) (ReceiptedActionResult, error) {
 	var out ReceiptedActionResult
 	if in.OutcomePending {
 		return out, fmt.Errorf("receipted action outcome is not sealed")
@@ -356,7 +360,18 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 		return out, err
 	}
 
+	if publication != nil {
+		if err := s.validatePrivatePublicationCompletion(w, publication.request, in, authorityAt); err != nil {
+			return out, err
+		}
+	}
 	workLinked, historicalReplay, err := s.preflightReceiptedActionWorkLink(w, action.ID, decision.ID)
+	if err != nil && publication != nil {
+		if baselineErr := s.validatePrivatePublicationPrelink(w, publication.request, authorityAt); baselineErr != nil {
+			return out, fmt.Errorf("private publication pre-admission link: %w", baselineErr)
+		}
+		workLinked, historicalReplay, err = false, false, nil
+	}
 	if err != nil {
 		return out, err
 	}
@@ -375,6 +390,12 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 	events, err := s.admissionEventsFor(workID)
 	if err != nil {
 		return out, fmt.Errorf("receipted action %s event preflight: %w", action.ID, err)
+	}
+	if publication != nil {
+		events, err = s.privatePublicationCompletionEvents(w, publication.request, in, authorityAt, expectedEvent, events)
+		if err != nil {
+			return out, err
+		}
 	}
 	eventPresent, err := preflightReceiptedActionEvent(events, expectedEvent)
 	if err != nil {

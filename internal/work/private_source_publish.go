@@ -332,7 +332,7 @@ func (s *Store) ApplyPrivateSourcePublication(ctx context.Context, request Priva
 			return out, fmt.Errorf("publication reservation action mismatch")
 		}
 		if !pending.OutcomePending {
-			result, err := s.RecordReservedReceiptedAction(request.WorkID, pending, authorizedAt)
+			result, err := s.recordReservedReceiptedAction(request.WorkID, pending, authorizedAt, &privatePublicationCompletion{request: request})
 			out.Status, out.Action = "receipted", &result
 			return out, err
 		}
@@ -353,6 +353,9 @@ func (s *Store) ApplyPrivateSourcePublication(ctx context.Context, request Priva
 	if err := s.validatePrivatePublication(ctx, request, now, false); err != nil {
 		return out, err
 	}
+	if err := s.preflightPrivatePublicationPrelink(request, now); err != nil {
+		return out, err
+	}
 	decision, err := s.authorizePrivatePublication(request, now)
 	if err != nil {
 		return out, err
@@ -364,7 +367,10 @@ func (s *Store) ApplyPrivateSourcePublication(ctx context.Context, request Priva
 		if err := s.recheckPrivatePublication(request, decision, time.Now()); err != nil {
 			return err
 		}
-		return s.validatePrivatePublication(ctx, request, time.Now(), false)
+		if err := s.validatePrivatePublication(ctx, request, time.Now(), false); err != nil {
+			return err
+		}
+		return s.preflightPrivatePublicationPrelink(request, now)
 	})
 	if err != nil {
 		return out, err
@@ -374,6 +380,9 @@ func (s *Store) ApplyPrivateSourcePublication(ctx context.Context, request Priva
 		return out, err
 	}
 	if err := s.validatePrivatePublication(ctx, request, time.Now(), false); err != nil {
+		return out, err
+	}
+	if err := s.preflightPrivatePublicationPrelink(request, now); err != nil {
 		return out, err
 	}
 	current, currentAt, present, err := s.ReadReceiptedActionReservationInput(request.WorkID, request.Action.ID)
@@ -393,10 +402,13 @@ func (s *Store) replayPrivateSourcePublication(request PrivateSourcePublishReque
 	if err := s.readEventJSON(completion.PolicyDecisionID, &decision); err != nil {
 		return ReceiptedActionResult{}, err
 	}
+	if len(receipt.ProofRefs) < 2 {
+		return ReceiptedActionResult{}, fmt.Errorf("private publication completion has no exact source observation")
+	}
 	final := ReceiptedActionInput{Action: request.Action, PreEvaluatedDecision: &decision, ExpectedWorkState: "running", Outcome: "completed", Changed: request.ExpectedRemoteSHA != request.Source.HeadSHA,
-		Summary: privatePublicationSuccessSummary, MoveType: "outward_delta", ProofRefs: receipt.ProofRefs,
+		Summary: privatePublicationSuccessSummary, MoveType: "outward_delta", ProofRefs: append([]string(nil), receipt.ProofRefs[:2]...),
 		BeforeRefs: []string{"git:" + request.Destination.FullName + "@" + request.ExpectedRemoteSHA}, AfterRefs: []string{"git:" + request.Destination.FullName + "@" + request.Source.HeadSHA}}
-	return s.replayCompletedReceiptedAction(request.WorkID, final, completion)
+	return s.replayCompletedReceiptedActionWithPublication(request.WorkID, final, completion, &privatePublicationCompletion{request: request})
 }
 
 func (s *Store) finishPrivatePublication(ctx context.Context, request PrivateSourcePublishRequest, pending ReceiptedActionInput, authorizedAt time.Time, attempted, transportOK bool) (PrivateSourcePublishResult, error) {
@@ -448,7 +460,7 @@ func (s *Store) finishPrivatePublication(ctx context.Context, request PrivateSou
 	if err := s.SealReceiptedActionOutcome(request.WorkID, pending, final, authorizedAt); err != nil {
 		return out, err
 	}
-	result, err := s.RecordReservedReceiptedAction(request.WorkID, final, authorizedAt)
+	result, err := s.recordReservedReceiptedAction(request.WorkID, final, authorizedAt, &privatePublicationCompletion{request: request})
 	out.Status, out.Action = "published_pending_receipt", &result
 	if err == nil {
 		out.Status = "published"

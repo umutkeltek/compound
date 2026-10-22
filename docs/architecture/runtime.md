@@ -237,6 +237,17 @@ Hung off one root `work_id`. The header matters more than any body — it preven
 authoritative ≠ current*.
 
 Current source-delivery close rule (superseding the earlier v0.4 migration wording above): only a revalidated `landed` `compound.work_land_check.v0.5` report is current close evidence. It binds the candidate tip to the latest attached, owned, content-addressed `proof-check:pfrs_*` source snapshot when one exists. The normal proof observes the bound target checkout. A checkout-independent CAS landing is also certifiable when the bound repository identity remains valid, no worktree checks out the target ref, and the target plus required publication refs already contain the certified candidate; dirt in the active foreign feature checkout is then outside target cleanliness. A target ref checked out in any worktree retains the ordinary checkout gate. Historical v0.3 and v0.4 reports remain readable stale evidence and require a fresh v0.5 check; v0.3 predates repository identity and v0.4 predates sealed proof source identity.
+The native private-source publisher can finish a sealed publication whose factory-generated
+action was already linked by `RecordAction` to a different allowing PolicyDecision. Its
+unexported typed completion path authenticates the unchanged running Work against the
+preceding native Work hash, the original consumed exact approval at the saved authorization
+time, the immutable confirmed source observation, and the exact sealed outcome. It excludes
+only that authenticated pre-admission event from completion-conflict checks; it preserves
+history and leaves generic receipted-action callers strict. Sealed completion may finish
+after approval expiry without another publication. First-effect authorization must still
+be live, and unexplained Work, policy, observation, or later lifecycle drift refuses
+reconciliation. Ordinary completed publications retain generic historical replay semantics.
+
 Non-source delivery is an exact per-action classification, not a work-wide Git exemption.
 An operator-provenanced same-state `work advance` may bind `--delivery-action`,
 `--delivery-kind private_runtime` and an immutable `--delivery-evidence` reference.

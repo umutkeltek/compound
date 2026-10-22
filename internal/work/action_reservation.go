@@ -229,6 +229,10 @@ func (s *Store) ReadReceiptedActionReservationInput(workID, actionID string) (Re
 // The blocker is removed after the receipt, transition, work link, and event
 // have converged durably.
 func (s *Store) RecordReservedReceiptedAction(workID string, in ReceiptedActionInput, authorizedAt time.Time) (ReceiptedActionResult, error) {
+	return s.recordReservedReceiptedAction(workID, in, authorizedAt, nil)
+}
+
+func (s *Store) recordReservedReceiptedAction(workID string, in ReceiptedActionInput, authorizedAt time.Time, publication *privatePublicationCompletion) (ReceiptedActionResult, error) {
 	var out ReceiptedActionResult
 	var recordErr error
 	err := s.withLifecycleMutation(func() error {
@@ -251,7 +255,7 @@ func (s *Store) RecordReservedReceiptedAction(workID string, in ReceiptedActionI
 			if !receiptedActionReservationEqual(completion.reservation(), expected) {
 				return fmt.Errorf("work %s completed receipted action %s conflicts with requested transaction", workID, completion.ActionID)
 			}
-			out, recordErr = s.replayCompletedReceiptedAction(workID, in, completion)
+			out, recordErr = s.replayCompletedReceiptedActionWithPublication(workID, in, completion, publication)
 			return recordErr
 		}
 		if !receiptedActionReservationEqual(actual, expected) {
@@ -267,7 +271,7 @@ func (s *Store) RecordReservedReceiptedAction(workID string, in ReceiptedActionI
 			if !receiptedActionReservationEqual(completion.reservation(), expected) {
 				return fmt.Errorf("work %s completed reservation conflicts with requested transaction", workID)
 			}
-			out, recordErr = s.replayCompletedReceiptedAction(workID, in, completion)
+			out, recordErr = s.replayCompletedReceiptedActionWithPublication(workID, in, completion, publication)
 			if recordErr != nil {
 				return recordErr
 			}
@@ -300,11 +304,11 @@ func (s *Store) RecordReservedReceiptedAction(workID string, in ReceiptedActionI
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		out, recordErr = s.recordReceiptedActionLocked(workID, in, authorizedAt, completedAt, false)
+		out, recordErr = s.recordReceiptedActionWithPublicationLocked(workID, in, authorizedAt, completedAt, false, publication)
 		if recordErr != nil {
 			return recordErr
 		}
-		return s.completeReceiptedActionReservation(path, expected, out)
+		return s.completeReceiptedActionReservationWithPublication(path, expected, out, publication)
 	})
 	return out, err
 }
@@ -696,9 +700,22 @@ func (s *Store) clearReceiptedActionReservation(path string, expected receiptedA
 }
 
 func (s *Store) completeReceiptedActionReservation(path string, expected receiptedActionReservation, result ReceiptedActionResult) error {
+	return s.completeReceiptedActionReservationWithPublication(path, expected, result, nil)
+}
+
+func (s *Store) completeReceiptedActionReservationWithPublication(path string, expected receiptedActionReservation, result ReceiptedActionResult, publication *privatePublicationCompletion) error {
 	events, err := s.admissionEventsFor(expected.WorkID)
 	if err != nil {
 		return err
+	}
+	if publication != nil {
+		if expected.Input == nil {
+			return fmt.Errorf("private publication completion has no immutable input")
+		}
+		events, err = s.privatePublicationCompletedEventView(result.Work, publication.request, *expected.Input, result.Receipt, result.Transition, expected.AuthorizedAt, events)
+		if err != nil {
+			return err
+		}
 	}
 	event, err := completedReceiptedActionEvent(events, result.Action, result.Decision, result.Receipt, result.Transition)
 	if err != nil {
@@ -830,6 +847,10 @@ func exactReceiptedActionDigest(value any) (string, error) {
 }
 
 func (s *Store) replayCompletedReceiptedAction(workID string, in ReceiptedActionInput, completion receiptedActionCompletion) (ReceiptedActionResult, error) {
+	return s.replayCompletedReceiptedActionWithPublication(workID, in, completion, nil)
+}
+
+func (s *Store) replayCompletedReceiptedActionWithPublication(workID string, in ReceiptedActionInput, completion receiptedActionCompletion, publication *privatePublicationCompletion) (ReceiptedActionResult, error) {
 	var out ReceiptedActionResult
 	action, present, err := s.preflightReceiptedAction(in.Action)
 	if err != nil {
@@ -902,6 +923,12 @@ func (s *Store) replayCompletedReceiptedAction(workID string, in ReceiptedAction
 	events, err := s.admissionEventsFor(workID)
 	if err != nil {
 		return out, err
+	}
+	if publication != nil {
+		events, err = s.privatePublicationCompletedEventView(w, publication.request, in, receipt, transition, completion.AuthorizedAt, events)
+		if err != nil {
+			return out, err
+		}
 	}
 	if err := validateCompletedReceiptedActionEvent(events, action, decision, receipt, transition, completion); err != nil {
 		return out, err
