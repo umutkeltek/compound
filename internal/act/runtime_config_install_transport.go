@@ -39,7 +39,10 @@ func RuntimeConfigInstallProgramSHA256() string {
 
 // The owner holds native admission while invoking the exact fixed OS start.
 type runtimeConfigInstallAdmissionGuard func(start func() error) error
-type runtimeConfigInstallNativeTransport struct{ home string }
+type runtimeConfigInstallNativeTransport struct {
+	home      string
+	alignment *CredentialPasswordAligner
+}
 
 func trustedRuntimeConfigInstallFile(path string, private bool) (os.FileInfo, error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
@@ -296,7 +299,7 @@ func (t runtimeConfigInstallNativeTransport) Start(ctx context.Context, r policy
 	if err != nil {
 		return nil, err
 	}
-	owner := &RuntimeConfigInstaller{home: t.home, now: time.Now}
+	owner := &RuntimeConfigInstaller{home: t.home, now: time.Now, alignment: t.alignment}
 	acceptances, err := owner.alignmentAcceptances(r)
 	if err != nil {
 		return nil, err

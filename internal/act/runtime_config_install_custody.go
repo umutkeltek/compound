@@ -155,7 +155,13 @@ func (v *RuntimeConfigInstaller) alignmentAcceptances(r policy.RuntimeConfigInst
 	if e != nil {
 		return nil, runtimeConfigInstallError("credential_receipt_time")
 	}
-	return credentialPasswordAlignmentInstallerFence(v.home, r.Files[0].Path,
+	if v.alignment == nil {
+		v.alignment = &CredentialPasswordAligner{home: v.home}
+	}
+	if v.alignment.home != v.home {
+		return nil, runtimeConfigInstallError("alignment_home_drift")
+	}
+	return v.alignment.installerFence(r.Files[0].Path,
 		policy.CredentialVerificationDestination(policy.CredentialVerificationRequest{SSH: policy.CredentialVerifySSH{User: r.SSH.User, Alias: r.SSH.Alias}}), created)
 }
 

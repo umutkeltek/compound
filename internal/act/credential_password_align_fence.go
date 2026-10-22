@@ -3,6 +3,7 @@ package act
 import (
 	"encoding/json"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -162,29 +163,51 @@ type credentialPasswordAlignmentFencedAttempt struct {
 }
 
 func credentialPasswordAlignmentAttempts(h, path, destination, skipAction string) ([]credentialPasswordAlignmentFencedAttempt, error) {
-	events, e := eventstore.Open(h)
+	return (&CredentialPasswordAligner{home: h}).alignmentAttempts(path, destination, skipAction)
+}
+
+func (v *CredentialPasswordAligner) alignmentAttempts(path, destination, skipAction string) ([]credentialPasswordAlignmentFencedAttempt, error) {
+	events, e := eventstore.Open(v.home)
 	if e != nil {
 		return nil, credentialPasswordAlignError("attempt_fence_unavailable")
 	}
-	entries, e := events.Scan(eventstore.ScanOptions{Prefixes: []string{"cpaf_"}})
+	scan := v.fenceScan
+	if scan == nil {
+		scan = events.ScanFrom
+	}
+	page, e := scan(eventstore.ScanOptions{Prefixes: []string{"cpaf_"}, Cursor: v.fenceCursor})
 	if e != nil {
 		return nil, credentialPasswordAlignError("attempt_fence_unavailable")
 	}
+	// Only discovery is incremental. A cursor is never authority for a fence
+	// or attempt: every known ID is read and validated below on every check.
+	// Union even non-resumed pages; a stale cursor may re-serve a superset.
+	ids := make(map[string]struct{}, len(v.fenceIDs)+len(page.Entries))
+	for id := range v.fenceIDs {
+		ids[id] = struct{}{}
+	}
+	for _, entry := range page.Entries {
+		ids[entry.ID] = struct{}{}
+	}
+	ordered := make([]string, 0, len(ids))
+	for id := range ids {
+		ordered = append(ordered, id)
+	}
+	sort.Strings(ordered)
 	var matching []credentialPasswordAlignmentFencedAttempt
-	for _, entry := range entries {
+	for _, id := range ordered {
 		// Never take the current attempt's lock from inside CommitLaunch's
 		// callback. The guard separately rechecks its immutable fence bytes.
 		if skipAction != "" {
 			var peek credentialPasswordAlignmentFence
-			v := &CredentialPasswordAligner{home: h}
-			if v.event(entry.ID, &peek) != nil {
+			if v.event(id, &peek) != nil {
 				return nil, credentialPasswordAlignError("attempt_fence_unavailable")
 			}
 			if peek.ActionID == skipAction {
 				continue
 			}
 		}
-		f, a, e := credentialPasswordAlignmentReadFence(h, entry.ID)
+		f, a, e := credentialPasswordAlignmentReadFence(v.home, id)
 		if e != nil {
 			return nil, e
 		}
@@ -192,6 +215,7 @@ func credentialPasswordAlignmentAttempts(h, path, destination, skipAction string
 			matching = append(matching, credentialPasswordAlignmentFencedAttempt{f, a})
 		}
 	}
+	v.fenceCursor, v.fenceIDs = page.Cursor, ids
 	return matching, nil
 }
 
@@ -203,7 +227,7 @@ func (v *CredentialPasswordAligner) priorAlignmentFence(r policy.CredentialPassw
 	if r.Operation != "align" {
 		return nil
 	}
-	all, e := credentialPasswordAlignmentAttempts(v.home, r.File.Path, policy.CredentialVerificationDestination(r.CredentialVerificationRequest), action)
+	all, e := v.alignmentAttempts(r.File.Path, policy.CredentialVerificationDestination(r.CredentialVerificationRequest), action)
 	if e != nil {
 		return e
 	}
@@ -281,7 +305,7 @@ func (v *CredentialPasswordAligner) previousRecovery(r policy.CredentialPassword
 	if r.Origin == nil {
 		return "", nil
 	}
-	all, e := credentialPasswordAlignmentAttempts(v.home, r.File.Path, policy.CredentialVerificationDestination(r.CredentialVerificationRequest), "")
+	all, e := v.alignmentAttempts(r.File.Path, policy.CredentialVerificationDestination(r.CredentialVerificationRequest), "")
 	if e != nil {
 		return "", e
 	}
@@ -299,7 +323,7 @@ func (v *CredentialPasswordAligner) priorRecoveryFence(r policy.CredentialPasswo
 	if r.Origin == nil {
 		return nil
 	}
-	all, e := credentialPasswordAlignmentAttempts(v.home, r.File.Path, policy.CredentialVerificationDestination(r.CredentialVerificationRequest), action)
+	all, e := v.alignmentAttempts(r.File.Path, policy.CredentialVerificationDestination(r.CredentialVerificationRequest), action)
 	if e != nil {
 		return e
 	}
@@ -317,7 +341,12 @@ func (v *CredentialPasswordAligner) priorRecoveryFence(r policy.CredentialPasswo
 }
 
 func credentialPasswordAlignmentInstallerFence(h, path, destination string, qualificationCreatedAt time.Time) ([]credentialPasswordAlignmentAcceptance, error) {
-	all, e := credentialPasswordAlignmentAttempts(h, path, destination, "")
+	return (&CredentialPasswordAligner{home: h}).installerFence(path, destination, qualificationCreatedAt)
+}
+
+func (v *CredentialPasswordAligner) installerFence(path, destination string, qualificationCreatedAt time.Time) ([]credentialPasswordAlignmentAcceptance, error) {
+	h := v.home
+	all, e := v.alignmentAttempts(path, destination, "")
 	if e != nil {
 		return nil, e
 	}

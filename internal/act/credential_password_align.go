@@ -71,6 +71,10 @@ type CredentialPasswordAligner struct {
 	home      string
 	now       func() time.Time
 	transport credentialPasswordAlignTransport
+	// Package-private scan seam; no request or CLI can select it.
+	fenceScan   func(eventstore.ScanOptions) (eventstore.ScanPage, error)
+	fenceCursor string
+	fenceIDs    map[string]struct{}
 }
 
 func NewCredentialPasswordAligner(homePath string) (*CredentialPasswordAligner, error) {

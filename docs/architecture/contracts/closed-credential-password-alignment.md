@@ -128,6 +128,21 @@ and requires exact native-derived observation digests. A later or unresolved
 remote recovery directory blocks installation even if local history is absent.
 The selected recovery RESULT must cover every preceding recovery directory.
 
+## Bounded history discovery
+
+Within one owner instance, fence discovery uses the event store's fixed-prefix
+incremental reader after its first complete read. It retains only discovered IDs
+and the opaque cache cursor. Every admission and launch check still rereads and
+validates every known native fence, attempt, approval and outcome, and discovers
+newly appended fences. An unreadable known record fails closed; a stale cursor
+safely falls back to a fuller scan. Legacy fallback retains full-read semantics.
+No cursor or cached outcome is accepted from a request, plan or CLI.
+
+The installer and its native transport share that process-local discovery state;
+creating a separate reader in transport startup would repeat the cold history
+scan within the same deadline. This changes neither native deadlines nor exact
+approval, recovery ordering, remote namespace checks or proof requirements.
+
 ## Disposable acceptance
 
 Default Go tests cover exact admission, owner proof, stale authority, native

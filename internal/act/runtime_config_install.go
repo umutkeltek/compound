@@ -71,6 +71,7 @@ type RuntimeConfigInstaller struct {
 	home      string
 	now       func() time.Time
 	transport runtimeConfigInstallTransport
+	alignment *CredentialPasswordAligner
 }
 
 func NewRuntimeConfigInstaller(homePath string) (*RuntimeConfigInstaller, error) {
@@ -81,7 +82,8 @@ func NewRuntimeConfigInstaller(homePath string) (*RuntimeConfigInstaller, error)
 	if e != nil {
 		return nil, errors.New("runtime_config_install:home_unavailable")
 	}
-	return &RuntimeConfigInstaller{home: resolved, now: time.Now, transport: runtimeConfigInstallNativeTransport{home: resolved}}, nil
+	alignment := &CredentialPasswordAligner{home: resolved}
+	return &RuntimeConfigInstaller{home: resolved, now: time.Now, alignment: alignment, transport: runtimeConfigInstallNativeTransport{home: resolved, alignment: alignment}}, nil
 }
 
 func runtimeConfigInstallHash(v any) string {
