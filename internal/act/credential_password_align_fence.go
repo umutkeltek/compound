@@ -162,10 +162,6 @@ type credentialPasswordAlignmentFencedAttempt struct {
 	Attempt runattempt.RunAttempt
 }
 
-func credentialPasswordAlignmentAttempts(h, path, destination, skipAction string) ([]credentialPasswordAlignmentFencedAttempt, error) {
-	return (&CredentialPasswordAligner{home: h}).alignmentAttempts(path, destination, skipAction)
-}
-
 func (v *CredentialPasswordAligner) alignmentAttempts(path, destination, skipAction string) ([]credentialPasswordAlignmentFencedAttempt, error) {
 	events, e := eventstore.Open(v.home)
 	if e != nil {
