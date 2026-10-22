@@ -341,15 +341,22 @@ class AlignmentCustody:
 def alignment_runtime_inactive(r, processes):
     require(program_hash("/usr/bin/docker") == r["catalog"]["docker_sha256"])
     frozen = r["profile"]["containers"]
-    require(type(frozen) is list and 0 < len(frozen) <= 5 and len(set(frozen)) == len(frozen))
-    api = urlsplit(r["profile"]["web_api_base"]).hostname
+    require(type(frozen) is list and all(type(name) is str for name in frozen)
+            and len(set(frozen)) == len(frozen))
+    endpoint = r["profile"]["web_api_base"]
+    require(type(endpoint) is str and re.fullmatch(r"http://[a-z0-9][a-z0-9.-]{0,127}:[0-9]{2,5}", endpoint) is not None)
+    api = urlsplit(endpoint).hostname
     require(type(api) is str and api.endswith("-api") and api in frozen)
     prefix = api[:-4]
     require(re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,100}", prefix) is not None)
-    # Same closed five-service grammar as the qualified capture owner. Frozen
-    # consumers may select fewer services, but inactivity always covers all five.
-    names = [prefix + suffix for suffix in ("-api", "-worker", "-provider-sync", "-web", "-cloudflared")]
-    require(set(frozen).issubset(names))
+    # Preserve the source capture's legacy shape. A commercial target must name
+    # its exact seven services, and also retain the legacy tunnel absence check.
+    legacy = [prefix + suffix for suffix in ("-api", "-worker", "-provider-sync", "-web", "-cloudflared")]
+    commercial = [prefix + suffix for suffix in ("-auth", "-api", "-worker", "-billing", "-billing-reconcile", "-provider-sync", "-web")]
+    is_legacy = 0 < len(frozen) <= len(legacy) and set(frozen).issubset(legacy)
+    is_commercial = len(frozen) == len(commercial) and set(frozen) == set(commercial)
+    require(is_legacy or is_commercial)
+    names = legacy if is_legacy else list(dict.fromkeys(legacy + commercial))
     child = processes.spawn(["/usr/bin/docker", "container", "ls", "--all", "--format", "{{.Names}}"], clean_env())
     code, out, err = processes.complete(child, b"")
     require(code == 0 and not err and len(out) <= 16384)

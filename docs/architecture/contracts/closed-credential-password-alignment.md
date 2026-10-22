@@ -44,10 +44,16 @@ not a supplied catalog assertion.
 
 All operations retain connection limit zero, denied application/PUBLIC CONNECT,
 zero sessions for either role or the target database, exact host/boot/cluster,
-executable, protected-file and catalog pins. The five service names are derived
-from the qualified frozen profile using the capture owner's fixed grammar;
-all five containers must be absent, including stopped containers. A caller
-cannot invent a smaller inactivity set.
+executable, protected-file and catalog pins. The API hostname in the qualified
+frozen target profile determines one prefix and two closed topology shapes.
+Legacy profiles may select a subset of api, worker, provider-sync, web and
+cloudflared, with api required; all five must still be absent. A commercial
+profile must select exactly auth, api, worker, billing, billing-reconcile,
+provider-sync and web. Its inactivity check covers all eight names in the union
+of both shapes, including the legacy cloudflared name and stopped containers.
+Unknown, duplicate, extra or incomplete commercial rosters refuse locally and
+remotely. This does not change the source capture protocol's five-role grammar
+or let a caller trim the frozen target profile.
 
 The root-owned native Python program uses a genuine duplex `psql` client:
 SQL travels on stdin, passwords go to native libpq's controlling-terminal
@@ -134,6 +140,11 @@ inspection, repair, unchanged-verifier success, commit acknowledgement loss,
 separate reconciliation, restore acknowledgement loss and restored-row recovery.
 Production installation, real credential alignment and migration acceptance
 still require their own delivered owners, exact grants and actual receipts.
+
+The native inventory also requires the exact commercial-seven profile to finish
+the genuine owner, unchanged verifier and inactive installer sequence. Real
+stopped auth and legacy tunnel fixtures must refuse through that same owner;
+the Python consumer checks every name in the eight-name inactivity union.
 
 Canonical full proof additionally requires `credential-password-alignment-native`.
 It runs the closed `scripts/testbattery` mode against the exact sealed source

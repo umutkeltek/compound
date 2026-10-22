@@ -28,6 +28,10 @@ const credentialAlignmentProofMode = "credential-password-alignment-native"
 
 var credentialAlignmentRequiredTests = []string{
 	"TestCredentialPasswordAlignmentActualLinuxOwnerThenUnchangedVerifier",
+	"TestCredentialPasswordAlignmentActualCommercialSevenThenUnchangedVerifier",
+	"TestCredentialPasswordAlignmentActualCommercialSevenStoppedContainers",
+	"TestCredentialPasswordAlignmentActualCommercialSevenStoppedContainers/auth",
+	"TestCredentialPasswordAlignmentActualCommercialSevenStoppedContainers/cloudflared",
 	"TestCredentialPasswordAlignmentProgramActualLinuxPrimitiveConsumer",
 	"TestCredentialPasswordAlignmentActualCommitAckLossAndRestoreAckLoss",
 	"TestCredentialPasswordAlignmentActualTamperedOldVerifierSwapHolds",

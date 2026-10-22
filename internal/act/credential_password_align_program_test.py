@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parent
@@ -18,6 +19,52 @@ exec(compile((ROOT / "credential_password_align_program.py").read_bytes(), "cred
 
 
 class AlignmentFormatTests(unittest.TestCase):
+    def inactive(self, containers, listed=(), endpoint="http://fixture-api:9000"):
+        class Processes:
+            argv = None
+
+            def spawn(self, argv, environment):
+                self.argv = argv
+                return self
+
+            def complete(self, child, payload):
+                return 0, "\n".join(listed).encode("ascii"), b""
+
+        processes = Processes()
+        request = {"catalog": {"docker_sha256": "d" * 64},
+                   "profile": {"containers": containers, "web_api_base": endpoint}}
+        with patch.object(owner, "program_hash", return_value="d" * 64):
+            owner.alignment_runtime_inactive(request, processes)
+        self.assertEqual(processes.argv, ["/usr/bin/docker", "container", "ls", "--all", "--format", "{{.Names}}"])
+
+    def test_closed_topologies_accept_only_legacy_subsets_or_exact_seven(self):
+        legacy = ["fixture-api", "fixture-worker", "fixture-provider-sync", "fixture-web", "fixture-cloudflared"]
+        commercial = ["fixture-auth", "fixture-api", "fixture-worker", "fixture-billing", "fixture-billing-reconcile", "fixture-provider-sync", "fixture-web"]
+        for names in (legacy, ["fixture-api"], ["fixture-api", "fixture-web"], commercial, list(reversed(commercial))):
+            with self.subTest(names=names):
+                self.inactive(names, listed=["unrelated-example"])
+        for names in ([], ["fixture-web"], ["fixture-api", "fixture-api"],
+                      ["fixture-api", "fixture-scheduler"], commercial[:6],
+                      ["fixture-api", "fixture-auth", "fixture-web"],
+                      commercial[:6] + ["fixture-api"], commercial[:6] + ["fixture-extra"],
+                      commercial + ["fixture-cloudflared"], commercial[:6] + ["other-web"]):
+            with self.subTest(refused=names), self.assertRaises(owner.Refusal):
+                self.inactive(names)
+
+    def test_commercial_guard_includes_all_eight_even_stopped_containers(self):
+        commercial = ["fixture-auth", "fixture-api", "fixture-worker", "fixture-billing", "fixture-billing-reconcile", "fixture-provider-sync", "fixture-web"]
+        for suffix in ("auth", "api", "worker", "billing", "billing-reconcile", "provider-sync", "web", "cloudflared"):
+            with self.subTest(container=suffix), self.assertRaises(owner.Refusal):
+                self.inactive(commercial, listed=["fixture-" + suffix])
+        for suffix in ("api", "worker", "provider-sync", "web", "cloudflared"):
+            with self.subTest(legacy=suffix), self.assertRaises(owner.Refusal):
+                self.inactive(["fixture-api"], listed=["fixture-" + suffix])
+
+    def test_closed_topologies_require_the_qualified_api_endpoint(self):
+        for endpoint in ("", "http://fixture-web:9000", "http://other-api:9000", "http://fixture_api:9000", "http://fixture-api:9000/extra", "http://user@fixture-api:9000"):
+            with self.subTest(endpoint=endpoint), self.assertRaises(owner.Refusal):
+                self.inactive(["fixture-api"], endpoint=endpoint)
+
     def test_catalog_pin_commits_private_verifiers_and_revisions(self):
         catalog = {"database": {"oid": "123"}, "roles": [
             {"oid": 1, "xmin": "1", "ctid": "(1,1)", "verifier": "synthetic-old-a", "attributes": {}},

@@ -88,8 +88,12 @@ func newAlignmentFixture(t *testing.T) *alignmentFixture {
 }
 
 func newConfiguredAlignmentFixture(t *testing.T, configure func(*credentialFixture)) *alignmentFixture {
+	return newConfiguredAlignmentProfileFixture(t, configure, nil)
+}
+
+func newConfiguredAlignmentProfileFixture(t *testing.T, configure func(*credentialFixture), configureProfile func(*policy.RuntimeConfigInstallProfile)) *alignmentFixture {
 	t.Helper()
-	i := newInstallerNativeFixture(t)
+	i := newInstallerProfileFixture(t, configureProfile)
 	c := i.credential
 	c.workID = alignmentTestWork(t, c.home, c.now)
 	c.request.AttemptID = c.now.Format("20060102t150405z") + "-bbbbbbbbbbbbbbbb"

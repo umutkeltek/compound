@@ -239,6 +239,10 @@ sys.exit(alignment_main())
 }
 
 func nativeAlignmentFixture(t *testing.T, linux alignmentLinuxFixture) *alignmentFixture {
+	return nativeAlignmentProfileFixture(t, linux, nil)
+}
+
+func nativeAlignmentProfileFixture(t *testing.T, linux alignmentLinuxFixture, configureProfile func(*policy.RuntimeConfigInstallProfile)) *alignmentFixture {
 	t.Helper()
 	raw, e := exec.Command("docker", "exec", linux.container, "/usr/bin/python3", "-I", "-B", "/root/compound-alignment-tests/credential_password_align_native_fixture.py", "prepare").Output()
 	if e != nil {
@@ -248,11 +252,11 @@ func nativeAlignmentFixture(t *testing.T, linux alignmentLinuxFixture) *alignmen
 	if json.Unmarshal(raw, &metadata) != nil {
 		t.Fatal("native fixture metadata refused")
 	}
-	f := newConfiguredAlignmentFixture(t, func(c *credentialFixture) {
+	f := newConfiguredAlignmentProfileFixture(t, func(c *credentialFixture) {
 		c.request.File, c.request.Host = metadata.File, metadata.Host
 		c.request.SSH.InterpreterSHA256, c.request.SSH.ClientSHA256, c.request.SSH.ClientVersion, c.request.SSH.SudoSHA256 = metadata.Interpreter, metadata.Client, metadata.ClientVersion, metadata.Sudo
 		c.verifier.transport = alignmentLinuxVerifyTransport{linux}
-	})
+	}, configureProfile)
 	f.r.Catalog.DockerSHA256 = metadata.Docker
 	f.linuxMetadata = &metadata
 	f.owner.transport = alignmentLinuxAlignTransport{alignmentLinuxFixture: linux}
@@ -262,6 +266,83 @@ func nativeAlignmentFixture(t *testing.T, linux alignmentLinuxFixture) *alignmen
 func TestCredentialPasswordAlignmentActualLinuxOwnerThenUnchangedVerifier(t *testing.T) {
 	linux := alignmentLinux(t)
 	f := nativeAlignmentFixture(t, linux)
+	testCredentialAlignmentThenUnchangedVerifier(t, linux, f)
+}
+
+func commercialAlignmentFixture(t *testing.T, linux alignmentLinuxFixture) *alignmentFixture {
+	t.Helper()
+	prefix := "fixture-seven-" + strconv.FormatInt(time.Now().UnixNano(), 16)
+	// Select the target before its first genuine capture qualification. The
+	// unchanged owner freezes it; no caller-written replacement is admitted.
+	return nativeAlignmentProfileFixture(t, linux, func(profile *policy.RuntimeConfigInstallProfile) {
+		profile.WebAPIBase = "http://" + prefix + "-api:9000"
+		profile.Containers = nil
+		for _, suffix := range []string{"-auth", "-api", "-worker", "-billing", "-billing-reconcile", "-provider-sync", "-web"} {
+			profile.Containers = append(profile.Containers, prefix+suffix)
+		}
+	})
+}
+
+func TestCredentialPasswordAlignmentActualCommercialSevenThenUnchangedVerifier(t *testing.T) {
+	linux := alignmentLinux(t)
+	testCredentialAlignmentThenUnchangedVerifier(t, linux, commercialAlignmentFixture(t, linux))
+}
+
+func TestCredentialPasswordAlignmentActualCommercialSevenStoppedContainers(t *testing.T) {
+	linux := alignmentLinux(t)
+	for _, suffix := range []string{"auth", "cloudflared"} {
+		t.Run(suffix, func(t *testing.T) {
+			f := commercialAlignmentFixture(t, linux)
+			api := strings.TrimPrefix(strings.TrimSuffix(f.r.Profile.WebAPIBase, ":9000"), "http://")
+			name := strings.TrimSuffix(api, "-api") + "-" + suffix
+			image, err := exec.Command("docker", "inspect", "--format", "{{.Image}}", linux.container).Output()
+			if err != nil {
+				t.Fatal("owned fixture image unavailable")
+			}
+			raw, err := exec.Command("docker", "create", "--pull", "never", "--network", "none", "--name", name, "--label", "compound.work="+f.workID, strings.TrimSpace(string(image)), "/bin/true").Output()
+			if err != nil {
+				t.Fatal("stopped owned fixture could not be created")
+			}
+			id := strings.TrimSpace(string(raw))
+			if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(id) {
+				t.Fatal("stopped fixture identity refused")
+			}
+			expected := "false /" + name + " " + f.workID
+			check := func() bool {
+				meta, err := exec.Command("docker", "inspect", "--format", `{{.State.Running}} {{.Name}} {{index .Config.Labels "compound.work"}}`, id).Output()
+				return err == nil && strings.TrimSpace(string(meta)) == expected
+			}
+			t.Cleanup(func() {
+				if !check() {
+					t.Error("stopped fixture ownership changed; cleanup refused")
+					return
+				}
+				if err := exec.Command("docker", "rm", "--volumes", id).Run(); err != nil {
+					t.Error("stopped owned fixture cleanup failed")
+				}
+			})
+			if !check() {
+				t.Fatal("fixture was not stopped with exact ownership")
+			}
+			p, err := f.owner.Plan(f.r, f.workID, "fixture")
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.approve(t, p)
+			result, err := f.owner.Execute(context.Background(), p.PlanRef, "fixture")
+			if err == nil || result.State == "completed" || !result.ApprovalConsumed || result.ConfigurationAccepted {
+				t.Fatal("stopped service did not refuse genuine native inspection")
+			}
+			a, err := runattempt.Open(f.owner.home).Get(result.RunAttemptID)
+			if err != nil || a.Status != runattempt.StatusFailed {
+				t.Fatal("stopped-service refusal lost failed native attempt")
+			}
+		})
+	}
+}
+
+func testCredentialAlignmentThenUnchangedVerifier(t *testing.T, linux alignmentLinuxFixture, f *alignmentFixture) {
+	t.Helper()
 	f.inspect(t)
 	p, e := f.owner.Plan(f.r, f.workID, "fixture")
 	if e != nil {

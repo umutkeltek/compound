@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -16,6 +17,7 @@ import (
 
 var credentialPasswordRevision = regexp.MustCompile(`^[0-9]{1,10}$`)
 var credentialPasswordCTID = regexp.MustCompile(`^\([0-9]{1,10},[0-9]{1,5}\)$`)
+var credentialPasswordContainerPrefix = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,100}$`)
 
 const (
 	CredentialPasswordAlignSchema     = "compound.credential_password_alignment_request.v0.1"
@@ -186,15 +188,8 @@ func ValidateCredentialPasswordAlignmentRequest(r CredentialPasswordAlignmentReq
 	if r.Operation != "inspect" && (!credentialVerifySHA.MatchString(r.Catalog.SHA256) || r.Catalog.DatabaseOID == 0 || r.Catalog.Roles[0].OID == 0 || r.Catalog.Roles[1].OID == 0 || r.Catalog.Roles[0].OID == r.Catalog.Roles[1].OID) {
 		return bad()
 	}
-	if !strings.HasPrefix(r.Profile.Ref, "artifact:sha256:") || !credentialVerifySHA.MatchString(r.Profile.SHA256) || len(r.Profile.Containers) == 0 || len(r.Profile.Containers) > 5 {
+	if !strings.HasPrefix(r.Profile.Ref, "artifact:sha256:") || !credentialVerifySHA.MatchString(r.Profile.SHA256) || !credentialPasswordAlignmentContainerTopology(r.Profile) {
 		return bad()
-	}
-	seen := map[string]bool{}
-	for _, name := range r.Profile.Containers {
-		if !credentialVerifyLabel.MatchString(name) || seen[name] {
-			return bad()
-		}
-		seen[name] = true
 	}
 	for _, role := range r.Catalog.Roles {
 		if r.Operation == "inspect" {
@@ -205,6 +200,43 @@ func ValidateCredentialPasswordAlignmentRequest(r CredentialPasswordAlignmentReq
 		}
 	}
 	return nil
+}
+
+// Source capture has five legacy roles; the frozen target may instead select
+// the exact seven-service commercial topology. Neither shape is an open roster.
+func credentialPasswordAlignmentContainerTopology(p RuntimeConfigInstallProfile) bool {
+	if !runtimeConfigInstallURL.MatchString(p.WebAPIBase) {
+		return false
+	}
+	u, err := url.Parse(p.WebAPIBase)
+	if err != nil || !strings.HasSuffix(u.Hostname(), "-api") {
+		return false
+	}
+	api := u.Hostname()
+	prefix := strings.TrimSuffix(api, "-api")
+	if !credentialPasswordContainerPrefix.MatchString(prefix) {
+		return false
+	}
+	legacy := map[string]bool{}
+	for _, suffix := range []string{"-api", "-worker", "-provider-sync", "-web", "-cloudflared"} {
+		legacy[prefix+suffix] = true
+	}
+	commercial := map[string]bool{}
+	for _, suffix := range []string{"-auth", "-api", "-worker", "-billing", "-billing-reconcile", "-provider-sync", "-web"} {
+		commercial[prefix+suffix] = true
+	}
+	isLegacy := len(p.Containers) > 0 && len(p.Containers) <= len(legacy)
+	isCommercial := len(p.Containers) == len(commercial)
+	seen := map[string]bool{}
+	for _, name := range p.Containers {
+		if !credentialVerifyLabel.MatchString(name) || seen[name] {
+			return false
+		}
+		seen[name] = true
+		isLegacy = isLegacy && legacy[name]
+		isCommercial = isCommercial && commercial[name]
+	}
+	return seen[api] && (isLegacy || isCommercial)
 }
 
 // The ordinary verifier's independent/custom/duplicate forbidden-rule floors

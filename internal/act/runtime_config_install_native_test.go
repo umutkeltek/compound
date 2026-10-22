@@ -156,6 +156,10 @@ func installCaptureFixture(t *testing.T, f *installerNativeFixture) {
 }
 
 func newInstallerNativeFixture(t *testing.T) *installerNativeFixture {
+	return newInstallerProfileFixture(t, nil)
+}
+
+func newInstallerProfileFixture(t *testing.T, configure func(*policy.RuntimeConfigInstallProfile)) *installerNativeFixture {
 	t.Helper()
 	c := newCredentialFixture(t)
 	p := c.plan(t)
@@ -199,6 +203,9 @@ func newInstallerNativeFixture(t *testing.T) *installerNativeFixture {
 	}
 	f.owner.now = func() time.Time { return c.now }
 	f.owner.transport = f.transport
+	if configure != nil {
+		configure(&r.Profile)
+	}
 	installCaptureFixture(t, f)
 	return f
 }
