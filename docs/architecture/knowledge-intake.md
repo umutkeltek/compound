@@ -91,6 +91,12 @@ gates. `compound orient --task` serves only promoted results.
 
 ## Applications
 
+- **Paper syntheses** (`knowledge/oo-harness-arxiv-2610-28380.md`): one external paper, read
+  in full, enters twice through the same door — first as an `arxiv` export (`compound
+  knowledge import`, evidence plus parked candidates), then as a curated page whose
+  frontmatter claims map the paper onto Compound's spine (`compound memory import-page`,
+  candidates on a `curated_page` basis). The page's "slices" section names the executor
+  whose next branch changes, which is the test that a synthesis is more than a document.
 - **Expertise packs** (`knowledge/expertise-packs.md`): "everything a world-class X
   knows" compressed into a `source.kind: expertise-synthesis` bundle of `technique`
   items. Model-synthesized profession knowledge enters as low-trust evidence, grounds
