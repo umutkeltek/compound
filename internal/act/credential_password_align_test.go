@@ -16,6 +16,7 @@ type alignmentMockTransport struct {
 	starts  int
 	stage   func()
 	fail    bool
+	waitErr error
 	action  string
 	catalog policy.CredentialPasswordCatalogPin
 }
@@ -48,6 +49,9 @@ func (m *alignmentMockTransport) Start(ctx context.Context, r policy.CredentialP
 	child := &credentialMockChild{raw: raw}
 	if m.fail {
 		child.waitErr = credentialVerifyError("synthetic_failed")
+	}
+	if m.waitErr != nil {
+		child.waitErr = m.waitErr
 	}
 	return child, nil
 }

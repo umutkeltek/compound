@@ -34,6 +34,44 @@ func CredentialPasswordAlignmentProgramSHA256() string {
 type credentialPasswordAlignAdmissionGuard = credentialVerifyAdmissionGuard
 type credentialPasswordAlignNativeTransport struct{}
 
+type credentialPasswordAlignStageError struct{ stage string }
+
+func (e credentialPasswordAlignStageError) Error() string {
+	return "credential_password_align:operation_failed"
+}
+
+func credentialPasswordAlignKnownFailureStage(stage string) bool {
+	switch stage {
+	case "request_validation", "runtime_preconditions", "inspection_negative_auth",
+		"inspection_session", "inspection_catalog_read", "inspection_catalog_shape",
+		"inspection_catalog_scram", "inspection_closed_state", "inspection_base_catalog",
+		"inspection_postchecks", "password_operation", "deadline", "cleanup", "observation_encoding":
+		return true
+	}
+	return false
+}
+
+type credentialPasswordAlignNativeChild struct{ *credentialVerifyNativeChild }
+
+func (c *credentialPasswordAlignNativeChild) Wait() ([]byte, error) {
+	raw, err := c.credentialVerifyNativeChild.Wait()
+	if err == nil || !c.failed {
+		return raw, err
+	}
+	c.stdout.mu.Lock()
+	empty := !c.stdout.overflow && len(c.stdout.data) == 0
+	c.stdout.mu.Unlock()
+	c.stderr.mu.Lock()
+	defer c.stderr.mu.Unlock()
+	const prefix = "credential_password_align:refused:"
+	marker := string(c.stderr.data)
+	stage := strings.TrimSuffix(strings.TrimPrefix(marker, prefix), "\n")
+	if empty && !c.stderr.invalid && credentialPasswordAlignKnownFailureStage(stage) && marker == prefix+stage+"\n" {
+		return nil, credentialPasswordAlignStageError{stage: stage}
+	}
+	return nil, err
+}
+
 func credentialPasswordAlignOriginalAction(r policy.CredentialPasswordAlignmentRequest, action string) string {
 	if r.Origin != nil {
 		return r.Origin.ActionID
@@ -65,7 +103,7 @@ func (t credentialPasswordAlignNativeTransport) Start(ctx context.Context, r pol
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=/nonexistent", "LC_ALL=C", "LANG=C"}
 	cmd.Dir = "/"
 	cmd.Stdin = bytes.NewReader(payload)
-	child := &credentialVerifyNativeChild{cmd: cmd, done: make(chan struct{})}
+	child := &credentialPasswordAlignNativeChild{&credentialVerifyNativeChild{cmd: cmd, done: make(chan struct{})}}
 	cmd.Stdout = &child.stdout
 	// Only a finite singleton marker can become failed-only metadata. Raw remote
 	// diagnostics never become an error message, observation, or artifact.

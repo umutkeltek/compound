@@ -459,7 +459,12 @@ func (v *CredentialPasswordAligner) Execute(ctx context.Context, planRef, actor 
 	raw, waitErr := child.Wait()
 	stopErr := child.Stop(outer)
 	if waitErr != nil || stopErr != nil {
-		return finish("failed", nil, "operation_failed")
+		code := "operation_failed"
+		var staged credentialPasswordAlignStageError
+		if stopErr == nil && errors.As(waitErr, &staged) && credentialPasswordAlignKnownFailureStage(staged.stage) {
+			code += ":" + staged.stage
+		}
+		return finish("failed", nil, code)
 	}
 	if workCtx.Err() != nil || !v.now().Before(started.Add(80*time.Second)) {
 		return finish("failed", nil, "work_deadline")
@@ -501,6 +506,10 @@ func (v *CredentialPasswordAligner) finish(out CredentialPasswordAlignmentResult
 		statusState = "recovery_required"
 	}
 	status := map[string]any{"schema_version": "compound.credential_password_alignment_status.v0.1", "state": statusState, "outcome": outcome, "code": code, "request_sha256": p.RequestSHA256, "request": p.Request, "action_intent_id": ai.ID, "policy_decision_id": pd.ID, "approval_consumed": out.ApprovalConsumed, "run_attempt_id": out.RunAttemptID, "change_knowledge": knowledge, "configuration_accepted": false, "credential_qualification_accepted": false, "application_activated": false, "service_activated": false}
+	if stage := strings.TrimPrefix(code, "operation_failed:"); stage != code && credentialPasswordAlignKnownFailureStage(stage) {
+		status["code"] = "operation_failed"
+		status["failure_stage"] = stage
+	}
 	if obs != nil {
 		raw, _ := json.Marshal(obs)
 		out.ObservationRef, e = store.Put(raw)

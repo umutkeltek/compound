@@ -15,6 +15,24 @@ ALIGN_EFFECTS = "closed-postgres-two-role-password-alignment-v1"
 ALIGN_NAMESPACE = ".compound-credential-password-alignment"
 ALIGN_OBSERVATION = "compound.credential_password_alignment_observation.v0.1"
 
+# Failed-only metadata. Never derive a marker from an exception or catalog value.
+ALIGN_FAILURE_STAGES = frozenset({
+    "request_validation", "runtime_preconditions", "inspection_negative_auth",
+    "inspection_session", "inspection_catalog_read", "inspection_catalog_shape",
+    "inspection_catalog_scram", "inspection_closed_state", "inspection_base_catalog",
+    "inspection_postchecks", "password_operation", "deadline", "cleanup",
+    "observation_encoding",
+})
+
+
+class AlignmentProgress:
+    def __init__(self):
+        self.stage = "request_validation"
+
+    def mark(self, stage):
+        require(stage in ALIGN_FAILURE_STAGES)
+        self.stage = stage
+
 
 def alignment_base_request(r):
     result = {k: v for k, v in r.items() if k not in ("failure", "catalog", "profile", "capture", "operation", "origin")}
@@ -96,14 +114,20 @@ def alignment_scram(value):
     require(8 <= len(salt) <= 1024 and len(stored) == 32 and len(server) == 32)
 
 
-def alignment_closed_catalog(value, r):
+def alignment_closed_catalog(value, r, progress=None):
     exact_keys(value, "roles memberships database database_revision settings hba preload session_preload local_preload sessions application_connect public_connect maintenance_connect")
     require(type(value["roles"]) is list and len(value["roles"]) == 2)
     for index, role in enumerate(value["roles"]):
+        if progress is not None:
+            progress.mark("inspection_catalog_shape")
         exact_keys(role, "oid xmin ctid attributes verifier")
         require(role["attributes"]["rolname"] == r["roles"][index]["name"])
         require(role["attributes"]["rolcanlogin"] is True)
+        if progress is not None:
+            progress.mark("inspection_catalog_scram")
         alignment_scram(role["verifier"])
+    if progress is not None:
+        progress.mark("inspection_closed_state")
     require(value["database"]["datname"] == r["database"]["name"])
     require(value["database"]["datconnlimit"] == 0)
     require(value["database"]["datallowconn"] == r["database"]["allow_connections"])
@@ -460,7 +484,9 @@ def alignment_probe(r, deadline):
         require(probes.cleanup())
 
 
-def alignment_protocol(r, operation, action, original_action, processes):
+def alignment_protocol(r, operation, action, original_action, processes, progress=None):
+    if progress is None:
+        progress = AlignmentProgress()
     alignment_validate(r)
     require(operation in ("inspect", "align", "reconcile", "restore"))
     require(operation == r["operation"])
@@ -468,6 +494,7 @@ def alignment_protocol(r, operation, action, original_action, processes):
     require((operation in ("align", "inspect") and original_action == action) or
             (operation not in ("align", "inspect") and re.fullmatch(r"act_[0-9a-f]{12}", original_action) is not None and original_action != action))
     runtime = NativeRuntime(processes)
+    progress.mark("runtime_preconditions")
     runtime.programs(r)
     host_before = runtime.host(r)
     if operation == "inspect":
@@ -475,16 +502,22 @@ def alignment_protocol(r, operation, action, original_action, processes):
         # parse_passwords() for the protected credential path.
         alignment_file_metadata(r)
         alignment_runtime_inactive(r, processes)
+        progress.mark("inspection_negative_auth")
         for role in r["roles"]:
             runtime.negative(r, role, secrets.token_urlsafe(48))
+        progress.mark("inspection_session")
         session = AlignmentSession(r, processes)
         try:
+            progress.mark("inspection_catalog_read")
             catalog = session.catalog(r)
-            alignment_closed_catalog(catalog, r)
+            progress.mark("inspection_catalog_shape")
+            alignment_closed_catalog(catalog, r, progress)
+            progress.mark("inspection_base_catalog")
             validate_catalog(runtime.catalog(r, []), r, [])
             metadata = {"sha256": canonical_digest(catalog),
                         "roles": [{k: row[k] for k in ("oid", "xmin", "ctid")} for row in catalog["roles"]],
                         "database_oid": int(catalog["database"]["oid"]), "docker_sha256": r["catalog"]["docker_sha256"]}
+            progress.mark("inspection_postchecks")
             require(runtime.host(r) == host_before)
             alignment_file_metadata(r)
             alignment_runtime_inactive(r, processes)
@@ -494,7 +527,12 @@ def alignment_protocol(r, operation, action, original_action, processes):
                     "configuration_accepted": False, "credential_qualification_accepted": False, "catalog": metadata,
                     "resolved_recovery_actions": []}
         finally:
-            session.close()
+            try:
+                session.close()
+            except BaseException:
+                progress.mark("cleanup")
+                raise
+    progress.mark("password_operation")
     namespace_lock = alignment_namespace(r, operation == "align")
     try:
         fcntl.flock(namespace_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -656,6 +694,7 @@ def alignment_main():
     processes = None
     observation = None
     accepted = False
+    progress = AlignmentProgress()
 
     def interrupted(_signum, _frame):
         raise StageRefusal("deadline")
@@ -682,17 +721,26 @@ def alignment_main():
         deadline = time.monotonic() + budget
         signal.setitimer(signal.ITIMER_REAL, budget)
         processes = Processes(deadline)
-        observation = alignment_protocol(r, r["operation"], wire["action_intent_id"], wire["original_action_intent_id"], processes)
+        observation = alignment_protocol(r, r["operation"], wire["action_intent_id"], wire["original_action_intent_id"], processes, progress)
         require(time.monotonic() < deadline)
         accepted = True
-    except BaseException:
+    except BaseException as error:
+        if isinstance(error, StageRefusal) and error.stage == "deadline":
+            progress.mark("deadline")
         accepted = False
     finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
+        try:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+        except BaseException:
+            progress.mark("cleanup")
+            accepted = False
         if processes is not None:
             try:
-                accepted = processes.cleanup() and accepted
+                if not processes.cleanup():
+                    progress.mark("cleanup")
+                    accepted = False
             except BaseException:
+                progress.mark("cleanup")
                 accepted = False
     if accepted:
         try:
@@ -702,9 +750,14 @@ def alignment_main():
             sys.stdout.buffer.flush()
             return 0
         except BaseException:
-            pass
+            progress.mark("observation_encoding")
     # The caller treats any launched failure as unknown effect, regardless of
     # whether the failure happened before ALTER, COMMIT, or acknowledgement.
+    try:
+        sys.stderr.write("credential_password_align:refused:" + progress.stage + "\n")
+        sys.stderr.flush()
+    except BaseException:
+        pass
     return 1
 
 

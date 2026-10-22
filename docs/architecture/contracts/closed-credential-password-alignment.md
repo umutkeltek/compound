@@ -84,6 +84,17 @@ credential qualification, application, source-capture and migration acceptance
 remain false. After alignment, the unchanged verifier must separately perform
 its four actual correct/wrong maintenance-database authentications.
 
+A launched failure may emit one bounded, fixed stage marker. The native
+transport accepts it only with a failed exit, empty stdout, and exactly one
+allowlisted marker line. It records `failure_stage` in the failed status
+artifact, never in an accepted observation. Inspection distinguishes runtime,
+negative authentication, session, catalog read/shape/SCRAM, closed-state,
+base-catalog and postcheck failures. Cleanup overrides other stages. Mutation
+operations retain the generic `password_operation` stage and the existing
+unknown-effect/recovery rules. No exception text, private catalog, verifier,
+credential, SQL or raw stderr becomes metadata. The original verifier program
+and its four-authentication requirement remain unchanged.
+
 ## Interrupted operations and installer consumption
 
 Before OS start, native admission records an immutable

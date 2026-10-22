@@ -1,14 +1,16 @@
 """Synthetic protocol and actual Linux/PostgreSQL fixtures for the closed owner."""
 import copy
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import time
+import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parent
@@ -106,6 +108,85 @@ class AlignmentFormatTests(unittest.TestCase):
         for value in ("plaintext", "SCRAM-SHA-256$4096:abc$bad:bad", "x';SELECT 1;--", None):
             with self.assertRaises(owner.Refusal):
                 owner.alignment_scram(value)
+
+
+class AlignmentDiagnosticTests(unittest.TestCase):
+    def run_main(self, failure=None, cleanup=True, operation="inspect"):
+        request = {"program_sha256": "d" * 64, "operation": operation,
+                   "roles": [{"name": "fixture_app"}, {"name": "fixture_migrator"}],
+                   "catalog": {"docker_sha256": "e" * 64}}
+        issued = owner.time.time_ns()
+        wire = {"request": request, "action_intent_id": "act_" + "a" * 12,
+                "original_action_intent_id": "act_" + "a" * 12,
+                "issued_ns": str(issued), "deadline_ns": str(issued + 50_000_000_000)}
+        runtime, session = Mock(), Mock()
+        runtime.host.return_value = {"fixture": "identity"}
+        session.catalog.return_value = {"database": {"oid": 42}, "roles": [
+            {"oid": 43, "xmin": "1", "ctid": "(0,1)"},
+            {"oid": 44, "xmin": "1", "ctid": "(0,2)"}]}
+        processes = Mock()
+        processes.cleanup.return_value = cleanup
+        stdout = types.SimpleNamespace(buffer=io.BytesIO())
+        stderr = io.StringIO()
+        with patch.object(owner.sys, "stdin", types.SimpleNamespace(buffer=io.BytesIO(json.dumps(wire).encode()))), \
+             patch.object(owner.sys, "stdout", stdout), patch.object(owner.sys, "stderr", stderr), \
+             patch.object(owner.sys, "argv", ["owner", request["program_sha256"]]), \
+             patch.object(owner.signal, "signal"), patch.object(owner.signal, "setitimer"), \
+             patch.object(owner, "Processes", return_value=processes), \
+             patch.object(owner, "alignment_validate"), \
+             patch.object(owner, "NativeRuntime", return_value=runtime), \
+             patch.object(owner, "AlignmentSession", return_value=session) as constructor, \
+             patch.object(owner, "alignment_file_metadata"), \
+             patch.object(owner, "alignment_runtime_inactive"), \
+             patch.object(owner, "alignment_closed_catalog") as closed, \
+             patch.object(owner, "validate_catalog") as base, \
+             patch.object(owner, "alignment_namespace") as namespace:
+            if failure is not None:
+                failure(runtime, session, constructor, closed, base, namespace)
+            code = owner.alignment_main()
+        self.assertEqual(processes.cleanup.call_count, 1)
+        return code, stdout.buffer.getvalue().decode(), stderr.getvalue()
+
+    def test_actual_inspection_path_has_only_finite_failed_stage_markers(self):
+        cases = {
+            "runtime_preconditions": lambda r, s, c, v, b, n: setattr(r.programs, "side_effect", RuntimeError("fixture-private-diagnostic")),
+            "inspection_negative_auth": lambda r, s, c, v, b, n: setattr(r.negative, "side_effect", RuntimeError("fixture-private-diagnostic")),
+            "inspection_session": lambda r, s, c, v, b, n: setattr(c, "side_effect", RuntimeError("fixture-private-diagnostic")),
+            "inspection_catalog_read": lambda r, s, c, v, b, n: setattr(s.catalog, "side_effect", RuntimeError("fixture-private-diagnostic")),
+            "inspection_catalog_shape": lambda r, s, c, v, b, n: setattr(v, "side_effect", RuntimeError("fixture-private-diagnostic")),
+            "inspection_base_catalog": lambda r, s, c, v, b, n: setattr(b, "side_effect", RuntimeError("fixture-private-diagnostic")),
+            "inspection_postchecks": lambda r, s, c, v, b, n: setattr(r.host, "side_effect", [{"fixture": "identity"}, RuntimeError("fixture-private-diagnostic")]),
+            "cleanup": lambda r, s, c, v, b, n: setattr(s.close, "side_effect", RuntimeError("fixture-private-diagnostic")),
+            "deadline": lambda r, s, c, v, b, n: setattr(r.programs, "side_effect", owner.StageRefusal("deadline")),
+        }
+        for stage, failure in cases.items():
+            with self.subTest(stage=stage):
+                self.assertEqual(self.run_main(failure), (1, "", "credential_password_align:refused:" + stage + "\n"))
+
+    def test_scram_failure_is_distinct_from_closed_state_without_value_output(self):
+        value = {"roles": [{"oid": 1, "xmin": "1", "ctid": "(0,1)",
+                  "attributes": {"rolname": "fixture_app", "rolcanlogin": True},
+                  "verifier": "fixture-private-invalid-verifier"}], "memberships": [],
+                 "database": {}, "database_revision": {}, "settings": [], "hba": [],
+                 "preload": "", "session_preload": "", "local_preload": "", "sessions": 0,
+                 "application_connect": False, "public_connect": False, "maintenance_connect": [True, True]}
+        value["roles"].append(copy.deepcopy(value["roles"][0]))
+        progress = owner.AlignmentProgress()
+        with self.assertRaises(owner.Refusal):
+            owner.alignment_closed_catalog(value, {"roles": [{"name": "fixture_app"}]}, progress)
+        self.assertEqual(progress.stage, "inspection_catalog_scram")
+
+    def test_cleanup_overrides_success_and_does_not_acknowledge_mutation(self):
+        self.assertEqual(self.run_main(cleanup=False), (1, "", "credential_password_align:refused:cleanup\n"))
+        failure = lambda r, s, c, v, b, n: setattr(n, "side_effect", RuntimeError("fixture-private-diagnostic"))
+        self.assertEqual(self.run_main(failure, operation="align"), (1, "", "credential_password_align:refused:password_operation\n"))
+        self.assertEqual(self.run_main(failure, cleanup=False, operation="align"), (1, "", "credential_password_align:refused:cleanup\n"))
+
+    def test_success_has_no_failure_stage_or_stderr(self):
+        code, stdout, stderr = self.run_main()
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertNotIn("failure_stage", json.loads(stdout))
+        self.assertEqual(json.loads(stdout)["classification"], "metadata_only")
 
 
 @unittest.skipUnless(os.environ.get("COMPOUND_ALIGNMENT_LINUX_PG17") == "1", "requires owned disposable Linux/root PostgreSQL17 fixture")
