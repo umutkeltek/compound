@@ -65,7 +65,15 @@ and 90-second bounds remain unchanged.
 Preflight freezes the authority revision, executable path and digest, tuple,
 requested workspace, and prompt. The launch guard reloads authority and hashes the
 executable immediately before starting. No caller args, environment, config,
-permission override, or reused session reach the native child. The prompt travels
+permission override, or reused session reach the native child. The Claude-family
+adapters add one adapter-owned exception in kind, not in authority: they allocate a
+fresh UUIDv4 native session id per `Run`, pin it on the launch argv as
+`--session-id`, and record it in the COPIED per-run selection snapshot as
+`pinned:--session-id` evidence before the shared runner persists that snapshot. The
+caller can neither supply nor reuse a session id, so two concurrent launches never
+share a session and a successor never inherits its predecessor's; the work owner's
+recipient resolution is the only consumer that may bind that id to a recipient. The
+prompt travels
 on stdin and is limited to 64 KiB. The native process runs in a new scratch cwd,
 with isolated HOME, native search home, and XDG config/data/state/cache directories.
 RunAttempt records the actual sandbox executable and scratch cwd, with separate

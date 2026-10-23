@@ -784,10 +784,15 @@ func (s *Store) ValidateCollaborationDeliveryEvidence(event CollaborationEvent) 
 // no lifecycle mutation and emits no acknowledgement or collaboration event.
 //
 // The request names the SOURCE work: the work that owns the event and the
-// body artifact. The RECIPIENT is derived from the exact validated run
-// attempt, so a cross-work handoff is addressable without letting the
-// requester pick the recipient's context. The body is released only when the
-// event is relevant to that recipient under the one shared relevance rule.
+// body artifact. The RECIPIENT is resolved by the same recipient resolver the
+// delivery projection uses, seeded with the attempt's OWN recorded harness and
+// workspace and the caller's session, and the resolved work/actor/run must
+// equal what the caller claimed. The body is released only when the event is
+// relevant to that recipient under the one shared relevance rule.
+//
+// Authority is checked once, here, through ValidateCollaborationDeliveryEvidence
+// — the same recheck the delivery projection performs — so a structurally valid
+// but ungoverned event cannot become readable merely by naming a live attempt.
 func (s *Store) RetrieveCollaborationBody(in CollaborationBodyRequest) (CollaborationBodyResult, error) {
 	in.WorkID = strings.TrimSpace(in.WorkID)
 	in.EventID = strings.TrimSpace(in.EventID)
@@ -802,7 +807,7 @@ func (s *Store) RetrieveCollaborationBody(in CollaborationBodyRequest) (Collabor
 	if err := s.readEventJSON(in.EventID, &event); err != nil {
 		return CollaborationBodyResult{}, err
 	}
-	if err := event.Validate(); err != nil {
+	if err := s.ValidateCollaborationDeliveryEvidence(event); err != nil {
 		return CollaborationBodyResult{}, err
 	}
 	// The named source work must be the event's owner. The body is
@@ -814,41 +819,28 @@ func (s *Store) RetrieveCollaborationBody(in CollaborationBodyRequest) (Collabor
 	if err != nil {
 		return CollaborationBodyResult{}, err
 	}
-	if runattempt.IsTerminal(attempt.Status) {
+	if runattempt.IsTerminal(attempt.Status) || attempt.Origin != runattempt.OriginHarnessExecution {
 		return CollaborationBodyResult{}, fmt.Errorf("collaboration body requires the exact active recipient run attempt")
 	}
-	if attempt.Origin != runattempt.OriginHarnessExecution {
-		return CollaborationBodyResult{}, fmt.Errorf("collaboration body requires a harness-execution recipient run attempt")
-	}
-	// The recipient actor must be the actor the attempt's own evidence
-	// authorizes, not a caller-supplied name.
-	recipientActor, err := s.collaborationRecipientActor(attempt)
+	// Resolve the recipient with the SAME resolver the delivery projection
+	// uses, seeded from the attempt's own recorded coordinates. There is no
+	// second, looser authority path here: whatever this returns is exactly
+	// what a delivered card would have been addressed to.
+	recipient, ok, err := s.ResolveCollaborationRecipient(CollaborationRecipientQuery{
+		Harness:   attempt.Harness,
+		SessionID: in.SessionID,
+		Cwd:       attempt.Workspace,
+	})
 	if err != nil {
 		return CollaborationBodyResult{}, err
 	}
-	if recipientActor == "" || recipientActor != in.Actor {
-		return CollaborationBodyResult{}, fmt.Errorf("collaboration body requires the exact active recipient run attempt")
+	if !ok ||
+		recipient.Actor != in.Actor ||
+		recipient.RunAttemptID != attempt.ID ||
+		recipient.WorkID != attempt.WorkID {
+		return CollaborationBodyResult{}, fmt.Errorf("collaboration body requires the exact active recipient binding")
 	}
-	// The native session binding belongs to the RECIPIENT's work, which is
-	// derived from the attempt, not from the source work named in the request.
-	binding, alive, err := s.latestDelegateBinding(attempt.WorkID)
-	if err != nil {
-		return CollaborationBodyResult{}, err
-	}
-	if !alive || binding == nil || binding.Session != in.SessionID ||
-		binding.RunAttemptID != attempt.ID ||
-		normalizeCollaborationHarness(binding.Harness) != normalizeCollaborationHarness(attempt.Harness) {
-		return CollaborationBodyResult{}, fmt.Errorf("collaboration body requires the exact owned native session binding")
-	}
-	item, err := s.Get(attempt.WorkID)
-	if err != nil {
-		return CollaborationBodyResult{}, err
-	}
-	recipient, ok, err := s.collaborationRecipientResolution(item, attempt)
-	if err != nil {
-		return CollaborationBodyResult{}, err
-	}
-	if !ok || !CollaborationEventRelevant(event, recipient.RelevanceContext()) {
+	if !CollaborationEventRelevant(event, recipient.RelevanceContext()) {
 		return CollaborationBodyResult{}, fmt.Errorf("collaboration body request does not match current recipient relevance")
 	}
 	artifacts, err := home.NewArtifactStore(s.home)

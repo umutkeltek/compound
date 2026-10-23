@@ -138,8 +138,17 @@ func (s *Store) ResolveCollaborationRecipient(query CollaborationRecipientQuery)
 	if unsettledSession {
 		return CollaborationRecipientResolution{UnresolvedReason: "the known spawned session has no exact active binding"}, false, nil
 	}
-	// No spawned binding. A session Compound never launched may still identify
-	// itself, but only conjunctively -- see below.
+	// No delegate binding. A session this runtime LAUNCHED under a governed
+	// execution is still addressable before the envelope forward-link exists:
+	// the launch's own pinned snapshot, committed start boundary, and current
+	// running reservation are the authority. A known-but-inactive native
+	// session returns a reason, never silence, so no bridge may adopt it.
+	native, ok, err := s.resolveNativeCollaborationRecipient(query, cwd, workByID, attempts)
+	if err != nil || ok || native.UnresolvedReason != "" {
+		return native, ok, err
+	}
+	// No spawned and no native binding. A session Compound never launched may
+	// still identify itself, but only conjunctively -- see below.
 	declared, ok, err := s.resolveDeclaredCollaborationRecipient(query, cwd, workByID, time.Now())
 	if err != nil || ok || declared.UnresolvedReason != "" || !query.CheckPriorBindings {
 		return declared, ok, err
@@ -176,6 +185,27 @@ func (s *Store) resolveAbsentCollaborationRecipient(query CollaborationRecipient
 		if known {
 			return CollaborationRecipientResolution{UnresolvedReason: "the known spawned session binding was superseded"}, false, nil
 		}
+	}
+	// Same fence for a native session this runtime launched: an inactive or
+	// superseded pinned session is still KNOWN, so prose must not adopt it.
+	// Only the Stop consumer reaches here, so this read is history-sized by
+	// the same argument as the delegate fold above.
+	works, err := s.List()
+	if err != nil {
+		return CollaborationRecipientResolution{}, false, err
+	}
+	liveByID := make(map[string]envelope.WorkEnvelope, len(works))
+	for _, item := range works {
+		if !terminalStates[item.State] {
+			liveByID[item.ID] = item
+		}
+	}
+	nativeKnown, err := s.fenceKnownNativeSession(query, liveByID)
+	if err != nil {
+		return CollaborationRecipientResolution{}, false, err
+	}
+	if nativeKnown {
+		return CollaborationRecipientResolution{UnresolvedReason: "the known native session has no exact active binding"}, false, nil
 	}
 	return CollaborationRecipientResolution{}, false, nil
 }
@@ -258,13 +288,16 @@ func (s *Store) resolveDeclaredCollaborationRecipient(
 	return s.collaborationRecipientResolution(held[0], runattempt.RunAttempt{Actor: actor})
 }
 
-func (s *Store) collaborationRecipientResolution(item envelope.WorkEnvelope, attempt runattempt.RunAttempt) (CollaborationRecipientResolution, bool, error) {
-	actor, err := s.collaborationRecipientActor(attempt)
-	if err != nil {
-		return CollaborationRecipientResolution{}, false, err
-	}
+// collaborationRecipientCoordinates folds one work envelope's reference-only
+// coordinates into a recipient read model. It is pure: both the delegate and
+// the native path build on it, so the two paths can never disagree about what
+// a recipient's own coordinates are. Policy references beyond the work's
+// current decision stay the caller's concern -- the delegate path scans the
+// event log for correlated decisions, the native path pins the exact current
+// one -- so neither path inherits the other's I/O profile.
+func collaborationRecipientCoordinates(item envelope.WorkEnvelope, attempt runattempt.RunAttempt) CollaborationRecipientResolution {
 	resolution := CollaborationRecipientResolution{
-		Actor: actor, WorkID: item.ID, RunAttemptID: attempt.ID,
+		WorkID: item.ID, RunAttemptID: attempt.ID,
 		ScopeRefs: []string{}, DependencyRefs: []string{}, PolicyRefs: []string{},
 		BaseRevisions: []string{}, ResourceRefs: []string{},
 	}
@@ -289,6 +322,16 @@ func (s *Store) collaborationRecipientResolution(item envelope.WorkEnvelope, att
 			resolution.ResourceRefs = appendCollaborationRef(resolution.ResourceRefs, ref)
 		}
 	}
+	return resolution
+}
+
+func (s *Store) collaborationRecipientResolution(item envelope.WorkEnvelope, attempt runattempt.RunAttempt) (CollaborationRecipientResolution, bool, error) {
+	actor, err := s.collaborationRecipientActor(attempt)
+	if err != nil {
+		return CollaborationRecipientResolution{}, false, err
+	}
+	resolution := collaborationRecipientCoordinates(item, attempt)
+	resolution.Actor = actor
 	if attempt.ActionIntentID != "" {
 		events, err := eventstore.Open(s.home)
 		if err != nil {

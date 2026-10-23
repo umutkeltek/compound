@@ -453,3 +453,155 @@ func TestCollaborationRecipientActorComesFromAuthorizingAction(t *testing.T) {
 		t.Fatalf("missing authorizing action was accepted: %v", err)
 	}
 }
+
+// TestCrossWorkCollaborationBodyRefusesCanceledRecipientAndLostAttachment pins
+// the lifecycle half of the body door: a recipient whose work terminalized, or
+// whose owned session binding was superseded by a recorded exit, can never
+// fetch the body that was addressed to it.
+func TestCrossWorkCollaborationBodyRefusesCanceledRecipientAndLostAttachment(t *testing.T) {
+	t.Parallel()
+
+	t.Run("canceled recipient work", func(t *testing.T) {
+		fixture := newCrossWorkFixture(t)
+		if _, err := fixture.store.Close(fixture.recipientWork, CloseInput{
+			Outcome: "cancelled", MoveType: "audit_only", Actor: fixture.recipientActor,
+			Summary: "recipient canceled before reading the handoff body",
+		}, fixedNow.Add(7*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fixture.store.RetrieveCollaborationBody(CollaborationBodyRequest{
+			WorkID: fixture.sourceWorkID, EventID: fixture.eventID, Actor: fixture.recipientActor,
+			RunAttemptID: fixture.attemptID, SessionID: fixture.sessionID,
+		}); err == nil {
+			t.Fatal("a canceled recipient fetched the cross-work body")
+		}
+	})
+
+	t.Run("lost session attachment", func(t *testing.T) {
+		fixture := newCrossWorkFixture(t)
+		binding, alive, err := fixture.store.latestDelegateBinding(fixture.recipientWork)
+		if err != nil || !alive || binding == nil {
+			t.Fatalf("fixture binding missing: alive=%v binding=%+v err=%v", alive, binding, err)
+		}
+		exitID, err := fixture.store.recordDelegateExited(fixture.recipientWork, binding, nil, fixedNow.Add(8*time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		item, err := fixture.store.Get(fixture.recipientWork)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := fixture.store.appendDelegateLifecycleEvent(
+			fixture.recipientWork, item.State, fixture.recipientActor, exitID,
+			"test session exit attached", fixedNow.Add(8*time.Second),
+		); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fixture.store.RetrieveCollaborationBody(CollaborationBodyRequest{
+			WorkID: fixture.sourceWorkID, EventID: fixture.eventID, Actor: fixture.recipientActor,
+			RunAttemptID: fixture.attemptID, SessionID: fixture.sessionID,
+		}); err == nil {
+			t.Fatal("a recipient whose session attachment was lost fetched the cross-work body")
+		}
+	})
+}
+
+// TestCrossWorkCollaborationBodyRefusesTamperedClassAuthority pins class
+// authority parity: a recorded next_boundary observation rewritten in storage
+// to claim interrupt delivery must be refused by the delivery-evidence
+// recheck, exactly as a delivered card would be.
+func TestCrossWorkCollaborationBodyRefusesTamperedClassAuthority(t *testing.T) {
+	t.Parallel()
+	fixture := newCrossWorkFixture(t)
+	var stored CollaborationEvent
+	if err := fixture.store.readEventJSON(fixture.eventID, &stored); err != nil {
+		t.Fatal(err)
+	}
+	// A copy under a fresh id: the eventstore is append-only, and the attack
+	// being falsified is an ungoverned event APPEARING in storage.
+	stored.ID = "wco_" + strings.Repeat("a1b2c3d4", 2)
+	stored.DeliveryClass = CollaborationDeliveryInterrupt
+	stored.Delta = &CollaborationStateDelta{
+		Kind: "run_attempt", SubjectRef: fixture.attemptID, After: "invalidated",
+	}
+	stored.Affects = &CollaborationAffects{
+		WorkIDs:       []string{fixture.recipientWork},
+		RunAttemptIDs: []string{fixture.attemptID},
+	}
+	if err := fixture.store.writeEventJSON(stored.ID, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.store.RetrieveCollaborationBody(CollaborationBodyRequest{
+		WorkID: fixture.sourceWorkID, EventID: stored.ID, Actor: fixture.recipientActor,
+		RunAttemptID: fixture.attemptID, SessionID: fixture.sessionID,
+	}); err == nil {
+		t.Fatal("a tampered interrupt class was released without governed authority")
+	}
+}
+
+// TestCrossWorkCollaborationBodyBindsTargetActorAndAffectedActorsConjunctively
+// pins the actor dimensions at the body door: a correctly targeted actor is
+// still refused while Affects.Actors names somebody else, whether the target
+// is set or unset.
+func TestCrossWorkCollaborationBodyBindsTargetActorAndAffectedActorsConjunctively(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name        string
+		targetActor string
+	}{
+		{name: "correct target actor with wrong affected actors", targetActor: "claude:receiver"},
+		{name: "unset target actor with wrong affected actors"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newCrossWorkFixture(t)
+			bodyRef := collaborationBodyRef(t, fixture.store, "body for another affected actor")
+			input := CollaborationInput{
+				Actor: "codex:sender", IdempotencyKey: "wrong-affected-" + workSlug(tt.name),
+				BodyRef: bodyRef, DeliveryClass: CollaborationDeliveryNextBoundary,
+				Delta: CollaborationStateDelta{Kind: "work", SubjectRef: fixture.sourceWorkID, After: "changed"},
+				Affects: CollaborationAffects{
+					Actors:  []string{"claude:somebody-else"},
+					WorkIDs: []string{fixture.recipientWork},
+				},
+			}
+			// Record, then state the sender's real intent directly in storage:
+			// recording merges TargetActor into Affects.Actors, and the point
+			// here is the stored conjunction the door re-reads.
+			recorded, err := fixture.store.RecordCollaboration(fixture.sourceWorkID, input, fixedNow.Add(9*time.Second))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.targetActor != "" {
+				stored := recorded.Event
+				stored.ID = "wco_" + strings.Repeat("e5f6a7b8", 2)
+				stored.TargetActor = tt.targetActor
+				stored.Affects = &CollaborationAffects{
+					Actors:  []string{"claude:somebody-else"},
+					WorkIDs: []string{fixture.recipientWork},
+				}
+				if err := fixture.store.writeEventJSON(stored.ID, &stored); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := fixture.store.RetrieveCollaborationBody(CollaborationBodyRequest{
+				WorkID: fixture.sourceWorkID, EventID: recorded.Event.ID, Actor: fixture.recipientActor,
+				RunAttemptID: fixture.attemptID, SessionID: fixture.sessionID,
+			}); err == nil {
+				t.Fatal("an event whose affected actors exclude the recipient released its body")
+			}
+		})
+	}
+}
+
+func workSlug(value string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r + ('a' - 'A')
+		default:
+			return '-'
+		}
+	}, value)
+}
