@@ -1252,8 +1252,10 @@ After cutover, landing mutations require `--work` and `--actor`. Work validates
 the current work lease, delivery binding, and policy before changing the resource.
 The holder includes the exact work ID as a colon-delimited component. `status
 --work W` selects that landing slot, while `status --proof` reports proof capacity.
-The fresh-main-SHA guard, exact candidate proof, and post-land proof remain required:
-a landing can now advance main while another candidate is being tested.
+The fresh-main-SHA guard and exact candidate proof remain required: a landing can now
+advance main while another candidate is being tested. A post-land proof is required only
+when the landed tip differs from the proven candidate HEAD; a pure fast-forward of the
+proven tip lands the byte-identical tree, and the nightly full battery on main is the backstop.
 
 ### Source-derived proof capacities and conflict FIFO
 

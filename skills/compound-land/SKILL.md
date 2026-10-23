@@ -396,8 +396,14 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   releasing with nothing held is an idempotent no-op — safe to run even if acquire never happened
   (e.g. a trivial single-commit land that skipped §3). `steal --reason` (§3) remains the escape
   hatch if a DIFFERENT lane needs to take over a lease this one abandoned without releasing.
-- Re-run on landed main against the same pre-land base (cheap insurance against
-  rehearsal/main divergence):
+- **No second battery after a pure fast-forward of the proven tip** (operator ruling 2026-10-23,
+  Law 16). When `git rev-parse main` after landing equals the certified candidate HEAD stored in the
+  pre-land `--out` report, main's tree is byte-identical to the tree the battery proved, so a
+  post-land rerun proves nothing new and costs ~40 minutes of shared proof capacity. Record the
+  equality instead: `land-check --tip "$TIP"` cites the pre-land proof at that same tip. The
+  nightly full battery on main is the backstop for host or ordering drift.
+  Run the post-land battery against the same `PRE_LAND_BASE_SHA` ONLY when the landed tip differs
+  from the proven HEAD (a replay, a package-disjointness landing, or any rebase after proof):
   ```bash
   go run ./cmd/compound proof-check --json --base "$PRE_LAND_BASE_SHA" \
     --work <work_id> --actor "<harness>:<lane>" --out <absolute-report.json>
@@ -405,7 +411,7 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   Preserve its actual exit and read the authoritative `--out` report. Never
   recapture `main^{commit}` after landing: that makes `base...HEAD` empty. If
   replay or rebase changes the candidate, deliberately capture a new
-  `PRE_LAND_BASE_SHA` before a renewed pre-land battery and rerun both batteries.
+  `PRE_LAND_BASE_SHA` before a renewed pre-land battery.
 - **If the land touched `cmd/compound` or `internal/{hook,harness,contract,mem,breadth}`: run
   `./install.sh`** — hooks and external consumers use the installed binary, which self-reports its
   build SHA since 9b5736b (`compound version`; arch doctor warns fresh/stale/missing). A stale
