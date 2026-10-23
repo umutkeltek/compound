@@ -168,6 +168,13 @@ var capabilitySkillRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
 // cover by exact slug match.
 var branchSlugRe = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`)
 
+// capabilityClassRe: a declared Receipt capability_class is one lowercase routing slug
+// (build-implement, judge-critique, ...) — no dots, paths, whitespace, or prose.
+var capabilityClassRe = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
+
+// ValidCapabilityClassSlug reports whether s has the Receipt capability_class shape.
+func ValidCapabilityClassSlug(s string) bool { return capabilityClassRe.MatchString(s) }
+
 func oneOf(val string, set []string) bool {
 	for _, s := range set {
 		if val == s {
@@ -1596,6 +1603,12 @@ type Receipt struct {
 	// work staked no prediction. When staked, ALWAYS set -- Diverged=false (a confirmed
 	// prediction) is signal too, not merely the absence of a divergence flag.
 	Surprise *SurpriseSignal `json:"surprise,omitempty"`
+	// CapabilityClass is the routing capability class the closing attempt DECLARED (work close
+	// --capability-class), never inferred from predicate text. It conditions the lanebeliefs
+	// per-(lane, class) completion posterior; empty means undeclared, which buckets as "unknown".
+	// Validation checks shape only (ValidCapabilityClassSlug); which classes exist is the close
+	// door's call, against routeevidence.KnownCapabilityClasses.
+	CapabilityClass string `json:"capability_class,omitempty"`
 }
 
 // SurpriseSignal is the harness-layer prediction-error record: what the work staked at create
@@ -1713,6 +1726,9 @@ func (e *Receipt) Validate() error {
 	e.Header.validate(v, SVReceipt, "rec_")
 	v.enum("outcome", e.Outcome, ReceiptOutcomes, true)
 	v.enum("move_type", e.MoveType, MoveTypes, true)
+	if e.CapabilityClass != "" && !ValidCapabilityClassSlug(e.CapabilityClass) {
+		v.addf("capability_class must be a lowercase [a-z0-9-] slug of at most 64 chars, got %q", e.CapabilityClass)
+	}
 	proofRefs := e.proofRefs()
 	switch e.MoveType {
 	case "outward_delta":

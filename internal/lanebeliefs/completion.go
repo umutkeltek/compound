@@ -18,31 +18,35 @@ import (
 // B1 valve — so it stays propose-only in the strongest sense: the fold writes its own cursor + its
 // belief observations + its completion observations + its belief candidates, and NOTHING else.
 //
-// Class conditioning (investigation result, docs_private/plan/ev-card-spec.md S0):
-// capability_class is NOT carried on a Receipt or on its WorkEnvelope — verified against the landed
-// shapes. The receipt exposes producer.lane_id (resolved to a lane node via the B0 door) and a
-// closed move_type enum, but move_type is a mutation-shape taxonomy, not the routing capability class
-// (build-implement / judge-critique / classify-extract / plan-decompose …). The only surface that
-// carries capability class at all is the route-evidence ledger, and even there it is not a stored
-// field: it is reverse-derived from the selected target through the model-capability routing
-// defaults, a mapping that is both lossy and multi-valued (routeevidence.RouteOutcomeReview keeps it
-// as a []string). Conditioning a per-attempt Beta trial on a multi-valued, ledger-dependent
-// reverse-map is neither clean nor in this slice's scope, so every receipt-sourced attempt buckets
-// into the explicit "unknown" class today (see completionCapabilityClass). The bucket dimension is
-// nonetheless first-class: a KNOWN class is never pooled with another and "unknown" is its own
-// bucket, so when a later slice wires a single-valued class resolver the guarantee already holds.
+// Class conditioning: a completion trial is bucketed by the capability_class the closing attempt
+// DECLARED on its Receipt (work close --capability-class, checked against
+// routeevidence.KnownCapabilityClasses). The fold never infers a class — not from predicate text,
+// not from move_type (a mutation-shape taxonomy, not a routing class), and not from the lossy,
+// multi-valued route-evidence reverse-map. A receipt that declares none buckets into the explicit
+// "unknown" class (see completionCapabilityClass). A KNOWN class is never pooled with another and
+// "unknown" is its own bucket: the class is the observation domain (the GroupKey axis), never
+// merged after the fact.
 
 const completionPosteriorSchemaVersion = "compound.lanebeliefs.completion_posterior.v0.1"
 
-// completionCapabilityClass resolves the capability class a completion trial is conditioned on. It
-// returns the explicit "unknown" sentinel for every receipt-sourced attempt: neither the Receipt nor
-// its WorkEnvelope carries a capability class, and the route-evidence reverse-map that could infer
-// one is lossy/multi-valued and out of this slice's read-only, self-contained scope. It is a seam,
-// not a guess — a future producer that can attribute a SINGLE class to a work substitutes a real
-// resolution here without reshaping the store, and the never-pool invariant still holds because the
-// class is the observation domain (the GroupKey axis), never merged after the fact.
-func completionCapabilityClass(_ envelope.Receipt) string {
+// completionCapabilityClass resolves the capability class a completion trial is conditioned on: the
+// receipt's declared capability_class, or the explicit "unknown" sentinel when it declares none.
+func completionCapabilityClass(rec envelope.Receipt) string {
+	if class := declaredCapabilityClass(rec); class != "" {
+		return class
+	}
 	return capabilityClassUnknown
+}
+
+// declaredCapabilityClass is the receipt's capability_class when it names a real class; empty when
+// the receipt declares none or declares the "unknown" sentinel itself (which is the absence of a
+// declaration, not a class).
+func declaredCapabilityClass(rec envelope.Receipt) string {
+	class := strings.TrimSpace(rec.CapabilityClass)
+	if class == capabilityClassUnknown {
+		return ""
+	}
+	return class
 }
 
 // completionSignal mints the completion Beta trial for one terminal work attempt: a hit (1) only when

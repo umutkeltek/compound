@@ -190,6 +190,43 @@ func TestCompletionKnownClassesNeverPool(t *testing.T) {
 	if laneYJudge.Attempts != 8 || laneYJudge.Completions != 1 {
 		t.Fatalf("lane axis pooled: %+v", laneYJudge)
 	}
+
+	// The same never-pool law through the REAL fold path: receipts declaring two classes on one lane
+	// (plus a class-less legacy receipt) land in three separate cells. Reds against a fold that
+	// buckets every receipt as "unknown" regardless of the declared capability_class.
+	foldHome := t.TempDir()
+	nodeID := seedLaneNode(t, foldHome, "fixture/judge")
+	for i := 0; i < 3; i++ {
+		writeLaneReceiptEvent(t, foldHome, laneReceiptFixture{
+			ReceiptID: fmt.Sprintf("rec_pool_judge_%02d", i), WorkID: fmt.Sprintf("work_pool_judge_%02d", i), LaneID: "fixture/judge",
+			MoveType: "audit_only", Outcome: "completed", To: "completed", CapabilityClass: "judge-critique",
+		})
+	}
+	for i := 0; i < 2; i++ {
+		writeLaneReceiptEvent(t, foldHome, laneReceiptFixture{
+			ReceiptID: fmt.Sprintf("rec_pool_build_%02d", i), WorkID: fmt.Sprintf("work_pool_build_%02d", i), LaneID: "fixture/judge",
+			MoveType: "outward_delta", Outcome: "failed", To: "failed", CapabilityClass: "build-implement",
+		})
+	}
+	writeLaneReceiptEvent(t, foldHome, laneReceiptFixture{
+		ReceiptID: "rec_pool_legacy", WorkID: "work_pool_legacy", LaneID: "fixture/judge",
+		MoveType: "control_plane_repair", Outcome: "completed", Changed: true, To: "completed",
+	})
+	if _, err := Fold(foldHome, FoldOptions{Now: foldTestTime}); err != nil {
+		t.Fatal(err)
+	}
+	for _, cell := range []struct {
+		class                 string
+		attempts, completions int
+	}{{"judge-critique", 3, 3}, {"build-implement", 2, 0}, {capabilityClassUnknown, 1, 1}} {
+		got, err := CompletionPosterior(foldHome, nodeID, cell.class)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Attempts != cell.attempts || got.Completions != cell.completions {
+			t.Fatalf("folded %s cell = %d/%d, want %d/%d (classes pooled): %+v", cell.class, got.Attempts, got.Completions, cell.attempts, cell.completions, got)
+		}
+	}
 }
 
 // Determinism: the same attempts discovered in permuted event/receipt order fold to byte-identical

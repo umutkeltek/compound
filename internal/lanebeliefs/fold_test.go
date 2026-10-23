@@ -436,6 +436,9 @@ type laneReceiptFixture struct {
 	FailureNote string
 	NoProof     bool
 	To          string
+	// CapabilityClass, when set, is written as the receipt's capability_class wire key: the
+	// fixture speaks the persisted JSON the fold reads, not a Go field.
+	CapabilityClass string
 }
 
 func writeLaneReceiptEvent(t *testing.T, homePath string, fx laneReceiptFixture) {
@@ -472,7 +475,11 @@ func writeLaneReceiptEvent(t *testing.T, homePath string, fx laneReceiptFixture)
 	if fx.FailureNote != "" {
 		receipt.FailureCause = &envelope.FailureCause{SurfaceOutcome: fx.FailureNote}
 	}
-	writeJSONFile(t, filepath.Join(homePath, "events", fx.ReceiptID+".json"), receipt)
+	if fx.CapabilityClass != "" {
+		writeJSONFile(t, filepath.Join(homePath, "events", fx.ReceiptID+".json"), withWireKey(t, receipt, "capability_class", fx.CapabilityClass))
+	} else {
+		writeJSONFile(t, filepath.Join(homePath, "events", fx.ReceiptID+".json"), receipt)
+	}
 	to := fx.To
 	if to == "" {
 		to = "completed"
@@ -496,6 +503,22 @@ func writeLaneReceiptEvent(t *testing.T, homePath string, fx laneReceiptFixture)
 	if _, err := f.Write(append(b, '\n')); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// withWireKey re-encodes v as a JSON object with one extra key set, so a fixture can carry a
+// field exactly as it appears on disk.
+func withWireKey(t *testing.T, v any, key string, value any) map[string]any {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(b, &obj); err != nil {
+		t.Fatal(err)
+	}
+	obj[key] = value
+	return obj
 }
 
 func writeJSONFile(t *testing.T, path string, v any) {

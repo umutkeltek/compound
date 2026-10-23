@@ -15,6 +15,7 @@ import (
 	"compound/internal/hook"
 	"compound/internal/mem"
 	"compound/internal/routeev"
+	"compound/internal/routeevidence"
 	"compound/internal/runattempt"
 	"compound/internal/work"
 )
@@ -265,7 +266,7 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work close-plan work_abc123 --outcome completed --move-type outward_delta --dry-run",
 	},
 	"close": {
-		Usage:   "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--used C] [--missed C] [--false-triggered C] [--failure-surface S] [--failure-mechanism M] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C] [--acknowledge-abandoned ratt_X --reason R]... [--verification-rejected ratt_X --reason R]... [--steal --reason R]",
+		Usage:   "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--used C] [--missed C] [--false-triggered C] [--failure-surface S] [--failure-mechanism M] [--capability-class C] [--lane L] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C] [--acknowledge-abandoned ratt_X --reason R]... [--verification-rejected ratt_X --reason R]... [--steal --reason R]",
 		Example: "compound work close work_abc123 --outcome completed --move-type outward_delta --summary \"shipped\" --changed",
 	},
 	"set-aside": {
@@ -1994,7 +1995,7 @@ func cmdWork(args []string) {
 			fmt.Printf("plan: %s\n", plan.PlanPath)
 		}
 	case "close":
-		closeUsage := "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--used C] [--missed C] [--false-triggered C] [--failure-surface S] [--failure-mechanism M] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C] [--opens-branch slug:owner:kind]... [--acknowledge-abandoned ratt_X --reason R]... [--verification-rejected ratt_X --reason R]... [--steal --reason R] [--transcript PATH] [--non-use REF --non-use-evidence REF]\n  (passing --used at all — even --used \"\" for declared-none — stamps skills.used_declared=true, records an explicit use declaration; absence of other refs remains unknown)\n  (--transcript PATH, or COMPOUND_TRANSCRIPT_PATH, runs the same reference detector as SessionEnd and records matches as references only; an absent or unreadable transcript is fail-open — unknown, never ignored, never a blocked close)\n  (--opens-branch declares a future branch on the emitted transition: kind is opens|blocks|supersedes|validates|retires|routes_to; the owner may itself contain colons)\n  (a work held by another actor's lease refuses close unless --by/--actor matches the holder, or --steal --reason \"...\" is given)"
+		closeUsage := "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--used C] [--missed C] [--false-triggered C] [--failure-surface S] [--failure-mechanism M] [--capability-class C] [--lane L] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C] [--opens-branch slug:owner:kind]... [--acknowledge-abandoned ratt_X --reason R]... [--verification-rejected ratt_X --reason R]... [--steal --reason R] [--transcript PATH] [--non-use REF --non-use-evidence REF]\n  (passing --used at all — even --used \"\" for declared-none — stamps skills.used_declared=true, records an explicit use declaration; absence of other refs remains unknown)\n  (--transcript PATH, or COMPOUND_TRANSCRIPT_PATH, runs the same reference detector as SessionEnd and records matches as references only; an absent or unreadable transcript is fail-open — unknown, never ignored, never a blocked close)\n  (--opens-branch declares a future branch on the emitted transition: kind is opens|blocks|supersedes|validates|retires|routes_to; the owner may itself contain colons)\n  (a work held by another actor's lease refuses close unless --by/--actor matches the holder, or --steal --reason \"...\" is given)\n  (--capability-class declares the attempt's routing class on the receipt and must be a known class; omitted, the receipt carries none and nothing is inferred. --lane stamps the receipt's producer lane and must resolve to an imported agent-lane node)"
 		closeValueFlags := map[string]bool{
 			"--outcome":               true,
 			"--move-type":             true,
@@ -2006,6 +2007,8 @@ func cmdWork(args []string) {
 			"--false-triggered":       true,
 			"--failure-surface":       true,
 			"--failure-mechanism":     true,
+			"--capability-class":      true,
+			"--lane":                  true,
 			"--proof":                 true,
 			"--proof-ref":             true,
 			"--memory-candidate":      true,
@@ -2039,6 +2042,13 @@ func cmdWork(args []string) {
 			fmt.Fprintln(os.Stderr, "error:", ackErr)
 			fmt.Fprintln(os.Stderr, closeUsage)
 			os.Exit(2)
+		}
+		if has("--capability-class") {
+			if err := routeevidence.CheckKnownCapabilityClass(homePath, "--capability-class", flag("--capability-class")); err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				fmt.Fprintln(os.Stderr, closeUsage)
+				os.Exit(2)
+			}
 		}
 		closeID := pos(closeValueFlags)
 		closeActor := firstNonEmpty(flag("--by"), flag("--actor"))
@@ -2078,6 +2088,8 @@ func cmdWork(args []string) {
 			MemoryRejected:             splitCSV(flag("--memory-rejected")),
 			FailureSurfaceOutcome:      flag("--failure-surface"),
 			FailureMechanism:           flag("--failure-mechanism"),
+			CapabilityClass:            flag("--capability-class"),
+			LaneID:                     flag("--lane"),
 			Steal:                      has("--steal"),
 			StealReason:                flag("--reason"),
 			OpensBranches:              branchRefs,

@@ -208,7 +208,8 @@ func compoundCommandRegistry() map[string]compoundCommand {
 			withSubcommandAdmission("cool", policy.FirstPartyCommandRead).
 			withSubcommandFlagAdmission("cool", "--dry-run", policy.FirstPartyCommandRead).
 			withSubcommandFlagAdmission("cool", "--experimental", policy.FirstPartyCommandGoverned).
-			withSubcommandAdmission("list", policy.FirstPartyCommandRead),
+			withSubcommandAdmission("list", policy.FirstPartyCommandRead).
+			withSubcommandAdmission("posterior", policy.FirstPartyCommandRead),
 		"mcp-transport": heldCommand(cmdMCPTransport),
 		"interest":      heldCommand(interestcli.RunCLI),
 		"negatives":     heldCommand(cmdNegatives),

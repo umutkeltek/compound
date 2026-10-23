@@ -4,7 +4,11 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"regexp"
+	"slices"
+	"sort"
 	"strings"
+
+	"compound/internal/envelope"
 )
 
 const (
@@ -93,6 +97,45 @@ func ClassifyCapabilityTask(task string) TaskClassification {
 		DeterministicFirst: fallback.deterministicFirst,
 		EvaluationMethod:   fallback.evaluationMethod,
 	}
+}
+
+// KnownCapabilityClasses is the one vocabulary of capability classes a close may declare
+// (work close --capability-class) and a posterior may be read for: every class the owned
+// classifier rules (and their default) can emit, plus every routing_defaults class in homePath's
+// model-capabilities manifest that has the Receipt capability_class shape (a dotted policy
+// capability such as work.continue.unattended is not a task class and is left out). An empty
+// homePath, or a home with no readable manifest, yields the classifier vocabulary alone. Sorted,
+// deduplicated, and a fresh slice on every call.
+func KnownCapabilityClasses(homePath string) []string {
+	seen := map[string]bool{defaultTaskClassificationRule.capabilityClass: true}
+	for _, rule := range taskClassificationRules {
+		seen[rule.capabilityClass] = true
+	}
+	if strings.TrimSpace(homePath) != "" {
+		if manifest, _, err := LoadModelCapabilitiesFromHome(homePath); err == nil {
+			for class := range manifest.RoutingDefaults {
+				if envelope.ValidCapabilityClassSlug(class) {
+					seen[class] = true
+				}
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for class := range seen {
+		out = append(out, class)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// CheckKnownCapabilityClass refuses a class outside KnownCapabilityClasses, naming the flag, the
+// bad value, and every valid class, so a typo never opens a silent new posterior cell.
+func CheckKnownCapabilityClass(homePath, flagName, class string) error {
+	known := KnownCapabilityClasses(homePath)
+	if slices.Contains(known, class) {
+		return nil
+	}
+	return fmt.Errorf("%s %q is not a known capability class; valid classes: %s", flagName, class, strings.Join(known, ", "))
 }
 
 func taskClassifierRevision(rules []taskClassificationRule, fallback taskClassificationRule) string {

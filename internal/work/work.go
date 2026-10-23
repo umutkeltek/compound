@@ -2460,6 +2460,11 @@ type CloseInput struct {
 	MemoryRejected             []string
 	FailureSurfaceOutcome      string
 	FailureMechanism           string
+	// CapabilityClass is the attempt's DECLARED routing capability class, written verbatim onto
+	// the Receipt (empty = undeclared, the field stays absent). Close never infers it from the
+	// predicate; receipt validation checks its shape and the CLI checks it against
+	// routeevidence.KnownCapabilityClasses.
+	CapabilityClass string
 	// UsedDeclared preserves historical/typed declarations. Claim scoring needs
 	// separate application provenance; absence never implies non-use.
 	UsedDeclared bool
@@ -3537,8 +3542,9 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 			Parked:     orEmpty(in.MemoryParked),
 			Rejected:   orEmpty(in.MemoryRejected),
 		},
-		Next:      envelope.ReceiptNext{SuggestedWork: []string{}},
-		ProofRefs: proofRefs,
+		Next:            envelope.ReceiptNext{SuggestedWork: []string{}},
+		ProofRefs:       proofRefs,
+		CapabilityClass: strings.TrimSpace(in.CapabilityClass),
 	}
 	if fc := failureCause(in.FailureSurfaceOutcome, in.FailureMechanism); fc != nil {
 		rec.FailureCause = fc

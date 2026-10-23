@@ -72,10 +72,10 @@ const (
 	// completionOutcomeCompleted is the single terminal work state that scores a completion hit; the
 	// denominator (failed/cancelled) is every other terminal state (see laneBeliefTerminalState).
 	completionOutcomeCompleted = "completed"
-	// capabilityClassUnknown is the explicit sentinel class a completion trial buckets into when no
-	// capability class is resolvable for the work. It is its OWN bucket: a KNOWN class is NEVER pooled
+	// capabilityClassUnknown is the explicit sentinel class a completion trial buckets into when its
+	// receipt declares no capability class. It is its OWN bucket: a KNOWN class is NEVER pooled
 	// with another and NEVER merged into unknown, so a 2/2 prior over one class can never be mistaken
-	// for evidence about another (see completionCapabilityClass for why this is unknown today).
+	// for evidence about another (see completionCapabilityClass).
 	capabilityClassUnknown = "unknown"
 )
 
@@ -282,7 +282,12 @@ func Fold(homePath string, opts FoldOptions) (FoldReport, error) {
 				report.UnresolvedReceiptCount++
 				continue
 			}
-			if strings.TrimSpace(rec.MoveType) == "audit_only" {
+			// audit_only does not count as a move, so it never feeds capability/tendency beliefs. An
+			// audit_only close that DECLARES its capability class is still one attempt by this lane in
+			// that class, so it mints the completion trial alone; without a declared class it stays
+			// ignored, exactly as before.
+			auditOnly := strings.TrimSpace(rec.MoveType) == "audit_only"
+			if auditOnly && declaredCapabilityClass(rec) == "" {
 				report.IgnoredReceiptCount++
 				continue
 			}
@@ -291,12 +296,15 @@ func Fold(homePath string, opts FoldOptions) (FoldReport, error) {
 				report.IgnoredReceiptCount++
 				continue
 			}
-			// Belief signals (capability + tendency) are minted ONLY for a completed receipt; the
-			// completion trial is minted for EVERY terminal work attempt (completed/failed/cancelled)
+			// Belief signals (capability + tendency) are minted ONLY for a completed non-audit receipt;
+			// the completion trial is minted for EVERY terminal work attempt (completed/failed/cancelled)
 			// keyed on the WORK's terminal state (ev.Event.To), so a non-completion is a first-class
-			// miss (Hits=0), not an ignored receipt. audit_only and work-id-less receipts were already
-			// dropped above, so every receipt reaching here is one legitimate attempt.
-			signals := beliefSignalsFromReceipt(rec)
+			// miss (Hits=0), not an ignored receipt. Class-less audit_only and work-id-less receipts
+			// were already dropped above, so every receipt reaching here is one legitimate attempt.
+			var signals []beliefSignal
+			if !auditOnly {
+				signals = beliefSignalsFromReceipt(rec)
+			}
 			signals = append(signals, completionSignal(ev.Event.To, completionCapabilityClass(rec)))
 			for _, sig := range signals {
 				groupKey := hashParts(resolution.NodeID, sig.Kind, sig.Domain, workID)

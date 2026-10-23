@@ -196,6 +196,10 @@ func TestFirstPartyCommandAdmissionDistinguishesMutatingSubcommands(t *testing.T
 			command:       "compound lanebeliefs list",
 			wantOperation: "local_command",
 		},
+		{
+			command:       "compound lanebeliefs posterior --lane fixture/judge --class build-implement --json",
+			wantOperation: "local_command",
+		},
 	}
 
 	for _, tc := range tests {
