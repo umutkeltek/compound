@@ -318,6 +318,14 @@ func ResolveRepoKindWithHome(homePath, flag, cwd string) (kind, via string, err 
 	if k, p := DetectRepoKindFromRegistry(reg, registryPath, cwd); k != "" {
 		return k, p, nil
 	}
+	// A linked worktree of a registered repository inherits that repository's
+	// DECLARED kind. The worktree path stays the workspace; only the kind and
+	// its declared authority change.
+	if k, p, werr := resolveRepoKindFromLinkedWorktree(reg, registryPath, cwd); werr != nil {
+		return "", "", werr
+	} else if k != "" {
+		return k, p, nil
+	}
 	return defaultRepoKind, "default", nil
 }
 
