@@ -42,7 +42,7 @@ func backupCredentialStageFileStat(info os.FileInfo, sha string) (policy.Runtime
 	if !ct.IsValid() {
 		return policy.RuntimeConfigInstallStat{}, backupCredentialStageError("source_stat")
 	}
-	ns := ct.FieldByName("Sec").Int()*1000000000 + ct.FieldByName("Nsec").Int()
+	ns := ct.FieldByName("Sec").Int()*1_000_000_000 + ct.FieldByName("Nsec").Int()
 	return policy.RuntimeConfigInstallStat{Device: uint64(s.Dev), Inode: uint64(s.Ino), Bytes: info.Size(), MtimeNS: strconv.FormatInt(info.ModTime().UnixNano(), 10), CtimeNS: strconv.FormatInt(ns, 10), Mode: fmt.Sprintf("%04o", info.Mode().Perm()), UID: s.Uid, GID: s.Gid, Links: uint64(s.Nlink), SHA256: sha}, nil
 }
 func backupCredentialStageMatch(info os.FileInfo, want policy.RuntimeConfigInstallStat) bool {

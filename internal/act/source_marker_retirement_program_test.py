@@ -172,7 +172,7 @@ class MarkerTests(unittest.TestCase):
             self.assertLessEqual(kwargs["timeout"], 10 if argv[0] == "/usr/bin/docker" else 15)
             timeouts.append(kwargs["timeout"])
             if len(timeouts) == 1:
-                clock[0] += 1500000000
+                clock[0] += 1_500_000_000
         self.run_main(clock=clock, budget_ns=2 * 10**9, on_probe=spending_probe)
         self.assertEqual(timeouts[:2], [2.0, 0.5])
 
