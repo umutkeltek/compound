@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // ProofRuntimeResolver maps a logical proof command to the executable that
@@ -128,23 +129,34 @@ func proofRuntimeExecutableIsTemporary(path string) bool {
 
 // ProofGoCache gives each worktree a stable Go cache outside the repository.
 // Sibling proof lanes then cannot evict one another's live cache entries or
-// leak build-cache bytes into the public-redact surface.
+// leak build-cache bytes into the public-redact surface. Each call stamps the
+// cache's owner-path and last-used markers so PruneProofGoCaches can bound
+// the caches; a retired worktree's cache becomes an orphan the next run removes.
 func ProofGoCache(repo string) (string, bool) {
-	if strings.TrimSpace(os.Getenv("COMPOUND_PROOF_SHARED_GOCACHE")) != "" || strings.TrimSpace(repo) == "" {
+	dir, owner, ok := proofGoCacheDir(repo)
+	if !ok {
 		return "", false
 	}
-	resolved, err := filepath.Abs(repo)
-	if err != nil {
-		return "", false
-	}
-	base, err := os.UserCacheDir()
-	if err != nil {
-		return "", false
-	}
-	sum := sha256.Sum256([]byte(resolved))
-	dir := filepath.Join(base, "compound-proof-gocache", hex.EncodeToString(sum[:8]))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", false
 	}
+	markProofGoCacheUse(dir, owner, time.Now())
 	return dir, true
+}
+
+// proofGoCacheDir names repo's per-worktree cache without creating it.
+func proofGoCacheDir(repo string) (dir string, owner string, ok bool) {
+	if strings.TrimSpace(os.Getenv("COMPOUND_PROOF_SHARED_GOCACHE")) != "" || strings.TrimSpace(repo) == "" {
+		return "", "", false
+	}
+	resolved, err := filepath.Abs(repo)
+	if err != nil {
+		return "", "", false
+	}
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return "", "", false
+	}
+	sum := sha256.Sum256([]byte(resolved))
+	return filepath.Join(base, "compound-proof-gocache", hex.EncodeToString(sum[:8])), resolved, true
 }

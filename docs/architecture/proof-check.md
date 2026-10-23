@@ -25,6 +25,15 @@ calls cannot race an unrelated host cache cleanup or pollute public redact.
 The `internal/work` proof-runtime module owns both custody decisions; the CLI
 only resolves the current candidate and dispatches the canonical gate plan.
 
+The cache lives per worktree under `compound-proof-gocache` in the user cache
+dir, stamped with `owner-path` and `last-used`. Each non-dry-run proof-check
+prunes that root once before its gates. It keeps the current cache and any
+cache used in the last 6 hours, removes caches whose owner worktree is gone or
+idle for 3 days, then removes the least recently used until 16 remain. A
+retired worktree's cache is removed by the next run, so retirement needs no
+cleanup step. Shared-cache runs and repos under the temp dir skip pruning; a
+prune error prints one `proof-gocache:` line and never fails the proof.
+
 For a sealed source snapshot, public redaction receives each changed file's complete
 committed body on stdin and its repo-relative identity through `--source-path`. The path
 is an annotation, not an instruction to read the working file. Edits or deletions after

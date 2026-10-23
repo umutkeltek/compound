@@ -88,6 +88,7 @@ func cmdProofCheck(args []string) {
 	if dropped := work.DropInheritedLoopbackProxy(); len(dropped) > 0 {
 		fmt.Fprintf(os.Stderr, "proof-check: gates run without the inherited loopback proxy (%s)\n", strings.Join(dropped, ", "))
 	}
+	proofCheckPruneGoCaches(args)
 	if proofCheckDevelopmentRequested(args) {
 		cmdProofCheckDevelopment(args)
 		return
@@ -1566,6 +1567,31 @@ func runProofCheckCodexPreToolUseNativeGateContext(ctx context.Context, repo str
 		return combined, fmt.Errorf("unowned write under COMPOUND_HOME governed root did not return native placement deny")
 	}
 	return combined, nil
+}
+
+// proofCheckPruneGoCaches bounds the per-worktree proof Go caches once per
+// run, here at the entry point: proofCheckCommandEnv runs for every command.
+// Pruning never fails the proof.
+func proofCheckPruneGoCaches(args []string) {
+	if hasFlag(args, "--dry-run") || hasFlag(args, "--recover-legacy-retained") {
+		return
+	}
+	repo, err := resolveProofCheckRepo(flagValue(args, "--repo"))
+	if err != nil {
+		return
+	}
+	report, ok, err := work.PruneProofGoCachesForRun(repo, time.Now())
+	if !ok {
+		return
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "proof-gocache: prune skipped:", err)
+		return
+	}
+	fmt.Fprintln(os.Stderr, report.Summary())
+	if len(report.Errors) > 0 {
+		fmt.Fprintf(os.Stderr, "proof-gocache: %d error(s), first: %s\n", len(report.Errors), report.Errors[0])
+	}
 }
 
 type proofCheckCacheOriginKey struct{}
