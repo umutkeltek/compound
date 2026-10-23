@@ -174,6 +174,13 @@ type RunInput struct {
 	// running. GovernedPermissionAdapter.RevalidateGovernedRun performs the
 	// read-only launch-boundary check instead.
 	preflighted bool
+	// nativeSessionID is the adapter-allocated native session identity for
+	// THIS launch. It is adapter-owned: the adapter allocates a fresh value
+	// per Run and pins it on the launch argv. A caller can neither supply a
+	// session id nor reuse one from an earlier launch, so two concurrent
+	// launches never share a native session and a successor never inherits
+	// its predecessor's. Empty means the launch pins no native session.
+	nativeSessionID string
 	// ompNativeVerifier is an adapter-owned resolved proof handoff. External
 	// callers cannot populate it; the verifier revalidates it again at Run.
 	ompNativeVerifier *ompNativeVerifierLaunch

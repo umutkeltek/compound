@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"os"
 	"os/exec"
@@ -85,6 +86,14 @@ func (a *ClaudeAdapter) RevalidateGovernedRun(_ context.Context, in RunInput) (R
 // Run drives the claude subprocess end-to-end. The RunInput.Command is
 // overridden to "claude" so the caller doesn't have to know the binary
 // path; Args[0] (or Prompt) is appended as the prompt text.
+//
+// The launch also pins a NATIVE session id: a fresh UUIDv4 allocated here,
+// placed on the argv as --session-id, and recorded in the copied per-run
+// selection snapshot as pinned evidence. The id is allocated per Run, never
+// taken from the caller, so two concurrent launches can never share a
+// session and a successor can never inherit its predecessor's. The copy is
+// what the shared runner persists before the subprocess starts, so the
+// historical record states what the launch actually pinned.
 func (a *ClaudeAdapter) Run(ctx context.Context, in RunInput) (RunOutput, error) {
 	if !in.preflighted {
 		resolved, err := a.Preflight(ctx, in)
@@ -103,7 +112,41 @@ func (a *ClaudeAdapter) Run(ctx context.Context, in RunInput) (RunOutput, error)
 	if in.Command == "" {
 		in.Command = a.command
 	}
+	sessionID, err := newNativeSessionID()
+	if err != nil {
+		return RunOutput{}, err
+	}
+	in.nativeSessionID = sessionID
+	if in.ExecutionSelectionSnapshot != nil {
+		// COPY the snapshot: the caller's plan is not this launch's record.
+		// The copy states the truth this adapter can attest -- the session
+		// was pinned on the argv -- instead of the wire-level plan.
+		snapshot := *in.ExecutionSelectionSnapshot
+		snapshot.NativeSessionID = sessionID
+		snapshot.NativeSessionEvidence = claudeNativeSessionEvidence
+		in.ExecutionSelectionSnapshot = &snapshot
+	}
 	return runWithSubprocess(ctx, a.store, a.Name(), in, a.buildCmd, a.heartbeatInterval)
+}
+
+// claudeNativeSessionEvidence names HOW the native session id is known: the
+// launch pinned it on the argv. It is an ExecutionSessionEvidencePrefixes
+// value, so a reader can tell a pinned id from an unobserved one.
+const claudeNativeSessionEvidence = "pinned:--session-id"
+
+// newNativeSessionID allocates a fresh RFC 4122 version 4 UUID for one
+// launch. Claude's --session-id requires a valid UUID, and the id has to be
+// unique per launch so a successor cannot land in its predecessor's session.
+// crypto/rand is the only source: a time- or counter-derived id would let
+// two launches collide.
+func newNativeSessionID() (string, error) {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", fmt.Errorf("claude adapter: allocate native session id: %w", err)
+	}
+	buf[6] = (buf[6] & 0x0f) | 0x40 // version 4
+	buf[8] = (buf[8] & 0x3f) | 0x80 // RFC 4122 variant
+	return fmt.Sprintf("%x-%x-%x-%x-%x", buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16]), nil
 }
 
 // Preflight resolves the lane without minting a RunAttempt or starting a
@@ -255,6 +298,10 @@ func claudePermissionArgs(mode string) []string {
 // posture comes from RunInput.PermissionMode (default plan -- see
 // claudeDefaultPermissionMode). Args[0] is used as the prompt if Prompt is
 // empty (caller convenience); the explicit Prompt field wins.
+//
+// The native session id the adapter allocated for THIS launch is pinned on
+// the argv as --session-id, so the id the snapshot records and the id the
+// harness receives are the same string.
 func (a *ClaudeAdapter) buildCmd(ctx context.Context, in RunInput) *exec.Cmd {
 	// Timeout is owned by runWithSubprocess; see OSEntrypointsAdapter.buildCmd.
 	prompt := in.Prompt
@@ -262,6 +309,9 @@ func (a *ClaudeAdapter) buildCmd(ctx context.Context, in RunInput) *exec.Cmd {
 		prompt = in.Args[0]
 	}
 	args := append([]string{"--print"}, claudePermissionArgs(in.PermissionMode)...)
+	if session := strings.TrimSpace(in.nativeSessionID); session != "" {
+		args = append(args, "--session-id", session)
+	}
 	if prompt != "" {
 		args = append(args, prompt)
 	}

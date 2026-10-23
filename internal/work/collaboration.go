@@ -129,6 +129,115 @@ type CollaborationBodyResult struct {
 	Body    []byte `json:"body"`
 }
 
+// CollaborationRecipientContext is the recipient-side coordinate set read by
+// CollaborationEventRelevant. The delivery projection (internal/hookplan) and
+// the explicit body door (this package) both project their recipient onto
+// this one shape, so the two surfaces cannot disagree about which event
+// belongs to whom.
+type CollaborationRecipientContext struct {
+	Actor          string
+	WorkID         string
+	RunAttemptID   string
+	ScopeRefs      []string
+	DependencyRefs []string
+	PolicyRefs     []string
+	BaseRevisions  []string
+	ResourceRefs   []string
+}
+
+// RelevanceContext projects a resolved recipient onto the shared predicate
+// shape. It is reference-only: no coordinate is derived, widened, or dropped.
+func (r CollaborationRecipientResolution) RelevanceContext() CollaborationRecipientContext {
+	return CollaborationRecipientContext{
+		Actor:          strings.TrimSpace(r.Actor),
+		WorkID:         strings.TrimSpace(r.WorkID),
+		RunAttemptID:   strings.TrimSpace(r.RunAttemptID),
+		ScopeRefs:      append([]string{}, r.ScopeRefs...),
+		DependencyRefs: append([]string{}, r.DependencyRefs...),
+		PolicyRefs:     append([]string{}, r.PolicyRefs...),
+		BaseRevisions:  append([]string{}, r.BaseRevisions...),
+		ResourceRefs:   append([]string{}, r.ResourceRefs...),
+	}
+}
+
+// CollaborationEventRelevant is the ONE recipient relevance rule.
+//
+// Both the delivery projection and the explicit body door call it, so a card
+// that was delivered and a body that can be fetched can never disagree about
+// whether the event concerns this recipient. Before this rule existed the two
+// surfaces disagreed by construction: delivery admitted an explicitly
+// relevant cross-work event while the body door demanded the event's own
+// work, so a delivered card could name a body the recipient was refused.
+//
+// The rule is conjunctive over every dimension the event declares, and
+// disjunctive only at the end:
+//
+//   - TargetActor, when set, must equal the recipient actor.
+//   - Affects.Actors, when non-empty, must contain the recipient actor.
+//   - Every other non-empty Affects dimension must intersect the recipient's
+//     own coordinate for that dimension.
+//   - An interrupt additionally requires the recipient's exact live run
+//     attempt and either the recipient's work or that work in Affects.WorkIDs.
+//
+// Only then does the event count as relevant: it either belongs to the
+// recipient's own work, or it names the recipient explicitly through one of
+// the affected coordinates. That last clause is what makes a cross-work
+// handoff addressable without making every work visible to every other.
+func CollaborationEventRelevant(event CollaborationEvent, recipient CollaborationRecipientContext) bool {
+	affects := collaborationAffectsValue(event)
+	actor := strings.TrimSpace(recipient.Actor)
+	workID := strings.TrimSpace(recipient.WorkID)
+	runAttemptID := strings.TrimSpace(recipient.RunAttemptID)
+
+	if target := strings.TrimSpace(event.TargetActor); target != "" && target != actor {
+		return false
+	}
+	if len(affects.Actors) > 0 && !collaborationRefsIntersect(affects.Actors, []string{actor}) {
+		return false
+	}
+	for _, dimension := range []struct {
+		affected  []string
+		recipient []string
+	}{
+		{affected: affects.WorkIDs, recipient: []string{workID}},
+		{affected: affects.RunAttemptIDs, recipient: []string{runAttemptID}},
+		{affected: affects.ScopeRefs, recipient: recipient.ScopeRefs},
+		{affected: affects.DependencyRefs, recipient: recipient.DependencyRefs},
+		{affected: affects.PolicyRefs, recipient: recipient.PolicyRefs},
+		{affected: affects.BaseRevisions, recipient: recipient.BaseRevisions},
+		{affected: affects.ResourceRefs, recipient: recipient.ResourceRefs},
+	} {
+		if len(dimension.affected) > 0 && !collaborationRefsIntersect(dimension.affected, dimension.recipient) {
+			return false
+		}
+	}
+	switch collaborationEventDeliveryClass(event) {
+	case CollaborationDeliveryInterrupt:
+		return runAttemptID != "" &&
+			collaborationContains(affects.RunAttemptIDs, runAttemptID) &&
+			workID != "" &&
+			(workID == event.WorkID || collaborationContains(affects.WorkIDs, workID))
+	}
+	return collaborationContains([]string{workID}, event.WorkID) ||
+		collaborationRefsIntersect([]string{workID}, affects.WorkIDs) ||
+		(runAttemptID != "" && collaborationContains(affects.RunAttemptIDs, runAttemptID)) ||
+		collaborationRefsIntersect(recipient.ScopeRefs, affects.ScopeRefs) ||
+		collaborationRefsIntersect(recipient.DependencyRefs, affects.DependencyRefs) ||
+		collaborationRefsIntersect(recipient.PolicyRefs, affects.PolicyRefs) ||
+		collaborationRefsIntersect(recipient.BaseRevisions, affects.BaseRevisions) ||
+		collaborationRefsIntersect(recipient.ResourceRefs, affects.ResourceRefs)
+}
+
+// collaborationEventDeliveryClass is the effective delivery class of an event.
+// A legacy (v0.1) event carries no class; it is treated as a non-interrupt
+// observation, exactly as the delivery projection treats it.
+func collaborationEventDeliveryClass(event CollaborationEvent) string {
+	if strings.TrimSpace(event.DeliveryClass) == "" {
+		return CollaborationDeliveryNextBoundary
+	}
+	return event.DeliveryClass
+}
+
 var appendCollaborationLifecycle = func(s *Store, event Event) error {
 	return s.appendEventControlled(event, nil, nil)
 }
@@ -673,6 +782,12 @@ func (s *Store) ValidateCollaborationDeliveryEvidence(event CollaborationEvent) 
 
 // RetrieveCollaborationBody is the production on-demand body door. It performs
 // no lifecycle mutation and emits no acknowledgement or collaboration event.
+//
+// The request names the SOURCE work: the work that owns the event and the
+// body artifact. The RECIPIENT is derived from the exact validated run
+// attempt, so a cross-work handoff is addressable without letting the
+// requester pick the recipient's context. The body is released only when the
+// event is relevant to that recipient under the one shared relevance rule.
 func (s *Store) RetrieveCollaborationBody(in CollaborationBodyRequest) (CollaborationBodyResult, error) {
 	in.WorkID = strings.TrimSpace(in.WorkID)
 	in.EventID = strings.TrimSpace(in.EventID)
@@ -681,7 +796,7 @@ func (s *Store) RetrieveCollaborationBody(in CollaborationBodyRequest) (Collabor
 	in.SessionID = strings.TrimSpace(in.SessionID)
 	if in.WorkID == "" || !strings.HasPrefix(in.EventID, "wco_") ||
 		in.Actor == "" || !runattempt.Valid(in.RunAttemptID) || in.SessionID == "" {
-		return CollaborationBodyResult{}, fmt.Errorf("collaboration body requires work, event, actor, ratt_ run attempt, and native session")
+		return CollaborationBodyResult{}, fmt.Errorf("collaboration body requires source work, event, actor, ratt_ run attempt, and native session")
 	}
 	var event CollaborationEvent
 	if err := s.readEventJSON(in.EventID, &event); err != nil {
@@ -690,6 +805,8 @@ func (s *Store) RetrieveCollaborationBody(in CollaborationBodyRequest) (Collabor
 	if err := event.Validate(); err != nil {
 		return CollaborationBodyResult{}, err
 	}
+	// The named source work must be the event's owner. The body is
+	// source-owned; the recipient's own work is derived from the attempt.
 	if event.WorkID != in.WorkID {
 		return CollaborationBodyResult{}, fmt.Errorf("collaboration body request does not match event work")
 	}
@@ -697,20 +814,33 @@ func (s *Store) RetrieveCollaborationBody(in CollaborationBodyRequest) (Collabor
 	if err != nil {
 		return CollaborationBodyResult{}, err
 	}
-	if attempt.WorkID != in.WorkID || attempt.Actor != in.Actor || runattempt.IsTerminal(attempt.Status) {
+	if runattempt.IsTerminal(attempt.Status) {
 		return CollaborationBodyResult{}, fmt.Errorf("collaboration body requires the exact active recipient run attempt")
 	}
-	binding, alive, err := s.latestDelegateBinding(in.WorkID)
+	if attempt.Origin != runattempt.OriginHarnessExecution {
+		return CollaborationBodyResult{}, fmt.Errorf("collaboration body requires a harness-execution recipient run attempt")
+	}
+	// The recipient actor must be the actor the attempt's own evidence
+	// authorizes, not a caller-supplied name.
+	recipientActor, err := s.collaborationRecipientActor(attempt)
+	if err != nil {
+		return CollaborationBodyResult{}, err
+	}
+	if recipientActor == "" || recipientActor != in.Actor {
+		return CollaborationBodyResult{}, fmt.Errorf("collaboration body requires the exact active recipient run attempt")
+	}
+	// The native session binding belongs to the RECIPIENT's work, which is
+	// derived from the attempt, not from the source work named in the request.
+	binding, alive, err := s.latestDelegateBinding(attempt.WorkID)
 	if err != nil {
 		return CollaborationBodyResult{}, err
 	}
 	if !alive || binding == nil || binding.Session != in.SessionID ||
 		binding.RunAttemptID != attempt.ID ||
-		normalizeCollaborationHarness(binding.Harness) != normalizeCollaborationHarness(attempt.Harness) ||
-		attempt.Origin != runattempt.OriginHarnessExecution {
+		normalizeCollaborationHarness(binding.Harness) != normalizeCollaborationHarness(attempt.Harness) {
 		return CollaborationBodyResult{}, fmt.Errorf("collaboration body requires the exact owned native session binding")
 	}
-	item, err := s.Get(in.WorkID)
+	item, err := s.Get(attempt.WorkID)
 	if err != nil {
 		return CollaborationBodyResult{}, err
 	}
@@ -718,7 +848,7 @@ func (s *Store) RetrieveCollaborationBody(in CollaborationBodyRequest) (Collabor
 	if err != nil {
 		return CollaborationBodyResult{}, err
 	}
-	if !ok || !collaborationBodyRelevant(event, recipient) {
+	if !ok || !CollaborationEventRelevant(event, recipient.RelevanceContext()) {
 		return CollaborationBodyResult{}, fmt.Errorf("collaboration body request does not match current recipient relevance")
 	}
 	artifacts, err := home.NewArtifactStore(s.home)
@@ -733,35 +863,6 @@ func (s *Store) RetrieveCollaborationBody(in CollaborationBodyRequest) (Collabor
 		return CollaborationBodyResult{}, err
 	}
 	return CollaborationBodyResult{EventID: event.ID, BodyRef: event.BodyRef, Body: body}, nil
-}
-
-func collaborationBodyRelevant(event CollaborationEvent, recipient CollaborationRecipientResolution) bool {
-	affects := collaborationAffectsValue(event)
-	if event.WorkID != recipient.WorkID {
-		return false
-	}
-	if event.TargetActor != "" && event.TargetActor != recipient.Actor {
-		return false
-	}
-	for _, dimension := range []struct {
-		affected  []string
-		recipient []string
-	}{
-		{affected: affects.Actors, recipient: []string{recipient.Actor}},
-		{affected: affects.WorkIDs, recipient: []string{recipient.WorkID}},
-		{affected: affects.RunAttemptIDs, recipient: []string{recipient.RunAttemptID}},
-		{affected: affects.ScopeRefs, recipient: recipient.ScopeRefs},
-		{affected: affects.DependencyRefs, recipient: recipient.DependencyRefs},
-		{affected: affects.PolicyRefs, recipient: recipient.PolicyRefs},
-		{affected: affects.BaseRevisions, recipient: recipient.BaseRevisions},
-		{affected: affects.ResourceRefs, recipient: recipient.ResourceRefs},
-	} {
-		if len(dimension.affected) > 0 &&
-			!collaborationRefsIntersect(dimension.affected, dimension.recipient) {
-			return false
-		}
-	}
-	return true
 }
 
 func collaborationRefsIntersect(left, right []string) bool {

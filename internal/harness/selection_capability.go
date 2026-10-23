@@ -40,13 +40,21 @@ type SelectionCapability struct {
 }
 
 // claudeLaneSelection is shared by every tuple-backed claude_* lane adapter.
+//
+// SessionPinnable is true because the Claude adapter allocates a fresh UUIDv4
+// per launch and pins it on the argv as --session-id, so the launch CAN pin a
+// native session. SessionEvidence still describes the WIRE's contribution --
+// the wire supplies no session id of its own -- and the adapter's copied
+// per-run snapshot upgrades that to pinned:--session-id evidence once the
+// launch has actually pinned it.
 func claudeLaneSelection() *SelectionCapability {
 	return &SelectionCapability{
 		ModelPassable:    true,
 		EffortObservable: true,
 		ObservedVia:      "wrapper_env",
-		SessionEvidence:  "unsupported:wire does not pin --session-id on the argv in v0.1; pass --session-id directly via the wrapper for explicit pinning",
-		Basis:            "adapter resolves the model-router tuple and launches its wrapper, which pins SB_LANE_CLAUDE_MODEL; argv is --print + permission only and the wrapper pins its own SB_LANE_REQUESTED_EFFORT, so a requested effort cannot be applied",
+		SessionPinnable:  true,
+		SessionEvidence:  "unsupported:wire does not pin --session-id on the argv; the claude adapter allocates a fresh uuid per launch and pins --session-id on the launch argv, and its copied per-run snapshot records pinned evidence",
+		Basis:            "adapter resolves the model-router tuple and launches its wrapper, which pins SB_LANE_CLAUDE_MODEL; argv is --print + permission + the adapter-pinned --session-id, and the wrapper pins its own SB_LANE_REQUESTED_EFFORT, so a requested effort cannot be applied",
 	}
 }
 

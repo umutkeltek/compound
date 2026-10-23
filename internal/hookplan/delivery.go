@@ -656,58 +656,22 @@ func deliveryReportRef(id string) string {
 	return filepath.Join("context", "coordination-delivery", "reports", id+".json")
 }
 
+// deliveryRelevant projects the live delivery recipient onto the work-owned
+// relevance rule and asks it. The rule itself lives in internal/work so the
+// delivery projection and the explicit body door read ONE definition: a card
+// that was delivered and a body that can be fetched can never disagree about
+// whether the event concerns this recipient.
 func deliveryRelevant(event work.CollaborationEvent, recipient DeliveryRecipient) bool {
-	affects := collaborationAffects(event)
-	if event.TargetActor != "" && recipient.Actor != event.TargetActor {
-		return false
-	}
-	if len(affects.Actors) > 0 && !containsRef(affects.Actors, recipient.Actor) {
-		return false
-	}
-	recipientWorkIDs := []string{recipient.WorkID}
-	if len(affects.WorkIDs) > 0 && !intersects(affects.WorkIDs, recipientWorkIDs) {
-		return false
-	}
-	if len(affects.RunAttemptIDs) > 0 && !containsRef(affects.RunAttemptIDs, recipient.RunAttemptID) {
-		return false
-	}
-	if len(affects.ScopeRefs) > 0 && !intersects(recipient.ScopeRefs, affects.ScopeRefs) {
-		return false
-	}
-	if len(affects.DependencyRefs) > 0 && !intersects(recipient.DependencyRefs, affects.DependencyRefs) {
-		return false
-	}
-	if len(affects.PolicyRefs) > 0 && !intersects(recipient.PolicyRefs, affects.PolicyRefs) {
-		return false
-	}
-	if len(affects.BaseRevisions) > 0 && !intersects(recipient.BaseRevisions, affects.BaseRevisions) {
-		return false
-	}
-	if len(affects.ResourceRefs) > 0 && !intersects(recipient.ResourceRefs, affects.ResourceRefs) {
-		return false
-	}
-	switch collaborationDeliveryClass(event) {
-	case work.CollaborationDeliveryInterrupt:
-		return recipient.RunAttemptID != "" &&
-			containsRef(affects.RunAttemptIDs, recipient.RunAttemptID) &&
-			recipient.WorkID != "" &&
-			(recipient.WorkID == event.WorkID || containsRef(affects.WorkIDs, recipient.WorkID))
-	}
-	return containsRef(recipientWorkIDs, event.WorkID) ||
-		intersects(recipientWorkIDs, affects.WorkIDs) ||
-		(recipient.RunAttemptID != "" && containsRef(affects.RunAttemptIDs, recipient.RunAttemptID)) ||
-		intersects(recipient.ScopeRefs, affects.ScopeRefs) ||
-		intersects(recipient.DependencyRefs, affects.DependencyRefs) ||
-		intersects(recipient.PolicyRefs, affects.PolicyRefs) ||
-		intersects(recipient.BaseRevisions, affects.BaseRevisions) ||
-		intersects(recipient.ResourceRefs, affects.ResourceRefs)
-}
-
-func collaborationAffects(event work.CollaborationEvent) work.CollaborationAffects {
-	if event.Affects == nil {
-		return work.CollaborationAffects{}
-	}
-	return *event.Affects
+	return work.CollaborationEventRelevant(event, work.CollaborationRecipientContext{
+		Actor:          recipient.Actor,
+		WorkID:         recipient.WorkID,
+		RunAttemptID:   recipient.RunAttemptID,
+		ScopeRefs:      recipient.ScopeRefs,
+		DependencyRefs: recipient.DependencyRefs,
+		PolicyRefs:     recipient.PolicyRefs,
+		BaseRevisions:  recipient.BaseRevisions,
+		ResourceRefs:   recipient.ResourceRefs,
+	})
 }
 
 func collaborationDeliveryClass(event work.CollaborationEvent) string {
@@ -964,22 +928,6 @@ func holdCurrentInterruptExecution(
 
 func normalizeDeliveryHarness(value string) string {
 	return strings.ReplaceAll(strings.TrimSpace(value), "_", "-")
-}
-
-func intersects(left, right []string) bool {
-	if len(left) == 0 || len(right) == 0 {
-		return false
-	}
-	set := make(map[string]bool, len(left))
-	for _, value := range left {
-		set[strings.TrimSpace(value)] = true
-	}
-	for _, value := range right {
-		if set[strings.TrimSpace(value)] {
-			return true
-		}
-	}
-	return false
 }
 
 func containsRef(values []string, want string) bool {

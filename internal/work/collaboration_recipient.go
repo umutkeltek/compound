@@ -259,8 +259,12 @@ func (s *Store) resolveDeclaredCollaborationRecipient(
 }
 
 func (s *Store) collaborationRecipientResolution(item envelope.WorkEnvelope, attempt runattempt.RunAttempt) (CollaborationRecipientResolution, bool, error) {
+	actor, err := s.collaborationRecipientActor(attempt)
+	if err != nil {
+		return CollaborationRecipientResolution{}, false, err
+	}
 	resolution := CollaborationRecipientResolution{
-		Actor: attempt.Actor, WorkID: item.ID, RunAttemptID: attempt.ID,
+		Actor: actor, WorkID: item.ID, RunAttemptID: attempt.ID,
 		ScopeRefs: []string{}, DependencyRefs: []string{}, PolicyRefs: []string{},
 		BaseRevisions: []string{}, ResourceRefs: []string{},
 	}
@@ -321,6 +325,41 @@ func (s *Store) collaborationRecipientResolution(item envelope.WorkEnvelope, att
 
 func normalizeCollaborationHarness(value string) string {
 	return strings.ReplaceAll(strings.TrimSpace(value), "_", "-")
+}
+
+// collaborationRecipientActor is the actor an attempt's own evidence
+// authorizes as the recipient.
+//
+// A governed attempt's authority is its authorizing ActionIntent: that record
+// names who Compound asked to act. The harness name on the attempt is a lane
+// label, not a person -- `compound work advance --execute` mints the attempt
+// with the harness family as its actor -- so reading the actor from the
+// attempt would hand every governed recipient the same identity. An attempt
+// with no authorizing ActionIntent is authorized by the actor that minted it
+// (the delegate path mints with the lane holder).
+//
+// The action must name the attempt's own work. An action that authorizes a
+// different work cannot speak for this attempt, so it is refused rather than
+// borrowed.
+func (s *Store) collaborationRecipientActor(attempt runattempt.RunAttempt) (string, error) {
+	if strings.TrimSpace(attempt.ActionIntentID) == "" {
+		return strings.TrimSpace(attempt.Actor), nil
+	}
+	var action envelope.ActionIntent
+	if err := s.readEventJSON(attempt.ActionIntentID, &action); err != nil {
+		return "", fmt.Errorf("collaboration recipient action evidence %s: %w", attempt.ActionIntentID, err)
+	}
+	if action.ID != attempt.ActionIntentID {
+		return "", fmt.Errorf("collaboration recipient action evidence %s does not match the attempt", attempt.ActionIntentID)
+	}
+	if strings.TrimSpace(action.IDs.WorkID) != strings.TrimSpace(attempt.WorkID) {
+		return "", fmt.Errorf("collaboration recipient action %s does not authorize work %s", action.ID, attempt.WorkID)
+	}
+	actor := strings.TrimSpace(action.Actor)
+	if actor == "" {
+		return "", fmt.Errorf("collaboration recipient action %s names no actor", action.ID)
+	}
+	return actor, nil
 }
 
 func canonicalCollaborationPath(value string) (string, error) {

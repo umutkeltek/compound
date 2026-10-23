@@ -1788,3 +1788,96 @@ func TestPostDeliveryTemporalActionWithoutCausalRefRemainsObservedOnly(t *testin
 		t.Fatalf("temporal-only action was mislabeled as caused: %+v", receipt)
 	}
 }
+
+// TestDeliveryRelevanceIsTheWorkOwnedRuleAcrossEveryDimension pins the
+// cross-surface contract: the delivery projection asks the SAME work-owned
+// rule the explicit body door asks. A card that names a body the recipient
+// could not fetch is the contradiction this repair removes, so the two
+// surfaces must answer identically for every recipient/event pair --
+// including the cross-work case, where the event belongs to another work but
+// names this recipient explicitly.
+func TestDeliveryRelevanceIsTheWorkOwnedRuleAcrossEveryDimension(t *testing.T) {
+	events := []work.CollaborationEvent{
+		{
+			SchemaVersion: work.CollaborationSchemaVersion,
+			ID:            "wco_0123456789abcdef",
+			WorkID:        "work_source",
+			Actor:         "codex:sender",
+			DeliveryClass: work.CollaborationDeliveryNextBoundary,
+			TargetActor:   "claude:receiver",
+			Affects: &work.CollaborationAffects{
+				Actors:        []string{"claude:receiver"},
+				WorkIDs:       []string{"work_recipient"},
+				RunAttemptIDs: []string{"ratt_20260724T120000Z_addressed"},
+			},
+		},
+		{
+			SchemaVersion: work.CollaborationSchemaVersion,
+			ID:            "wco_0123456789abcdef0",
+			WorkID:        "work_source",
+			Actor:         "codex:sender",
+			DeliveryClass: work.CollaborationDeliveryInterrupt,
+			Affects: &work.CollaborationAffects{
+				WorkIDs:       []string{"work_recipient"},
+				RunAttemptIDs: []string{"ratt_20260724T120000Z_addressed"},
+			},
+		},
+		{
+			SchemaVersion: work.CollaborationSchemaVersion,
+			ID:            "wco_0123456789abcdef1",
+			WorkID:        "work_source",
+			Actor:         "codex:sender",
+			DeliveryClass: work.CollaborationDeliveryNextBoundary,
+			Affects: &work.CollaborationAffects{
+				WorkIDs: []string{"work_somebody_else"},
+			},
+		},
+	}
+	recipients := []DeliveryRecipient{
+		{
+			Actor: "claude:receiver", WorkID: "work_recipient",
+			RunAttemptID: "ratt_20260724T120000Z_addressed",
+		},
+		{
+			Actor: "claude:receiver", WorkID: "work_recipient",
+		},
+		{
+			Actor: "claude:other", WorkID: "work_recipient",
+			RunAttemptID: "ratt_20260724T120000Z_addressed",
+		},
+	}
+	for _, event := range events {
+		for _, recipient := range recipients {
+			projected := work.CollaborationRecipientContext{
+				Actor:          recipient.Actor,
+				WorkID:         recipient.WorkID,
+				RunAttemptID:   recipient.RunAttemptID,
+				ScopeRefs:      recipient.ScopeRefs,
+				DependencyRefs: recipient.DependencyRefs,
+				PolicyRefs:     recipient.PolicyRefs,
+				BaseRevisions:  recipient.BaseRevisions,
+				ResourceRefs:   recipient.ResourceRefs,
+			}
+			want := work.CollaborationEventRelevant(event, projected)
+			if got := deliveryRelevant(event, recipient); got != want {
+				t.Fatalf("delivery and body surfaces disagree for event %s recipient %+v: delivery=%v work=%v",
+					event.ID, recipient, got, want)
+			}
+		}
+	}
+	// The cross-work handoff the repair exists for: the event belongs to
+	// another work but names this recipient explicitly, so BOTH surfaces
+	// admit it.
+	crossWork := events[0]
+	explicit := recipients[0]
+	if !deliveryRelevant(crossWork, explicit) {
+		t.Fatal("delivery refused an explicitly relevant cross-work event")
+	}
+	if !work.CollaborationEventRelevant(crossWork, work.CollaborationRecipientContext{
+		Actor:        explicit.Actor,
+		WorkID:       explicit.WorkID,
+		RunAttemptID: explicit.RunAttemptID,
+	}) {
+		t.Fatal("body rule refused an explicitly relevant cross-work event")
+	}
+}
