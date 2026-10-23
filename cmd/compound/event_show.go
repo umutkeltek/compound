@@ -16,10 +16,10 @@ import (
 
 // eventShowUsage documents the accepted id shapes for `compound event show`:
 // a trace_-prefixed or bare trace id resolves through the existing trace
-// envelope path; a rec_/hook_/act_/pol_/tr_-prefixed id resolves the matching
-// record straight from the event store. No bespoke per-kind formatter — the
-// store path always prints the record's own JSON body.
-const eventShowUsage = "usage: compound event show <id> [--json] (trace_<id> | rec_<id> | hook_<id> | act_<id> | pol_<id> | tr_<id> | a bare trace id)"
+// envelope path; other supported record IDs, including exact approvals, resolve
+// straight from the event store. No bespoke per-kind formatter — the store path
+// always prints the record's own JSON body.
+const eventShowUsage = "usage: compound event show <id> [--json] (trace_<id> | rec_<id> | hook_<id> | act_<id> | pol_<id> | tr_<id> | approval_plan_<id> | approval_grant_<id> | a bare trace id)"
 
 // eventShowStoreKind names the human-readable label for each store-resolved
 // record family, keyed by its canonical id prefix. trace_ is deliberately
@@ -33,6 +33,8 @@ var eventShowStoreKind = []struct {
 	{"act_", "action_intent"},
 	{"pol_", "policy_decision"},
 	{"tr_", "transition"},
+	{"approval_plan_", "exact_action_approval_plan"},
+	{"approval_grant_", "exact_action_approval"},
 }
 
 // classifyEventShowID decides whether an id dispatches to the existing
@@ -59,11 +61,11 @@ func classifyEventShowID(id string) (kind string, useShowTrace bool, err error) 
 	}
 	prefix := trimmed[:idx+1]
 	for _, k := range eventShowStoreKind {
-		if prefix == k.prefix {
+		if strings.HasPrefix(trimmed, k.prefix) {
 			return k.kind, false, nil
 		}
 	}
-	return "", false, fmt.Errorf("unknown id prefix %q — supported: trace_, rec_, hook_, act_, pol_, tr_, or a bare trace id", prefix)
+	return "", false, fmt.Errorf("unknown id prefix %q — supported: trace_, rec_, hook_, act_, pol_, tr_, approval_plan_, approval_grant_, or a bare trace id", prefix)
 }
 
 // runEventShow is the testable core of `compound event show`; cmdEvent's

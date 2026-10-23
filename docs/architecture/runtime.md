@@ -170,6 +170,12 @@ physical repair owner. Loose-path drift fails closed. The sole tolerated coexist
 regular-file recurrence proven against the sealed archive and result. Old result replay and proof finalization do
 not consume or hide that recurrence: it remains doctor-visible and advances only after the old proof into the
 deterministic next occurrence. Exact terminal replay is a byte-no-op for the old lifecycle artifacts.
+`compound event show <id> --json` also resolves exact approval plan and grant IDs
+(`approval_plan_` and `approval_grant_`) through that same event-store read seam.
+It returns the stored bytes without consuming, renewing or changing approval authority;
+callers still verify the action binding and live one-use consumption through policy.
+Other unknown approval prefixes remain errors.
+
 Durable event references
 use `compound://events/<id>`; the resolver also accepts bare IDs and historical `events/<id>.json` references,
 but rejects traversal and physical segment/index paths. The lifecycle and compatibility streams remain distinct:

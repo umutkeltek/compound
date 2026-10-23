@@ -6,9 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/eventsource"
 	"compound/internal/eventstore"
+	"compound/internal/home"
+	"compound/internal/policy"
 )
 
 // runEventShowCLI mirrors runEventStoreCLI's convention: drive the testable
@@ -214,6 +217,9 @@ func TestClassifyEventShowID(t *testing.T) {
 		{"action live prefix", "act_live_abc123", "action_intent", false, false},
 		{"policy prefix", "pol_abc123", "policy_decision", false, false},
 		{"transition prefix", "tr_abc123", "transition", false, false},
+		{"approval plan prefix", "approval_plan_abc123", "exact_action_approval_plan", false, false},
+		{"approval grant prefix", "approval_grant_abc123", "exact_action_approval", false, false},
+		{"unknown approval prefix", "approval_other_abc123", "", false, true},
 		{"unknown prefix", "zzz_abc123", "", false, true},
 	}
 	for _, tc := range cases {
@@ -229,5 +235,62 @@ func TestClassifyEventShowID(t *testing.T) {
 				t.Fatalf("classifyEventShowID(%q) = (%q, %v), want (%q, %v)", tc.id, kind, useShowTrace, tc.wantKind, tc.wantShowTrace)
 			}
 		})
+	}
+}
+
+func TestEventShowExactApprovalsFromPolicyProducer(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("COMPOUND_HOME", root)
+	if err := home.Init(root, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	cfg := policy.DefaultConfig()
+	monitored := policy.MonitorToolAction(policy.ToolActionRequest{
+		WorkID: "work_reader_fixture", Actor: "codex", Harness: "codex", Tool: "browser.submit",
+		Arguments:          map[string]any{"target": "publish", "form": "prepared-fixture"},
+		ToolSchemaRevision: "builtin:browser.submit",
+	}, cfg, cliTestNow)
+	events, err := eventstore.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.PutJSON(monitored.Intent.ID, monitored.Intent, "  "); err != nil {
+		t.Fatal(err)
+	}
+	approvals := policy.NewExactActionApprovalStore(root)
+	plan, _, err := approvals.Plan(monitored.Intent.ID, cfg, 5*time.Minute, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, _, err := approvals.Approve(plan.ID, "operator:fixture", cfg, cliTestNow.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{plan.ID, grant.ID} {
+		t.Run(id, func(t *testing.T) {
+			stored, err := events.Read(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, stderr, code := runEventShowCLI(t, id, "--json")
+			if code != 0 {
+				t.Fatalf("read native approval exit=%d stderr=%s", code, stderr)
+			}
+			if out != string(ensureTrailingNewline(stored.Bytes)) {
+				t.Fatalf("approval bytes changed: got=%s want=%s", out, stored.Bytes)
+			}
+			human, stderr, code := runEventShowCLI(t, id)
+			if code != 0 || !strings.Contains(human, id) {
+				t.Fatalf("human approval read exit=%d stdout=%s stderr=%s", code, human, stderr)
+			}
+		})
+	}
+	status, err := approvals.Check(grant.ID, cliTestNow.Add(2*time.Second))
+	if err != nil || status.Status != policy.ExactApprovalStatusReady {
+		t.Fatalf("read changed approval availability: status=%+v err=%v", status, err)
+	}
+	out, stderr, code := runEventShowCLI(t, "approval_grant_missing", "--json")
+	if code != 1 || out != "" || !strings.Contains(stderr, "not found in event store") {
+		t.Fatalf("missing approval must use store absence: exit=%d out=%s stderr=%s", code, out, stderr)
 	}
 }
