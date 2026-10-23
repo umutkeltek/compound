@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1084,11 +1085,14 @@ func parseTime(value string) (time.Time, bool) {
 	if value == "" {
 		return time.Time{}, false
 	}
-	t, err := time.Parse(time.RFC3339, value)
-	if err != nil {
-		return time.Time{}, false
+	if t, err := time.Parse(time.RFC3339, value); err == nil {
+		return t, true
 	}
-	return t, true
+	// Workbench claim times retain the work lease writer's Unix nanoseconds.
+	if nanos, err := strconv.ParseInt(value, 10, 64); err == nil && nanos > 0 {
+		return time.Unix(0, nanos).UTC(), true
+	}
+	return time.Time{}, false
 }
 
 func firstNonEmpty(values ...string) string {
