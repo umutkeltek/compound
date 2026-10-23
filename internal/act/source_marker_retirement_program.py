@@ -13,6 +13,10 @@ import subprocess
 import sys
 import time
 
+LEGACY_PROGRAM_SHA256 = "b517afa4728bf99bc9a1e347b186641ea921f2cbb2ae7df9adb81ba854c51487"
+EXECUTABLE_CHUNK_BYTES = 1024 * 1024
+MAX_EXECUTABLE_BYTES = 256 * 1024 * 1024
+
 class Refusal(Exception):
     pass
 
@@ -70,7 +74,19 @@ def check_deadline(wire):
 def executable_pins(request):
     for path, sha in (("/usr/bin/python3", request["ssh"]["interpreter_sha256"]), ("/usr/bin/sudo", request["ssh"]["sudo_sha256"]), ("/usr/bin/docker", request["executables"]["docker_sha256"]), ("/usr/sbin/runuser", request["executables"]["runuser_sha256"]), (request["executables"]["client_path"], request["executables"]["client_sha256"])):
         with open(path, "rb") as file:
-            if digest(file.read(32 * 1024 * 1024)) != sha:
+            if os.fstat(file.fileno()).st_size > MAX_EXECUTABLE_BYTES:
+                raise Refusal()
+            sha256 = hashlib.sha256()
+            total = 0
+            while True:
+                chunk = file.read(EXECUTABLE_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_EXECUTABLE_BYTES:
+                    raise Refusal()
+                sha256.update(chunk)
+            if sha256.hexdigest() != sha:
                 raise Refusal()
 
 def remaining_timeout(wire, maximum):
@@ -184,7 +200,7 @@ def main():
     if set(wire) != {"request", "operation", "deadline_ns"} or wire["operation"] not in ("retire", "reconcile"):
         raise Refusal()
     request = wire["request"]
-    if request["schema_version"] != "compound.source_marker_retirement_request.v0.1" or request["effect_set"] != "metadata-only-source-marker-rename-after-native-acceptance" or request["program_sha256"] != sys.argv[1] or not re.fullmatch(r"[a-z][a-z0-9.-]{1,79}", request["recovery_basename"]) or len(request["files"]) != 4:
+    if request["schema_version"] != "compound.source_marker_retirement_request.v0.1" or request["effect_set"] != "metadata-only-source-marker-rename-after-native-acceptance" or (request["program_sha256"] != sys.argv[1] and not (wire["operation"] == "reconcile" and request["program_sha256"] == LEGACY_PROGRAM_SHA256)) or not re.fullmatch(r"[a-z][a-z0-9.-]{1,79}", request["recovery_basename"]) or len(request["files"]) != 4:
         raise Refusal()
     root_path = request["root"]["path"]
     if not root_path.startswith("/") or os.path.normpath(root_path) != root_path or root_path == "/" or not re.fullmatch(r"[a-z][a-z0-9.-]{1,79}", request["container_prefix"]):

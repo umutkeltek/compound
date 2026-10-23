@@ -16,20 +16,36 @@ import (
 	"compound/internal/work"
 )
 
+// Only this exact historical request can be reconciled with current transport
+// code. New retirement requests always pin the current program.
+const sourceMarkerLegacyProgramSHA256 = "b517afa4728bf99bc9a1e347b186641ea921f2cbb2ae7df9adb81ba854c51487"
+
+func sourceMarkerRequestProgram(r policy.SourceMarkerRetirementRequest, operation string) string {
+	if operation == "reconcile" && r.ProgramSHA256 == sourceMarkerLegacyProgramSHA256 {
+		return sourceMarkerLegacyProgramSHA256
+	}
+	return SourceMarkerRetirementProgramSHA256()
+}
+
 // SourceMarkerRecoveryOrigin names actual immutable native proof. It never
 // supplies a replacement decision, observation or credential projection.
 type SourceMarkerRecoveryOrigin struct {
-	PlanRef       string `json:"plan_ref"`
-	WorkID        string `json:"work_id"`
-	ActionID      string `json:"action_id"`
-	AttemptID     string `json:"attempt_id"`
-	ReceiptID     string `json:"receipt_id"`
-	TransitionID  string `json:"transition_id"`
-	RequestSHA256 string `json:"request_sha256"`
+	PlanRef                string `json:"plan_ref"`
+	WorkID                 string `json:"work_id"`
+	ActionID               string `json:"action_id"`
+	AttemptID              string `json:"attempt_id"`
+	ReceiptID              string `json:"receipt_id"`
+	TransitionID           string `json:"transition_id"`
+	RequestSHA256          string `json:"request_sha256"`
+	TransportProgramSHA256 string `json:"transport_program_sha256,omitempty"`
 }
 
 func (r SourceMarkerRecoveryOrigin) proofRefs() []string {
-	return []string{r.PlanRef, r.ActionID, r.AttemptID, "sha256:" + r.RequestSHA256, r.ReceiptID, r.TransitionID}
+	refs := []string{r.PlanRef, r.ActionID, r.AttemptID, "sha256:" + r.RequestSHA256, r.ReceiptID, r.TransitionID}
+	if r.TransportProgramSHA256 != "" {
+		refs = append(refs, "transport-program-sha256:"+r.TransportProgramSHA256)
+	}
+	return refs
 }
 func sourceMarkerOwner(operation string) string {
 	if operation == "retire" {
@@ -47,7 +63,7 @@ func sourceMarkerValidateRequest(r policy.SourceMarkerRetirementRequest, operati
 	if operation == "retire" {
 		return policy.ValidateSourceMarkerRetirementRequest(r, SourceMarkerRetirementProgramSHA256(), now)
 	}
-	return policy.ValidateSourceMarkerRecoveryRequest(r, SourceMarkerRetirementProgramSHA256(), now)
+	return policy.ValidateSourceMarkerRecoveryRequest(r, sourceMarkerRequestProgram(r, operation), now)
 }
 func sourceMarkerOperationIntent(r policy.SourceMarkerRetirementRequest, workID, actor, workSHA, operation string, origin *SourceMarkerRecoveryOrigin, now time.Time) envelope.ActionIntent {
 	ai := sourceMarkerRetirementIntent(r, workID, actor, workSHA, now)
@@ -64,10 +80,10 @@ func sourceMarkerEvaluate(ai envelope.ActionIntent, r policy.SourceMarkerRetirem
 	if operation == "retire" {
 		return policy.EvaluateSourceMarkerRetirement(ai, r, SourceMarkerRetirementProgramSHA256(), cfg, policy.EvaluationContext{}, now)
 	}
-	if origin == nil {
+	if origin == nil || origin.TransportProgramSHA256 != SourceMarkerRetirementProgramSHA256() {
 		return envelope.PolicyDecision{}, false
 	}
-	return policy.EvaluateSourceMarkerRecovery(ai, r, origin.ActionID, origin.AttemptID, operation, SourceMarkerRetirementProgramSHA256(), cfg, policy.EvaluationContext{}, now)
+	return policy.EvaluateSourceMarkerRecovery(ai, r, origin.ActionID, origin.AttemptID, operation, sourceMarkerRequestProgram(r, operation), cfg, policy.EvaluationContext{}, now)
 }
 func (v *SourceMarkerRetirer) planAuthority(r policy.SourceMarkerRetirementRequest, operation string, origin *SourceMarkerRecoveryOrigin, workID string, now time.Time) error {
 	if !sourceMarkerOperationValid(operation, origin) {
@@ -75,6 +91,9 @@ func (v *SourceMarkerRetirer) planAuthority(r policy.SourceMarkerRetirementReque
 	}
 	if operation == "retire" {
 		return v.witness(r, now)
+	}
+	if origin.TransportProgramSHA256 != SourceMarkerRetirementProgramSHA256() {
+		return sourceMarkerRetirementError("transport_program_binding")
 	}
 	return v.recoveryAuthority(r, *origin, workID)
 }
@@ -136,7 +155,7 @@ func (v *SourceMarkerRetirer) PlanRecovery(originalPlan, operation, workID, acto
 	if _, err = attempts.CompleteWithOwnerProof(attempt.ID, runattempt.StatusFailed, sourceMarkerRetirementOwner, completed.Receipt.ID, completed.Transition.ID, v.now().UTC()); err != nil {
 		return out, sourceMarkerRetirementError("original_attempt_proof")
 	}
-	origin := &SourceMarkerRecoveryOrigin{PlanRef: originalPlan, WorkID: p.WorkID, ActionID: ai.ID, AttemptID: attempt.ID, ReceiptID: completed.Receipt.ID, TransitionID: completed.Transition.ID, RequestSHA256: p.RequestSHA256}
+	origin := &SourceMarkerRecoveryOrigin{PlanRef: originalPlan, WorkID: p.WorkID, ActionID: ai.ID, AttemptID: attempt.ID, ReceiptID: completed.Receipt.ID, TransitionID: completed.Transition.ID, RequestSHA256: p.RequestSHA256, TransportProgramSHA256: SourceMarkerRetirementProgramSHA256()}
 	return v.plan(p.Request, workID, actor, operation, origin)
 }
 

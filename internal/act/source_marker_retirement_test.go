@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -177,6 +178,10 @@ func TestSourceMarkerRetirementRecoveryIsSeparate(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	broken := sourceMarkerMissingPlanField(t, v, recovery.PlanRef, "recovery", "transport_program_sha256")
+	if _, _, e = v.loadPlan(broken, "fixture"); e == nil {
+		t.Fatal("fresh current recovery accepted missing transport pin")
+	}
 	sourceMarkerApprove(t, v, recovery, now)
 	m.fail = false
 	out, e := v.Execute(context.Background(), recovery.PlanRef, "fixture")
@@ -234,5 +239,282 @@ func TestSourceMarkerRetirementRejectsChangedWorkGeneration(t *testing.T) {
 	}
 	if _, e = v.Execute(context.Background(), p.PlanRef, "fixture"); e == nil || m.starts != 0 {
 		t.Fatal("stale Work generation launched marker rename")
+	}
+}
+
+// These fixtures build the pre-repair immutable protocol through native stores.
+// They never change production validation, edit ledger bytes or launch a process.
+func sourceMarkerHistoricalRecoveryPlan(t *testing.T, v *SourceMarkerRetirer, original SourceMarkerRetirementPlanResult, failed SourceMarkerRetirementResult, now time.Time) SourceMarkerRetirementPlanResult {
+	t.Helper()
+	if SourceMarkerRetirementProgramSHA256() != sourceMarkerLegacyProgramSHA256 {
+		t.Fatal("historical fixture must use exact legacy program bytes")
+	}
+	origin := &SourceMarkerRecoveryOrigin{PlanRef: original.PlanRef, WorkID: original.Plan.WorkID, ActionID: original.Plan.ActionIntentID, AttemptID: failed.RunAttemptID, ReceiptID: failed.ReceiptID, TransitionID: failed.TransitionID, RequestSHA256: original.Plan.RequestSHA256}
+	w, err := v.requireWork(failed.RecoveryWorkID, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ai := sourceMarkerOperationIntent(original.Plan.Request, w.ID, "fixture", sourceMarkerRetirementHash(w), "reconcile", origin, now)
+	cfg, _, err := policy.LoadConfig(v.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pd, eligible := policy.EvaluateSourceMarkerRecovery(ai, original.Plan.Request, origin.ActionID, origin.AttemptID, "reconcile", sourceMarkerLegacyProgramSHA256, cfg, policy.EvaluationContext{}, now)
+	if !eligible || pd.Outcome != "hold" {
+		t.Fatal("historical fixture policy refused")
+	}
+	if err = recordEnvelope(v.home, ai.ID, &ai); err != nil {
+		t.Fatal(err)
+	}
+	if err = recordEnvelope(v.home, pd.ID, &pd); err != nil {
+		t.Fatal(err)
+	}
+	ap, _, _, err := policy.NewExactActionApprovalStore(v.home).EnsurePlanForIntent(ai, cfg, policy.SourceMarkerRetirementApprovalTTL, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := SourceMarkerRetirementPlan{Operation: "reconcile", Recovery: origin, SchemaVersion: sourceMarkerRetirementPlanSchema, Request: original.Plan.Request, RequestSHA256: original.Plan.RequestSHA256, WorkID: w.ID, Actor: "fixture", WorkSHA256: sourceMarkerRetirementHash(w), ActionIntentID: ai.ID, PolicyDecisionID: pd.ID, ApprovalPlanID: ap.ID, ApprovalBindingDigest: ap.BindingDigest, ApprovalExpiresAt: ap.ExpiresAt}
+	raw, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "transport_program_sha256") {
+		t.Fatal("historical fixture contains future field")
+	}
+	store, err := NewArtifactStore(v.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := store.Put(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return SourceMarkerRetirementPlanResult{PlanRef: ref, Plan: p, PolicyOutcome: pd.Outcome}
+}
+
+func sourceMarkerHistoricalFailedRecovery(t *testing.T, v *SourceMarkerRetirer, plan SourceMarkerRetirementPlanResult, now time.Time) SourceMarkerRetirementResult {
+	t.Helper()
+	p, ai, err := v.loadPlan(plan.PlanRef, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := policy.LoadConfig(v.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, eligible := policy.EvaluateSourceMarkerRecovery(ai, p.Request, p.Recovery.ActionID, p.Recovery.AttemptID, p.Operation, sourceMarkerLegacyProgramSHA256, cfg, policy.EvaluationContext{}, now)
+	if !eligible {
+		t.Fatal("historical fixture was not eligible")
+	}
+	pd, matched, err := policy.NewExactActionApprovalStore(v.home).ApplyMatching(ai, cfg, base, now)
+	if err != nil || !matched || !policy.Allowed(pd) {
+		t.Fatal("historical fixture approval not consumed", err)
+	}
+	if err = recordEnvelope(v.home, pd.ID, &pd); err != nil {
+		t.Fatal(err)
+	}
+	attemptTime, err := time.Parse("20060102t150405z", p.Request.AttemptID[:16])
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempts := runattempt.Open(v.home)
+	id := runattempt.MintDeterministic("source-marker-recovery:"+ai.ID, attemptTime)
+	attempt, err := attempts.MintWithID(id, p.WorkID, p.Actor, "compound", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = attempts.AttachActionIntent(id, ai.ID); err != nil {
+		t.Fatal(err)
+	}
+	w, err := v.requireWork(p.WorkID, p.Actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := work.ReceiptedActionInput{Action: ai, PreEvaluatedDecision: &pd, ExpectedWorkState: w.State, OutcomePending: true, Outcome: "blocked", Summary: "synthetic historical reconcile response pending", MoveType: "audit_only", ProofRefs: append([]string{ai.ID, attempt.ID, "policy-decision:" + pd.ID}, p.Recovery.proofRefs()...), BeforeRefs: []string{"request-sha256:" + p.RequestSHA256, "request-sha256:" + p.RequestSHA256}, FilesChanged: []string{}, RequiredAttemptCompletion: &work.RequiredAttemptCompletion{AttemptID: id, Owner: sourceMarkerRecoveryOwner}}
+	s, err := work.Open(v.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.ReserveReceiptedAction(p.WorkID, pending, now, func() error { return policy.NewExactActionApprovalStore(v.home).ValidateConsumedDecision(ai, pd) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = attempts.CommitLaunch(id, now, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = attempts.MarkRunning(id, now); err != nil {
+		t.Fatal(err)
+	}
+	out, err := v.finish(SourceMarkerRetirementResult{RunAttemptID: id, ApprovalConsumed: true}, p, ai, pd, "failed", nil, "verification_failed", &sourceMarkerRetirementReservation{input: pending, authorizedAt: now, launched: true}, context.Background())
+	if err == nil || out.State != "recovery_required" || out.ReceiptID == "" || out.TransitionID == "" {
+		t.Fatal("historical native failure proof missing", err)
+	}
+	return out
+}
+
+func sourceMarkerMissingPlanField(t *testing.T, v *SourceMarkerRetirer, ref string, path ...string) string {
+	t.Helper()
+	store, err := NewArtifactStore(v.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := store.Get(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err = json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	node := fields
+	for _, part := range path[:len(path)-1] {
+		node = node[part].(map[string]any)
+	}
+	delete(node, path[len(path)-1])
+	raw, err = json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broken, err := store.Put(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return broken
+}
+
+func TestSourceMarkerRetirementLegacyHistoryRequiresFreshTransportApproval(t *testing.T) {
+	currentProgram := sourceMarkerRetirementProgram
+	legacy, err := os.ReadFile("testdata/source_marker_retirement_legacy_v0_1.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtimeConfigBytesHash(legacy) != sourceMarkerLegacyProgramSHA256 {
+		t.Fatal("legacy fixture drift")
+	}
+	sourceMarkerRetirementProgram = string(legacy)
+	t.Cleanup(func() { sourceMarkerRetirementProgram = currentProgram })
+	v, r, m, w, now := sourceMarkerFixture(t)
+	clock := now
+	v.now = func() time.Time { return clock }
+	original, err := v.Plan(r, w, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceMarkerApprove(t, v, original, clock)
+	m.fail = true
+	failed, err := v.Execute(context.Background(), original.PlanRef, "fixture")
+	if err == nil || failed.State != "recovery_required" {
+		t.Fatal("historical original did not fail", err)
+	}
+	nativeInstallerWork(t, v.home, "reconcile synthetic historical marker", failed.RecoveryWorkID, clock)
+	clock = clock.Add(time.Second)
+	historical := sourceMarkerHistoricalRecoveryPlan(t, v, original, failed, clock)
+	sourceMarkerApprove(t, v, historical, clock)
+	sourceMarkerRetirementProgram = currentProgram
+	if _, _, err = v.loadPlan(original.PlanRef, "fixture"); err != nil {
+		t.Fatal("old original no longer loads", err)
+	}
+	if _, _, err = v.loadPlan(historical.PlanRef, "fixture"); err != nil {
+		t.Fatal("old reconcile no longer loads", err)
+	}
+	starts := m.starts
+	if _, err = v.Execute(context.Background(), historical.PlanRef, "fixture"); err == nil || m.starts != starts || !strings.Contains(err.Error(), "transport_program_binding") {
+		t.Fatal("old approval launched repaired transport", err)
+	}
+	sourceMarkerRetirementProgram = string(legacy)
+	failedRecovery := sourceMarkerHistoricalFailedRecovery(t, v, historical, clock)
+	sourceMarkerRetirementProgram = currentProgram
+	for _, ref := range []string{original.PlanRef, historical.PlanRef} {
+		if _, _, err = v.loadPlan(ref, "fixture"); err != nil {
+			t.Fatal("immutable failed plan no longer loads", err)
+		}
+	}
+	events, err := eventstore.Open(v.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{failed.ReceiptID, failedRecovery.ReceiptID} {
+		record, readErr := events.Read(id)
+		var receipt envelope.Receipt
+		if readErr != nil || json.Unmarshal(record.Bytes, &receipt) != nil || receipt.Validate() != nil || receipt.Outcome != "failed" || receipt.StateDelta.ChangeKnowledge != "unknown" {
+			t.Fatal("historical failed receipt invalid", readErr)
+		}
+	}
+	clock = clock.Add(time.Second)
+	fresh, err := v.PlanRecovery(original.PlanRef, "reconcile", failed.RecoveryWorkID, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Plan.WorkID != failed.RecoveryWorkID || fresh.Plan.RequestSHA256 != original.Plan.RequestSHA256 || fresh.Plan.Recovery.TransportProgramSHA256 != SourceMarkerRetirementProgramSHA256() {
+		t.Fatal("fresh recovery did not retain original request and reserved work")
+	}
+	_, freshAI, err := v.loadPlan(fresh.PlanRef, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, oldAI, err := v.loadPlan(historical.PlanRef, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if freshAI.ArgumentsHash != oldAI.ArgumentsHash {
+		t.Fatal("original recovery commitment changed")
+	}
+	unpinned := *fresh.Plan.Recovery
+	unpinned.TransportProgramSHA256 = ""
+	unpinnedAI := sourceMarkerOperationIntent(fresh.Plan.Request, fresh.Plan.WorkID, fresh.Plan.Actor, fresh.Plan.WorkSHA256, fresh.Plan.Operation, &unpinned, clock)
+	if policy.CanonicalFullIntentDigest(unpinnedAI) == policy.CanonicalFullIntentDigest(freshAI) {
+		t.Fatal("transport code is absent from full approval binding")
+	}
+	cfg, _, err := policy.LoadConfig(v.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.ActionBindingDigest(policy.ActionBindingForIntent(unpinnedAI, cfg)) == policy.ActionBindingDigest(policy.ActionBindingForIntent(freshAI, cfg)) {
+		t.Fatal("transport code is absent from one-use approval binding")
+	}
+	for _, path := range [][]string{{"recovery", "transport_program_sha256"}, {"recovery", "request_sha256"}, {"request", "ssh", "interpreter_sha256"}, {"work_id"}} {
+		broken := sourceMarkerMissingPlanField(t, v, fresh.PlanRef, path...)
+		if _, _, err = v.loadPlan(broken, "fixture"); err == nil {
+			t.Fatal("fresh plan accepted missing field", path)
+		}
+	}
+	if _, err = v.Execute(context.Background(), fresh.PlanRef, "fixture"); err == nil || m.starts != starts {
+		t.Fatal("fresh transport reused historical approval", err)
+	}
+	sourceMarkerApprove(t, v, fresh, clock)
+	m.fail = false
+	recovered, err := v.Execute(context.Background(), fresh.PlanRef, "fixture")
+	if err != nil || !recovered.SourceMarkerRetired {
+		t.Fatal("fresh exact recovery failed", err)
+	}
+	s, err := work.Open(v.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, present, readErr := s.ReadReceiptedActionReservationInput(original.Plan.WorkID, original.Plan.ActionIntentID); readErr != nil || present {
+		t.Fatal("original recovery commitment did not clear", readErr)
+	}
+	for _, prior := range []SourceMarkerRetirementResult{failed, failedRecovery} {
+		attempt, readErr := runattempt.Open(v.home).Get(prior.RunAttemptID)
+		if readErr != nil || attempt.Status != runattempt.StatusFailed || attempt.TerminalizationReceiptID != prior.ReceiptID || attempt.TerminalizationTransitionID != prior.TransitionID {
+			t.Fatal("historical failure was rewritten", readErr)
+		}
+	}
+}
+
+func TestSourceMarkerRetirementFreshCurrentPlanRequiresEveryField(t *testing.T) {
+	v, r, _, w, _ := sourceMarkerFixture(t)
+	p, err := v.Plan(r, w, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range [][]string{{"operation"}, {"request", "program_sha256"}, {"request", "ssh", "interpreter_sha256"}} {
+		broken := sourceMarkerMissingPlanField(t, v, p.PlanRef, path...)
+		if _, _, err = v.loadPlan(broken, "fixture"); err == nil {
+			t.Fatal("fresh plan accepted missing field", path)
+		}
+	}
+	r.ProgramSHA256 = sourceMarkerLegacyProgramSHA256
+	if _, err = v.Plan(r, w, "fixture"); err == nil {
+		t.Fatal("new retirement accepted legacy request pin")
 	}
 }

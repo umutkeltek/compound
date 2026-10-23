@@ -177,6 +177,30 @@ func (v *SourceMarkerRetirer) plan(r policy.SourceMarkerRetirementRequest, workI
 	return out, nil
 }
 
+// Historical recovery plans omitted only the transport pin. Validate a copy of
+// that exact legacy shape; the immutable bytes and intent remain unchanged and
+// are authenticated by loadPlan. Fresh execution still requires a current pin.
+func sourceMarkerPlanRequiredFields(raw json.RawMessage, p SourceMarkerRetirementPlan) bool {
+	if credentialVerifyRequiredFields(raw, reflect.TypeOf(p)) {
+		return true
+	}
+	if p.Operation != "reconcile" || p.Recovery == nil || p.Request.ProgramSHA256 != sourceMarkerLegacyProgramSHA256 || p.Recovery.TransportProgramSHA256 != "" || p.Recovery.RequestSHA256 != p.RequestSHA256 || p.WorkID != sourceMarkerRecoveryWorkID(p.Recovery.ActionID, p.Recovery.AttemptID) {
+		return false
+	}
+	var fields map[string]json.RawMessage
+	var recovery map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || json.Unmarshal(fields["recovery"], &recovery) != nil || recovery == nil {
+		return false
+	}
+	if _, present := recovery["transport_program_sha256"]; present {
+		return false
+	}
+	recovery["transport_program_sha256"] = json.RawMessage(`""`)
+	fields["recovery"], _ = json.Marshal(recovery)
+	shape, err := json.Marshal(fields)
+	return err == nil && credentialVerifyRequiredFields(shape, reflect.TypeOf(p))
+}
+
 func (v *SourceMarkerRetirer) loadPlan(ref, actor string) (SourceMarkerRetirementPlan, envelope.ActionIntent, error) {
 	var p SourceMarkerRetirementPlan
 	var ai envelope.ActionIntent
@@ -194,7 +218,7 @@ func (v *SourceMarkerRetirer) loadPlan(ref, actor string) (SourceMarkerRetiremen
 		return p, ai, sourceMarkerRetirementError("plan_binding")
 	}
 	var extra any
-	if d.Decode(&extra) != io.EOF || !credentialVerifyUniqueJSON(raw) || !credentialVerifyRequiredFields(raw, reflect.TypeOf(p)) {
+	if d.Decode(&extra) != io.EOF || !credentialVerifyUniqueJSON(raw) || !sourceMarkerPlanRequiredFields(raw, p) {
 		return p, ai, sourceMarkerRetirementError("plan_binding")
 	}
 	events, e := eventstore.Open(v.home)

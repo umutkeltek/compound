@@ -1352,3 +1352,14 @@ files and inactive anchor remain unchanged. Native Work generation, launch and
 terminal-owner proofs bound every effect. A lost response requires a separate
 reconcile Work; there is no configuration rewrite, rollback or activation effect.
 Generic forbidden paths and custom or overlapping denials remain enforced.
+
+Executable pins are full-file SHA-256 values, streamed in 1 MiB chunks with a
+256 MiB per-executable ceiling. Oversize files are refused; a truncated prefix is
+never treated as the executable. Reconciliation can retain the exact historical
+request program pin for the known pre-streaming program, but new retirements
+must pin the current program. Every new recovery separately binds the current
+transport program in its full ActionIntent evidence and one-use approval, while
+preserving the original request bytes, request digest, reserved recovery Work and
+recovery arguments hash. Historical immutable reconcile plans may omit only that
+transport field for this exact legacy lineage; they remain readable and cannot
+launch current transport. Missing fields in fresh plans remain errors.

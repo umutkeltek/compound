@@ -62,6 +62,21 @@ class MarkerTests(unittest.TestCase):
         retire.rename_no_replace = self.real_rename
         os.close(self.fd)
         self.tmp.cleanup()
+    def test_legacy_request_pin_is_reconcile_only(self):
+        legacy_sha = "b517afa4728bf99bc9a1e347b186641ea921f2cbb2ae7df9adb81ba854c51487"
+        with self.assertRaises(retire.Refusal):
+            self.run_main(mutate=lambda request: request.update(program_sha256=legacy_sha))
+        with self.assertRaises(retire.Refusal):
+            self.run_main("reconcile", mutate=lambda request: request.update(program_sha256="f" * 64))
+        self.assertTrue(self.marker.exists())
+        original = copy.deepcopy(self.request)
+        original["program_sha256"] = legacy_sha
+        original["executables"] = {"client_path": "/usr/lib/postgresql/17/bin/psql"}
+        result = self.run_main("reconcile", mutate=lambda request: request.update(program_sha256=legacy_sha))
+        self.assertEqual(result["request_sha256"], retire.digest(retire.canonical(original)))
+        self.assertEqual(result["program_sha256"], self.program)
+        self.assertTrue(result["source_marker_retired"])
+
     def run_main(self, operation="retire", mutate=None, clock=None, budget_ns=30 * 10**9, on_probe=None):
         request = copy.deepcopy(self.request)
         if mutate:
@@ -207,6 +222,51 @@ with tempfile.TemporaryDirectory() as tmp:
  finally:os.close(fd)
 """
         subprocess.run([sys.executable, "-I", "-B", "-c", code], check=True, timeout=5)
+
+
+class ExecutablePinTests(unittest.TestCase):
+    def test_full_large_executable_and_suffix_are_pinned(self):
+        legacy_path = Path(__file__).with_name("testdata") / "source_marker_retirement_legacy_v0_1.py"
+        legacy_spec = importlib.util.spec_from_file_location("legacy_retire", legacy_path)
+        legacy = importlib.util.module_from_spec(legacy_spec)
+        legacy_spec.loader.exec_module(legacy)
+        self.assertEqual(legacy.digest(legacy_path.read_bytes()), "b517afa4728bf99bc9a1e347b186641ea921f2cbb2ae7df9adb81ba854c51487")
+        real_open = open
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "large-executable"
+            executable.write_bytes(b"a" * (32 * 1024 * 1024) + b"pinned suffix")
+            sha = retire.digest(executable.read_bytes())
+            request = {"ssh": {"interpreter_sha256": sha, "sudo_sha256": sha},
+                       "executables": {"docker_sha256": sha, "runuser_sha256": sha,
+                                       "client_path": "/usr/lib/postgresql/17/bin/psql", "client_sha256": sha}}
+            paths = {"/usr/bin/python3", "/usr/bin/sudo", "/usr/bin/docker",
+                     "/usr/sbin/runuser", request["executables"]["client_path"]}
+            def opened(path, mode):
+                self.assertIn(path, paths)
+                self.assertEqual(mode, "rb")
+                return real_open(executable, mode)
+            with patch("builtins.open", side_effect=opened):
+                with self.assertRaises(legacy.Refusal):
+                    legacy.executable_pins(request)
+                retire.executable_pins(request)
+            with real_open(executable, "r+b") as file:
+                file.seek(32 * 1024 * 1024 + 1)
+                file.write(b"X")
+            with patch("builtins.open", side_effect=opened), self.assertRaises(retire.Refusal):
+                retire.executable_pins(request)
+
+    def test_executable_size_ceiling_refuses_instead_of_hashing_a_prefix(self):
+        real_open = open
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "oversize-executable"
+            executable.write_bytes(b"x" * 65)
+            sha = retire.digest(executable.read_bytes())
+            request = {"ssh": {"interpreter_sha256": sha, "sudo_sha256": sha},
+                       "executables": {"docker_sha256": sha, "runuser_sha256": sha,
+                                       "client_path": "/usr/lib/postgresql/17/bin/psql", "client_sha256": sha}}
+            with patch.object(retire, "MAX_EXECUTABLE_BYTES", 64), patch("builtins.open", side_effect=lambda path, mode: real_open(executable, mode)), self.assertRaises(retire.Refusal):
+                retire.executable_pins(request)
+
 
 if __name__ == "__main__":
     unittest.main()
