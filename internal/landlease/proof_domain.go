@@ -116,6 +116,36 @@ func proofRepositoryHolder(identity *ProofCoordinationIdentity) string {
 	return "repository:" + identity.RepositoryBarrier
 }
 
+// proofRepositoryOccupied reports whether identity's repository already owns
+// proof execution: its repository barrier is held, or a lease record for its
+// fingerprint sits in any class slot. An expired record still counts, because
+// expiry does not recover a predecessor's repository ownership. It reads atomic
+// lease images only and takes no class lock, so the queue lock order holds.
+func proofRepositoryOccupied(backing string, identity *ProofCoordinationIdentity, now time.Time) (bool, error) {
+	pending, err := executionBarrierPending(proofRepositoryRoot(backing, identity.Generation), proofRepositoryHolder(identity))
+	if err != nil || pending {
+		return pending, err
+	}
+	for _, class := range []ProofCapacityClass{ProofCapacitySystemFull, ProofCapacityNativeConsumer} {
+		expected := *identity
+		expected.Class = class
+		for slot := 0; slot <= proofSlotMax; slot++ {
+			slotted, err := expected.WithSlot(slot)
+			if err != nil {
+				return false, err
+			}
+			status, err := proofAdmissionSnapshot(proofSlotRoot(backing, identity.Generation, class, slot), now, &leaseBinding{identity: &slotted, acquisition: true})
+			if err != nil {
+				return false, err
+			}
+			if status.Holder != "" && status.ProofCoordination != nil && status.ProofCoordination.RepositoryFingerprint == identity.RepositoryFingerprint {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
 // ProofCoordinationFor returns nil only for an unmigrated historical singleton.
 // The work owner derives class from sealed canonical source, never a CLI flag.
 func ProofCoordinationFor(home string, class ProofCapacityClass, repository string) (*ProofCoordinationIdentity, error) {

@@ -1276,8 +1276,13 @@ v0.2 identities, so mixed clients never exceed two `system_full` proofs and a
 slot-1 reservation is never misread as slot 0.
 
 A descriptor-backed FIFO ticket precedes every immediate or waiting admission.
-An earlier live ticket blocks successors sharing its class **or** repository;
-the independent other class and repository can progress. Cancellation and deadline
+An earlier live ticket blocks successors sharing its repository, and successors
+sharing its class unless that earlier ticket's own repository is occupied (its
+repository barrier is held, or any class slot keeps a held or expired lease for
+it). Such a ticket waits for its repository, not for capacity, so it does not
+hold a free slot idle; tickets that wait for capacity keep strict FIFO order.
+The occupancy check reads lease images without a class lock and fails closed on
+any read error. The independent other class and repository can progress. Cancellation and deadline
 checks occur after lock acquisition and before reservation or RunAttempt creation.
 Expired/dead tickets are pruned, and failed preparation releases its ticket.
 A capacity lease and repository barrier are both inherited by gate descendants.

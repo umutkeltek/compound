@@ -267,3 +267,74 @@ func TestProofSlotsQueueTicketsAreSlotless(t *testing.T) {
 		t.Fatal("queue accepted a slot-bearing ticket")
 	}
 }
+
+func requireQueueBusy(t *testing.T, ticket, earlier *ProofAdmission) {
+	t.Helper()
+	called := false
+	err := ticket.WithTurn(context.Background(), false, func(*Resource) error { called = true; return nil })
+	var busy *ProofQueueBusyError
+	if called || !errors.As(err, &busy) || busy.EarlierTicket != earlier.ticket.ID() {
+		t.Fatalf("ticket not held behind %s: called=%v err=%v", earlier.ticket.ID(), called, err)
+	}
+}
+
+// A ticket that waits only for its own repository must not hold a free slot
+// idle for another repository's same-class proof.
+func TestProofQueueRepositoryWaiterDoesNotHoldAFreeSlot(t *testing.T) {
+	homes, _, _ := proofDomainFixture(t)
+	running, _ := acquireDomainProof(t, beginDomainTicket(t, homes[0], ProofCapacitySystemFull, "2"), "repo-running")
+	requireProofSlot(t, running, 0)
+	waiting := beginDomainTicket(t, homes[1], ProofCapacitySystemFull, "2")
+	sameRepo := beginDomainTicket(t, homes[0], ProofCapacitySystemFull, "2")
+	requireQueueBusy(t, sameRepo, waiting)
+	other, _ := acquireDomainProof(t, beginDomainTicket(t, homes[0], ProofCapacitySystemFull, "3"), "repo-other")
+	requireProofSlot(t, other, 1)
+	requireProofBusy(t, waiting, "same repository proof running")
+	requireQueueBusy(t, sameRepo, waiting)
+}
+
+// A ticket whose repository is free waits for capacity, so later same-class
+// tickets keep strict FIFO behind it.
+func TestProofQueueCapacityWaitersKeepFIFO(t *testing.T) {
+	homes, _, _ := proofDomainFixture(t)
+	acquireDomainProof(t, beginDomainTicket(t, homes[0], ProofCapacitySystemFull, "2"), "fifo-first")
+	acquireDomainProof(t, beginDomainTicket(t, homes[1], ProofCapacitySystemFull, "3"), "fifo-second")
+	head := beginDomainTicket(t, homes[0], ProofCapacitySystemFull, "4")
+	requireProofBusy(t, head, "capacity occupied (2/2)")
+	later := beginDomainTicket(t, homes[1], ProofCapacitySystemFull, "5")
+	requireQueueBusy(t, later, head)
+}
+
+// An expired, unrecovered lease still owns its repository: the earlier ticket
+// of that repository waits for recovery, not capacity.
+func TestProofQueueExpiredRepositoryRecordDoesNotHoldAFreeSlot(t *testing.T) {
+	homes, backing, generation := proofDomainFixture(t)
+	dead, deadBarrier := acquireDomainProof(t, beginDomainTicket(t, homes[0], ProofCapacitySystemFull, "2"), "repo-dead")
+	requireProofSlot(t, dead, 0)
+	if err := deadBarrier.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := executionBarrierPending(proofRepositoryRoot(backing, generation), proofRepositoryHolder(dead.ProofIdentity())); err != nil || pending {
+		t.Fatalf("repository barrier pending = %v, %v; want released", pending, err)
+	}
+	path, _ := statePath(proofSlotRoot(backing, generation, ProofCapacitySystemFull, 0))
+	lease, _, err := readLease(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.AcquiredAt = baseNow.Format(time.RFC3339Nano)
+	lease.ExpiresAt = baseNow.Add(time.Minute).Format(time.RFC3339Nano)
+	if err := writeLeaseAtomic(path, *lease); err != nil {
+		t.Fatal(err)
+	}
+	waiting := beginDomainTicket(t, homes[1], ProofCapacitySystemFull, "2")
+	other, _ := acquireDomainProof(t, beginDomainTicket(t, homes[0], ProofCapacitySystemFull, "3"), "repo-other")
+	requireProofSlot(t, other, 1)
+	status, err := ProofResourceForIdentity(homes[0], dead.ProofIdentity()).StatusReadOnly(time.Now())
+	if err != nil || status.Holder != "repo-dead" || status.Held {
+		t.Fatalf("expired slot-0 record touched: %+v %v", status, err)
+	}
+	if waiting.ticket.ID() == "" {
+		t.Fatal("waiting ticket lost")
+	}
+}

@@ -20,8 +20,8 @@ const proofQueueSchema = "compound.proof_queue.v0.1"
 // The queue owns ordering only. Existing class leases remain execution and
 // recovery authority. Every operation shares this short admission flock.
 type proofQueue struct {
-	root, generation string
-	now              func() time.Time
+	backing, root, generation string
+	now                       func() time.Time
 }
 
 type proofQueueRecord struct {
@@ -56,7 +56,7 @@ func newProofQueue(backing, generation string) (*proofQueue, error) {
 	if !filepath.IsAbs(backing) || filepath.Clean(backing) != backing || !proofIdentityDigest(generation) {
 		return nil, fmt.Errorf("canonical proof backing and generation required")
 	}
-	return &proofQueue{root: filepath.Join(backing, "landlease", "proof", generation, "admission"), generation: generation, now: time.Now}, nil
+	return &proofQueue{backing: backing, root: filepath.Join(backing, "landlease", "proof", generation, "admission"), generation: generation, now: time.Now}, nil
 }
 
 func (q *proofQueue) path() string { return filepath.Join(q.root, "state", "proof-queue.json") }
@@ -294,8 +294,22 @@ func (q *proofQueue) enqueue(identity ProofCoordinationIdentity, deadline time.T
 	return ticket, err
 }
 
-func proofTicketsConflict(left, right proofQueueRecord) bool {
-	return left.Identity.Class == right.Identity.Class || left.Identity.RepositoryFingerprint == right.Identity.RepositoryFingerprint
+// proofTicketBlocks reports whether the earlier pending ticket keeps later in
+// line. Same repository always does. Same class does unless the earlier
+// ticket's own repository is occupied: then it waits for its repository, not
+// for capacity, and must not hold a free slot idle. Read errors fail closed.
+func (q *proofQueue) proofTicketBlocks(earlier, later proofQueueRecord) (bool, error) {
+	if earlier.Identity.RepositoryFingerprint == later.Identity.RepositoryFingerprint {
+		return true, nil
+	}
+	if earlier.Identity.Class != later.Identity.Class {
+		return false, nil
+	}
+	occupied, err := proofRepositoryOccupied(q.backing, &earlier.Identity, q.now())
+	if err != nil {
+		return true, err
+	}
+	return !occupied, nil
 }
 
 // withTurn does not consume the ticket. The owner must defer Cancel across its
@@ -351,7 +365,11 @@ func (q *proofQueue) withTurn(ctx context.Context, ticket *ProofTicket, fn func(
 				found = true
 				break
 			}
-			if proofTicketsConflict(record, ticket.record) {
+			blocks, err := q.proofTicketBlocks(record, ticket.record)
+			if err != nil {
+				return err
+			}
+			if blocks {
 				return &ProofQueueBusyError{EarlierTicket: record.ID}
 			}
 		}

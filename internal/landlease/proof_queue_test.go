@@ -66,6 +66,35 @@ func TestProofQueueConflictFIFOAllowsIndependentClass(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A lease image that cannot be read keeps the later ticket waiting: the
+// occupancy check fails closed and the callback never runs.
+func TestProofQueueOccupancyReadErrorFailsClosed(t *testing.T) {
+	backing := t.TempDir()
+	q, err := newProofQueue(backing, strings.Repeat("1", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	q.now = func() time.Time { return baseNow }
+	queueFixtureTicket(t, q, ProofCapacitySystemFull, "2", baseNow.Add(time.Hour))
+	later := queueFixtureTicket(t, q, ProofCapacitySystemFull, "3", baseNow.Add(time.Hour))
+	path, err := statePath(proofSlotRoot(backing, q.generation, ProofCapacitySystemFull, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	err = q.withTurn(context.Background(), later, func() error { called = true; return nil })
+	var busy *ProofQueueBusyError
+	if called || err == nil || errors.As(err, &busy) || !strings.Contains(err.Error(), "parse land-lease state") {
+		t.Fatalf("corrupt slot lease did not fail closed: called=%v err=%v", called, err)
+	}
+}
 func TestProofQueuePrunesDeadAndExpiredHead(t *testing.T) {
 	for _, expired := range []bool{false, true} {
 		name := "dead"
