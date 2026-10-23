@@ -142,6 +142,10 @@ parked. Default recall remains promoted-claim-only; `memory recall <entity>
 `promote` verdict still requires a valid promotion basis and reviewed provenance;
 annotation is not an adjudication verdict and never widens the memory verdict set.
 
+The pending-adjudication sweep acts only on an explicit `proposed` state. It skips
+records with a missing or blank state, including source-candidate records, without
+rewriting them or freezing a promotion operation for them.
+
 ## Nine Questions
 
 Every durable object should answer:

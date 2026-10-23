@@ -757,7 +757,8 @@ func (s *Store) adjudicatePendingProposed(expected candidates.Record, verdict, w
 			return fmt.Errorf("decode expected candidate %s: %w", candID, err)
 		}
 		res.Candidate = latest
-		if latest.State != "" && latest.State != "proposed" {
+		if strings.TrimSpace(latest.State) != "proposed" {
+			outcome = pendingMutationSkipped
 			return nil
 		}
 		if err := validateAdjudicationIntent(latest, AdjudicationIntent{Verdict: verdict, WorkID: workID}); err != nil {
@@ -778,7 +779,7 @@ func (s *Store) adjudicatePendingProposed(expected candidates.Record, verdict, w
 				return fmt.Errorf("decode current candidate %s after stale generation: %w", candID, err)
 			}
 			res.Candidate = current
-			if current.State != "" && current.State != "proposed" {
+			if strings.TrimSpace(current.State) != "proposed" {
 				outcome = pendingMutationSkipped
 			}
 			return nil
@@ -914,6 +915,7 @@ func (s *Store) AdjudicatePending(opts AdjudicatePendingOptions, now time.Time) 
 		cursor      candidates.EntryCursor
 		record      candidates.Record
 		candidateID string
+		state       string
 		verdict     string
 		outcome     string
 		err         error
@@ -935,11 +937,12 @@ func (s *Store) AdjudicatePending(opts AdjudicatePendingOptions, now time.Time) 
 		lite := *entry.Candidate
 		decision.record = *entry.Record
 		decision.candidateID = lite.ID
+		decision.state = lite.State
 		if r.FirstID == "" {
 			r.FirstID = lite.ID
 		}
 		r.LastID = lite.ID
-		if lite.State != "" && lite.State != "proposed" {
+		if strings.TrimSpace(lite.State) != "proposed" {
 			decision.outcome = "skipped"
 			decisions = append(decisions, decision)
 			continue
@@ -1001,7 +1004,7 @@ func (s *Store) AdjudicatePending(opts AdjudicatePendingOptions, now time.Time) 
 				Verdict:        decision.verdict,
 				EntryCursor:    decision.cursor,
 				ExpectedDigest: decision.record.Digest,
-				ExpectedState:  "proposed",
+				ExpectedState:  decision.state,
 			}
 			if opts.DryRun {
 				r.Actions = append(r.Actions, action)

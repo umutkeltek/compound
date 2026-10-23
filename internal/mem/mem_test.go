@@ -2789,3 +2789,32 @@ func TestAdjudicatePendingNamesEveryCustodyCorruptionAndNeverActsOnIt(t *testing
 		}
 	}
 }
+
+func TestAdjudicatePendingSkipsRecordWithNoState(t *testing.T) {
+	s := newStore(t)
+	if err := os.WriteFile(filepath.Join(s.candDir(), "cand_real.json"), []byte(`{"id":"cand_real","state":"proposed"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stateless := []byte(`{"schema_version":"compound.source_candidate.v0.1","id":"src_cand_stateless","kind":"memory","promote_allowed":false,"verdict":"no_promote"}`)
+	path := filepath.Join(s.candDir(), "src_cand_stateless.json")
+	if err := os.WriteFile(path, stateless, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report := s.AdjudicatePending(AdjudicatePendingOptions{DryRun: true}, t0)
+	for _, action := range report.Actions {
+		if action.CandidateID == "src_cand_stateless" {
+			t.Fatalf("missing state planned as %q: %+v", action.ExpectedState, action)
+		}
+	}
+	if len(report.Actions) != 1 || report.Actions[0].CandidateID != "cand_real" || report.Actions[0].ExpectedState != "proposed" {
+		t.Fatalf("actions = %+v, want only cand_real planned as proposed", report.Actions)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, stateless) {
+		t.Fatalf("stateless record rewritten: %s", got)
+	}
+}

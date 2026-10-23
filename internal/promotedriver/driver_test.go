@@ -709,6 +709,36 @@ func TestDriverPersistsVersionedFilenameCursorsAndReadsLegacyAfterID(t *testing.
 	})
 }
 
+func TestApplyDoesNotFreezeStatelessSourceRecord(t *testing.T) {
+	home := t.TempDir()
+	seedCandidate(t, home, "cand_plain", mem.Candidate{Entity: "plain", Predicate: "value", Object: "z"})
+	body := []byte(`{"schema_version":"compound.source_candidate.v0.1","id":"src_cand_stateless","kind":"memory","promote_allowed":false,"verdict":"no_promote"}`)
+	path := filepath.Join(home, candidates.InboxDir(candidates.Memory), "src_cand_stateless.json")
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Run(home, Options{Apply: true, WorkID: "work_stateless_skip", SweepScanLimit: 100}, testNow)
+	if err != nil || report.Stage == stageRecoveryRequired {
+		t.Fatalf("apply stage=%q err=%v, stateless source record must not wedge the pass", report.Stage, err)
+	}
+	if report.Intent == nil {
+		t.Fatal("apply left no intent")
+	}
+	for _, op := range report.Intent.Operations {
+		if op.Target.ID == "src_cand_stateless" {
+			t.Fatalf("planned operation on stateless record: %+v", op)
+		}
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatalf("stateless record rewritten: %s", got)
+	}
+}
+
 func TestResolveStoredCursorMigratesLegacyIDWithTokenPrefix(t *testing.T) {
 	got, err := resolveStoredCursor("", "filename-v1:abc")
 	if err != nil {
