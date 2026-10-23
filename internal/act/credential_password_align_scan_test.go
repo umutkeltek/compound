@@ -107,9 +107,14 @@ func TestCredentialPasswordAlignmentIncrementalDiscoveryRechecksKnownAndNewFence
 			if err := os.WriteFile(path, []byte("{}"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			if err := check(); err == nil {
-				t.Fatal("known attempt was trusted from cached validation")
+			// Losing an ID from discovery must not hide a damaged known attempt.
+			owner.fenceScan = func(eventstore.ScanOptions) (eventstore.ScanPage, error) {
+				return eventstore.ScanPage{}, nil
 			}
+			if err := check(); err == nil {
+				t.Fatal("known attempt was omitted after discovery inventory shrank")
+			}
+			owner.fenceScan = nil
 			if err := os.WriteFile(path, original, 0600); err != nil {
 				t.Fatal(err)
 			}

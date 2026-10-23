@@ -130,18 +130,25 @@ The selected recovery RESULT must cover every preceding recovery directory.
 
 ## Bounded history discovery
 
-Within one owner instance, fence discovery uses the event store's fixed-prefix
-incremental reader after its first complete read. It retains only discovered IDs
-and the opaque cache cursor. Every admission and launch check still rereads and
-validates every known native fence, attempt, approval and outcome, and discovers
-newly appended fences. An unreadable known record fails closed; a stale cursor
-safely falls back to a fuller scan. Legacy fallback retains full-read semantics.
-No cursor or cached outcome is accepted from a request, plan or CLI.
+Every native discovery check uses the event store's exact fixed-prefix
+`EnumerateIDs("cpaf_", false)` inventory. Its complete sealed-frame inventory
+proof permits skipping unrelated payloads; missing, changed or incomplete
+index evidence triggers strict validation against stored frames. Returned IDs
+are discovery hints, never authority for a fence or its outcome.
 
-The installer and its native transport share that process-local discovery state;
-creating a separate reader in transport startup would repeat the cold history
-scan within the same deadline. This changes neither native deadlines nor exact
-approval, recovery ordering, remote namespace checks or proof requirements.
+The owner retains only discovered IDs within the process and unions each exact
+inventory with those known IDs. Every admission and launch check still rereads
+and validates every known native fence, attempt, approval and applicable outcome.
+A missing or unreadable known record fails closed. Newly appended malformed
+fences remain visible. Compatibility scan adapters retain their incremental
+cursor and conservative rescan behavior. No ID set, cursor, cached request or
+cached outcome is accepted from a request, plan or CLI.
+
+The installer and native transport share the same known-ID set. Exact ID
+enumeration avoids decoding unrelated history even in a new CLI process, so the
+first discovery fits the existing admission budget. This changes neither native
+deadlines nor exact approval, recovery ordering, remote namespace checks or proof
+requirements.
 
 ## Disposable acceptance
 

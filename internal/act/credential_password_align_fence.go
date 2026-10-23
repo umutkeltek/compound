@@ -169,13 +169,25 @@ func (v *CredentialPasswordAligner) alignmentAttempts(path, destination, skipAct
 	}
 	scan := v.fenceScan
 	if scan == nil {
-		scan = events.ScanFrom
+		// Enumeration returns the complete ID set without decoding unrelated
+		// history. Each ID is still freshly read and validated below.
+		scan = func(eventstore.ScanOptions) (eventstore.ScanPage, error) {
+			names, err := events.EnumerateIDs("cpaf_", false)
+			if err != nil {
+				return eventstore.ScanPage{}, err
+			}
+			entries := make([]eventstore.Entry, 0, len(names))
+			for _, id := range names {
+				entries = append(entries, eventstore.Entry{ID: id})
+			}
+			return eventstore.ScanPage{Entries: entries}, nil
+		}
 	}
 	page, e := scan(eventstore.ScanOptions{Prefixes: []string{"cpaf_"}, Cursor: v.fenceCursor})
 	if e != nil {
 		return nil, credentialPasswordAlignError("attempt_fence_unavailable")
 	}
-	// Only discovery is incremental. A cursor is never authority for a fence
+	// Only discovery is optimized. A cursor is never authority for a fence
 	// or attempt: every known ID is read and validated below on every check.
 	// Union even non-resumed pages; a stale cursor may re-serve a superset.
 	ids := make(map[string]struct{}, len(v.fenceIDs)+len(page.Entries))
