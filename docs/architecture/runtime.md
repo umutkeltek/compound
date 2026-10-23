@@ -1310,3 +1310,45 @@ can exist without a per-work frame, so an absent frame or stale index cannot pro
 that a work item has no pending terminalization. Optimization must retain complete
 validation and corruption reporting; a new index is justified only by measured
 consumer cost and an explicit writer cutover.
+
+## Existing backup credential handoff
+
+The act backup-credential-stage command is a separate typed native owner. Its
+closed request admits exactly four existing backup files into one root-private
+recovery directory; it cannot issue credentials, install configuration, start
+services, retire source markers or accept a migration. Planning inspects custody
+metadata only. The one-use exact approval binds device/inode, owner, mode,
+single-link, size and modification/change times for the directory and files,
+plus host and transport/code pins. Source content hashes are optional input
+pins; the native guard derives and binds actual hashes after admission and
+before transfer.
+
+The owner uses native Work generation, receipted-action reservation, honest
+actor/compound RunAttempt, launch evidence and completion proof. Credentials
+cross only bounded stdin; stdout/receipts contain metadata. Linux publication
+uses create-only atomic rename. Its immutable request journal supports a distinct
+native recovery Work after uncertain transport outcomes; recovery may complete
+a verified interrupted prefix but cannot overwrite published files. Exact retry
+does not re-enter transport. Generic forbidden-path evaluation is unchanged;
+custom, overlapping and duplicate protected rules still deny the typed owner.
+
+## Source-comparison marker retirement
+
+The act source-marker-retirement command is a distinct metadata-only native owner.
+It accepts a source marker rename only after reading genuine accepted native
+runtime installation proof: the committed succeeded compound RunAttempt, its
+owned receipt/transition, consumed allowing policy, typed installed-inactive
+observation, and exact four-file postimages. A caller-created proof or generic
+protected-file action cannot substitute for that chain.
+
+Its one-use request pins host, SSH/code, marker, inactive anchor and accepted
+runtime metadata. A fixed Docker census and read-only local PostgreSQL probe
+require absent application containers and a closed database with zero clients.
+Each child timeout is capped by the remaining wire deadline. The complete
+runtime fence rechecks that deadline before returning to filesystem effects.
+The native program never opens environment bodies. Linux create-only rename
+preserves the source marker inode in root-private recovery; the four runtime
+files and inactive anchor remain unchanged. Native Work generation, launch and
+terminal-owner proofs bound every effect. A lost response requires a separate
+reconcile Work; there is no configuration rewrite, rollback or activation effect.
+Generic forbidden paths and custom or overlapping denials remain enforced.

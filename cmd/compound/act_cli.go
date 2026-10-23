@@ -38,6 +38,8 @@ func actUsage() string {
 		"  " + actcli.PaddleSandboxUsage() + "\n" +
 		"  " + actcli.CredentialVerificationUsage() + "\n" +
 		"  " + actcli.RuntimeConfigInstallUsage() + "\n" +
+		"  " + actcli.BackupCredentialStageUsage() + "\n" +
+		"  " + actcli.SourceMarkerRetirementUsage() + "\n" +
 		"  compound act post (--from-work W | --draft D --at RFC3339 | --content -) [--work W] --transport NAME [--confirm] [--home P] [--json]\n" +
 		"    Governed outbound write: repoint the dotted KEY inside the YAML/JSON config at P to V.\n" +
 		"    DRY-RUN by default (shows current -> proposed + the PolicyDecision, writes nothing).\n" +
@@ -69,6 +71,10 @@ func runActWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 		return actcli.RunCredentialPasswordAlignment(args[1:], stdout, stderr)
 	case "credential-verify":
 		return actcli.RunCredentialVerification(args[1:], stdout, stderr)
+	case "source-marker-retirement":
+		return actcli.RunSourceMarkerRetirement(args[1:], stdout, stderr)
+	case "backup-credential-stage":
+		return actcli.RunBackupCredentialStage(args[1:], stdout, stderr)
 	case "runtime-config-install":
 		return actcli.RunRuntimeConfigInstall(args[1:], stdout, stderr)
 	case "paddle-sandbox-notification":

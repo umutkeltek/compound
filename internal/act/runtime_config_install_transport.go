@@ -194,16 +194,9 @@ func runtimeConfigInstallTransportPreflight(r policy.RuntimeConfigInstallRequest
 	if err != nil || known.Size() > 1024*1024 {
 		return nil, runtimeConfigInstallError("transport_custody")
 	}
-	fd, err := os.OpenFile(r.SSH.KnownHostsFile, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	raw, err := runtimeConfigInstallReadTransportFile(r.SSH.KnownHostsFile, known)
 	if err != nil {
-		return nil, runtimeConfigInstallError("transport_custody")
-	}
-	fi, fe := fd.Stat()
-	raw, re := io.ReadAll(io.LimitReader(fd, 1024*1024+1))
-	after, ae := fd.Stat()
-	ce := fd.Close()
-	if fe != nil || ae != nil || re != nil || ce != nil || !runtimeConfigInstallSameTransportMetadata(known, fi) || !runtimeConfigInstallSameTransportMetadata(fi, after) || int64(len(raw)) != known.Size() {
-		return nil, runtimeConfigInstallError("transport_custody")
+		return nil, err
 	}
 	if err = verifyRuntimeConfigInstallKnownHosts(raw, r); err != nil {
 		return nil, err
@@ -221,6 +214,28 @@ func runtimeConfigInstallTransportPreflight(r policy.RuntimeConfigInstallRequest
 		}
 		return nil
 	}, nil
+}
+
+// An expected regular path may be replaced after lstat. Open nonblocking and
+// validate the actual descriptor before reading so FIFOs cannot hold admission.
+func runtimeConfigInstallReadTransportFile(path string, expected os.FileInfo) ([]byte, error) {
+	fail := func() ([]byte, error) { return nil, runtimeConfigInstallError("transport_custody") }
+	fd, e := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if e != nil {
+		return fail()
+	}
+	defer fd.Close()
+	before, e := fd.Stat()
+	if e != nil || !before.Mode().IsRegular() || !runtimeConfigInstallSameTransportMetadata(expected, before) {
+		return fail()
+	}
+	raw, e := io.ReadAll(io.LimitReader(fd, 1024*1024+1))
+	after, ae := fd.Stat()
+	ce := fd.Close()
+	if e != nil || ae != nil || ce != nil || !runtimeConfigInstallSameTransportMetadata(before, after) || int64(len(raw)) != expected.Size() || len(raw) > 1024*1024 {
+		return fail()
+	}
+	return raw, nil
 }
 
 func runtimeConfigInstallSameTransportMetadata(a, b os.FileInfo) bool {
