@@ -146,6 +146,11 @@ The pending-adjudication sweep acts only on an explicit `proposed` state. It ski
 records with a missing or blank state, including source-candidate records, without
 rewriting them or freezing a promotion operation for them.
 
+After recovery abandons a frozen promotion pass, the next pass validates that
+terminal frame's provenance, frozen intent, planned summaries, recorded partial
+results and any recorded finalization before planning fresh work from current
+candidate generations.
+
 ## Nine Questions
 
 Every durable object should answer:

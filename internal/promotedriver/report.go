@@ -21,6 +21,7 @@ type Report struct {
 	// failures are named), failed (a phase or integrity write failed), or
 	// recovery_required (mutations may have occurred but the terminal receipt
 	// could not be durably appended).
+	// An abandoned recovery closes replay while retaining prior operation and finalization evidence.
 	Stage string `json:"stage,omitempty"`
 	// Error carries the terminal failure/partial/recovery explanation.
 	Error       string `json:"error,omitempty"`

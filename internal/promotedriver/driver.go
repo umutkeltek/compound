@@ -227,7 +227,7 @@ func Run(homePath string, opts Options, now time.Time) (Report, error) {
 	// Canonical terminal record: receipt_path identifies the receipt file the
 	// appended line lives in, so we set it BEFORE the append. The heartbeat
 	// helper reads the receipt line and the producer-rendered stdout, then
-	// compares them by pass/home/work/stage identity (the stored line's
+	// compares their pass, home, work and stage identity (the stored line's
 	// SHA-256 is recorded as evidence). CLI presentation whitespace is
 	// allowed to differ; what must match is the canonical record itself.
 	receiptPath := filepath.Join(homePath, stateDirName, receiptFileName)
@@ -727,6 +727,11 @@ func loadFrozenJournal(homePath string, now time.Time) (*frozenJournal, []string
 			if err := validateFrozenFrameProvenance(*pass.plan, receipt); err != nil {
 				return nil, nil, fmt.Errorf("pass %s recovery frame provenance invalid: %w", receipt.PassID, err)
 			}
+		case stageAbandoned:
+			if err := validateAbandonedReceipt(receipt.PassID, pass, receipt); err != nil {
+				return nil, nil, fmt.Errorf("pass %s abandonment receipt invalid: %w", receipt.PassID, err)
+			}
+			pass.terminal = true
 		case stageCommitted, stagePartial, stageFailed:
 			if receipt.SchemaVersion == ReportSchemaVersion || pass.replayable {
 				if err := validateTerminalReceipt(receipt.PassID, pass, receipt); err != nil {
@@ -841,6 +846,68 @@ func validateFrozenFrameProvenance(plan, frame Report) error {
 	}
 	if finished.Before(started) {
 		return fmt.Errorf("finished_at %q precedes started_at %q", frame.FinishedAt, frame.StartedAt)
+	}
+	return nil
+}
+
+// Abandonment closes replay without claiming that every operation completed.
+// runRecover copies the planned summaries and carries all durably recorded
+// operation and finalization results; accepting that frame must preserve them.
+func validateAbandonedReceipt(passID string, pass *frozenJournalPass, abandoned Report) error {
+	if pass.plan == nil || !pass.replayable || pass.plan.Intent == nil {
+		return fmt.Errorf("abandonment requires replayable planned intent")
+	}
+	if abandoned.SchemaVersion != pass.plan.SchemaVersion {
+		return fmt.Errorf("abandonment schema %q does not match planned schema %q", abandoned.SchemaVersion, pass.plan.SchemaVersion)
+	}
+	if err := validateFrozenFrameProvenance(*pass.plan, abandoned); err != nil {
+		return fmt.Errorf("abandonment provenance invalid: %w", err)
+	}
+	if abandoned.Intent == nil {
+		return fmt.Errorf("abandonment has no frozen intent")
+	}
+	if err := validatePassIntent(passID, *abandoned.Intent); err != nil {
+		return fmt.Errorf("abandonment intent invalid: %w", err)
+	}
+	if !samePassIntent(*pass.plan.Intent, *abandoned.Intent) {
+		return fmt.Errorf("abandonment intent does not match planned intent")
+	}
+	if abandoned.Locked || strings.TrimSpace(abandoned.Error) == "" {
+		return fmt.Errorf("abandonment requires an observed drift reason and an acquired lock")
+	}
+	if pass.finalization == nil {
+		if abandoned.Finalization != nil {
+			return fmt.Errorf("abandonment carries finalization without prior frame")
+		}
+	} else if abandoned.Finalization == nil || !sameFinalizationResult(*pass.finalization, *abandoned.Finalization) {
+		return fmt.Errorf("abandonment finalization does not match its recorded frame")
+	}
+	expected := orderedOperationResults(*pass.plan.Intent, pass.results)
+	if len(abandoned.OperationResults) != len(expected) {
+		return fmt.Errorf("abandonment carries %d operation results, want %d", len(abandoned.OperationResults), len(expected))
+	}
+	for index := range expected {
+		if err := validateOperationResult(*pass.plan.Intent, abandoned.OperationResults[index]); err != nil {
+			return fmt.Errorf("abandonment operation result %d invalid: %w", index, err)
+		}
+		if !sameOperationResult(expected[index], abandoned.OperationResults[index]) {
+			return fmt.Errorf("abandonment operation result %d does not match its recorded frame", index)
+		}
+	}
+	for _, summary := range []struct {
+		name        string
+		got, wanted any
+	}{
+		{"promote", abandoned.Promote, pass.plan.Promote},
+		{"dedupe", abandoned.Dedupe, pass.plan.Dedupe},
+		{"sweep", abandoned.Sweep, pass.plan.Sweep},
+		{"imports", abandoned.Imports, pass.plan.Imports},
+		{"lane_beliefs", abandoned.LaneBeliefs, pass.plan.LaneBeliefs},
+		{"pending_after", abandoned.PendingAfter, pass.plan.PendingAfter},
+	} {
+		if !sameJSONValue(summary.got, summary.wanted) {
+			return fmt.Errorf("abandonment %s summary does not match planned summary", summary.name)
+		}
 	}
 	return nil
 }
