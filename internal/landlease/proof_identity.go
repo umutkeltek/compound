@@ -12,7 +12,23 @@ const (
 	ProofCapacitySystemFull         ProofCapacityClass = "system_full"
 	ProofCapacityNativeConsumer     ProofCapacityClass = "native_consumer"
 	ProofCoordinationIdentitySchema                    = "compound.proof_coordination.v0.1"
+	// ProofCoordinationSlotIdentitySchema marks a slot >= 1. Slot 0 keeps the
+	// v0.1 bytes so older binaries still read every slot-0 record.
+	ProofCoordinationSlotIdentitySchema = "compound.proof_coordination.v0.2"
 )
+
+// proofSlotMax bounds persisted slots independently of capacity, so capacity
+// can be lowered without making historical reservations unreadable.
+const proofSlotMax = 7
+
+// proofClassCapacity is the operator-approved number of concurrent proof slots
+// per class. Same-repository exclusion is a separate kernel barrier.
+func proofClassCapacity(class ProofCapacityClass) int {
+	if class == ProofCapacitySystemFull {
+		return 2
+	}
+	return 1
+}
 
 // ProofCoordinationIdentity is persisted with both the reservation and lease.
 // A missing identity always means the historical singleton; readers must never
@@ -23,6 +39,7 @@ type ProofCoordinationIdentity struct {
 	Class                 ProofCapacityClass `json:"class"`
 	RepositoryFingerprint string             `json:"repository_fingerprint"`
 	RepositoryBarrier     string             `json:"repository_barrier"`
+	Slot                  int                `json:"slot,omitempty"`
 }
 
 func NewProofCoordinationIdentity(generation string, class ProofCapacityClass, repository string) (ProofCoordinationIdentity, error) {
@@ -35,8 +52,28 @@ func NewProofCoordinationIdentity(generation string, class ProofCapacityClass, r
 	return identity, identity.Validate()
 }
 
+// WithSlot routes an identity to one class slot. Slot 0 is the original class
+// root and keeps schema v0.1; any other slot is v0.2.
+func (identity ProofCoordinationIdentity) WithSlot(slot int) (ProofCoordinationIdentity, error) {
+	identity.Slot = slot
+	identity.SchemaVersion = ProofCoordinationIdentitySchema
+	if slot != 0 {
+		identity.SchemaVersion = ProofCoordinationSlotIdentitySchema
+	}
+	return identity, identity.Validate()
+}
+
 func (identity ProofCoordinationIdentity) Validate() error {
-	if identity.SchemaVersion != ProofCoordinationIdentitySchema {
+	switch identity.SchemaVersion {
+	case ProofCoordinationIdentitySchema:
+		if identity.Slot != 0 {
+			return fmt.Errorf("proof coordination schema %q cannot carry slot %d", identity.SchemaVersion, identity.Slot)
+		}
+	case ProofCoordinationSlotIdentitySchema:
+		if identity.Slot < 1 || identity.Slot > proofSlotMax {
+			return fmt.Errorf("proof coordination slot %d outside 1..%d", identity.Slot, proofSlotMax)
+		}
+	default:
 		return fmt.Errorf("unsupported proof coordination identity schema %q", identity.SchemaVersion)
 	}
 	if !proofIdentityDigest(identity.Generation) || !proofIdentityDigest(identity.RepositoryFingerprint) {
@@ -104,8 +141,8 @@ func proofLeaseIdentity(current *Lease, holder string, requested *ProofCoordinat
 		}
 		return cloneProofCoordination(existing), nil
 	}
-	if existing.Generation != requested.Generation || existing.Class != requested.Class {
-		return nil, fmt.Errorf("proof lease class or generation changed")
+	if existing.Generation != requested.Generation || existing.Class != requested.Class || existing.Slot != requested.Slot {
+		return nil, fmt.Errorf("proof lease class, slot or generation changed")
 	}
 	if current.Holder == holder && !sameProofCoordination(existing, requested) {
 		return nil, fmt.Errorf("exact holder cannot change its proof coordination identity")
@@ -133,13 +170,14 @@ func (b *leaseBinding) validate(current *Lease) error {
 		}
 	}
 	actual := current.ProofCoordination
+	// A lease found in slot k must carry slot k.
 	if b.historicalHolder != "" && current.Holder != b.historicalHolder && b.identity != nil && actual != nil {
-		if b.identity.Generation == actual.Generation && b.identity.Class == actual.Class {
+		if b.identity.Generation == actual.Generation && b.identity.Class == actual.Class && b.identity.Slot == actual.Slot {
 			return nil
 		}
 	}
 	if b.acquisition && b.identity != nil && actual != nil {
-		if b.identity.Generation == actual.Generation && b.identity.Class == actual.Class {
+		if b.identity.Generation == actual.Generation && b.identity.Class == actual.Class && b.identity.Slot == actual.Slot {
 			return nil
 		}
 	}

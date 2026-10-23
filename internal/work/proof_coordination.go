@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"strings"
 	"time"
 )
 
@@ -262,4 +263,17 @@ func (s *Store) ProofExecutionLive(runID string, now time.Time) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// preferTerminatedRun lets an audited steal target the slot whose holder is the
+// exact terminated predecessor run. Without a run id, slot choice is lowest first.
+func preferTerminatedRun(runAttemptID string) func(string) bool {
+	runAttemptID = strings.TrimSpace(runAttemptID)
+	if runAttemptID == "" {
+		return nil
+	}
+	return func(holder string) bool {
+		_, run, _, ok := parseProofResourceHolder(holder)
+		return ok && run == runAttemptID
+	}
 }

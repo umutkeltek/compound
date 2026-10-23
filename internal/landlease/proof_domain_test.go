@@ -81,9 +81,16 @@ func TestProofDomainTwoClassesAcrossHomesAndSameRepositoryExclusion(t *testing.T
 	resource, barrier := acquireDomainProof(t, first, "capacity-first")
 	independent := beginDomainTicket(t, homes[1], ProofCapacityNativeConsumer, "3")
 	other, otherBarrier := acquireDomainProof(t, independent, "capacity-independent")
+	// Operator-approved capacity: system_full has two slots, so a second
+	// repository is admitted into slot 1 and a third is refused.
 	sameClass := beginDomainTicket(t, homes[1], ProofCapacitySystemFull, "4")
 	sameRepo := beginDomainTicket(t, homes[1], ProofCapacityNativeConsumer, "2")
-	for _, ticket := range []*ProofAdmission{sameClass, sameRepo} {
+	secondSlot, secondSlotBarrier := acquireDomainProof(t, sameClass, "capacity-second-slot")
+	if identity := secondSlot.ProofIdentity(); identity == nil || identity.Slot != 1 {
+		t.Fatalf("second system_full repository not in slot 1: %+v", identity)
+	}
+	thirdClass := beginDomainTicket(t, homes[0], ProofCapacitySystemFull, "5")
+	for _, ticket := range []*ProofAdmission{thirdClass, sameRepo} {
 		called := false
 		err := ticket.WithTurn(context.Background(), false, func(*Resource) error { called = true; return nil })
 		var busy *ProofAdmissionBusyError
@@ -109,7 +116,8 @@ func TestProofDomainTwoClassesAcrossHomesAndSameRepositoryExclusion(t *testing.T
 	if _, err := resource.Release("capacity-first", time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := sameClass.Cancel(); err != nil {
+	releaseDomainProof(t, secondSlot, secondSlotBarrier, "capacity-second-slot")
+	if err := thirdClass.Cancel(); err != nil {
 		t.Fatal(err)
 	}
 	_, _ = acquireDomainProof(t, sameRepo, "repository-after-release")
@@ -441,10 +449,26 @@ func TestProofDomainWaitingSnapshotIsForeignAwareAndDoesNotBlockFinalizer(t *tes
 	first := beginDomainTicket(t, homes[0], ProofCapacitySystemFull, "2")
 	_, barrier := acquireDomainProof(t, first, "waiting-snapshot-holder")
 	defer barrier.Close()
+	// One foreign holder leaves the second system_full slot free: not Held.
+	early := beginDomainTicket(t, homes[1], ProofCapacitySystemFull, "3")
+	if status, err := early.WaitingStatus(time.Now()); err != nil || status.Held {
+		t.Fatalf("free second slot reported Held: %+v %v", status, err)
+	}
+	if err := early.Cancel(); err != nil {
+		t.Fatal(err)
+	}
+	// Both slots held by foreign repositories: Held, reporting the slot-0 holder.
+	_, secondBarrier := acquireDomainProof(t, beginDomainTicket(t, homes[1], ProofCapacitySystemFull, "4"), "waiting-snapshot-second")
+	defer secondBarrier.Close()
 	waiter := beginDomainTicket(t, homes[1], ProofCapacitySystemFull, "3")
-	root := proofClassRoot(backing, generation, ProofCapacitySystemFull)
-	held, release, unlocked := make(chan struct{}), make(chan struct{}), make(chan error, 1)
-	go func() { unlocked <- withLock(root, func() error { close(held); <-release; return nil }) }()
+	held, release, unlocked := make(chan struct{}), make(chan struct{}), make(chan error, 2)
+	for slot := 0; slot < proofClassCapacity(ProofCapacitySystemFull); slot++ {
+		root := proofSlotRoot(backing, generation, ProofCapacitySystemFull, slot)
+		locked := make(chan struct{})
+		go func() { unlocked <- withLock(root, func() error { close(locked); <-release; return nil }) }()
+		<-locked
+	}
+	close(held)
 	<-held
 	type result struct {
 		status StatusResult
@@ -460,8 +484,10 @@ func TestProofDomainWaitingSnapshotIsForeignAwareAndDoesNotBlockFinalizer(t *tes
 		blocked = true
 	}
 	close(release)
-	if err := <-unlocked; err != nil {
-		t.Fatal(err)
+	for slot := 0; slot < proofClassCapacity(ProofCapacitySystemFull); slot++ {
+		if err := <-unlocked; err != nil {
+			t.Fatal(err)
+		}
 	}
 	if blocked {
 		observed = <-done

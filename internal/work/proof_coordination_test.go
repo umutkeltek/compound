@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compound/internal/authority/gitrepository"
 	"compound/internal/landlease"
+	"compound/internal/runattempt"
 	"context"
 	"encoding/json"
 	"errors"
@@ -302,14 +303,18 @@ func TestCoordinatedProofStatusReportsBothClasses(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Generation == "" || len(result.Resources) != 2 || result.Resources[0].Class == result.Resources[1].Class {
-		t.Fatalf("missing class statuses: %+v", result)
+	// Operator-approved capacity: two system_full slots and one native_consumer.
+	if result.Generation == "" || len(result.Resources) != 3 ||
+		result.Resources[0].Class != landlease.ProofCapacitySystemFull || result.Resources[0].Slot != 0 ||
+		result.Resources[1].Class != landlease.ProofCapacitySystemFull || result.Resources[1].Slot != 1 ||
+		result.Resources[2].Class != landlease.ProofCapacityNativeConsumer || result.Resources[2].Slot != 0 {
+		t.Fatalf("missing class slot statuses: %+v", result)
 	}
 	out.Reset()
 	if code := RunLandingStatus(s.home, LandingCLISelection{Proof: true, Status: true}, false, &out, &diagnostics, time.Now()); code != 0 {
 		t.Fatal(diagnostics.String())
 	}
-	for _, class := range []string{"system_full", "native_consumer"} {
+	for _, class := range []string{"system_full[0]", "system_full[1]", "native_consumer[0]"} {
 		if !strings.Contains(out.String(), class) {
 			t.Fatalf("text status omitted %s", class)
 		}
@@ -432,9 +437,21 @@ func TestCoordinatedProofBusyWaitDoesNotReadLifecycleLog(t *testing.T) {
 			}
 			defer first.ExecutionBarrier.Close()
 			if foreign {
-				input.Profile = capacitySystemProfileForOrigin(t, false, "https://other.example/proof-fixture.git")
+				// Operator-approved capacity: system_full has two slots, so a
+				// foreign waiter is only busy once both slots hold other repositories.
+				secondWork := claimedProofWork(t, s, "second active proof", proofActorAlpha, time.Now())
+				secondProfile := capacitySystemProfileForOrigin(t, false, "https://example.invalid/proof-slot-second.git")
+				second, err := s.ReserveProofResource(secondWork.ID, ProofResourceReserveInput{Actor: proofActorAlpha, TTL: time.Minute, Workspace: secondProfile.Repo, Command: "compound proof-check", Profile: secondProfile}, time.Now())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer second.ExecutionBarrier.Close()
+				if second.Reservation.ProofCoordination == nil || second.Reservation.ProofCoordination.Slot != 1 {
+					t.Fatalf("second repository not in slot 1: %+v", second.Reservation.ProofCoordination)
+				}
+				input.Profile = capacitySystemProfileForOrigin(t, false, "https://example.invalid/proof-fixture.git")
 				input.Workspace = input.Profile.Repo
-				if input.Profile.SourceSnapshot.RepositoryFingerprint == profile.SourceSnapshot.RepositoryFingerprint {
+				if input.Profile.SourceSnapshot.RepositoryFingerprint == profile.SourceSnapshot.RepositoryFingerprint || input.Profile.SourceSnapshot.RepositoryFingerprint == secondProfile.SourceSnapshot.RepositoryFingerprint {
 					t.Fatal("fixture repositories are not distinct")
 				}
 			}
@@ -456,5 +473,93 @@ func TestCoordinatedProofBusyWaitDoesNotReadLifecycleLog(t *testing.T) {
 				t.Fatalf("busy wait minted attempt: %d -> %d", before, after)
 			}
 		})
+	}
+}
+
+// A foreign repository joins the second system_full slot without waiting, and
+// its refresh and completion route to that exact slot root.
+func TestCoordinatedProofSecondRepositoryUsesSecondSlot(t *testing.T) {
+	t.Setenv("GIT_AUTHOR_DATE", "2001-01-01T00:00:00Z")
+	t.Setenv("GIT_COMMITTER_DATE", "2001-01-01T00:00:00Z")
+	s := coordinatedStoreFixture(t)
+	firstWork := claimedProofWork(t, s, "first system proof", proofActorAlpha, time.Now())
+	secondWork := claimedProofWork(t, s, "second system proof", proofActorAlpha, time.Now())
+	firstProfile := capacitySystemProfile(t, false)
+	first, err := s.ReserveProofResource(firstWork.ID, ProofResourceReserveInput{Actor: proofActorAlpha, TTL: time.Minute, Workspace: firstProfile.Repo, Command: "compound proof-check", Profile: firstProfile}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = first.ExecutionBarrier.Close() })
+	secondProfile := capacitySystemProfileForOrigin(t, false, "https://example.invalid/proof-slot-fixture.git")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	second, err := s.ReserveProofResourceWhenFree(ctx, secondWork.ID, ProofResourceReserveInput{Actor: proofActorAlpha, TTL: time.Minute, Workspace: secondProfile.Repo, Command: "compound proof-check", Profile: secondProfile}, time.Minute, proofCancelOnSleepClock{cancel}, nil)
+	if err != nil {
+		t.Fatalf("second repository waited for capacity: %v", err)
+	}
+	t.Cleanup(func() { _ = second.ExecutionBarrier.Close() })
+	identity := second.Reservation.ProofCoordination
+	if identity == nil || identity.Slot != 1 || identity.SchemaVersion != landlease.ProofCoordinationSlotIdentitySchema {
+		t.Fatalf("second repository identity = %+v, want slot 1", identity)
+	}
+	if first.Reservation.ProofCoordination == nil || first.Reservation.ProofCoordination.Slot != 0 {
+		t.Fatalf("first repository identity = %+v, want slot 0", first.Reservation.ProofCoordination)
+	}
+	slotStatus := func(slot int) landlease.StatusResult {
+		t.Helper()
+		rows, err := landlease.ProofResourceStatuses(s.home, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range rows {
+			if row.Class == landlease.ProofCapacitySystemFull && row.Slot == slot {
+				return row.Status
+			}
+		}
+		t.Fatalf("no system_full slot %d row", slot)
+		return landlease.StatusResult{}
+	}
+	if status := slotStatus(1); !status.Held || status.Holder != second.Reservation.Holder {
+		t.Fatalf("slot 1 status = %+v, want %s", status, second.Reservation.Holder)
+	}
+	if _, err := s.RefreshProofResource(secondWork.ID, second.Reservation.ID, proofActorAlpha, time.Minute, time.Now()); err != nil {
+		t.Fatalf("slot-1 refresh: %v", err)
+	}
+	if err := second.ExecutionBarrier.Close(); err != nil {
+		t.Fatal(err)
+	}
+	done, err := s.CompleteProofResource(secondWork.ID, ProofResourceCompleteInput{Actor: proofActorAlpha, ReservationID: second.Reservation.ID, FailureReason: "fixture stopped before gates", ProducerExitKnown: true, ProducerExitCode: 1}, time.Now())
+	if err != nil || !done.ResourceReleased {
+		t.Fatalf("slot-1 completion: %+v %v", done, err)
+	}
+	if status := slotStatus(1); status.Holder != "" {
+		t.Fatalf("slot 1 retained after completion: %+v", status)
+	}
+	if status := slotStatus(0); !status.Held || status.Holder != first.Reservation.Holder {
+		t.Fatalf("slot 0 disturbed by slot-1 completion: %+v", status)
+	}
+}
+
+// An audited steal prefers only the slot whose holder is the exact terminated run.
+func TestCoordinatedProofStealPrefersExactTerminatedRun(t *testing.T) {
+	if preferTerminatedRun(" ") != nil {
+		t.Fatal("empty run id must keep lowest-slot choice")
+	}
+	run, err := runattempt.Mint(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := runattempt.Mint(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefer := preferTerminatedRun(" " + run + " ")
+	if !prefer(proofResourceHolder("pfr_fixture", run, "work_fixture", proofActorAlpha)) {
+		t.Fatal("exact terminated run holder not preferred")
+	}
+	for _, holder := range []string{proofResourceHolder("pfr_fixture", other, "work_fixture", proofActorAlpha), "capacity-first", ""} {
+		if prefer(holder) {
+			t.Fatalf("holder %q preferred for run %s", holder, run)
+		}
 	}
 }

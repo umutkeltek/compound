@@ -100,6 +100,15 @@ func validateProofEnrollment(home string, manifest proofDomainManifest) error {
 func proofClassRoot(backing, generation string, class ProofCapacityClass) string {
 	return filepath.Join(backing, "landlease", "proof", generation, "classes", string(class))
 }
+
+// proofSlotRoot keeps slot 0 at the original class root (fence semantics
+// untouched); slot k is a sibling at the same depth.
+func proofSlotRoot(backing, generation string, class ProofCapacityClass, slot int) string {
+	if slot == 0 {
+		return proofClassRoot(backing, generation, class)
+	}
+	return filepath.Join(backing, "landlease", "proof", generation, "classes", fmt.Sprintf("%s-slot-%d", class, slot))
+}
 func proofRepositoryRoot(backing, generation string) string {
 	return filepath.Join(backing, "landlease", "proof", generation, "repositories")
 }
@@ -164,12 +173,20 @@ func (r *Resource) selectProofRoot(root string, scoped bool) (string, error) {
 	if r.proofIdentity.Generation != manifest.Generation {
 		return "", fmt.Errorf("proof coordination generation changed")
 	}
-	return proofClassRoot(backing, manifest.Generation, r.proofIdentity.Class), nil
+	return proofSlotRoot(backing, manifest.Generation, r.proofIdentity.Class, r.proofIdentity.Slot), nil
+}
+
+// ProofIdentity returns the exact slot-bearing identity this resource routes by.
+func (r *Resource) ProofIdentity() *ProofCoordinationIdentity {
+	if r == nil {
+		return nil
+	}
+	return cloneProofCoordination(r.proofIdentity)
 }
 func (r *Resource) binding(root string, acquisition bool) *leaseBinding {
 	b := &leaseBinding{identity: r.proofIdentity, acquisition: acquisition, nonblocking: acquisition && r.proofIdentity != nil}
 	if r.proofIdentity != nil {
-		// class root is generation/classes/class; repository barriers share generation.
+		// slot root is generation/classes/<slot dir>; repository barriers share generation.
 		b.repositoryRoot = filepath.Join(filepath.Dir(filepath.Dir(root)), "repositories")
 	}
 	return b
@@ -258,17 +275,128 @@ func (a *ProofAdmission) Identity() *ProofCoordinationIdentity {
 // preserves this ticket's generation while accepting a foreign repository's
 // same-class holder. It takes no class lock, so a finalizer cannot block waiting
 // cancellation. WithTurn must still revalidate every admission fence.
+// It reports this repository's pinned slot if any, else the first free or
+// expired slot (not Held, so the caller tries admission), else slot 0 (Held).
 func (a *ProofAdmission) WaitingStatus(now time.Time) (StatusResult, error) {
 	if a == nil || a.ticket == nil {
 		return StatusResult{}, fmt.Errorf("proof waiting status requires an admission ticket")
 	}
-	resource := ProofResourceForIdentity(a.home, &a.identity)
-	return selectedReadCall(resource, func(root string) (StatusResult, error) {
-		return proofAdmissionSnapshot(root, now, resource.binding(root, true))
-	})
+	slots := make([]StatusResult, proofSlotMax+1)
+	for slot := range slots {
+		identity, err := a.identity.WithSlot(slot)
+		if err != nil {
+			return StatusResult{}, err
+		}
+		resource := ProofResourceForIdentity(a.home, &identity)
+		status, err := selectedReadCall(resource, func(root string) (StatusResult, error) {
+			return proofAdmissionSnapshot(root, now, resource.binding(root, true))
+		})
+		if err != nil {
+			return StatusResult{}, err
+		}
+		slots[slot] = status
+	}
+	for _, status := range slots {
+		if status.Holder != "" && status.ProofCoordination != nil && status.ProofCoordination.RepositoryFingerprint == a.identity.RepositoryFingerprint {
+			return status, nil
+		}
+	}
+	for _, status := range slots[:proofClassCapacity(a.identity.Class)] {
+		if status.Holder == "" || !status.Held {
+			return status, nil
+		}
+	}
+	return slots[0], nil
+}
+
+// observeProofSlots snapshots every slot root of both classes for this
+// generation. Absent roots read empty; each binding expects its own slot.
+func (a *ProofAdmission) observeProofSlots(now time.Time) (map[ProofCapacityClass][]StatusResult, error) {
+	out := map[ProofCapacityClass][]StatusResult{}
+	for _, class := range []ProofCapacityClass{ProofCapacitySystemFull, ProofCapacityNativeConsumer} {
+		expected := a.identity
+		expected.Class = class
+		for slot := 0; slot <= proofSlotMax; slot++ {
+			identity, err := expected.WithSlot(slot)
+			if err != nil {
+				return nil, err
+			}
+			status, err := proofAdmissionSnapshot(proofSlotRoot(a.backing, a.identity.Generation, class, slot), now, &leaseBinding{identity: &identity, acquisition: true})
+			if err != nil {
+				return nil, err
+			}
+			out[class] = append(out[class], status)
+		}
+	}
+	return out, nil
+}
+
+// chooseProofSlot picks the one slot this turn may use. Same-repository records
+// pin recovery to their exact root; otherwise a free slot, then an expired one,
+// then (steal only) a held one, each lowest first.
+func (a *ProofAdmission) chooseProofSlot(slots map[ProofCapacityClass][]StatusResult, steal bool, prefer func(string) bool) (int, error) {
+	mine := func(status StatusResult) bool {
+		return status.Holder != "" && status.ProofCoordination != nil && status.ProofCoordination.RepositoryFingerprint == a.identity.RepositoryFingerprint
+	}
+	for class, statuses := range slots {
+		if class == a.identity.Class {
+			continue
+		}
+		for _, status := range statuses {
+			if mine(status) {
+				// Expiry does not recover a predecessor's repository ownership.
+				return 0, &ProofAdmissionBusyError{Holder: status.Holder, Reason: "same repository requires exact predecessor recovery"}
+			}
+		}
+	}
+	own := slots[a.identity.Class]
+	pinned := -1
+	for slot, status := range own {
+		if !mine(status) {
+			continue
+		}
+		if pinned >= 0 {
+			return 0, &ProofAdmissionBusyError{Holder: status.Holder, Reason: "same repository holds multiple slots; exact recovery required"}
+		}
+		pinned = slot
+	}
+	if pinned >= 0 {
+		if own[pinned].Held && !steal {
+			return 0, &ProofAdmissionBusyError{Holder: own[pinned].Holder, Reason: "same repository proof running"}
+		}
+		return pinned, nil
+	}
+	capacity := proofClassCapacity(a.identity.Class)
+	if steal && prefer != nil {
+		for slot, status := range own[:capacity] {
+			if status.Holder != "" && prefer(status.Holder) {
+				return slot, nil
+			}
+		}
+	}
+	for slot, status := range own[:capacity] {
+		if status.Holder == "" {
+			return slot, nil
+		}
+	}
+	for slot, status := range own[:capacity] {
+		if !status.Held {
+			return slot, nil
+		}
+	}
+	if steal {
+		return 0, nil
+	}
+	return 0, &ProofAdmissionBusyError{Holder: own[0].Holder, Reason: fmt.Sprintf("capacity occupied (%d/%d)", capacity, capacity)}
 }
 
 func (a *ProofAdmission) WithTurn(ctx context.Context, steal bool, fn func(*Resource) error) error {
+	return a.WithTurnFor(ctx, steal, nil, fn)
+}
+
+// WithTurnFor admits into one class slot chosen under the queue turn. prefer
+// lets an audited steal target the exact predecessor's slot.
+func (a *ProofAdmission) WithTurnFor(ctx context.Context, steal bool, prefer func(holder string) bool, fn func(*Resource) error) error {
 	if a == nil || fn == nil {
 		return fmt.Errorf("proof admission and callback required")
 	}
@@ -280,25 +408,13 @@ func (a *ProofAdmission) WithTurn(ctx context.Context, steal bool, fn func(*Reso
 		if !exists || backing != a.backing || manifest.Generation != a.identity.Generation {
 			return fmt.Errorf("proof coordination changed after enqueue")
 		}
-		now := a.ticket.queue.now()
-		for _, class := range []ProofCapacityClass{ProofCapacitySystemFull, ProofCapacityNativeConsumer} {
-			expected := a.identity
-			expected.Class = class
-			status, err := proofAdmissionSnapshot(proofClassRoot(a.backing, a.identity.Generation, class), now, &leaseBinding{identity: &expected, acquisition: true})
-			if err != nil {
-				return err
-			}
-			if status.Holder == "" {
-				continue
-			}
-			if class == a.identity.Class {
-				if status.Held && !steal {
-					return &ProofAdmissionBusyError{Holder: status.Holder, Reason: "capacity occupied"}
-				}
-			} else if status.ProofCoordination.RepositoryFingerprint == a.identity.RepositoryFingerprint {
-				// Expiry does not recover a predecessor's repository ownership.
-				return &ProofAdmissionBusyError{Holder: status.Holder, Reason: "same repository requires exact predecessor recovery"}
-			}
+		slots, err := a.observeProofSlots(a.ticket.queue.now())
+		if err != nil {
+			return err
+		}
+		chosen, err := a.chooseProofSlot(slots, steal, prefer)
+		if err != nil {
+			return err
 		}
 		pending, err := executionBarrierPending(proofRepositoryRoot(a.backing, a.identity.Generation), proofRepositoryHolder(&a.identity))
 		if err != nil {
@@ -310,7 +426,11 @@ func (a *ProofAdmission) WithTurn(ctx context.Context, steal bool, fn func(*Reso
 		deadline, _ := time.Parse(time.RFC3339Nano, a.ticket.record.Deadline)
 		guard := &proofAdmissionGuard{active: true, ctx: ctx, deadline: deadline, now: a.ticket.queue.now}
 		defer guard.close()
-		resource := ProofResourceForIdentity(a.home, &a.identity)
+		identity, err := a.identity.WithSlot(chosen)
+		if err != nil {
+			return err
+		}
+		resource := ProofResourceForIdentity(a.home, &identity)
 		resource.proofAdmission = guard
 		return fn(resource)
 	})
@@ -463,6 +583,7 @@ func ProofCoordinationGeneration(home string) (string, error) {
 
 type ProofClassStatus struct {
 	Class  ProofCapacityClass `json:"class,omitempty"`
+	Slot   int                `json:"slot"`
 	Status StatusResult       `json:"status"`
 }
 
@@ -479,13 +600,24 @@ func ProofResourceStatuses(home string, now time.Time) ([]ProofClassStatus, erro
 		return []ProofClassStatus{{Status: status}}, nil
 	}
 	var out []ProofClassStatus
+	// One row per slot within capacity, plus any slot beyond it that still
+	// holds a lease (capacity may shrink below historical slots).
 	for _, class := range []ProofCapacityClass{ProofCapacitySystemFull, ProofCapacityNativeConsumer} {
-		identity, _ := NewProofCoordinationIdentity(manifest.Generation, class, strings.Repeat("0", 64))
-		status, err := statusReadOnlyBound(proofClassRoot(backing, manifest.Generation, class), now, &leaseBinding{identity: &identity, acquisition: true})
-		if err != nil {
-			return nil, err
+		base, _ := NewProofCoordinationIdentity(manifest.Generation, class, strings.Repeat("0", 64))
+		for slot := 0; slot <= proofSlotMax; slot++ {
+			identity, err := base.WithSlot(slot)
+			if err != nil {
+				return nil, err
+			}
+			status, err := statusReadOnlyBound(proofSlotRoot(backing, manifest.Generation, class, slot), now, &leaseBinding{identity: &identity, acquisition: true})
+			if err != nil {
+				return nil, err
+			}
+			if slot >= proofClassCapacity(class) && status.Holder == "" {
+				continue
+			}
+			out = append(out, ProofClassStatus{Class: class, Slot: slot, Status: status})
 		}
-		out = append(out, ProofClassStatus{Class: class, Status: status})
 	}
 	return out, nil
 }

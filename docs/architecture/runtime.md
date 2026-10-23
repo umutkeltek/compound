@@ -1250,9 +1250,9 @@ a landing can now advance main while another candidate is being tested.
 
 ### Source-derived proof capacities and conflict FIFO
 
-An optional second, one-way cutover enables exactly one `system_full` and one
-`native_consumer` slot in the same shared backing root. Core and Rust inventories
-use the system slot. Native consumer classification requires the complete ordered
+An optional second, one-way cutover enables two `system_full` slots and one
+`native_consumer` slot in the same shared backing root (operator-approved
+2026-10-23). Core and Rust inventories use a system slot. Native consumer classification requires the complete ordered
 canonical profile rederived from its clean sealed source, including authenticated
 redaction review when present. Neither a caller flag nor a plan name selects the
 cheaper slot. Both classes retain `canonical_full` certification semantics.
@@ -1263,14 +1263,26 @@ identity. Historical v0.2 reservations remain on the historical singleton route;
 missing identity is never filled from current configuration. Heartbeat, completion,
 rearm, termination, recovery, stale sweep and doctor resolve persisted identity.
 
+Slot 0 of each class is the original class root, and its identity keeps the
+`compound.proof_coordination.v0.1` bytes. Slot 1 and higher are sibling roots
+(`<class>-slot-<k>`) whose identity carries `slot` under
+`compound.proof_coordination.v0.2`; a schema bound of 7 slots is independent of
+capacity, so capacity can shrink without making old reservations unreadable.
+Queue tickets are slot-less; the turn chooses the slot. A repository's existing
+record pins it to that exact slot for recovery; otherwise the lowest free slot,
+then the lowest expired slot, then (audited steal only) a held slot is used.
+An older binary of the same generation still uses only slot 0, and it refuses
+v0.2 identities, so mixed clients never exceed two `system_full` proofs and a
+slot-1 reservation is never misread as slot 0.
+
 A descriptor-backed FIFO ticket precedes every immediate or waiting admission.
 An earlier live ticket blocks successors sharing its class **or** repository;
 the independent other class and repository can progress. Cancellation and deadline
 checks occur after lock acquisition and before reservation or RunAttempt creation.
 Expired/dead tickets are pruned, and failed preparation releases its ticket.
 A capacity lease and repository barrier are both inherited by gate descendants.
-The same repository remains exclusive across classes and homes, including an
-expired other-class holder until exact recovery. An expired predecessor whose
+The same repository remains exclusive across slots, classes and homes, including
+an expired other-class holder until exact recovery. An expired predecessor whose
 lineage is absent from the requesting home is preserved for its original owner's
 recovery before any successor attempt or lease is created.
 

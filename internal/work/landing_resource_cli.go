@@ -217,7 +217,7 @@ func RunLandingStatus(homePath string, selected LandingCLISelection, asJSON bool
 				}
 			} else {
 				for _, row := range rows {
-					fmt.Fprintf(stdout, "proof %s: holder=%s held=%v expired=%v expires=%s\n", row.Class, row.Status.Holder, row.Status.Held, row.Status.IsExpired, row.Status.ExpiresAt)
+					fmt.Fprintf(stdout, "proof %s[%d]: holder=%s held=%v expired=%v expires=%s\n", row.Class, row.Slot, row.Status.Holder, row.Status.Held, row.Status.IsExpired, row.Status.ExpiresAt)
 				}
 			}
 			return 0

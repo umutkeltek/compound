@@ -609,8 +609,9 @@ func (s *Store) ReserveProofResource(workID string, in ProofResourceReserveInput
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		return in.admission.WithTurn(ctx, in.Steal, func(resource *landlease.Resource) error {
+		return in.admission.WithTurnFor(ctx, in.Steal, preferTerminatedRun(in.TerminatedRunAttemptID), func(resource *landlease.Resource) error {
 			in.resource = resource
+			in.coordination = resource.ProofIdentity()
 			in.busyWhenHeld = true
 			result, err = s.reserveProofResourceLocked(strings.TrimSpace(workID), in, time.Now())
 			return err

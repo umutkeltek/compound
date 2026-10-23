@@ -223,6 +223,9 @@ func (q *proofQueue) enqueue(identity ProofCoordinationIdentity, deadline time.T
 	if identity.Generation != q.generation {
 		return nil, fmt.Errorf("queue generation mismatch")
 	}
+	if identity.Slot != 0 {
+		return nil, fmt.Errorf("proof queue tickets are slot-less; the slot is chosen at the turn")
+	}
 	if !deadline.After(q.now()) {
 		return nil, context.DeadlineExceeded
 	}
