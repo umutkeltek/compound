@@ -239,7 +239,7 @@ func (c *capturedArchive) writeCaptureJournal(homePath string, warm bool, deadli
 		if !info.IsDir() && !info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
 			return fmt.Errorf("archive included source entry must be regular file or directory: %s", rel)
 		}
-		header, err := tar.FileInfoHeader(info, "")
+		header, err := archiveFileInfoHeader(info, "")
 		if err != nil {
 			return err
 		}
@@ -527,7 +527,7 @@ func (c *capturedArchive) clone(rel string, before fs.FileInfo, body int) (_ *ta
 	if !metadata.Mode().IsRegular() || (!event && (metadata.Size() != before.Size() || !metadata.ModTime().Equal(before.ModTime()))) {
 		return nil, archiveCaptureStamp{}, fmt.Errorf("capture clone metadata changed: %s", rel)
 	}
-	header, err := tar.FileInfoHeader(metadata, "")
+	header, err := archiveFileInfoHeader(metadata, "")
 	if err != nil {
 		return nil, archiveCaptureStamp{}, err
 	}
