@@ -153,7 +153,15 @@ exit 0
 	}
 	cancelRunner()
 
-	result := <-done
+	// The normal receive is bounded: a hung run must fail the control here
+	// instead of blocking forever, because the cleanup's join timeout cannot
+	// fire while the test goroutine waits on an unbounded receive.
+	var result runnerResult
+	select {
+	case result = <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("cancelled canonical run did not return")
+	}
 	// Production proof-check reports the cancellation cause; a cancelled run is
 	// never a successful run.
 	if !errors.Is(result.err, context.Canceled) {
