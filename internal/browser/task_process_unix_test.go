@@ -364,16 +364,13 @@ assert found is None or pathlib.Path(found).is_file(), found
 	}
 }
 
-func TestJevChromeSpawnHandoffAlwaysReapsDetachedChild(t *testing.T) {
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 unavailable")
-	}
-	source, err := filepath.Abs("jev_bridge.py")
-	if err != nil {
-		t.Fatal(err)
-	}
-	const script = `import os, pathlib, runpy, signal, subprocess, sys, time
+// jevSpawnHandoffScript drives isolated_chrome through its Chrome ownership
+// handoff with a synthetic detached child in place of Chrome. "signal" delivers
+// SIGTERM inside Popen, before its return value is assigned; "write_failure"
+// fails the chrome.pid sidecar write after the spawn. Either way the bridge must
+// reap the child it spawned. The script exits non-zero only when the bridge
+// raised something other than the expected interruption.
+const jevSpawnHandoffScript = `import os, pathlib, runpy, signal, subprocess, sys, time
 source, mode, session_dir = sys.argv[1:]
 session = pathlib.Path(session_dir)
 os.environ["COMPOUND_JEV_SESSION_DIR"] = session_dir
@@ -412,36 +409,93 @@ except BaseException as exc:
 else:
     raise AssertionError("handoff interruption was ignored")
 `
+
+// runJevSpawnHandoff runs jevSpawnHandoffScript against the given bridge source
+// and reports whether the synthetic child's process group outlived the handoff.
+// Any survivor is SIGKILLed at cleanup.
+func runJevSpawnHandoff(t *testing.T, python, source, mode string) bool {
+	t.Helper()
+	sessionDir, err := newJevSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var childPID int
+	t.Cleanup(func() {
+		if childPID > 1 {
+			_ = syscall.Kill(-childPID, syscall.SIGKILL)
+		}
+		_ = os.RemoveAll(sessionDir)
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, python, "-c", jevSpawnHandoffScript, source, mode, sessionDir)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("synthetic Chrome handoff failed: %v: %s", err, output)
+	}
+	data, err := os.ReadFile(filepath.Join(sessionDir, "synthetic-child.pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	childPID, err = strconv.Atoi(string(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	alive, err := jevLiveGroupMembers(childPID)
+	if err != nil {
+		t.Fatalf("inspect synthetic child group after %s handoff: %v", mode, err)
+	}
+	return alive
+}
+
+func TestJevChromeSpawnHandoffAlwaysReapsDetachedChild(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 unavailable")
+	}
+	source, err := filepath.Abs("jev_bridge.py")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, mode := range []string{"signal", "write_failure"} {
 		t.Run(mode, func(t *testing.T) {
-			sessionDir, err := newJevSession()
-			if err != nil {
+			if runJevSpawnHandoff(t, python, source, mode) {
+				t.Fatalf("detached child survived %s handoff", mode)
+			}
+		})
+	}
+}
+
+// Falsifier for the harness above: run it against bridge copies with the reap
+// or the SIGTERM deferral cut out, and require it to report the survivor. A
+// harness that cannot fail would turn the reap test into a green no-op, which
+// is the failure mode a missing Chrome used to hide.
+func TestJevChromeSpawnHandoffHarnessDetectsUnreapedChild(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 unavailable")
+	}
+	original, err := os.ReadFile("jev_bridge.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const reap = "if chrome is not None and chrome.poll() is None:"
+	const deferral = "signal.signal(signal.SIGTERM, defer_term)"
+	for _, tc := range []struct{ name, mode, anchor, replacement string }{
+		{"reap_removed/signal", "signal", reap, "if False:"},
+		{"reap_removed/write_failure", "write_failure", reap, "if False:"},
+		{"deferral_removed/signal", "signal", deferral, "pass"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if n := strings.Count(string(original), tc.anchor); n != 1 {
+				t.Fatalf("mutation anchor %q appears %d times in jev_bridge.py, want 1; move this falsifier with the handoff code", tc.anchor, n)
+			}
+			mutated := filepath.Join(t.TempDir(), "jev_bridge.py")
+			if err := os.WriteFile(mutated, []byte(strings.Replace(string(original), tc.anchor, tc.replacement, 1)), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			var childPID int
-			t.Cleanup(func() {
-				if childPID > 1 {
-					_ = syscall.Kill(-childPID, syscall.SIGKILL)
-				}
-				_ = os.RemoveAll(sessionDir)
-			})
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			cmd := exec.CommandContext(ctx, python, "-c", script, source, mode, sessionDir)
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("synthetic Chrome handoff failed: %v: %s", err, output)
-			}
-			data, err := os.ReadFile(filepath.Join(sessionDir, "synthetic-child.pid"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			childPID, err = strconv.Atoi(string(data))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if alive, err := jevLiveGroupMembers(childPID); err != nil || alive {
-				t.Fatalf("detached child survived %s handoff: alive=%t err=%v", mode, alive, err)
+			if !runJevSpawnHandoff(t, python, mutated, tc.mode) {
+				t.Fatalf("harness passed a bridge with %s: it no longer sees an unreaped child", tc.name)
 			}
 		})
 	}
