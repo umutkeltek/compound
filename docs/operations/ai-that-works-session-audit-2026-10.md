@@ -320,7 +320,7 @@ coding benchmark.
 ## 6. Sequencing and dependencies
 
 Start with **one S1 review through the existing path**. It proves value alone by replacing a
-timeout with a bounded, reviewable disposition; it needs neither a new evaluator nor adoption.
+blind retry loop with a bounded, reviewable disposition; it needs neither a new evaluator nor adoption.
 
 Then qualify one execution boundary in S2 before using it for S3's paid comparison. S4 and S5 are
 independent proof-hardening work, admitted only after reproducing their local gaps.
@@ -346,7 +346,7 @@ Thresholds below are proposed acceptance rules, not measured outcomes.
 
 | Slice | Owned evaluator and success criterion | Review trigger and stop condition |
 |---|---|---|
-| S1 | Capability evaluation: traceable positive evidence, idempotent import, bounded review dispositions, no unsupported surfacing lift (`internal/capgraph/evaluation.go`) | Review after the three configured repositories; stop expansion if the timeout persists or receipts cannot be resolved |
+| S1 | Capability evaluation: traceable positive evidence, idempotent import, bounded review dispositions, no unsupported surfacing lift (`internal/capgraph/evaluation.go`) | Review after the three configured repositories; stop expansion if the same rejected output repeats without a changed approach or receipts cannot be resolved |
 | S2 | Capability-evaluation records runtime qualification; deterministic effect and interleaving tests supply the ground truth — zero forbidden effects and correct permitted controls (`internal/capgraph/evaluation.go`; `internal/work/standing_proof.go`) | Requalify on runtime or configuration change; stop affected execution on bypass or ambiguous outcome |
 | S3 | Latent-tax plus receipt-linked assessment: critical-case preservation, complete cost accounting, declared repetitions and budgets (`internal/latenttax/latenttax.go`; `internal/routeevidence/outcome.go`) | Review at the trial budget or on material provider change; stop on critical regression, incomparable evidence, or missing accounting |
 | S4 | Distiller eval: exact binding, targeted semantic fail/pass pair, unaffected-consumer non-regression, zero live replay calls (`internal/distiller/eval.go`) | Review before target changes; stop acceptance on stale proof or incomplete coverage |
