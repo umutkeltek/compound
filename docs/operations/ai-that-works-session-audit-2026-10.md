@@ -17,8 +17,12 @@ scripts/upstream-learning/upstream_scout.py   pinned upstream text → staged co
       → compound finding record                 hash-checked body custody
       → compound source observe                no-promote capability_observation candidate + NoPromoteDecision
       → compound capability import-evaluations  evidence-only eval node + evaluated_by / validated_by edges
-      → compound panel plan                    owner review over the candidate
 ```
+
+Review is a **separate branch of that path**, not its tail. A no-promote candidate is already
+adjudicated, so `compound panel plan --target-kind capability_observation` selects only candidates
+still awaiting a verdict — it does not re-open a no-promote one. The panel leg was proven
+separately against a verdict-pending candidate.
 
 That path was exercised against this upstream repository during the audit, in an isolated smoke
 instance. A six-file frontier (`README.md`, `2026-10-06-building-a-memory-pipeline/README.md`,
