@@ -18,6 +18,7 @@ import (
 )
 
 func TestCanonicalProofGatesReadSealedHeadDuringTransientCallerMutation(t *testing.T) {
+	isolateProofCacheTest(t)
 	t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "")
 	repo := initCompoundCommandGitRepo(t)
 	compiler := filepath.Join(repo, "console", "node_modules", ".bin", "tsc")

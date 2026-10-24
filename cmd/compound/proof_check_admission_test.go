@@ -3272,6 +3272,7 @@ func TestProofCheckCompletionRetainsHolderUntilBackgroundDescendantExits(t *test
 }
 
 func TestProofCheckGoCacheIsPerWorktree(t *testing.T) {
+	isolateProofCacheTest(t)
 	t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "")
 	first, firstOK := work.ProofGoCache(t.TempDir())
 	second, secondOK := work.ProofGoCache(t.TempDir())
@@ -3288,6 +3289,7 @@ func TestProofCheckGoCacheIsPerWorktree(t *testing.T) {
 }
 
 func TestProofCheckGoCacheIsStableForOneWorktree(t *testing.T) {
+	isolateProofCacheTest(t)
 	t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "")
 	worktree := t.TempDir()
 	first, firstOK := work.ProofGoCache(worktree)
@@ -3302,6 +3304,7 @@ func TestProofCheckGoCacheIsStableForOneWorktree(t *testing.T) {
 }
 
 func TestProofCheckGoCacheLivesOutsideWorktree(t *testing.T) {
+	isolateProofCacheTest(t)
 	t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "")
 	worktree := t.TempDir()
 	cache, ok := work.ProofGoCache(worktree)
@@ -3316,6 +3319,7 @@ func TestProofCheckGoCacheLivesOutsideWorktree(t *testing.T) {
 }
 
 func TestProofCheckGoCacheHonorsSharedOptOut(t *testing.T) {
+	isolateProofCacheTest(t)
 	t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "1")
 	if _, ok := work.ProofGoCache(t.TempDir()); ok {
 		t.Fatal("shared-cache opt-out ignored")
@@ -3325,6 +3329,7 @@ func TestProofCheckGoCacheHonorsSharedOptOut(t *testing.T) {
 // Path selection is insufficient proof: this fails if runProofCheckStep stops injecting the
 // per-worktree cache even while every proofCheckGoCache unit test remains green.
 func TestRunProofCheckStepInjectsWorktreeGoCache(t *testing.T) {
+	isolateProofCacheTest(t)
 	t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "")
 	repo := initCompoundCommandGitRepo(t)
 	want, ok := work.ProofGoCache(repo)
@@ -3355,6 +3360,7 @@ func TestRunProofCheckStepInjectsWorktreeGoCache(t *testing.T) {
 }
 
 func TestRunProofCheckBunToolsInjectsWorktreeGoCache(t *testing.T) {
+	isolateProofCacheTest(t)
 	t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "")
 	repo := t.TempDir()
 	toolsDir := filepath.Join(repo, "tools")

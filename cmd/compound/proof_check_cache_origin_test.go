@@ -12,6 +12,7 @@ import (
 )
 
 func TestProofCommandsPreserveCallerCacheAcrossSealedWorkspaces(t *testing.T) {
+	isolateProofCacheTest(t)
 	for _, mode := range []string{"isolated", "shared"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "")
