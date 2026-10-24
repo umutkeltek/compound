@@ -1,6 +1,6 @@
 ---
 name: compound-land
-description: The landing ceremony for getting a change onto main in the compound repo — scope claim, full verification battery, rehearsed merge, --ff-only with a fresh main-SHA guard, post-land duties. Use when committing, merging, landing an executor/worker's diff or worktree, or when asked to "land"/"commit"/"merge" anything here.
+description: The landing ceremony for getting a change onto main in the compound repo — scope claim, minutes-scale presubmit, rehearsed merge, --ff-only with a fresh main-SHA guard, canonical battery after the land, post-land duties. Use when committing, merging, landing an executor/worker's diff or worktree, or when asked to "land"/"commit"/"merge" anything here.
 ---
 
 # compound-land — how a change actually reaches main
@@ -51,7 +51,7 @@ This skill replaces re-deriving the "standing session rules" from
   ff AND `git diff --name-only <base>..<tip>` ∩ their dirty files = ∅. Then: back up their diff
   (`git diff > /tmp/<lane>-wip-backup.patch`), land the guarded ff from MAIN as its own command,
   verify their WIP byte-identical after (diff checksum before/after), record the pure-ff equality
-  (landed `main` == the certified candidate HEAD) so `land-check --tip` cites the pre-land proof
+  (landed `main` == the certified candidate HEAD) so `land-check --tip` cites the canonical proof at that tip
   instead of a second battery (§4), and run `./install.sh` from a clean detached worktree at the
   landed SHA — never from the mixed tree (a binary built there would embed their half-built WIP).
 
@@ -70,21 +70,76 @@ publication and live-consumer checks still apply. Raw foreign `proof-check:` att
 ancestry-only membership and reuse across differing candidates remain invalid. Bootstrap the
 adoption capability itself through a direct source proof before using it in a live ceremony.
 
-## 1 · Pre-flight battery (all of it, every time)
+## 1 · Presubmit before the land; canonical proof after it
 
 The ceremony has five gates, in force order: **scope-claim** (§0 — land-lease + worklog claim) ·
-**battery** (§1 — `proof-check --json --base <full-sha> --work ... --actor ... --out`) ·
-**fresh-SHA guard** (§3 — `MAIN_SHA` read this
-turn) · **redact** (§5 — unpiped, its own command) · **tree-identity** (§4 — containment proved
-before any removal). **A later gate cannot prove that an earlier gate passed: a green battery does
-not prove the scope claim, and a clean redact does not prove the battery ran.** Each is cleared only
-by reading ITS OWN verdict this turn — the `| tail` and `EXIT=$?` incidents below are one mistake
-repeated, trusting an adjacent command's exit for a gate's own result.
+**presubmit** (§1 — scoped build/vet/doctor/affected tests, minutes) ·
+**fresh-SHA guard** (§3 — `MAIN_SHA` read this turn) · **redact** (§5 — unpiped, its own command) ·
+**tree-identity** (§4 — containment proved before any removal). **A later gate cannot prove that an
+earlier gate passed: a green presubmit does not prove the scope claim, and a clean redact does not
+prove the presubmit ran.** Each is cleared only by reading ITS OWN verdict this turn — the `| tail`
+and `EXIT=$?` incidents below are one mistake repeated, trusting an adjacent command's exit for a
+gate's own result.
 
-During iteration, use `go run ./cmd/compound proof-check --dev --base main` for
-cache-enabled short feedback. It is explicitly non-certifying: it does not write
-the canonical installed-runtime proof artifact and never substitutes for the
-pre-land full proof below.
+### Presubmit (every landing, before the fast-forward)
+
+Operator ruling 2026-10-23, Law 16 (govern in proportion to risk): the blocking gate before a
+landing is a minutes-scale presubmit scoped to what changed, not the canonical battery. Measured
+2026-10-24 over the last 50 canonical runs: `go-test` alone was p50 43.5 min of a 49.7-min battery,
+40% of runs were red under laptop load, and every repository on the machine queued on one shared
+proof pool. That gate serialized every lane behind one thread while certifying nothing a post-land
+run on the same tip would not.
+
+```bash
+PRESUBMIT_BASE_SHA=$(git rev-parse --verify "<reviewed-base-sha>^{commit}") &&
+go build ./... && go vet ./... &&
+test -z "$(git ls-files '*.go' | xargs gofmt -l)" &&
+git diff --check "$PRESUBMIT_BASE_SHA"...HEAD &&
+go run ./cmd/compound architecture doctor --strict &&
+go test -short -timeout=30m <affected packages>
+```
+
+Then the redact gate (§5), unpiped, as its own command. Read each verdict; exit `0` is the only green.
+
+**Affected packages** — name them from the diff, never from memory:
+- Go files changed under dirs `D1..Dn` → `./D1/... ./Dn/... ./cmd/compound/`. The CLI package is the
+  integration surface that imports nearly every `internal/` package, so it catches cross-package
+  breaks. A hub package (`internal/work`, `internal/policy`) costs ~10 min idle; that is the honest
+  price of touching it, not a reason to skip it.
+- Only docs, skills, contracts or `AGENTS.md` changed → `./internal/arch/` (every served-doctrine
+  guard lives there) plus the CLI readers by name:
+  `go test -short ./cmd/compound/ -run 'Ceremony|ContractCompile|Orient|ProofCheck|Doctor'`.
+- `go.mod`, `go.sum`, `scripts/testbattery/` or a root file changed → the whole module:
+  `go run ./cmd/compound proof-check --dev --base "$PRESUBMIT_BASE_SHA" --out <file>` (cached
+  `go test -short ./...`; budget 10-20 min idle).
+
+Measured 2026-10-24 on this laptop, idle: `go build ./...` 67 s, `go vet ./...` 61 s, strict doctor
+8.5 s, `internal/arch` guards 9-27 s, the whole `cmd/compound` package 51 s. **Under a concurrent
+canonical battery (load 10-12, swap full) the same `cmd/compound` package did not finish inside 10
+minutes, and `proof-check --dev` took 17.8 min and went red on 10-minute package timeouts.** The
+presubmit is minutes only when no canonical battery shares the laptop — which is why the canonical
+battery runs after the land, detached and nice'd or on the remote verifier, never concurrently
+with a landing on the same machine.
+
+Add, when they apply, before the presubmit (seconds each):
+- new tracked text files → `git add` them first; the leak gate sees tracked files only (ordering hazard below);
+- CLI or `internal/` structure changes → the arch quick tests named under the ordering hazards below.
+
+Presubmit red: fix it or do not land. Never weaken a gate to turn it green (AGENTS.md §Proof discipline).
+Every presubmit step is non-certifying by design — none writes a canonical installed-runtime proof
+artifact — and that is correct: certification is the post-land battery's job, not the landing's
+precondition.
+
+### Canonical proof — after the land, before any governed close
+
+The canonical battery (every gate, uncached `-count=1` Go suite) runs ONCE per landed tip, on
+main, AFTER the fast-forward and push — detached, low priority, never blocking the next landing.
+Its `--out` report is authoritative; read it when it finishes. **A red post-land battery is fixed
+forward or reverted the same day by the lane that landed it.** The nightly main battery
+(`com.compound.nightly-main-battery`, 04:30) is the backstop, and its claims count only when its
+log shows a finished run. For a governed WorkEnvelope the stored canonical proof at the landed tip
+is what `land-check` and `work close` cite (§4); the commands below produce that proof, and the
+`compound-verify` skill drives the close.
 
 Run the `compound-verify` skill. Select two distinct full commit IDs before proof:
 
@@ -115,6 +170,13 @@ git merge-base --is-ancestor "$PRE_PROOF_TARGET_SHA" "$CANDIDATE_SHA" &&
 go run ./cmd/compound proof-check --json --base "$PROOF_BASE_SHA" \
   --work <work_id> --actor "<harness>:<lane>" \
   --out <absolute-report.json>   # full canonical inventory
+```
+
+Detached post-land form of the same command (same captured base, landed tip checked out on main):
+
+```bash
+nohup nice -n 10 go run ./cmd/compound proof-check --json --base "$PROOF_BASE_SHA" \
+  --out <absolute-report.json> >/dev/null 2>&1 &
 ```
 
 Every capture and guard is joined to proof execution: a failed predicate cannot
@@ -315,10 +377,10 @@ For anything beyond a trivial single commit on a quiet main:
 
 ```bash
 git worktree add --detach /tmp/land-rehearsal <your-branch>
-# merge/rebase against a fresh fetch of main there; run the battery in the rehearsal tree
+# merge/rebase against a fresh fetch of main there; run the presubmit in the rehearsal tree
 ```
 
-Acquire the land-lease AFTER the certifying battery completes green and before touching the real
+Acquire the land-lease AFTER the presubmit completes green and before touching the real
 main — it serializes the guard+merge window (complementary to, not a replacement for, the
 `MAIN_SHA` guard below, which is the real correctness check). Before resource cutover, the battery must find
 the shared lease free. After cutover, it reserves independent proof capacity and
@@ -367,7 +429,7 @@ git -C <MAIN-worktree> merge --ff-only "$CANDIDATE_SHA"
 - **Reviewed integration merges belong in an isolated candidate, never in the main checkout.**
   An integration work item may combine pinned, reviewed candidate tips from the same repository
   with merge commits to preserve their original ancestry. Review the complete resulting tree and
-  every conflict resolution, then run the full canonical proof at final exact B/H. A parent's
+  every conflict resolution, then run the presubmit at the final exact B/H; the canonical proof runs on the landed tip (§1). A parent's
   proof never certifies the merge result. Main still advances only under its scoped landing
   lease, fresh SHA guard and `--ff-only`; current main must be an ancestor of certified H.
   Composition grants no membership, proof adoption, acceptance or lifecycle authority over
@@ -398,11 +460,12 @@ git -C <MAIN-worktree> merge --ff-only "$CANDIDATE_SHA"
   (`compound run-attempt list --non-terminal` — proof-check terminalizes its own ratt on the
   admission error path), then rerun the plain exact command on the freed resource.
 - **Package disjointness never preserves proof after replay or a new merge.** If reconciling
-  main changes the candidate HEAD or proof base, attach the new H and complete a full canonical
-  proof for that exact B/H **before landing**. If main merely advances to a target tip T' inside
+  main changes the candidate HEAD or proof base, attach the new H; the presubmit reruns on the new tip before landing, and the
+  canonical proof is for that exact B/H on the landed tip (§1). If main merely advances to a target tip T' inside
   the unchanged certified H (`B <= T' <= H`), retain the original B/H proof and take a fresh
   main-SHA guard; do not relabel its base. Use the short landing lease and ordinary `--ff-only` landing.
-  Never land first and test later, or use `git update-ref` or target-ref CAS to bypass a stale
+  Never land an untested tip — presubmit before the fast-forward, canonical proof on the
+  landed tip after it — and never use `git update-ref` or target-ref CAS to bypass a stale
   guard, changed-source proof, acceptance or publication checks.
   The separate hijacked-checkout exception in §1 still requires an already-certified descendant;
   it does not authorize proof reuse for a changed base or candidate.
@@ -455,19 +518,19 @@ git -C <MAIN-worktree> merge --ff-only "$CANDIDATE_SHA"
   releasing with nothing held is an idempotent no-op — safe to run even if acquire never happened
   (e.g. a trivial single-commit land that skipped §3). `steal --reason` (§3) remains the escape
   hatch if a DIFFERENT lane needs to take over a lease this one abandoned without releasing.
-- **No second battery after a pure fast-forward of the proven tip** (operator ruling 2026-10-23,
-  Law 16). When `git rev-parse main` after landing equals the certified candidate HEAD stored in the
-  pre-land `--out` report, main's tree is byte-identical to the tree the battery proved, so a
-  post-land rerun proves nothing new and costs ~40 minutes of shared proof capacity. Record the
-  equality instead: `land-check --tip "$TIP"` cites the pre-land proof at that same tip. The
-  scheduled full battery can provide an additional check for host or ordering drift only when
-  its actual runs and results are verified; a schedule or written claim alone is not evidence.
-  If the planned base or candidate changes after proof, stop before landing. Select and validate the new
-  `PROOF_BASE_SHA` separately from the current target tip, run a fresh canonical proof for that exact base and candidate, then repeat
-  the fresh main-SHA guard before the fast-forward. Package disjointness does not exempt a replay.
-  An already-landed tip that differs from the certified HEAD is a proof mismatch requiring
-  reconciliation, not a supported land-first/test-later path. Preserve the original proof report;
-  never recapture landed `main^{commit}` as its baseline, which would make `base...HEAD` empty.
+- **One canonical battery per landed tip, after the fast-forward** (operator ruling 2026-10-23,
+  Law 16). The presubmit (§1) is the pre-land gate; the canonical battery runs on main at the landed
+  tip, detached, and is never rerun for a pure fast-forward of a tip it already certified — when
+  `git rev-parse main` equals a certified HEAD stored in a canonical `--out` report, main's tree is
+  byte-identical to the tree that battery proved, so a rerun proves nothing new and costs ~50
+  minutes of shared proof capacity. Record the equality instead: `land-check --tip "$TIP"` cites
+  the canonical proof at that same tip. The scheduled nightly battery is the backstop only when its
+  actual runs and results are verified; a schedule or written claim alone is not evidence.
+  If the planned base or candidate changes after a canonical proof, that proof is spent: select
+  and validate the new `PROOF_BASE_SHA` separately from the current target tip, and the next
+  canonical proof is for that exact base and candidate. Package disjointness does not exempt a
+  replay. Preserve the original proof report; never recapture landed `main^{commit}` as its
+  baseline, which would make `base...HEAD` empty.
 - **If the land touched `cmd/compound` or `internal/{hook,harness,contract,mem,breadth}`: run
   `./install.sh`** — hooks and external consumers use the installed binary, which self-reports its
   build SHA since 9b5736b (`compound version`; arch doctor warns fresh/stale/missing). A stale

@@ -77,9 +77,11 @@ or termination assertions to accommodate setup latency.
 1. **Never trust the checked-in binary.** `./compound` at repo root is a local build artifact and
    is routinely stale. Verify through `go run ./cmd/compound <verb>` or a fresh `make install`.
 
-   For iteration only, `go run ./cmd/compound proof-check --dev --base main` provides
-   cache-enabled short feedback. It is non-certifying, does not write the canonical
-   installed-runtime proof artifact, and never satisfies the deterministic bundle below.
+   The scoped presubmit (`compound-land` §1) is what every landing runs before its fast-forward;
+   `go run ./cmd/compound proof-check --dev --base <full-sha> --out <file>` is its whole-module
+   cached variant. Both are non-certifying: neither writes the canonical installed-runtime proof
+   artifact or satisfies the deterministic bundle below, which runs on the landed tip after the
+   land and before any governed close.
 
 2. **Deterministic bundle:**
    ```bash

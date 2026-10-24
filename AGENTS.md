@@ -235,6 +235,14 @@ reasons before building what the note implies.
 - Fresh-worktree batteries need gitignored inputs copied in first (`cp -Rc`, never symlink); the exact set is owned by `compound-land` §1.
 
 ## Proof discipline
+
+- **Presubmit before the land, canonical proof after it** (operator ruling 2026-10-23, Law 16).
+  The blocking gate before any fast-forward is the scoped presubmit in `compound-land` §1 — build,
+  vet, gofmt, diff-check, strict arch doctor, short tests of the affected packages, redact; minutes
+  on an idle laptop. The canonical battery runs
+  once per landed tip on main, detached, and a red one is fixed forward or reverted the same day by
+  the lane that landed it. Never block a landing on the canonical battery; never leave main red.
+  Details and the measured why: `compound-land` §1.
 - Before the full battery after CLI changes, run `go test ./internal/arch -count=1 -run '^(TestCheckCmdCompoundBudgetPassesOnRealRepo|TestDoctorEmitsCmdCompoundBudgetFindings)$'`.
   The general `TestDoctorGreenAgainstRealRepo` uses non-strict mode and can remain green on a CLI-budget warning.
   This cheap structural preflight catches misplaced responsibilities before long tests; it never replaces canonical proof or permits raising the budget.

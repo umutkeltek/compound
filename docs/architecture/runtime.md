@@ -1438,7 +1438,7 @@ the current work lease, delivery binding, and policy before changing the resourc
 The holder includes the exact work ID as a colon-delimited component. `status
 --work W` selects that landing slot, while `status --proof` reports proof capacity.
 The fresh-main-SHA guard and exact candidate proof remain required: a landing can now
-advance main while another candidate is being tested. Any replay or rebase that changes candidate H requires renewed proof BEFORE landing.
+advance main while another candidate is being tested. Any replay or rebase that changes candidate H spends the prior proof: the presubmit reruns before landing and the canonical proof is for the new landed tip.
 A pure fast-forward of that exact proven tip needs no duplicate battery. Scheduled
 full runs add evidence only when their actual results have been inspected; scheduling
 alone proves neither execution nor correctness.

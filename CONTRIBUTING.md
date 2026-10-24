@@ -48,10 +48,15 @@ go run ./cmd/compound proof-check --base "$PRE_LAND_BASE_SHA" \
   --out <absolute-report.json>
 ```
 
-For a landing ceremony, capture `PRE_LAND_BASE_SHA` before replay, battery, or
-land and reuse that exact full SHA for the post-land canonical battery. Never
-recapture `main^{commit}` after landing; if a rebase changes the candidate,
-capture a new pre-land base and rerun the full pre-land and post-land batteries.
+For a landing ceremony, the blocking gate before the fast-forward is the
+scoped presubmit in `skills/compound-land/SKILL.md` §1 (build, vet, gofmt,
+diff-check, strict doctor, short tests of the affected packages, redact;
+minutes); the canonical bundle runs once on the landed tip, after the land
+(operator ruling 2026-10-23, Law 16).
+Capture `PRE_LAND_BASE_SHA` before replay or land and reuse that exact full SHA
+for the post-land canonical battery. Never recapture `main^{commit}` after
+landing; if a rebase changes the candidate, capture a new base, rerun the
+presubmit before landing, and the canonical battery is for the new landed tip.
 
 Certifying proof is agent-invocable and supports non-terminal, redirected, or
 backgrounded stdout. Run it unpiped as its own command by default, preserve its
@@ -125,8 +130,9 @@ skills/                   Agent ceremony definitions
 1. **Fork and branch** from `main`.
 2. **Write tests** that would fail if the depth were wrong. Tests are how the
    system understands its own depth — not happy-path coverage.
-3. **Use the fast development profile while iterating**, then run the canonical
-   proof bundle before pushing:
+3. **Use the fast development profile while iterating**, land behind the
+   scoped presubmit (`skills/compound-land/SKILL.md` §1), and let the canonical
+   proof bundle run on the landed tip after the land:
    ```sh
    go run ./cmd/compound proof-check --dev --base main
    ```
@@ -165,8 +171,8 @@ skills/                   Agent ceremony definitions
    maintainer's machine as a draft, then requires explicit operator review and
    publication. The tracked `.github/workflows/proof.yml` and
    `.github/workflows/release.yml` files are inactive references kept for tests.
-   See [Release procedure](docs/release.md). Landing is certified locally by the
-   full `proof-check` battery, never by CI alone.
+   See [Release procedure](docs/release.md). A landed tip is certified locally by
+   the full `proof-check` battery run on it after the land, never by CI alone.
 
 A rebase, replay, or new HEAD invalidates prior proof and requires a fresh battery.
 For source-controlled work, a committed stored successful proof is required:
