@@ -203,10 +203,72 @@ func TestBackupCredentialStageSourceAndObservationFences(t *testing.T) {
 }
 
 func TestBackupCredentialStageProgramSyntheticFences(t *testing.T) {
-	command := exec.Command("python3", "-I", "-B", "backup_credential_stage_program_test.py")
-	if raw, e := command.CombinedOutput(); e != nil {
-		t.Fatalf("synthetic program fences failed: %v %s", e, raw)
+	runSyntheticProgramSuite(t, "backup_credential_stage_program_test.py")
+}
+
+// runSyntheticProgramSuite runs a synthetic Python suite under the inherited
+// TMPDIR and again under a TMPDIR whose group is not the caller's egid. BSD
+// filesystems (macOS) always give a new entry its parent directory's group,
+// so a verifier TMPDIR under root:wheel /private/tmp made every fixture file
+// gid 0; Linux does the same under a setgid directory. Owner fences in the
+// synthetic suites must hold on both hosts, not only where TMPDIR is egid's.
+func runSyntheticProgramSuite(t *testing.T, script string) {
+	t.Helper()
+	run := func(label string, env []string) {
+		command := exec.Command("python3", "-I", "-B", script)
+		command.Env = env
+		if raw, e := command.CombinedOutput(); e != nil {
+			t.Fatalf("synthetic suite %s failed under %s: %v %s", script, label, e, raw)
+		}
 	}
+	run("inherited TMPDIR", os.Environ())
+	foreign, gid, ok := foreignGroupTempDir(t)
+	if !ok {
+		t.Skip("host offers no group other than the caller's egid; foreign-group TMPDIR case needs one")
+	}
+	run(fmt.Sprintf("foreign-group TMPDIR (gid %d, egid %d)", gid, os.Getegid()), append(os.Environ(), "TMPDIR="+foreign))
+}
+
+// foreignGroupTempDir returns a private setgid directory owned by a group
+// other than the caller's egid, so entries created inside inherit that group
+// on BSD and Linux alike.
+func foreignGroupTempDir(t *testing.T) (string, int, bool) {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "foreign-group")
+	if e := os.Mkdir(dir, 0o700); e != nil {
+		t.Fatal(e)
+	}
+	egid := os.Getegid()
+	var candidates []int
+	if os.Geteuid() == 0 {
+		candidates = append(candidates, egid+1)
+	}
+	groups, e := os.Getgroups()
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, g := range groups {
+		if g != egid {
+			candidates = append(candidates, g)
+		}
+	}
+	for _, gid := range candidates {
+		if os.Chown(dir, -1, gid) != nil {
+			continue
+		}
+		if e := os.Chmod(dir, 0o700|os.ModeSetgid); e != nil {
+			t.Fatal(e)
+		}
+		var s unix.Stat_t
+		if e := unix.Stat(dir, &s); e != nil {
+			t.Fatal(e)
+		}
+		if int(s.Gid) != gid || uint32(s.Mode)&unix.S_ISGID == 0 {
+			t.Fatalf("foreign-group TMPDIR not applied: gid=%d mode=%o want gid=%d setgid", s.Gid, s.Mode, gid)
+		}
+		return dir + "/", gid, true
+	}
+	return "", 0, false
 }
 func TestBackupCredentialStagePolicyRemainsClosed(t *testing.T) {
 	v, r, _, w, now := backupStageFixture(t)

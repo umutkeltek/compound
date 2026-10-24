@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -217,10 +216,7 @@ func TestSourceMarkerRetirementObservationRejectsChanges(t *testing.T) {
 	}
 }
 func TestSourceMarkerRetirementProgramSyntheticMain(t *testing.T) {
-	command := exec.Command("python3", "-I", "-B", "source_marker_retirement_program_test.py")
-	if raw, e := command.CombinedOutput(); e != nil {
-		t.Fatalf("synthetic marker main failed: %v %s", e, raw)
-	}
+	runSyntheticProgramSuite(t, "source_marker_retirement_program_test.py")
 }
 
 func TestSourceMarkerRetirementRejectsChangedWorkGeneration(t *testing.T) {

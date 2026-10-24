@@ -20,10 +20,15 @@ class StageTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
+        uid, gid = os.geteuid(), os.getegid()
+        # BSD filesystems (macOS) give a new entry its parent directory's
+        # group, not the caller's egid, so a TMPDIR under /private/tmp
+        # (root:wheel) makes every fixture file gid 0. Pin the fixture
+        # tree's group so the fences compare one known owner on any TMPDIR.
+        os.chown(self.root, uid, gid)
         os.chmod(self.root, 0o700)
         self.parent = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
         self.real_owner = stage.owner_ok
-        uid, gid = os.geteuid(), os.getegid()
         stage.owner_ok = lambda s: s.st_uid == uid and s.st_gid == gid
         self.real_publish = stage.publish_directory
         if sys.platform != "linux":
