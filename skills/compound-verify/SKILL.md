@@ -108,6 +108,21 @@ or termination assertions to accommodate setup latency.
    remains until native reconciliation receives matching quiescent evidence.
    No gate inventory, acceptance condition or Go test package timeout changes.
 
+   For an exact fresh local reservation whose execution barriers have closed,
+   proof-check --reconcile-quiescent PFR --work W --actor A --expected-run R
+   uses native failed finalization without queue admission, a new attempt, or
+   verification credit. Execution quiescence does not assert producer exit.
+   Current work action/policy must still belong to that reservation, its rooted
+   refresh, or its exact pending recovery completion. Expired, remote, live-child, missing-barrier, changed-holder, unrelated
+   journal, or already resolved runs refuse unchanged. Only this command's exact
+   authenticated failure journal may resume the original running or matching
+   terminal attempt while the same fresh holder remains; no migration or retry
+   descendant is admitted. Other journals
+   retain their own reconciliation path. Ordinary retained source
+   profiles do not require a readable checkout; private-source profiles retain
+   native current review/destination authority checks. Recovery cannot supply a
+   report, exit code, queue wait, execution timeout, or success assertion.
+
    Custom `--ttl` values below 30s are refused before
    admission; accepted windows refresh at `min(TTL/3, 5s)` and monitor holder loss continuously.
    Each gate inherits the shared land-lease kernel execution barrier. Lease loss, SIGINT/SIGTERM,

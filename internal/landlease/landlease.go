@@ -1210,13 +1210,19 @@ func executionBarrierID(holder string) string {
 }
 
 func executionBarrierPending(home, holder string) (bool, error) {
+	return executionBarrierPendingWithKnown(home, holder, false)
+}
+func executionBarrierPendingWithKnown(home, holder string, requireKnown bool) (bool, error) {
 	if pending, err := remoteExecutionPending(home, holder); err != nil || pending {
 		return pending, err
 	}
-	return localExecutionBarrierPending(home, holder)
+	return localExecutionBarrierPendingWithKnown(home, holder, requireKnown)
 }
 
 func localExecutionBarrierPending(home, holder string) (bool, error) {
+	return localExecutionBarrierPendingWithKnown(home, holder, false)
+}
+func localExecutionBarrierPendingWithKnown(home, holder string, requireKnown bool) (bool, error) {
 	holder = strings.TrimSpace(holder)
 	if holder == "" {
 		return false, nil
@@ -1224,7 +1230,7 @@ func localExecutionBarrierPending(home, holder string) (bool, error) {
 	path := filepath.Join(home, executionBarrierRelPath, executionBarrierID(holder)+".lock")
 	file, err := os.OpenFile(path, os.O_RDWR, 0o644)
 	if errors.Is(err, os.ErrNotExist) {
-		if strings.HasPrefix(holder, "proof:") {
+		if requireKnown || strings.HasPrefix(holder, "proof:") {
 			return false, &ExecutionUnattestedError{Holder: holder}
 		}
 		return false, nil

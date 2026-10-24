@@ -84,6 +84,21 @@ func TestProofCheckPreparationCancellationBeforeAdmission(t *testing.T) {
 			case <-time.After(10 * time.Second):
 				t.Fatal("preparation did not stop")
 			}
+			body, err := os.ReadFile(log.Name())
+			if err != nil {
+				t.Fatal(err)
+			}
+			output := string(body)
+			if mode == "deadline" {
+				for _, want := range []string{"proof-check execution budget of " + budget, "pre-admission preparation", "queue waiting for the proof resource is excluded"} {
+					if !strings.Contains(output, want) {
+						t.Fatalf("deadline output missing %q: %s", want, output)
+					}
+				}
+			} else if !strings.Contains(output, "terminated signal received") || strings.Contains(output, "proof-check execution budget") {
+				t.Fatalf("signal incorrectly reported as deadline: %s", output)
+			}
+
 			waitForProofCheckTestProcessExit(t, pid)
 			status, err := landlease.ProofResource(homePath).StatusReadOnly(time.Now())
 			if err != nil || status.Held {

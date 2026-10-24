@@ -507,3 +507,17 @@ Runtime semantics and activation evidence requirements: [runtime.md](../../docs/
 For bounded unattended canonical execution, proof-check --execution-timeout <duration>
 uses one active-operation allowance across preparation and the admitted run, excluding
 queue wait. See compound-verify for cancellation, durable-cleanup and remote-fence semantics.
+
+### Exact local proof recovery
+
+A retained fresh local proof can be failed through
+proof-check --reconcile-quiescent PFR --work W --actor A --expected-run R
+after native repository and capacity barriers both attest execution quiescence.
+This path does not join the proof queue or certify a result. It preserves the
+original failed attempt and unknown producer exit. It refuses expired holders,
+newer work generations, live children, missing barriers, remote profiles and
+unrelated completion journals. Its own exact interrupted failure journal resumes
+the same original attempt while the fresh holder remains, without a new
+reservation or descendant; see compound-verify for the exact scope and
+private-source authority prerequisite. A repeated call refuses an already
+resolved run and leaves a successor holder untouched.

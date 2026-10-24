@@ -244,7 +244,9 @@ func (b *leaseBinding) repositoryReleased() error {
 	if b.repositoryRoot == "" {
 		return fmt.Errorf("bound proof repository barrier root required")
 	}
-	pending, err := executionBarrierPending(b.repositoryRoot, proofRepositoryHolder(b.identity))
+	// Release/attestation requires an installed exact repository barrier.
+	// Admission separately permits absence for a repository's first proof.
+	pending, err := executionBarrierPendingWithKnown(b.repositoryRoot, proofRepositoryHolder(b.identity), true)
 	if err != nil {
 		return err
 	}
