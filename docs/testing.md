@@ -58,11 +58,19 @@ and therefore by the complete package inventory in the canonical Go-test gate.
 
 ## Canonical package scheduling
 
-The `go-test` gate runs `go run ./scripts/testbattery`. The driver inventories
-`go list ./...`, runs every package except `compound/internal/home` with ordinary
-Go package parallelism, then runs the entire home package alone. Both phases use
-`go test -count=1 -timeout=40m`. Every package runs once, including new packages;
-there are no test-name filters, short-mode exclusions or blanket `-p 1`.
+The `go-test` gate runs `go run ./scripts/testbattery general-release` and the
+`go-test-home` gate runs `go run ./scripts/testbattery home`. The driver discovers
+Git-owned package directories and resolves them with `go list -e -json`.
+Execution has three phases: general packages, the complete release package alone,
+and the complete home package alone. Standalone `go run ./scripts/testbattery test`
+runs all three. Every package runs once with `-count=1 -timeout=40m`; there are no
+test-name filters, short-mode exclusions or blanket `-p 1`.
+
+Every invocation names its mode explicitly. The compiled driver exits 2 when no
+mode is supplied, without inventorying packages or starting tests. Through
+`go run`, Go reports `exit status 2` and returns shell status 1. `-h` and
+`--help` return 0. Mode-less, flag-only and unknown-mode invocations do not
+start tests; an explicit help request takes precedence over mode validation.
 
 This isolates archive scale deadlines from contention with other packages without
 changing any archive limit or production durability check. An ordinary first-phase

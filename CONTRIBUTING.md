@@ -33,7 +33,7 @@ COMPOUND_HOME="$HOME/.compound" ./compound home init
 go run ./cmd/compound proof-check --dev --base main
 
 # Standalone fresh Go suite (non-certifying; canonical bundle below):
-go run ./scripts/testbattery
+go run ./scripts/testbattery test
 
 # Single package:
 go test ./internal/work/ -count=1 -timeout 5m
