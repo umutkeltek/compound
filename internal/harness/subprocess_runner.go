@@ -307,6 +307,26 @@ func runWithSubprocessOptions(
 		}
 	}
 	cmd := build(ctx, in)
+	// The shared runner is the SOLE cancellation owner. Adapters that build
+	// with exec.CommandContext inherit two extra killers from os/exec: the
+	// default Cancel callback kills only the DIRECT process, and a nonzero
+	// WaitDelay arms a second direct-process killer that can also force-close
+	// the capture pipes. Either one races this runner's process-group kill
+	// and can leave a descendant holding the pipes open, so clear both here --
+	// after the adapter's build, before Start -- where nothing can re-arm them.
+	//
+	// This does NOT weaken pre-start rejection: os/exec keeps the context
+	// bound to the *exec.Cmd regardless of Cancel and refuses to start a
+	// command whose context is already done, and the runner's own ctx.Err()
+	// check inside start() refuses the launch before cmd.Start() is reached.
+	// After this normalization os/exec arms no ctx watchdog at all, so the
+	// runner's process-group kill is the SOLE CANCELLATION PATH: nothing in
+	// os/exec or in this runner cancels the child any other way. That is a
+	// statement about cancellation only -- a child can still end on its own
+	// (a normal exit, or a signal from outside this runner), and the group
+	// kill reaches the process group, not an arbitrary descendant tree.
+	cmd.Cancel = nil
+	cmd.WaitDelay = 0
 	// The observed leg is read from the command actually built and stamped
 	// once beside (never into) the requested snapshot; nothing observed, no block.
 	if obs, ok := observeLaunch(harnessName, cmd, hookReading, hookKnown); ok {
@@ -315,9 +335,11 @@ func runWithSubprocessOptions(
 		}
 	}
 	// Spawn the subprocess in its own process group (unix only; a no-op
-	// elsewhere) so the timeout kill below reaps the whole tree, not just the
-	// direct child -- see procgroup_unix.go for the orphaned-grandchild hang
-	// this prevents.
+	// elsewhere) so the timeout kill below reaps the whole PROCESS GROUP,
+	// not just the direct child -- see procgroup_unix.go for the
+	// orphaned-grandchild hang this prevents, and for the limit of that
+	// guarantee (a descendant that starts its own group/session is not
+	// reachable by the group signal).
 	setProcessGroup(cmd)
 	// Connect stdin to the subprocess. The old code ran
 	// io.Copy(io.Discard, in.Stdin) in a goroutine, silently throwing the
@@ -397,11 +419,20 @@ func runWithSubprocessOptions(
 	// re-hangs capWG.Wait with fresh heartbeats that hide the stall from
 	// SweepStale. The timer also selects on stopCh so a process that exits
 	// on its own never gets a spurious kill.
-	// reapMu/reaped make "kill the tree" and "reap the child" mutually
-	// exclusive. Timeout authority now outlives capture (see cmd.Wait below),
-	// so without this guard the timer could fire after cmd.Wait released the
-	// pid and SIGKILL a recycled pgid -- killing an unrelated process is a
-	// worse failure than the hang this ordering fixes.
+	// reapMu/reaped fence the kill paths against a REAPED pid: the timer and
+	// the cancellation goroutine check `reaped` under the lock before they
+	// signal, so a kill that lands after the child was reaped declines to
+	// signal a freed pgid. Timeout authority outlives capture (see cmd.Wait
+	// below), so without this guard the timer could fire after cmd.Wait
+	// released the pid and SIGKILL a recycled pgid -- killing an unrelated
+	// process is a worse failure than the hang this ordering fixes.
+	//
+	// LIMIT (unchanged here, no reproduction claimed): cmd.Wait() runs
+	// OUTSIDE reapMu and `reaped` is marked only after it returns, so a
+	// narrow wait-return-to-mark window remains in which the first
+	// cancellation/timer signal can still reach a group id the OS has begun
+	// to reuse. Closing that window is outside this repair; this change
+	// alters no reaping or signalling behavior.
 	var reapMu sync.Mutex
 	reaped := false
 	captureDrained := false
@@ -506,7 +537,9 @@ func runWithSubprocessOptions(
 	// process that exited on its own.
 	waitErr := cmd.Wait()
 	// Mark the pid reaped before cancelling the timer, so a timer that fires
-	// in this window observes reaped and declines to signal a freed pgid.
+	// in this window observes reaped and declines to signal a freed pgid. The
+	// wait-return-to-mark window just above is still open (see the
+	// reapMu/reaped note above); closing it is outside this repair.
 	reapMu.Lock()
 	reaped = true
 	reapMu.Unlock()
