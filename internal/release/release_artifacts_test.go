@@ -91,8 +91,8 @@ func TestReleaseArtifactsAreExactAndReproducible(t *testing.T) {
 		if got := releaseArchiveMembers(t, archive); !reflect.DeepEqual(got, wantMembers) {
 			t.Fatalf("archive %s members = %#v, want %#v", platform, got, wantMembers)
 		}
-		assertReleaseSBOMApplication(t, filepath.Join(first, bundle+".cdx.json"), "cmd/compound")
-		assertReleaseSBOMApplication(t, filepath.Join(first, bundle+"_compound-breadth-engine.cdx.json"), "cmd/compound-breadth-engine")
+		assertReleaseSBOMApplication(t, filepath.Join(first, bundle+".cdx.json"), "cmd/compound", "0.1.0")
+		assertReleaseSBOMApplication(t, filepath.Join(first, bundle+"_compound-breadth-engine.cdx.json"), "cmd/compound-breadth-engine", "0.1.0")
 	}
 }
 
@@ -264,8 +264,8 @@ esac
 		"-w", "/fixture",
 		// Write as the host user: the release helper creates linux-dist
 		// inside the mounted TempDir, and root-owned output made t.TempDir
-		// cleanup fail with permission denied on CI runners (run
-		// 35304076022 phase 2). The probe script needs no privileges.
+		// cleanup fail with permission denied on CI runners. The probe
+		// script needs no privileges.
 		"-u", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
 		"-e", "VERSION=0.1.0",
 		"-e", "DIST=/fixture/linux-dist",
@@ -364,28 +364,33 @@ esac
 `)
 	writeExecutable(t, filepath.Join(tools, "fake-sbom"), `#!/bin/sh
 set -eu
-[ "$1" = app ] || { printf 'expected app subcommand, got: %s\n' "$*" >&2; exit 64; }
+[ "$1" = bin ] || { printf 'expected binary inspection, got: %s\n' "$*" >&2; exit 64; }
 shift
 output=
-main=
-module=
+version=
+binary=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -json|-noserial|-notimestamp) shift ;;
     -output) output=$2; shift 2 ;;
-    -main) main=$2; shift 2 ;;
+    -version) version=$2; shift 2 ;;
     -*) printf 'unexpected fake sbom flag: %s\n' "$1" >&2; exit 64 ;;
-    *) module=$1; shift ;;
+    *) binary=$1; shift ;;
   esac
 done
 [ -n "$output" ]
-[ "$module" = . ]
-case "$main" in
-  cmd/compound|cmd/compound-breadth-engine) ;;
-  *) printf 'unexpected main package: %s\n' "$main" >&2; exit 64 ;;
+[ "$version" = "$COMPOUND_RELEASE_VERSION" ]
+[ -f "$binary" ] && [ -x "$binary" ]
+# Inspect the just-built application, without executing a cross-platform binary.
+grep -F -- "$version" "$binary" >/dev/null
+grep -F -- "$COMPOUND_RELEASE_COMMIT" "$binary" >/dev/null
+case "$(basename "$binary")" in
+  compound) main=cmd/compound ;;
+  compound-breadth-engine) main=cmd/compound-breadth-engine ;;
+  *) printf 'unexpected binary: %s\n' "$binary" >&2; exit 64 ;;
 esac
 case "${RELEASE_TEST_SBOM_OUTPUT_KIND:-regular}" in
-  regular) printf '{"bomFormat":"CycloneDX","specVersion":"1.6","application":"%s"}\n' "$main" > "$output" ;;
+  regular) printf '{"bomFormat":"CycloneDX","specVersion":"1.6","application":"%s","version":"%s"}\n' "$main" "$version" > "$output" ;;
   symlink) ln -s "$RELEASE_TEST_SBOM_SYMLINK_TARGET" "$output" ;;
   directory) mkdir "$output" ;;
   *) printf 'unexpected SBOM output kind: %s\n' "$RELEASE_TEST_SBOM_OUTPUT_KIND" >&2; exit 64 ;;
@@ -482,7 +487,7 @@ func removeString(values []string, target string) []string {
 	return result
 }
 
-func assertReleaseSBOMApplication(t *testing.T, path, application string) {
+func assertReleaseSBOMApplication(t *testing.T, path, application, version string) {
 	t.Helper()
 	body, err := os.ReadFile(path)
 	if err != nil {
@@ -491,6 +496,9 @@ func assertReleaseSBOMApplication(t *testing.T, path, application string) {
 	want := `"application":"` + application + `"`
 	if !strings.Contains(string(body), want) {
 		t.Fatalf("SBOM %s = %q, want %q", filepath.Base(path), body, want)
+	}
+	if want := `"version":"` + version + `"`; !strings.Contains(string(body), want) {
+		t.Fatalf("SBOM %s = %q, want release version %q", filepath.Base(path), body, version)
 	}
 }
 

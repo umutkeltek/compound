@@ -1,5 +1,10 @@
 # Release without GitHub-hosted Actions
 
+Each SBOM inspects the freshly built executable with the explicit release
+version. It does not infer the application's version from source Git tags,
+so linked worktrees, shared prior clones and later tag creation preserve the
+same packaged identity.
+
 GitHub-hosted Actions have been disabled in this repository since 2026-10-16.
 The tracked `.github/workflows/proof.yml` and `.github/workflows/release.yml` are
 inactive references retained for tests. The single `.woodpecker.yml` pipeline

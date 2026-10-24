@@ -238,13 +238,15 @@ func buildPlatform(root, stage, buildGo, sbomTool, version, commit string, platf
 	}
 	compoundSBOM := bundle + ".cdx.json"
 	breadthSBOM := bundle + "_compound-breadth-engine.cdx.json"
-	if _, err := commandOutput(root, env, sbomTool, "app", "-json", "-noserial", "-notimestamp", "-output", filepath.Join(stage, compoundSBOM), "-main", "cmd/compound", "."); err != nil {
+	// Inspect the packaged executables. Source Git layouts and later tag creation
+	// must not change the SBOM identity of an already built release candidate.
+	if _, err := commandOutput(root, env, sbomTool, "bin", "-json", "-noserial", "-notimestamp", "-output", filepath.Join(stage, compoundSBOM), "-version", version, compoundPath); err != nil {
 		return builtArtifact{}, fmt.Errorf("generate compound SBOM for %s/%s: %w", platform.os, platform.arch, err)
 	}
 	if _, err := requireRegularFile(filepath.Join(stage, compoundSBOM), "SBOM output"); err != nil {
 		return builtArtifact{}, err
 	}
-	if _, err := commandOutput(root, env, sbomTool, "app", "-json", "-noserial", "-notimestamp", "-output", filepath.Join(stage, breadthSBOM), "-main", "cmd/compound-breadth-engine", "."); err != nil {
+	if _, err := commandOutput(root, env, sbomTool, "bin", "-json", "-noserial", "-notimestamp", "-output", filepath.Join(stage, breadthSBOM), "-version", version, breadthPath); err != nil {
 		return builtArtifact{}, fmt.Errorf("generate breadth-engine SBOM for %s/%s: %w", platform.os, platform.arch, err)
 	}
 	if _, err := requireRegularFile(filepath.Join(stage, breadthSBOM), "SBOM output"); err != nil {
