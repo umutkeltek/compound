@@ -848,6 +848,10 @@ and historic global wait summaries do not supply one; exactly supplied item
 classification is preserved without enumerating foreign work as dependencies.
 The projection keeps one Workbench snapshot, deterministic output and read-only
 home behavior. It does not truncate a larger dependency list or change policy.
+Its observation-summary index includes empty per-work results: missing rows or
+unreadable input reported by that index never restart a directory scan for each
+work item. Standalone item readers still load their own observations. Index
+warnings remain visible once, and hold-evidence consumption is unchanged.
 
 ### Lifecycle finalization cost and evidence scope
 

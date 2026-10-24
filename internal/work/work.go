@@ -122,11 +122,13 @@ func claimEventFromIsLegal(from string, repairOwnerless bool) bool {
 type Store struct {
 	// advanceClock is a test clock; nil always samples real admission time.
 	// Its argument lets deterministic fixtures preserve their explicit logical time.
-	advanceClock                  func(time.Time) time.Time
-	home                          string
-	events                        *eventstore.Store
-	readOnly                      bool
-	eventLogReads                 atomic.Int64
+	advanceClock  func(time.Time) time.Time
+	home          string
+	events        *eventstore.Store
+	readOnly      bool
+	eventLogReads atomic.Int64
+	// Summary-projection reads only; hold evidence has its own observation pass.
+	runObservationFileReads       atomic.Int64
 	holdEvidenceFileReads         atomic.Int64
 	experimentalDelegateMutations atomic.Bool
 	sweepStaleFault               func(stage string) error

@@ -390,8 +390,15 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 	for _, w := range works {
 		events := eventsByWork[w.ID]
 		wbItemT := time.Now()
+		observations := runObsByWork[w.ID]
+		if observations == nil {
+			// The index already checked this work, including an empty result or
+			// unreadable input reported above. Nil means no index to standalone
+			// callers; pass a non-nil empty result so this loop never rescans it.
+			observations = []RunObservationSummary{}
+		}
 		item := s.workbenchItemWithCaches(w, events, &report, holdEvidence, now, workbenchItemCaches{
-			RunObservations:  runObsByWork[w.ID],
+			RunObservations:  observations,
 			ASCSignals:       &ascSignals,
 			EnvelopeMemo:     &envelopeMemo,
 			GitLandCheckMemo: &gitLandCheckMemo,
@@ -1209,6 +1216,7 @@ func (s *Store) workbenchRunObservations(workID string) ([]RunObservationSummary
 		}
 		path := filepath.Join(dir, entry.Name())
 		var result RunObservationResult
+		s.runObservationFileReads.Add(1)
 		if err := s.readJSON(path, &result); err != nil {
 			warnings = append(warnings, "run observation "+entry.Name()+" unreadable: "+err.Error())
 			continue
@@ -1259,6 +1267,7 @@ func (s *Store) workbenchRunObservationsIndex() (map[string][]RunObservationSumm
 		}
 		path := filepath.Join(dir, entry.Name())
 		var result RunObservationResult
+		s.runObservationFileReads.Add(1)
 		if err := s.readJSON(path, &result); err != nil {
 			warnings = append(warnings, "run observation "+entry.Name()+" unreadable: "+err.Error())
 			continue
