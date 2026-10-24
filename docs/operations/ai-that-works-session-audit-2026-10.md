@@ -120,7 +120,7 @@ engineering days. External receipts remain unresolved; the upstream corpus canno
 (it ships no reproducible arena implementation or raw trial results).
 
 **Rollback / retirement.** Restore prior processing while retaining evidence; suspend new positive
-validation if binding fails. Retire the demonstrated timeout path and, only if reproduced,
+validation if binding fails. Retire the demonstrated blind-retry path and, only if reproduced,
 verdict-only positive validation. No additional acquisition queue.
 
 **Why this, not the nearest alternative.** Complete the working learning loop before building
