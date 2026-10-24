@@ -615,12 +615,17 @@ func TestReadManySeesRecordThatAppearsMidBatch(t *testing.T) {
 			return
 		}
 		mu.Lock()
-		defer mu.Unlock()
 		enumerations++
-		if enumerations%2 != 0 || appended {
+		shouldAppend := enumerations%2 == 0 && !appended
+		if shouldAppend {
+			appended = true
+		}
+		mu.Unlock()
+		if !shouldAppend {
 			return
 		}
-		appended = true
+		// Put can enumerate this family again. The flag prevents another
+		// append, and releasing the mutex permits that nested observation.
 		putRecord(t, store, "rec_batch_late", "compound.receipt.v0.1", time.Now().UTC(), "late")
 	}
 	defer func() { familyInventoryObserver = prevFamily }()
@@ -674,4 +679,3 @@ func TestReadManyReportsDriftForIdAbsentOnFirstAttempt(t *testing.T) {
 		t.Fatalf("an unaffected family must keep its answer: %v", results["tr_batch_00"].Err)
 	}
 }
-
