@@ -51,6 +51,13 @@ byte-for-byte to the consumed grant. A completed action cannot reserve again:
 the completion marker is checked before the authorization callback or a new
 reservation can run.
 
+A canonical owned failed report with a known nonzero producer exit may finalize
+non-certifying audit evidence after its original private-source review expires.
+The exact historical action, allowing policy, actor, Work, source profile and report
+remain mandatory; no review timestamp, expiry, result or source Work is rewritten.
+New reservations, verified reports, unknown or inconsistent outcomes and source
+publication retain current authorization. A failed audit emits no VerificationID.
+
 ## Evidence of later benefit
 
 A completed changed receipt and its transition establish a **proof-backed change**.
