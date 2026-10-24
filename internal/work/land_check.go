@@ -269,12 +269,12 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 		report.NextAction = fmt.Sprintf("candidate %s does not match latest attached artifact commit:%s; use that verified tip, or attach commit:%s if the provided tip is the newer final work output", candidate, attachedTip, candidate)
 		return report, nil
 	}
-	proofResult, proofFound, err := s.latestSourceBoundProofResult(w)
+	acceptanceRef, proofResult, proofFound, err := s.latestLandingProofResolution(w)
 	if err != nil {
 		return report, err
 	}
 	if proofFound {
-		report.ProofVerificationRef = proofResult.VerificationRef
+		report.ProofVerificationRef = acceptanceRef
 		report.ProofHeadSHA = proofResult.SourceSnapshot.HeadSHA
 		if proofResult.SourceSnapshot.RepositoryFingerprint != contract.RepositoryFingerprint {
 			report.Status = "proof_repository_mismatch"
@@ -763,6 +763,10 @@ func validateRecordedLandCheck(w envelope.WorkEnvelope, evidenceRef, id, proofPa
 }
 
 func validRecordedLandCheckVerificationRef(ref string) bool {
+	if strings.HasPrefix(ref, ProofAdoptionVerificationPrefix) {
+		_, _, ok := parseProofAdoptionRef(ref)
+		return ok
+	}
 	if strings.HasPrefix(ref, "proof-check:pfrs_") {
 		return true
 	}
@@ -771,7 +775,7 @@ func validRecordedLandCheckVerificationRef(ref string) bool {
 }
 
 func (s *Store) validateRecordedLandCheckProofResult(w envelope.WorkEnvelope, report LandCheckReport) error {
-	result, found, err := s.latestSourceBoundProofResult(w)
+	acceptanceRef, result, found, err := s.latestLandingProofResolution(w)
 	if err != nil {
 		return err
 	}
@@ -786,7 +790,7 @@ func (s *Store) validateRecordedLandCheckProofResult(w envelope.WorkEnvelope, re
 			report.CandidateTipSHA,
 		)
 	}
-	if report.ProofVerificationRef != result.VerificationRef {
+	if report.ProofVerificationRef != acceptanceRef {
 		// Recorded before a later battery stored: the land-check cites the
 		// pre-land verification while the envelope's latest verification_ids
 		// entry is a newer proof battery sealing the SAME tip. That is the
@@ -801,16 +805,16 @@ func (s *Store) validateRecordedLandCheckProofResult(w envelope.WorkEnvelope, re
 				report.ID,
 				report.ProofVerificationRef,
 				w.ID,
-				result.VerificationRef,
+				acceptanceRef,
 				result.SourceSnapshot.HeadSHA,
-				result.VerificationRef,
+				acceptanceRef,
 			)
 		}
 		return fmt.Errorf(
 			"recorded land-check %s proof tip %s does not match current stored proof %s tip %s",
 			report.ID,
 			report.ProofHeadSHA,
-			result.VerificationRef,
+			acceptanceRef,
 			result.SourceSnapshot.HeadSHA,
 		)
 	}
@@ -820,7 +824,7 @@ func (s *Store) validateRecordedLandCheckProofResult(w envelope.WorkEnvelope, re
 			"recorded land-check %s proof tip %s does not match current stored proof %s tip %s",
 			report.ID,
 			report.ProofHeadSHA,
-			result.VerificationRef,
+			acceptanceRef,
 			result.SourceSnapshot.HeadSHA,
 		)
 	}

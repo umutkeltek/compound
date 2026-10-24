@@ -14,19 +14,20 @@ import (
 const AdvancePlanSchemaVersion = "compound.work_advance_plan.v0.1"
 
 type AdvancePlanOptions struct {
-	NonSourceDelivery *ActionDeliveryRequest
-	Actor             string
-	To                string
-	GitDelivery       *envelope.GitDeliveryContract
-	Capability        string
-	Action            string
-	MutationClass     string
-	Reversibility     string
-	BlastRadius       string
-	TargetKind        string
-	TargetID          string
-	TargetPath        string
-	Record            bool
+	proofAttachmentRef string
+	NonSourceDelivery  *ActionDeliveryRequest
+	Actor              string
+	To                 string
+	GitDelivery        *envelope.GitDeliveryContract
+	Capability         string
+	Action             string
+	MutationClass      string
+	Reversibility      string
+	BlastRadius        string
+	TargetKind         string
+	TargetID           string
+	TargetPath         string
+	Record             bool
 	// Steal and StealReason preview the advance-gate lease escape hatch (see AdvanceInput in
 	// work.go): when set with a non-empty reason, the plan reports the advance as
 	// steal-ready (and its AdvanceCommand carries --steal --reason) instead of
@@ -298,6 +299,9 @@ func (s *Store) advanceActionIntent(w envelope.WorkEnvelope, actor, to string, n
 	}
 	blastRadius := orDefault(opts.BlastRadius, "local")
 	idParts := []string{capability, action, targetKind, targetID, targetPath, mutationClass, reversibility, blastRadius, actor, to}
+	if opts.proofAttachmentRef != "" {
+		idParts = append(idParts, opts.proofAttachmentRef, w.PolicyDecisionID, latestActionIntentID(w))
+	}
 	preview := fmt.Sprintf("advance work %s from %s to %s actor %s", w.ID, w.State, to, actor)
 	rollbackPlan := fmt.Sprintf("advance work back to %s if no downstream action started", w.State)
 	if opts.NonSourceDelivery != nil {
@@ -327,6 +331,7 @@ func (s *Store) advanceActionIntent(w envelope.WorkEnvelope, actor, to string, n
 		}
 	}
 	return envelope.ActionIntent{
+		ArgumentsHash: proofAdvanceArgumentsHash(opts.proofAttachmentRef),
 		Header: newHeader(
 			envelope.SVActionIntent,
 			idFor("act_", append(idParts, ts(now))...),
@@ -364,4 +369,11 @@ func summarizeAdvancePolicy(pd envelope.PolicyDecision, source string) AdvancePo
 		Obligations:      append([]string{}, pd.Obligations...),
 		EvidenceRefs:     append([]string{}, pd.EvidenceRefs...),
 	}
+}
+
+func proofAdvanceArgumentsHash(ref string) string {
+	if ref == "" {
+		return ""
+	}
+	return proofAttachmentArgumentsHash(ref)
 }

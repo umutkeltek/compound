@@ -811,6 +811,37 @@ lease and cannot print green. A mismatch fails closed. Journal cleanup
 happens only after verification publication and lease release have committed. Reservation state may be exposed by UI/read models,
 but is not ContextPack/model context. Dry-run and CI subsets stay outside this certifying path.
 
+### Exact reviewed candidate proof adoption
+
+Distinct work items may share one original canonical proof only after explicit review of the
+same repository, fresh proof base and combined candidate. The source holder uses
+`work proof-manifest WORK --actor ACTOR --file MANIFEST.json` to custody an immutable
+`compound.proof_member_manifest.v0.1` artifact. Its source work, repository fingerprint,
+base/head, target ref and members are explicit. Every member preserves its original
+`commit:` artifact and attached content-addressed `review_refs`; custody fills or verifies
+the member acceptance/delivery contract digest. Every work explicitly accepts the combined
+`commit:` candidate. Historical creation bases may differ when each remains an ancestor of
+the fresh proof base. Ancestry never supplies missing membership, review or acceptance.
+
+Authenticated manifest custody must precede the original proof reservation; a later review
+cannot retroactively authorize an earlier execution. The original work executes the existing
+complete `canonical_full` proof once. A destination
+holder in `verifying` calls
+`work proof-adopt WORK --actor ACTOR --proof-result pfrs_ID --manifest artifact:sha256:DIGEST`.
+The deterministic `proof-adopt:pfrs_ID:DIGEST` ref attaches through the existing same-state
+ActionIntent/PolicyDecision and lifecycle transaction. The action binds its exact evidence
+arguments; exact retry is idempotent, including interrupted attachment recovery. There is no
+second proof result, foreign RunAttempt attachment, adoption ledger or weaker proof profile.
+
+Only landing resolution understands adoption. It reloads immutable review/manifest custody,
+current source and destination contracts/candidates, the original direct proof and its complete
+finalization chain; pending completion/recovery, red/dry/skipped/differential/transitive proofs
+refuse. A closed or archived source remains usable when that chain remains authentic.
+Historical admission policy is authenticated without demanding it stay the latest generation.
+Private source publication still requires its unchanged direct same-work proof. Each member
+retains separate acceptance, guarded landing, publication and consumer verification obligations.
+A stale main rejects the landing without discarding the completed original evidence.
+
 ## 3. Hooks are clients, not brains
 
 > Hooks are clients. compound is authority.

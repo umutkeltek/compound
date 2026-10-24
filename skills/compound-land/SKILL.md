@@ -54,6 +54,19 @@ This skill replaces re-deriving the "standing session rules" from
   battery AND `./install.sh` from a clean detached worktree at the landed SHA — never from the
   mixed tree (a binary built there would embed their half-built WIP).
 
+### Reviewed members at one exact candidate
+
+When several separately held work items explicitly accept the same combined candidate, the
+existing full battery may be executed once by an integration work item. Preserve original
+candidate refs and attached immutable review artifacts in its native `work proof-manifest`;
+after the original proof fully finalizes, each member holder invokes `work proof-adopt`.
+The native manifest/adoption contract is specified in
+`docs/architecture/runtime.md` under “Exact reviewed candidate proof adoption”.
+This changes proof reuse only: the full inventory, fresh main guard, member acceptance,
+publication and live-consumer checks still apply. Raw foreign `proof-check:` attachment,
+ancestry-only membership and reuse across differing candidates remain invalid. Bootstrap the
+adoption capability itself through a direct source proof before using it in a live ceremony.
+
 ## 1 · Pre-flight battery (all of it, every time)
 
 The ceremony has five gates, in force order: **scope-claim** (§0 — land-lease + worklog claim) ·

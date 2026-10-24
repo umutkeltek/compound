@@ -1709,9 +1709,11 @@ func (s *Store) validateClaimEventArtifacts(event Event, claimed envelope.WorkEn
 // --- advance ---
 
 type AdvanceInput struct {
-	To                string
-	Actor             string
-	NonSourceDelivery *ActionDeliveryRequest
+	proofAdoptionAdmission bool
+	proofManifestAdmission bool
+	To                     string
+	Actor                  string
+	NonSourceDelivery      *ActionDeliveryRequest
 	// ExpectedWorkState is an optional compare-and-set precondition evaluated
 	// under the lifecycle admission lock. Governed execution uses it to reserve
 	// claimed -> running exactly once while ordinary same-state advances remain
@@ -1878,6 +1880,17 @@ func (s *Store) advanceLocked(workID string, in AdvanceInput, now time.Time) (en
 			return w, fmt.Errorf("differential proof verification: %w", err)
 		}
 	}
+	if ref := strings.TrimSpace(in.VerificationID); strings.HasPrefix(ref, ProofAdoptionVerificationPrefix) {
+		if !in.proofAdoptionAdmission {
+			return w, fmt.Errorf("exact proof admission requires work proof-adopt")
+		}
+		if _, err := s.validateProofAdoptionRef(w, ref, false); err != nil {
+			return w, fmt.Errorf("exact proof adoption: %w", err)
+		}
+	}
+	if ref := strings.TrimSpace(in.ArtifactID); strings.HasPrefix(ref, ProofManifestArtifactPrefix) && !in.proofManifestAdmission {
+		return w, fmt.Errorf("proof membership custody requires work proof-manifest")
+	}
 	// Resolve a declared/corrected lane fail-closed BEFORE any state mutation: a bad --lane ref
 	// aborts the advance untouched (never records a refusal, never mutates the envelope).
 	declaredLane, err := s.resolveDeclaredLane(in.LaneRef)
@@ -2013,7 +2026,14 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 	} else if ok {
 		return recovered, nil
 	}
-	plan, err := s.AdvancePlan(workID, now, AdvancePlanOptions{Actor: in.Actor, To: in.To, GitDelivery: in.GitDelivery, NonSourceDelivery: in.NonSourceDelivery})
+	proofAttachmentRef := ""
+	if in.proofManifestAdmission {
+		proofAttachmentRef = in.ArtifactID
+	}
+	if in.proofAdoptionAdmission {
+		proofAttachmentRef = in.VerificationID
+	}
+	plan, err := s.AdvancePlan(workID, now, AdvancePlanOptions{Actor: in.Actor, To: in.To, GitDelivery: in.GitDelivery, NonSourceDelivery: in.NonSourceDelivery, proofAttachmentRef: proofAttachmentRef})
 	if err != nil {
 		return w, err
 	}
