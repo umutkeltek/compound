@@ -2164,7 +2164,7 @@ func (s *Store) completeProofResourceLocked(workID string, in ProofResourceCompl
 			return ProofResourceCompleteResult{}, err
 		}
 	}
-	if err := s.validatePrivateSourceProfileAuthority(workID, in.Actor, reservation.Profile, now); err != nil {
+	if err := s.validatePrivateSourceCompletionAuthority(workID, in.Actor, reservation.Profile, pending.Result, now); err != nil {
 		return ProofResourceCompleteResult{}, err
 	}
 
