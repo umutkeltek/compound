@@ -2069,6 +2069,10 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 		attached = append(attached, in.EvidenceRefs...)
 	}
 	if len(in.RunAttemptIDs) > 0 {
+		attachedAttempts, err := s.runAttemptAttachmentIndex(w)
+		if err != nil {
+			return envelope.WorkEnvelope{}, err
+		}
 		for _, rid := range in.RunAttemptIDs {
 			rid = strings.TrimSpace(rid)
 			if rid == "" {
@@ -2084,11 +2088,7 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 			// work_1d968c3f0522). The attach is idempotent-dropped (the advance
 			// itself still proceeds: same run, no new information); a genuinely new
 			// execution must mint a fresh ratt_ via runattempt.Mint.
-			already, err := s.runAttemptAlreadyAttached(w, rid)
-			if err != nil {
-				return envelope.WorkEnvelope{}, err
-			}
-			if !already {
+			if !attachedAttempts[rid] {
 				attached = append(attached, rid)
 			}
 			w.RunAttemptIDs = mergeUnique(w.RunAttemptIDs, []string{rid})
@@ -2671,28 +2671,24 @@ func quoteForError(s string) string {
 	return `"` + s + `"`
 }
 
-// runAttemptAlreadyAttached reports whether any prior lifecycle event for this
-// work already attached the given ratt_ id. applyAdvance uses this to drop
-// idempotent re-attaches silently (the close-time authority gate builds one
-// (act_, pol_) pair per attaching event for this ratt_; an attach that
-// survives twice under DIFFERENT pairs wedges the envelope, so the gate
-// stays strict but advance-time stays silent). The packet's recovery path
-// for an already-wedged history is the tiebreak in
-// resolveRunAttemptAuthorityFromEvents.
-func (s *Store) runAttemptAlreadyAttached(w envelope.WorkEnvelope, rattID string) (bool, error) {
-	if rattID == "" || !strings.HasPrefix(rattID, "ratt_") {
-		return false, nil
-	}
+// runAttemptAttachmentIndex reads the strictly validated canonical lifecycle
+// history once for every incoming attempt in one advance. It is a mutation-local
+// projection under autonomy admission, never a persisted membership authority.
+// Existing attachments retain their original action/policy pair.
+func (s *Store) runAttemptAttachmentIndex(w envelope.WorkEnvelope) (map[string]bool, error) {
 	events, err := s.eventsFor(w.ID)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
+	attached := make(map[string]bool)
 	for _, event := range events {
-		if attachedHas(event.Attached, rattID) {
-			return true, nil
+		for _, ref := range event.Attached {
+			if strings.HasPrefix(ref, "ratt_") {
+				attached[ref] = true
+			}
 		}
 	}
-	return false, nil
+	return attached, nil
 }
 
 // resolveRunAttemptAuthority binds one attempt to one exact allowed

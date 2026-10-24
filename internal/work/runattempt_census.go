@@ -70,7 +70,7 @@ func addReverseRunAttemptFindings(w envelope.WorkEnvelope, attempts []runattempt
 // It only assembles the prospective close generation; it never repairs an
 // earlier attachment by changing the currently authoritative WorkEnvelope.
 func (s *Store) closeRunAttemptCensus(w envelope.WorkEnvelope) ([]string, error) {
-	attempts, err := s.runAttempts().List()
+	attempts, err := s.runAttempts().ForWork(w.ID)
 	if err != nil {
 		// An unreadable record has uncertain membership; a partial enumeration
 		// cannot certify that every same-work execution was considered.

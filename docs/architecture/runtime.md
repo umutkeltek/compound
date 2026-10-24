@@ -811,6 +811,21 @@ lease and cannot print green. A mismatch fails closed. Journal cleanup
 happens only after verification publication and lease release have committed. Reservation state may be exposed by UI/read models,
 but is not ContextPack/model context. Dry-run and CI subsets stay outside this certifying path.
 
+### Lifecycle finalization cost and evidence scope
+
+Attaching a batch of retained RunAttempts reads the strict canonical lifecycle
+history once for duplicate-attachment checks. The local attachment index lasts
+only for that native advance under admission; original action/policy bindings,
+whole-log corruption checks, recovery, CAS and append verification remain intact.
+
+A work close uses the existing RunAttempt owner's `ForWork` census. It freshly
+enumerates and validates every main record, refusing unreadable or ambiguous
+membership, then validates launch sidecars only for that exact work. Reverse-only
+owned attempts remain discoverable. Known foreign sidecar corruption remains
+visible to the whole-home doctor and cannot impose unrelated-work authority on
+this close. This is a scoped read through the existing owner, not a new cache or
+membership ledger.
+
 ### Exact reviewed candidate proof adoption
 
 Distinct work items may share one original canonical proof only after explicit review of the
