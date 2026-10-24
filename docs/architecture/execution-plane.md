@@ -460,20 +460,28 @@ The initial timeout remains armed for a child that closes its pipes early. This
 closes the one-shot fork/cancellation race without widening the signal target or
 changing the run budget.
 
-The shared runner is the sole cancellation owner of the adapter command. Immediately
+The shared runner is the sole cancellation path for the adapter command. Immediately
 after the adapter builds the command and before it starts, the runner clears the
 command's inherited `Cancel` callback and `WaitDelay`, so `os/exec` arms no context
 watchdog: the default callback would kill only the direct process, and a nonzero
 `WaitDelay` would add a second direct-process killer that can also force-close the
 capture pipes. Either would race the runner's process-group kill. Pre-start rejection
 is unchanged — the runner refuses a launch whose context is already cancelled, and
-`os/exec` independently refuses to start a command with a done context.
+`os/exec` independently refuses to start a command with a done context. Sole ownership
+of cancellation is not sole ownership of the child's life: the child can still exit
+on its own, or be signalled from outside the runner.
 
 The process-group guarantee is exactly a group guarantee. The kill reaches the direct
 child and every descendant that stayed in the runner's process group. It does not
 reach a descendant that starts its own process group or session, nor work handed to
 a remote or external job; such a descendant can outlive the group kill, and no
 process-tree guarantee is claimed for it.
+
+The reap guard that keeps the kill paths off an already-reaped PID is unchanged, and
+it is not airtight: `cmd.Wait` runs outside the guard and the `reaped` mark follows
+it, so a narrow wait-return-to-mark window remains in which the first
+cancellation/timeout signal can still reach a group id the OS has begun to reuse. No
+reproduction is claimed; closing that window is outside this repair.
 
 ### Actuator admission accounting is not a mission budget
 
