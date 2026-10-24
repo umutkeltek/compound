@@ -775,3 +775,15 @@ built launch will run: codex model/effort from argv, claude lane model/effort fr
 the wrapper's literal `SB_LANE_CLAUDE_MODEL` / `SB_LANE_REQUESTED_EFFORT` exports
 (read with the settings-source reader, never sourced), and the hook posture. It is
 absent, not zeroed, when nothing was observable.
+
+
+Native collaboration recipients validate the exact ActionIntent body, policy body identity,
+lease work/actor, and agreement between the attempt, selection snapshot, and query harness.
+A same-state authority replacement invalidates the old recipient. Generic
+pinned:<flag> evidence retains the execution-selection schema's meaning.
+
+Only the Stop fallback consults runattempt.ListByNativeSessionID: it probes
+main-record session IDs before loading matching launch sidecars and preserves
+unreadable-record errors. Terminal attempts remain known even when their work
+is archived or the reservation-loss path has no envelope forward-link.
+Ordinary tool hooks continue to inspect nonterminal attempts only.

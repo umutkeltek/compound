@@ -1411,3 +1411,15 @@ preserving the original request bytes, request digest, reserved recovery Work an
 recovery arguments hash. Historical immutable reconcile plans may omit only that
 transport field for this exact legacy lineage; they remain readable and cannot
 launch current transport. Missing fields in fresh plans remain errors.
+
+
+Native collaboration recipients validate the exact ActionIntent body, policy body identity,
+lease work/actor, and agreement between the attempt, selection snapshot, and query harness.
+A same-state authority replacement invalidates the old recipient. Generic
+pinned:<flag> evidence retains the execution-selection schema's meaning.
+
+Only the Stop fallback consults runattempt.ListByNativeSessionID: it probes
+main-record session IDs before loading matching launch sidecars and preserves
+unreadable-record errors. Terminal attempts remain known even when their work
+is archived or the reservation-loss path has no envelope forward-link.
+Ordinary tool hooks continue to inspect nonterminal attempts only.

@@ -49,6 +49,13 @@ func (s *Store) resolveNativeCollaborationRecipient(
 	}
 	var pinned []string
 	for _, snapshot := range live {
+		selection := snapshot.ExecutionSelection
+		if snapshot.Origin == runattempt.OriginHarnessExecution && selection != nil &&
+			strings.TrimSpace(selection.NativeSessionID) == query.SessionID &&
+			normalizeCollaborationHarness(selection.Harness) == query.Harness &&
+			normalizeCollaborationHarness(snapshot.Harness) != query.Harness {
+			return refuse("the native session snapshot conflicts with its execution harness")
+		}
 		if snapshot.Origin == runattempt.OriginHarnessExecution && nativeSessionPinned(snapshot, query) {
 			pinned = append(pinned, snapshot.ID)
 		}
@@ -111,7 +118,7 @@ func (s *Store) resolveNativeCollaborationRecipient(
 		}
 		return refuse("the native session's actor holds no lease on the work")
 	}
-	if strings.TrimSpace(lease.By) != actor {
+	if lease.WorkID != attempt.WorkID || strings.TrimSpace(lease.By) != actor {
 		return refuse("the native session's actor does not hold the work lease")
 	}
 	// The exact CURRENT policy reference, not a scan of every historical
@@ -124,7 +131,7 @@ func (s *Store) resolveNativeCollaborationRecipient(
 	if err := decision.Validate(); err != nil {
 		return CollaborationRecipientResolution{}, false, fmt.Errorf("native recipient policy evidence %s: %w", posture.PolicyDecisionID, err)
 	}
-	if decision.IDs.WorkID != attempt.WorkID || decision.ActionIntentID != attempt.ActionIntentID || !policy.Allowed(decision) {
+	if decision.ID != posture.PolicyDecisionID || decision.IDs.WorkID != attempt.WorkID || decision.ActionIntentID != attempt.ActionIntentID || !policy.Allowed(decision) {
 		return refuse("the native session's policy decision does not allow its action")
 	}
 	resolution := collaborationRecipientCoordinates(item, attempt)
@@ -164,7 +171,7 @@ func nativeSessionPinned(attempt runattempt.RunAttempt, query CollaborationRecip
 	if !strings.HasPrefix(snapshot.NativeSessionEvidence, collaborationNativePinnedEvidencePrefix) {
 		return false
 	}
-	if normalizeCollaborationHarness(snapshot.Harness) != query.Harness {
+	if normalizeCollaborationHarness(snapshot.Harness) != query.Harness || normalizeCollaborationHarness(attempt.Harness) != query.Harness {
 		return false
 	}
 	if err := snapshot.Validate(); err != nil {
@@ -173,32 +180,17 @@ func nativeSessionPinned(attempt runattempt.RunAttempt, query CollaborationRecip
 	return true
 }
 
-// fenceKnownNativeSession is the Stop-side half of the native fence: it finds a
-// session this runtime pinned on a work whose live attempts no longer resolve
-// (the attempt terminalized, was superseded, or lost its running work) and
-// reports it as KNOWN-but-inactive so no legacy prose bridge may adopt it. It
-// reads only the envelope's attached ratt_ ids, never a historical scan.
-func (s *Store) fenceKnownNativeSession(query CollaborationRecipientQuery, workByID map[string]envelope.WorkEnvelope) (bool, error) {
-	for _, item := range workByID {
-		for _, id := range item.RunAttemptIDs {
-			if !strings.HasPrefix(id, "ratt_") || !runattempt.Valid(id) {
-				continue
-			}
-			attempt, err := s.runAttempts().Get(id)
-			if err != nil {
-				if errors.Is(err, runattempt.ErrNotFound) {
-					continue
-				}
-				return false, err
-			}
-			if normalizeCollaborationHarness(attempt.Harness) != query.Harness {
-				continue
-			}
-			if attempt.ExecutionSelection == nil ||
-				strings.TrimSpace(attempt.ExecutionSelection.NativeSessionID) != query.SessionID ||
-				!strings.HasPrefix(attempt.ExecutionSelection.NativeSessionEvidence, collaborationNativePinnedEvidencePrefix) {
-				continue
-			}
+// fenceKnownNativeSession is the Stop-only history fence. A terminal or
+// reservation-lost attempt remains known even without a forward-link or a live
+// work envelope. The runattempt owner probes session IDs before hydrating
+// matched launch evidence; ordinary hooks never scan historical sidecars.
+func (s *Store) fenceKnownNativeSession(query CollaborationRecipientQuery) (bool, error) {
+	attempts, err := s.runAttempts().ListByNativeSessionID(query.SessionID)
+	if err != nil {
+		return false, err
+	}
+	for _, attempt := range attempts {
+		if attempt.Origin == runattempt.OriginHarnessExecution && nativeSessionPinned(attempt, query) {
 			return true, nil
 		}
 	}

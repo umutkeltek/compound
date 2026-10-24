@@ -190,17 +190,7 @@ func (s *Store) resolveAbsentCollaborationRecipient(query CollaborationRecipient
 	// superseded pinned session is still KNOWN, so prose must not adopt it.
 	// Only the Stop consumer reaches here, so this read is history-sized by
 	// the same argument as the delegate fold above.
-	works, err := s.List()
-	if err != nil {
-		return CollaborationRecipientResolution{}, false, err
-	}
-	liveByID := make(map[string]envelope.WorkEnvelope, len(works))
-	for _, item := range works {
-		if !terminalStates[item.State] {
-			liveByID[item.ID] = item
-		}
-	}
-	nativeKnown, err := s.fenceKnownNativeSession(query, liveByID)
+	nativeKnown, err := s.fenceKnownNativeSession(query)
 	if err != nil {
 		return CollaborationRecipientResolution{}, false, err
 	}
@@ -390,6 +380,9 @@ func (s *Store) collaborationRecipientActor(attempt runattempt.RunAttempt) (stri
 	}
 	var action envelope.ActionIntent
 	if err := s.readEventJSON(attempt.ActionIntentID, &action); err != nil {
+		return "", fmt.Errorf("collaboration recipient action evidence %s: %w", attempt.ActionIntentID, err)
+	}
+	if err := action.Validate(); err != nil {
 		return "", fmt.Errorf("collaboration recipient action evidence %s: %w", attempt.ActionIntentID, err)
 	}
 	if action.ID != attempt.ActionIntentID {
