@@ -125,6 +125,33 @@ their explicit setup. Run the clone-isolation tests with any such migration.
 Further scheduling changes or exact-input proof reuse need a separately reviewed
 verification contract. A diagnostic profile cannot authorize either.
 
+## Source qualification vs the full architecture doctor
+
+`internal/arch` exposes two entry points over ONE check inventory:
+
+- `arch.Doctor(repoRoot, strict)` is the canonical FULL doctor. It runs the
+  source checks plus three runtime audits: the live proveable-pair law (which
+  resolves the ambient `COMPOUND_HOME`), the installed build freshness and the
+  installed sidecar freshness. `compound architecture doctor --strict` and the
+  proof-check architecture gate call this one; their behaviour is unchanged.
+- `arch.DoctorSource(repoRoot, strict)` is the SOURCE-ONLY entry point. It runs
+  the candidate map and every repository source/contract/leak/budget/
+  classification check, the mint ratchet and the convergence ratchet, and it
+  never resolves a Compound home, inspects installed artifacts or executes an
+  installed Compound binary. The runtime audits are not filtered out of a
+  finished report — they are not run.
+
+Use `DoctorSource` for tests that qualify SOURCE (ownership, classification,
+doc leak, budgets, contracts). Use `Doctor` for tests that qualify RUNTIME
+(live pair law, installed drift). A source qualification that calls the full
+doctor inherits the operator's mutable runtime records and installation, so its
+result is not a property of the source under test.
+
+Runtime paths in a source qualification are still confined: point `HOME`,
+`GOBIN` and `COMPOUND_HOME` at disposable fixtures, and own any installation
+fixture the test needs — never resolve the operator's real one. The separation
+controls live in `internal/arch/source_qualification_test.go`.
+
 ## Own cooperative fixture lifetimes
 
 A fixture that acknowledges a concurrent operation must stay alive through

@@ -363,7 +363,7 @@ func TestPrepareProofCheckSealedWorkspacePreservesSourceLeakOverlayForDoctor(t *
 		}
 	})
 
-	report := arch.Doctor(sealedRepo, true)
+	report := arch.DoctorSource(sealedRepo, true)
 	var docLeakFindings []arch.Finding
 	for _, finding := range report.Findings {
 		if finding.Check == "doc-leak" {

@@ -46,7 +46,7 @@ func hasDocLeakFailContaining(findings []Finding, parts ...string) bool {
 
 func doctorDocLeakFindings(repo string, strict bool) []Finding {
 	var findings []Finding
-	for _, finding := range Doctor(repo, strict).Findings {
+	for _, finding := range DoctorSource(repo, strict).Findings {
 		if finding.Check == "doc-leak" {
 			findings = append(findings, finding)
 		}
@@ -58,7 +58,7 @@ func doctorDocLeakFindings(repo string, strict bool) []Finding {
 // classified, public docs clean. If someone adds an unclassified package or leaks a private path
 // into a tracked doc, THIS test fails in CI — that is the enforcement.
 func TestDoctorGreenAgainstRealRepo(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	if !r.OK {
 		for _, f := range r.Findings {
 			if f.Severity == Fail {
@@ -815,7 +815,7 @@ func TestPrivateSourceBodyContractScopesToTrackedFiles(t *testing.T) {
 }
 
 func TestCandidateMapInvariantPure(t *testing.T) {
-	r := Doctor("", false)
+	r := DoctorSource("", false)
 	for _, f := range r.Findings {
 		if f.Severity == Fail {
 			t.Errorf("pure candidate-map FAIL: %s", f.Message)
@@ -826,7 +826,7 @@ func TestCandidateMapInvariantPure(t *testing.T) {
 // Every internal/ package the doctor sees is classified — i.e. classification is total. (Belt to
 // the real-repo test's suspenders: assert the Info line, not just absence of Fail.)
 func TestClassificationIsTotal(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	var classified bool
 	for _, f := range r.Findings {
 		if f.Check == "classification" && f.Severity == Fail {
@@ -1168,7 +1168,7 @@ func TestStatusHotPathFailsOnProofJournalEntries(t *testing.T) {
 }
 
 func TestConvergenceDebtIsObservable(t *testing.T) {
-	r := Doctor("", false)
+	r := DoctorSource("", false)
 	for _, f := range r.Findings {
 		if f.Check == "convergence" {
 			return // present
@@ -1181,7 +1181,7 @@ func TestConvergenceDebtIsObservable(t *testing.T) {
 // change adds a converge→retire package the count exceeds the budget and --strict fails; when a
 // package converges, lower ConvergePendingBudget to lock the gain.
 func TestConvergenceRatchetHoldsAtBudget(t *testing.T) {
-	r := Doctor(repoRoot, true)
+	r := DoctorSource(repoRoot, true)
 	for _, f := range r.Findings {
 		if f.Check == "convergence" && f.Severity == Fail {
 			t.Errorf("strict convergence FAIL (debt grew past budget %d): %s", ConvergePendingBudget, f.Message)
@@ -1190,7 +1190,7 @@ func TestConvergenceRatchetHoldsAtBudget(t *testing.T) {
 }
 
 func TestRetiredSurfaceReferencesResolved(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	var saw bool
 	for _, f := range r.Findings {
 		if f.Check != "retired-surface" {
@@ -1740,7 +1740,7 @@ func goodAdaptationRuleFixture() string {
 }
 
 func TestDistillerDuplicateContractResolved(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	var saw bool
 	for _, f := range r.Findings {
 		if f.Check != "distiller-contract" {
@@ -1796,7 +1796,7 @@ func TestDistillerDuplicateContractRequiresCandidateCoverage(t *testing.T) {
 }
 
 func TestLLMExtractionGroundingContractResolved(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	var saw bool
 	for _, f := range r.Findings {
 		if f.Check != "llm-grounding-contract" {
@@ -1853,7 +1853,7 @@ func TestLLMExtractionGroundingContractRequiresEvidenceAndSourceRefs(t *testing.
 }
 
 func TestDistillerCandidateShapeContractResolved(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	var saw bool
 	for _, f := range r.Findings {
 		if f.Check != "distiller-shape-contract" {
@@ -1890,7 +1890,7 @@ func TestDistillerCandidateShapeContractFailsOnThinDocs(t *testing.T) {
 }
 
 func TestRouteOutcomeContractResolved(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	var saw bool
 	for _, f := range r.Findings {
 		if f.Check != "route-outcome-contract" {
@@ -1944,7 +1944,7 @@ func TestRouteOutcomeContractRequiresStateDeltaAndNoPromote(t *testing.T) {
 	}
 }
 func TestKnowledgePageContractResolved(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	var saw bool
 	for _, f := range r.Findings {
 		if f.Check != "knowledge-page-contract" {
@@ -1981,7 +1981,7 @@ func TestKnowledgePageContractFailsOnVagueDocs(t *testing.T) {
 }
 
 func TestWorkPacketContractResolved(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	var saw bool
 	for _, f := range r.Findings {
 		if f.Check != "packet-work-contract" {
@@ -2036,7 +2036,7 @@ func TestWorkPacketContractRequiresNoProofMutationOrPromotion(t *testing.T) {
 }
 
 func TestMCPorterTopologyContractResolved(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	var saw bool
 	for _, f := range r.Findings {
 		if f.Check != "mcporter-topology-contract" {
@@ -2093,7 +2093,7 @@ func TestMCPorterTopologyContractRequiresNoPromoteAndNoExecution(t *testing.T) {
 }
 
 func TestMemoryEngineContractResolved(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	var saw bool
 	for _, f := range r.Findings {
 		if f.Check != "memory-engine-contract" {
@@ -2148,7 +2148,7 @@ func TestMemoryEngineContractRequiresLedgerAndAuthorityGuards(t *testing.T) {
 }
 
 func TestHarnessEntrypointContractResolved(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	var saw bool
 	for _, f := range r.Findings {
 		if f.Check != "harness-entrypoint-contract" {
@@ -2203,7 +2203,7 @@ func TestHarnessEntrypointContractRejectsCapabilityOverclaim(t *testing.T) {
 }
 
 func TestHookSourceControlContractResolved(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	var saw bool
 	for _, f := range r.Findings {
 		if f.Check != "hook-source-control-contract" {
@@ -2239,7 +2239,7 @@ func TestHookSourceControlContractFailsOnRawTargetDocs(t *testing.T) {
 }
 
 func TestHookLiveParityContextSpineContractResolved(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	var saw bool
 	for _, f := range r.Findings {
 		if f.Check != "hook-live-parity-context-spine-contract" {
@@ -2275,7 +2275,7 @@ func TestHookLiveParityContextSpineContractFailsOnDocsOnlyClaim(t *testing.T) {
 }
 
 func TestHookReadinessActionContractResolved(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	var saw bool
 	for _, f := range r.Findings {
 		if f.Check != "hook-readiness-action-contract" {
@@ -2351,7 +2351,7 @@ func TestHookReadinessActionContractFailsOnProseOnlyActions(t *testing.T) {
 }
 
 func TestStandingGrantContractResolved(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	var saw bool
 	for _, f := range r.Findings {
 		if f.Check != "standing-grant-contract" {
@@ -2387,7 +2387,7 @@ func TestStandingGrantContractFailsOnUnscopedDocs(t *testing.T) {
 }
 
 func TestPlacementGuardContractResolved(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	var saw bool
 	for _, f := range r.Findings {
 		if f.Check != "placement-guard-contract" {
@@ -2423,7 +2423,7 @@ func TestPlacementGuardContractFailsOnHookOnlyDocs(t *testing.T) {
 }
 
 func TestProductContractContractResolved(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	var saw bool
 	for _, f := range r.Findings {
 		if f.Check != "product-contract-contract" {
@@ -2440,7 +2440,7 @@ func TestProductContractContractResolved(t *testing.T) {
 }
 
 func TestProductLoopOpenHypothesisContractResolved(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	var saw bool
 	for _, f := range r.Findings {
 		if f.Check != "product-loop-open-hypothesis-contract" {
@@ -2457,7 +2457,7 @@ func TestProductLoopOpenHypothesisContractResolved(t *testing.T) {
 }
 
 func TestOperatorProductLoopProjectionContractResolved(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	var saw bool
 	for _, f := range r.Findings {
 		if f.Check != "operator-product-loop-projection-contract" {
@@ -2545,7 +2545,7 @@ func TestProductContractContractRejectsAnalyticsCausalityOverclaim(t *testing.T)
 }
 
 func TestCapabilityEvaluationContractResolved(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	var saw bool
 	for _, f := range r.Findings {
 		if f.Check != "capability-evaluation-contract" {
@@ -2823,7 +2823,7 @@ func TestCapabilityEvaluationContractFailsWhenReviewMutatesGraph(t *testing.T) {
 }
 
 func TestConversationMiningContractResolved(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	var saw bool
 	for _, f := range r.Findings {
 		if f.Check != "conversation-mining-contract" {
@@ -2859,7 +2859,7 @@ func TestConversationMiningContractFailsWithoutGates(t *testing.T) {
 }
 
 func TestConversationCoverageContractResolved(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	var saw bool
 	for _, f := range r.Findings {
 		if f.Check != "conversation-coverage-contract" {
@@ -2895,7 +2895,7 @@ func TestConversationCoverageContractFailsWithoutGates(t *testing.T) {
 }
 
 func TestDecisionSourceAuthorityContractResolved(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	var saw bool
 	for _, f := range r.Findings {
 		if f.Check != "decision-source-authority-contract" {
@@ -3073,7 +3073,7 @@ func epistemicsFixtureRows() []string {
 }
 
 func TestPluginServingContractResolved(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	var saw bool
 	for _, f := range r.Findings {
 		if f.Check != "plugin-serving-contract" {
@@ -3403,17 +3403,17 @@ func TestCheckCmdCompoundBudgetStrictEscalatesOverBudgetToFail(t *testing.T) {
 	}
 }
 
-// TestDoctorEmitsCmdCompoundBudgetFindings: integration smoke through Doctor(repoRoot,
+// TestDoctorEmitsCmdCompoundBudgetFindings: integration smoke through DoctorSource(repoRoot,
 // true). Direct tests already pin the check's behavior; this one pins the WIRE — that the
-// check is actually registered in Doctor(). If a future refactor drops the
+// check is actually registered in the shared doctor implementation. If a future refactor drops the
 // `f = append(f, checkCmdCompoundBudget(repoRoot, strict)...)` call, the unit tests still
 // pass against the unwired function, and the gate silently stops gating. This test catches
-// that drift: a real run of Doctor(strict=true) against the live repo must surface exactly
+// that drift: a real run of DoctorSource(strict=true) against the live repo must surface exactly
 // two cmd-compound-budget findings (one per independent metric).
 func TestDoctorEmitsCmdCompoundBudgetFindings(t *testing.T) {
-	report := Doctor(repoRoot, true)
+	report := DoctorSource(repoRoot, true)
 	if !report.OK {
-		t.Fatalf("Doctor(strict=true) against the live repo must be green, got failures: %+v", report.Findings)
+		t.Fatalf("DoctorSource(strict=true) against the live repo must be green, got failures: %+v", report.Findings)
 	}
 	var budget []Finding
 	for _, f := range report.Findings {

@@ -54,7 +54,7 @@ func TestMintRatchetGreenAgainstRealRepo(t *testing.T) {
 
 // FALSIFIER (c) belt-and-suspenders: the whole Doctor stays green with the mint ratchet wired in.
 func TestDoctorStaysGreenWithMintRatchet(t *testing.T) {
-	r := Doctor(repoRoot, false)
+	r := DoctorSource(repoRoot, false)
 	for _, f := range r.Findings {
 		if f.Check == "mint-ratchet" && f.Severity == Fail {
 			t.Errorf("doctor mint-ratchet FAIL: %s", f.Message)
