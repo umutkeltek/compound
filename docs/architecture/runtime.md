@@ -107,7 +107,18 @@ framed, self-validating JSONL segments (per-family, per-UTC-day, flock-serialize
 with sealed-segment sidecar indexes that are rebuildable cache, never authority. Legacy loose records remain
 readable during the migration era; `compound event-store migrate` folds them into segments under a manifest with
 per-family count and digest verification, and a published completion gate retires the loose fallback from the hot
-path (a loose record appearing after completion is a doctor-visible defect). A post-completion loose record is
+path (a loose record appearing after completion is a doctor-visible defect).
+
+The delegated-session reducer used by `ExecutorsProjection` and `Coordination` resolves exact
+attachment IDs with `ReadMany` from the existing Workbench lifecycle snapshot. Every original
+attachment still passes identity and Work-binding validation in the same ordered reducer.
+`ReadMany` shares family inventories, hot frames and sealed indexes only within one call,
+preserving native point-read validation and index repair. Results match `Read` on a stable
+store; concurrent reads are nontransactional, with no family-wide snapshot or current-at-return
+guarantee. Later calls reacquire freshness through existing owner checks; no batch verdict is
+persisted. Rooted `ReadRegular` callers keep their existing validation path.
+
+A post-completion loose record is
 resolved only through `compound event-store repair plan|review|supersede|apply`. Idempotent planning seals the complete
 loose-byte and segment-authority snapshot plus a bounded two-snapshot observation of the retired-writer surfaces.
 Review is a separate immutable operator seam: it binds the exact plan digest/revision, reviewer identity, explicit
@@ -118,15 +129,6 @@ readiness from the current PolicyDecision for the concrete target before reservi
 `ActionIntent → PolicyDecision` transaction. An allowing private-scope policy outcome never substitutes for the
 exact review. The policy input describes manual recovery, bounded event-store blast radius, verified recovery
 evidence, and continuity of operator control; it does not reduce the operation to a location or generic label.
-
-The delegated-session reducer used by `ExecutorsProjection` and `Coordination` resolves exact
-attachment IDs with `ReadMany` from the existing Workbench lifecycle snapshot. Every original
-attachment still passes identity and Work-binding validation in the same ordered reducer.
-`ReadMany` shares family inventories, hot frames and sealed indexes only within one call,
-preserving native point-read validation and index repair. Results match `Read` on a stable
-store; concurrent reads are nontransactional, with no family-wide snapshot or current-at-return
-guarantee. Later calls reacquire freshness through existing owner checks; no batch verdict is
-persisted. Rooted `ReadRegular` callers keep their existing validation path.
 
 Apply fails closed if the frozen migration baseline, planned loose bytes, loose set, reviewed writer fence,
 current policy-authority revision, or relevant segment coordinates drift. Content-addressed archive bytes are

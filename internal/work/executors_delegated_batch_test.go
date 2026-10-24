@@ -13,7 +13,7 @@ import (
 )
 
 func TestDelegatedSessionsBatchMatchesPointReduction(t *testing.T) {
-	s := newTestStore(t)
+	s := newStore(t)
 	byWork := map[string][]Event{}
 	sequence := []struct{ work, lane, kind, session string }{
 		{"work_batch_a", "one", "spawned", "first"},
@@ -77,7 +77,7 @@ func TestDelegatedSessionsBatchMatchesPointReduction(t *testing.T) {
 func TestDelegatedSessionsBatchPreservesNativeErrors(t *testing.T) {
 	for _, mode := range []string{"missing", "wrong_work", "wrong_schema", "malformed_field"} {
 		t.Run(mode, func(t *testing.T) {
-			s := newTestStore(t)
+			s := newStore(t)
 			workID, id := "work_batch_error", "wde_batch_error"
 			dev := delegateEvent{SchemaVersion: delegateEventSchemaVersion, ID: id,
 				WorkID: workID, Kind: "work.delegate.refused", Reason: "capacity", TS: ts(fixedNow)}
