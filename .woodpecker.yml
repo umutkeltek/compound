@@ -71,7 +71,8 @@ steps:
         set -eu
         export PATH="$CI_WORKSPACE/.ci/bin:$PATH"
         export COMPOUND_BIN="$CI_WORKSPACE/.ci/bin/compound"
-        COMPOUND_HOME="$(mktemp -d "$CI_WORKSPACE/.ci/console-home.XXXXXX")"
+          # A global test home must stay outside the source checkout.
+          COMPOUND_HOME="$(mktemp -d /tmp/compound-ci-console.XXXXXX)"
         export COMPOUND_HOME
         "$COMPOUND_BIN" home init
         export CONSOLE_SMOKE_REQUIRE_CLI=1
