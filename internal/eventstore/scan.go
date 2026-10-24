@@ -59,6 +59,7 @@ func (e *engine) segmentFrame(id, regularKind string) (segmentHit, bool, error) 
 		// each (the post-migration quadratic — see hotcache.go). regularKind
 		// reads keep the direct rooted-validation parse.
 		if regularKind == "" {
+			notifyHotSegmentAcquire(segment.path)
 			byID, err := e.hotFrames(segment.path)
 			if err != nil {
 				return segmentHit{}, false, err
@@ -68,6 +69,7 @@ func (e *engine) segmentFrame(id, regularKind string) (segmentHit, bool, error) 
 			}
 			continue
 		}
+		notifyHotSegmentAcquire(segment.path)
 		notifyHotParse(segment.path)
 		frames, err := e.readSegment(segment.path, true, regularKind)
 		if err != nil {

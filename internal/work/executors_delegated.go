@@ -71,10 +71,27 @@ type DelegatedSessionCounts struct {
 // already loaded and then reads the small number of attached wde_ records; it
 // never walks raw eventstore files on the console's behalf.
 func (s *Store) reduceDelegatedSessions(byWork map[string][]Event) ([]DelegatedSessionRow, DelegatedSessionCounts, error) {
+	refs := make([]string, 0)
+	seen := make(map[string]bool)
+	for _, events := range byWork {
+		for _, event := range events {
+			for _, ref := range event.Attached {
+				if strings.HasPrefix(ref, "wde_") && !seen[ref] {
+					seen[ref] = true
+					refs = append(refs, ref)
+				}
+			}
+		}
+	}
+	records := s.events.ReadMany(refs)
+	readEvent := func(ref string, value any) error {
+		result := records[ref]
+		return decodeEventJSON(ref, result.Record, result.Err, value)
+	}
 	raStore := runattempt.Open(s.home)
 	rows := make([]DelegatedSessionRow, 0)
 	for workID, events := range byWork {
-		workRows, rerr := s.reduceDelegatedSessionsForWork(workID, events, raStore)
+		workRows, rerr := s.reduceDelegatedSessionsForWorkRead(workID, events, raStore, readEvent)
 		if rerr != nil {
 			return nil, DelegatedSessionCounts{}, rerr
 		}
@@ -123,6 +140,12 @@ type delegatedLaneState struct {
 // lane replaces that lane's older generation; activity on another lane remains
 // visible instead of being collapsed away.
 func (s *Store) reduceDelegatedSessionsForWork(workID string, events []Event, raStore *runattempt.Store) ([]DelegatedSessionRow, error) {
+	return s.reduceDelegatedSessionsForWorkRead(workID, events, raStore, s.readEventJSON)
+}
+
+// The reader changes acquisition only. Every original occurrence still passes
+// validation and the same ordered lifecycle reduction.
+func (s *Store) reduceDelegatedSessionsForWorkRead(workID string, events []Event, raStore *runattempt.Store, readEvent func(string, any) error) ([]DelegatedSessionRow, error) {
 	states := make(map[string]*delegatedLaneState)
 
 	for _, e := range events {
@@ -131,7 +154,7 @@ func (s *Store) reduceDelegatedSessionsForWork(workID string, events []Event, ra
 				continue
 			}
 			var dev delegateEvent
-			if rerr := s.readEventJSON(att, &dev); rerr != nil {
+			if rerr := readEvent(att, &dev); rerr != nil {
 				return nil, rerr
 			}
 			if verr := validateAttachedDelegateEvent(att, workID, dev); verr != nil {

@@ -122,6 +122,18 @@ func (e *engine) readIndexedFrame(family string, segment segmentFile, id, regula
 	if err != nil {
 		return Frame{}, false, err
 	}
+	return e.resolveIndexedFrame(family, segment, &index, id, regularKind)
+}
+
+// resolveIndexedFrame resolves one id inside an ALREADY LOADED index. It holds
+// the per-id validation and rebuild rules, shared verbatim with the batch
+// reader so there is exactly one implementation of record validation — not a
+// second parser or a divergent shadow resolver.
+//
+// When the indexed frame does not validate, the index is rebuilt and the
+// REBUILT index is written back through *index, so a caller serving many ids
+// from one segment keeps resolving against current truth.
+func (e *engine) resolveIndexedFrame(family string, segment segmentFile, index *segmentIndex, id, regularKind string) (Frame, bool, error) {
 	entry, found := index.Entries[id]
 	if !found {
 		return Frame{}, false, nil
@@ -137,10 +149,11 @@ func (e *engine) readIndexedFrame(family string, segment segmentFile, id, regula
 	} else {
 		reason = fmt.Sprintf("indexed frame at offset %d is invalid: %v", entry.Offset, err)
 	}
-	index, err = e.rebuildIndex(family, segment, reason)
+	rebuilt, err := e.rebuildIndex(family, segment, reason)
 	if err != nil {
 		return Frame{}, false, err
 	}
+	*index = rebuilt
 	entry, found = index.Entries[id]
 	if !found {
 		return Frame{}, false, nil
@@ -155,8 +168,21 @@ func (e *engine) readIndexedFrame(family string, segment segmentFile, id, regula
 	return frame, true, nil
 }
 
+// indexLoadObserver is a test-only seam fired once per sealed-segment index
+// ACQUISITION — the per-(id, segment) work the batch reader collapses to one
+// acquisition per segment. It is nil in production (counter-seam precedent:
+// indexParseObserver above).
+var indexLoadObserver func(family string, path string)
+
+func notifyIndexLoad(family string, path string) {
+	if indexLoadObserver != nil {
+		indexLoadObserver(family, path)
+	}
+}
+
 func (e *engine) loadOrBuildIndex(family string, segment segmentFile) (segmentIndex, error) {
 	path := e.indexPath(family, segment)
+	notifyIndexLoad(family, path)
 	if index, ok := e.cachedIndex(path, segment.path); ok {
 		return index, nil
 	}

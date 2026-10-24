@@ -4474,6 +4474,12 @@ func (s *Store) readJSON(path string, v any) error {
 
 func (s *Store) readEventJSON(ref string, v any) error {
 	record, err := s.events.Read(ref)
+	return decodeEventJSON(ref, record, err, v)
+}
+
+// decodeEventJSON preserves the same error and JSON semantics for point and
+// request-local batch readers.
+func decodeEventJSON(ref string, record eventstore.Record, err error, v any) error {
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			id := ref
