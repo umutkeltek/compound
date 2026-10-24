@@ -102,12 +102,13 @@ comparative trials but supplies no reproducible arena implementation or raw tria
 (`2026-06-23-software-factory-for-agent-tools/transcript.txt`).
 
 **Owner and flow.** Existing scout → pinned finding custody → `compound source observe` → no-promote
-`capability_observation` → `compound capability import-evaluations` → evidence-only evaluation node →
-`compound panel plan --target-kind capability_observation` → existing owner review. Repair the review
-tick inside `scripts/upstream-learning/`; strengthen provenance only at
-`internal/capgraph/evaluation.go`. Govern repairs and imports through the spine; attach their actual
-outcomes to receipts and transitions. Consumers are upstream owner review and capability review — not
-a new inbox (`scripts/upstream-learning/README.md`).
+`capability_observation` → `compound capability import-evaluations` → evidence-only evaluation node.
+Owner review runs as a branch of that path (`compound panel plan --target-kind
+capability_observation` over a candidate still awaiting a verdict). Repair the review tick inside
+`scripts/upstream-learning/`; strengthen provenance only at `internal/capgraph/evaluation.go`.
+Govern repairs and imports through the spine; attach their actual outcomes to receipts and
+transitions. Consumers are upstream owner review and capability review — not a new inbox
+(`scripts/upstream-learning/README.md`).
 
 **Baseline and acceptance — verified, and corrected against the live instance.** The operator status
 note claimed the upstream-review tick times out. Live evidence contradicts that: no review attempt
