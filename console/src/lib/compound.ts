@@ -207,6 +207,7 @@ type RunJsonCacheGlobals = {
   cache: Map<string, RunJsonCacheEntry>;
   inflight: Map<string, RunJsonInflightEntry>;
   generation: number;
+  diskWork: Promise<void>;
   binaryFreshness:
     | {
         storedAt: number;
@@ -221,11 +222,23 @@ const runJsonGlobals = ((globalThis as typeof globalThis & {
   cache: new Map<string, RunJsonCacheEntry>(),
   inflight: new Map<string, RunJsonInflightEntry>(),
   generation: 0,
+  diskWork: Promise.resolve(),
   binaryFreshness: null,
 });
 
 const runJsonCache = runJsonGlobals.cache;
 const runJsonInflight = runJsonGlobals.inflight;
+
+// Module reloads can retain an older global cache object without this field.
+runJsonGlobals.diskWork ??= Promise.resolve();
+
+function queueRunJsonDiskWork<T>(work: () => Promise<T>): Promise<T> {
+  const result = runJsonGlobals.diskWork.then(work);
+  // A failed cache optimization must not poison later invalidations or reads.
+  runJsonGlobals.diskWork = result.then(() => undefined, () => undefined);
+  return result;
+}
+
 
 function pruneRunJsonCache() {
   while (runJsonCache.size > RUN_JSON_MAX_ENTRIES) {
@@ -318,62 +331,70 @@ function runJsonDiskPath(key: string): string {
 }
 
 async function readRunJsonDiskEntry(key: string): Promise<RunJsonCacheEntry | null> {
-  try {
-    const raw = await readFile(runJsonDiskPath(key), "utf8");
-    const parsed = JSON.parse(raw) as { storedAt?: unknown; value?: unknown };
-    if (typeof parsed.storedAt !== "number" || parsed.value == null || typeof parsed.value !== "object") {
+  return queueRunJsonDiskWork(async () => {
+    try {
+      const raw = await readFile(runJsonDiskPath(key), "utf8");
+      const parsed = JSON.parse(raw) as { storedAt?: unknown; value?: unknown };
+      if (typeof parsed.storedAt !== "number" || parsed.value == null || typeof parsed.value !== "object") {
+        return null;
+      }
+      return {
+        value: parsed.value as Json,
+        storedAt: parsed.storedAt,
+        revalidating: false,
+        lastError: null,
+        lastErrorAt: null,
+      };
+    } catch {
       return null;
     }
-    return {
-      value: parsed.value as Json,
-      storedAt: parsed.storedAt,
-      revalidating: false,
-      lastError: null,
-      lastErrorAt: null,
-    };
-  } catch {
-    return null;
-  }
+  });
 }
 
 async function writeRunJsonDiskEntry(key: string, value: Json, storedAt: number): Promise<void> {
-  try {
-    await mkdir(RUN_JSON_DISK_DIR, { recursive: true });
-    const final = runJsonDiskPath(key);
-    const tmp = `${final}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
-    await writeFile(tmp, JSON.stringify({ storedAt, value }), { mode: 0o600 });
-    await rename(tmp, final);
-    // Bound the dir: once past the cap, unlink the oldest files. Cheap readdir,
-    // best-effort — a failed prune only costs disk, never correctness.
-    const names = await readdir(RUN_JSON_DISK_DIR);
-    if (names.length <= RUN_JSON_DISK_MAX_FILES) return;
-    const stats = await Promise.all(
-      names.filter((n) => n.endsWith(".json")).map(async (n) => {
-        const full = join(RUN_JSON_DISK_DIR, n);
-        try {
-          return { full, mtime: (await stat(full)).mtimeMs };
-        } catch {
-          return null;
-        }
-      }),
-    );
-    const ordered = stats.filter((s): s is { full: string; mtime: number } => s !== null).sort((a, b) => a.mtime - b.mtime);
-    for (const victim of ordered.slice(0, ordered.length - RUN_JSON_DISK_MAX_FILES)) {
-      await rm(victim.full, { force: true }).catch(() => undefined);
+  return queueRunJsonDiskWork(async () => {
+    try {
+      await mkdir(RUN_JSON_DISK_DIR, { recursive: true });
+      const final = runJsonDiskPath(key);
+      const tmp = `${final}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+      await writeFile(tmp, JSON.stringify({ storedAt, value }), { mode: 0o600 });
+      await rename(tmp, final);
+      // Bound the dir: once past the cap, unlink the oldest files. Cheap readdir,
+      // best-effort — a failed prune only costs disk, never correctness.
+      const names = await readdir(RUN_JSON_DISK_DIR);
+      if (names.length <= RUN_JSON_DISK_MAX_FILES) return;
+      const stats = await Promise.all(
+        names.filter((n) => n.endsWith(".json")).map(async (n) => {
+          const full = join(RUN_JSON_DISK_DIR, n);
+          try {
+            return { full, mtime: (await stat(full)).mtimeMs };
+          } catch {
+            return null;
+          }
+        }),
+      );
+      const ordered = stats.filter((s): s is { full: string; mtime: number } => s !== null).sort((a, b) => a.mtime - b.mtime);
+      for (const victim of ordered.slice(0, ordered.length - RUN_JSON_DISK_MAX_FILES)) {
+        await rm(victim.full, { force: true }).catch(() => undefined);
+      }
+    } catch {
+      // Disk is an optimization tier; a failed write only costs warmth.
     }
-  } catch {
-    // Disk is an optimization tier; a failed write only costs warmth.
-  }
+  });
 }
 
 function clearRunJsonDiskEntries(): void {
-  readdir(RUN_JSON_DISK_DIR)
-    .then((names) =>
-      Promise.all(names.map((n) => rm(join(RUN_JSON_DISK_DIR, n), { force: true }).catch(() => undefined))),
-    )
-    .catch(() => undefined);
+  // Serialize removal after prior writes and before subsequent cold reads.
+  // Fire-and-forget deletion alone lets an invalidated value return as live.
+  void queueRunJsonDiskWork(async () => {
+    try {
+      const names = await readdir(RUN_JSON_DISK_DIR);
+      await Promise.all(names.map((name) => rm(join(RUN_JSON_DISK_DIR, name), { force: true }).catch(() => undefined)));
+    } catch {
+      // A missing or unreadable optimization tier still permits real execution.
+    }
+  });
 }
-
 function startRunJsonInflight(
   key: string,
   args: string[],
@@ -411,7 +432,11 @@ async function readRunJsonEntry(args: string[], timeoutMs: number): Promise<RunJ
   if (!entry) {
     // Memory miss: this process has never seen the argv. The disk tier may
     // still carry a last-good fact from another process or a prior run.
+    const diskGeneration = runJsonGlobals.generation;
     const disk = await readRunJsonDiskEntry(key);
+    if (diskGeneration !== runJsonGlobals.generation) {
+      return readRunJsonEntry(args, timeoutMs);
+    }
     if (disk) {
       runJsonCache.delete(key);
       runJsonCache.set(key, disk);
