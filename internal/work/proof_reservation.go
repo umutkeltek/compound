@@ -107,6 +107,7 @@ type ProofResourceProfile struct {
 	SourceSnapshot *gitrepository.Snapshot    `json:"source_snapshot,omitempty"`
 	Gates          []ProofResourceGateProfile `json:"gates"`
 	Digest         string                     `json:"digest"`
+	RemoteGoTest   *RemoteProofDescriptor     `json:"remote_go_test,omitempty"`
 }
 
 // NewProofResourceProfile validates and seals one typed proof inventory.
@@ -128,6 +129,7 @@ func newProofResourceProfile(
 	kind, repo, baseRef string,
 	source *gitrepository.Snapshot,
 	gates []ProofResourceGateProfile,
+	remote ...*RemoteProofDescriptor,
 ) (ProofResourceProfile, error) {
 	profile := ProofResourceProfile{
 		Kind:           strings.TrimSpace(kind),
@@ -135,6 +137,9 @@ func newProofResourceProfile(
 		BaseRef:        strings.TrimSpace(baseRef),
 		SourceSnapshot: source,
 		Gates:          append([]ProofResourceGateProfile(nil), gates...),
+	}
+	if len(remote) > 0 {
+		profile.RemoteGoTest = remote[0]
 	}
 	for i := range profile.Gates {
 		profile.Gates[i].Name = strings.TrimSpace(profile.Gates[i].Name)
@@ -161,6 +166,7 @@ func normalizeProofResourceProfile(profile ProofResourceProfile) (ProofResourceP
 		profile.BaseRef,
 		profile.SourceSnapshot,
 		profile.Gates,
+		profile.RemoteGoTest,
 	)
 }
 
@@ -578,6 +584,7 @@ type ownedProofReport struct {
 		ConsumerEvidence      *CanonicalConsumerEvidence `json:"consumer_evidence,omitempty"`
 		RedactionEvidence     *PublicRedactionEvidence   `json:"redaction_evidence,omitempty"`
 		PrivateSourceEvidence *PrivateSourceEvidence     `json:"private_source_evidence,omitempty"`
+		RemoteEvidence        *RemoteProofEvidence       `json:"remote_evidence,omitempty"`
 		HomeFixtureEvidence   *HomeFixtureEvidence       `json:"home_fixture_evidence,omitempty"`
 	} `json:"steps"`
 }
@@ -1040,6 +1047,9 @@ func (s *Store) deriveProofResourceCompletionExpectation(
 		report, err := decodeOwnedProofReport(body)
 		if err != nil {
 			return proofResourceCompletionExpectation{}, fmt.Errorf("proof report decode: %w", err)
+		}
+		if err := s.validateRemoteProofArtifacts(report); err != nil {
+			return proofResourceCompletionExpectation{}, err
 		}
 		if err := validateOwnedProofReportAgainstReservation(report, reservation); err != nil {
 			return proofResourceCompletionExpectation{}, fmt.Errorf("proof report profile: %w", err)
@@ -2397,6 +2407,9 @@ func (s *Store) validateCommittedProofResourceChainStatus(
 		reservation.ActionIntentID == "" ||
 		reservation.PolicyDecisionID == "" {
 		return fmt.Errorf("reservation identity does not bind result")
+	}
+	if err := s.validateRemoteProofArtifacts(report); err != nil {
+		return err
 	}
 	if err := validateOwnedProofReportAgainstReservation(report, reservation); err != nil {
 		return fmt.Errorf("report/reservation: %w", err)
@@ -4014,10 +4027,10 @@ func decodeOwnedProofReport(body []byte) (ownedProofReport, error) {
 		report.SchemaVersion != "compound.proof_check_report.v0.2" &&
 		report.SchemaVersion != "compound.proof_check_report.v0.3" &&
 		report.SchemaVersion != "compound.proof_check_report.v0.4" &&
-		report.SchemaVersion != "compound.proof_check_report.v0.5" && report.SchemaVersion != ProofCheckSchemaVersion {
+		report.SchemaVersion != "compound.proof_check_report.v0.5" && report.SchemaVersion != ProofCheckSchemaVersion && report.SchemaVersion != RemoteProofReportSchemaVersion {
 		return ownedProofReport{}, fmt.Errorf("unsupported schema_version %q", report.SchemaVersion)
 	}
-	if report.SchemaVersion == "compound.proof_check_report.v0.3" || report.SchemaVersion == "compound.proof_check_report.v0.4" || report.SchemaVersion == "compound.proof_check_report.v0.5" || report.SchemaVersion == ProofCheckSchemaVersion {
+	if report.SchemaVersion == "compound.proof_check_report.v0.3" || report.SchemaVersion == "compound.proof_check_report.v0.4" || report.SchemaVersion == "compound.proof_check_report.v0.5" || report.SchemaVersion == ProofCheckSchemaVersion || report.SchemaVersion == RemoteProofReportSchemaVersion {
 		if report.SourceSnapshot != nil {
 			if err := gitrepository.ValidateSnapshotShape(*report.SourceSnapshot); err != nil {
 				return ownedProofReport{}, fmt.Errorf("source_snapshot: %w", err)
@@ -4026,6 +4039,9 @@ func decodeOwnedProofReport(body []byte) (ownedProofReport, error) {
 				return ownedProofReport{}, fmt.Errorf("source_snapshot must be clean")
 			}
 		}
+	}
+	if err := validateRemoteReportSchema(report); err != nil {
+		return ownedProofReport{}, err
 	}
 	if report.Status != "ok" && report.Status != "failed" {
 		return ownedProofReport{}, fmt.Errorf("status must be ok or failed")
@@ -4071,6 +4087,27 @@ func decodeOwnedProofReport(body []byte) (ownedProofReport, error) {
 }
 
 func validateProofResourceProfileShape(profile ProofResourceProfile) error {
+	if d := profile.RemoteGoTest; d != nil {
+		if profile.Kind != ProofResourceProfileCanonicalFull || profile.SourceSnapshot == nil || !reflect.DeepEqual(*profile.SourceSnapshot, d.Source) {
+			return fmt.Errorf("remote descriptor differs from native profile")
+		}
+		if err := validateRemoteProofDescriptor(*d); err != nil {
+			return err
+		}
+		found := false
+		for _, gate := range profile.Gates {
+			if gate.Name == "go-test" {
+				found = true
+				if gate.ProofRef != "go-test-count-1-general-release" || !reflect.DeepEqual(gate.Command, remoteGateCommand(d.Source.HeadSHA)) {
+					return fmt.Errorf("remote profile gate mismatch")
+				}
+			}
+		}
+		if !found {
+			return fmt.Errorf("remote profile missing go-test")
+		}
+	}
+
 	if profile.Kind == "" {
 		return fmt.Errorf("kind required")
 	}
@@ -4131,6 +4168,9 @@ func proofResourceProfileDigest(profile ProofResourceProfile) (string, error) {
 }
 
 func validateOwnedProofReportAgainstReservation(report ownedProofReport, reservation ProofResourceReservation) error {
+	if err := validateRemoteReportReservation(report, reservation); err != nil {
+		return err
+	}
 	profile, err := normalizeProofResourceProfile(reservation.Profile)
 	if err != nil {
 		return fmt.Errorf("reservation profile invalid: %w", err)
@@ -4153,7 +4193,7 @@ func validateOwnedProofReportAgainstReservation(report ownedProofReport, reserva
 	if !reflect.DeepEqual(report.SourceSnapshot, profile.SourceSnapshot) {
 		return fmt.Errorf("source_snapshot mismatch between report and reservation profile")
 	}
-	if profile.SourceSnapshot != nil && report.SchemaVersion != "compound.proof_check_report.v0.3" && report.SchemaVersion != "compound.proof_check_report.v0.4" && report.SchemaVersion != "compound.proof_check_report.v0.5" && report.SchemaVersion != ProofCheckSchemaVersion {
+	if profile.SourceSnapshot != nil && report.SchemaVersion != "compound.proof_check_report.v0.3" && report.SchemaVersion != "compound.proof_check_report.v0.4" && report.SchemaVersion != "compound.proof_check_report.v0.5" && report.SchemaVersion != ProofCheckSchemaVersion && report.SchemaVersion != RemoteProofReportSchemaVersion {
 		return fmt.Errorf("source-bound proof requires compound.proof_check_report.v0.3, v0.4, v0.5 or v0.6")
 	}
 	if len(report.Steps) != len(profile.Gates) {
@@ -4194,7 +4234,7 @@ func validateOwnedProofReportAgainstReservation(report ownedProofReport, reserva
 		if privateReviewErr != nil {
 			return fmt.Errorf("gate %q private review binding: %w", gate.Name, privateReviewErr)
 		}
-		if (reviewed || privatelyReviewed) && report.SchemaVersion != "compound.proof_check_report.v0.5" && report.SchemaVersion != ProofCheckSchemaVersion {
+		if (reviewed || privatelyReviewed) && report.SchemaVersion != "compound.proof_check_report.v0.5" && report.SchemaVersion != ProofCheckSchemaVersion && report.SchemaVersion != RemoteProofReportSchemaVersion {
 			return fmt.Errorf("reviewed redaction requires proof report v0.5 or v0.6")
 		}
 		if err := ValidatePublicRedactionEvidence(redactionStep, profile.SourceSnapshot, reservation.WorkID); err != nil {

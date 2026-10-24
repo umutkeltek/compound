@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"compound/internal/home"
+	"compound/internal/landlease"
 )
 
 func RunResourceMigrationCLI(args []string, stdout, stderr io.Writer) int {
@@ -22,6 +23,7 @@ func RunResourceMigrationCLI(args []string, stdout, stderr io.Writer) int {
 	expires := flags.String("expires", "", "pause expiry RFC3339, at most five minutes")
 	backing := flags.String("backing-home", "", "required shared owning home for host proof capacity")
 	proofClasses := flags.Bool("proof-classes", false, "one-way two-class proof domain cutover")
+	target := flags.String("proof-target-revision", "", "explicit proof domain revision; omitted preserves v0.2")
 	var proofHomes []string
 	flags.Func("participating-home", "every installed paused home sharing this backing (repeatable)", func(value string) error { proofHomes = append(proofHomes, value); return nil })
 	flags.Bool("json", false, "emit JSON")
@@ -49,7 +51,7 @@ func RunResourceMigrationCLI(args []string, stdout, stderr io.Writer) int {
 	}
 	result, err := store.MigrateCoordinationResources(*workID, ResourceMigrationInput{
 		Actor: *actor, Operator: *operator, EvidenceRef: *evidence,
-		ProofClasses: *proofClasses, ProofHomes: proofHomes,
+		ProofClasses: *proofClasses, ProofTargetRevision: landlease.ProofDomainRevision(*target), ProofHomes: proofHomes,
 		BackingHome: *backing, WritersPaused: *paused, ExpiresAt: end,
 	}, time.Now())
 	if err != nil {

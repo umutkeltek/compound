@@ -155,7 +155,11 @@ func (s *Store) finishResourceMigrationLocked(w envelope.WorkEnvelope, p resourc
 		if err != nil {
 			return err
 		}
-		if status.Phase != "active" || status.Generation != landlease.ProofDomainMigrationGeneration(p.BackingRoot, p.Input.ProofHomes) || !reflect.DeepEqual(status.Homes, p.Input.ProofHomes) {
+		target, err := resourceProofMigrationRevision(p.Input)
+		if err != nil {
+			return err
+		}
+		if status.SchemaVersion != string(target) || status.Phase != "active" || status.Generation != landlease.ProofDomainMigrationGeneration(p.BackingRoot, p.Input.ProofHomes) || !reflect.DeepEqual(status.Homes, p.Input.ProofHomes) {
 			return fmt.Errorf("exact active proof-domain cutover is absent or changed")
 		}
 	}

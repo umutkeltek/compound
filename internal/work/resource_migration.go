@@ -20,6 +20,7 @@ type ResourceMigrationInput struct {
 	WritersPaused                             bool
 	ProofClasses                              bool
 	ProofHomes                                []string
+	ProofTargetRevision                       landlease.ProofDomainRevision `json:",omitempty"`
 	ExpiresAt                                 time.Time
 }
 
@@ -28,6 +29,12 @@ type ResourceMigrationInput struct {
 // All participating homes must bind the same backing home during one quiescent
 // cutover. The API cannot fence an unrelated home that has not joined that cutover.
 func (s *Store) MigrateCoordinationResources(workID string, in ResourceMigrationInput, now time.Time) (landlease.LayoutStatusResult, error) {
+	if in.ProofTargetRevision != "" && !in.ProofClasses {
+		return landlease.LayoutStatusResult{}, fmt.Errorf("proof target requires --proof-classes")
+	}
+	if _, err := resourceProofMigrationRevision(in); err != nil {
+		return landlease.LayoutStatusResult{}, err
+	}
 	started := time.Now()
 	currentTime := func() time.Time { return now.Add(time.Since(started)) }
 	validateWindow := func() error {

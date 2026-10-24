@@ -504,3 +504,14 @@ action-approve protocol, then retry identical arguments before pause expiry.
 Work generation or predecessor drift invalidates an old approval. Do not assert `--writers-paused` from general task
 authorization. Keep every writer paused until all homes have migrated and scoped
 proof/landing status and audit reconciliation are verified. Keep the migration work generation and its lease owner unchanged until reconciliation completes; a changed generation refuses recovery and preserves newer authority. Old clients refuse on the permanent legacy fence.
+
+### Remote canonical Go execution
+
+When a private route has passed deployment review and proof-domain v0.3 cutover,
+use the existing canonical proof command with `--remote-go-test ROUTE_FILE`.
+The native reservation seals the route, source, complete owned inputs and gate;
+a transport failure leaves exact remote fences and never falls back to local Go
+testing. Use `--remote-reconcile RESERVATION --work WORK --actor ACTOR [--cancel]`
+for the original request. Read the structured recovery disposition and retain its
+expiry trigger if no completion journal existed; cleanup alone grants no proof.
+Runtime semantics and activation evidence requirements: [runtime.md](../../docs/architecture/runtime.md#native-remote-canonical-go-gate).

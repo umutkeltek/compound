@@ -1284,9 +1284,63 @@ the current work lease, delivery binding, and policy before changing the resourc
 The holder includes the exact work ID as a colon-delimited component. `status
 --work W` selects that landing slot, while `status --proof` reports proof capacity.
 The fresh-main-SHA guard and exact candidate proof remain required: a landing can now
-advance main while another candidate is being tested. A post-land proof is required only
-when the landed tip differs from the proven candidate HEAD; a pure fast-forward of the
-proven tip lands the byte-identical tree, and the nightly full battery on main is the backstop.
+advance main while another candidate is being tested. Any replay or rebase that changes candidate H requires renewed proof BEFORE landing.
+A pure fast-forward of that exact proven tip needs no duplicate battery. Scheduled
+full runs add evidence only when their actual results have been inspected; scheduling
+alone proves neither execution nor correctness.
+
+
+### Native remote canonical Go gate
+
+The source implementation supports `proof-check --remote-go-test ROUTE_FILE` only
+for the exact canonical general-release Go gate. The private route is sealed
+before scarce-resource admission: host, absolute runner path, runner digest,
+Go version, timeout and config bytes are part of the native profile. Its source
+B/H/tree/repository identity, complete ceremony input manifest and exact gate
+command are also sealed. Other gates retain their existing routes. No transport
+error starts a local heavy-test fallback.
+
+The producer bundles named HEAD and snapshots every input owned by
+`ProofCeremonyOwnedIgnoredInputs`. Sorted roots and entries, parent topology,
+file hashes/modes and in-root symlinks are validated before transport. A declared
+root cannot contain a Git metadata component or be a symlink. Archived Git
+metadata strictly below an owned input root remains opaque fixture bytes, as in
+the local ceremony; unowned metadata, source shadowing and escaping paths reject.
+The receiver validates exact input ownership before staging Git source.
+
+Remote execution requires explicit active proof-domain v0.3. The migration CLI
+accepts `--proof-target-revision compound.proof_domain.v0.3`; omission retains
+the existing v0.2 default. The exact target is bound into preview, approval,
+preparation and outcome recovery. Installation alone does not perform cutover;
+the existing owner pause, approval and all-participant census still apply.
+
+Before SSH, the native owner persists the same exact request fence at the class
+slot and repository barrier. A disconnect, timeout, unknown response or cleanup
+failure keeps those fences closed. A terminal receipt must prove exact request,
+source, gate, inputs, runner and toolchain identity, plus clean quiescence.
+Request and raw receipt bytes enter immutable native artifact custody. Consumers
+revalidate that custody. Remote reports use v0.7, so old v0.6 readers reject the
+report instead of silently dropping remote evidence. Local reports remain v0.6.
+
+`proof-check --remote-reconcile RESERVATION --work WORK --actor ACTOR [--cancel]`
+uses a fresh governed reconciliation attempt and only inspects or cancels the
+original request; it cannot donate a green proof. With a failed prepared native
+completion, it resumes the existing finalizer and returns `failed_proof_released`.
+If the caller died and its attempt is terminal failed/abandoned before any
+completion journal existed, it returns `waiting_for_expiry` (or
+`ready_for_fresh_proof`) after exact remote cleanup and local termination
+attestation. This disposition includes the exact `eligible_after` and original
+native `next_command` invocation identity (`argv-json:` in the CLI), with
+`resource_released=false`. Preserve that timed trigger; an ordinary new proof
+reservation after expiry must rerun the canonical proof. The predecessor remains
+terminal and uncertified. A changed owner/holder or live local descendants refuses
+recovery. A resource takeover before expiry still needs the existing separate
+takeover authority.
+
+These are source capabilities and synthetic acceptance results. A deployed route,
+current runner digest, real remote canonical run, interruption recovery, cleanup
+and timings require their own inspected runtime evidence. No duration or nightly
+execution claim follows from configuration alone.
 
 ### Source-derived proof capacities and conflict FIFO
 

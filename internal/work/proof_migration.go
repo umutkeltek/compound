@@ -21,6 +21,9 @@ func (s *Store) proofMigrationPendingPath() string {
 	return filepath.Join(s.home, "work", "resource-leases", "proof-domain-preparation.json")
 }
 func (s *Store) migrateProofCoordinationResources(workID string, in ResourceMigrationInput, backing string, now func() time.Time, window func() error) (landlease.LayoutStatusResult, error) {
+	if _, err := resourceProofMigrationRevision(in); err != nil {
+		return landlease.LayoutStatusResult{}, err
+	}
 	if len(in.ProofHomes) == 0 {
 		return landlease.LayoutStatusResult{}, fmt.Errorf("explicit participating homes required")
 	}
@@ -68,7 +71,7 @@ func (s *Store) migrateProofCoordinationResources(workID string, in ResourceMigr
 			if err := json.Unmarshal(data, &prior); err != nil {
 				return err
 			}
-			if prior.SchemaVersion != resourceMigrationPendingSchema || !prior.Input.ProofClasses || prior.Work.ID != w.ID || prior.BackingRoot != backing || !reflect.DeepEqual(prior.Input.ProofHomes, homes) {
+			if prior.SchemaVersion != resourceMigrationPendingSchema || !prior.Input.ProofClasses || prior.Work.ID != w.ID || prior.BackingRoot != backing || !reflect.DeepEqual(prior.Input.ProofHomes, homes) || prior.Input.ProofTargetRevision != in.ProofTargetRevision {
 				return fmt.Errorf("proof migration preparation differs from exact work and enrollment")
 			}
 			if err := s.validateResourceMigrationPreparation(prior); err != nil {
@@ -86,7 +89,8 @@ func (s *Store) migrateProofCoordinationResources(workID string, in ResourceMigr
 			if err != nil {
 				return s.resourceMigrationRecoveryError(prior, err)
 			}
-			if status.Phase == "active" {
+			target, _ := resourceProofMigrationRevision(prior.Input)
+			if status.Phase == "active" && status.SchemaVersion == string(target) {
 				return s.finishResourceMigrationLocked(w, prior, now())
 			}
 			if before != current {
@@ -160,7 +164,11 @@ func (s *Store) performProofMigrationLocked(w envelope.WorkEnvelope, p resourceM
 		}
 		return window()
 	}
-	err := landlease.MigrateProofDomain(p.BackingRoot, p.Input.ProofHomes, validate, s.resourceMigrationFault)
+	target, err := resourceProofMigrationRevision(p.Input)
+	if err != nil {
+		return err
+	}
+	err = landlease.MigrateProofDomain(p.BackingRoot, p.Input.ProofHomes, validate, s.resourceMigrationFault, target)
 	if err != nil {
 		status, statusErr := landlease.ReadProofDomainStatus(p.BackingRoot)
 		if statusErr != nil || status.Phase != "" {
@@ -212,4 +220,14 @@ func (s *Store) validateProofMigrationEffectAuthority(p resourceMigrationPending
 		}
 	}
 	return nil
+}
+
+func resourceProofMigrationRevision(in ResourceMigrationInput) (landlease.ProofDomainRevision, error) {
+	if in.ProofTargetRevision == "" {
+		return landlease.ProofDomainLocalV2, nil
+	}
+	if in.ProofTargetRevision != landlease.ProofDomainLocalV2 && in.ProofTargetRevision != landlease.ProofDomainFencedV3 {
+		return "", fmt.Errorf("unknown proof domain target revision %q", in.ProofTargetRevision)
+	}
+	return in.ProofTargetRevision, nil
 }

@@ -74,7 +74,7 @@ func coordinatedStoreFixture(t *testing.T) *Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := landlease.MigrateProofDomain(backing, []string{canonical}, func() error { return nil }, nil); err != nil {
+	if err := landlease.MigrateProofDomain(backing, []string{canonical}, func() error { return nil }, nil, landlease.ProofDomainFencedV3); err != nil {
 		t.Fatal(err)
 	}
 	return s

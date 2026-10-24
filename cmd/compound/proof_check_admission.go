@@ -230,6 +230,7 @@ func runProofCheckWithAdmissionContext(
 		cancelRunner,
 	)
 	runnerContext = work.ContextWithHomeFixtureReuse(runnerContext, in.HomePath, in.WorkID, in.Profile.SourceSnapshot, in.Workspace)
+	runnerContext = work.ContextWithRemoteProof(runnerContext, in.HomePath, reserved.Reservation, proofCheckCommandContext)
 	report, runErr := runner(runnerContext)
 	stopHeartbeat()
 	if hbErr := heartbeatErr(); hbErr != nil {

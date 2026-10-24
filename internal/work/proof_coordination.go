@@ -71,6 +71,11 @@ func CanonicalProofCapacityClass(profile ProofResourceProfile) (landlease.ProofC
 }
 
 func (s *Store) proofCoordinationForProfile(profile ProofResourceProfile) (*landlease.ProofCoordinationIdentity, error) {
+	if profile.RemoteGoTest != nil {
+		if err := ValidateRemoteProofDomain(s.home); err != nil {
+			return nil, err
+		}
+	}
 	generation, err := landlease.ProofCoordinationGeneration(s.home)
 	if err != nil || generation == "" {
 		return nil, err

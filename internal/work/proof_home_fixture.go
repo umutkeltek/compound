@@ -148,7 +148,7 @@ func (s *Store) loadDirectHomeFixtureOrigin(w envelope.WorkEnvelope, ref string,
 	if err != nil {
 		return report, result, err
 	}
-	if report.SchemaVersion != ProofCheckSchemaVersion {
+	if report.SchemaVersion != ProofCheckSchemaVersion && report.SchemaVersion != RemoteProofReportSchemaVersion {
 		return report, result, fmt.Errorf("legacy report cannot donate home fixture proof")
 	}
 	generated, err := time.Parse(time.RFC3339Nano, report.GeneratedAt)
@@ -174,7 +174,7 @@ func (s *Store) validateHomeFixtureReport(workID string, report ownedProofReport
 			continue
 		}
 		gate := ProofCheckStep{Name: step.Name, Command: step.Command, Dir: step.Dir, SkipIfMissing: step.SkipIfMissing, ProofRef: step.ProofRef}
-		if report.SchemaVersion != ProofCheckSchemaVersion || step.Status != "ok" || !validHomeFixtureGate(gate, report.SourceSnapshot) {
+		if (report.SchemaVersion != ProofCheckSchemaVersion && report.SchemaVersion != RemoteProofReportSchemaVersion) || step.Status != "ok" || !validHomeFixtureGate(gate, report.SourceSnapshot) {
 			return fmt.Errorf("home fixture evidence is not bound to its source gate")
 		}
 		if err := evidence.validate(); err != nil {

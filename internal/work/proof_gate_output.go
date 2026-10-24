@@ -24,7 +24,7 @@ const ProofCheckSchemaVersion = "compound.proof_check_report.v0.6"
 // from drifting away from the equivalent accept-list in decodeOwnedProofCheckReport.
 func IsAcceptedProofCheckSchemaVersion(v, canonical string) bool {
 	switch v {
-	case "compound.proof_check_report.v0.1",
+	case RemoteProofReportSchemaVersion, "compound.proof_check_report.v0.1",
 		"compound.proof_check_report.v0.2",
 		"compound.proof_check_report.v0.3",
 		"compound.proof_check_report.v0.4",

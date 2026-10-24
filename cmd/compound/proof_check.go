@@ -49,8 +49,12 @@ var proofCheckCanonicalRunner = runProofCheckSealedSnapshotContext
 var proofCheckRuntimeArtifactRecorder = recordProofCheckRuntimeArtifact
 
 func cmdProofCheck(args []string) {
+	if hasFlag(args, "--remote-reconcile") {
+		os.Exit(work.RunRemoteProofRecoveryCLI(args, os.Stdout, os.Stderr))
+	}
 	if hasFlag(args, "--help") || hasFlag(args, "-h") {
 		fmt.Println("usage: compound proof-check [--json] [--dry-run] [--dev|--ci|--ci-console] [--repo P] [--base REF] [--out FILE] [--work ID --actor ACTOR]")
+		fmt.Println(work.RemoteProofHelp)
 		fmt.Println("  --dev         fast, cache-enabled, non-certifying developer feedback")
 		fmt.Println("  --redact-review ACT_ID exact native public-content review for the complete source snapshot (canonical full proof only)")
 		fmt.Println("  --ci          run only the fresh-clone-portable gate subset (bare Go gates; what CI runs on push/PR)")
@@ -68,13 +72,9 @@ func cmdProofCheck(args []string) {
 		fmt.Println("                never runs gates and exits 2 because fresh source-bound v0.3 battery is required")
 		return
 	}
-	reviewActionID := strings.TrimSpace(flagValue(args, "--redact-review"))
-	if hasFlag(args, "--redact-review") && (reviewActionID == "" || strings.HasPrefix(reviewActionID, "--")) {
-		fmt.Fprintln(os.Stderr, "proof-check: --redact-review requires an exact recorded ActionIntent ID")
-		os.Exit(2)
-	}
-	if reviewActionID != "" && (proofCheckDevelopmentRequested(args) || hasFlag(args, "--dry-run") || hasFlag(args, "--ci") || hasFlag(args, "--ci-console") || hasFlag(args, "--recover-legacy-retained") || hasFlag(args, "--timings")) {
-		fmt.Fprintln(os.Stderr, "proof-check: reviewed redaction requires canonical full proof, not a lightweight or recovery mode")
+	routeOptions, err := work.ParseProofCheckRouteOptions(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "proof-check:", err)
 		os.Exit(2)
 	}
 	if err := proofCheckLegacyRecoveryModeError(args); err != nil {
@@ -244,14 +244,14 @@ func cmdProofCheck(args []string) {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
 			os.Exit(2)
 		}
-		if reviewActionID != "" {
-			plan, err = work.BindNativeSourceRedactionReview(plan, homePath, workID, actor, reviewActionID)
+		if routeOptions.PublicRedactionActionID != "" {
+			plan, err = work.BindNativeSourceRedactionReview(plan, homePath, workID, actor, routeOptions.PublicRedactionActionID)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "proof-check: public redaction review:", err)
 				os.Exit(2)
 			}
 		}
-		profile, err := work.ProofResourceProfileForCanonicalPlan(plan)
+		profile, err := work.ProofResourceProfileForCanonicalPlanWithRemote(context.Background(), plan, homePath, routeOptions.RemoteRoute, proofCheckCommandContext)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
 			os.Exit(2)
@@ -290,7 +290,7 @@ func cmdProofCheck(args []string) {
 			Now:                    time.Now,
 		}, func(ctx context.Context) (proofCheckReport, error) {
 			planContext := work.ContextWithCanonicalProofPlan(ctx, plan)
-			if reviewActionID != "" {
+			if routeOptions.PublicRedactionActionID != "" {
 				planContext = work.ContextWithPublicRedactionReview(planContext, homePath, workID, actor)
 			}
 			produced, runErr := proofCheckCanonicalRunner(planContext, resolvedRepo, false, sourceSnapshot, false, false, time.Now())
@@ -405,12 +405,7 @@ func proofCheckShouldRecordArtifact(dryRun bool, status string, ciOnly, ciConsol
 }
 
 func proofCheckInvocationIdentity(args []string) (string, error) {
-	argv := append([]string{"compound", "proof-check"}, args...)
-	body, err := json.Marshal(argv)
-	if err != nil {
-		return "", err
-	}
-	return "argv-json:" + string(body), nil
+	return work.ProofCheckInvocationIdentity(args)
 }
 
 func proofCheckArgsWithoutLegacyRecovery(args []string) []string {
@@ -1093,7 +1088,7 @@ func runProofCheckWithRangeContext(
 		defer cleanupRuntimeExecutable()
 	}
 	report := proofCheckReport{
-		SchemaVersion:  work.ProofCheckSchemaVersion,
+		SchemaVersion:  work.RemoteProofReportSchema(ctx),
 		ProfileKind:    work.ProofResourceProfileCanonicalFull,
 		Status:         "ok",
 		GeneratedAt:    now.UTC().Format(time.RFC3339Nano),
@@ -1120,7 +1115,7 @@ func runProofCheckWithRangeContext(
 		}
 		report.Steps = append(report.Steps, result)
 	}
-	return report, nil
+	return report, work.ValidateRemoteProofSteps(ctx, report.Steps)
 }
 
 func recordProofCheckRuntimeArtifact(homePath string, report proofCheckReport) (proofCheckReport, error) {
@@ -1390,7 +1385,9 @@ func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckS
 		result.DurationMS = time.Since(start).Milliseconds()
 		return result
 	}
-	if strings.HasPrefix(step.Name, "consumer:") {
+	if step.Name == "go-test" && work.RemoteProofRequired(ctx) {
+		output, result.RemoteEvidence, err = work.RunRemoteProofGate(ctx, repo, step)
+	} else if strings.HasPrefix(step.Name, "consumer:") {
 		output, result.ConsumerEvidence, err = work.RunCanonicalConsumer(ctx, repo, step, headRefs, proofCheckCommandContext, proofCheckRuntimeExecutable)
 	} else if step.Name == work.HomeFixtureGateName {
 		output, result.HomeFixtureEvidence, err = work.RunHomeFixtureGate(ctx, repo, step, proofCheckCommandEnv(ctx, repo), proofCheckCommandContext)
