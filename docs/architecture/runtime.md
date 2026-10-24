@@ -829,7 +829,19 @@ membership ledger.
 ### Exact reviewed candidate proof adoption
 
 Distinct work items may share one original canonical proof only after explicit review of the
-same repository, fresh proof base and combined candidate. The source holder uses
+same repository, fresh proof base and combined candidate.
+
+`work proof-review WORK --actor ACTOR --file REVIEW` custodies a nonempty review
+body of at most 1 MiB for the currently held verifying work. It attaches the exact
+content hash through a native same-state ActionIntent and PolicyDecision before
+immutable artifact custody, and returns the plain artifact reference consumed by
+manifest review refs. Identical retries authenticate that attachment and recover
+only its exact pending operation. Foreign holders, unrelated pending mutations,
+corrupt existing bodies, and stale explicit generations fail closed. The optional
+`--expected-policy` and `--expected-action` flags bind a caller's observed generation;
+a completed exact retry is accepted only while its result remains current.
+This door does not declare a review sufficient or change the acceptance contract.
+
 `work proof-manifest WORK --actor ACTOR --file MANIFEST.json` to custody an immutable
 `compound.proof_member_manifest.v0.1` artifact. Its source work, repository fingerprint,
 base/head, target ref and members are explicit. Every member preserves its original

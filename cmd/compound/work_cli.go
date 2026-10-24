@@ -116,6 +116,7 @@ type workVerbHelp struct {
 const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|reconcile-run-attempts|run-attempt-link|continue|dispatch-plan|dispatch-claim|dispatch-execute|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|delivery-capture|advance-plan|advance|delegate|steer|attach|collaborate|observe-run|land-check|proof-manifest|proof-adopt|salvage-plan|private-source-publish|action-plan|act|close-plan|close|set-aside|sweep-stale|reseal> ..."
 
 var workVerbHelpByName = map[string]workVerbHelp{
+	"proof-review":   {Usage: work.ProofAdoptionUsage, Example: "compound work proof-review work_example --actor executor --file review.md"},
 	"proof-manifest": {Usage: work.ProofAdoptionUsage, Example: "compound work proof-manifest work_example --actor executor --file manifest.json"},
 	"proof-adopt":    {Usage: work.ProofAdoptionUsage, Example: "compound work proof-adopt work_example --actor executor --proof-result pfrs_example --manifest artifact:sha256:DIGEST"},
 	"private-source-publish": {
@@ -310,7 +311,7 @@ func previewDispatchClaim(store *work.Store, now time.Time, opts work.DispatchPl
 // The command owner parses any mixed read/write surface so invalid and read-only
 // requests cannot materialize the work habitat.
 func workCommandNeedsWritableStore(sub string, args []string) bool {
-	if sub == "proof-manifest" || sub == "proof-adopt" {
+	if sub == "proof-manifest" || sub == "proof-adopt" || sub == "proof-review" {
 		return work.ProofAdoptionCLIRequiresWritableStore(sub, args)
 	}
 	if sub == "private-source-publish" {
@@ -573,7 +574,7 @@ func cmdWork(args []string) {
 	}
 
 	switch sub {
-	case "proof-manifest", "proof-adopt":
+	case "proof-manifest", "proof-adopt", "proof-review":
 		if code := work.RunProofAdoptionCLI(store, sub, rest, os.Stdout, os.Stderr); code != 0 {
 			os.Exit(code)
 		}

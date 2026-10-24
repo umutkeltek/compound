@@ -1,6 +1,7 @@
 package work
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -52,6 +53,82 @@ type ProofManifestResult struct {
 	WorkID      string `json:"work_id"`
 	ManifestRef string `json:"manifest_ref"`
 	ArtifactRef string `json:"artifact_ref"`
+}
+
+// ProofReviewInput custodies one holder-supplied review body for this work only.
+type ProofReviewInput struct {
+	Actor                    string
+	Body                     []byte
+	ExpectedPolicyDecisionID string
+	ExpectedActionIntentID   string
+}
+
+type ProofReviewResult struct {
+	WorkID    string `json:"work_id"`
+	ReviewRef string `json:"review_ref"`
+}
+
+// RecordProofReview binds immutable review bytes to a native same-state action.
+// Custody follows attachment authority; the same bytes safely finish an
+// interrupted body write without minting a second action or foreign attachment.
+func (s *Store) RecordProofReview(workID string, in ProofReviewInput, now time.Time) (ProofReviewResult, error) {
+	var out ProofReviewResult
+	if len(in.Body) > 1<<20 || len(bytes.TrimSpace(in.Body)) == 0 {
+		return out, fmt.Errorf("proof review requires 1..1048576 bytes of nonempty content")
+	}
+	body := append([]byte(nil), in.Body...)
+	sum := sha256.Sum256(body)
+	ref := home.ArtifactRefPrefix + hex.EncodeToString(sum[:])
+	err := s.withLifecycleMutation(func() error {
+		w, err := s.proofAdoptionMutableWork(workID, in.Actor, in.ExpectedPolicyDecisionID, in.ExpectedActionIntentID, ref, now)
+		if err != nil {
+			return err
+		}
+		reader, err := s.proofAdoptionArtifactReader()
+		if err != nil {
+			return err
+		}
+		// Refuse corrupt existing custody before appending a new action.
+		if _, err := reader.Get(ref); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if oneOf(ref, w.ArtifactIDs) {
+			if err := s.validateProofAttachment(w, ref); err != nil {
+				return err
+			}
+		} else {
+			_, err = s.advanceLocked(workID, AdvanceInput{
+				To: w.State, Actor: in.Actor, ArtifactID: ref,
+				ExpectedWorkState: w.State, ExpectedPolicyDecisionID: w.PolicyDecisionID,
+				ExpectedActionIntentID: latestActionIntentID(w), proofReviewAdmission: true,
+				Note: "custody exact work proof review",
+			}, now)
+			if err != nil {
+				return err
+			}
+		}
+		artifacts, err := home.NewArtifactStore(s.home)
+		if err != nil {
+			return err
+		}
+		stored, err := artifacts.Put(body)
+		if err != nil {
+			return err
+		}
+		if stored != ref {
+			return fmt.Errorf("proof review custody digest mismatch")
+		}
+		out = ProofReviewResult{WorkID: workID, ReviewRef: ref}
+		return nil
+	})
+	return out, err
+}
+
+func proofAttachmentPresent(w envelope.WorkEnvelope, ref string) bool {
+	if strings.HasPrefix(ref, home.ArtifactRefPrefix) {
+		return oneOf(ref, w.ArtifactIDs)
+	}
+	return oneOf(ref, w.VerificationIDs)
 }
 
 func proofManifestBody(m ProofMemberManifest) ([]byte, string, error) {
@@ -270,17 +347,6 @@ func (s *Store) proofAdoptionMutableWork(workID, actor, expectedPolicy, expected
 	if leaseBefore.By != actor {
 		return w, fmt.Errorf("proof operation requires current work holder")
 	}
-	if err := validateExpectedExecutionReservation(w, "verifying", expectedPolicy, expectedAction); err != nil {
-		// A completed exact retry can return its authenticated existing state.
-		// It must not replay some other pending operation to satisfy stale CAS.
-		if idempotentRef != "" && oneOf(idempotentRef, w.VerificationIDs) {
-			if authErr := s.validateProofAttachment(w, idempotentRef); authErr != nil {
-				return w, authErr
-			}
-			return w, nil
-		}
-		return w, err
-	}
 	if idempotentRef != "" {
 		var pending envelope.WorkEnvelope
 		if readErr := s.readJSON(s.advancePendingPath(w.ID), &pending); readErr != nil {
@@ -292,10 +358,33 @@ func (s *Store) proofAdoptionMutableWork(workID, actor, expectedPolicy, expected
 			if err := s.readEventJSON(latestActionIntentID(pending), &action); err != nil {
 				return w, err
 			}
-			if !oneOf(idempotentRef, pending.VerificationIDs) || action.ArgumentsHash != proofAttachmentArgumentsHash(idempotentRef) {
+			if !proofAttachmentPresent(pending, idempotentRef) || action.ArgumentsHash != proofAttachmentArgumentsHash(idempotentRef) {
 				return w, fmt.Errorf("pending unrelated lifecycle mutation must be recovered before proof adoption")
 			}
 		}
+	}
+	if err := validateExpectedExecutionReservation(w, "verifying", expectedPolicy, expectedAction); err != nil {
+		// A completed exact retry can return its authenticated existing state.
+		// It must not replay some other pending operation to satisfy stale CAS.
+		if idempotentRef != "" && proofAttachmentPresent(w, idempotentRef) {
+			if strings.HasPrefix(idempotentRef, home.ArtifactRefPrefix) {
+				var latest envelope.ActionIntent
+				if readErr := s.readEventJSON(latestActionIntentID(w), &latest); readErr != nil {
+					return w, readErr
+				}
+				if latest.ArgumentsHash != proofAttachmentArgumentsHash(idempotentRef) {
+					return w, err
+				}
+				if gateErr := s.leaseHolderAdvanceGate(w, actor, AdvanceInput{To: w.State, Actor: actor}, now); gateErr != nil {
+					return w, gateErr
+				}
+			}
+			if authErr := s.validateProofAttachment(w, idempotentRef); authErr != nil {
+				return w, authErr
+			}
+			return w, nil
+		}
+		return w, err
 	}
 	// Recover a prior same-state attachment before deciding whether this operation
 	// already happened. Otherwise advanceLocked can return a different recovered

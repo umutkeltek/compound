@@ -10,9 +10,9 @@ import (
 	"time"
 )
 
-const ProofAdoptionUsage = "usage: compound work proof-manifest WORK --actor ACTOR --file MANIFEST.json\n   or: compound work proof-adopt WORK --actor ACTOR --proof-result pfrs_ID --manifest artifact:sha256:DIGEST"
+const ProofAdoptionUsage = "usage: compound work proof-review WORK --actor ACTOR --file REVIEW [--expected-policy ID --expected-action ID]\n   or: compound work proof-manifest WORK --actor ACTOR --file MANIFEST.json\n   or: compound work proof-adopt WORK --actor ACTOR --proof-result pfrs_ID --manifest artifact:sha256:DIGEST"
 
-type proofAdoptionCLIOptions struct{ work, actor, file, result, manifest string }
+type proofAdoptionCLIOptions struct{ work, actor, file, result, manifest, expectedPolicy, expectedAction string }
 
 func parseProofAdoptionCLI(operation string, args []string) (proofAdoptionCLIOptions, error) {
 	var opts proofAdoptionCLIOptions
@@ -23,13 +23,17 @@ func parseProofAdoptionCLI(operation string, args []string) (proofAdoptionCLIOpt
 	flags := flag.NewFlagSet(operation, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&opts.actor, "actor", "", "current holder")
-	if operation == "proof-manifest" {
-		flags.StringVar(&opts.file, "file", "", "reviewed manifest")
+	if operation == "proof-manifest" || operation == "proof-review" {
+		flags.StringVar(&opts.file, "file", "", "review or manifest body")
 	} else if operation == "proof-adopt" {
 		flags.StringVar(&opts.result, "proof-result", "", "original proof result")
 		flags.StringVar(&opts.manifest, "manifest", "", "custodied manifest")
 	} else {
 		return opts, fmt.Errorf("unknown proof operation")
+	}
+	if operation == "proof-review" {
+		flags.StringVar(&opts.expectedPolicy, "expected-policy", "", "exact current policy generation")
+		flags.StringVar(&opts.expectedAction, "expected-action", "", "exact current action generation")
 	}
 	flags.Bool("json", false, "structured output")
 	seen := map[string]bool{}
@@ -49,8 +53,8 @@ func parseProofAdoptionCLI(operation string, args []string) (proofAdoptionCLIOpt
 	if flags.NArg() != 0 || strings.TrimSpace(opts.actor) == "" {
 		return opts, fmt.Errorf("exact actor and registered flags are required")
 	}
-	if operation == "proof-manifest" && opts.file == "" {
-		return opts, fmt.Errorf("manifest file is required")
+	if (operation == "proof-manifest" || operation == "proof-review") && opts.file == "" {
+		return opts, fmt.Errorf("proof body file is required")
 	}
 	if operation == "proof-adopt" {
 		if _, err := proofAdoptionRef(opts.result, opts.manifest); err != nil {
@@ -73,7 +77,12 @@ func RunProofAdoptionCLI(store *Store, operation string, args []string, stdout, 
 		return 2
 	}
 	var out any
-	if operation == "proof-manifest" {
+	if operation == "proof-manifest" || operation == "proof-review" {
+		info, statErr := os.Lstat(opts.file)
+		if statErr != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
+			fmt.Fprintln(stderr, "proof body must be a bounded regular file")
+			return 2
+		}
 		file, openErr := os.Open(opts.file)
 		if openErr != nil {
 			fmt.Fprintln(stderr, openErr)
@@ -81,12 +90,23 @@ func RunProofAdoptionCLI(store *Store, operation string, args []string, stdout, 
 		}
 		body, readErr := io.ReadAll(io.LimitReader(file, 1<<20+1))
 		closeErr := file.Close()
-		var manifest ProofMemberManifest
-		if readErr != nil || closeErr != nil || len(body) > 1<<20 || publicReviewStrictJSON(body, &manifest) != nil {
-			fmt.Fprintln(stderr, "invalid bounded proof manifest")
+		if readErr != nil || closeErr != nil || len(body) > 1<<20 {
+			fmt.Fprintln(stderr, "invalid bounded proof body")
 			return 2
 		}
-		out, err = store.RecordProofManifest(opts.work, opts.actor, manifest, time.Now())
+		if operation == "proof-review" {
+			out, err = store.RecordProofReview(opts.work, ProofReviewInput{
+				Actor: opts.actor, Body: body, ExpectedPolicyDecisionID: opts.expectedPolicy,
+				ExpectedActionIntentID: opts.expectedAction,
+			}, time.Now())
+		} else {
+			var manifest ProofMemberManifest
+			if publicReviewStrictJSON(body, &manifest) != nil {
+				fmt.Fprintln(stderr, "invalid proof manifest")
+				return 2
+			}
+			out, err = store.RecordProofManifest(opts.work, opts.actor, manifest, time.Now())
+		}
 	} else {
 		out, err = store.AdoptProof(opts.work, ProofAdoptionInput{Actor: opts.actor, ProofResultID: opts.result, ManifestRef: opts.manifest}, time.Now())
 	}

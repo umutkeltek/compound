@@ -1711,6 +1711,7 @@ func (s *Store) validateClaimEventArtifacts(event Event, claimed envelope.WorkEn
 type AdvanceInput struct {
 	proofAdoptionAdmission bool
 	proofManifestAdmission bool
+	proofReviewAdmission   bool
 	To                     string
 	Actor                  string
 	NonSourceDelivery      *ActionDeliveryRequest
@@ -2027,7 +2028,7 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 		return recovered, nil
 	}
 	proofAttachmentRef := ""
-	if in.proofManifestAdmission {
+	if in.proofManifestAdmission || in.proofReviewAdmission {
 		proofAttachmentRef = in.ArtifactID
 	}
 	if in.proofAdoptionAdmission {
