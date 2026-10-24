@@ -64,9 +64,15 @@ original workspace, command and sealed profile instead of the current checkout. 
 reuses the ordinary completion machinery and the existing output custody to restore
 the original owned report, and it never admits a battery. The exact Work, actor,
 reservation and the expected pending-journal bytes are mandatory, and the pending-byte
-fence is enforced inside the native mutation guard, not only in a wrapper precheck. The
+fence is enforced inside the guard that performs the recovery effects — before any
+report, custody, rearm or attempt mutation — not only in a wrapper precheck. The
+dedicated route requires an existing, valid completion governance seal and validates
+the pending, attempt, lineage and holder barriers before it reaches the owned report.
+A hash the recovery itself generates later (a legitimate retry reseed) is allowed. The
 outcome stays a failed battery verdict with no VerificationID: the original report,
-attempts and refusals are preserved.
+attempts and refusals are preserved. A repetition, or any request that matches no
+retained completion, refuses without writing an output, recreating consumed evidence
+or admitting a battery.
 
 ## Evidence of later benefit
 

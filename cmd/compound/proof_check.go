@@ -34,7 +34,7 @@ var proofCheckCanonicalRunner = runProofCheckSealedSnapshotContext
 var proofCheckRuntimeArtifactRecorder = recordProofCheckRuntimeArtifact
 
 func cmdProofCheck(args []string) {
-	if hasFlag(args, "--reconcile-quiescent") || hasFlag(args, "--resume-retained") {
+	if work.HasProofRecoveryFlag(args, "--reconcile-quiescent") || work.HasProofRecoveryFlag(args, "--resume-retained") {
 		os.Exit(work.RunProofRecoveryCLI(args, os.Stdout, os.Stderr, proofCheckRestoreRetainedReport))
 	}
 	if hasFlag(args, "--remote-reconcile") {

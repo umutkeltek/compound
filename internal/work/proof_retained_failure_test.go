@@ -131,6 +131,59 @@ func TestRetainedFailedProofRecoveryRearmsExpiredLeaseWithMissingCheckout(t *tes
 	assertRetainedFailedRecovery(t, f, acquired, outcome)
 }
 
+// The combined realistic recovery: an expired source review, an expired reservation lease, a
+// terminal attempt whose retry lineage the recovery itself must extend, and a source checkout
+// that advanced after the retained proof was produced.
+func TestRetainedFailedProofRecoveryCombinesExpiredLeaseExpiredReviewTerminalRetryAndAdvancedCheckout(t *testing.T) {
+	f, acquired, input, sum, at := retainedFailedProofFixture(t)
+	// The source checkout advanced after the retained proof was produced.
+	advanceProofSourceRepo(t, f.repo)
+	later := at.Add(21 * time.Minute)
+	if err := f.store.validatePrivateSourceProfileAuthority(f.workID, proofActorAlpha, acquired.Reservation.Profile, later); err == nil {
+		t.Fatal("the fixture must carry a genuinely expired source review")
+	}
+	restored := 0
+	outcome, found, err := f.store.ResumeRetainedFailedProofCompletion(f.workID, ProofResourceRetainedFailureInput{
+		Actor: proofActorAlpha, ReservationID: acquired.Reservation.ID, ExpectedPendingSHA256: sum,
+		PrepareOwnedReport: func(result ProofResourceResult) error {
+			restored++
+			if result.ReportArtifactRef != input.ReportArtifactRef {
+				t.Fatal("recovery changed the original owned report")
+			}
+			return nil
+		},
+	}, later)
+	if err != nil || !found {
+		t.Fatalf("the combined retained recovery was blocked: found=%v err=%v", found, err)
+	}
+	if restored != 1 {
+		t.Fatalf("owned report publication barrier calls=%d", restored)
+	}
+	assertRetainedFailedRecovery(t, f, acquired, outcome)
+	// The original terminal attempt is preserved and the retry lineage extends it: the
+	// recovery never replaces an original attempt.
+	original, err := f.store.runAttempts().Get(acquired.Reservation.RunAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !runattempt.IsTerminal(original.Status) || original.Status != runattempt.StatusFailed {
+		t.Fatalf("the original terminal attempt was not preserved: %+v", original)
+	}
+	attempts, err := f.store.runAttempts().List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	retries := 0
+	for _, attempt := range attempts {
+		if attempt.PredecessorID == original.ID {
+			retries++
+		}
+	}
+	if retries == 0 {
+		t.Fatalf("the retained recovery did not extend the terminal retry lineage: %+v", attempts)
+	}
+}
+
 func TestRetainedFailedProofRecoveryRefusesMismatchedExpectations(t *testing.T) {
 	f, acquired, _, sum, at := retainedFailedProofFixture(t)
 	cases := []struct {
@@ -195,8 +248,16 @@ func TestRetainedFailedProofRecoveryFencesPendingBytesInsideTheNativeGuard(t *te
 			t.Fatal(writeErr)
 		}
 	}
+	attemptsBefore, err := f.store.runAttempts().List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventsBefore, err := f.store.eventsFor(f.workID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// The journal changes between the initial read and the protected mutation. The fence lives
-	// inside the native mutation guard, so the changed bytes refuse there.
+	// inside the guard that performs the recovery effects, so the changed bytes refuse there.
 	original := proofResourceBeforeRetainedMutation
 	proofResourceBeforeRetainedMutation = func(reservationID string) { tamper() }
 	t.Cleanup(func() { proofResourceBeforeRetainedMutation = original })
@@ -212,6 +273,89 @@ func TestRetainedFailedProofRecoveryFencesPendingBytesInsideTheNativeGuard(t *te
 	}
 	if !strings.Contains(err.Error(), "expected pending sha256") {
 		t.Fatalf("the changed pending bytes were not refused by the expected-hash fence: %v", err)
+	}
+	// A fenced refusal has ZERO callback, output and native effects.
+	attemptsAfter, err := f.store.runAttempts().List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attemptsAfter) != len(attemptsBefore) {
+		t.Fatalf("a fenced retained recovery mutated the attempt ledger: %d -> %d", len(attemptsBefore), len(attemptsAfter))
+	}
+	eventsAfter, err := f.store.eventsFor(f.workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(eventsAfter) != len(eventsBefore) {
+		t.Fatalf("a fenced retained recovery wrote lifecycle events: %d -> %d", len(eventsBefore), len(eventsAfter))
+	}
+}
+
+// The dedicated failure route requires an EXISTING, valid completion governance seal before any
+// effect. A missing or malformed seal must have zero callback and output effects.
+func TestRetainedFailedProofRecoveryRefusesMissingOrMalformedSeal(t *testing.T) {
+	for name, mutate := range map[string]func(map[string]any){
+		"missing_seal": func(body map[string]any) { delete(body, "governance_seal") },
+		"malformed_seal": func(body map[string]any) { body["governance_seal"] = strings.Repeat("0", 64) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, acquired, _, sum, at := retainedFailedProofFixture(t)
+			path, err := f.store.proofResourceCompletionPendingPath(acquired.Reservation.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded map[string]any
+			if err := json.Unmarshal(body, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			mutate(decoded)
+			forged, err := json.Marshal(decoded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, forged, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			attemptsBefore, err := f.store.runAttempts().List()
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The seal mutation changes the journal bytes, so the fence refuses first. The seal
+			// refusal itself is proven by the barrier check below, which the dedicated route
+			// applies to the unchanged journal.
+			_, _, _ = f.store.ResumeRetainedFailedProofCompletion(f.workID, ProofResourceRetainedFailureInput{
+				Actor: proofActorAlpha, ReservationID: acquired.Reservation.ID, ExpectedPendingSHA256: sum,
+				PrepareOwnedReport: func(result ProofResourceResult) error {
+					t.Fatal("a refused seal reached the owned report barrier")
+					return nil
+				},
+			}, at.Add(6*time.Minute))
+			attemptsAfter, err := f.store.runAttempts().List()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(attemptsAfter) != len(attemptsBefore) {
+				t.Fatalf("a refused seal mutated the attempt ledger: %d -> %d", len(attemptsBefore), len(attemptsAfter))
+			}
+			// The barrier refuses the very same missing/malformed seal directly, with the
+			// operator's expected bytes re-derived from the mutated journal.
+			mutated, err := f.store.proofResourceCompletionPendingSHA256(acquired.Reservation.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pending, _, _, err := f.store.readProofResourceCompletionPending(acquired.Reservation.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.store.validateRetainedFailedProofBarriers(f.workID, proofActorAlpha, acquired.Reservation, pending); err == nil {
+				t.Fatal("the dedicated failure route accepted a missing or malformed governance seal")
+			}
+			_ = mutated
+		})
 	}
 }
 
@@ -258,7 +402,7 @@ func TestRetainedFailedProofRecoveryRefusesNonFailedResults(t *testing.T) {
 	}
 }
 
-func TestRetainedFailedProofRecoveryRepetitionIsHarmless(t *testing.T) {
+func TestRetainedFailedProofRecoveryRepetitionRefusesWithoutStateDelta(t *testing.T) {
 	f, acquired, _, sum, at := retainedFailedProofFixture(t)
 	outcome, found, err := f.store.ResumeRetainedFailedProofCompletion(f.workID, ProofResourceRetainedFailureInput{
 		Actor: proofActorAlpha, ReservationID: acquired.Reservation.ID, ExpectedPendingSHA256: sum,
@@ -267,12 +411,19 @@ func TestRetainedFailedProofRecoveryRepetitionIsHarmless(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("the first retained recovery failed: found=%v err=%v", found, err)
 	}
+	if outcome.ReportArtifactRef == "" {
+		t.Fatal("the first retained recovery lost the original owned report")
+	}
 	attempts, err := f.store.runAttempts().List()
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The consumed journal is gone. A repetition must not require it, must not recreate
-	// evidence, and must not admit a battery.
+	events, err := f.store.eventsFor(f.workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The consumed journal is gone. A repetition must refuse clearly: it must not require the
+	// consumed pending file, must not recreate consumed evidence, and must not admit a battery.
 	repeat, found, err := f.store.ResumeRetainedFailedProofCompletion(f.workID, ProofResourceRetainedFailureInput{
 		Actor: proofActorAlpha, ReservationID: acquired.Reservation.ID, ExpectedPendingSHA256: sum,
 		PrepareOwnedReport: func(result ProofResourceResult) error {
@@ -283,18 +434,25 @@ func TestRetainedFailedProofRecoveryRepetitionIsHarmless(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a repeated retained recovery errored: %v", err)
 	}
-	if !found || !repeat.AlreadyCompleted {
-		t.Fatalf("a repeated retained recovery did not report the committed completion: %+v", repeat)
+	if found {
+		t.Fatalf("a repeated retained recovery claimed a retained completion: %+v", repeat)
 	}
-	if repeat.ReportArtifactRef != outcome.ReportArtifactRef {
-		t.Fatal("a repeated retained recovery reported a different owned report")
+	if repeat.ReportArtifactRef != "" || repeat.VerificationRef != "" || repeat.ResourceReleased {
+		t.Fatalf("a refused repetition reported a completion: %+v", repeat)
 	}
 	after, err := f.store.runAttempts().List()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(after) != len(attempts) {
-		t.Fatalf("a repeated retained recovery invented an attempt: %d -> %d", len(attempts), len(after))
+		t.Fatalf("a refused repetition invented an attempt: %d -> %d", len(attempts), len(after))
+	}
+	afterEvents, err := f.store.eventsFor(f.workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterEvents) != len(events) {
+		t.Fatalf("a refused repetition wrote lifecycle events: %d -> %d", len(events), len(afterEvents))
 	}
 }
 

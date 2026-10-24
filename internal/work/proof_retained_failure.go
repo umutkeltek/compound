@@ -14,6 +14,7 @@ import (
 
 	"compound/internal/envelope"
 	"compound/internal/home"
+	"compound/internal/policy"
 	"compound/internal/runattempt"
 )
 
@@ -52,7 +53,6 @@ type RetainedFailedProofOutcome struct {
 	ProducerExitCode  int                   `json:"producer_exit_code"`
 	VerificationRef   string                `json:"verification_ref,omitempty"`
 	ResourceReleased  bool                  `json:"resource_released"`
-	AlreadyCompleted  bool                  `json:"already_completed"`
 	Work              envelope.WorkEnvelope `json:"work"`
 }
 
@@ -103,15 +103,9 @@ func (s *Store) ResumeRetainedFailedProofCompletion(
 		return RetainedFailedProofOutcome{}, false, err
 	}
 	if !present {
-		// The journal is consumed only by a proven completion. Report that idempotently;
-		// never recreate consumed evidence and never admit a battery in its place.
-		outcome, completed, err := s.retainedFailedProofCommittedOutcome(workID, in.Actor, reservation)
-		if err != nil {
-			return RetainedFailedProofOutcome{}, false, err
-		}
-		if completed {
-			return outcome, true, nil
-		}
+		// The completion journal is gone. There is no retained completion to finish: the route
+		// refuses safely. It never recreates consumed evidence, never writes an output, and
+		// never admits a battery in its place.
 		return RetainedFailedProofOutcome{}, false, nil
 	}
 	if err := s.verifyRetainedPendingSHA256(reservation.ID, in.ExpectedPendingSHA256); err != nil {
@@ -174,54 +168,6 @@ func (s *Store) ResumeRetainedFailedProofCompletion(
 	return outcome, true, nil
 }
 
-// retainedFailedProofCommittedOutcome reports an already committed retained failure from the
-// native receipts. It reads only this work's own lifecycle evidence.
-func (s *Store) retainedFailedProofCommittedOutcome(
-	workID, actor string,
-	reservation ProofResourceReservation,
-) (RetainedFailedProofOutcome, bool, error) {
-	events, err := s.eventsFor(workID)
-	if err != nil {
-		return RetainedFailedProofOutcome{}, false, err
-	}
-	for _, event := range events {
-		if event.By != actor {
-			continue
-		}
-		for _, attached := range event.Attached {
-			if !strings.HasPrefix(attached, "pfrs_") {
-				continue
-			}
-			var result ProofResourceResult
-			if err := s.readEventJSON(attached, &result); err != nil {
-				continue
-			}
-			if result.ReservationID != reservation.ID || result.Status != ProofResourceFailed {
-				continue
-			}
-			if result.VerificationRef != "" || result.ReportArtifactRef == "" {
-				continue
-			}
-			current, err := s.Get(workID)
-			if err != nil {
-				return RetainedFailedProofOutcome{}, false, err
-			}
-			return RetainedFailedProofOutcome{
-				ReservationID:     reservation.ID,
-				WorkID:            workID,
-				Actor:             actor,
-				ReportArtifactRef: result.ReportArtifactRef,
-				ReportStatus:      result.ReportStatus,
-				ProducerExitCode:  result.ProducerExitCode,
-				ResourceReleased:  true,
-				AlreadyCompleted:  true,
-				Work:              current,
-			}, true, nil
-		}
-	}
-	return RetainedFailedProofOutcome{}, false, nil
-}
-
 // authenticateRetainedFailedProofResult accepts only an owned, exact failed result for this
 // reservation. A successful, unknown, inconsistent, unowned or verification-bearing result can
 // never use the dedicated failure route.
@@ -258,20 +204,68 @@ func authenticateRetainedFailedProofResult(
 	return nil
 }
 
-// fenceRetainedPendingUnderMutationGuard re-checks the retained completion journal bytes inside
-// the existing native mutation guard, before any recovery effect. A wrapper-only precheck is
-// racy: the journal may change between the operator's read and the protected mutation.
-func (s *Store) fenceRetainedPendingUnderMutationGuard(reservationID, expected string) error {
-	if strings.TrimSpace(expected) == "" {
-		return nil
+// validateRetainedFailedProofBarriers authenticates the native pending, attempt, lineage and
+// holder barriers of the dedicated failure route BEFORE any recovery effect, so a missing or
+// malformed seal and an invalid or still-active attempt can never reach the owned report
+// publication or any native mutation.
+//
+// The dedicated route requires an EXISTING, valid completion governance seal. The ordinary
+// legacy normalization of a missing seal stays untouched for every other path.
+func (s *Store) validateRetainedFailedProofBarriers(
+	workID, actor string,
+	reservation ProofResourceReservation,
+	pending proofResourceCompletionPending,
+) error {
+	if pending.GovernanceSeal == "" {
+		return fmt.Errorf("retained failed proof recovery requires an existing completion governance seal")
 	}
-	return s.withLifecycleMutation(func() error {
-		return s.verifyRetainedPendingSHA256(reservationID, expected)
-	})
+	seal, err := proofResourceCompletionGovernanceSeal(pending.Action, pending.Decision)
+	if err != nil {
+		return fmt.Errorf("retained failed proof completion governance seal cannot be computed: %w", err)
+	}
+	if seal != pending.GovernanceSeal {
+		return fmt.Errorf("retained failed proof completion governance seal does not match its action and decision")
+	}
+	if err := pending.Action.Validate(); err != nil {
+		return fmt.Errorf("retained failed proof completion action is invalid: %w", err)
+	}
+	if err := pending.Decision.Validate(); err != nil {
+		return fmt.Errorf("retained failed proof completion decision is invalid: %w", err)
+	}
+	if !policy.Allowed(pending.Decision) {
+		return fmt.Errorf("retained failed proof completion decision is not allowing")
+	}
+	ra, err := s.runAttempts().Get(pending.Result.RunAttemptID)
+	if err != nil {
+		return fmt.Errorf("retained failed proof attempt cannot be read: %w", err)
+	}
+	if !runattempt.IsTerminal(ra.Status) {
+		return fmt.Errorf("retained failed proof attempt %s is still active", ra.ID)
+	}
+	if ra.Status != runattempt.StatusFailed {
+		return fmt.Errorf("retained failed proof attempt %s status %q is not a terminal failure", ra.ID, ra.Status)
+	}
+	if ra.WorkID != workID ||
+		ra.Actor != actor ||
+		ra.Harness != proofResourceHarness ||
+		ra.Origin != runattempt.OriginHarnessExecution {
+		return fmt.Errorf("retained failed proof attempt %s is not the reserved same-work execution", ra.ID)
+	}
+	if ra.Workspace != reservation.Workspace || ra.Command != reservation.Command {
+		return fmt.Errorf("retained failed proof attempt %s does not carry the reserved workspace and command", ra.ID)
+	}
+	if ra.ActionIntentID != reservation.ActionIntentID && ra.ActionIntentID != pending.Action.ID {
+		return fmt.Errorf("retained failed proof attempt %s is not bound to the reserved action intent", ra.ID)
+	}
+	if ra.ID != reservation.RunAttemptID && ra.PredecessorID == "" {
+		return fmt.Errorf("retained failed proof retry attempt %s has no predecessor", ra.ID)
+	}
+	return nil
 }
 
 // verifyRetainedPendingSHA256 fences the retained completion journal by its exact bytes. It runs
-// at admission and again inside the native mutation guards, before any recovery effect.
+// at admission and again inside the guard that performs the recovery effects, before any
+// report, custody, rearm or attempt mutation.
 func (s *Store) verifyRetainedPendingSHA256(reservationID, expected string) error {
 	expected = strings.ToLower(strings.TrimSpace(expected))
 	if expected == "" {
@@ -307,8 +301,8 @@ func RunProofRecoveryCLI(
 	stdout, stderr io.Writer,
 	restore func(homePath, artifactRef, outPath string) (ProofCheckReport, error),
 ) int {
-	if hasProofRecoveryFlag(args, "--resume-retained") {
-		if hasProofRecoveryFlag(args, "--reconcile-quiescent") {
+	if HasProofRecoveryFlag(args, "--resume-retained") {
+		if HasProofRecoveryFlag(args, "--reconcile-quiescent") {
 			fmt.Fprintln(stderr, "proof-check: --resume-retained and --reconcile-quiescent are mutually exclusive")
 			return 2
 		}
@@ -317,7 +311,11 @@ func RunProofRecoveryCLI(
 	return RunQuiescentProofRecoveryCLI(args, stdout, stderr)
 }
 
-func hasProofRecoveryFlag(args []string, name string) bool {
+// HasProofRecoveryFlag detects the EXACT recovery-only tokens. Both "--resume-retained PFR" and
+// "--resume-retained=PFR" select the retained route, and both enter it BEFORE any source capture,
+// plan rebuilding or current-snapshot validation. A longer token that merely starts with the same
+// characters is not a recovery flag.
+func HasProofRecoveryFlag(args []string, name string) bool {
 	for _, arg := range args {
 		if arg == name || strings.HasPrefix(arg, name+"=") {
 			return true
@@ -415,9 +413,6 @@ func RunRetainedFailedProofRecoveryCLI(
 		}
 	}
 	state := "recovered"
-	if outcome.AlreadyCompleted {
-		state = "already-completed"
-	}
 	if *jsonOut {
 		body, marshalErr := json.Marshal(report)
 		if marshalErr != nil {
