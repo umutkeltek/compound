@@ -1364,22 +1364,24 @@ func scanPrivateSourceBody(rel string, content []byte) []Finding {
 }
 
 // gitTrackedFiles returns the repo-relative paths of every tracked file (`git
-// ls-files`), the authoritative set of what ships publicly. The child receives
-// no GIT_* environment overrides: GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, object
-// directories, and config injection must not redirect the doctor away from the
-// repoRoot checkout it was asked to certify. A non-git repoRoot (or missing git)
-// returns an error so the caller falls back to a filesystem walk. Bounded by a
-// timeout so the doctor can never hang on a wedged git.
+// ls-files`), the authoritative set of what ships publicly. The child receives no
+// GIT_* environment overrides and no ambient Git config (gitSourceEnumerationEnv),
+// and core.fsmonitor is disabled for this invocation, so nothing outside the
+// repoRoot checkout can change WHICH SOURCE FILES the doctor enumerates. A
+// non-git repoRoot (or missing git) returns an error so the caller falls back to
+// a filesystem walk. Bounded by a timeout so the doctor can never hang on a
+// wedged git.
 func gitTrackedFiles(repoRoot string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "-C", repoRoot, "ls-files", "-z")
-	for _, entry := range os.Environ() {
-		name, _, _ := strings.Cut(entry, "=")
-		if !strings.HasPrefix(strings.ToUpper(name), "GIT_") {
-			cmd.Env = append(cmd.Env, entry)
-		}
-	}
+	// core.fsmonitor is disabled because the fsmonitor hook is an EXTERNAL PROGRAM
+	// git runs while listing the index — `git ls-files` runs it, so an ambient (or
+	// repo-local) core.fsmonitor made the enumeration execute whatever helper it
+	// names. `-c core.fsmonitor=false` is a command-line override, so it outranks
+	// every config file and leaves the tracked inventory byte-identical; it changes
+	// no index, worktree or submodule fact.
+	cmd := exec.CommandContext(ctx, "git", "-C", repoRoot, "-c", "core.fsmonitor=false", "ls-files", "-z")
+	cmd.Env = gitSourceEnumerationEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -1391,6 +1393,42 @@ func gitTrackedFiles(repoRoot string) ([]string, error) {
 		}
 	}
 	return files, nil
+}
+
+// gitSourceEnumerationEnv builds the environment the source-enumeration child runs
+// under. It is the DETERMINISM CONTRACT of that child, kept as one function so the
+// contract is inspectable and testable rather than spread across the call site.
+//
+// Two classes of ambient input are removed:
+//
+//  1. Every inherited GIT_* variable. GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, the
+//     object directories and the GIT_CONFIG_* family must not redirect the doctor
+//     away from the repoRoot checkout it was asked to certify.
+//  2. The CONFIG FILES git reads outside the checkout: the system-wide file,
+//     ~/.gitconfig and $XDG_CONFIG_HOME/git/config. A malformed one made
+//     `git ls-files` FAIL, which changed the doctor's source findings — the doc-leak
+//     scan failed closed and the private-body contract silently fell back to a
+//     filesystem walk. GIT_CONFIG_NOSYSTEM plus GIT_CONFIG_SYSTEM and
+//     GIT_CONFIG_GLOBAL pointing at os.DevNull remove all three.
+//
+// The repo's OWN .git/config is deliberately NOT touched: the local index, worktree
+// and submodule semantics git owns there stay exactly as they are, and the fix only
+// removes what the operator's environment contributes.
+func gitSourceEnumerationEnv() []string {
+	var env []string
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if !strings.HasPrefix(strings.ToUpper(name), "GIT_") {
+			env = append(env, entry)
+		}
+	}
+	// Appended AFTER the inherited-GIT_* filter, so these win over anything the
+	// caller exported.
+	return append(env,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_SYSTEM="+os.DevNull,
+		"GIT_CONFIG_GLOBAL="+os.DevNull,
+	)
 }
 
 // checkRetiredSurfaceReferences keeps proven-retired public surfaces from
