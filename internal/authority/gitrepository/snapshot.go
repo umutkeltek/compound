@@ -21,7 +21,12 @@ type Snapshot struct {
 // CaptureCleanSnapshot resolves baseRef once and refuses a candidate whose
 // source is not entirely represented by its committed HEAD tree.
 func CaptureCleanSnapshot(repo, baseRef string) (Snapshot, error) {
-	snapshot, err := readSnapshot(repo, baseRef)
+	return CaptureCleanSnapshotContext(context.Background(), repo, baseRef)
+}
+
+// CaptureCleanSnapshotContext binds all snapshot reads to the caller's cancellation.
+func CaptureCleanSnapshotContext(ctx context.Context, repo, baseRef string) (Snapshot, error) {
+	snapshot, err := readSnapshotContext(ctx, repo, baseRef)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -35,13 +40,18 @@ func CaptureCleanSnapshot(repo, baseRef string) (Snapshot, error) {
 // source identity. It intentionally resolves the immutable BaseSHA, never the
 // moving symbolic ref originally supplied by the caller.
 func RevalidateSnapshot(repo string, expected Snapshot) error {
+	return RevalidateSnapshotContext(context.Background(), repo, expected)
+}
+
+// RevalidateSnapshotContext retains the success fence without escaping the caller's deadline.
+func RevalidateSnapshotContext(ctx context.Context, repo string, expected Snapshot) error {
 	if err := ValidateSnapshotShape(expected); err != nil {
 		return fmt.Errorf("sealed source snapshot: %w", err)
 	}
 	if !expected.Clean {
 		return fmt.Errorf("sealed source snapshot is not clean")
 	}
-	current, err := readSnapshot(repo, expected.BaseSHA)
+	current, err := readSnapshotContext(ctx, repo, expected.BaseSHA)
 	if err != nil {
 		return err
 	}
@@ -62,6 +72,9 @@ func RevalidateSnapshot(repo string, expected Snapshot) error {
 }
 
 func readSnapshot(repo, baseRef string) (Snapshot, error) {
+	return readSnapshotContext(context.Background(), repo, baseRef)
+}
+func readSnapshotContext(parent context.Context, repo, baseRef string) (Snapshot, error) {
 	repo = strings.TrimSpace(repo)
 	baseRef = strings.TrimSpace(baseRef)
 	if repo == "" {
@@ -70,7 +83,7 @@ func readSnapshot(repo, baseRef string) (Snapshot, error) {
 	if baseRef == "" {
 		return Snapshot{}, fmt.Errorf("repository base ref required")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 
 	baseSHA, err := gitOutput(ctx, repo, "rev-parse", "--verify", baseRef+"^{commit}")
@@ -91,7 +104,7 @@ func readSnapshot(repo, baseRef string) (Snapshot, error) {
 	if !validObjectID(baseSHA) || !validObjectID(headSHA) || !validObjectID(treeSHA) {
 		return Snapshot{}, fmt.Errorf("Git source identity did not resolve to full object IDs")
 	}
-	identity, err := ReadIdentity(repo, baseSHA)
+	identity, err := ReadIdentityContext(ctx, repo, baseSHA)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("read repository identity: %w", err)
 	}

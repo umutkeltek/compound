@@ -90,6 +90,24 @@ or termination assertions to accommodate setup latency.
    non-terminal, redirected, and backgrounded stdout are supported; the authoritative full report
    is `--out`. Run it unpiped as its own command by default and preserve the actual process exit
    because zsh pipelines can mask failure. This is shell-observation safety, not proof admission.
+   Optional --execution-timeout <positive Go duration> bounds active canonical
+   proof preparation and admitted execution. It starts before source/profile
+   subprocesses; preparation consumes the same allowance later used by the admitted
+   run. Queue wait time is excluded, and --ttl remains heartbeat lease liveness.
+   Omitting the option preserves interactive unbounded behavior. Lightweight
+   and recovery modes refuse it; it has no harness-derived 45-minute ceiling.
+
+   The deadline cancels existing process groups, stops further gate setup and
+   checks cancellation after report publication and success-source revalidation.
+   That check is the execution cutoff. Expiry before it fails the original attempt,
+   retains failed/partial output, and cannot certify. Durable failure publication,
+   journal persistence and safe resource cleanup run synchronously afterward and
+   may exceed the allowance; a kernel-blocked filesystem call is not a hard
+   wall-clock promise. Output rewrites retain exact rooted publication custody.
+   Local SSH cancellation does not prove remote quiescence: the exact remote fence
+   remains until native reconciliation receives matching quiescent evidence.
+   No gate inventory, acceptance condition or Go test package timeout changes.
+
    Custom `--ttl` values below 30s are refused before
    admission; accepted windows refresh at `min(TTL/3, 5s)` and monitor holder loss continuously.
    Each gate inherits the shared land-lease kernel execution barrier. Lease loss, SIGINT/SIGTERM,

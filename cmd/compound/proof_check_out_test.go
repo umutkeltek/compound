@@ -10,6 +10,7 @@ package main
 import (
 	"bytes"
 	"compound/internal/home"
+	"compound/internal/work"
 	"context"
 	"encoding/json"
 	"errors"
@@ -109,11 +110,11 @@ func TestProofCheckGoRunInvocationsUseStableGateIdentity(t *testing.T) {
 
 func TestProofCheckInvocationIdentityIsLossless(t *testing.T) {
 	t.Parallel()
-	withSpace, err := proofCheckInvocationIdentity([]string{"--repo", "/synthetic/repo with space", "--out", "/synthetic/report.json"})
+	withSpace, err := work.ProofCheckInvocationIdentity([]string{"--repo", "/synthetic/repo with space", "--out", "/synthetic/report.json"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	split, err := proofCheckInvocationIdentity([]string{"--repo", "/synthetic/repo", "with", "space", "--out", "/synthetic/report.json"})
+	split, err := work.ProofCheckInvocationIdentity([]string{"--repo", "/synthetic/repo", "with", "space", "--out", "/synthetic/report.json"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,11 +126,11 @@ func TestProofCheckInvocationIdentityIsLossless(t *testing.T) {
 func TestProofCheckInvocationIdentityBindsResolvedReportPath(t *testing.T) {
 	t.Parallel()
 	args := []string{"--repo", "/synthetic/repo", "--out", "proof.json"}
-	first, err := proofCheckInvocationIdentity(proofCheckArgsWithResolvedOut(args, "/synthetic/one/proof.json"))
+	first, err := work.ProofCheckInvocationIdentity(work.ProofCheckArgsWithResolvedOut(args, "/synthetic/one/proof.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := proofCheckInvocationIdentity(proofCheckArgsWithResolvedOut(args, "/synthetic/two/proof.json"))
+	second, err := work.ProofCheckInvocationIdentity(work.ProofCheckArgsWithResolvedOut(args, "/synthetic/two/proof.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

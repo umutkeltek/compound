@@ -503,3 +503,7 @@ testing. Use `--remote-reconcile RESERVATION --work WORK --actor ACTOR [--cancel
 for the original request. Read the structured recovery disposition and retain its
 expiry trigger if no completion journal existed; cleanup alone grants no proof.
 Runtime semantics and activation evidence requirements: [runtime.md](../../docs/architecture/runtime.md#native-remote-canonical-go-gate).
+
+For bounded unattended canonical execution, proof-check --execution-timeout <duration>
+uses one active-operation allowance across preparation and the admitted run, excluding
+queue wait. See compound-verify for cancellation, durable-cleanup and remote-fence semantics.

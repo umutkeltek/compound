@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"reflect"
@@ -81,17 +80,27 @@ func ResolveCanonicalProofPlan(
 	source gitrepository.Snapshot,
 	compoundInventory CanonicalProofInventory,
 ) (CanonicalProofPlan, error) {
-	return resolveCanonicalProofPlan(repo, source, compoundInventory, false)
+	return ResolveCanonicalProofPlanContext(context.Background(), repo, source, compoundInventory)
+}
+
+// ResolveCanonicalProofPlanContext cancels committed inventory reads with their owner.
+func ResolveCanonicalProofPlanContext(ctx context.Context, repo string, source gitrepository.Snapshot, inventory CanonicalProofInventory) (CanonicalProofPlan, error) {
+	return resolveCanonicalProofPlanContext(ctx, repo, source, inventory, false)
 }
 
 // ValidateCanonicalProofProfile checks the real committed profile declaration
 // without running gates or manufacturing an inventory or proof certificate.
 func ValidateCanonicalProofProfile(repo string, source gitrepository.Snapshot) error {
-	_, err := resolveCanonicalProofPlan(repo, source, nil, true)
+	_, err := resolveCanonicalProofPlanContext(context.Background(), repo, source, nil, true)
 	return err
 }
 
-func resolveCanonicalProofPlan(
+func resolveCanonicalProofPlan(repo string, source gitrepository.Snapshot, inventory CanonicalProofInventory, profileOnly bool) (CanonicalProofPlan, error) {
+	return resolveCanonicalProofPlanContext(context.Background(), repo, source, inventory, profileOnly)
+}
+
+func resolveCanonicalProofPlanContext(
+	ctx context.Context,
 	repo string,
 	source gitrepository.Snapshot,
 	compoundInventory CanonicalProofInventory,
@@ -108,7 +117,7 @@ func resolveCanonicalProofPlan(
 		return CanonicalProofPlan{}, fmt.Errorf("canonical proof source must be clean")
 	}
 
-	markers, err := canonicalProofRootMarkers(
+	markers, err := canonicalProofRootMarkersContext(ctx,
 		resolvedRepo,
 		source.HeadSHA,
 		[]string{"Cargo.lock", "Cargo.toml", "go.mod", "package.json", "bun.lock", "pyproject.toml", "uv.lock", CanonicalConsumerContractPath},
@@ -123,7 +132,7 @@ func resolveCanonicalProofPlan(
 	hasBunLock := markers["bun.lock"]
 	hasPyproject := markers["pyproject.toml"]
 	hasUVLock := markers["uv.lock"]
-	contractPath, err := canonicalConsumerDeclarationPath(resolvedRepo, source.HeadSHA)
+	contractPath, err := canonicalConsumerDeclarationPathContext(ctx, resolvedRepo, source.HeadSHA)
 	if err != nil {
 		return CanonicalProofPlan{}, err
 	}
@@ -134,7 +143,7 @@ func resolveCanonicalProofPlan(
 		if hasCargoManifest || hasCargoLock {
 			return CanonicalProofPlan{}, fmt.Errorf("external consumer contract cannot replace Rust canonical inventory")
 		}
-		body, blobErr := canonicalProofGitBlob(resolvedRepo, source.HeadSHA, contractPath)
+		body, blobErr := canonicalProofGitBlobContext(ctx, resolvedRepo, source.HeadSHA, contractPath)
 		if blobErr != nil {
 			return CanonicalProofPlan{}, blobErr
 		}
@@ -161,7 +170,7 @@ func resolveCanonicalProofPlan(
 			return CanonicalProofPlan{}, fmt.Errorf("consumer profile does not match tracked root Bun package markers")
 		}
 		if hasGoModule {
-			moduleBody, blobErr := canonicalProofGitBlob(resolvedRepo, source.HeadSHA, "go.mod")
+			moduleBody, blobErr := canonicalProofGitBlobContext(ctx, resolvedRepo, source.HeadSHA, "go.mod")
 			if blobErr != nil {
 				return CanonicalProofPlan{}, blobErr
 			}
@@ -173,7 +182,7 @@ func resolveCanonicalProofPlan(
 		for _, consumer := range contract.Consumers {
 			if contract.Profile == "node_npm_consumers_v1" {
 				paths := []string{path.Join(consumer.Dir, "package.json"), path.Join(consumer.Dir, "package-lock.json")}
-				packageMarkers, err := canonicalProofRootMarkers(resolvedRepo, source.HeadSHA, paths)
+				packageMarkers, err := canonicalProofRootMarkersContext(ctx, resolvedRepo, source.HeadSHA, paths)
 				if err != nil {
 					return CanonicalProofPlan{}, err
 				}
@@ -198,7 +207,7 @@ func resolveCanonicalProofPlan(
 	case hasCargoLock:
 		return CanonicalProofPlan{}, fmt.Errorf("tracked root Cargo.lock without Cargo.toml is not a canonical proof profile")
 	case hasGoModule:
-		moduleBody, blobErr := canonicalProofGitBlob(resolvedRepo, source.HeadSHA, "go.mod")
+		moduleBody, blobErr := canonicalProofGitBlobContext(ctx, resolvedRepo, source.HeadSHA, "go.mod")
 		if blobErr != nil {
 			return CanonicalProofPlan{}, blobErr
 		}
@@ -233,7 +242,10 @@ func validConsumerContractPath(value string) bool {
 // Existing root inventories always win. Only otherwise unsupported repositories
 // can discover one nested declaration; a runtime flag never selects a weaker one.
 func canonicalConsumerDeclarationPath(repo, head string) (string, error) {
-	markers, err := canonicalProofRootMarkers(repo, head, []string{CanonicalConsumerContractPath, "go.mod", "Cargo.toml", "Cargo.lock", "package.json", "bun.lock", "pyproject.toml", "uv.lock"})
+	return canonicalConsumerDeclarationPathContext(context.Background(), repo, head)
+}
+func canonicalConsumerDeclarationPathContext(ctx context.Context, repo, head string) (string, error) {
+	markers, err := canonicalProofRootMarkersContext(ctx, repo, head, []string{CanonicalConsumerContractPath, "go.mod", "Cargo.toml", "Cargo.lock", "package.json", "bun.lock", "pyproject.toml", "uv.lock"})
 	if err != nil {
 		return "", err
 	}
@@ -243,7 +255,7 @@ func canonicalConsumerDeclarationPath(repo, head string) (string, error) {
 	if len(markers) != 0 {
 		return "", nil
 	}
-	packageLock, err := canonicalProofRootMarkers(repo, head, []string{"package-lock.json"})
+	packageLock, err := canonicalProofRootMarkersContext(ctx, repo, head, []string{"package-lock.json"})
 	if err != nil {
 		return "", err
 	}
@@ -252,11 +264,14 @@ func canonicalConsumerDeclarationPath(repo, head string) (string, error) {
 	}
 	// Include trees: a directory or submodule named like a declaration must not
 	// disappear from recursive discovery and leave a different declaration chosen.
-	cmd := exec.CommandContext(context.Background(), "git", "ls-tree", "-r", "-t", "-z", "--full-tree", head)
+	cmd := gitrepository.CommandContext(ctx, "git", "ls-tree", "-r", "-t", "-z", "--full-tree", head)
 	cmd.Dir = repo
 	var output consumerTreeOutput
 	cmd.Stdout = &output
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return "", context.Cause(ctx)
+		}
 		return "", fmt.Errorf("discover consumer declarations: %w", err)
 	}
 	selected := ""
@@ -293,9 +308,12 @@ func (b *consumerTreeOutput) Write(p []byte) (int, error) {
 }
 
 func canonicalProofRootMarkers(repo, headSHA string, paths []string) (map[string]bool, error) {
+	return canonicalProofRootMarkersContext(context.Background(), repo, headSHA, paths)
+}
+func canonicalProofRootMarkersContext(ctx context.Context, repo, headSHA string, paths []string) (map[string]bool, error) {
 	args := []string{"ls-tree", "-z", headSHA, "--"}
 	args = append(args, paths...)
-	records, err := canonicalProofGitNULList(repo, args...)
+	records, err := canonicalProofGitNULListContext(ctx, repo, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -469,9 +487,15 @@ func rustfmtPathRelativeToRepository(roots []string, path string) (string, bool)
 }
 
 func canonicalProofGitBlob(repo, headSHA, path string) ([]byte, error) {
-	cmd := exec.CommandContext(context.Background(), "git", "show", headSHA+":"+path)
+	return canonicalProofGitBlobContext(context.Background(), repo, headSHA, path)
+}
+func canonicalProofGitBlobContext(ctx context.Context, repo, headSHA, path string) ([]byte, error) {
+	cmd := gitrepository.CommandContext(ctx, "git", "show", headSHA+":"+path)
 	cmd.Dir = repo
 	body, err := cmd.Output()
+	if ctx.Err() != nil {
+		return nil, context.Cause(ctx)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read canonical proof marker %s: %w", path, err)
 	}
@@ -590,7 +614,7 @@ func CanonicalProofPlanForExecution(
 		if !reflect.DeepEqual(stored.Source, source) {
 			return CanonicalProofPlan{}, fmt.Errorf("canonical proof plan does not match execution source")
 		}
-		executionSource, err := gitrepository.CaptureCleanSnapshot(resolvedRepo, source.BaseSHA)
+		executionSource, err := gitrepository.CaptureCleanSnapshotContext(ctx, resolvedRepo, source.BaseSHA)
 		if err != nil {
 			return CanonicalProofPlan{}, fmt.Errorf("canonical proof execution checkout: %w", err)
 		}
@@ -601,7 +625,7 @@ func CanonicalProofPlanForExecution(
 		}
 		return cloneCanonicalProofPlan(stored), nil
 	}
-	return ResolveCanonicalProofPlan(repo, source, compoundInventory)
+	return ResolveCanonicalProofPlanContext(ctx, repo, source, compoundInventory)
 }
 
 func cloneCanonicalProofPlan(in CanonicalProofPlan) CanonicalProofPlan {
@@ -654,9 +678,15 @@ func resolveCanonicalProofRepo(repoPath string) (string, error) {
 }
 
 func canonicalProofGitNULList(repo string, args ...string) ([]string, error) {
-	cmd := exec.CommandContext(context.Background(), "git", args...)
+	return canonicalProofGitNULListContext(context.Background(), repo, args...)
+}
+func canonicalProofGitNULListContext(ctx context.Context, repo string, args ...string) ([]string, error) {
+	cmd := gitrepository.CommandContext(ctx, "git", args...)
 	cmd.Dir = repo
 	out, err := cmd.Output()
+	if ctx.Err() != nil {
+		return nil, context.Cause(ctx)
+	}
 	if err != nil {
 		return nil, err
 	}

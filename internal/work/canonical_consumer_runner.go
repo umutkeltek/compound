@@ -24,7 +24,7 @@ func RunCanonicalConsumer(ctx context.Context, repo string, step ProofCheckStep,
 	if len(headRefs) > 0 {
 		head = headRefs[len(headRefs)-1]
 	}
-	consumer, body, contractPath, err := readCanonicalConsumerAtPath(repo, head, step)
+	consumer, body, contractPath, err := readCanonicalConsumerAtPathContext(ctx, repo, head, step)
 	if err != nil {
 		return nil, nil, err
 	}

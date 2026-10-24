@@ -43,6 +43,10 @@ type proofCheckAdmissionInput struct {
 	Wait                   time.Duration
 	WaitProgress           io.Writer
 	Now                    func() time.Time
+	// ExecutionBudget bounds the active operation of this governed proof run.
+	// It is consumed by pre-admission preparation and by the admitted run; the
+	// queue wait below never touches it. Nil keeps the unbounded behavior.
+	ExecutionBudget *work.ProofExecutionBudget
 }
 
 type proofCheckRunner func() (proofCheckReport, error)
@@ -93,6 +97,10 @@ func runProofCheckWithAdmissionContext(
 	in proofCheckAdmissionInput,
 	runner proofCheckContextRunner,
 ) (proofCheckReport, work.ProofResourceCompleteResult, error) {
+	preparationStarted := time.Now()
+	preparationContext, cancelPreparation := in.ExecutionBudget.PreparationContext(in.Context)
+	defer cancelPreparation()
+	preparationContext = gitrepository.ContextWithCommandFactory(preparationContext, proofCheckCommandContext)
 	if runner == nil {
 		return proofCheckReport{}, work.ProofResourceCompleteResult{}, fmt.Errorf("proof-check runner required")
 	}
@@ -126,7 +134,7 @@ func runProofCheckWithAdmissionContext(
 		)
 	}
 	if in.Profile.SourceSnapshot != nil {
-		if err := gitrepository.RevalidateSnapshot(in.Workspace, *in.Profile.SourceSnapshot); err != nil {
+		if err := gitrepository.RevalidateSnapshotContext(preparationContext, in.Workspace, *in.Profile.SourceSnapshot); err != nil {
 			return proofCheckReport{}, work.ProofResourceCompleteResult{}, err
 		}
 	}
@@ -190,6 +198,14 @@ func runProofCheckWithAdmissionContext(
 			return proofCheckReport{}, work.ProofResourceCompleteResult{}, err
 		}
 	}
+	in.ExecutionBudget.Charge(time.Since(preparationStarted))
+	cancelPreparation()
+	if in.Context != nil && in.Context.Err() != nil {
+		return proofCheckReport{}, work.ProofResourceCompleteResult{}, context.Cause(in.Context)
+	}
+	if in.ExecutionBudget != nil && in.ExecutionBudget.Remaining() <= 0 {
+		return proofCheckReport{}, work.ProofResourceCompleteResult{}, in.ExecutionBudget.ExpiredError(work.ProofBudgetPhasePreparation)
+	}
 	reserveInput := work.ProofResourceReserveInput{
 		Actor:                  in.Actor,
 		TTL:                    in.TTL,
@@ -231,7 +247,22 @@ func runProofCheckWithAdmissionContext(
 	)
 	runnerContext = work.ContextWithHomeFixtureReuse(runnerContext, in.HomePath, in.WorkID, in.Profile.SourceSnapshot, in.Workspace)
 	runnerContext = work.ContextWithRemoteProof(runnerContext, in.HomePath, reserved.Reservation, proofCheckCommandContext)
-	report, runErr := runner(runnerContext)
+	// The bounded execution budget starts HERE, after the queue wait for the
+	// scarce proof resource: waiting is not active operation, so it must not
+	// consume the budget. What preparation already consumed does, so the
+	// admitted run continues with the remainder rather than a fresh full
+	// budget.
+	var report proofCheckReport
+	budgetContext, cancelBudget, runErr := in.ExecutionBudget.RunContext(runnerContext)
+	defer cancelBudget()
+	runnerContext = gitrepository.ContextWithCommandFactory(budgetContext, proofCheckCommandContext)
+	if runErr == nil {
+		report, runErr = runner(runnerContext)
+	}
+	if cause := work.ProofExecutionBudgetCause(runnerContext); cause != nil {
+		runErr = errors.Join(runErr, cause)
+	}
+
 	stopHeartbeat()
 	if hbErr := heartbeatErr(); hbErr != nil {
 		if runErr == nil {
@@ -239,6 +270,20 @@ func runProofCheckWithAdmissionContext(
 		} else {
 			runErr = errors.Join(runErr, fmt.Errorf("proof resource heartbeat: %w", hbErr))
 		}
+	}
+	if runErr == nil && in.Profile.SourceSnapshot != nil {
+		runErr = gitrepository.RevalidateSnapshotContext(runnerContext, in.Workspace, *in.Profile.SourceSnapshot)
+	}
+	if cause := work.ProofExecutionBudgetCause(runnerContext); cause != nil {
+		runErr = errors.Join(runErr, cause)
+	}
+	if runnerContext.Err() != nil && runErr == nil {
+		runErr = context.Cause(runnerContext)
+	}
+	if cause := work.ProofExecutionBudgetCause(runnerContext); cause != nil && report.Status != "failed" {
+		var publishErr error
+		report, publishErr = proofCheckPublishDeadlineReport(in.ReportPath, report, in.ReportCustody, cause)
+		runErr = errors.Join(runErr, publishErr)
 	}
 	// Stop every context-bound gate start before dropping the supervisor's execution-barrier
 	// descriptor. A runner may have returned while one of its goroutines is still queued to spawn;
@@ -257,15 +302,7 @@ func runProofCheckWithAdmissionContext(
 			runErr = errors.Join(runErr, fmt.Errorf("close proof execution barrier: %w", barrierErr))
 		}
 	}
-	if in.Profile.SourceSnapshot != nil {
-		if sourceErr := gitrepository.RevalidateSnapshot(in.Workspace, *in.Profile.SourceSnapshot); sourceErr != nil {
-			if runErr == nil {
-				runErr = sourceErr
-			} else {
-				runErr = errors.Join(runErr, sourceErr)
-			}
-		}
-	}
+
 	if runErr != nil {
 		completed, completeErr := store.CompleteProofResource(in.WorkID, work.ProofResourceCompleteInput{
 			Actor:         in.Actor,

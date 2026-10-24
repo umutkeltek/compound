@@ -198,7 +198,7 @@ func TestProofCheckCommandLegacyRecoveryBypassesBaseWithoutRunningBattery(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantCommand, err := proofCheckInvocationIdentity([]string{
+	wantCommand, err := work.ProofCheckInvocationIdentity([]string{
 		"--repo", repoPath,
 		"--work", "work_legacy_recovery",
 		"--actor", "codex:legacy-recovery",
@@ -278,7 +278,7 @@ func TestProofCheckCommandLegacyRecoveryReleasesRealRetainedHolderWithoutVerific
 	if err != nil {
 		t.Fatal(err)
 	}
-	commandIdentity, err := proofCheckInvocationIdentity([]string{
+	commandIdentity, err := work.ProofCheckInvocationIdentity([]string{
 		"--repo", repoPath,
 		"--work", w.ID,
 		"--actor", actor,
@@ -453,7 +453,7 @@ func TestProofCheckCommandLegacyRecoveryReleasesReportlessFailureWithoutRunningB
 	if err != nil {
 		t.Fatal(err)
 	}
-	commandIdentity, err := proofCheckInvocationIdentity([]string{
+	commandIdentity, err := work.ProofCheckInvocationIdentity([]string{
 		"--repo", repoPath,
 		"--work", w.ID,
 		"--actor", actor,

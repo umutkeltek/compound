@@ -26,22 +26,7 @@ import (
 
 const proofCheckSchemaVersion = work.ProofCheckSchemaVersion
 
-type proofCheckReport struct {
-	SchemaVersion  string                  `json:"schema_version"`
-	ProfileKind    string                  `json:"profile_kind,omitempty"`
-	Status         string                  `json:"status"`
-	GeneratedAt    string                  `json:"generated_at"`
-	Repo           string                  `json:"repo"`
-	BaseRef        string                  `json:"base_ref,omitempty"`
-	SourceSnapshot *gitrepository.Snapshot `json:"source_snapshot,omitempty"`
-	DryRun         bool                    `json:"dry_run"`
-	CIOnly         bool                    `json:"ci_only,omitempty"`
-	CIConsole      bool                    `json:"ci_console,omitempty"`
-	ArtifactRef    string                  `json:"artifact_ref,omitempty"`
-	Warnings       []string                `json:"warnings,omitempty"`
-	ProofRefs      []string                `json:"proof_refs"`
-	Steps          []proofCheckStep        `json:"steps"`
-}
+type proofCheckReport = work.ProofCheckReport
 
 type proofCheckStep = work.ProofCheckStep
 
@@ -65,6 +50,9 @@ func cmdProofCheck(args []string) {
 		fmt.Println("  --work ID --actor ACTOR  required for a full local battery; reserves the scarce proof resource")
 		fmt.Println("  --ttl DURATION            reservation TTL (minimum 30s, default 45m; renewed by RunAttempt heartbeat)")
 		fmt.Println("  --wait DURATION           queue up to DURATION for a busy proof resource instead of refusing")
+		fmt.Println("  --execution-timeout DURATION")
+		fmt.Println("                bounded active-operation budget for preparation plus the admitted run;")
+		fmt.Println("                queue waiting is excluded; canonical full proof only")
 		fmt.Println("  --steal --reason TEXT     exceptional audited transfer of a live proof/land resource")
 		fmt.Println("  --terminated-run RATT_ID --termination-evidence ARTIFACT_REF")
 		fmt.Println("                governed proof that the oldest stopped predecessor was terminated and waited")
@@ -156,9 +144,9 @@ func cmdProofCheck(args []string) {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
 			os.Exit(2)
 		}
-		commandIdentity, err := proofCheckInvocationIdentity(
-			proofCheckArgsWithResolvedOut(
-				proofCheckArgsWithoutLegacyRecovery(args),
+		commandIdentity, err := work.ProofCheckInvocationIdentity(
+			work.ProofCheckArgsWithResolvedOut(
+				work.ProofCheckArgsWithoutLegacyRecovery(args),
 				outPath,
 			),
 		)
@@ -224,17 +212,27 @@ func cmdProofCheck(args []string) {
 			}
 			wait = parsed
 		}
+		// The bounded execution budget covers the pre-admission preparation and
+		// the admitted run. It is charged, never reset: what preparation spends
+		// is subtracted from what the admitted run may still use.
+		signalContext, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stopSignals()
+		executionBudget := work.NewProofExecutionBudget(routeOptions.ExecutionTimeout)
+		preparationStarted := time.Now()
+		profileContext, cancelProfile := executionBudget.PreparationContext(signalContext)
+		defer cancelProfile()
+		profileContext = gitrepository.ContextWithCommandFactory(profileContext, proofCheckCommandContext)
 		resolvedRepo, err := resolveProofCheckRepo(repoPath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
 			os.Exit(2)
 		}
-		sourceSnapshot, err := gitrepository.CaptureCleanSnapshot(resolvedRepo, baseRef)
+		sourceSnapshot, err := gitrepository.CaptureCleanSnapshotContext(profileContext, resolvedRepo, baseRef)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
 			os.Exit(2)
 		}
-		plan, err := work.ResolveCanonicalProofPlan(resolvedRepo, sourceSnapshot, proofCheckSteps)
+		plan, err := work.ResolveCanonicalProofPlanContext(profileContext, resolvedRepo, sourceSnapshot, proofCheckSteps)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
 			os.Exit(2)
@@ -251,8 +249,15 @@ func cmdProofCheck(args []string) {
 				os.Exit(2)
 			}
 		}
-		profile, err := work.ProofResourceProfileForCanonicalPlanWithRemote(context.Background(), plan, homePath, routeOptions.RemoteRoute, proofCheckCommandContext)
+		// The remote profile sealing used to run on an unbounded background
+		// context. It is preparation, so it runs inside the bounded budget and
+		// stops with it — before the reservation and before any remote launch.
+		profile, err := work.ProofResourceProfileForCanonicalPlanWithRemote(profileContext, plan, homePath, routeOptions.RemoteRoute, proofCheckCommandContext)
 		if err != nil {
+			if budgetErr := work.ProofExecutionBudgetCause(profileContext); budgetErr != nil {
+				fmt.Fprintln(os.Stderr, "proof-check:", budgetErr)
+				os.Exit(2)
+			}
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
 			os.Exit(2)
 		}
@@ -261,14 +266,14 @@ func cmdProofCheck(args []string) {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
 			os.Exit(2)
 		}
-		commandIdentity, err := proofCheckInvocationIdentity(proofCheckArgsWithResolvedOut(args, outPath))
+		commandIdentity, err := work.ProofCheckInvocationIdentity(work.ProofCheckArgsWithResolvedOut(args, outPath))
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
 			os.Exit(2)
 		}
+		executionBudget.Charge(time.Since(preparationStarted))
+		cancelProfile()
 		var completed work.ProofResourceCompleteResult
-		signalContext, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer stopSignals()
 		signalContext = work.ContextWithGateOutputReportPath(signalContext, outPath)
 		report, completed, err = runProofCheckWithAdmissionContext(proofCheckAdmissionInput{
 			Context:                signalContext,
@@ -288,12 +293,21 @@ func cmdProofCheck(args []string) {
 			Wait:                   wait,
 			WaitProgress:           os.Stderr,
 			Now:                    time.Now,
+			ExecutionBudget:        executionBudget,
 		}, func(ctx context.Context) (proofCheckReport, error) {
 			planContext := work.ContextWithCanonicalProofPlan(ctx, plan)
 			if routeOptions.PublicRedactionActionID != "" {
 				planContext = work.ContextWithPublicRedactionReview(planContext, homePath, workID, actor)
 			}
 			produced, runErr := proofCheckCanonicalRunner(planContext, resolvedRepo, false, sourceSnapshot, false, false, time.Now())
+			if budgetErr := work.ProofExecutionBudgetCause(ctx); budgetErr != nil {
+				if produced.Repo == "" {
+					produced.Repo = resolvedRepo
+					produced.SourceSnapshot = &sourceSnapshot
+				}
+				produced, deadlineErr := proofCheckPublishDeadlineReport(outPath, produced, outCustody, budgetErr)
+				return produced, errors.Join(deadlineErr, runErr)
+			}
 			if runErr != nil {
 				return produced, runErr
 			}
@@ -404,46 +418,59 @@ func proofCheckShouldRecordArtifact(dryRun bool, status string, ciOnly, ciConsol
 	return !dryRun && status == "ok" && !ciOnly && !ciConsole
 }
 
-func proofCheckInvocationIdentity(args []string) (string, error) {
-	return work.ProofCheckInvocationIdentity(args)
+// proofCheckPublishDeadlineReport ends a bounded canonical proof run truthfully.
+// The partial failed report and the exact deadline reason are retained in the
+// authoritative --out evidence, the battery is never green, and the returned
+// error keeps the deadline as its cause so the reservation closes as failed
+// rather than verified.
+func proofCheckPublishDeadlineReport(outPath string, report proofCheckReport, custody *proofCheckOutCustody, cause error) (proofCheckReport, error) {
+	if report.SchemaVersion == "" {
+		report.SchemaVersion = proofCheckSchemaVersion
+		report.ProfileKind = work.ProofResourceProfileCanonicalFull
+		report.GeneratedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	report.Status = "failed"
+	report.Warnings = append(report.Warnings, cause.Error())
+	if outPath == "" || custody == nil {
+		return report, cause
+	}
+	current, err := proofCheckCaptureOutPath(outPath)
+	if err != nil {
+		return report, errors.Join(cause, err)
+	}
+	defer current.close()
+	expectedInfo, expectedData, expectedMode, existed := custody.targetInfo, custody.targetData, custody.targetMode, custody.existed
+	if published := custody.publication; published != nil && published.info != nil {
+		expectedInfo, expectedData, expectedMode, existed = published.info, published.data, published.mode, true
+	}
+	if !os.SameFile(current.parentInfo, custody.parentInfo) || current.existed != existed ||
+		(existed && (!os.SameFile(current.targetInfo, expectedInfo) || current.targetMode != expectedMode)) ||
+		!bytes.Equal(current.targetData, expectedData) {
+		return report, errors.Join(cause, fmt.Errorf("deadline report output changed outside this proof"))
+	}
+	if err := proofCheckWriteReportFileWithCustody(outPath, report, current); err != nil {
+		return report, errors.Join(cause, err)
+	}
+	return report, cause
 }
 
-func proofCheckArgsWithoutLegacyRecovery(args []string) []string {
-	out := make([]string, 0, len(args))
-	for _, arg := range args {
-		if arg == "--recover-legacy-retained" {
-			continue
-		}
-		out = append(out, arg)
-	}
-	return out
-}
-
-func proofCheckArgsWithResolvedOut(args []string, resolvedOut string) []string {
-	out := append([]string(nil), args...)
-	for i := range out {
-		switch {
-		case out[i] == "--out" && i+1 < len(out):
-			out[i+1] = resolvedOut
-			return out
-		case strings.HasPrefix(out[i], "--out="):
-			out[i] = "--out=" + resolvedOut
-			return out
-		}
-	}
-	return out
+type proofCheckOutPublication struct {
+	info os.FileInfo
+	data []byte
+	mode os.FileMode
 }
 
 type proofCheckOutCustody struct {
-	path       string
-	dir        string
-	leaf       string
-	root       *os.Root
-	parentInfo os.FileInfo
-	targetInfo os.FileInfo
-	targetData []byte
-	targetMode os.FileMode
-	existed    bool
+	publication *proofCheckOutPublication
+	path        string
+	dir         string
+	leaf        string
+	root        *os.Root
+	parentInfo  os.FileInfo
+	targetInfo  os.FileInfo
+	targetData  []byte
+	targetMode  os.FileMode
+	existed     bool
 }
 
 type proofCheckRootedCASPublication interface {
@@ -504,12 +531,13 @@ func proofCheckCaptureOutPath(path string) (proofCheckOutCustody, error) {
 	}
 
 	custody := proofCheckOutCustody{
-		path:       path,
-		dir:        dir,
-		leaf:       leaf,
-		root:       root,
-		parentInfo: openedParent,
-		targetMode: 0o600,
+		publication: &proofCheckOutPublication{},
+		path:        path,
+		dir:         dir,
+		leaf:        leaf,
+		root:        root,
+		parentInfo:  openedParent,
+		targetMode:  0o600,
 	}
 	targetInfo, err := root.Lstat(leaf)
 	switch {
@@ -896,77 +924,22 @@ func proofCheckWriteReportBytesWithCustody(path string, data []byte, custody pro
 	if err != nil {
 		return err
 	}
-	return publication.Commit()
+	if err := publication.Commit(); err != nil {
+		return err
+	}
+	if custody.publication != nil {
+		*custody.publication = proofCheckOutPublication{replacementInfo, append([]byte(nil), data...), custody.targetMode}
+	}
+	return nil
 }
 
 // proofCheckVerdictLine renders the single final stdout line printed when --out is
 // present, with passed, skipped, and failed gates counted separately.
 func proofCheckVerdictLine(report proofCheckReport, path string) string {
-	total := len(report.Steps)
-	passed := 0
-	skipped := 0
-	failed := 0
-	planned := 0
-	firstFailed := ""
-	var elapsedMS int64
-	for _, step := range report.Steps {
-		elapsedMS += step.DurationMS
-		switch step.Status {
-		case "ok":
-			passed++
-		case "skipped":
-			skipped++
-		case "failed":
-			failed++
-			if firstFailed == "" {
-				firstFailed = step.Name
-			}
-		case "planned":
-			planned++
-		}
-	}
-	if report.ProfileKind == proofCheckProfileDevelopment {
-		out := ""
-		if strings.TrimSpace(path) != "" {
-			out = " out=" + path
-		}
-		if report.DryRun {
-			return fmt.Sprintf("dev-check: planned non_certifying=true planned=%d total=%d elapsed_ms=%d%s", planned, total, elapsedMS, out)
-		}
-		if report.Status == "ok" {
-			return fmt.Sprintf("dev-check: ok non_certifying=true passed=%d skipped=%d failed=%d total=%d elapsed_ms=%d%s", passed, skipped, failed, total, elapsedMS, out)
-		}
-		return fmt.Sprintf("dev-check: FAILED non_certifying=true passed=%d skipped=%d failed=%d total=%d elapsed_ms=%d first_failed=%s%s", passed, skipped, failed, total, elapsedMS, firstFailed, out)
-	}
-	if report.Status == "ok" {
-		return fmt.Sprintf("battery: ok passed=%d skipped=%d failed=%d total=%d out=%s", passed, skipped, failed, total, path)
-	}
-	return fmt.Sprintf("battery: FAILED passed=%d skipped=%d failed=%d total=%d first_failed=%s out=%s", passed, skipped, failed, total, firstFailed, path)
+	return work.ProofCheckVerdictLine(report, path)
 }
-
 func proofCheckReleasePendingVerdictLine(report proofCheckReport, path string) string {
-	total := len(report.Steps)
-	passed := 0
-	skipped := 0
-	failed := 0
-	for _, step := range report.Steps {
-		switch step.Status {
-		case "ok":
-			passed++
-		case "skipped":
-			skipped++
-		case "failed":
-			failed++
-		}
-	}
-	return fmt.Sprintf(
-		"battery: FAILED release_pending=true passed=%d skipped=%d failed=%d total=%d out=%s",
-		passed,
-		skipped,
-		failed,
-		total,
-		path,
-	)
+	return work.ProofCheckReleasePendingVerdictLine(report, path)
 }
 
 func proofCheckPostReportErrorVerdict(report proofCheckReport, path string, cause error) (string, bool) {
@@ -989,28 +962,7 @@ func proofCheckPostReportErrorVerdict(report proofCheckReport, path string, caus
 	if errors.As(cause, &releasePending) {
 		return proofCheckReleasePendingVerdictLine(report, path), true
 	}
-	total := len(report.Steps)
-	passed := 0
-	skipped := 0
-	failed := 0
-	for _, step := range report.Steps {
-		switch step.Status {
-		case "ok":
-			passed++
-		case "skipped":
-			skipped++
-		case "failed":
-			failed++
-		}
-	}
-	return fmt.Sprintf(
-		"battery: FAILED post_report_error=true passed=%d skipped=%d failed=%d total=%d out=%s",
-		passed,
-		skipped,
-		failed,
-		total,
-		path,
-	), true
+	return work.ProofCheckPostReportFailureVerdict(report, path), true
 }
 
 func runProofCheckContext(ctx context.Context, repoPath string, dryRun bool, baseRef string, ciOnly bool, ciConsole bool, now time.Time) (proofCheckReport, error) {
@@ -1101,6 +1053,10 @@ func runProofCheckWithRangeContext(
 		Steps:          make([]proofCheckStep, 0, len(steps)),
 	}
 	for _, step := range steps {
+		if !dryRun && ctx.Err() != nil {
+			report.Status = "failed"
+			return report, context.Cause(ctx)
+		}
 		result := step
 		if dryRun {
 			result.Status = "planned"

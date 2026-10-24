@@ -170,7 +170,7 @@ func remoteProofManifest(ctx context.Context, repo string, roots []string, comma
 					return err
 				}
 				h := sha256.New()
-				_, copyErr := io.Copy(h, f)
+				_, copyErr := copyProofContext(ctx, h, f)
 				closeErr := f.Close()
 				if copyErr != nil {
 					return copyErr
@@ -314,7 +314,7 @@ func remoteProofArchive(ctx context.Context, repo string, request RemoteProofReq
 			return e
 		}
 		h := sha256.New()
-		n, e := io.Copy(io.MultiWriter(tw, h), src)
+		n, e := copyProofContext(ctx, io.MultiWriter(tw, h), src)
 		if e != nil {
 			return e
 		}

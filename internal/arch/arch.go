@@ -1917,6 +1917,10 @@ func checkOperatorOrientAdjacentProgressContract(repoRoot string) []Finding {
 			"workbench\", \"--json\"",
 			"adjacent Workbench action",
 			"Do not rerun",
+			"type proofCheckReport = work.ProofCheckReport",
+		},
+		"internal/work/proof_execution.go": {
+			"type ProofCheckReport struct",
 			"artifact_ref,omitempty",
 		},
 		"cmd/compound/main_test.go": {

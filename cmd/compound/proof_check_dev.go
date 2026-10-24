@@ -26,13 +26,14 @@ func proofCheckDevelopmentRequested(args []string) bool {
 
 func validateProofCheckDevelopmentArgs(args []string) error {
 	governanceFlags := map[string]bool{
-		"--ci":         true,
-		"--ci-console": true,
-		"--work":       true,
-		"--actor":      true,
-		"--ttl":        true,
-		"--steal":      true,
-		"--reason":     true,
+		"--ci":                true,
+		"--ci-console":        true,
+		"--work":              true,
+		"--actor":             true,
+		"--ttl":               true,
+		"--steal":             true,
+		"--reason":            true,
+		"--execution-timeout": true,
 	}
 	booleanFlags := map[string]bool{
 		"--dev":     true,

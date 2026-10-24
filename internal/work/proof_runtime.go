@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,6 +29,9 @@ func ResolveProofRuntimeCommand(logical string) (string, error) {
 // PinProofRuntimeExecutable copies a temporary self executable into private,
 // synced custody before any proof gate can outlive the source build-cache path.
 func PinProofRuntimeExecutable(ctx context.Context, resolve ProofRuntimeResolver) (context.Context, func(), error) {
+	if ctx.Err() != nil {
+		return ctx, func() {}, context.Cause(ctx)
+	}
 	if resolve == nil {
 		return ctx, func() {}, fmt.Errorf("proof runtime resolver is required")
 	}
@@ -40,6 +42,9 @@ func PinProofRuntimeExecutable(ctx context.Context, resolve ProofRuntimeResolver
 	executable = filepath.Clean(strings.TrimSpace(executable))
 	if executable == "." || executable == "" {
 		return ctx, func() {}, fmt.Errorf("compound runtime executable is empty")
+	}
+	if ctx.Err() != nil {
+		return ctx, func() {}, context.Cause(ctx)
 	}
 	if !proofRuntimeExecutableIsTemporary(executable) {
 		return context.WithValue(ctx, proofRuntimeExecutableContextKey{}, executable), func() {}, nil
@@ -69,7 +74,7 @@ func PinProofRuntimeExecutable(ctx context.Context, resolve ProofRuntimeResolver
 		cleanup()
 		return ctx, func() {}, fmt.Errorf("create stable compound runtime executable: %w", err)
 	}
-	if _, err := io.Copy(destination, source); err != nil {
+	if _, err := copyProofContext(ctx, destination, source); err != nil {
 		_ = destination.Close()
 		cleanup()
 		return ctx, func() {}, fmt.Errorf("copy stable compound runtime executable: %w", err)
@@ -96,6 +101,10 @@ func PinProofRuntimeExecutable(ctx context.Context, resolve ProofRuntimeResolver
 	if err := directory.Close(); err != nil {
 		cleanup()
 		return ctx, func() {}, fmt.Errorf("close stable compound runtime directory: %w", err)
+	}
+	if ctx.Err() != nil {
+		cleanup()
+		return ctx, func() {}, context.Cause(ctx)
 	}
 	return context.WithValue(ctx, proofRuntimeExecutableContextKey{}, target), cleanup, nil
 }

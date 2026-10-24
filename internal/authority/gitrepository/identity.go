@@ -39,6 +39,11 @@ type identityContent struct {
 // ref. Using the bound expected-base commit as ref makes the identity stable as
 // branches advance, while a different lineage or canonical origin fails closed.
 func ReadIdentity(repo, ref string) (Identity, error) {
+	return ReadIdentityContext(context.Background(), repo, ref)
+}
+
+// ReadIdentityContext preserves the caller's cancellation and the existing local upper bound.
+func ReadIdentityContext(parent context.Context, repo, ref string) (Identity, error) {
 	repo = strings.TrimSpace(repo)
 	ref = strings.TrimSpace(ref)
 	if repo == "" {
@@ -48,7 +53,7 @@ func ReadIdentity(repo, ref string) (Identity, error) {
 		return Identity{}, fmt.Errorf("repository identity ref required")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 	objectFormat, err := gitOutput(ctx, repo, "rev-parse", "--show-object-format")
 	if err != nil {
@@ -145,11 +150,11 @@ func (e *gitCommandError) Error() string {
 }
 
 func gitOutput(ctx context.Context, repo string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...)
+	cmd := CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...)
 	cmd.Env = ReadEnvironment()
 	out, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {
-		return "", ctx.Err()
+		return "", context.Cause(ctx)
 	}
 	if err != nil {
 		exitCode := -1
@@ -164,4 +169,20 @@ func gitOutput(ctx context.Context, repo string, args ...string) (string, error)
 		return "", &gitCommandError{args: append([]string{}, args...), exitCode: exitCode, output: message}
 	}
 	return string(out), nil
+}
+
+// ContextWithCommandFactory retains the execution owner's cancellation and child isolation
+// when repository reads are preparation for a governed operation.
+func ContextWithCommandFactory(ctx context.Context, factory func(context.Context, string, ...string) *exec.Cmd) context.Context {
+	return context.WithValue(ctx, commandFactoryKey{}, factory)
+}
+
+type commandFactoryKey struct{}
+
+// CommandContext delegates to the caller's execution owner, or the standard direct-child command.
+func CommandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
+	if factory, ok := ctx.Value(commandFactoryKey{}).(func(context.Context, string, ...string) *exec.Cmd); ok {
+		return factory(ctx, name, args...)
+	}
+	return exec.CommandContext(ctx, name, args...)
 }

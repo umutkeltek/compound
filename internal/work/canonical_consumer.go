@@ -2,6 +2,7 @@ package work
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -284,14 +285,17 @@ func ReadCanonicalConsumer(repo, head string, step ProofCheckStep) (CanonicalCon
 }
 
 func readCanonicalConsumerAtPath(repo, head string, step ProofCheckStep) (CanonicalConsumer, []byte, string, error) {
-	contractPath, err := canonicalConsumerDeclarationPath(repo, head)
+	return readCanonicalConsumerAtPathContext(context.Background(), repo, head, step)
+}
+func readCanonicalConsumerAtPathContext(ctx context.Context, repo, head string, step ProofCheckStep) (CanonicalConsumer, []byte, string, error) {
+	contractPath, err := canonicalConsumerDeclarationPathContext(ctx, repo, head)
 	if err != nil {
 		return CanonicalConsumer{}, nil, "", err
 	}
 	if contractPath == "" {
 		return CanonicalConsumer{}, nil, "", fmt.Errorf("tracked consumer contract required")
 	}
-	body, err := canonicalProofGitBlob(repo, head, contractPath)
+	body, err := canonicalProofGitBlobContext(ctx, repo, head, contractPath)
 	if err != nil {
 		return CanonicalConsumer{}, nil, "", err
 	}
