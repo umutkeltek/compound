@@ -119,6 +119,15 @@ readiness from the current PolicyDecision for the concrete target before reservi
 exact review. The policy input describes manual recovery, bounded event-store blast radius, verified recovery
 evidence, and continuity of operator control; it does not reduce the operation to a location or generic label.
 
+The delegated-session reducer used by `ExecutorsProjection` and `Coordination` resolves exact
+attachment IDs with `ReadMany` from the existing Workbench lifecycle snapshot. Every original
+attachment still passes identity and Work-binding validation in the same ordered reducer.
+`ReadMany` shares family inventories, hot frames and sealed indexes only within one call,
+preserving native point-read validation and index repair. Results match `Read` on a stable
+store; concurrent reads are nontransactional, with no family-wide snapshot or current-at-return
+guarantee. Later calls reacquire freshness through existing owner checks; no batch verdict is
+persisted. Rooted `ReadRegular` callers keep their existing validation path.
+
 Apply fails closed if the frozen migration baseline, planned loose bytes, loose set, reviewed writer fence,
 current policy-authority revision, or relevant segment coordinates drift. Content-addressed archive bytes are
 idempotent recovery state; an immutable digest-bound `.pending.json` snapshot plus a bounded, hash-chained,
