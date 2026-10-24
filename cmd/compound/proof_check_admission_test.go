@@ -3271,43 +3271,79 @@ func TestProofCheckCompletionRetainsHolderUntilBackgroundDescendantExits(t *test
 	}
 }
 
+// proofCheckGoCacheFixture isolates the per-worktree Go cache root so a
+// fixture never creates directories under the operator's real user cache.
+// work.ProofGoCache resolves its root through os.UserCacheDir, so without
+// HOME/XDG_CACHE_HOME set here the fixture writes into the real cache and
+// waits on a filesystem it does not own. It returns the fixture home and the
+// cache root inside it, and proves the isolation BEFORE any cache is made.
+func proofCheckGoCacheFixture(t *testing.T) (home string, cacheBase string) {
+	t.Helper()
+	home = t.TempDir()
+	// The fixture home becomes the process HOME, so make it inert for Go
+	// telemetry the same way the package's other disposable homes are made
+	// inert: a telemetry counter file written after the child exits would race
+	// t.TempDir's RemoveAll and fail the parent with "directory not empty".
+	disableGoTelemetryIn(t, home)
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "xdg-cache"))
+	cacheBase, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatalf("resolve isolated user cache dir: %v", err)
+	}
+	if !strings.HasPrefix(cacheBase, home+string(filepath.Separator)) {
+		t.Fatalf("user cache dir %q is not inside the fixture home %q", cacheBase, home)
+	}
+	return home, cacheBase
+}
+
 func TestProofCheckGoCacheIsPerWorktree(t *testing.T) {
+	_, cacheBase := proofCheckGoCacheFixture(t)
 	t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "")
 	first, firstOK := work.ProofGoCache(t.TempDir())
 	second, secondOK := work.ProofGoCache(t.TempDir())
-	t.Cleanup(func() {
-		_ = os.RemoveAll(first)
-		_ = os.RemoveAll(second)
-	})
 	if !firstOK || !secondOK {
 		t.Fatal("no cache chosen for a real worktree")
 	}
 	if first == second {
 		t.Fatalf("two worktrees share one cache (%s); sibling lanes can still evict each other", first)
 	}
+	for _, cache := range []string{first, second} {
+		if !strings.HasPrefix(cache, cacheBase+string(filepath.Separator)) {
+			t.Fatalf("cache %s escaped the isolated fixture cache root %s", cache, cacheBase)
+		}
+	}
 }
 
 func TestProofCheckGoCacheIsStableForOneWorktree(t *testing.T) {
+	_, cacheBase := proofCheckGoCacheFixture(t)
 	t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "")
 	worktree := t.TempDir()
 	first, firstOK := work.ProofGoCache(worktree)
 	second, secondOK := work.ProofGoCache(worktree)
-	t.Cleanup(func() { _ = os.RemoveAll(first) })
 	if !firstOK || !secondOK {
 		t.Fatal("no cache chosen for a real worktree")
 	}
 	if first != second {
 		t.Fatalf("same worktree got two caches (%s vs %s); repeated batteries would start cold", first, second)
 	}
+	for _, cache := range []string{first, second} {
+		if !strings.HasPrefix(cache, cacheBase+string(filepath.Separator)) {
+			t.Fatalf("cache %s escaped the isolated fixture cache root %s", cache, cacheBase)
+		}
+	}
 }
 
 func TestProofCheckGoCacheLivesOutsideWorktree(t *testing.T) {
+	_, cacheBase := proofCheckGoCacheFixture(t)
 	t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "")
 	worktree := t.TempDir()
 	cache, ok := work.ProofGoCache(worktree)
-	t.Cleanup(func() { _ = os.RemoveAll(cache) })
 	if !ok {
 		t.Fatal("no cache chosen for a real worktree")
+	}
+	if !strings.HasPrefix(cache, cacheBase+string(filepath.Separator)) {
+		t.Fatalf("cache %s escaped the isolated fixture cache root %s", cache, cacheBase)
 	}
 	relative, err := filepath.Rel(worktree, cache)
 	if err == nil && !strings.HasPrefix(relative, "..") {
@@ -3316,6 +3352,7 @@ func TestProofCheckGoCacheLivesOutsideWorktree(t *testing.T) {
 }
 
 func TestProofCheckGoCacheHonorsSharedOptOut(t *testing.T) {
+	proofCheckGoCacheFixture(t)
 	t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "1")
 	if _, ok := work.ProofGoCache(t.TempDir()); ok {
 		t.Fatal("shared-cache opt-out ignored")
@@ -3325,13 +3362,16 @@ func TestProofCheckGoCacheHonorsSharedOptOut(t *testing.T) {
 // Path selection is insufficient proof: this fails if runProofCheckStep stops injecting the
 // per-worktree cache even while every proofCheckGoCache unit test remains green.
 func TestRunProofCheckStepInjectsWorktreeGoCache(t *testing.T) {
+	_, cacheBase := proofCheckGoCacheFixture(t)
 	t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "")
 	repo := initCompoundCommandGitRepo(t)
 	want, ok := work.ProofGoCache(repo)
 	if !ok {
 		t.Fatal("no cache chosen for a real worktree")
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(want) })
+	if !strings.HasPrefix(want, cacheBase+string(filepath.Separator)) {
+		t.Fatalf("cache %s escaped the isolated fixture cache root %s", want, cacheBase)
+	}
 
 	binDir := t.TempDir()
 	fakeGo := filepath.Join(binDir, "go")
@@ -3355,6 +3395,7 @@ func TestRunProofCheckStepInjectsWorktreeGoCache(t *testing.T) {
 }
 
 func TestRunProofCheckBunToolsInjectsWorktreeGoCache(t *testing.T) {
+	_, cacheBase := proofCheckGoCacheFixture(t)
 	t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "")
 	repo := t.TempDir()
 	toolsDir := filepath.Join(repo, "tools")
@@ -3368,7 +3409,9 @@ func TestRunProofCheckBunToolsInjectsWorktreeGoCache(t *testing.T) {
 	if !ok {
 		t.Fatal("no cache chosen for a real worktree")
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(want) })
+	if !strings.HasPrefix(want, cacheBase+string(filepath.Separator)) {
+		t.Fatalf("cache %s escaped the isolated fixture cache root %s", want, cacheBase)
+	}
 
 	binDir := t.TempDir()
 	fakeBun := filepath.Join(binDir, "bun")

@@ -19,6 +19,10 @@ import (
 
 func TestCanonicalProofGatesReadSealedHeadDuringTransientCallerMutation(t *testing.T) {
 	t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "")
+	// The canonical gates run with a per-worktree Go cache. Isolate its root
+	// BEFORE the runner starts so the gates and the expectation below agree,
+	// and so the fixture never writes into the real user cache.
+	_, cacheBase := proofCheckGoCacheFixture(t)
 	repo := initCompoundCommandGitRepo(t)
 	compiler := filepath.Join(repo, "console", "node_modules", ".bin", "tsc")
 	if err := os.MkdirAll(filepath.Dir(compiler), 0o755); err != nil {
@@ -210,7 +214,9 @@ exit 0
 	if !ok {
 		t.Fatal("no cache chosen for original caller")
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(want) })
+	if !strings.HasPrefix(want, cacheBase+string(filepath.Separator)) {
+		t.Fatalf("cache %s escaped the isolated fixture cache root %s", want, cacheBase)
+	}
 	if got := strings.TrimSpace(string(observedCache)); got != want {
 		t.Fatalf("canonical gate cache = %q, want original caller cache %q (sealed cwd %q)", got, want, sealedGateDir)
 	}

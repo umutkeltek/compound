@@ -58,6 +58,8 @@ Two corollaries worth their own line:
   zero-provenance claim cannot be produced by `Adjudicate`; an unreadable work envelope cannot be
   produced by `Create`. A control that respected the door could not prove those gates can go red.
 
+Tests that use user-cache APIs must isolate the user and cache environment under a temporary fixture, verify that ownership before cache side effects, and rely on fixture-owned cleanup rather than deleting an unchecked returned path.
+
 ### Process readiness is not admission readiness
 
 If marker existence signals readiness, publish its complete contents by sibling-file rename;

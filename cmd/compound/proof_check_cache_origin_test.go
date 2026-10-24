@@ -14,6 +14,9 @@ import (
 func TestProofCommandsPreserveCallerCacheAcrossSealedWorkspaces(t *testing.T) {
 	for _, mode := range []string{"isolated", "shared"} {
 		t.Run(mode, func(t *testing.T) {
+			// The caller cache is a per-worktree Go cache: isolate its root so
+			// the fixture never creates directories under the real user cache.
+			_, cacheBase := proofCheckGoCacheFixture(t)
 			t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "")
 			if mode == "shared" {
 				t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "1")
@@ -55,10 +58,12 @@ func TestProofCommandsPreserveCallerCacheAcrossSealedWorkspaces(t *testing.T) {
 					if !ok {
 						t.Fatal("no cache chosen for original caller")
 					}
-					t.Cleanup(func() { _ = os.RemoveAll(cache) })
 					wantCache = cache
 					if wantCache == previousOriginCache || wantCache == inheritedCache {
 						t.Fatalf("caller cache %q was not isolated from sibling and inherited caches", wantCache)
+					}
+					if !strings.HasPrefix(wantCache, cacheBase+string(filepath.Separator)) {
+						t.Fatalf("caller cache %q escaped the isolated fixture cache root %q", wantCache, cacheBase)
 					}
 				}
 				previousOriginCache = wantCache
