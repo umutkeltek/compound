@@ -134,22 +134,13 @@ func (e *engine) readIndexedFrame(family string, segment segmentFile, id, regula
 // REBUILT index is written back through *index, so a caller serving many ids
 // from one segment keeps resolving against current truth.
 func (e *engine) resolveIndexedFrame(family string, segment segmentFile, index *segmentIndex, id, regularKind string) (Frame, bool, error) {
-	frame, found, _, err := e.resolveIndexedFrameTracked(family, segment, index, id, regularKind)
-	return frame, found, err
-}
-
-// resolveIndexedFrameTracked is resolveIndexedFrame plus the REBUILT flag: it
-// reports whether this resolution had to REBUILD (and therefore WRITE) the
-// sidecar index. The batch reader needs that fact to tell its own owner-
-// sanctioned index write apart from an index REPLACED by someone else.
-func (e *engine) resolveIndexedFrameTracked(family string, segment segmentFile, index *segmentIndex, id, regularKind string) (Frame, bool, bool, error) {
 	entry, found := index.Entries[id]
 	if !found {
-		return Frame{}, false, false, nil
+		return Frame{}, false, nil
 	}
 	frame, err := e.readFrameAt(segment.path, entry, regularKind)
 	if err == nil && frame.ID == id {
-		return frame, true, false, nil
+		return frame, true, nil
 	}
 
 	reason := "indexed frame validation failed"
@@ -160,21 +151,21 @@ func (e *engine) resolveIndexedFrameTracked(family string, segment segmentFile, 
 	}
 	rebuilt, err := e.rebuildIndex(family, segment, reason)
 	if err != nil {
-		return Frame{}, false, false, err
+		return Frame{}, false, err
 	}
 	*index = rebuilt
 	entry, found = index.Entries[id]
 	if !found {
-		return Frame{}, false, true, nil
+		return Frame{}, false, nil
 	}
 	frame, err = e.readFrameAt(segment.path, entry, regularKind)
 	if err != nil {
-		return Frame{}, false, true, corruptionAt(segment.path, nil, 0, entry.Offset, err)
+		return Frame{}, false, corruptionAt(segment.path, nil, 0, entry.Offset, err)
 	}
 	if frame.ID != id {
-		return Frame{}, false, true, fmt.Errorf("rebuilt event index %s maps %q to frame %q", e.indexPath(family, segment), id, frame.ID)
+		return Frame{}, false, fmt.Errorf("rebuilt event index %s maps %q to frame %q", e.indexPath(family, segment), id, frame.ID)
 	}
-	return frame, true, true, nil
+	return frame, true, nil
 }
 
 // indexLoadObserver is a test-only seam fired once per sealed-segment index
@@ -190,42 +181,30 @@ func notifyIndexLoad(family string, path string) {
 }
 
 func (e *engine) loadOrBuildIndex(family string, segment segmentFile) (segmentIndex, error) {
-	index, _, err := e.loadOrBuildIndexTracked(family, segment)
-	return index, err
-}
-
-// loadOrBuildIndexTracked is loadOrBuildIndex plus the REBUILT flag: it
-// reports whether the load had to REBUILD (and therefore WRITE) the sidecar
-// index. The batch reader uses that fact to recognise its own owner-sanctioned
-// index write instead of reporting it as an unexplained index movement.
-func (e *engine) loadOrBuildIndexTracked(family string, segment segmentFile) (segmentIndex, bool, error) {
 	path := e.indexPath(family, segment)
 	notifyIndexLoad(family, path)
 	if index, ok := e.cachedIndex(path, segment.path); ok {
-		return index, false, nil
+		return index, nil
 	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		index, err := e.rebuildIndex(family, segment, "index missing")
-		return index, true, err
+		return e.rebuildIndex(family, segment, "index missing")
 	}
 	if err != nil {
-		return segmentIndex{}, false, err
+		return segmentIndex{}, err
 	}
 	notifyIndexParse(path)
 	var index segmentIndex
 	if err := json.Unmarshal(data, &index); err != nil {
-		rebuilt, err := e.rebuildIndex(family, segment, fmt.Sprintf("index decode failed: %v", err))
-		return rebuilt, true, err
+		return e.rebuildIndex(family, segment, fmt.Sprintf("index decode failed: %v", err))
 	}
 	if reason, err := e.validateLoadedIndex(path, segment, index); err != nil {
-		return segmentIndex{}, false, err
+		return segmentIndex{}, err
 	} else if reason != "" {
-		rebuilt, err := e.rebuildIndex(family, segment, reason)
-		return rebuilt, true, err
+		return e.rebuildIndex(family, segment, reason)
 	}
 	e.rememberIndex(path, segment.path, index)
-	return index, false, nil
+	return index, nil
 }
 
 // cachedIndex returns the memoized validated index for idxPath when both the

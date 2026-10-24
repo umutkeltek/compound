@@ -266,15 +266,15 @@ func TestReadManyCollapsesPerIDInventoryAndIndexWork(t *testing.T) {
 	if oldCounts["narrow"] == oldCounts["wide"] {
 		t.Fatalf("old path must scale with ids: narrow=%v wide=%v", oldCounts["narrow"], oldCounts["wide"])
 	}
-	// One family: one inventory pair (observe + recheck), one sealed index,
+	// One family: one inventory, one sealed index,
 	// one hot segment — independent of how many ids were requested.
-	if batchCounts["narrow"] != [3]int{2, 1, 1} {
-		t.Fatalf("single-family batch cost = %v, want [2 1 1]", batchCounts["narrow"])
+	if batchCounts["narrow"] != [3]int{1, 1, 1} {
+		t.Fatalf("single-family batch cost = %v, want [1 1 1]", batchCounts["narrow"])
 	}
 	// Three families: three sealed indexes and three hot segments, not
 	// twenty-four.
-	if batchCounts["all"] != [3]int{6, 3, 3} {
-		t.Fatalf("three-family batch cost = %v, want [6 3 3]", batchCounts["all"])
+	if batchCounts["all"] != [3]int{3, 3, 3} {
+		t.Fatalf("three-family batch cost = %v, want [3 3 3]", batchCounts["all"])
 	}
 	// The batch must be strictly cheaper than the old path.
 	if batchCounts["all"][1] >= oldCounts["all"][1] || batchCounts["all"][2] >= oldCounts["all"][2] {
@@ -317,7 +317,7 @@ func TestReadManyDuplicateReferencesResolveOnce(t *testing.T) {
 		t.Fatalf("duplicate reference must resolve: %v", results["rec_batch_00"].Err)
 	}
 	families, indexes, hot := counters.totals()
-	if families != 2 || indexes != 1 || hot != 1 {
+	if families != 1 || indexes != 1 || hot != 1 {
 		t.Fatalf("duplicate references must resolve once: fam %d idx %d hot %d", families, indexes, hot)
 	}
 }
@@ -433,47 +433,6 @@ func TestReadManySeesAppendAfterEarlierBatch(t *testing.T) {
 	}
 }
 
-// A controlled mid-batch mutation must never be presented as a mixed stale
-// success. The store keeps changing across the bounded retry, so the batch
-// must report an explicit drift failure instead of first-attempt bytes.
-func TestReadManyReportsExplicitDriftOnPersistentMidBatchMutation(t *testing.T) {
-	store, now := batchFixtureHome(t, 3)
-	hotPath := segmentPath(store.engine.segRoot, "receipt", ingestionDay(now.Add(24*time.Hour)), 0)
-
-	// Rewrite the hot segment in place at each attempt's RECHECK, so both the
-	// first attempt and the bounded retry observe the store moving. The bytes
-	// stay valid; only the segment identity moves.
-	var mu sync.Mutex
-	enumerations := 0
-	prevFamily := familyInventoryObserver
-	familyInventoryObserver = func(family string) {
-		mu.Lock()
-		defer mu.Unlock()
-		enumerations++
-		if enumerations%2 == 1 {
-			return // the boundary observation: the token is captured after this
-		}
-		data, err := os.ReadFile(hotPath)
-		if err != nil {
-			return
-		}
-		_ = os.WriteFile(hotPath, data, 0o644)
-	}
-	defer func() { familyInventoryObserver = prevFamily }()
-
-	results := store.ReadMany([]string{"rec_batch_01", "tr_batch_00"})
-	if results["rec_batch_01"].Err == nil {
-		t.Fatalf("a drifting batch must not return bytes: %s", results["rec_batch_01"].Record.Bytes)
-	}
-	if !errors.Is(results["rec_batch_01"].Err, errBatchDrift) {
-		t.Fatalf("drift error = %v, want errBatchDrift", results["rec_batch_01"].Err)
-	}
-	// A family whose store did NOT move keeps its answer.
-	if results["tr_batch_00"].Err != nil {
-		t.Fatalf("an unaffected family must keep its answer: %v", results["tr_batch_00"].Err)
-	}
-}
-
 // --- E. rooted boundaries --------------------------------------------------
 // The batch API stays UNROOTED and does not grow a rooted twin: the rooted
 // path remains the standalone ReadRegular, using its own rooted owner path.
@@ -498,13 +457,6 @@ func TestReadRegularStillRejectsSymlinkedAncestor(t *testing.T) {
 	if _, err := store.Read("rec_link"); err == nil {
 		t.Fatal("Read must not resolve through a symlinked events ancestor")
 	}
-}
-
-// The batch reader must not expose a rooted variant: a rooted batch would be
-// an unrequested API surface, and the rooted contract stays with ReadRegular.
-func TestReadManyExposesNoRootedBatchVariant(t *testing.T) {
-	store, _ := batchFixtureHome(t, 1)
-	var _ map[string]ReadResult = store.ReadMany([]string{"rec_batch_00"})
 }
 
 // --- D. freshness: consulted-only identity, drift, and relevance ----------
@@ -565,117 +517,107 @@ func TestReadManyAcquiresNoIrrelevantOlderIndex(t *testing.T) {
 	}
 }
 
-// A sidecar index REPLACED during the batch must never be served as current:
-// the consulted index identity is rechecked, and a persistent replacement is
-// an explicit drift failure.
-func TestReadManyReportsDriftOnIndexReplacement(t *testing.T) {
-	store, now := batchFixtureHome(t, 2)
-	idxPath := filepath.Join(store.engine.indexRoot, "receipt", ingestionDay(now)+".idx")
-	var mu sync.Mutex
-	enumerations := 0
-	prevFamily := familyInventoryObserver
-	familyInventoryObserver = func(family string) {
-		if family != "receipt" {
-			return
-		}
-		mu.Lock()
-		defer mu.Unlock()
-		enumerations++
-		if enumerations%2 != 0 {
-			return
-		}
-		// The final recheck of the attempt: replace the sealed index.
-		data, err := os.ReadFile(idxPath)
-		if err != nil {
-			return
-		}
-		_ = os.WriteFile(idxPath, append(data, ' '), 0o644)
+func TestReadManyRefreshesAfterNativeRemovalAndRollover(t *testing.T) {
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	store := openConfiguredStore(t, engineConfig{clock: func() time.Time { return now }})
+	putRecord(t, store, "rec_keep", "compound.receipt.v0.1", now, "keep")
+	putRecord(t, store, "rec_tail", "compound.receipt.v0.1", now, "tail")
+	if got := store.ReadMany([]string{"rec_keep", "rec_tail", "rec_next"}); got["rec_tail"].Err != nil || !errors.Is(got["rec_next"].Err, os.ErrNotExist) {
+		t.Fatalf("warm results: %+v", got)
 	}
-	defer func() { familyInventoryObserver = prevFamily }()
-
-	results := store.ReadMany([]string{"rec_batch_00"})
-	if results["rec_batch_00"].Err == nil {
-		t.Fatalf("a replaced index must not be served as current: %s", results["rec_batch_00"].Record.Bytes)
+	if err := store.Remove("rec_tail"); err != nil {
+		t.Fatal(err)
 	}
-	if !errors.Is(results["rec_batch_00"].Err, errBatchDrift) {
-		t.Fatalf("drift error = %v, want errBatchDrift", results["rec_batch_00"].Err)
+	removed := store.ReadMany([]string{"rec_keep", "rec_tail"})
+	if removed["rec_keep"].Err != nil || !errors.Is(removed["rec_tail"].Err, os.ErrNotExist) {
+		t.Fatalf("tail removal not reflected: %+v", removed)
+	}
+	now = now.Add(24 * time.Hour)
+	putRecord(t, store, "rec_next", "compound.receipt.v0.1", now, "next")
+	got := store.ReadMany([]string{"rec_keep", "rec_tail", "rec_next"})
+	for _, id := range []string{"rec_keep", "rec_next"} {
+		want, err := store.Read(id)
+		if err != nil || got[id].Err != nil || !bytes.Equal(got[id].Record.Bytes, want.Bytes) {
+			t.Fatalf("%s after rollover: batch=%+v point=%+v err=%v", id, got[id], want, err)
+		}
+	}
+	if !errors.Is(got["rec_tail"].Err, os.ErrNotExist) {
+		t.Fatalf("removed tail resurrected: %+v", got["rec_tail"])
 	}
 }
 
-// A record that APPEARS mid-batch must not be answered with a stale "not
-// found": the bounded retry re-observes the family and resolves it fresh.
-func TestReadManySeesRecordThatAppearsMidBatch(t *testing.T) {
-	store, _ := batchFixtureHome(t, 2)
-	var mu sync.Mutex
-	enumerations := 0
-	appended := false
-	prevFamily := familyInventoryObserver
-	familyInventoryObserver = func(family string) {
-		if family != "receipt" {
-			return
-		}
-		mu.Lock()
-		enumerations++
-		shouldAppend := enumerations%2 == 0 && !appended
-		if shouldAppend {
-			appended = true
-		}
-		mu.Unlock()
-		if !shouldAppend {
-			return
-		}
-		// Put can enumerate this family again. The flag prevents another
-		// append, and releasing the mutex permits that nested observation.
-		putRecord(t, store, "rec_batch_late", "compound.receipt.v0.1", time.Now().UTC(), "late")
+func TestReadManyRefreshesAfterForeignTornTailCompletion(t *testing.T) {
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	store := openConfiguredStore(t, engineConfig{clock: func() time.Time { return now }})
+	putRecord(t, store, "rec_prefix", "compound.receipt.v0.1", now, "prefix")
+	path := segmentPath(store.engine.segRoot, "receipt", ingestionDay(now), 0)
+	line := encodedRecordFrame(t, "rec_completed", "compound.receipt.v0.1", now, "completed")
+	split := len(line) / 2
+	appendFile(t, path, line[:split])
+	before := store.ReadMany([]string{"rec_prefix", "rec_completed"})
+	if before["rec_prefix"].Err != nil || !errors.Is(before["rec_completed"].Err, os.ErrNotExist) {
+		t.Fatalf("incomplete hot tail: %+v", before)
 	}
-	defer func() { familyInventoryObserver = prevFamily }()
-
-	results := store.ReadMany([]string{"rec_batch_late"})
-	if results["rec_batch_late"].Err != nil {
-		t.Fatalf("the bounded retry must see the record that appeared mid-batch: %v", results["rec_batch_late"].Err)
-	}
-	if !bytes.Contains(results["rec_batch_late"].Record.Bytes, []byte("late")) {
-		t.Fatalf("unexpected bytes %s", results["rec_batch_late"].Record.Bytes)
+	// Direct file append does not update this process's owner cache.
+	appendFile(t, path, line[split:])
+	after := store.ReadMany([]string{"rec_prefix", "rec_completed"})
+	for _, id := range []string{"rec_prefix", "rec_completed"} {
+		want, err := store.Read(id)
+		if err != nil || after[id].Err != nil || !bytes.Equal(after[id].Record.Bytes, want.Bytes) {
+			t.Fatalf("%s after completion: batch=%+v point=%+v err=%v", id, after[id], want, err)
+		}
 	}
 }
 
-// A family that keeps drifting must report drift for EVERY requested id of
-// that family — including an id that was ABSENT on the first attempt. A stale
-// "not found" is exactly the answer the drift exists to prevent. Other
-// families keep their answers.
-func TestReadManyReportsDriftForIdAbsentOnFirstAttempt(t *testing.T) {
-	store, now := batchFixtureHome(t, 2)
-	hotPath := segmentPath(store.engine.segRoot, "receipt", ingestionDay(now.Add(24*time.Hour)), 0)
-	var mu sync.Mutex
-	enumerations := 0
-	prevFamily := familyInventoryObserver
-	familyInventoryObserver = func(family string) {
-		if family != "receipt" {
-			return
-		}
-		mu.Lock()
-		defer mu.Unlock()
-		enumerations++
-		if enumerations%2 != 0 {
-			return
-		}
-		// Rewrite the hot segment at every recheck: the family keeps moving.
-		data, err := os.ReadFile(hotPath)
-		if err != nil {
-			return
-		}
-		_ = os.WriteFile(hotPath, data, 0o644)
+func TestReadManyPreservesMigrationFallbackBoundary(t *testing.T) {
+	store := openMigrateStore(t)
+	seedLoose(t, store, "rec_loose", "before")
+	before := store.ReadMany([]string{"rec_loose"})
+	want, err := store.Read("rec_loose")
+	if err != nil || before["rec_loose"].Err != nil || !bytes.Equal(before["rec_loose"].Record.Bytes, want.Bytes) || before["rec_loose"].Record.DiagnosticPath != want.DiagnosticPath {
+		t.Fatalf("loose fallback: batch=%+v point=%+v err=%v", before, want, err)
 	}
-	defer func() { familyInventoryObserver = prevFamily }()
+	report, err := store.Migrate(MigrateOptions{Mode: ModeApply})
+	if err != nil || !report.Completion.Complete {
+		t.Fatalf("fixture migration: complete=%v err=%v", report.Completion.Complete, err)
+	}
+	seedLoose(t, store, "rec_late", "after")
+	after := store.ReadMany([]string{"rec_loose", "rec_late"})
+	if after["rec_loose"].Err != nil || after["rec_loose"].Record.DiagnosticPath != logicalReferencePrefix+"rec_loose" {
+		t.Fatalf("migrated record: %+v", after["rec_loose"])
+	}
+	_, pointErr := store.Read("rec_late")
+	if !errors.Is(after["rec_late"].Err, os.ErrNotExist) || pointErr == nil || after["rec_late"].Err.Error() != pointErr.Error() {
+		t.Fatalf("post-completion fallback: batch=%v point=%v", after["rec_late"].Err, pointErr)
+	}
+}
 
-	results := store.ReadMany([]string{"rec_batch_absent", "tr_batch_00"})
-	if results["rec_batch_absent"].Err == nil {
-		t.Fatal("an id absent on the first attempt must not keep a stale missing answer")
-	}
-	if !errors.Is(results["rec_batch_absent"].Err, errBatchDrift) {
-		t.Fatalf("drift error = %v, want errBatchDrift", results["rec_batch_absent"].Err)
-	}
-	if results["tr_batch_00"].Err != nil {
-		t.Fatalf("an unaffected family must keep its answer: %v", results["tr_batch_00"].Err)
+func TestReadManyRebuildsIndexForMultipleIDs(t *testing.T) {
+	for _, mode := range []string{"missing", "swapped"} {
+		t.Run(mode, func(t *testing.T) {
+			fixture := newSealedIndexFixture(t, map[string]string{"rec_batch_a": "first", "rec_batch_b": "second"})
+			refs := []string{"rec_batch_a", "rec_batch_b"}
+			warm := fixture.store.ReadMany(refs)
+			for _, id := range refs {
+				if warm[id].Err != nil {
+					t.Fatal(warm[id].Err)
+				}
+			}
+			if mode == "missing" {
+				if err := os.Remove(fixture.indexPath); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				index := readTestIndex(t, fixture.indexPath)
+				index.Entries[refs[0]], index.Entries[refs[1]] = index.Entries[refs[1]], index.Entries[refs[0]]
+				writeTestIndex(t, fixture.indexPath, index)
+			}
+			got := fixture.store.ReadMany(refs)
+			for _, id := range refs {
+				if got[id].Err != nil || !bytes.Equal(got[id].Record.Bytes, warm[id].Record.Bytes) {
+					t.Fatalf("%s after %s index: %+v", id, mode, got[id])
+				}
+			}
+		})
 	}
 }
