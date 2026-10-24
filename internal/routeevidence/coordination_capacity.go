@@ -29,6 +29,14 @@ import (
 // the cached facts. It never caches an actor verdict and never mutates a shared
 // row slice: each actor filters its own copy of the parsed rows.
 //
+// That once-per-request bound covers the COORDINATION path. A declared-source
+// request is delegated to the EXISTING fresh guard, which reads its own sources
+// and is not attributed to this observation's counters; a request that mixes a
+// declared-source actor with a coordination actor therefore reads the usage
+// feeds twice. The first slice delegates rather than re-implementing the
+// declared-source semantics, and no coordination request carries a declared
+// source today.
+//
 // The observation is READ-ONLY by construction. It never records
 // capacity-refusal evidence, never runs a live provider probe on the
 // coordination path, and never touches the global work.LaneCapacityGuard. It
@@ -91,8 +99,10 @@ func (o *CoordinationCapacityObservation) Guard() work.LaneCapacityGuardFunc {
 	}
 }
 
-// SourceAccess reports how many times this observation read or stat'ed each capacity source.
-// It exists so the read-once property is observable rather than asserted.
+// SourceAccess reports how many times this observation read or stat'ed each capacity source
+// on the COORDINATION path. It exists so the read-once property is observable rather than
+// asserted. A declared-source request is delegated to the existing fresh guard, whose own
+// reads are not attributed here.
 func (o *CoordinationCapacityObservation) SourceAccess() CoordinationSourceAccess {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -219,7 +229,9 @@ func (s *coordinationCapacitySession) guardLegacy(req work.LaneCapacityGuardRequ
 }
 
 // guardDeclared delegates a declared-source request to the EXISTING fresh guard path, with the
-// observation's read-only posture: refusal evidence is never recorded from here.
+// observation's read-only posture: refusal evidence is never recorded from here. The delegated
+// path reads its own sources, so those reads are not attributed to this observation's counters
+// and are not shared with the request's cached facts.
 func (s *coordinationCapacitySession) guardDeclared(req work.LaneCapacityGuardRequest, probe codexBarCapacityProbeFunc) (LaneCapacityDecision, error) {
 	if probe == nil {
 		probe = ProbeCodexBarCapacity

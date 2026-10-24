@@ -574,7 +574,8 @@ func TestCoordinationCapacityObservationLeavesHomeUnchangedAndProbesNothing(t *t
 }
 
 // F7b: a declared-source request is the one place a live probe may run, and
-// it is still the EXISTING fresh guard path.
+// it is still the EXISTING fresh guard path. The delegated path reads its own
+// sources, so the observation's read counters do not attribute them.
 func TestCoordinationCapacityObservationDeclaredSourceDelegatesToFreshGuard(t *testing.T) {
 	cfg, home := coordinationCapacityFixture(t)
 	now := coordinationCapacityNow

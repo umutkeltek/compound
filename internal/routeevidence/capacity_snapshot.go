@@ -193,10 +193,11 @@ func capacitySourceInstalled(paths LaneCapacityPaths) bool {
 }
 
 // capacitySourceInstalledCounted is capacitySourceInstalled with an optional per-path observer,
-// so a request-scoped observation can report how many existence probes it made. The boolean
-// result is identical to the uncounted form: "any configured capacity source file exists".
+// so a request-scoped observation can report how many existence probes it made. The probe
+// sequence and the short-circuit are identical to the uncounted form: the result is "any
+// configured capacity source file exists", and the count reflects only the paths actually
+// probed (the first hit ends the walk, exactly as the production path does).
 func capacitySourceInstalledCounted(paths LaneCapacityPaths, onStat func(string)) bool {
-	installed := false
 	for _, path := range []string{paths.UsageHistoryPath, paths.QuotaCachePath, paths.AccountProjectionPath, paths.SupplementUsagePath} {
 		if strings.TrimSpace(path) == "" {
 			continue
@@ -205,10 +206,10 @@ func capacitySourceInstalledCounted(paths LaneCapacityPaths, onStat func(string)
 			onStat(path)
 		}
 		if _, err := os.Stat(path); err == nil {
-			installed = true
+			return true
 		}
 	}
-	return installed
+	return false
 }
 
 type codexBarCapacityRow struct {
