@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { installProjectionDiskProbe, runProjectionDiskProbe } from "./projection-cache-invalidation.selftest.mjs";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +18,7 @@ await Bun.sleep(120);
 console.log(JSON.stringify({
   generated_at: new Date().toISOString(),
   marker: "extended-caller-succeeded",
+  probe: process.argv[3] ?? "",
 }));
 `,
   "utf8",
@@ -27,6 +29,9 @@ process.env.COMPOUND_BIN = bin;
 process.env.COMPOUND_HOME = join(scratch, "home");
 
 try {
+  const diskProbe = installProjectionDiskProbe();
+  const api = await import("../src/lib/compound.ts");
+  await runProjectionDiskProbe(api, diskProbe);
   const { runProjectionTimeoutSelfTest } = await import("../src/lib/projection-timeout.selftest.ts");
   const result = await runProjectionTimeoutSelfTest();
   assert.equal(result.ok, true);

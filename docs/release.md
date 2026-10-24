@@ -6,6 +6,11 @@ inactive references retained for tests. The single `.woodpecker.yml` pipeline
 runs routine CI and release builds on the owned agent. The maintainer's Mac
 rebuilds, drills, signs, and uploads a draft; only the operator publishes it.
 
+Routine console CI initializes a disposable `COMPOUND_HOME` with the freshly built
+CLI and requires CLI-backed integrations instead of allowing skips. It checks
+projection-door and standing-law execution markers and retains the full JSON in
+owned CI logs, with a copy at `.ci/reports/ci-console.json`.
+
 ## Prepare and stage
 
 1. Complete the release floor in [SECURITY.md](../SECURITY.md), including the

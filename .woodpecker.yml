@@ -63,11 +63,45 @@ steps:
     image: docker.io/library/node:22-bookworm
     depends_on:
       - proof-gates
+    backend_options:
+      docker:
+        user: "1000:1000"
     commands:
-      - export PATH="$CI_WORKSPACE/.ci/bin:$PATH"
-      - (cd console && bun install --frozen-lockfile)
-      - COMPOUND_BIN="$CI_WORKSPACE/.ci/bin/compound" .ci/bin/compound proof-check --ci-console
-      - rm -f .ci/bin/bun
+      - |
+        set -eu
+        export PATH="$CI_WORKSPACE/.ci/bin:$PATH"
+        export COMPOUND_BIN="$CI_WORKSPACE/.ci/bin/compound"
+        COMPOUND_HOME="$(mktemp -d "$CI_WORKSPACE/.ci/console-home.XXXXXX")"
+        export COMPOUND_HOME
+        "$COMPOUND_BIN" home init
+        export CONSOLE_SMOKE_REQUIRE_CLI=1
+        (cd console && bun install --frozen-lockfile)
+        mkdir -p "$CI_WORKSPACE/.ci/reports"
+        report="$CI_WORKSPACE/.ci/reports/ci-console.json"
+        # The full JSON is retained in owned CI logs as well as this report.
+        "$COMPOUND_BIN" proof-check --ci-console --json --out "$report"
+        node --input-type=module - "$report" <<'NODE'
+        import assert from "node:assert/strict";
+        import { readFileSync } from "node:fs";
+        import { createHash } from "node:crypto";
+        const bytes = readFileSync(process.argv[2]);
+        const report = JSON.parse(bytes);
+        assert.equal(report.status, "ok");
+        assert.equal(report.dry_run, false);
+        assert.ok(report.steps.length > 0);
+        assert.ok(report.steps.every((step) => step.status === "ok"), "every console gate must execute successfully, with no skips");
+        const required = [
+          ["console-projection-doors-smoke", /real CLI work-detail IDs.*round-trip ok/],
+          ["console-standing-law-smoke", /standing-law e2e ok:/],
+        ];
+        for (const [name, marker] of required) {
+          const step = report.steps.find((item) => item.name === name);
+          assert.equal(step?.status, "ok", `${name} must run`);
+          assert.match(step.output_tail ?? "", marker, `${name} must run its CLI-backed integration`);
+        }
+        console.log(JSON.stringify({ ci_console_required_cli: true, passed: report.steps.length, skipped: 0, report_sha256: createHash("sha256").update(bytes).digest("hex"), required_cli_gates: required.map(([name]) => name) }));
+        NODE
+        rm -f .ci/bin/bun
 
   secret-scan:
     image: ghcr.io/gitleaks/gitleaks:v8.30.1
