@@ -3,7 +3,6 @@
 package home
 
 import (
-	"archive/tar"
 	"bufio"
 	"bytes"
 	"crypto/sha256"
@@ -272,7 +271,7 @@ func BenchmarkCapturedReconcileCardinality(b *testing.B) {
 			}
 			return nil
 		}
-		header, err := tar.FileInfoHeader(info, "")
+		header, err := archiveFileInfoHeader(info, "")
 		if err != nil {
 			return err
 		}
