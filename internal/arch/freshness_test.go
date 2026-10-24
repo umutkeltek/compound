@@ -148,19 +148,60 @@ func requireOneFinding(t *testing.T, findings []Finding) Finding {
 	return findings[0]
 }
 
-// TestCheckBuildFreshnessContractNeverFails proves the real (impure) wiring Doctor()
-// calls also never returns Fail, regardless of what's actually installed on the machine
-// running the test — the repo root here is this checkout, so gitHeadSHA resolves for
-// real, but the installed binary at installedBinaryPath() may be absent, stale, or
-// pre-embed; every one of those is a reported state, not a failure.
+// TestCheckBuildFreshnessContractNeverFails proves the real (impure) wiring the doctor
+// calls also never returns Fail, for EVERY install state a machine can be in.
+//
+// The installation is a DISPOSABLE FIXTURE this test owns: GOBIN points at a temp dir
+// holding a synthetic compound binary, so installedBinaryPath() resolves to that
+// synthetic binary and runInstalledVersion executes it — never the operator's real
+// installation. The repo root here is this checkout, so gitHeadSHA resolves for real
+// (git may inspect the requested source repo; it never reads live runtime state). The
+// synthetic binary is absent, fresh, stale or pre-embed depending on the case; every one
+// of those is a reported state, not a failure.
 func TestCheckBuildFreshnessContractNeverFails(t *testing.T) {
-	findings := checkBuildFreshnessContract(repoRoot)
-	f := requireOneFinding(t, findings)
-	if f.Severity == Fail {
-		t.Fatalf("build-freshness must never Fail the doctor, got %+v", f)
+	head, err := gitHeadSHA(repoRoot)
+	if err != nil || strings.TrimSpace(head) == "" {
+		t.Fatalf("git HEAD of the requested source repo must resolve for the freshness fixture: %v", err)
 	}
-	if f.Check != "build-freshness" {
-		t.Fatalf("finding.Check = %q, want build-freshness", f.Check)
+	head = strings.TrimSpace(head)
+	// A build SHA guaranteed to differ from HEAD (same length, first character flipped),
+	// so the synthetic installation is classified stale rather than accidentally fresh.
+	stale := "0" + head[1:]
+	if head[0] == '0' {
+		stale = "1" + head[1:]
+	}
+	for _, tc := range []struct {
+		name       string
+		install    bool
+		versionOut string
+		wantStatus BuildFreshnessStatus
+	}{
+		{"not installed", false, "", BuildMissing},
+		{"fresh", true, "compound 0.1.0 (build " + head + ")", BuildFresh},
+		{"stale", true, "compound 0.1.0 (build " + stale + ")", BuildStale},
+		{"no embedded build sha", true, "compound 0.1.0", BuildUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gobin := t.TempDir()
+			t.Setenv("GOBIN", gobin)
+			if tc.install {
+				script := "#!/bin/sh\nprintf '%s\\n' '" + tc.versionOut + "'\n"
+				if err := os.WriteFile(filepath.Join(gobin, "compound"), []byte(script), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			findings := checkBuildFreshnessContract(repoRoot)
+			f := requireOneFinding(t, findings)
+			if f.Severity == Fail {
+				t.Fatalf("build-freshness must never Fail the doctor, got %+v", f)
+			}
+			if f.Check != "build-freshness" {
+				t.Fatalf("finding.Check = %q, want build-freshness", f.Check)
+			}
+			if !strings.Contains(f.Message, string(tc.wantStatus)) {
+				t.Fatalf("finding = %+v, want it to report status=%s", f, tc.wantStatus)
+			}
+		})
 	}
 }
 

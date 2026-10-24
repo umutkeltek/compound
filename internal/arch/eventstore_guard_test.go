@@ -129,7 +129,7 @@ func reopen(store *eventstore.Store, id string) ([]byte, error) {
 }
 `)
 
-	findings := eventStoreOwnershipFindings(t, Doctor(repo, true))
+	findings := eventStoreOwnershipFindings(t, DoctorSource(repo, true))
 	wantFiles := []string{
 		"internal/caller/direct.go",
 		"cmd/probe/streams.go",
@@ -185,7 +185,7 @@ import "path/filepath"
 var fixture = filepath.Join("fixture", "events", "rec_example.json")
 `)
 
-	findings := eventStoreOwnershipFindings(t, Doctor(repo, true))
+	findings := eventStoreOwnershipFindings(t, DoctorSource(repo, true))
 	for _, finding := range findings {
 		if finding.Severity == Fail {
 			t.Fatalf("owner/non-physical vocabulary must pass: %+v", findings)
@@ -210,7 +210,7 @@ func read(home string) ([]byte, error) {
 }
 `)
 
-	findings := eventStoreOwnershipFindings(t, Doctor(repo, true))
+	findings := eventStoreOwnershipFindings(t, DoctorSource(repo, true))
 	if !eventStoreFindingContains(findings, Fail, "internal/eventstore/nested/bypass.go") {
 		t.Fatalf("nested package bypassed exact internal/eventstore ownership: %+v", findings)
 	}
@@ -246,7 +246,7 @@ func open(home string) (*os.File, error) {
 }
 `)
 
-	findings := eventStoreOwnershipFindings(t, Doctor(repo, true))
+	findings := eventStoreOwnershipFindings(t, DoctorSource(repo, true))
 	for _, rel := range []string{
 		"internal/reader/split_constant.go",
 		"internal/chainedreader/chained_constant.go",
@@ -279,7 +279,7 @@ func scratchRead(home string) ([]byte, error) {
 		t.Fatal("scratch probe unexpectedly became tracked; test would not prove worktree scanning")
 	}
 
-	findings := eventStoreOwnershipFindings(t, Doctor(repo, true))
+	findings := eventStoreOwnershipFindings(t, DoctorSource(repo, true))
 	if !eventStoreFindingContains(findings, Fail, "zz_eventstore_guard_probe.go") {
 		t.Fatalf("untracked scratch production access must fail: %+v", findings)
 	}
@@ -319,7 +319,7 @@ func TestEventStorePublicArchitectureContract(t *testing.T) {
 		}
 	}
 	var doctorProof bool
-	for _, finding := range Doctor(repoRoot, true).Findings {
+	for _, finding := range DoctorSource(repoRoot, true).Findings {
 		if finding.Check == "eventstore-public-contract" && finding.Severity == Info {
 			doctorProof = true
 		}

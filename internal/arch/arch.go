@@ -364,13 +364,46 @@ const MaxNonTestCompoundLOC = 52300
 // ConvergePendingBudget, it only ever goes DOWN — to add prose, subtract prose.
 const MaxStatusHotPathNarrationLines = 189
 
-// Doctor runs every check. repoRoot is the compound repo root for filesystem checks (classification
-// totality, doc leak); pass "" to run only the in-memory checks (candidate map). strict turns the
+// Doctor runs EVERY check: the source-scoped checks plus the three runtime audits (the live
+// proveable-pair law, the installed build freshness and the installed sidecar freshness).
+//
+// repoRoot is the compound repo root for filesystem checks (classification totality, doc leak);
+// pass "" to skip every repository-scoped check. IMPORTANT: "" does NOT mean "in-memory only" —
+// the proveable-pair law still audits the AMBIENT COMPOUND_HOME (it resolves its own home), so
+// the empty-repoRoot run is candidate map + live pair law + convergence ratchet. A caller that
+// must not touch ambient runtime state wants DoctorSource, not Doctor(""). strict turns the
 // convergence-debt ratchet into a hard failure if the debt exceeds its budget. It never mutates.
 func Doctor(repoRoot string, strict bool) Report {
+	return doctor(repoRoot, strict, true)
+}
+
+// DoctorSource runs ONLY the source-scoped checks: the candidate map, every repository
+// source/contract/leak/budget/classification check, the mint ratchet, the cmd/compound budget
+// and the convergence ratchet.
+//
+// It NEVER resolves or scans an ambient Compound home, NEVER inspects installed artifacts and
+// NEVER executes an installed Compound binary. The three runtime audits Doctor performs are not
+// filtered out of a finished report — they are not run at all — so a source qualification cannot
+// be perturbed by unrelated mutable runtime records or by the operator's installation.
+//
+// repoRoot and strict carry the same meaning as in Doctor, so the source findings are the same
+// findings with the same ordering, severities and OK calculation; the source report is a strict
+// subset of the full report's source findings.
+func DoctorSource(repoRoot string, strict bool) Report {
+	return doctor(repoRoot, strict, false)
+}
+
+// doctor is the SINGLE implementation of the check inventory — there is no second copy of the
+// source-check list and no post-hoc filtering. includeRuntime gates exactly the three runtime
+// audits named above; every other check is source-scoped and always runs. When includeRuntime is
+// true the finding order, severities and OK calculation are byte-identical to the pre-split
+// Doctor.
+func doctor(repoRoot string, strict, includeRuntime bool) Report {
 	var f []Finding
 	f = append(f, checkCandidateMap()...)
-	f = append(f, checkProveablePairLaw("", strict)...)
+	if includeRuntime {
+		f = append(f, checkProveablePairLaw("", strict)...)
+	}
 	if repoRoot != "" {
 		f = append(f, checkClassificationTotal(repoRoot)...)
 		f = append(f, checkPackageClassificationTableContract(repoRoot)...)
@@ -424,8 +457,10 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkOperatorSourceControlProjectionContract(repoRoot)...)
 		f = append(f, checkASCDailySignalsPublicBoundaryContract(repoRoot)...)
 		f = append(f, checkPublicAlphaSupportedScopeContract(repoRoot)...)
-		f = append(f, checkBuildFreshnessContract(repoRoot)...)
-		f = append(f, checkSidecarFreshnessContract(repoRoot)...)
+		if includeRuntime {
+			f = append(f, checkBuildFreshnessContract(repoRoot)...)
+			f = append(f, checkSidecarFreshnessContract(repoRoot)...)
+		}
 		f = append(f, checkMintTwoClassHome(repoRoot)...)
 		f = append(f, checkCmdCompoundBudget(repoRoot, strict)...)
 	}
@@ -1329,22 +1364,24 @@ func scanPrivateSourceBody(rel string, content []byte) []Finding {
 }
 
 // gitTrackedFiles returns the repo-relative paths of every tracked file (`git
-// ls-files`), the authoritative set of what ships publicly. The child receives
-// no GIT_* environment overrides: GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, object
-// directories, and config injection must not redirect the doctor away from the
-// repoRoot checkout it was asked to certify. A non-git repoRoot (or missing git)
-// returns an error so the caller falls back to a filesystem walk. Bounded by a
-// timeout so the doctor can never hang on a wedged git.
+// ls-files`), the authoritative set of what ships publicly. The child receives no
+// GIT_* environment overrides and no ambient Git config (gitSourceEnumerationEnv),
+// and core.fsmonitor is disabled for this invocation, so nothing outside the
+// repoRoot checkout can change WHICH SOURCE FILES the doctor enumerates. A
+// non-git repoRoot (or missing git) returns an error so the caller falls back to
+// a filesystem walk. Bounded by a timeout so the doctor can never hang on a
+// wedged git.
 func gitTrackedFiles(repoRoot string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "-C", repoRoot, "ls-files", "-z")
-	for _, entry := range os.Environ() {
-		name, _, _ := strings.Cut(entry, "=")
-		if !strings.HasPrefix(strings.ToUpper(name), "GIT_") {
-			cmd.Env = append(cmd.Env, entry)
-		}
-	}
+	// core.fsmonitor is disabled because the fsmonitor hook is an EXTERNAL PROGRAM
+	// git runs while listing the index — `git ls-files` runs it, so an ambient (or
+	// repo-local) core.fsmonitor made the enumeration execute whatever helper it
+	// names. `-c core.fsmonitor=false` is a command-line override, so it outranks
+	// every config file and leaves the tracked inventory byte-identical; it changes
+	// no index, worktree or submodule fact.
+	cmd := exec.CommandContext(ctx, "git", "-C", repoRoot, "-c", "core.fsmonitor=false", "ls-files", "-z")
+	cmd.Env = gitSourceEnumerationEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -1356,6 +1393,42 @@ func gitTrackedFiles(repoRoot string) ([]string, error) {
 		}
 	}
 	return files, nil
+}
+
+// gitSourceEnumerationEnv builds the environment the source-enumeration child runs
+// under. It is the DETERMINISM CONTRACT of that child, kept as one function so the
+// contract is inspectable and testable rather than spread across the call site.
+//
+// Two classes of ambient input are removed:
+//
+//  1. Every inherited GIT_* variable. GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, the
+//     object directories and the GIT_CONFIG_* family must not redirect the doctor
+//     away from the repoRoot checkout it was asked to certify.
+//  2. The CONFIG FILES git reads outside the checkout: the system-wide file,
+//     ~/.gitconfig and $XDG_CONFIG_HOME/git/config. A malformed one made
+//     `git ls-files` FAIL, which changed the doctor's source findings — the doc-leak
+//     scan failed closed and the private-body contract silently fell back to a
+//     filesystem walk. GIT_CONFIG_NOSYSTEM plus GIT_CONFIG_SYSTEM and
+//     GIT_CONFIG_GLOBAL pointing at os.DevNull remove all three.
+//
+// The repo's OWN .git/config is deliberately NOT touched: the local index, worktree
+// and submodule semantics git owns there stay exactly as they are, and the fix only
+// removes what the operator's environment contributes.
+func gitSourceEnumerationEnv() []string {
+	var env []string
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if !strings.HasPrefix(strings.ToUpper(name), "GIT_") {
+			env = append(env, entry)
+		}
+	}
+	// Appended AFTER the inherited-GIT_* filter, so these win over anything the
+	// caller exported.
+	return append(env,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_SYSTEM="+os.DevNull,
+		"GIT_CONFIG_GLOBAL="+os.DevNull,
+	)
 }
 
 // checkRetiredSurfaceReferences keeps proven-retired public surfaces from

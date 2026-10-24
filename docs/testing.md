@@ -125,6 +125,76 @@ their explicit setup. Run the clone-isolation tests with any such migration.
 Further scheduling changes or exact-input proof reuse need a separately reviewed
 verification contract. A diagnostic profile cannot authorize either.
 
+## Source qualification vs the full architecture doctor
+
+`internal/arch` exposes two entry points over ONE check inventory:
+
+- `arch.Doctor(repoRoot, strict)` is the canonical FULL doctor. It runs the
+  source checks plus three runtime audits: the live proveable-pair law (which
+  resolves the ambient `COMPOUND_HOME`), the installed build freshness and the
+  installed sidecar freshness. `compound architecture doctor --strict` and the
+  proof-check architecture gate call this one; their behaviour is unchanged.
+- `arch.DoctorSource(repoRoot, strict)` is the SOURCE-ONLY entry point. It runs
+  the candidate map and every repository source/contract/leak/budget/
+  classification check, the mint ratchet and the convergence ratchet, and it
+  never resolves a Compound home, inspects installed artifacts or executes an
+  installed Compound binary. The runtime audits are not filtered out of a
+  finished report — they are not run.
+
+Use `DoctorSource` for tests that qualify SOURCE (ownership, classification,
+doc leak, budgets, contracts). Use `Doctor` for tests that qualify RUNTIME
+(live pair law, installed drift). A source qualification that calls the full
+doctor inherits the operator's mutable runtime records and installation, so its
+result is not a property of the source under test.
+
+Runtime paths in a source qualification are still confined: point `HOME`,
+`GOBIN` and `COMPOUND_HOME` at disposable fixtures, and own any installation
+fixture the test needs — never resolve the operator's real one. The separation
+controls live in `internal/arch/source_qualification_test.go`.
+
+## The source inventory does not read ambient Git state
+
+The source inventory is `git ls-files` over the repo the doctor was asked to
+certify. The child Git process runs under a fixed contract
+(`gitSourceEnumerationEnv`), so the operator's environment cannot change WHICH
+SOURCE FILES the doctor enumerates:
+
+- every inherited `GIT_*` variable is filtered out — `GIT_DIR`, `GIT_WORK_TREE`,
+  `GIT_INDEX_FILE`, the object directories and the `GIT_CONFIG_*` family must
+  not redirect the doctor away from the checkout under test;
+- the config files Git reads OUTSIDE the checkout are neutralized:
+  `GIT_CONFIG_NOSYSTEM=1` plus `GIT_CONFIG_SYSTEM` and `GIT_CONFIG_GLOBAL`
+  pointing at `os.DevNull`. A malformed `~/.gitconfig` or XDG config otherwise
+  made `git ls-files` fail, which moved the doctor's findings — the doc-leak
+  scan failed closed and the private-body contract fell back to a filesystem
+  walk;
+- `core.fsmonitor` is disabled for the enumeration with
+  `-c core.fsmonitor=false`. The fsmonitor hook is an EXTERNAL PROGRAM Git runs
+  while listing the index, so an ambient (or repo-local) `core.fsmonitor` made
+  the enumeration execute whatever helper it named.
+
+The repo's OWN `.git/config` is deliberately still consulted: the local index,
+worktree and submodule semantics Git owns there are unchanged, and the tracked
+inventory stays byte-identical. The runtime build-freshness audit is a separate
+Git seam and keeps its own behaviour.
+
+The controls live in `internal/arch/git_enumeration_test.go`. Each hostile
+input is a disposable fixture (temp repo, temp home, temp XDG config home, temp
+system/global config files, temp helper script), and each one carries a POSITIVE
+CONTROL — a plain `git ls-files` that proves the hostility was live — so a
+passing control can never mean "the attack never worked".
+
+The raw controls run under an EXPLICITLY OWNED environment: every inherited
+`GIT_*` variable is excluded and the system config is confined to a disposable
+file, so an exported `GIT_CONFIG_GLOBAL` can neither redirect the fixture's own
+Git commands nor mask the hostile globals under test. The hostile inputs
+themselves are concrete — a malformed disposable system config, a malformed
+disposable global config, and a config INJECTED through the environment
+(`GIT_CONFIG_COUNT`) — and the enumeration child's own environment is asserted
+to be exactly `GIT_CONFIG_NOSYSTEM=1` plus `GIT_CONFIG_SYSTEM` and
+`GIT_CONFIG_GLOBAL` at `os.DevNull`, with the repo's own `.git/config` still
+consulted.
+
 ## Own cooperative fixture lifetimes
 
 A fixture that acknowledges a concurrent operation must stay alive through
