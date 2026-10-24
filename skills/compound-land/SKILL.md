@@ -414,7 +414,8 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   pre-land `--out` report, main's tree is byte-identical to the tree the battery proved, so a
   post-land rerun proves nothing new and costs ~40 minutes of shared proof capacity. Record the
   equality instead: `land-check --tip "$TIP"` cites the pre-land proof at that same tip. The
-  nightly full battery on main is the backstop for host or ordering drift.
+  scheduled full battery can provide an additional check for host or ordering drift only when
+  its actual runs and results are verified; a schedule or written claim alone is not evidence.
   Run the post-land battery against the same `PRE_LAND_BASE_SHA` ONLY when the landed tip differs
   from the proven HEAD (a replay, a package-disjointness landing, or any rebase after proof):
   ```bash
