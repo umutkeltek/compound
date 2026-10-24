@@ -144,8 +144,16 @@ func (s *Store) LandCheck(workID string, opts LandCheckOptions, now time.Time) (
 // malformed, non-canonical, or wrong-branch refs still fail WorkEnvelope
 // validation instead of being mislabeled as awaiting publication.
 func (s *Store) validateBoundGitDeliveryForLandCheck(w envelope.WorkEnvelope) error {
+	return s.validateBoundGitDeliveryForLandCheckWithFacts(w, nil)
+}
+
+// validateBoundGitDeliveryForLandCheckWithFacts is the session-aware form: a
+// non-nil facts session reuses the repository reads this validation shares
+// with the rest of one projection request, while every contract check stays
+// per-Work.
+func (s *Store) validateBoundGitDeliveryForLandCheckWithFacts(w envelope.WorkEnvelope, facts *landingGitFacts) error {
 	if w.GitDelivery == nil {
-		return s.validateBoundGitDelivery(w)
+		return s.validateBoundGitDeliveryWithFacts(w, facts)
 	}
 	if err := w.Validate(); err != nil {
 		return err
@@ -158,17 +166,31 @@ func (s *Store) validateBoundGitDeliveryForLandCheck(w envelope.WorkEnvelope) er
 		return fmt.Errorf("git_delivery.publication_ref %q is not canonical", contract.PublicationRef)
 	}
 	if contract.PublicationMode != "required" {
-		return s.validateBoundGitDelivery(w)
+		return s.validateBoundGitDeliveryWithFacts(w, facts)
 	}
 
 	withoutPublication := w
 	contract.PublicationMode = "local_only"
 	contract.PublicationRef = ""
 	withoutPublication.GitDelivery = &contract
-	return s.validateBoundGitDelivery(withoutPublication)
+	return s.validateBoundGitDeliveryWithFacts(withoutPublication, facts)
 }
 
+// evaluateLandCheck performs one Work's full landing evaluation with fresh Git
+// reads. The governed mutation paths (land-check, close revalidation) always
+// take this form.
 func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions, now time.Time) (LandCheckReport, error) {
+	return s.evaluateLandCheckWithFacts(w, opts, now, nil)
+}
+
+// evaluateLandCheckWithFacts evaluates ONE Work's delivery invariant. Every
+// Work-specific input — envelope validation, the bound contract, the attached
+// candidate artifact, proof resolution, publication mode, and the expected
+// base — is evaluated here, per Work. The optional facts session only reuses
+// repository-scoped READ FACTS (root, refs, status, worktrees, object
+// existence, ancestry, identity, owned-path dirt) across the Works of one
+// request; a nil session reads everything fresh.
+func (s *Store) evaluateLandCheckWithFacts(w envelope.WorkEnvelope, opts LandCheckOptions, now time.Time, facts *landingGitFacts) (LandCheckReport, error) {
 	if now.IsZero() {
 		now = time.Now()
 	}
@@ -190,13 +212,13 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 		}
 		return report, nil
 	}
-	if err := s.validateBoundGitDeliveryForLandCheck(w); err != nil {
+	if err := s.validateBoundGitDeliveryForLandCheckWithFacts(w, facts); err != nil {
 		return LandCheckReport{}, err
 	}
 	contract := *w.GitDelivery
 	repoPath := contract.TargetWorktreeRoot
 	if assertedRepo := strings.TrimSpace(opts.RepoPath); assertedRepo != "" {
-		canonicalAssertion, err := canonicalLandingRepo(assertedRepo)
+		canonicalAssertion, err := facts.canonicalRepo(assertedRepo)
 		if err != nil {
 			return LandCheckReport{}, err
 		}
@@ -204,12 +226,12 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 			return LandCheckReport{}, fmt.Errorf("caller repository %s does not match WorkEnvelope git_delivery.target_worktree_root %s", canonicalAssertion, repoPath)
 		}
 	}
-	targetRef, targetBranchRef, err := normalizeLandingTargetRef(repoPath, contract.TargetLocalRef)
+	targetRef, targetBranchRef, err := facts.normalizeTargetRef(repoPath, contract.TargetLocalRef)
 	if err != nil {
 		return LandCheckReport{}, err
 	}
 	if assertedRef := strings.TrimSpace(opts.TargetRef); assertedRef != "" {
-		_, normalizedAssertion, err := normalizeLandingTargetRef(repoPath, assertedRef)
+		_, normalizedAssertion, err := facts.normalizeTargetRef(repoPath, assertedRef)
 		if err != nil {
 			return LandCheckReport{}, err
 		}
@@ -217,18 +239,18 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 			return LandCheckReport{}, fmt.Errorf("caller target ref %s does not match WorkEnvelope git_delivery.target_local_ref %s", normalizedAssertion, targetBranchRef)
 		}
 	}
-	targetSHA, err := runLandingGitOutput(repoPath, "rev-parse", "--verify", targetBranchRef+"^{commit}")
+	targetSHA, err := facts.refCommit(repoPath, targetBranchRef)
 	if err != nil {
 		return LandCheckReport{}, fmt.Errorf("resolve target branch %s: %w", targetRef, err)
 	}
 	if !validLandingObjectID(targetSHA) {
 		return LandCheckReport{}, fmt.Errorf("target branch %s did not resolve to a full Git object id", targetRef)
 	}
-	currentBranchRef, err := landingCurrentBranchRef(repoPath)
+	currentBranchRef, err := facts.currentBranchRef(repoPath)
 	if err != nil {
 		return LandCheckReport{}, err
 	}
-	statusOutput, err := runLandingGitOutput(repoPath, "status", "--porcelain=v1", "--untracked-files=all")
+	statusOutput, err := facts.statusPorcelain(repoPath)
 	if err != nil {
 		return LandCheckReport{}, fmt.Errorf("inspect target worktree status: %w", err)
 	}
@@ -287,7 +309,7 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 			return report, nil
 		}
 	}
-	report.CandidateExists, err = landingCommitExists(repoPath, candidate)
+	report.CandidateExists, err = facts.commitExists(repoPath, candidate)
 	if err != nil {
 		return report, err
 	}
@@ -296,7 +318,7 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 		report.NextAction = fmt.Sprintf("recover candidate tip %s into this repository, then rerun land-check", candidate)
 		return report, nil
 	}
-	report.ExpectedBaseExists, err = landingCommitExists(repoPath, expectedBase)
+	report.ExpectedBaseExists, err = facts.commitExists(repoPath, expectedBase)
 	if err != nil {
 		return report, err
 	}
@@ -305,7 +327,7 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 		report.NextAction = fmt.Sprintf("recover expected base %s into this repository or replace the malformed envelope before landing", expectedBase)
 		return report, nil
 	}
-	report.ExpectedBaseAncestorOfCandidate, err = landingIsAncestor(repoPath, expectedBase, candidate)
+	report.ExpectedBaseAncestorOfCandidate, err = facts.isAncestor(repoPath, expectedBase, candidate)
 	if err != nil {
 		return report, err
 	}
@@ -320,16 +342,16 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 	// provably reachable from the target (and publication) refs. The historical
 	// short-circuit that returned dirty_target here left CandidateContainedInTarget
 	// at its false zero value even for a commit demonstrably on the target branch.
-	report.CandidateContainedInTarget, err = landingIsAncestor(repoPath, candidate, targetSHA)
+	report.CandidateContainedInTarget, err = facts.isAncestor(repoPath, candidate, targetSHA)
 	if err != nil {
 		return report, err
 	}
-	report.TargetAncestorOfCandidate, err = landingIsAncestor(repoPath, targetSHA, candidate)
+	report.TargetAncestorOfCandidate, err = facts.isAncestor(repoPath, targetSHA, candidate)
 	if err != nil {
 		return report, err
 	}
 	if !report.TargetBranchWorktree {
-		targetCheckedOut, err := landingRefCheckedOut(repoPath, targetBranchRef)
+		targetCheckedOut, err := facts.refCheckedOut(repoPath, targetBranchRef)
 		if err != nil {
 			return report, err
 		}
@@ -350,16 +372,16 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 
 	publicationExists := false
 	if report.CandidateContainedInTarget && contract.PublicationMode == "required" {
-		publicationExists, err = landingRefExists(repoPath, contract.PublicationRef)
+		publicationExists, err = facts.refExists(repoPath, contract.PublicationRef)
 		if err != nil {
 			return report, err
 		}
 		if publicationExists {
-			report.PublicationSHA, err = runLandingGitOutput(repoPath, "rev-parse", "--verify", contract.PublicationRef+"^{commit}")
+			report.PublicationSHA, err = facts.refCommit(repoPath, contract.PublicationRef)
 			if err != nil {
 				return report, fmt.Errorf("resolve publication ref %s: %w", contract.PublicationRef, err)
 			}
-			report.CandidateContainedInPublication, err = landingIsAncestor(repoPath, candidate, report.PublicationSHA)
+			report.CandidateContainedInPublication, err = facts.isAncestor(repoPath, candidate, report.PublicationSHA)
 			if err != nil {
 				return report, err
 			}
@@ -414,7 +436,7 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 	// While landing is still necessary, scope the blocking cleanliness gate to
 	// paths this envelope owns (its base..candidate diff). Unrelated dirt remains
 	// diagnostic state through CleanTarget, but cannot hold the landing hostage.
-	ownedDirty, ownedDirtyPaths, err := landingOwnedPathsDirty(repoPath, expectedBase, candidate)
+	ownedDirty, ownedDirtyPaths, err := facts.ownedPathsDirty(repoPath, expectedBase, candidate)
 	if err != nil {
 		return report, err
 	}
@@ -926,13 +948,20 @@ func landingRefCheckedOut(repoPath, targetBranchRef string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("inspect worktrees for target ref %s: %w", targetBranchRef, err)
 	}
+	return landingWorktreeListHasBranch(out, targetBranchRef), nil
+}
+
+// landingWorktreeListHasBranch parses one porcelain worktree list for the
+// exact checked-out branch ref. Shared by the direct read and the request-local
+// facts session so both answer from one definition.
+func landingWorktreeListHasBranch(out, targetBranchRef string) bool {
 	want := "branch " + targetBranchRef
 	for _, field := range strings.Split(out, "\x00") {
 		if field == want {
-			return true, nil
+			return true
 		}
 	}
-	return false, nil
+	return false
 }
 
 func landingRefExists(repoPath, ref string) (bool, error) {

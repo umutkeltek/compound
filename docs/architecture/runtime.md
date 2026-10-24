@@ -853,6 +853,22 @@ unreadable input reported by that index never restart a directory scan for each
 work item. Standalone item readers still load their own observations. Index
 warnings remain visible once, and hold-evidence consumption is unchanged.
 
+Workbench and coordination build one request-local Git facts session per projection
+call. It reuses only repository-scoped read facts — canonical worktree root,
+normalized refs and their commit resolution, current branch, worktree status and
+worktree list, commit existence, ancestry between exact object ids, repository
+identity keyed by canonical root plus exact expected base, and owned-path dirt —
+with explicit first-read snapshot semantics inside that one request. Every Work
+still evaluates its own delivery verdict: envelope and contract validation, the
+attached candidate artifact, proof resolution, publication requirement, expected
+base, and recorded delivery proof are never shared between Works, and a failed
+shared Git read is reported as an integrity error for every affected Work. No
+LandCheckReport, verdict, next action, or proof crosses Works. The session is
+never stored on the home, persisted, or reused across requests, so a new
+projection rereads mutable refs, status, origin identity, proofs, and previously
+missing inputs; governed land-check, close, and admission keep fresh per-call
+reads. A nil session means fresh reads per Work.
+
 ### Lifecycle finalization cost and evidence scope
 
 Attaching a batch of retained RunAttempts reads the strict canonical lifecycle

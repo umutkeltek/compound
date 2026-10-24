@@ -731,7 +731,17 @@ func (s *Store) normalizeGitDeliveryForPlan(w *envelope.WorkEnvelope) error {
 	return s.validateBoundGitDelivery(*w)
 }
 
+// validateBoundGitDelivery proves the bound Git delivery contract against the
+// repository with fresh Git reads. The governed mutation paths (create, close,
+// admission, landing) always take this form.
 func (s *Store) validateBoundGitDelivery(w envelope.WorkEnvelope) error {
+	return s.validateBoundGitDeliveryWithFacts(w, nil)
+}
+
+// validateBoundGitDeliveryWithFacts is the session-aware form: a non-nil facts
+// session reuses the repository reads this validation shares with the rest of
+// one projection request, while every contract check stays per-Work.
+func (s *Store) validateBoundGitDeliveryWithFacts(w envelope.WorkEnvelope, facts *landingGitFacts) error {
 	if w.GitDelivery == nil {
 		return validateNewGitDeliveryDeclaration(w)
 	}
@@ -739,31 +749,31 @@ func (s *Store) validateBoundGitDelivery(w envelope.WorkEnvelope) error {
 		return repositoryIdentityMigrationError(w)
 	}
 	contract := *w.GitDelivery
-	root, err := canonicalLandingRepo(contract.TargetWorktreeRoot)
+	root, err := facts.canonicalRepo(contract.TargetWorktreeRoot)
 	if err != nil {
 		return fmt.Errorf("git_delivery.target_worktree_root: %w", err)
 	}
 	if root != contract.TargetWorktreeRoot {
 		return fmt.Errorf("git_delivery.target_worktree_root %q is not the exact canonical root %q", contract.TargetWorktreeRoot, root)
 	}
-	_, localRef, err := normalizeLandingTargetRef(root, contract.TargetLocalRef)
+	_, localRef, err := facts.normalizeTargetRef(root, contract.TargetLocalRef)
 	if err != nil {
 		return fmt.Errorf("git_delivery.target_local_ref: %w", err)
 	}
 	if localRef != contract.TargetLocalRef {
 		return fmt.Errorf("git_delivery.target_local_ref %q is not canonical %q", contract.TargetLocalRef, localRef)
 	}
-	identity, err := gitrepository.ReadIdentity(root, contract.ExpectedBaseSHA)
+	identity, err := facts.repositoryIdentity(root, contract.ExpectedBaseSHA)
 	if err != nil {
 		return fmt.Errorf("git_delivery.repository_fingerprint: %w", err)
 	}
 	if identity.Fingerprint != contract.RepositoryFingerprint {
 		return fmt.Errorf("git_delivery repository fingerprint %s no longer matches bound fingerprint %s", identity.Fingerprint, contract.RepositoryFingerprint)
 	}
-	if _, err := runLandingGitOutput(root, "rev-parse", "--verify", localRef+"^{commit}"); err != nil {
+	if _, err := facts.refCommit(root, localRef); err != nil {
 		return fmt.Errorf("git_delivery.target_local_ref does not resolve: %w", err)
 	}
-	baseExists, err := landingCommitExists(root, contract.ExpectedBaseSHA)
+	baseExists, err := facts.commitExists(root, contract.ExpectedBaseSHA)
 	if err != nil {
 		return err
 	}
@@ -771,7 +781,7 @@ func (s *Store) validateBoundGitDelivery(w envelope.WorkEnvelope) error {
 		return fmt.Errorf("git_delivery.expected_base_sha %s does not exist in bound repository", contract.ExpectedBaseSHA)
 	}
 	if contract.PublicationMode == "required" {
-		if _, err := runLandingGitOutput(root, "rev-parse", "--verify", contract.PublicationRef+"^{commit}"); err != nil {
+		if _, err := facts.refCommit(root, contract.PublicationRef); err != nil {
 			return fmt.Errorf("git_delivery.publication_ref does not resolve: %w", err)
 		}
 	}
