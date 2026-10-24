@@ -324,7 +324,7 @@ export function CoordinationBoard({ view, doorStatus, doorError, execDetail, run
       <section className="flex flex-col gap-2">
         <SectionHeader tone="seam" label="Work constraints" sub={`${view.waits.length} constraint${view.waits.length === 1 ? "" : "s"}`} />
         {view.waits.length === 0 ? (
-          <EmptyState>Nothing is waiting on anything — every involved actor can continue.</EmptyState>
+          <EmptyState>No specific work or lane constraints to show.</EmptyState>
         ) : (
           <div className="overflow-hidden rounded-xl border border-hair bg-panel shadow-sm">
             <table className="w-full text-left text-sm">

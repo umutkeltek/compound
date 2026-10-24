@@ -82,13 +82,13 @@ repeated, trusting an adjacent command's exit for a gate's own result.
 
 During iteration, use `go run ./cmd/compound proof-check --dev --base main` for
 cache-enabled short feedback. It is explicitly non-certifying: it does not write
-the canonical installed-runtime proof artifact and never substitutes for either
-the pre-land or post-land full proof below.
+the canonical installed-runtime proof artifact and never substitutes for the
+pre-land full proof below.
 
-Run the `compound-verify` skill. Before any replay, battery, or land, capture the
-current target tip once as `PRE_LAND_BASE_SHA`; the post-land battery reuses
-that exact full SHA so its diff still covers the landed candidate. Minimum bar
-before any commit to main:
+Run the `compound-verify` skill. Capture the current target tip as
+`PRE_LAND_BASE_SHA` before each pre-land canonical proof and preserve that exact
+full SHA with its candidate report. A replay changes the candidate and requires
+renewed proof before landing. Minimum bar before any commit to main:
 
 ```bash
 PRE_LAND_BASE_SHA=$(git rev-parse --verify "main^{commit}")
@@ -344,25 +344,15 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   (the holder's own release is the tool's sanctioned path), confirm the dead run self-terminalized
   (`compound run-attempt list --non-terminal` — proof-check terminalizes its own ratt on the
   admission error path), then rerun the plain exact command on the freed resource.
-- **When holding the lease ALSO fails, land on package-disjointness — never on a CAS to your own tip**
-  (lived 2026-07-27: FOUR guard trips, one of them while the lease was held, because the lease is
-  advisory and that lane bypassed it). Measure before deciding: battery **~14 min** against main
-  gaining **~1 commit per 14 min** — main moved between a `git status` read and the `git rebase` on
-  the very next line. At that ratio the guard trips essentially every cycle and waiting cannot
-  converge. The counter: **full battery on base B → if main moved to B', require the commits
-  `B..B'` to touch NO package your change touches → replay your commit onto B' → `--ff-only`.**
-  Compute it, do not eyeball it —
-  `comm -12 <(git diff --name-only B..B' | xargs -n1 dirname | sort -u) <(your changed dirs | sort -u)`
-  must be empty; on overlap the rule REFUSES and you re-battery. It fired once and cost a cycle: that
-  is the rule working, not a formality to wave through. Confirm it is satisfiable for your packages
-  first — 12 of 30 recent commits touched `cmd/compound`/`internal/capgraph` (~40% collide) → ~60%
-  clean windows → ~1.7 expected cycles, i.e. bounded. **The trap: do NOT implement this as
-  `git update-ref refs/heads/main <your-tip> <fresh-sha>`.** Your tip is based on the OLD main, so
-  the CAS SUCCEEDS and silently DELETES the other lane's commit. Always rebase FORWARD onto B';
-  never overwrite it. The `update-ref` escape hatch below is for a hijacked main CHECKOUT, a
-  different problem — and it is doubly wrong here, because MAIN has `main` checked out, so moving
-  the ref without the index leaves your landed files looking *reverted* in that worktree, and the
-  next lane can commit the revert.
+- **Package disjointness guides reconciliation; it never preserves proof after a replay.**
+  If main moves from B to B', inspect the intervening changes to plan a forward replay in an
+  isolated worktree. Even disjoint changes produce a new proof base or candidate HEAD.
+  Capture the fresh base B', attach the new candidate H', and complete the full canonical proof
+  for that exact B'/H' pair **before landing**. Then use the short landing lease and fresh
+  main-SHA guard for the ordinary `--ff-only` landing. Do not land first and test the replay later.
+  Never use `git update-ref` or a target-ref CAS to bypass replay, fresh proof or a tripped guard.
+  The separate hijacked-checkout exception in §1 still requires an already-certified descendant;
+  it does not authorize proof reuse for a changed base or candidate.
 - **An old index lock is a recovery candidate, not proof that Git is idle.**
   Do not move or delete it by hand and do not relax the generic `.git` forbidden-path rule.
   Use `compound authority git-index-lock plan --repo ROOT --work WORK --actor ACTOR`.
@@ -418,16 +408,12 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   equality instead: `land-check --tip "$TIP"` cites the pre-land proof at that same tip. The
   scheduled full battery can provide an additional check for host or ordering drift only when
   its actual runs and results are verified; a schedule or written claim alone is not evidence.
-  Run the post-land battery against the same `PRE_LAND_BASE_SHA` ONLY when the landed tip differs
-  from the proven HEAD (a replay, a package-disjointness landing, or any rebase after proof):
-  ```bash
-  go run ./cmd/compound proof-check --json --base "$PRE_LAND_BASE_SHA" \
-    --work <work_id> --actor "<harness>:<lane>" --out <absolute-report.json>
-  ```
-  Preserve its actual exit and read the authoritative `--out` report. Never
-  recapture `main^{commit}` after landing: that makes `base...HEAD` empty. If
-  replay or rebase changes the candidate, deliberately capture a new
-  `PRE_LAND_BASE_SHA` before a renewed pre-land battery.
+  If the planned base or candidate changes after proof, stop before landing. Capture the new
+  `PRE_LAND_BASE_SHA`, run a fresh canonical proof for that exact base and candidate, then repeat
+  the fresh main-SHA guard before the fast-forward. Package disjointness does not exempt a replay.
+  An already-landed tip that differs from the certified HEAD is a proof mismatch requiring
+  reconciliation, not a supported land-first/test-later path. Preserve the original proof report;
+  never recapture landed `main^{commit}` as its baseline, which would make `base...HEAD` empty.
 - **If the land touched `cmd/compound` or `internal/{hook,harness,contract,mem,breadth}`: run
   `./install.sh`** — hooks and external consumers use the installed binary, which self-reports its
   build SHA since 9b5736b (`compound version`; arch doctor warns fresh/stale/missing). A stale

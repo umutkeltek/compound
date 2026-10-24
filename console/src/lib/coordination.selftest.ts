@@ -7,6 +7,8 @@
  */
 
 import { renderToStaticMarkup } from "react-dom/server";
+import { createElement } from "react";
+import { CoordinationBoard } from "../components/coordination/CoordinationBoard";
 import { OperatorCoordinationList } from "../components/coordination/OperatorCoordinationList";
 import {
   buildCoordinationView,
@@ -124,6 +126,14 @@ export function runCoordinationSelfTest(): { ok: boolean; details: string[] } {
       name: "idle actor keeps shared queue counts without invented waits or chips",
       ok: view.me.open === 500 && view.me.inProgress === 300 && view.me.blockedOn.length === 0 && view.waits.length === 0,
       detail: JSON.stringify({ open: view.me.open, inProgress: view.me.inProgress, blockedOn: view.me.blockedOn, waits: view.waits }),
+    });
+    const markup = renderToStaticMarkup(createElement(CoordinationBoard, {
+      view, doorStatus: "live", doorError: null, execDetail: {}, runAttemptsPresent: true,
+    }));
+    checks.push({
+      name: "empty constraints do not promise every actor can continue",
+      ok: markup.includes("No specific work or lane constraints to show.") && !markup.includes("every involved actor can continue"),
+      detail: JSON.stringify({ canContinue: view.me.canContinue, emptyStatePresent: markup.includes("No specific work or lane constraints to show.") }),
     });
   }
 
