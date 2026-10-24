@@ -1,6 +1,8 @@
 package work
 
 import (
+	"bytes"
+	"compound/internal/envelope"
 	"compound/internal/home"
 	"compound/internal/landlease"
 	"compound/internal/runattempt"
@@ -10,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -171,30 +174,104 @@ func TestRemoteProofRecoveryFailsOriginalAndReleasesNativeResource(t *testing.T)
 		})
 	}
 }
+
+// An exact approval for one target revision never authorizes another, and a
+// pending preparation of the SAME Work is never completed history: only a
+// distinct Work's completed preparation is predecessor history. A same-Work
+// request for a different exact raw target is an exact preparation mismatch.
 func TestRemoteProofMigrationExactTargetApprovalAndPending(t *testing.T) {
-	s, _, w, in := proofMigrationStoreFixture(t)
-	_, hold := s.MigrateCoordinationResources(w.ID, in, fixedNow)
-	approveResourceAction(t, s, hold, fixedNow)
-	in.ProofTargetRevision = landlease.ProofDomainFencedV3
-	if _, err := s.MigrateCoordinationResources(w.ID, in, fixedNow.Add(time.Second)); err == nil {
-		t.Fatal("v0.2 approval authorized v0.3")
-	}
-	_, hold = s.MigrateCoordinationResources(w.ID, in, fixedNow.Add(2*time.Second))
-	approveResourceAction(t, s, hold, fixedNow.Add(2*time.Second))
+	t.Run("v3-prepared-v2-requested", func(t *testing.T) {
+		s, _, w, in := proofMigrationStoreFixture(t)
+		approveProofMigrationPreparation(t, s, w, in, fixedNow)
+		in.ProofTargetRevision = landlease.ProofDomainFencedV3
+		if _, err := s.MigrateCoordinationResources(w.ID, in, fixedNow.Add(time.Second)); err == nil {
+			t.Fatal("v0.2 approval authorized v0.3")
+		}
+		approveProofMigrationPreparation(t, s, w, in, fixedNow.Add(2*time.Second))
+		interruptProofMigrationAtPrepared(t, s, w, in, fixedNow.Add(3*time.Second))
+		changed := in
+		changed.ProofTargetRevision = landlease.ProofDomainLocalV2
+		assertProofMigrationTargetRefusal(t, s, w, in, changed, landlease.ProofDomainFencedV3, fixedNow.Add(4*time.Second))
+	})
+	t.Run("v2-prepared-v3-requested", func(t *testing.T) {
+		s, _, w, in := proofMigrationStoreFixture(t)
+		in.ProofTargetRevision = landlease.ProofDomainLocalV2
+		approveProofMigrationPreparation(t, s, w, in, fixedNow)
+		interruptProofMigrationAtPrepared(t, s, w, in, fixedNow.Add(time.Second))
+		changed := in
+		changed.ProofTargetRevision = landlease.ProofDomainFencedV3
+		assertProofMigrationTargetRefusal(t, s, w, in, changed, landlease.ProofDomainLocalV2, fixedNow.Add(2*time.Second))
+	})
+	t.Run("empty-prepared-explicit-v2-requested", func(t *testing.T) {
+		s, _, w, in := proofMigrationStoreFixture(t)
+		approveProofMigrationPreparation(t, s, w, in, fixedNow)
+		interruptProofMigrationAtPrepared(t, s, w, in, fixedNow.Add(time.Second))
+		changed := in
+		changed.ProofTargetRevision = landlease.ProofDomainLocalV2
+		assertProofMigrationTargetRefusal(t, s, w, in, changed, landlease.ProofDomainLocalV2, fixedNow.Add(2*time.Second))
+	})
+}
+
+// approveProofMigrationPreparation holds one exact migration action and
+// approves it, so the next call owns the exact approval for that request.
+func approveProofMigrationPreparation(t *testing.T, s *Store, w envelope.WorkEnvelope, in ResourceMigrationInput, at time.Time) {
+	t.Helper()
+	_, hold := s.MigrateCoordinationResources(w.ID, in, at)
+	approveResourceAction(t, s, hold, at)
+}
+
+// interruptProofMigrationAtPrepared interrupts the migration exactly at the
+// prepared stage and proves that stage was reached. The preparation journal
+// keeps the pending preparation of this exact Work and request.
+func interruptProofMigrationAtPrepared(t *testing.T, s *Store, w envelope.WorkEnvelope, in ResourceMigrationInput, at time.Time) {
+	t.Helper()
+	prepared := 0
 	s.resourceMigrationFault = func(stage string) error {
 		if stage == "proof-prepared" {
+			prepared++
 			return errors.New("interrupted")
 		}
 		return nil
 	}
-	if _, err := s.MigrateCoordinationResources(w.ID, in, fixedNow.Add(3*time.Second)); err == nil {
+	if _, err := s.MigrateCoordinationResources(w.ID, in, at); err == nil {
 		t.Fatal("expected prepared failure")
 	}
+	if prepared == 0 {
+		t.Fatal("the proof-prepared stage was never reached")
+	}
 	s.resourceMigrationFault = nil
-	changed := in
-	changed.ProofTargetRevision = landlease.ProofDomainLocalV2
-	if _, err := s.MigrateCoordinationResources(w.ID, changed, fixedNow.Add(4*time.Second)); err == nil || !strings.Contains(err.Error(), "preparation differs") {
-		t.Fatalf("changed pending target: %v", err)
+}
+
+// assertProofMigrationTargetRefusal proves that a same-Work request for a
+// different exact raw target is refused as an exact preparation mismatch,
+// leaves the preparation journal, the Work and the proof domain untouched,
+// and that the original exact request still resumes its own preparation.
+func assertProofMigrationTargetRefusal(t *testing.T, s *Store, w envelope.WorkEnvelope, in, changed ResourceMigrationInput, wantRevision landlease.ProofDomainRevision, at time.Time) {
+	t.Helper()
+	domainPath := filepath.Join(in.BackingHome, "work", "resource-leases", "landlease", "proof", "domain.json")
+	before := map[string][]byte{}
+	for _, path := range []string{s.proofMigrationPendingPath(), s.workPath(w.ID), domainPath} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		before[path] = body
+	}
+	if _, err := s.MigrateCoordinationResources(w.ID, changed, at); err == nil || !strings.Contains(err.Error(), "preparation differs") {
+		t.Fatalf("changed pending target %q: %v", changed.ProofTargetRevision, err)
+	}
+	for path, want := range before {
+		after, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(want, after) {
+			t.Fatalf("refusal changed %s: %v", path, err)
+		}
+	}
+	if _, err := s.MigrateCoordinationResources(w.ID, in, at.Add(time.Second)); err != nil {
+		t.Fatalf("original exact request did not resume: %v", err)
+	}
+	status, err := landlease.ReadProofDomainStatus(filepath.Join(in.BackingHome, "work", "resource-leases"))
+	if err != nil || status.Phase != "active" || status.SchemaVersion != string(wantRevision) {
+		t.Fatalf("resumed proof domain %+v err=%v", status, err)
 	}
 }
 
