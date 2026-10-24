@@ -2,6 +2,7 @@ package eventstore
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -415,6 +416,47 @@ func TestReadManySeesAppendAfterEarlierBatch(t *testing.T) {
 	}
 	if !bytes.Contains(after["rec_batch_late"].Record.Bytes, []byte("late")) {
 		t.Fatalf("unexpected bytes %s", after["rec_batch_late"].Record.Bytes)
+	}
+}
+
+// A controlled mid-batch mutation must never be presented as a mixed stale
+// success. The store keeps changing across the bounded retry, so the batch
+// must report an explicit drift failure instead of first-attempt bytes.
+func TestReadManyReportsExplicitDriftOnPersistentMidBatchMutation(t *testing.T) {
+	store, now := batchFixtureHome(t, 3)
+	hotPath := segmentPath(store.engine.segRoot, "receipt", ingestionDay(now.Add(24*time.Hour)), 0)
+
+	// Rewrite the hot segment in place at each attempt's RECHECK, so both the
+	// first attempt and the bounded retry observe the store moving. The bytes
+	// stay valid; only the segment identity moves.
+	var mu sync.Mutex
+	enumerations := 0
+	prevFamily := familyInventoryObserver
+	familyInventoryObserver = func(family string) {
+		mu.Lock()
+		defer mu.Unlock()
+		enumerations++
+		if enumerations%2 == 1 {
+			return // the boundary observation: the token is captured after this
+		}
+		data, err := os.ReadFile(hotPath)
+		if err != nil {
+			return
+		}
+		_ = os.WriteFile(hotPath, data, 0o644)
+	}
+	defer func() { familyInventoryObserver = prevFamily }()
+
+	results := store.ReadMany([]string{"rec_batch_01", "tr_batch_00"})
+	if results["rec_batch_01"].Err == nil {
+		t.Fatalf("a drifting batch must not return bytes: %s", results["rec_batch_01"].Record.Bytes)
+	}
+	if !errors.Is(results["rec_batch_01"].Err, errBatchDrift) {
+		t.Fatalf("drift error = %v, want errBatchDrift", results["rec_batch_01"].Err)
+	}
+	// A family whose store did NOT move keeps its answer.
+	if results["tr_batch_00"].Err != nil {
+		t.Fatalf("an unaffected family must keep its answer: %v", results["tr_batch_00"].Err)
 	}
 }
 
