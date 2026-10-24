@@ -329,6 +329,9 @@ blind retry loop with a bounded, reviewable disposition; it needs neither a new 
 Then qualify one execution boundary in S2 before using it for S3's paid comparison. S4 and S5 are
 independent proof-hardening work, admitted only after reproducing their local gaps.
 
+The 16 projects classified as worth a vertical slice reconcile exactly: 12 are covered by S1–S5,
+and 4 are deliberately parked. No project appears in both groups, and none is left unassigned.
+
 Four candidates are deliberately parked:
 
 - **Useful-result latency** — no named affected workflow, timestamp coverage, or validated milestone
