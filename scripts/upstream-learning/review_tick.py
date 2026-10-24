@@ -118,24 +118,32 @@ def get_work(cli, identity):
 
 
 def role_state(cli, home, observation, role):
+    """Classify this role's attempt and carry the last rejection forward.
+
+    A rejected attempt keeps its verified evidence, but the next attempt must
+    learn WHY it was rejected. Discarding the reason makes every retry repeat
+    the same defect until the bounded attempts are exhausted.
+    """
+    rejection = ""
     for attempt in range(1, MAX_ATTEMPTS + 1):
         identity = work_id(observation, role, attempt)
         work = get_work(cli, identity)
         if work is None:
-            return "ready", identity, None
+            return "ready", identity, None, rejection
         if work["state"] == "completed":
             try:
                 _, report = completed_report(home, work, observation, role)
             except (intake.TickError, ValueError, OSError) as error:
                 raise CompletedEvidenceUnavailable(str(error)) from error
             if report.get("schema_version") == REJECTION_SCHEMA:
+                rejection = str(report.get("validation_error", ""))[:300]
                 continue
-            return "completed", identity, work
+            return "completed", identity, work, rejection
         if work["state"] == "verifying":
-            return "recover_verifying", identity, work
+            return "recover_verifying", identity, work, rejection
         if work["state"] not in ("failed", "cancelled"):
-            return "in_progress", identity, work
-    return "attempts_exhausted", identity, work
+            return "in_progress", identity, work, rejection
+    return "attempts_exhausted", identity, work, rejection
 
 
 def prefer_untried_routes(cli, home, observation, role, identity, routes):
