@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -349,9 +350,15 @@ func isOfferKind(kind string) bool {
 }
 
 func ageExceeds(oldest string, now time.Time, d time.Duration) bool {
-	t, err := time.Parse(time.RFC3339, strings.TrimSpace(oldest))
+	oldest = strings.TrimSpace(oldest)
+	t, err := time.Parse(time.RFC3339, oldest)
 	if err != nil {
-		return false
+		// Attention preserves the work lease writer's native Unix nanoseconds.
+		nanos, err := strconv.ParseInt(oldest, 10, 64)
+		if err != nil || nanos <= 0 {
+			return false
+		}
+		t = time.Unix(0, nanos)
 	}
 	return now.UTC().Sub(t.UTC()) > d
 }
