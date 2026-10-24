@@ -842,6 +842,7 @@ corrupt existing bodies, and stale explicit generations fail closed. The optiona
 a completed exact retry is accepted only while its result remains current.
 This door does not declare a review sufficient or change the acceptance contract.
 
+The source holder uses
 `work proof-manifest WORK --actor ACTOR --file MANIFEST.json` to custody an immutable
 `compound.proof_member_manifest.v0.1` artifact. Its source work, repository fingerprint,
 base/head, target ref and members are explicit. Every member preserves its original

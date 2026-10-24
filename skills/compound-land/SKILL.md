@@ -57,7 +57,9 @@ This skill replaces re-deriving the "standing session rules" from
 ### Reviewed members at one exact candidate
 
 When several separately held work items explicitly accept the same combined candidate, the
-existing full battery may be executed once by an integration work item. Preserve original
+existing full battery may be executed once by an integration work item. Each holder first
+custodies its local review with `work proof-review WORK --actor ACTOR --file REVIEW`; use
+the returned `review_ref` in that member's manifest entry. Preserve original
 candidate refs and attached immutable review artifacts in its native `work proof-manifest`;
 after the original proof fully finalizes, each member holder invokes `work proof-adopt`.
 The native manifest/adoption contract is specified in

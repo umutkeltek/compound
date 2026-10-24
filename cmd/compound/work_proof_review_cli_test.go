@@ -6,6 +6,9 @@ import (
 )
 
 func TestWorkProofReviewNativeCLIAdmissionAndHelp(t *testing.T) {
+	if !strings.Contains(genericWorkUsage, "proof-review|proof-manifest|proof-adopt") {
+		t.Fatal("root work help omits native review entry")
+	}
 	if !workCommandNeedsWritableStore("proof-review", []string{"work_example", "--actor", "executor", "--file", "review.md"}) {
 		t.Fatal("valid native review does not reach writable owner")
 	}

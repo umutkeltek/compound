@@ -2673,7 +2673,7 @@ func quoteForError(s string) string {
 }
 
 // runAttemptAttachmentIndex reads the strictly validated canonical lifecycle
-// history once for every incoming attempt in one advance. It is a mutation-local
+// history once for the entire incoming attempt batch. It is a mutation-local
 // projection under autonomy admission, never a persisted membership authority.
 // Existing attachments retain their original action/policy pair.
 func (s *Store) runAttemptAttachmentIndex(w envelope.WorkEnvelope) (map[string]bool, error) {
