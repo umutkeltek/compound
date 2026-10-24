@@ -1651,7 +1651,7 @@ func runProofCheckRedactContext(ctx context.Context, repo, baseRef string, headR
 		}
 		return combined.Bytes(), nil
 	}
-	files, err := proofCheckChangedFilesContext(ctx, repo, baseRef, headRefs...)
+	files, err := proofCheckChangedFilesContext(ctx, repo, baseRef)
 	if err != nil {
 		return nil, err
 	}
@@ -1683,16 +1683,13 @@ func proofCheckChangedFiles(repo, baseRef string) ([]string, error) {
 	return proofCheckChangedFilesContext(context.Background(), repo, baseRef)
 }
 
-func proofCheckChangedFilesContext(ctx context.Context, repo, baseRef string, headRefs ...string) ([]string, error) {
+func proofCheckChangedFilesContext(ctx context.Context, repo, baseRef string) ([]string, error) {
 	// Redact scans only bodies that still exist. With rename detection disabled,
 	// a rename is represented as delete+add: ACM retains the new body while the
 	// deleted source is excluded.
-	paths, err := proofCheckChangedPathsContext(ctx, repo, baseRef, "ACM", headRefs...)
+	paths, err := proofCheckChangedPathsContext(ctx, repo, baseRef, "ACM")
 	if err != nil {
 		return nil, err
-	}
-	if len(headRefs) > 0 && strings.TrimSpace(headRefs[0]) != "" {
-		return paths, nil
 	}
 	files := paths[:0]
 	for _, path := range paths {
@@ -1708,7 +1705,7 @@ func proofCheckChangedFilesContext(ctx context.Context, repo, baseRef string, he
 }
 
 func proofCheckChangedFilesAtSnapshot(repo string, source gitrepository.Snapshot) ([]string, error) {
-	return proofCheckChangedFilesContext(context.Background(), repo, source.BaseSHA, source.HeadSHA)
+	return gitrepository.CommittedContentPaths(context.Background(), repo, source.BaseSHA, source.HeadSHA)
 }
 
 type proofCheckRedactInput = work.PublicRedactionInput
@@ -1722,15 +1719,15 @@ func proofCheckRedactInputsAtSnapshotContext(
 	repo string,
 	source gitrepository.Snapshot,
 ) ([]proofCheckRedactInput, error) {
-	files, err := proofCheckChangedFilesContext(ctx, repo, source.BaseSHA, source.HeadSHA)
+	// The canonical scanner reads exact committed bodies through the shared
+	// repository owner, so a mutated caller file cannot change what it scanned.
+	paths, err := gitrepository.CommittedContentPaths(ctx, repo, source.BaseSHA, source.HeadSHA)
 	if err != nil {
 		return nil, err
 	}
-	inputs := make([]proofCheckRedactInput, 0, len(files))
-	for _, path := range files {
-		cmd := proofCheckCommandContext(ctx, "git", "show", source.HeadSHA+":"+filepath.ToSlash(path))
-		cmd.Dir = repo
-		body, err := cmd.Output()
+	inputs := make([]proofCheckRedactInput, 0, len(paths))
+	for _, path := range paths {
+		body, err := gitrepository.CommittedFileBody(ctx, repo, source.HeadSHA, path)
 		if err != nil {
 			return nil, fmt.Errorf("read committed redact input %q at %s: %w", path, source.HeadSHA, err)
 		}
@@ -1743,7 +1740,7 @@ func proofCheckChangedPaths(repo, baseRef, diffFilter string) ([]string, error) 
 	return proofCheckChangedPathsContext(context.Background(), repo, baseRef, diffFilter)
 }
 
-func proofCheckChangedPathsContext(ctx context.Context, repo, baseRef, diffFilter string, headRefs ...string) ([]string, error) {
+func proofCheckChangedPathsContext(ctx context.Context, repo, baseRef, diffFilter string) ([]string, error) {
 	seen := map[string]bool{}
 	var files []string
 	add := func(paths []string) {
@@ -1756,20 +1753,12 @@ func proofCheckChangedPathsContext(ctx context.Context, repo, baseRef, diffFilte
 			files = append(files, path)
 		}
 	}
-	headRef := "HEAD"
-	exactCommittedRange := len(headRefs) > 0 && strings.TrimSpace(headRefs[0]) != ""
-	if exactCommittedRange {
-		headRef = strings.TrimSpace(headRefs[0])
-	}
 	if baseRef = strings.TrimSpace(baseRef); baseRef != "" {
-		paths, err := proofCheckGitNULListContext(ctx, repo, "diff", "--no-renames", "--name-only", "--diff-filter="+diffFilter, "-z", baseRef+"..."+headRef)
+		paths, err := proofCheckGitNULListContext(ctx, repo, "diff", "--no-renames", "--name-only", "--diff-filter="+diffFilter, "-z", baseRef+"...HEAD")
 		if err != nil {
 			return nil, err
 		}
 		add(paths)
-	}
-	if exactCommittedRange {
-		return files, nil
 	}
 	for _, args := range [][]string{
 		{"diff", "--no-renames", "--name-only", "--diff-filter=" + diffFilter, "-z"},

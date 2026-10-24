@@ -2,6 +2,7 @@ package work
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/authority/gitrepository"
 	"compound/internal/envelope"
 	"compound/internal/home"
 )
@@ -213,11 +215,8 @@ func (s *Store) validateProofManifestWork(m ProofMemberManifest, w envelope.Work
 	if c.RepositoryFingerprint != m.RepositoryFingerprint || c.TargetLocalRef != m.TargetLocalRef {
 		return fmt.Errorf("work %s delivery contract does not match exact reviewed repository/base/target", w.ID)
 	}
-	// Creation-time delivery bases may differ. The reviewed battery base must
-	// descend from each member's original contract, and certify the same H.
-	ancestor, err := landingIsAncestor(c.TargetWorktreeRoot, c.ExpectedBaseSHA, m.BaseSHA)
-	if err != nil || !ancestor {
-		return fmt.Errorf("work %s creation base is outside reviewed base lineage: %v", w.ID, err)
+	if err := s.validateProofManifestBase(c, m, w.ID); err != nil {
+		return err
 	}
 	_, tip, found, valid := latestCommitArtifact(w.ArtifactIDs)
 	if !found || !valid || tip != m.HeadSHA {
@@ -254,6 +253,68 @@ func (s *Store) validateProofManifestWork(m ProofMemberManifest, w envelope.Work
 		}
 	}
 	return fmt.Errorf("work %s is not an explicit reviewed member", w.ID)
+}
+
+// proofContainedBaseReadTimeout bounds the immutable repository reads one
+// contained-base admission performs.
+const proofContainedBaseReadTimeout = 30 * time.Second
+
+// validateProofManifestBase admits a reviewed member whose immutable creation
+// base either precedes the reviewed proof base (the original lineage) or
+// is contained between that base and the reviewed head. Ancestry alone never
+// supplies coverage: a contained base must additionally prove that every
+// content-bearing member change appears in the one proof's own scanned
+// inventory and that its own range is independently whitespace-clean.
+func (s *Store) validateProofManifestBase(c *envelope.GitDeliveryContract, m ProofMemberManifest, workID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), proofContainedBaseReadTimeout)
+	defer cancel()
+	// Creation-time delivery bases may differ. The reviewed battery base must
+	// descend from each member's original contract, and certify the same H.
+	ancestor, err := gitrepository.CommittedAncestor(ctx, c.TargetWorktreeRoot, c.ExpectedBaseSHA, m.BaseSHA)
+	if err != nil {
+		return fmt.Errorf("work %s creation base is outside reviewed base lineage: %v", workID, err)
+	}
+	if ancestor {
+		return nil
+	}
+	contained, err := gitrepository.CommittedAncestor(ctx, c.TargetWorktreeRoot, m.BaseSHA, c.ExpectedBaseSHA)
+	if err != nil || !contained {
+		return fmt.Errorf("work %s creation base is outside reviewed base lineage: %v", workID, err)
+	}
+	reaches, err := gitrepository.CommittedAncestor(ctx, c.TargetWorktreeRoot, c.ExpectedBaseSHA, m.HeadSHA)
+	if err != nil || !reaches {
+		return fmt.Errorf("work %s creation base does not reach the reviewed head: %v", workID, err)
+	}
+	return s.validateProofContainedBaseCoverage(ctx, c, m, workID)
+}
+
+// validateProofContainedBaseCoverage proves that the one canonical proof
+// covered the contained member's whole delivery. Both inventories are read at
+// the same immutable head, so the bodies the proof scanned are the bodies the
+// member delivered. A path the member changed that the proof never scanned is
+// a coverage hole, not a covered delivery.
+func (s *Store) validateProofContainedBaseCoverage(ctx context.Context, c *envelope.GitDeliveryContract, m ProofMemberManifest, workID string) error {
+	proofPaths, err := gitrepository.CommittedContentPaths(ctx, c.TargetWorktreeRoot, m.BaseSHA, m.HeadSHA)
+	if err != nil {
+		return fmt.Errorf("work %s reviewed proof inventory is unreadable: %w", workID, err)
+	}
+	memberPaths, err := gitrepository.CommittedContentPaths(ctx, c.TargetWorktreeRoot, c.ExpectedBaseSHA, m.HeadSHA)
+	if err != nil {
+		return fmt.Errorf("work %s member change inventory is unreadable: %w", workID, err)
+	}
+	covered := make(map[string]struct{}, len(proofPaths))
+	for _, path := range proofPaths {
+		covered[path] = struct{}{}
+	}
+	for _, path := range memberPaths {
+		if _, ok := covered[path]; !ok {
+			return fmt.Errorf("work %s member change %q is not covered by the reviewed proof inventory", workID, path)
+		}
+	}
+	if err := gitrepository.CommittedDiffCheck(ctx, c.TargetWorktreeRoot, c.ExpectedBaseSHA, m.HeadSHA); err != nil {
+		return fmt.Errorf("work %s member range diff-check failed: %w", workID, err)
+	}
+	return nil
 }
 
 func (s *Store) proofAdoptionArtifactReader() (*home.ArtifactReader, error) {

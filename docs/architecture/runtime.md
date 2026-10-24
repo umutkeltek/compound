@@ -907,7 +907,12 @@ base/head, target ref and members are explicit. Every member preserves its origi
 `commit:` artifact and attached content-addressed `review_refs`; custody fills or verifies
 the member acceptance/delivery contract digest. Every work explicitly accepts the combined
 `commit:` candidate. Historical creation bases may differ when each remains an ancestor of
-the fresh proof base. Ancestry never supplies missing membership, review or acceptance.
+the fresh proof base, or when a member's creation base is contained between that proof base
+and the reviewed head. A contained base is admitted only when every content-bearing change
+the member made appears in the one proof's own scanned inventory, read at the same exact
+head, and when that member's own range passes an independent `git diff --check`. Ancestry
+alone never supplies coverage. Ancestry never supplies missing membership, review or
+acceptance.
 
 Authenticated manifest custody must precede the original proof reservation; a later review
 cannot retroactively authorize an earlier execution. The original work executes the existing
