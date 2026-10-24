@@ -1182,6 +1182,11 @@ func stealWithProofIdentityAndBarrierPrepared(
 }
 
 func lockExecutionBarrier(home, holder string) (*ExecutionBarrier, error) {
+	if pending, err := remoteExecutionPending(home, holder); err != nil {
+		return nil, err
+	} else if pending {
+		return nil, &ExecutionPendingError{Holder: holder}
+	}
 	id := executionBarrierID(holder)
 	dir := filepath.Join(home, executionBarrierRelPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -1205,6 +1210,13 @@ func executionBarrierID(holder string) string {
 }
 
 func executionBarrierPending(home, holder string) (bool, error) {
+	if pending, err := remoteExecutionPending(home, holder); err != nil || pending {
+		return pending, err
+	}
+	return localExecutionBarrierPending(home, holder)
+}
+
+func localExecutionBarrierPending(home, holder string) (bool, error) {
 	holder = strings.TrimSpace(holder)
 	if holder == "" {
 		return false, nil

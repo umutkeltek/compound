@@ -31,7 +31,7 @@ func proofDomainFixture(t *testing.T) ([]string, string, string) {
 	}
 	sort.Strings(homes)
 	generation := ProofDomainMigrationGeneration(backing, homes)
-	if err := MigrateProofDomain(backing, homes, func() error { return nil }, nil); err != nil {
+	if err := MigrateProofDomain(backing, homes, func() error { return nil }, nil, ProofDomainFencedV3); err != nil {
 		t.Fatal(err)
 	}
 	return homes, backing, generation

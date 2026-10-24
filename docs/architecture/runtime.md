@@ -1250,9 +1250,10 @@ a landing can now advance main while another candidate is being tested.
 
 ### Source-derived proof capacities and conflict FIFO
 
-An optional second, one-way cutover enables two `system_full` slots and one
-`native_consumer` slot in the same shared backing root (operator-approved
-2026-10-23). Core and Rust inventories use a system slot. Native consumer classification requires the complete ordered
+The original v0.2 proof-domain cutover retains one `system_full` and one
+`native_consumer` slot with its original same-class FIFO. A separate explicit,
+quiescent v0.3 upgrade enables two `system_full` slots and one
+`native_consumer` slot in the same shared backing root. Core and Rust inventories use a system slot. Native consumer classification requires the complete ordered
 canonical profile rederived from its clean sealed source, including authenticated
 redaction review when present. Neither a caller flag nor a plan name selects the
 cheaper slot. Both classes retain `canonical_full` certification semantics.
@@ -1271,9 +1272,16 @@ capacity, so capacity can shrink without making old reservations unreadable.
 Queue tickets are slot-less; the turn chooses the slot. A repository's existing
 record pins it to that exact slot for recovery; otherwise the lowest free slot,
 then the lowest expired slot, then (audited steal only) a held slot is used.
-An older binary of the same generation still uses only slot 0, and it refuses
-v0.2 identities, so mixed clients never exceed two `system_full` proofs and a
-slot-1 reservation is never misread as slot 0.
+The v0.3 domain manifest rejects older clients before admission; slot identity
+alone cannot fence an old client that never reads slot 1 after a crash. The
+generation remains stable, so historical records retain their original routes.
+New clients keep v0.2 single-slot operation for bootstrap, refuse any nonzero
+lease under v0.2, and require v0.3 for additional slots or remote preparation.
+`MigrateProofDomain` defaults to v0.2; only an explicit `ProofDomainFencedV3`
+target invokes the existing owner pause/census validation and prepared/active
+cutover. Every slot must be released, including expired records; live local
+descendants and unresolved remote markers refuse the upgrade. No downgrade
+is supported.
 
 A descriptor-backed FIFO ticket precedes every immediate or waiting admission.
 An earlier live ticket blocks successors sharing its repository, and successors
@@ -1286,6 +1294,16 @@ any read error. The independent other class and repository can progress. Cancell
 checks occur after lock acquisition and before reservation or RunAttempt creation.
 Expired/dead tickets are pruned, and failed preparation releases its ticket.
 A capacity lease and repository barrier are both inherited by gate descendants.
+For v0.3, the landlease remote-execution primitive also durably prepares an
+exact request ID/digest on both barriers before transport may start. The
+repository marker is prepared first and resolved last, so interruption remains
+blocking. Local process exit never clears a remote marker. The work owner must
+authenticate an exact terminal receipt proving remote quiescence or a durable
+cancel-before-start tombstone before resolving it; terminal markers refuse
+delayed start. Release, expiry recovery, takeover, historical attestation and
+new barrier acquisition share this predicate. These primitives do not implement
+a remote runner or grant remote authority; the work-owned adapter must supply
+request/receipt validation before activation.
 The same repository remains exclusive across slots, classes and homes, including
 an expired other-class holder until exact recovery. An expired predecessor whose
 lineage is absent from the requesting home is preserved for its original owner's

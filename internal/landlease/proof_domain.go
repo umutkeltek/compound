@@ -16,6 +16,43 @@ import (
 )
 
 const proofDomainSchema = "compound.proof_domain.v0.2"
+const proofDomainFencedSchema = "compound.proof_domain.v0.3"
+
+// ProofDomainRevision is an explicit, one-way owner-authorized cutover target.
+type ProofDomainRevision string
+
+const (
+	ProofDomainLocalV2  ProofDomainRevision = proofDomainSchema
+	ProofDomainFencedV3 ProofDomainRevision = proofDomainFencedSchema
+)
+
+func requireFencedProofDomain(manifest proofDomainManifest) error {
+	if manifest.SchemaVersion != proofDomainFencedSchema {
+		return fmt.Errorf("proof domain requires explicit v0.3 quiescent cutover before additional slots or remote execution")
+	}
+	return nil
+}
+
+func proofDomainCapacity(manifest proofDomainManifest, class ProofCapacityClass) int {
+	if manifest.SchemaVersion == proofDomainSchema {
+		return 1
+	}
+	return proofClassCapacity(class)
+}
+
+func validateProofDomainSlots(manifest proofDomainManifest, slots map[ProofCapacityClass][]StatusResult) error {
+	if manifest.SchemaVersion != proofDomainSchema {
+		return nil
+	}
+	for _, statuses := range slots {
+		for slot, status := range statuses {
+			if slot != 0 && status.Holder != "" {
+				return fmt.Errorf("v0.2 proof domain contains an unsupported nonzero slot; exact recovery and cutover required")
+			}
+		}
+	}
+	return nil
+}
 
 type proofDomainManifest struct {
 	SchemaVersion string   `json:"schema_version"`
@@ -45,7 +82,7 @@ func readProofDomain(backing string) (proofDomainManifest, bool, error) {
 	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return manifest, false, fmt.Errorf("proof domain has trailing JSON")
 	}
-	if manifest.SchemaVersion != proofDomainSchema || !proofIdentityDigest(manifest.Generation) || (manifest.Phase != "prepared" && manifest.Phase != "active") || len(manifest.Homes) == 0 || !sort.StringsAreSorted(manifest.Homes) {
+	if (manifest.SchemaVersion != proofDomainSchema && manifest.SchemaVersion != proofDomainFencedSchema) || !proofIdentityDigest(manifest.Generation) || (manifest.Phase != "prepared" && manifest.Phase != "active") || len(manifest.Homes) == 0 || !sort.StringsAreSorted(manifest.Homes) {
 		return manifest, false, fmt.Errorf("invalid proof coordination manifest")
 	}
 	prior := ""
@@ -203,6 +240,11 @@ func (r *Resource) selectProofRoot(root string, scoped bool) (string, error) {
 	if r.proofIdentity.Generation != manifest.Generation {
 		return "", fmt.Errorf("proof coordination generation changed")
 	}
+	if r.proofIdentity.Slot != 0 {
+		if err := requireFencedProofDomain(manifest); err != nil {
+			return "", err
+		}
+	}
 	return proofSlotRoot(backing, manifest.Generation, r.proofIdentity.Class, r.proofIdentity.Slot), nil
 }
 
@@ -311,27 +353,27 @@ func (a *ProofAdmission) WaitingStatus(now time.Time) (StatusResult, error) {
 	if a == nil || a.ticket == nil {
 		return StatusResult{}, fmt.Errorf("proof waiting status requires an admission ticket")
 	}
-	slots := make([]StatusResult, proofSlotMax+1)
-	for slot := range slots {
-		identity, err := a.identity.WithSlot(slot)
-		if err != nil {
-			return StatusResult{}, err
-		}
-		resource := ProofResourceForIdentity(a.home, &identity)
-		status, err := selectedReadCall(resource, func(root string) (StatusResult, error) {
-			return proofAdmissionSnapshot(root, now, resource.binding(root, true))
-		})
-		if err != nil {
-			return StatusResult{}, err
-		}
-		slots[slot] = status
+	manifest, backing, exists, err := proofDomainForHome(a.home)
+	if err != nil {
+		return StatusResult{}, err
 	}
+	if !exists || backing != a.backing || manifest.Generation != a.identity.Generation {
+		return StatusResult{}, fmt.Errorf("proof coordination changed after enqueue")
+	}
+	observed, err := a.observeProofSlots(now)
+	if err != nil {
+		return StatusResult{}, err
+	}
+	if err := validateProofDomainSlots(manifest, observed); err != nil {
+		return StatusResult{}, err
+	}
+	slots := observed[a.identity.Class]
 	for _, status := range slots {
 		if status.Holder != "" && status.ProofCoordination != nil && status.ProofCoordination.RepositoryFingerprint == a.identity.RepositoryFingerprint {
 			return status, nil
 		}
 	}
-	for _, status := range slots[:proofClassCapacity(a.identity.Class)] {
+	for _, status := range slots[:proofDomainCapacity(manifest, a.identity.Class)] {
 		if status.Holder == "" || !status.Held {
 			return status, nil
 		}
@@ -364,7 +406,7 @@ func (a *ProofAdmission) observeProofSlots(now time.Time) (map[ProofCapacityClas
 // chooseProofSlot picks the one slot this turn may use. Same-repository records
 // pin recovery to their exact root; otherwise a free slot, then an expired one,
 // then (steal only) a held one, each lowest first.
-func (a *ProofAdmission) chooseProofSlot(slots map[ProofCapacityClass][]StatusResult, steal bool, prefer func(string) bool) (int, error) {
+func (a *ProofAdmission) chooseProofSlot(slots map[ProofCapacityClass][]StatusResult, capacity int, steal bool, prefer func(string) bool) (int, error) {
 	mine := func(status StatusResult) bool {
 		return status.Holder != "" && status.ProofCoordination != nil && status.ProofCoordination.RepositoryFingerprint == a.identity.RepositoryFingerprint
 	}
@@ -396,7 +438,6 @@ func (a *ProofAdmission) chooseProofSlot(slots map[ProofCapacityClass][]StatusRe
 		}
 		return pinned, nil
 	}
-	capacity := proofClassCapacity(a.identity.Class)
 	if steal && prefer != nil {
 		for slot, status := range own[:capacity] {
 			if status.Holder != "" && prefer(status.Holder) {
@@ -442,7 +483,10 @@ func (a *ProofAdmission) WithTurnFor(ctx context.Context, steal bool, prefer fun
 		if err != nil {
 			return err
 		}
-		chosen, err := a.chooseProofSlot(slots, steal, prefer)
+		if err := validateProofDomainSlots(manifest, slots); err != nil {
+			return err
+		}
+		chosen, err := a.chooseProofSlot(slots, proofDomainCapacity(manifest, a.identity.Class), steal, prefer)
 		if err != nil {
 			return err
 		}
@@ -643,7 +687,7 @@ func ProofResourceStatuses(home string, now time.Time) ([]ProofClassStatus, erro
 			if err != nil {
 				return nil, err
 			}
-			if slot >= proofClassCapacity(class) && status.Holder == "" {
+			if slot >= proofDomainCapacity(manifest, class) && status.Holder == "" {
 				continue
 			}
 			out = append(out, ProofClassStatus{Class: class, Slot: slot, Status: status})

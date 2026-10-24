@@ -305,6 +305,14 @@ func (q *proofQueue) proofTicketBlocks(earlier, later proofQueueRecord) (bool, e
 	if earlier.Identity.Class != later.Identity.Class {
 		return false, nil
 	}
+	manifest, exists, err := readProofDomain(q.backing)
+	if err != nil {
+		return true, err
+	}
+	// Existing v0.2 clients retain their original same-class FIFO semantics.
+	if exists && manifest.SchemaVersion == proofDomainSchema {
+		return true, nil
+	}
 	occupied, err := proofRepositoryOccupied(q.backing, &earlier.Identity, q.now())
 	if err != nil {
 		return true, err

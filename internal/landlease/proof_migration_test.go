@@ -2,6 +2,7 @@ package landlease
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -111,5 +112,103 @@ func TestProofMigrationActiveManifestRequiresExactFence(t *testing.T) {
 	}
 	if _, err := ProofCoordinationFor(homes[0], ProofCapacityNativeConsumer, strings.Repeat("a", 64)); err == nil {
 		t.Fatal("active manifest without fence admitted")
+	}
+}
+
+func TestProofDomainRevisionUpgradeIsExplicitAndQuiescent(t *testing.T) {
+	homes, backing := unmigratedProofDomainFixture(t)
+	if err := MigrateProofDomain(backing, homes, func() error { return nil }, nil); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	if err := MigrateProofDomain(backing, homes, func() error { calls++; return nil }, nil, ProofDomainFencedV3); err != nil {
+		t.Fatal(err)
+	}
+	if calls < 2 {
+		t.Fatalf("owner authority not revalidated: %d", calls)
+	}
+	status, err := ReadProofDomainStatus(backing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.SchemaVersion != proofDomainFencedSchema || status.Phase != "active" {
+		t.Fatalf("wrong revision: %+v", status)
+	}
+	if err := MigrateProofDomain(backing, homes, func() error { return nil }, nil); err == nil {
+		t.Fatal("revision downgrade accepted")
+	}
+}
+
+func TestProofDomainRevisionUpgradeInterruptionAndUnknownVersion(t *testing.T) {
+	homes, backing := unmigratedProofDomainFixture(t)
+	if err := MigrateProofDomain(backing, homes, func() error { return nil }, nil); err != nil {
+		t.Fatal(err)
+	}
+	err := MigrateProofDomain(backing, homes, func() error { return nil }, func(stage string) error {
+		if stage == "proof-prepared" {
+			return errors.New("interrupted upgrade")
+		}
+		return nil
+	}, ProofDomainFencedV3)
+	if err == nil {
+		t.Fatal("fault missing")
+	}
+	status, err := ReadProofDomainStatus(backing)
+	if err != nil || status.SchemaVersion != proofDomainFencedSchema || status.Phase != "prepared" {
+		t.Fatalf("not safely prepared: %+v %v", status, err)
+	}
+	if _, err := ProofCoordinationFor(homes[0], ProofCapacitySystemFull, strings.Repeat("a", 64)); err == nil {
+		t.Fatal("prepared domain admitted")
+	}
+	if err := MigrateProofDomain(backing, homes, func() error { return errors.New("pause expired") }, nil, ProofDomainFencedV3); err == nil {
+		t.Fatal("stale authority resumed")
+	}
+	if err := MigrateProofDomain(backing, homes, func() error { return nil }, nil, ProofDomainFencedV3); err != nil {
+		t.Fatal(err)
+	}
+	manifest, _, err := readProofDomain(backing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.SchemaVersion = "compound.proof_domain.v999"
+	if err := writeProofDomainJSON(proofDomainManifestPath(backing), manifest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadProofDomainStatus(backing); err == nil {
+		t.Fatal("unknown domain revision accepted")
+	}
+	if err := MigrateProofDomain(backing, homes, func() error { return nil }, nil, ProofDomainFencedV3); err == nil {
+		t.Fatal("unknown domain upgraded")
+	}
+}
+
+func TestProofDomainRevisionUpgradeRefusesOldLiveAndExpiredSlots(t *testing.T) {
+	for _, expired := range []bool{false, true} {
+		t.Run(fmt.Sprint(expired), func(t *testing.T) {
+			homes, backing := unmigratedProofDomainFixture(t)
+			if err := MigrateProofDomain(backing, homes, func() error { return nil }, nil); err != nil {
+				t.Fatal(err)
+			}
+			generation := ProofDomainMigrationGeneration(backing, homes)
+			identity, _ := NewProofCoordinationIdentity(generation, ProofCapacitySystemFull, strings.Repeat("a", 64))
+			root := proofClassRoot(backing, generation, ProofCapacitySystemFull)
+			now := time.Now()
+			if expired {
+				now = now.Add(-time.Hour)
+			}
+			lease := newLease("old-proof", 60, now)
+			lease.ProofCoordination = &identity
+			path, _ := statePath(root)
+			if err := writeLeaseAtomic(path, lease); err != nil {
+				t.Fatal(err)
+			}
+			if err := MigrateProofDomain(backing, homes, func() error { return nil }, nil, ProofDomainFencedV3); err == nil {
+				t.Fatal("unrecovered old slot allowed upgrade")
+			}
+			status, err := ReadProofDomainStatus(backing)
+			if err != nil || status.SchemaVersion != proofDomainSchema || status.Phase != "active" {
+				t.Fatalf("refusal changed active revision: %+v %v", status, err)
+			}
+		})
 	}
 }
