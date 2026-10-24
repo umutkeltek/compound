@@ -389,7 +389,7 @@ def tick(cli, config, output, home, workspace, now, dry_run=False):
         prior = None
         for role in ("audit", "challenge"):
             try:
-                status, identity, work = role_state(cli, home, observation, role)
+                status, identity, work, rejection = role_state(cli, home, observation, role)
             except CompletedEvidenceUnavailable as error:
                 waits.append({"observation": observation["id"], "role": role, "reason": "completed_evidence_unavailable", "error": str(error)[:500]})
                 break
