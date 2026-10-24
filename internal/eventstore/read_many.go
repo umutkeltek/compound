@@ -6,8 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-
-	"compound/internal/home"
 )
 
 // ReadResult is one batch outcome for one requested reference. Exactly one of
@@ -28,34 +26,28 @@ var errBatchDrift = errors.New("event store changed during batch resolution")
 // ReadMany resolves many exact event references in ONE bounded, request-local
 // observation of the event store.
 //
-// It is the batched form of Store.Read with identical per-reference
-// semantics: every distinct input reference is a result key (including
-// malformed ones), and each result is byte-for-byte what an independent
-// Store.Read of that reference returns — same Record identity, same bytes,
-// same diagnostic path, or the same error class and message.
+// It is the batched form of Store.Read: every distinct input reference is a
+// result key (including malformed ones), and each result is what an
+// independent Store.Read of that reference returns — same Record identity,
+// same bytes, same diagnostic path, or the same error class and message. The
+// one deliberate difference is an EXPLICIT drift failure: when the store keeps
+// moving across the bounded retry, every requested id of the drifted family
+// reports errBatchDrift instead of an answer that might be stale.
 //
-// The difference is mechanical, not semantic: instead of one family
-// directory enumeration and one sealed-index acquisition PER REFERENCE, the
-// batch enumerates each needed family once and acquires each needed sealed
-// index once, then resolves every requested id through the SAME point-read
-// validation machinery (decode, hash, range and rebuild rules).
+// The difference from per-reference reads is mechanical, not semantic: the
+// batch resolves each needed family's segment inventory ONCE and acquires each
+// consulted sealed index ONCE, then resolves every requested id through the
+// SAME point-read validation machinery (decode, hash, range and rebuild rules)
+// the point reader uses.
 //
-// ReadMany holds no state beyond the call: nothing is memoized on the Store,
-// no verdict is cached, and no file is written. Read and ReadRegular are
-// untouched and keep their native corruption, newest-occurrence, tail,
-// migration and freshness behavior.
+// ReadMany holds no state beyond the call: no verdict is cached, no new
+// persistence is added, and no request-local fact outlives the call. It does
+// NOT write a file of its own; the reused owner machinery it calls (index
+// rebuild/verification) writes exactly what the point reader writes for the
+// same segment, because it IS the point reader's machinery. Read and
+// ReadRegular are untouched and keep their native corruption, rooted
+// rejection, newest-occurrence, tail, migration and freshness behavior.
 func (s *Store) ReadMany(refs []string) map[string]ReadResult {
-	return s.readMany(refs, "")
-}
-
-// ReadManyRegular is the fail-closed rooted twin of ReadMany: it applies the
-// same rooted/symlink rejection ReadRegular applies, to the same batch shape.
-// A batch never routes a rooted read through a weaker non-rooted path.
-func (s *Store) ReadManyRegular(refs []string, kind string) map[string]ReadResult {
-	return s.readMany(refs, kind)
-}
-
-func (s *Store) readMany(refs []string, regularKind string) map[string]ReadResult {
 	results := make(map[string]ReadResult, len(refs))
 	if len(refs) == 0 {
 		// Empty input performs no family access at all.
@@ -88,7 +80,7 @@ func (s *Store) readMany(refs []string, regularKind string) map[string]ReadResul
 		return results
 	}
 
-	stored, errs := s.engine.resolveBatch(ids, regularKind)
+	stored, errs := s.engine.resolveBatch(ids)
 	for _, id := range ids {
 		var res ReadResult
 		if err, failed := errs[id]; failed {
@@ -113,36 +105,43 @@ func (s *Store) readMany(refs []string, regularKind string) map[string]ReadResul
 // resolveBatch resolves canonical ids through one bounded observation of the
 // event store, retrying ONCE when the store changes underneath the batch.
 //
-// A second, persistent change is reported as an explicit drift failure for the
-// affected ids rather than as stale bytes presented as current.
-func (e *engine) resolveBatch(ids []string, regularKind string) (map[string]storedRecord, map[string]error) {
+// A second, persistent change is reported as an explicit drift failure for
+// EVERY requested id of the drifted family — including ids that were absent
+// or already carrying an error on the first attempt. A stale "not found" or a
+// stale corruption verdict is exactly the answer the drift exists to prevent.
+func (e *engine) resolveBatch(ids []string) (map[string]storedRecord, map[string]error) {
 	var stored map[string]storedRecord
 	var errs map[string]error
 	var drifted map[string]bool
 	for attempt := 0; attempt < 2; attempt++ {
-		stored, errs, drifted = e.resolveBatchAttempt(ids, regularKind)
+		stored, errs, drifted = e.resolveBatchAttempt(ids)
 		if len(drifted) == 0 {
 			return stored, errs
 		}
 	}
-	// The store kept changing across the bounded retry. Fail closed for the
-	// ids we would otherwise have answered with possibly-stale bytes. Ids that
-	// already carry a native error (corruption, missing) keep it: an explicit
-	// failure is never staler than the fact it reports.
-	for id := range stored {
-		if !drifted[familyOf(nil, id)] {
-			continue
+	// The store kept changing across the bounded retry. Fail closed for every
+	// id of every drifted family: we can no longer vouch for any answer we
+	// would give about that family.
+	byFamily := map[string][]string{}
+	for _, id := range ids {
+		family := familyOf(nil, id)
+		byFamily[family] = append(byFamily[family], id)
+	}
+	for family := range drifted {
+		for _, id := range byFamily[family] {
+			delete(stored, id)
+			errs[id] = fmt.Errorf("event %s: %w", id, errBatchDrift)
 		}
-		delete(stored, id)
-		errs[id] = fmt.Errorf("event %s: %w", id, errBatchDrift)
 	}
 	return stored, errs
 }
 
 // resolveBatchAttempt performs one full observation: every needed family is
-// enumerated once, every needed sealed index is acquired once, and every
-// requested id is resolved through the existing point-read rules.
-func (e *engine) resolveBatchAttempt(ids []string, regularKind string) (map[string]storedRecord, map[string]error, map[string]bool) {
+// enumerated once for resolution, every CONSULTED sealed index is acquired
+// once, and every requested id is resolved through the existing point-read
+// rules. A final recheck of the consulted files decides whether the
+// observation is still current.
+func (e *engine) resolveBatchAttempt(ids []string) (map[string]storedRecord, map[string]error, map[string]bool) {
 	stored := make(map[string]storedRecord, len(ids))
 	errs := make(map[string]error)
 	drifted := make(map[string]bool)
@@ -162,7 +161,12 @@ func (e *engine) resolveBatchAttempt(ids []string, regularKind string) (map[stri
 
 	for _, family := range families {
 		famIDs := byFamily[family]
-		observation, err := e.observeFamily(family)
+		// ONE resolution inventory per family, shared by every requested id of
+		// that family. The inventory is a name list only: no file is stat'ed
+		// here, so an irrelevant older segment that cannot be stat'ed (a
+		// dangling symlink with a valid segment name) cannot break a request
+		// that resolves in the newest segment.
+		inventory, err := e.familySegments(family)
 		if err != nil {
 			for _, id := range famIDs {
 				if pending[id] {
@@ -172,7 +176,8 @@ func (e *engine) resolveBatchAttempt(ids []string, regularKind string) (map[stri
 			}
 			continue
 		}
-		e.resolveFamily(observation, famIDs, pending, stored, errs, regularKind)
+		observation := &familyObservation{family: family, inventory: inventory}
+		e.resolveFamily(observation, famIDs, pending, stored, errs)
 		if e.familyDrifted(observation) {
 			drifted[family] = true
 		}
@@ -193,13 +198,7 @@ func (e *engine) resolveBatchAttempt(ids []string, regularKind string) (map[stri
 			continue
 		}
 		legacyPath := filepath.Join(e.eventsDir, id+".json")
-		var data []byte
-		var err error
-		if regularKind == "" {
-			data, err = os.ReadFile(legacyPath)
-		} else {
-			data, err = home.ReadRootedRegularFile(e.home, legacyPath, regularKind)
-		}
+		data, err := os.ReadFile(legacyPath)
 		if err != nil {
 			errs[id] = err
 			delete(pending, id)
@@ -214,13 +213,25 @@ func (e *engine) resolveBatchAttempt(ids []string, regularKind string) (map[stri
 // resolveFamily resolves one family's requested ids against that family's
 // segments, newest segment first — the same order, and the same per-segment
 // rules, that segmentFrame applies to a single id.
-func (e *engine) resolveFamily(observation familyObservation, famIDs []string, pending map[string]bool, stored map[string]storedRecord, errs map[string]error, regularKind string) {
-	for index, segment := range observation.segments {
+//
+// The walk STOPS as soon as every requested id of the family is resolved:
+// older segments are then irrelevant to this request and are never acquired.
+func (e *engine) resolveFamily(observation *familyObservation, famIDs []string, pending map[string]bool, stored map[string]storedRecord, errs map[string]error) {
+	for index, segment := range observation.inventory {
+		if !anyPending(famIDs, pending) {
+			// Every requested id of this family is resolved. Older segments are
+			// irrelevant here: stop before acquiring their indexes.
+			return
+		}
+		// The stat identity is captured only for CONSULTED segments, and only
+		// to detect movement during the consultation.
+		preToken, preErr := statToken(segment.path)
+
 		if index == 0 {
 			// Hot (last-written) segment. The per-process memo keeps this a
 			// single parse; the batch asks for it once per segment instead of
 			// once per id.
-			byID, err := e.hotSegmentFrames(segment.path, regularKind)
+			byID, err := e.hotSegmentFrames(segment.path)
 			if err != nil {
 				failPendingFamily(famIDs, pending, errs, err)
 				return
@@ -241,11 +252,14 @@ func (e *engine) resolveFamily(observation familyObservation, famIDs []string, p
 				}
 				delete(pending, id)
 			}
+			observation.noteSegment(segment.path, preToken, preErr)
 			continue
 		}
 
 		// Sealed segment: ONE index acquisition serves every requested id.
-		index, err := e.loadOrBuildIndex(observation.family, segment)
+		idxPath := e.indexPath(observation.family, segment)
+		preIndex, preIndexErr := statToken(idxPath)
+		segIndex, rebuilt, err := e.loadOrBuildIndexTracked(observation.family, segment)
 		if err != nil {
 			failPendingFamily(famIDs, pending, errs, err)
 			return
@@ -254,7 +268,10 @@ func (e *engine) resolveFamily(observation familyObservation, famIDs []string, p
 			if !pending[id] {
 				continue
 			}
-			frame, found, err := e.resolveIndexedFrame(observation.family, segment, &index, id, regularKind)
+			frame, found, idRebuilt, err := e.resolveIndexedFrameTracked(observation.family, segment, &segIndex, id, "")
+			if idRebuilt {
+				rebuilt = true
+			}
 			if err != nil {
 				errs[id] = err
 				delete(pending, id)
@@ -271,31 +288,29 @@ func (e *engine) resolveFamily(observation familyObservation, famIDs []string, p
 			}
 			delete(pending, id)
 		}
+		observation.noteSegment(segment.path, preToken, preErr)
+		observation.noteIndex(idxPath, preIndex, preIndexErr, rebuilt)
 	}
 }
 
-// hotSegmentFrames returns the hot segment's id→frame map for the batch. It
-// mirrors segmentFrame exactly: the memoized non-rooted parse, or the rooted
-// parse with its tolerable final torn frame. Within a segment the LAST
-// occurrence of an id wins, matching the point reader's reverse scan.
-func (e *engine) hotSegmentFrames(path string, regularKind string) (map[string]parsedFrame, error) {
-	if regularKind == "" {
-		notifyHotSegmentAcquire(path)
-		return e.hotFrames(path)
-	}
-	notifyHotSegmentAcquire(path)
-	notifyHotParse(path)
-	frames, err := e.readSegment(path, true, regularKind)
-	if err != nil {
-		return nil, err
-	}
-	byID := make(map[string]parsedFrame, len(frames))
-	for i := len(frames) - 1; i >= 0; i-- {
-		if _, seen := byID[frames[i].Frame.ID]; !seen {
-			byID[frames[i].Frame.ID] = frames[i]
+// anyPending reports whether any of the family's requested ids is still
+// unresolved.
+func anyPending(famIDs []string, pending map[string]bool) bool {
+	for _, id := range famIDs {
+		if pending[id] {
+			return true
 		}
 	}
-	return byID, nil
+	return false
+}
+
+// hotSegmentFrames returns the hot segment's id→frame map for the batch. It
+// mirrors segmentFrame exactly: the memoized non-rooted parse. Within a
+// segment the LAST occurrence of an id wins, matching the point reader's
+// reverse scan.
+func (e *engine) hotSegmentFrames(path string) (map[string]parsedFrame, error) {
+	notifyHotSegmentAcquire(path)
+	return e.hotFrames(path)
 }
 
 // failPendingFamily applies one segment-level failure to every still-unresolved
@@ -318,51 +333,85 @@ type fileToken struct {
 }
 
 // familyObservation is the request-local identity of one family at the batch
-// boundary: which segments existed, and what each of them looked like.
+// boundary: the segment inventory the batch resolved against, plus the stat
+// identity of the segments and indexes the batch ACTUALLY consulted.
 type familyObservation struct {
-	family   string
-	segments []segmentFile
-	tokens   []fileToken
+	family    string
+	inventory []segmentFile
+	consulted []consultedFile
+	moved     bool
 }
 
-// observeFamily captures the family's segment inventory and each segment's
-// stat identity. It is the batch's recheck anchor: if any of it moves, the
-// observation is no longer current.
-func (e *engine) observeFamily(family string) (familyObservation, error) {
-	segments, err := e.familySegments(family)
+// consultedFile is the observed identity of one file the batch consulted. Only
+// consulted files are stat'ed and rechecked: an irrelevant older segment is
+// never stat'ed, so it can never fail the batch.
+type consultedFile struct {
+	path  string
+	token fileToken
+}
+
+// noteSegment records the identity of a consulted segment AFTER the
+// consultation. A segment that moved while we read it marks the family as
+// moved: the bytes we served may no longer be current.
+func (observation *familyObservation) noteSegment(path string, pre fileToken, preErr error) {
+	post, err := statToken(path)
 	if err != nil {
-		return familyObservation{}, err
+		observation.moved = true
+		return
 	}
-	observation := familyObservation{family: family, segments: segments}
-	for _, segment := range segments {
-		token, err := statToken(segment.path)
-		if err != nil {
-			return familyObservation{}, err
-		}
-		observation.tokens = append(observation.tokens, token)
+	if preErr == nil && pre != post {
+		observation.moved = true
 	}
-	return observation, nil
+	observation.consulted = append(observation.consulted, consultedFile{path: path, token: post})
 }
 
-// familyDrifted reports whether the family changed since the batch boundary:
-// a new/removed/reordered segment, or a segment whose bytes moved.
-func (e *engine) familyDrifted(observation familyObservation) bool {
+// noteIndex records the identity of a consulted sidecar index AFTER the
+// consultation. An index this batch rebuilt is the OWNER's legitimate write —
+// the same write the point reader performs for the same segment — so it is
+// accepted as the current identity. An index that was REPLACED while we
+// consulted it (and that we did not rebuild ourselves) marks the family as
+// moved.
+func (observation *familyObservation) noteIndex(path string, pre fileToken, preErr error, rebuilt bool) {
+	post, err := statToken(path)
+	if err != nil {
+		observation.moved = true
+		return
+	}
+	if preErr == nil && !rebuilt && pre != post {
+		observation.moved = true
+	}
+	observation.consulted = append(observation.consulted, consultedFile{path: path, token: post})
+}
+
+// familyDrifted reports whether the family's observation is no longer current:
+// the segment inventory changed, a consulted segment or consulted index moved,
+// or a consulted file moved while it was being read.
+func (e *engine) familyDrifted(observation *familyObservation) bool {
+	if observation.moved {
+		return true
+	}
+	// The final recheck: the family's inventory must still be the same set of
+	// segments (a publication, append-driven rollover or removal changes it).
 	segments, err := e.familySegments(observation.family)
 	if err != nil {
 		return true
 	}
-	if len(segments) != len(observation.segments) {
+	if len(segments) != len(observation.inventory) {
 		return true
 	}
 	for index, segment := range segments {
-		if segment.path != observation.segments[index].path {
+		if segment.path != observation.inventory[index].path {
 			return true
 		}
-		token, err := statToken(segment.path)
+	}
+	// Only CONSULTED files are rechecked, using the same stat trust rule the
+	// owner uses elsewhere (size + mtime).
+	for _, consulted := range observation.consulted {
+		token, err := statToken(consulted.path)
 		if err != nil {
 			return true
 		}
-		if token != observation.tokens[index] {
+		if token != consulted.token {
 			return true
 		}
 	}
