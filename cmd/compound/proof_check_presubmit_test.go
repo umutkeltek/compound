@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -29,10 +30,17 @@ func newProofCheckPresubmitRepo(t *testing.T) (string, string) {
 		"internal/arch/arch.go":         "package arch\n",
 		"internal/arch/arch_test.go":    "package arch\n\nimport (\n\t\"runtime\"\n\t\"testing\"\n)\n\nfunc TestRoot(t *testing.T) { _, _, _, _ = runtime.Caller(0) }\n",
 		"internal/policy/policy.go":     "package policy\n",
+		"tools/gen.go":                  "//go:build ignore\n\npackage main\n",
+		".gitignore":                    "private/\n",
 	} {
 		proofCheckDevelopmentWriteFile(t, filepath.Join(repo, name), body)
 	}
-	return repo, proofCheckPresubmitCommit(t, repo, "base")
+	base := proofCheckPresubmitCommit(t, repo, "base")
+	// Operator-private notes: a gitignored directory holding Go files that do
+	// not even compile. A `./...` walk would reach them; the Git inventory
+	// never does.
+	proofCheckDevelopmentWriteFile(t, filepath.Join(repo, "private/notes/notes.go"), "package notes\n\nthis is not Go\n")
+	return repo, base
 }
 
 func proofCheckPresubmitCommit(t *testing.T, repo, message string) string {
@@ -93,9 +101,14 @@ func TestProofCheckPresubmitDerivesGatesFromTheDiff(t *testing.T) {
 			t.Fatalf("step %s status=%s proof_ref=%s", step.Name, step.Status, step.ProofRef)
 		}
 	}
-	wantNames := []string{"head-clean", "go-build", "go-vet", "gofmt", "diff-check", "architecture-doctor", "go-test", "redact-public"}
+	wantNames := []string{"go-build", "go-vet", "gofmt", "diff-check", "architecture-doctor", "go-test", "redact-public"}
 	if !reflect.DeepEqual(names, wantNames) {
 		t.Fatalf("steps = %v; want %v", names, wantNames)
+	}
+	for i, mode := range []string{"build", "vet"} {
+		if want := []string{"go", "run", "./scripts/testbattery", mode, "--source-head", head}; !reflect.DeepEqual(report.Steps[i].Command, want) {
+			t.Fatalf("%s gate = %v; want the sealed Git-inventory gate %v", mode, report.Steps[i].Command, want)
+		}
 	}
 	wantTests := map[string][]string{
 		"go-test": {"go", "test", "-short", "-timeout=30m", "compound/cmd/compound", "compound/internal/arch", "compound/internal/landlease", "compound/internal/work"},
@@ -103,10 +116,10 @@ func TestProofCheckPresubmitDerivesGatesFromTheDiff(t *testing.T) {
 	if got := proofCheckPresubmitGoTests(report); !reflect.DeepEqual(got, wantTests) {
 		t.Fatalf("go-test runs = %v; want %v", got, wantTests)
 	}
-	if diffCheck := report.Steps[4].Command; !reflect.DeepEqual(diffCheck, []string{"git", "diff", "--check", base + "...HEAD"}) {
+	if diffCheck := report.Steps[3].Command; !reflect.DeepEqual(diffCheck, []string{"git", "diff", "--check", base + "...HEAD"}) {
 		t.Fatalf("diff-check = %v", diffCheck)
 	}
-	if !strings.HasPrefix(verdict, "presubmit: planned non_certifying=true scope=affected reason=diff packages=4 deferred=0 planned=8 total=8 out=") {
+	if !strings.HasPrefix(verdict, "presubmit: planned non_certifying=true scope=affected reason=diff packages=4 deferred=0 planned=7 total=7 out=") {
 		t.Fatalf("verdict line = %q", verdict)
 	}
 }
@@ -150,14 +163,43 @@ func TestProofCheckPresubmitRunsWholeModuleForModuleAndRemovedPackages(t *testin
 			tc.edit(t, repo)
 			proofCheckPresubmitCommit(t, repo, tc.name)
 			report, verdict := proofCheckPresubmitDryRun(t, repo, base)
-			want := map[string][]string{"go-test": {"go", "test", "-short", "-timeout=30m", "./..."}}
+			// The whole Git inventory, named: never `./...`, never the
+			// gitignored private/notes package, never the ignore-only tools dir.
+			inventory := []string{"compound/cmd/compound", "compound/internal/arch", "compound/internal/landlease", "compound/internal/policy", "compound/internal/work"}
+			if tc.name == "removed package" {
+				inventory = slices.DeleteFunc(inventory, func(pkg string) bool { return pkg == "compound/internal/policy" })
+			}
+			want := map[string][]string{"go-test": append([]string{"go", "test", "-short", "-timeout=30m"}, inventory...)}
 			if got := proofCheckPresubmitGoTests(report); !reflect.DeepEqual(got, want) {
 				t.Fatalf("go-test runs = %v; want %v", got, want)
+			}
+			if report.Presubmit == nil || !reflect.DeepEqual(report.Presubmit.NoGoFiles, []string{"compound/tools"}) {
+				t.Fatalf("no_go_files = %+v; want the ignore-only tools dir", report.Presubmit)
 			}
 			if !strings.Contains(verdict, " scope=full reason="+tc.reason+" packages=all ") {
 				t.Fatalf("verdict line = %q", verdict)
 			}
 		})
+	}
+}
+
+// A changed file under a gitignored directory never reaches the diff, and an
+// edit there can never add its package to the presubmit scope.
+func TestProofCheckPresubmitIgnoresGitignoredGoPackages(t *testing.T) {
+	repo, base := newProofCheckPresubmitRepo(t)
+	proofCheckDevelopmentWriteFile(t, filepath.Join(repo, "private/notes/more.go"), "package notes\n")
+	proofCheckDevelopmentWriteFile(t, filepath.Join(repo, "AGENTS.md"), "# agents\n\nmore\n")
+	proofCheckPresubmitCommit(t, repo, "docs plus ignored notes")
+	report, _ := proofCheckPresubmitDryRun(t, repo, base)
+	for name, command := range proofCheckPresubmitGoTests(report) {
+		for _, arg := range command {
+			if strings.Contains(arg, "private") || arg == "./..." {
+				t.Fatalf("%s reaches %q: %v", name, arg, command)
+			}
+		}
+	}
+	if report.Presubmit.Plan.Scope.Mode != proofscope.Affected {
+		t.Fatalf("scope = %+v; the ignored edit must not widen a docs-only diff", report.Presubmit.Plan.Scope)
 	}
 }
 

@@ -98,9 +98,9 @@ go run ./cmd/compound proof-check --presubmit --base "$PRESUBMIT_BASE_SHA" --out
 One command, one final `presubmit: ok|FAILED non_certifying=true scope=... passed=... failed=...`
 stdout line; exit `0` is the only green (`1` a gate is red, `2` usage or setup: the base is not a
 full SHA or not an ancestor of HEAD). Commit first: the scope is derived from the base and HEAD
-commits, and the `head-clean` gate fails on uncommitted tracked changes. Gates, in order:
-`head-clean`, `go build ./...`, `go vet ./...`, `gofmt` on tracked `*.go`,
-`git diff --check BASE...HEAD`, `architecture doctor --strict`,
+commits, and the build and vet gates run `go run ./scripts/testbattery build|vet --source-head HEAD_SHA`,
+which refuse a dirty tree. Gates, in order: build and vet of the Git source inventory, `gofmt` on
+tracked `*.go`, `git diff --check BASE...HEAD`, `architecture doctor --strict`,
 `go test -short -timeout=30m <affected packages>` (plus the restricted CLI run below),
 `console-tsc` when `console/` changed, and `redact-public` of the changed files. The `--out` JSON
 carries the derived scope under `presubmit.plan`.
@@ -120,7 +120,9 @@ from memory. The rule it applies:
   guard lives there) plus the CLI readers by name:
   `go test -short ./cmd/compound/ -run 'Ceremony|ContractCompile|Orient|ProofCheck|Doctor'`.
 - `go.mod`, `go.sum`, `scripts/testbattery/`, `internal/proofscope/`, a root file or a removed
-  package → the whole module: `go test -short ./...` (budget 10-20 min idle).
+  package → every package of the Git inventory at HEAD, named one by one (budget 10-20 min idle).
+  Never a bare `./...` walk: it reaches gitignored `docs_private/**/*.go` and broke the `--dev`
+  lane's build on 2026-10-24.
 - Other repository-root readers (packages whose tests read the whole tree) are listed in the report
   as `deferred`; the canonical battery after the land runs them.
 

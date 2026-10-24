@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -28,6 +29,10 @@ var presubmitFullSHA = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 type ProofCheckPresubmit struct {
 	Head string                   `json:"head"`
 	Plan proofscope.PresubmitPlan `json:"plan"`
+	// NoGoFiles are inventory directories go list resolves to no buildable
+	// or test files (for example only `//go:build ignore` files); go test
+	// would refuse them, so presubmit drops them.
+	NoGoFiles []string `json:"no_go_files,omitempty"`
 }
 
 // ProofCheckNonCertifyingMode returns "--dev" or "--presubmit" when argv
@@ -150,19 +155,85 @@ func ProofCheckPresubmitSteps(ctx context.Context, repo, base string) ([]ProofCh
 	if err != nil {
 		return nil, nil, err
 	}
-	derivation := &ProofCheckPresubmit{Head: head, Plan: proofscope.Presubmit(scope)}
-	return ProofCheckPresubmitGates(base, compoundExe, derivation.Plan, strings.Split(changed, "\x00")), derivation, nil
+	// The package universe is the Git tree at head, never a `./...` walk:
+	// gitignored directories (operator-private notes with .go files) must not
+	// enter the presubmit.
+	tree, err := presubmitGit(ctx, repo, "ls-tree", "-r", "-z", "--name-only", "--full-tree", head)
+	if err != nil {
+		return nil, nil, err
+	}
+	derivation := &ProofCheckPresubmit{
+		Head: head,
+		Plan: proofscope.Presubmit(scope, proofscope.InventoryPackages(strings.Split(tree, "\x00"))),
+	}
+	if derivation.NoGoFiles, err = presubmitDropNoGoFiles(ctx, repo, &derivation.Plan); err != nil {
+		return nil, nil, err
+	}
+	return ProofCheckPresubmitGates(base, head, compoundExe, derivation.Plan, strings.Split(changed, "\x00")), derivation, nil
 }
 
-// ProofCheckPresubmitGates is the ordered gate list for one plan: the commit
-// under test, whole-module build/vet/format/whitespace/architecture, the
+// presubmitDropNoGoFiles keeps only packages go list resolves to Go or test
+// files, as the testbattery source inventory does.
+func presubmitDropNoGoFiles(ctx context.Context, repo string, plan *proofscope.PresubmitPlan) ([]string, error) {
+	seen := map[string]bool{}
+	args := []string{"list", "-e", "-f", "{{if or .GoFiles .CgoFiles .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}"}
+	for _, run := range plan.Runs {
+		for _, pkg := range run.Packages {
+			if !seen[pkg] {
+				seen[pkg] = true
+				args = append(args, "./"+strings.TrimPrefix(strings.TrimPrefix(pkg, "compound"), "/"))
+			}
+		}
+	}
+	if len(seen) == 0 {
+		return nil, fmt.Errorf("presubmit derived no Go packages to test")
+	}
+	cmd := exec.CommandContext(ctx, "go", args...)
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("go list presubmit packages: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	resolved := map[string]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			resolved[line] = true
+		}
+	}
+	var dropped []string
+	for i, run := range plan.Runs {
+		kept := run.Packages[:0:0]
+		for _, pkg := range run.Packages {
+			if resolved[pkg] {
+				kept = append(kept, pkg)
+			} else if !slices.Contains(dropped, pkg) {
+				dropped = append(dropped, pkg)
+			}
+		}
+		plan.Runs[i].Packages = kept
+	}
+	runs := plan.Runs[:0]
+	for _, run := range plan.Runs {
+		if len(run.Packages) > 0 {
+			runs = append(runs, run)
+		}
+	}
+	plan.Runs = runs
+	return dropped, nil
+}
+
+// ProofCheckPresubmitGates is the ordered gate list for one plan: build and
+// vet of the Git source inventory sealed to the head commit (testbattery
+// refuses a dirty or drifted tree), format/whitespace/architecture, the
 // derived go-test runs, the console type check when console changed, and the
 // public redaction of the changed files.
-func ProofCheckPresubmitGates(base, compoundExe string, plan proofscope.PresubmitPlan, changed []string) []ProofCheckStep {
+func ProofCheckPresubmitGates(base, head, compoundExe string, plan proofscope.PresubmitPlan, changed []string) []ProofCheckStep {
 	steps := []ProofCheckStep{
-		{Name: "head-clean", Command: []string{"git", "diff", "--stat", "--exit-code", "HEAD", "--"}, ProofRef: "presubmit:head-clean"},
-		{Name: "go-build", Command: []string{"go", "build", "./..."}, ProofRef: "presubmit:go-build"},
-		{Name: "go-vet", Command: []string{"go", "vet", "./..."}, ProofRef: "presubmit:go-vet"},
+		{Name: "go-build", Command: []string{"go", "run", "./scripts/testbattery", "build", "--source-head", head}, ProofRef: "presubmit:go-build-inventory"},
+		{Name: "go-vet", Command: []string{"go", "run", "./scripts/testbattery", "vet", "--source-head", head}, ProofRef: "presubmit:go-vet-inventory"},
 		{Name: "gofmt", Command: []string{"gofmt", "-l", "<tracked *.go>"}, ProofRef: "presubmit:gofmt-check"},
 		{Name: "diff-check", Command: []string{"git", "diff", "--check", base + "...HEAD"}, ProofRef: "presubmit:diff-check"},
 		{Name: "architecture-doctor", Command: []string{compoundExe, "architecture", "doctor", "--strict"}, ProofRef: "presubmit:architecture-doctor-strict"},

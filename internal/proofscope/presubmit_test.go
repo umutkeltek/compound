@@ -40,6 +40,10 @@ func presubmitFixture() map[string]string {
 func TestPresubmitDerivesTheLandingRule(t *testing.T) {
 	files := presubmitFixture()
 	cli := PresubmitCLIPackage
+	inventory := InventoryPackages(snapshot(files, false).Paths)
+	if len(inventory) != 8 || inventory[0] != cli {
+		t.Fatalf("inventory = %v; want the eight fixture packages", inventory)
+	}
 	readers := PresubmitRun{Packages: []string{cli}, Run: PresubmitCLIReaders}
 	for _, tc := range []struct {
 		name     string
@@ -79,28 +83,28 @@ func TestPresubmitDerivesTheLandingRule(t *testing.T) {
 			changed: []string{"go.mod"},
 			mode:    Full,
 			reason:  "module-files:go.mod",
-			runs:    []PresubmitRun{{Packages: []string{PresubmitWholeModule}}},
+			runs:    []PresubmitRun{{Packages: inventory}},
 		},
 		{
 			name:    "go.sum runs the whole module",
 			changed: []string{"go.sum"},
 			mode:    Full,
 			reason:  "module-files:go.sum",
-			runs:    []PresubmitRun{{Packages: []string{PresubmitWholeModule}}},
+			runs:    []PresubmitRun{{Packages: inventory}},
 		},
 		{
 			name:    "the battery driver runs the whole module",
 			changed: []string{"scripts/testbattery/main.go"},
 			mode:    Full,
 			reason:  "scope-owner:scripts/testbattery/main.go",
-			runs:    []PresubmitRun{{Packages: []string{PresubmitWholeModule}}},
+			runs:    []PresubmitRun{{Packages: inventory}},
 		},
 		{
 			name:    "a root file runs the whole module",
 			changed: []string{"install.sh"},
 			mode:    Full,
 			reason:  "root-file:install.sh",
-			runs:    []PresubmitRun{{Packages: []string{PresubmitWholeModule}}},
+			runs:    []PresubmitRun{{Packages: inventory}},
 		},
 		{
 			name:    "a removed package runs the whole module",
@@ -108,7 +112,7 @@ func TestPresubmitDerivesTheLandingRule(t *testing.T) {
 			changed: []string{"internal/gone/gone.go"},
 			mode:    Full,
 			reason:  "package-removed:internal/gone",
-			runs:    []PresubmitRun{{Packages: []string{PresubmitWholeModule}}},
+			runs:    []PresubmitRun{{Packages: inventory}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -116,7 +120,7 @@ func TestPresubmitDerivesTheLandingRule(t *testing.T) {
 			if base == nil {
 				base = files
 			}
-			plan := Presubmit(derive(base, files, tc.changed...))
+			plan := Presubmit(derive(base, files, tc.changed...), inventory)
 			if plan.Scope.Mode != tc.mode || plan.Scope.Reason != tc.reason {
 				t.Fatalf("scope = %s/%s; want %s/%s", plan.Scope.Mode, plan.Scope.Reason, tc.mode, tc.reason)
 			}
@@ -140,7 +144,7 @@ func TestPresubmitPathReadersRunWithoutLiftingTheCLIRestriction(t *testing.T) {
 	if !reflect.DeepEqual(scope.PathReaders, []string{PresubmitCLIPackage}) {
 		t.Fatalf("path readers = %v; want the CLI skill reader", scope.PathReaders)
 	}
-	plan := Presubmit(scope)
+	plan := Presubmit(scope, nil)
 	want := []PresubmitRun{{Packages: pkgs("arch")}, {Packages: []string{PresubmitCLIPackage}, Run: PresubmitCLIReaders}}
 	if !reflect.DeepEqual(plan.Runs, want) {
 		t.Fatalf("runs = %+v; want %+v", plan.Runs, want)
@@ -150,7 +154,7 @@ func TestPresubmitPathReadersRunWithoutLiftingTheCLIRestriction(t *testing.T) {
 	if !reflect.DeepEqual(scope.PathReaders, pkgs("policy")) || len(scope.Reached) != 0 {
 		t.Fatalf("docs reader scope = %+v; want policy as the only path reader", scope)
 	}
-	plan = Presubmit(scope)
+	plan = Presubmit(scope, nil)
 	want = []PresubmitRun{{Packages: pkgs("arch", "policy")}, {Packages: []string{PresubmitCLIPackage}, Run: PresubmitCLIReaders}}
 	if !reflect.DeepEqual(plan.Runs, want) {
 		t.Fatalf("runs = %+v; want %+v", plan.Runs, want)

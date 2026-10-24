@@ -8,7 +8,9 @@ import "sort"
 //
 // Rule (skills/compound-land/SKILL.md §1):
 //   - Full scope (go.mod/go.sum, scripts/testbattery, internal/proofscope, a
-//     root file, a removed package, ...) runs the whole module.
+//     root file, a removed package, ...) runs every package of the Git
+//     inventory at head, never a `./...` walk that would reach gitignored
+//     directories.
 //   - Otherwise it runs every package reached from a changed package by
 //     import or test edges, every package whose tests name a changed path,
 //     and internal/arch (every served-doctrine guard lives there).
@@ -21,8 +23,6 @@ const (
 	// PresubmitCLIReaders names the cmd/compound tests that read served
 	// doctrine (skills, contracts, AGENTS.md).
 	PresubmitCLIReaders = "Ceremony|ContractCompile|Orient|ProofCheck|Doctor"
-	// PresubmitWholeModule is the go test pattern of a Full scope.
-	PresubmitWholeModule = "./..."
 )
 
 // PresubmitRun is one `go test -short` invocation.
@@ -40,11 +40,18 @@ type PresubmitPlan struct {
 	Deferred []string `json:"deferred,omitempty"`
 }
 
-// Presubmit derives the go-test runs for a scope.
-func Presubmit(scope Scope) PresubmitPlan {
+// InventoryPackages is the sorted import paths of every package directory in
+// a Git tree listing, by the testbattery source-inventory rules.
+func InventoryPackages(paths []string) []string {
+	return importPaths(packageDirs(paths))
+}
+
+// Presubmit derives the go-test runs for a scope. inventory is the head
+// package set a Full scope runs (InventoryPackages of the head tree).
+func Presubmit(scope Scope, inventory []string) PresubmitPlan {
 	plan := PresubmitPlan{Scope: scope}
 	if scope.Mode != Affected {
-		plan.Runs = []PresubmitRun{{Packages: []string{PresubmitWholeModule}}}
+		plan.Runs = []PresubmitRun{{Packages: append([]string(nil), inventory...)}}
 		return plan
 	}
 	reached := make(map[string]bool, len(scope.Reached))
