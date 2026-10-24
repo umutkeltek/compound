@@ -94,15 +94,30 @@ tick inside `scripts/upstream-learning/`; strengthen provenance only at
 outcomes to receipts and transitions. Consumers are upstream owner review and capability review — not
 a new inbox (`scripts/upstream-learning/README.md`).
 
-**Baseline and acceptance.** The review tick currently reports timeouts and no reviewable proposal
-for its three configured repositories; revalidate that baseline before changing anything. Each
-configured repository must reach an explicit bounded disposition, and a controlled eligible finding
-must reach a reviewable artifact. Missing receipts, failed trials, revision mismatches, and duplicate
-imports must not create unsupported positive validation or ranking benefit. "No adoption" is a
-successful outcome.
+**Baseline and acceptance — verified, and corrected against the live instance.** The operator status
+note claimed the upstream-review tick times out. Live evidence contradicts that: no review attempt
+timed out, and the attempts that mattered **succeeded** (`run_attempts/*.json`, status `succeeded`,
+two governed plan-mode runs each). The real baseline is a **blind retry loop**. Each attempt's output
+is rejected by a deterministic validator, and the tick discards the rejection reason before the next
+attempt, so every retry repeats the same defect until the three-pass bound is exhausted
+(`scripts/upstream-learning/review_tick.py`, `role_state`/`prompt_for`; observed rejection reasons:
+`Review requires one JSON document or one explicit JSON block` and `Claim citation does not resolve
+to pinned source text`). The operator-visible symptom is `attempts_exhausted` with no reviewable
+proposal — the same source sat at that state across 404 logged waits.
 
-**Cost / risk.** Timebox diagnosis first; provenance work is provisionally 3–5 engineering days.
-External receipts and the timeout root cause remain unresolved.
+Fixed in this change: a rejected attempt now hands its validator reason to the next attempt
+(`role_state` → `prompt_for` → `run_one`), so the retry can correct the named defect instead of
+repeating it. Proven by `test_retry_receives_the_reason_the_previous_attempt_was_rejected`, which
+fails against the pre-fix code and passes after it.
+
+Remaining baseline: each configured repository must reach an explicit bounded disposition, and a
+controlled eligible finding must reach a reviewable artifact. Missing receipts, failed trials,
+revision mismatches, and duplicate imports must not create unsupported positive validation or
+ranking benefit. "No adoption" is a successful outcome.
+
+**Cost / risk.** The retry-repair fix is landed here. Provenance work remains provisionally 3–5
+engineering days. External receipts remain unresolved; the upstream corpus cannot supply them
+(it ships no reproducible arena implementation or raw trial results).
 
 **Rollback / retirement.** Restore prior processing while retaining evidence; suspend new positive
 validation if binding fails. Retire the demonstrated timeout path and, only if reproduced,
