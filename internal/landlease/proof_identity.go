@@ -246,7 +246,7 @@ func (b *leaseBinding) repositoryReleased() error {
 	}
 	// Release/attestation requires an installed exact repository barrier.
 	// Admission separately permits absence for a repository's first proof.
-	pending, err := executionBarrierPendingWithKnown(b.repositoryRoot, proofRepositoryHolder(b.identity), true)
+	pending, err := settledExecutionBarrierPending(b.repositoryRoot, proofRepositoryHolder(b.identity), true)
 	if err != nil {
 		return err
 	}

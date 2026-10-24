@@ -3,9 +3,12 @@ package landlease
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -116,6 +119,116 @@ func TestReleaseAfterRefusesActiveInheritedExecutionBarrierBeforeFinalizer(t *te
 	}
 	if !status.Held || status.Holder != holder {
 		t.Fatalf("refused ReleaseAfter released or transferred lease: %+v", status)
+	}
+}
+
+// A thread that forks while a barrier is open hands its child a copy of the
+// locked open file description until the child execs. A same-process
+// duplicate closed shortly after the holder's own close is that copy,
+// deterministically: it is not a live execution tree and must not strand the
+// finalized release, yet the finalizer must still wait for the kernel lock.
+func TestReleaseAfterWaitsOutForkToExecDescriptorCopy(t *testing.T) {
+	homePath := t.TempDir()
+	holder := "proof:pfr_fork_window:ratt_20260102T030405Z_cdcdcdcd:work_fork_window:codex-fork-window"
+	_, barrier, err := AcquireWithExecutionBarrierPrepared(
+		homePath,
+		holder,
+		time.Minute,
+		baseNow,
+		func(AcquireOutcome) error { return nil },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = barrier.Close() })
+	preExec, err := barrier.DuplicateForChild()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := barrier.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var dropped atomic.Bool
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		dropped.Store(true)
+		_ = preExec.Close()
+	}()
+
+	finalized := false
+	released, err := ReleaseAfter(homePath, holder, baseNow.Add(time.Second), func() error {
+		if !dropped.Load() {
+			return errors.New("finalizer ran while the pre-exec descriptor copy still held the barrier")
+		}
+		finalized = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ReleaseAfter after the holder closed its barrier = %v; a fork-to-exec descriptor copy is not a live execution tree", err)
+	}
+	if !finalized || !released.Freed {
+		t.Fatalf("finalized release incomplete: finalized=%v released=%+v", finalized, released)
+	}
+}
+
+// Sibling goroutines that keep spawning processes (parallel tests, a
+// supervisor's git probes) make almost every barrier close straddle some
+// child's fork-to-exec window. Termination evidence and the finalized release
+// must still succeed once the holder has closed its own barrier.
+func TestTerminationAttestationIgnoresSiblingSpawnsAcrossClose(t *testing.T) {
+	stop := make(chan struct{})
+	var spawners sync.WaitGroup
+	var spawnErr atomic.Value
+	for i := 0; i < 4; i++ {
+		spawners.Add(1)
+		go func() {
+			defer spawners.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if err := exec.Command("/bin/sh", "-c", ":").Run(); err != nil {
+					spawnErr.Store(err)
+					return
+				}
+			}
+		}()
+	}
+	var stopOnce sync.Once
+	stopSpawners := func() {
+		stopOnce.Do(func() { close(stop) })
+		spawners.Wait()
+	}
+	t.Cleanup(stopSpawners)
+
+	for i := 0; i < 25; i++ {
+		homePath := t.TempDir()
+		holder := fmt.Sprintf("proof:pfr_sibling_%02d:ratt_20260102T030405Z_%08x:work_sibling_%02d:codex-sibling", i, i, i)
+		_, barrier, err := AcquireWithExecutionBarrierPrepared(
+			homePath,
+			holder,
+			time.Minute,
+			baseNow,
+			func(AcquireOutcome) error { return nil },
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := barrier.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := AttestExecutionTerminated(homePath, holder); err != nil {
+			t.Fatalf("iteration %d: termination attestation after the holder closed its barrier = %v", i, err)
+		}
+		if _, err := ReleaseAfter(homePath, holder, baseNow.Add(time.Second), func() error { return nil }); err != nil {
+			t.Fatalf("iteration %d: finalized release after the holder closed its barrier = %v", i, err)
+		}
+	}
+	stopSpawners()
+	if v := spawnErr.Load(); v != nil {
+		t.Fatalf("sibling spawn failed: %v", v)
 	}
 }
 

@@ -456,7 +456,7 @@ func rearmExpiredExactBound(home string, expected StatusResult, now time.Time, b
 		if current.live(now) {
 			return fmt.Errorf("land-lease for %q is not expired at recovery time", expected.Holder)
 		}
-		pending, err := executionBarrierPending(home, current.Holder)
+		pending, err := settledExecutionBarrierPending(home, current.Holder, false)
 		if err != nil {
 			return err
 		}
@@ -699,7 +699,7 @@ func releaseBound(home, holder string, now time.Time, binding *leaseBinding) (Re
 		if current.Holder != holder {
 			return fmt.Errorf("land-lease held by %q, not %q — refusing to release someone else's lease", current.Holder, holder)
 		}
-		pending, err := executionBarrierPending(home, current.Holder)
+		pending, err := settledExecutionBarrierPending(home, current.Holder, false)
 		if err != nil {
 			return err
 		}
@@ -762,7 +762,7 @@ func releaseAfterBound(home, holder string, now time.Time, finalize func() error
 		if !current.live(now) {
 			return fmt.Errorf("land-lease for %q expired at %s; refusing late finalized release", holder, current.ExpiresAt)
 		}
-		pending, err := executionBarrierPending(home, current.Holder)
+		pending, err := settledExecutionBarrierPending(home, current.Holder, false)
 		if err != nil {
 			return err
 		}
@@ -1251,12 +1251,45 @@ func localExecutionBarrierPendingWithKnown(home, holder string, requireKnown boo
 	return false, nil
 }
 
+// Termination attestation re-probes a held local barrier for a bounded
+// settle window before it reports a live execution tree. Any thread of a
+// process that forks while a barrier descriptor is open gives the child a
+// copy of the locked open file description until that child execs and drops
+// the close-on-exec descriptor. Darwin forks without vfork, so ForkLock does
+// not span that pre-exec interval there, and on every platform an unrelated
+// sibling spawn can straddle the holder's close. Such a child is not part of
+// the barrier's execution tree and drops the lock within milliseconds; a real
+// inheriting descendant holds it past the window and still refuses. The pause
+// separates kernel observations only: no TTL or expiry decision reads time,
+// and "terminated" is only ever an exclusive lock the kernel actually granted.
+const (
+	executionBarrierSettleProbes = 200
+	executionBarrierSettlePause  = 10 * time.Millisecond
+)
+
+// settledExecutionBarrierPending is executionBarrierPendingWithKnown for a
+// caller attesting that holder's execution has ended (release, finalized
+// release, rearm, termination evidence). Admission and read-only projections
+// keep the single-observation probe.
+func settledExecutionBarrierPending(home, holder string, requireKnown bool) (bool, error) {
+	if pending, err := remoteExecutionPending(home, holder); err != nil || pending {
+		return pending, err
+	}
+	for probe := 1; ; probe++ {
+		pending, err := localExecutionBarrierPendingWithKnown(home, holder, requireKnown)
+		if err != nil || !pending || probe >= executionBarrierSettleProbes {
+			return pending, err
+		}
+		time.Sleep(executionBarrierSettlePause)
+	}
+}
+
 // AttestExecutionTerminated is the trusted production evidence producer. It
 // succeeds only for an installed exact barrier after the kernel permits an
 // exclusive nonblocking lock, which means the final inherited descriptor has
 // closed.
 func AttestExecutionTerminated(home, holder string) (ExecutionTerminationAttestation, error) {
-	pending, err := executionBarrierPending(home, holder)
+	pending, err := settledExecutionBarrierPending(home, holder, false)
 	if err != nil {
 		return ExecutionTerminationAttestation{}, err
 	}
