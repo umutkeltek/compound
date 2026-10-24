@@ -8,6 +8,8 @@
  * tool_result, session_shutdown). This shim makes compound the meaning spine
  * for omp sessions, matching what compound hook install does for claude-code:
  *
+ *   - session_start → `compound hook session-start --live`; its context (summary
+ *     + door map) is held and prepended to the first before_agent_start message.
  *   - before_agent_start → `compound hook user-prompt-submit --live` and inject
  *     the returned ContextPack (memory + contract + capability offers) into the
  *     session as a persisted custom message.
@@ -230,16 +232,22 @@ function callCompound(verb: string, fixture: Record<string, unknown>): CompoundH
 }
 
 export default function compoundHook(pi: CompoundHookApi): void {
+	// omp gives session_start no message channel, so keep its context (the
+	// session summary and the door map) and prepend it to the first message.
+	let startContext = "";
 	pi.on("session_start", () => {
-		callCompound("session-start", sessionFixture);
+		const ctx = callCompound("session-start", sessionFixture)?.hookSpecificOutput?.additionalContext;
+		startContext = typeof ctx === "string" ? ctx.trim() : "";
 	});
 
 	pi.on("before_agent_start", (payload) => {
 		const event = (payload ?? {}) as BeforeAgentStartPayload;
 		const doc = callCompound("user-prompt-submit", { ...sessionFixture, prompt: event.prompt ?? "" });
 		const ctx = doc?.hookSpecificOutput?.additionalContext;
-		if (typeof ctx !== "string" || ctx.length === 0) return undefined;
-		return { message: ctx };
+		const parts = [startContext, typeof ctx === "string" ? ctx : ""].filter((part) => part.length > 0);
+		startContext = "";
+		if (parts.length === 0) return undefined;
+		return { message: parts.join("\n\n") };
 	});
 
 	pi.on("tool_call", (payload) => {

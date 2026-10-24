@@ -511,7 +511,7 @@ func renderInstructionBlockContent(ec envelope.EffectiveContract, harnessName, p
 	}
 
 	// Both templates consume the same task-free guidance as ContextPacks.
-	lead := HumanOutputBaseline() + "\n\n" + HumanOutputOrientReminder() +
+	lead := HumanOutputBaseline() + "\n\n" + HumanOutputOrientReminder() + " " + HumanOutputDoorPointer() +
 		"\n\nMissing legacy paths are migration evidence. Do not recreate retired authorities; use Compound-owned references."
 	if preset == "" {
 		return fmt.Sprintf(`%s

@@ -93,6 +93,12 @@ func TestHumanOutputBaselineReachesEverySupportedStaticSurface(t *testing.T) {
 			if leadAt < 0 || orientAt < 0 || generatedAt < 0 || !(leadAt < orientAt && orientAt < generatedAt) {
 				t.Fatalf("%s static block does not order baseline → orient reminder → generated header:\n%s", harness, body)
 			}
+			// A static client has no session-start hook to serve the door
+			// map, so the block must point at it before the doctrine.
+			doorAt := strings.Index(body, HumanOutputDoorPointer())
+			if doorAt < orientAt || doorAt > generatedAt || !strings.Contains(HumanOutputDoorPointer(), "run `compound doors serve`") {
+				t.Fatalf("%s static block lost the door map pointer:\n%s", harness, body)
+			}
 		})
 	}
 	// An unsupported name has no static surface; the inventory above is the
@@ -117,6 +123,9 @@ func TestHumanOutputBaselineReachesExecutorPreset(t *testing.T) {
 			}
 			if !strings.Contains(render.Content, "Begin non-trivial tasks with") {
 				t.Fatalf("%s executor preset lost the orient reminder:\n%s", harness, render.Content)
+			}
+			if !strings.Contains(render.Content, HumanOutputDoorPointer()) {
+				t.Fatalf("%s executor preset lost the door map pointer:\n%s", harness, render.Content)
 			}
 		})
 	}

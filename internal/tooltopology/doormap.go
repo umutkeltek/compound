@@ -34,7 +34,9 @@ const (
 	// outer bound; beyond it the block stops asserting statuses.
 	DefaultDoorMapTTL = 24 * time.Hour
 	// MaxServedBytes is the hard cap on the block injected at session start.
-	MaxServedBytes = 1500
+	// It leaves room for every door recipe of a ~15-door machine uncut: a
+	// recipe cut by "…" is a door the harness must rediscover by hand.
+	MaxServedBytes = 3000
 
 	doorMapDir        = "observed/door-map"
 	doorMapCurrent    = "snapshot.json"

@@ -66,15 +66,18 @@ func humanAge(d time.Duration) string {
 	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
-// Section byte budgets. They sum to MaxServedBytes minus newline slack; the
-// final fitBlock cap is the backstop that makes the limit unconditional.
+// Section byte budgets. They stay under MaxServedBytes; RenderDoorMap hands the
+// rest to doors and models, and the final fitBlock cap is the backstop that
+// makes the limit unconditional. Harness versions are not served: they are
+// for `compound doors show`, not for acting on the machine.
 const (
 	budgetHeader  = 110
-	budgetDoors   = 690
+	budgetDoors   = 1900
 	budgetMCP     = 290
-	budgetVersion = 130
 	budgetModels  = 150
 	budgetChanged = 110
+	// maxRecipeBytes caps one PASS line when the recipes do not all fit.
+	maxRecipeBytes = 150
 )
 
 // RenderDoorMap renders the served block for a FRESH snapshot within MaxServedBytes.
@@ -100,9 +103,6 @@ func renderDoorMapWith(m DoorMap, now, observed time.Time, slack int) string {
 		humanAge(now.Sub(observed)), observed.UTC().Format("2006-01-02T15:04Z")), budgetHeader))
 	lines = append(lines, renderDoorLines(m.Doors, budgetDoors+slack/2)...)
 	if l := renderMCPLine(m.MCP, budgetMCP); l != "" {
-		lines = append(lines, l)
-	}
-	if l := renderVersionLine(m.Harnesses, budgetVersion); l != "" {
 		lines = append(lines, l)
 	}
 	if l := renderModelLine(m.Models, budgetModels+slack/2); l != "" {
@@ -145,6 +145,17 @@ func renderDoorLines(doors []Door, budget int) []string {
 		return lines
 	}
 	room := budget - used
+	// Every recipe whole when they all fit: an equal share would cut the long
+	// ones while short ones leave bytes unused.
+	whole := make([]string, 0, len(good))
+	wholeBytes := 0
+	for _, d := range good {
+		whole = append(whole, "PASS "+d.Name+": "+d.Use)
+		wholeBytes += len(whole[len(whole)-1]) + 1
+	}
+	if wholeBytes <= room {
+		return append(lines, whole...)
+	}
 	per := 0
 	if room > 0 {
 		per = room/len(good) - 1
@@ -156,8 +167,8 @@ func renderDoorLines(doors []Door, budget int) []string {
 		}
 		return append(lines, truncBytes("PASS: "+strings.Join(names, " ")+" (recipes: compound doors show)", maxInt(room, 40)))
 	}
-	if per > 84 {
-		per = 84
+	if per > maxRecipeBytes {
+		per = maxRecipeBytes
 	}
 	for _, d := range good {
 		lines = append(lines, truncBytes("PASS "+d.Name+": "+d.Use, per))
@@ -176,21 +187,6 @@ func renderMCPLine(sets []MCPSet, budget int) string {
 		parts = append(parts, fmt.Sprintf("%s[%s]", s.Harness, joinCapped(s.Servers, share-len(s.Harness)-3)))
 	}
 	return truncBytes("MCP: "+strings.Join(parts, " "), budget)
-}
-
-func renderVersionLine(hs []HarnessVersion, budget int) string {
-	if len(hs) == 0 {
-		return ""
-	}
-	parts := make([]string, 0, len(hs))
-	for _, h := range hs {
-		v := h.Version
-		if strings.HasPrefix(v, "unversioned@") {
-			v = "unversioned"
-		}
-		parts = append(parts, h.Harness+" "+v)
-	}
-	return truncBytes("Versions: "+strings.Join(parts, ", "), budget)
 }
 
 func renderModelLine(ms []ModelLane, budget int) string {

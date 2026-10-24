@@ -171,8 +171,10 @@ The exact credential-slot lock spans read, replacement, and proof publication. B
 Every harness used to rediscover its doors (which tools work, which MCP servers exist, which harness
 version is installed, which model each launcher routes to). `compound doors refresh` now observes that
 once into `COMPOUND_HOME/observed/door-map/snapshot.json` (previous snapshot kept as `previous.json`), and
-the live `session-start` hook appends a block of at most 1500 bytes to the harness payload. Every served
-harness already runs that hook, so no per-harness pack is needed.
+the live `session-start` hook appends a block of at most 3000 bytes to the harness payload. Door recipes are
+served whole when they fit; harness versions stay in `compound doors show`. The oh-my-pi shim keeps the
+session-start context and prepends it to the first agent message. Static clients without that hook get a
+one-line pointer to `compound doors serve` in their compiled instruction block.
 
 - Observe, never execute: inputs are a door-doctor JSON report (`--doctor-json` or
   `COMPOUND_DOOR_DOCTOR_JSON`), MCP config files (server names only, never env/args/URLs), harness binaries

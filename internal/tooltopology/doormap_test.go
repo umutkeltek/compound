@@ -247,10 +247,14 @@ func TestServeDoorMapFreshContainsDoorsRecipesAndChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := ServeDoorMap(home, doorNow.Add(2*time.Hour), DefaultDoorMapTTL)
-	for _, want := range []string{"## Door map", "doors checked 3h ago", "PASS web: websearch", "HUMAN gui:", "FAIL devices:", "MCP: h1[alpha,beta]", "Versions: a 1.0.0", "Models: lane-one=vendor/model-1", "Changed: mcp beta added to h1 (1h)"} {
+	for _, want := range []string{"## Door map", "doors checked 3h ago", "PASS web: websearch", "HUMAN gui:", "FAIL devices:", "MCP: h1[alpha,beta]", "Models: lane-one=vendor/model-1", "Changed: mcp beta added to h1 (1h)"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("served block missing %q:\n%s", want, got)
 		}
+	}
+	// Harness versions stay in `compound doors show`; the served block is for acting.
+	if strings.Contains(got, "Versions:") {
+		t.Fatalf("served block must not carry the harness Versions line:\n%s", got)
 	}
 	if len(got) > MaxServedBytes {
 		t.Fatalf("served block is %d bytes, cap %d", len(got), MaxServedBytes)
@@ -319,5 +323,54 @@ func TestRealisticSnapshotFitsWithMostRecipesVisible(t *testing.T) {
 	got := RenderDoorMap(m, doorNow, doorNow)
 	if len(got) > MaxServedBytes || strings.Count(got, "PASS ") < 10 {
 		t.Fatalf("len=%d recipes=%d\n%s", len(got), strings.Count(got, "PASS "), got)
+	}
+}
+
+// A machine shaped like the operator's: three non-passing doors, twelve
+// passing doors whose recipes run up to ~200 bytes, several MCP sets, harness
+// versions, fifteen model lanes and recent changes. Every recipe must reach the
+// harness whole — a recipe cut by "…" is a door the harness rediscovers by hand.
+func TestLiveShapedSnapshotServesEveryRecipeWhole(t *testing.T) {
+	recipe := func(name string, n int) string {
+		s := "tool-" + name + " --flag <value>"
+		for len(s) < n {
+			s += " then step"
+		}
+		return s[:n]
+	}
+	m := DoorMap{SchemaVersion: DoorMapSchema, GeneratedAt: doorNow.Format(time.RFC3339),
+		Doors: []Door{
+			{Name: "disk", Status: StatusFail, Detail: strings.Repeat("d", 78)},
+			{Name: "store-web", Status: StatusFail, Detail: strings.Repeat("d", 67)},
+			{Name: "surface", Status: StatusUnknown, Detail: strings.Repeat("d", 160)},
+		}}
+	for i, n := range []int{75, 110, 100, 175, 120, 185, 70, 100, 125, 55, 80, 35} {
+		name := fmt.Sprintf("door-%02d", i)
+		m.Doors = append(m.Doors, Door{Name: name, Status: StatusPass, Detail: "ok", Use: recipe(name, n)})
+	}
+	m.MCP = []MCPSet{{Harness: "h1", Servers: []string{"a", "b"}}, {Harness: "h2", Servers: []string{"c", "d", "e", "f"}}, {Harness: "bridge", Servers: strings.Fields(strings.Repeat("server ", 23))}}
+	for _, h := range []string{"h1", "h2", "h3", "h4"} {
+		m.Harnesses = append(m.Harnesses, HarnessVersion{Harness: h, Version: "2.1.309"})
+	}
+	for i := 0; i < 15; i++ {
+		m.Models = append(m.Models, ModelLane{Launcher: fmt.Sprintf("lane-%02d", i), Route: "vendor/model-name"})
+		m.RecentChanges = append(m.RecentChanges, Change{What: fmt.Sprintf("lane-%02d route changed", i), At: doorNow.Format(time.RFC3339)})
+	}
+	got := RenderDoorMap(m, doorNow, doorNow)
+	if len(got) > MaxServedBytes {
+		t.Fatalf("served %d bytes, cap %d:\n%s", len(got), MaxServedBytes, got)
+	}
+	for _, d := range m.Doors {
+		if d.Status == StatusPass && !strings.Contains(got, "PASS "+d.Name+": "+d.Use+"\n") {
+			t.Fatalf("recipe for %s not served whole:\n%s", d.Name, got)
+		}
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if strings.HasPrefix(line, "PASS") && strings.HasSuffix(line, "…") {
+			t.Fatalf("PASS line cut: %q", line)
+		}
+	}
+	if strings.Contains(got, "Versions:") || !strings.Contains(got, "FAIL disk:") || !strings.Contains(got, "UNKNOWN surface:") {
+		t.Fatalf("block must keep non-passing doors and drop harness versions:\n%s", got)
 	}
 }
