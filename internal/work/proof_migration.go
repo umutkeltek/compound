@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"time"
 )
@@ -62,58 +61,20 @@ func (s *Store) migrateProofCoordinationResources(workID string, in ResourceMigr
 		if err := window(); err != nil {
 			return err
 		}
-		data, readErr := os.ReadFile(s.proofMigrationPendingPath())
-		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-			return readErr
+		resumed, history, err := s.resumeProofMigrationLocked(w, in, backing, now, window)
+		if resumed || err != nil {
+			return err
 		}
-		if readErr == nil {
-			var prior resourceMigrationPending
-			if err := json.Unmarshal(data, &prior); err != nil {
-				return err
-			}
-			if prior.SchemaVersion != resourceMigrationPendingSchema || !prior.Input.ProofClasses || prior.Work.ID != w.ID || prior.BackingRoot != backing || !reflect.DeepEqual(prior.Input.ProofHomes, homes) || prior.Input.ProofTargetRevision != in.ProofTargetRevision {
-				return fmt.Errorf("proof migration preparation differs from exact work and enrollment")
-			}
-			if err := s.validateResourceMigrationPreparation(prior); err != nil {
-				return err
-			}
-			before, err := workEnvelopeSHA256(prior.Work)
-			if err != nil {
-				return err
-			}
-			current, err := workEnvelopeSHA256(w)
-			if err != nil {
-				return err
-			}
-			status, err := landlease.ReadProofDomainStatus(backing)
-			if err != nil {
-				return s.resourceMigrationRecoveryError(prior, err)
-			}
-			target, _ := resourceProofMigrationRevision(prior.Input)
-			if status.Phase == "active" && status.SchemaVersion == string(target) {
-				return s.finishResourceMigrationLocked(w, prior, now())
-			}
-			if before != current {
-				return fmt.Errorf("proof migration work generation changed; preserve newer authority")
-			}
-			if reflect.DeepEqual(prior.Input, in) && prior.Input.ExpiresAt.After(now()) && validatePreEvaluatedReceiptedActionAt(prior.Action, prior.Decision, now()) == nil {
-				return s.performProofMigrationLocked(w, prior, now, window)
-			}
-			// Expired or changed pause is a new action with a fresh one-use approval.
-			// Preserve the prepared fence and outcome, but never replay stale authority.
-			if err := s.appendEvent(Event{TS: ts(now()), WorkID: w.ID, From: w.State, To: w.State, Note: "proof cutover pause expired or changed; fresh exact approval required", Attached: []string{prior.Action.ID, prior.Decision.ID}}); err != nil {
-				return err
-			}
-			if err := os.Remove(s.proofMigrationPendingPath()); err != nil {
-				return err
-			}
+		historyRef := ""
+		if len(history) != 0 {
+			historyRef = proofMigrationHistoryRef(history)
 		}
 		cfg, _, err := policy.LoadConfig(s.home)
 		if err != nil {
 			return err
 		}
 		revision := policy.ActionBindingForIntent(envelope.ActionIntent{}, cfg).PolicyRevision
-		preview := proofMigrationPreview(in, revision)
+		preview := proofMigrationPreviewWithHistory(in, revision, historyRef)
 		action := s.resourceMutationAction(w, in.Actor, "coordination.proof-migrate", preview, backing, now())
 		action.MutationClass = "security"
 		action.Reversibility = "irreversible"
@@ -124,11 +85,17 @@ func (s *Store) migrateProofCoordinationResources(workID string, in ResourceMigr
 			return err
 		}
 		action.EvidenceRefs = append(action.EvidenceRefs, in.EvidenceRef)
+		if historyRef != "" {
+			action.EvidenceRefs = append(action.EvidenceRefs, historyRef)
+		}
 		decision, err := s.authorizeResourceMutationLocked(w, action, now())
 		if err != nil {
 			return err
 		}
-		pending := resourceMigrationPending{SchemaVersion: resourceMigrationPendingSchema, Work: w, Input: in, BackingRoot: backing, Action: action, Decision: decision, PolicyRevision: policy.ActionBindingForIntent(action, cfg).PolicyRevision}
+		pending := resourceMigrationPending{PredecessorPreparationRef: historyRef, SchemaVersion: resourceMigrationPendingSchema, Work: w, Input: in, BackingRoot: backing, Action: action, Decision: decision, PolicyRevision: policy.ActionBindingForIntent(action, cfg).PolicyRevision}
+		if err := s.preserveProofMigrationHistory(pending, history); err != nil {
+			return err
+		}
 		if err := os.MkdirAll(filepath.Dir(s.proofMigrationPendingPath()), 0700); err != nil {
 			return err
 		}
@@ -189,11 +156,19 @@ func (s *Store) performProofMigrationLocked(w envelope.WorkEnvelope, p resourceM
 }
 
 func proofMigrationPreview(in ResourceMigrationInput, revision string) string {
+	return proofMigrationPreviewWithHistory(in, revision, "")
+}
+
+func proofMigrationPreviewWithHistory(in ResourceMigrationInput, revision, historyRef string) string {
 	body, _ := json.Marshal(struct {
 		Input          ResourceMigrationInput
 		PolicyRevision string
 	}{in, revision})
-	return "activate two source-derived proof capacities; permanently fence historical shared endpoint; inputs=" + string(body)
+	preview := "activate two source-derived proof capacities; permanently fence historical shared endpoint; inputs=" + string(body)
+	if historyRef != "" {
+		preview += "; predecessor_preparation=" + historyRef
+	}
+	return preview
 }
 
 func (s *Store) validateProofMigrationEffectAuthority(p resourceMigrationPending, now time.Time) error {
