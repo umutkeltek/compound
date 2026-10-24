@@ -290,6 +290,9 @@ coding benchmark.
 
 ## 5. Explicit NO-BUILD list
 
+Each entry refuses one **mechanism**, not the whole upstream project. A project can appear here and
+still contribute an absorbed mechanism elsewhere — the split is by mechanism, not by directory.
+
 1. **Another software-factory queue** — duplicates existing candidate and work ownership; a
    narrative workflow is not replacement evidence
    (`2026-06-23-software-factory-for-agent-tools/README.md`; `docs/LAYERS.md`).
