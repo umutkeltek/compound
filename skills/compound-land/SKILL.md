@@ -241,11 +241,13 @@ go run ./cmd/compound proof-check --json --base "$PRE_LAND_BASE_SHA" \
   cannot `git merge <its-branch>` — the ref is invisible. Land it with
   `git fetch <worktree-path> <branch>` then `git merge --ff-only FETCH_HEAD`. Opus/Agent-native
   `isolation:"worktree"` trees ARE linked (normal `merge --ff-only <branch>` works).
-- **A concurrent lane moved main → rebase, don't merge.** The tell: `git diff --stat main..HEAD`
-  in the executor tree shows the OTHER lane's already-landed files as **deletions** (you branched
-  before them). `git merge` would revert their work. Rebase the executor branch onto the fresh
-  `main` SHA, re-run the battery on the combined state, THEN `--ff-only` (observed 2026-07-06:
-  the kill-switch branch would have reverted the bakeoff that landed 40 min earlier).
+- **Reconcile current main against the reviewed candidate before replay.** An endpoint
+  `main..HEAD` diff can show target-only files as deletions on an older branch; inspect the merge
+  base and actual changes. If current main is already an ancestor of the exact certified H,
+  preserve that candidate and its original B/H proof, then use a fresh landing guard. Otherwise
+  prepare a successor in an isolated worktree by replay or the reviewed integration merge
+  procedure in §3; review the resulting tree and run a fresh full canonical proof.
+
 - **ff refuses "diverging" despite a CLEAN guard → check `git branch --show-current`** (observed
   2026-07-15, next_consumer land): a non-ceremony lane can `git checkout` ITS branch in the shared
   MAIN worktree, so `git merge` compares against THEIR HEAD, not main — and land-check later fails
@@ -311,9 +313,11 @@ MAIN_SHA=$(git -C <MAIN-worktree> rev-parse main)   # read from the MAIN worktre
 git merge --ff-only <your-branch>                    # or push with the SHA guard
 ```
 
-- The guard is the point: if main moved since `MAIN_SHA`, **stop**, rebase, re-run the battery,
-  retry. The guard has caught concurrent landings twice; treat a guard trip as normal, not an
-  error to force past.
+- The guard is the point: if main moved since `MAIN_SHA`, **stop that landing transaction**.
+  Re-read main and prove it is an ancestor of the unchanged certified H before taking a fresh
+  guard. If source composition or the proof base changes, prepare and prove the new B/H first.
+  Never force past a stale guard.
+
 - **Never put retirement in the same command as the guarded merge**
   (near-miss 2026-07-09, Packet F): the guard tripped (main had moved a THIRD time that day), the
   `&&`-chain correctly skipped the merge — but a `;`-separated tail in the same command went on to
@@ -322,7 +326,18 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   commits survive worktree removal until gc). Rule: land = its own command; retirement is a
   separately reviewed Compound transaction issued only after `git log` shows the candidate tip is
   contained or patch-equivalent on both local and published authority.
-- No merge commits onto main; `--ff-only` always.
+- **Reviewed integration merges belong in an isolated candidate, never in the main checkout.**
+  An integration work item may combine pinned, reviewed candidate tips from the same repository
+  with merge commits to preserve their original ancestry. Review the complete resulting tree and
+  every conflict resolution, then run the full canonical proof at final exact B/H. A parent's
+  proof never certifies the merge result. Main still advances only under its scoped landing
+  lease, fresh SHA guard and `--ff-only`; current main must be an ancestor of certified H.
+  Composition grants no membership, proof adoption, acceptance or lifecycle authority over
+  another Work. The existing explicit holder acceptance and immutable manifest gates remain.
+  Preserve uncontained merge candidates: ordinary patch IDs omit merge resolutions, so
+  inventory/retirement refuse such equivalence and salvage refuses blind merge cherry-picks.
+  Exact target and required publication containment remain sufficient for normal retirement.
+
 - **Racing a fast-landing concurrent lane is how the cwd trap recurs** (observed 2026-07-09 late,
   lane K2 — it bit AGAIN with the rule below already written): after repeated guard trips the
   instinct is to chain rebase-in-worktree + guarded merge into ONE command to "shrink the window" —
@@ -344,15 +359,16 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   (the holder's own release is the tool's sanctioned path), confirm the dead run self-terminalized
   (`compound run-attempt list --non-terminal` — proof-check terminalizes its own ratt on the
   admission error path), then rerun the plain exact command on the freed resource.
-- **Package disjointness guides reconciliation; it never preserves proof after a replay.**
-  If main moves from B to B', inspect the intervening changes to plan a forward replay in an
-  isolated worktree. Even disjoint changes produce a new proof base or candidate HEAD.
-  Capture the fresh base B', attach the new candidate H', and complete the full canonical proof
-  for that exact B'/H' pair **before landing**. Then use the short landing lease and fresh
-  main-SHA guard for the ordinary `--ff-only` landing. Do not land first and test the replay later.
-  Never use `git update-ref` or a target-ref CAS to bypass replay, fresh proof or a tripped guard.
+- **Package disjointness never preserves proof after replay or a new merge.** If reconciling
+  main changes the candidate HEAD or proof base, attach the new H and complete a full canonical
+  proof for that exact B/H **before landing**. If main merely advances to an ancestor already
+  contained in unchanged certified H, retain the original B/H proof and take a fresh main-SHA
+  guard; do not relabel its base. Use the short landing lease and ordinary `--ff-only` landing.
+  Never land first and test later, or use `git update-ref` or target-ref CAS to bypass a stale
+  guard, changed-source proof, acceptance or publication checks.
   The separate hijacked-checkout exception in §1 still requires an already-certified descendant;
   it does not authorize proof reuse for a changed base or candidate.
+
 - **An old index lock is a recovery candidate, not proof that Git is idle.**
   Do not move or delete it by hand and do not relax the generic `.git` forbidden-path rule.
   Use `compound authority git-index-lock plan --repo ROOT --work WORK --actor ACTOR`.

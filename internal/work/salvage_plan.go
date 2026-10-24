@@ -205,6 +205,13 @@ func (s *Store) SalvagePlan(workID string, opts SalvagePlanOptions, now time.Tim
 // branch's true contribution, oldest first) and attaches each commit's
 // subject for a human-legible plan.
 func salvageTrueCommits(repoPath, mergeBase, branch string) ([]SalvagePlanCommit, error) {
+	merges, err := runSalvageGitOutput(repoPath, "rev-list", "--min-parents=2", "--max-count=1", mergeBase+".."+branch)
+	if err != nil {
+		return nil, fmt.Errorf("inspect salvage merge ancestry: %w", err)
+	}
+	if strings.TrimSpace(merges) != "" {
+		return nil, fmt.Errorf("salvage delta contains a merge commit; preserve the source branch and review its parent graph before replay")
+	}
 	out, err := runSalvageGitOutput(repoPath, "rev-list", "--reverse", mergeBase+".."+branch)
 	if err != nil {
 		return nil, fmt.Errorf("list true commits %s..%s: %w", mergeBase, branch, err)

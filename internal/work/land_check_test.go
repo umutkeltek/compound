@@ -1784,3 +1784,67 @@ func TestCloseRefusalNamesMissingPostLandProof(t *testing.T) {
 		t.Fatalf("close must accept the fresh post-land land-check: %v", err)
 	}
 }
+
+func TestLandCheckReviewedMergePreservesExactProofAcrossContainedMain(t *testing.T) {
+	repo, base := sharedLandingBaseRepo(t)
+	parents := make([]string, 0, 2)
+	for _, side := range []string{"left", "right"} {
+		landingGit(t, repo, "switch", "-c", "integration-"+side, base)
+		writeLandingFile(t, filepath.Join(repo, side+".txt"), side+"\n")
+		landingGit(t, repo, "add", side+".txt")
+		landingGit(t, repo, "commit", "-m", side+" candidate")
+		parents = append(parents, landingGitOutput(t, repo, "rev-parse", "HEAD"))
+	}
+	landingGit(t, repo, "switch", "-c", "reviewed-integration", parents[0])
+	landingGit(t, repo, "merge", "--no-ff", "-m", "reviewed sibling integration", parents[1])
+	head := landingGitOutput(t, repo, "rev-parse", "HEAD")
+	landingGit(t, repo, "switch", "main")
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	w, err := store.Create(CreateInput{
+		Owner: "codex", SuccessPredicate: "exact reviewed merge reaches main",
+		GitDelivery: localGitDelivery(repo, base),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachLandingCommit(t, store, w.ID, head, now.Add(time.Second))
+	completeSourceBoundProofForDetachedCandidate(t, store, w.ID, "codex", repo, head, now.Add(2*time.Second))
+	read := func() LandCheckReport {
+		t.Helper()
+		report, err := store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: head, TargetRef: "main"}, now.Add(time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return report
+	}
+	initial := read()
+	if initial.Status != "ready_to_land" || initial.ProofVerificationRef == "" {
+		t.Fatalf("initial merged candidate: %+v", initial)
+	}
+	for _, parent := range parents {
+		// Reset only the synthetic fixture to exercise each possible next land.
+		landingGit(t, repo, "reset", "--hard", base)
+		landingGit(t, repo, "merge", "--ff-only", parent)
+		report := read()
+		if report.Status != "ready_to_land" || report.ExpectedBaseSHA != base ||
+			report.ProofHeadSHA != head || report.ProofVerificationRef != initial.ProofVerificationRef {
+			t.Fatalf("contained parent changed exact proof: %+v", report)
+		}
+	}
+	writeLandingFile(t, filepath.Join(repo, "outside.txt"), "not in reviewed integration\n")
+	landingGit(t, repo, "add", "outside.txt")
+	landingGit(t, repo, "commit", "-m", "unreviewed main successor")
+	if report := read(); report.Status != "rebase_required" {
+		t.Fatalf("unrelated main must refuse old candidate: %+v", report)
+	}
+	landingGit(t, repo, "reset", "--hard", parents[1])
+	landingGit(t, repo, "merge", "--ff-only", head)
+	report := read()
+	if report.Status != "landed" || report.ProofVerificationRef != initial.ProofVerificationRef || report.ProofHeadSHA != head {
+		t.Fatalf("guarded fast-forward must use original merged-tip proof: %+v", report)
+	}
+}

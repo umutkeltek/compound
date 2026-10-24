@@ -1098,3 +1098,62 @@ func writeRetirementJSON(t *testing.T, path string, value any) {
 // testRetirementRecoveryPreflight supplies the independent custody-owner seam
 // for Authority unit tests. Cross-owner delivery tests use Work's real reader.
 func testRetirementRecoveryPreflight(WorktreeRetirementPlan) error { return nil }
+
+func TestWorktreeRetirementPreservesUncontainedMergeContent(t *testing.T) {
+	fixture := newMergeOnlyRetirementGitFixture(t)
+	deps := WorktreeRetirementDependencies{
+		RecoveryInventoryPreflight: testRetirementRecoveryPreflight,
+		Git:                        ExecWorktreeRetirementGit{},
+		Liveness:                   staticRetirementLiveness{state: WorktreeLivenessUnused},
+	}
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), deps, time.Now())
+	if err == nil && plan.Status == "review_required" {
+		t.Fatalf("patch-equivalent parents do not preserve merge-only content: %+v", plan)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.worktree, "merge-only.txt")); err != nil {
+		t.Fatalf("refusal must retain merge-only source: %v", err)
+	}
+
+	// Exact containment remains sufficient: land the original merge object,
+	// rather than inferring equivalence from its ordinary parent patches.
+	retirementRunGit(t, fixture.repo, "merge", "--no-ff", "-m", "contain reviewed integration", fixture.candidateTip)
+	fixture.mainTip = retirementGitOutput(t, fixture.repo, "rev-parse", "HEAD")
+	retirementRunGit(t, fixture.repo, "update-ref", "refs/remotes/origin/main", fixture.mainTip)
+	plan, err = BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), deps, time.Now())
+	if err != nil || plan.Status != "review_required" || plan.CandidateRelation != WorktreeCandidateContained {
+		t.Fatalf("exactly contained merge must remain eligible: plan=%+v err=%v", plan, err)
+	}
+	row := patchIDRowForBranch(t, buildPatchIDInventory(t, patchIDInventoryFixture{repo: fixture.repo}, ExecWorktreeRetirementGit{}), "candidate")
+	if !row.Contained || row.Class != WorktreeClassLandedClean {
+		t.Fatalf("exactly contained merge inventory: %+v", row)
+	}
+}
+
+func newMergeOnlyRetirementGitFixture(t *testing.T) retirementGitFixture {
+	t.Helper()
+	fixture := newDivergentRetirementGitFixture(t, true)
+	base := retirementGitOutput(t, fixture.repo, "rev-parse", "main^")
+	retirementRunGit(t, fixture.repo, "switch", "-c", "merge-side", base)
+	writePatchIDFile(t, fixture.repo, "side.txt", "side\n")
+	retirementRunGit(t, fixture.repo, "add", "side.txt")
+	retirementRunGit(t, fixture.repo, "commit", "-m", "side input")
+	side := retirementGitOutput(t, fixture.repo, "rev-parse", "HEAD")
+	retirementRunGit(t, fixture.repo, "switch", "main")
+	retirementRunGit(t, fixture.repo, "cherry-pick", side)
+	fixture.mainTip = retirementGitOutput(t, fixture.repo, "rev-parse", "HEAD")
+	retirementRunGit(t, fixture.repo, "update-ref", "refs/remotes/origin/main", fixture.mainTip)
+
+	retirementRunGit(t, fixture.worktree, "merge", "--no-ff", "--no-commit", side)
+	writePatchIDFile(t, fixture.worktree, "merge-only.txt", "reviewed resolution absent from both parents\n")
+	retirementRunGit(t, fixture.worktree, "add", "merge-only.txt")
+	retirementRunGit(t, fixture.worktree, "commit", "-m", "reviewed integration resolution")
+	fixture.candidateTip = retirementGitOutput(t, fixture.worktree, "rev-parse", "HEAD")
+	cherry := retirementGitOutput(t, fixture.repo, "cherry", "main", fixture.candidateTip)
+	if strings.Contains(cherry, "+") || !strings.Contains(cherry, "-") {
+		t.Fatalf("fixture must hide merge-only content from ordinary patch IDs: %q", cherry)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.repo, "merge-only.txt")); !os.IsNotExist(err) {
+		t.Fatalf("main must lack merge-only content: %v", err)
+	}
+	return fixture
+}

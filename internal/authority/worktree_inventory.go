@@ -1043,10 +1043,10 @@ func landedByPatchIDReason(landed, ahead int) string {
 
 // worktreeUnlandedCount is the load-bearing "is there work here" read: `git
 // cherry` compares patch-ids, so a commit main absorbed under a different SHA
-// counts as landed ("-") rather than unique ("+"). It returns the raw Git error
-// unwrapped so each caller can name its own failure; callers MUST fail closed on
-// error, because an unreadable count that defaults to zero would classify a tree
-// holding real work as retirable.
+// counts as landed ("-") rather than unique ("+"). Merge resolutions have no
+// ordinary patch ID, so equivalence also requires no uncontained merge. Callers
+// MUST fail closed on unreadable facts: zero by default would make real work
+// appear retirable.
 func worktreeUnlandedCount(ctx context.Context, git WorktreeRetirementGit, root, upstream, head string) (unlanded, landed int, err error) {
 	out, err := git.Run(ctx, root, "cherry", upstream, head)
 	if err != nil {
@@ -1058,6 +1058,20 @@ func worktreeUnlandedCount(ctx context.Context, git WorktreeRetirementGit, root,
 			unlanded++
 		case strings.HasPrefix(strings.TrimSpace(line), "-"):
 			landed++
+		}
+	}
+	if unlanded == 0 {
+		// git cherry omits merge commits. Matching ordinary patches cannot
+		// establish that an uncontained merge's resolution is preserved.
+		merges, mergeErr := git.Run(ctx, root, "rev-list", "--min-parents=2", "--max-count=1", upstream+".."+head)
+		if mergeErr != nil {
+			return 0, 0, fmt.Errorf("read merge ancestry: %w", mergeErr)
+		}
+		if merge := strings.TrimSpace(merges); merge != "" {
+			if !validRetirementObjectID(merge) {
+				return 0, 0, fmt.Errorf("invalid merge ancestry result")
+			}
+			return 0, landed, fmt.Errorf("uncontained merge %s requires exact containment; patch IDs omit merge resolutions", merge)
 		}
 	}
 	return unlanded, landed, nil

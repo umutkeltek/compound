@@ -206,3 +206,38 @@ func writePatchIDFile(t *testing.T, dir, name, body string) {
 		t.Fatal(err)
 	}
 }
+
+func TestWorktreeInventoryPreservesUncontainedMergeContent(t *testing.T) {
+	fix := newMergeOnlyRetirementGitFixture(t)
+	row := patchIDRowForBranch(t, buildPatchIDInventory(t, patchIDInventoryFixture{repo: fix.repo}, ExecWorktreeRetirementGit{}), "candidate")
+	if row.Contained || row.Class == WorktreeClassLandedClean || strings.Contains(row.NextAction, "worktree-retire") {
+		t.Fatalf("uncontained merge-only content must be preserved, not offered for retirement: %+v", row)
+	}
+}
+
+func TestWorktreeInventoryFailsClosedWhenMergeReadFails(t *testing.T) {
+	for _, malformed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "unreadable", true: "malformed"}[malformed], func(t *testing.T) {
+			fix := newPatchIDInventoryFixture(t)
+			row := patchIDRowForBranch(t, buildPatchIDInventory(t, fix, mergeReadFailingGit{malformed: malformed}), "lane-rebased")
+			if row.Class != WorktreeClassUnknown || strings.Contains(row.NextAction, "worktree-retire") {
+				t.Fatalf("unverified merge ancestry must refuse patch-equivalence retirement: %+v", row)
+			}
+		})
+	}
+}
+
+type mergeReadFailingGit struct {
+	malformed bool
+	real      ExecWorktreeRetirementGit
+}
+
+func (g mergeReadFailingGit) Run(ctx context.Context, repo string, args ...string) (string, error) {
+	if len(args) > 1 && args[0] == "rev-list" && strings.Contains(strings.Join(args, " "), "--min-parents=2") {
+		if g.malformed {
+			return "not-a-commit\n", nil
+		}
+		return "", errors.New("merge ancestry unavailable (injected)")
+	}
+	return g.real.Run(ctx, repo, args...)
+}

@@ -424,3 +424,51 @@ func hashTree(t *testing.T, root string) string {
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
+
+func TestSalvagePlanRefusesMergeReplayAndPreservesSource(t *testing.T) {
+	repo, base := sharedLandingBaseRepo(t)
+	landingGit(t, repo, "switch", "-c", "salvage-left", base)
+	writeLandingFile(t, filepath.Join(repo, "left.txt"), "left\n")
+	landingGit(t, repo, "add", "left.txt")
+	landingGit(t, repo, "commit", "-m", "left")
+	left := landingGitOutput(t, repo, "rev-parse", "HEAD")
+	landingGit(t, repo, "switch", "-c", "salvage-right", base)
+	writeLandingFile(t, filepath.Join(repo, "right.txt"), "right\n")
+	landingGit(t, repo, "add", "right.txt")
+	landingGit(t, repo, "commit", "-m", "right")
+	right := landingGitOutput(t, repo, "rev-parse", "HEAD")
+	landingGit(t, repo, "switch", "-c", "salvage-integration", left)
+	landingGit(t, repo, "merge", "--no-ff", "-m", "reviewed integration", right)
+	tip := landingGitOutput(t, repo, "rev-parse", "HEAD")
+	landingGit(t, repo, "switch", "main")
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	w, err := store.Create(CreateInput{
+		Owner: "codex", SuccessPredicate: "retain reviewed merge source",
+		GitDelivery: localGitDelivery(repo, base),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(store.workPath(w.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := store.SalvagePlan(w.ID, SalvagePlanOptions{Branch: "refs/heads/salvage-integration"}, now.Add(time.Second))
+	if err == nil || !strings.Contains(err.Error(), "merge") || len(plan.SuccessorCommands) != 0 {
+		t.Fatalf("merge replay must refuse without blind cherry-pick commands: plan=%+v err=%v", plan, err)
+	}
+	after, readErr := os.ReadFile(store.workPath(w.ID))
+	if readErr != nil || string(before) != string(after) {
+		t.Fatalf("read-only refusal changed Work: err=%v", readErr)
+	}
+	if got := landingGitOutput(t, repo, "rev-parse", "refs/heads/salvage-integration"); got != tip {
+		t.Fatalf("refusal moved source: got %s want %s", got, tip)
+	}
+	if got := landingGitOutput(t, repo, "rev-parse", "main"); got != base {
+		t.Fatalf("refusal moved main: got %s want %s", got, base)
+	}
+}
