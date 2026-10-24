@@ -662,7 +662,7 @@ func (s *Store) surface(task, harness string, ctx SurfaceContext) ([]Surfaced, e
 			if harnesses[e.From] == nil {
 				harnesses[e.From] = map[string]bool{}
 			}
-			harnesses[e.From][e.To] = true
+			harnesses[e.From][harnessID(e.To)] = true
 			continue
 		}
 		ctx := strings.TrimPrefix(e.From, "context:")
@@ -938,7 +938,7 @@ func capabilityConstraints(nodeID string, edges []Edge, connections map[string]C
 			}
 		case EdSurfacesWith:
 			if e.From == nodeID && strings.HasPrefix(e.To, "harness:") {
-				add(&c.Harnesses, e.Kind, e.To, "compatible harness", e.Confidence)
+				add(&c.Harnesses, e.Kind, harnessID(e.To), "compatible harness", e.Confidence)
 			}
 		case EdMissedWhen:
 			if e.To == nodeID && strings.HasPrefix(e.From, "context:") {
@@ -964,10 +964,20 @@ func capabilityConstraints(nodeID string, edges []Edge, connections map[string]C
 	return c
 }
 
+// harnessID is the one spelling of a harness node id inside the graph.
+// docs/NAMING.md: a harness is snake_case. Launch owners, lane manifests and
+// the public skill bundle spell the same program with dashes, and the live
+// graph held 113 surfaces_with edges to "harness:claude-code",
+// "harness:claude-minimax" and "harness:claude-zai" -- nodes that do not exist
+// -- which hid 31 skills from claude_code (measured 2026-10-25). Every read and
+// write of a harness id goes through here, so a dashed id in a stored edge or a
+// caller's flag means the same node as its snake_case form.
 func harnessID(harness string) string {
 	harness = strings.TrimSpace(strings.ToLower(harness))
-	if harness == "" || strings.HasPrefix(harness, "harness:") {
-		return harness
+	harness = strings.TrimPrefix(harness, "harness:")
+	harness = strings.ReplaceAll(harness, "-", "_")
+	if harness == "" {
+		return ""
 	}
 	return "harness:" + harness
 }
@@ -1313,8 +1323,14 @@ func (s *Store) loadEdges() ([]Edge, error) {
 
 // --- helpers ---
 
+// instructionRuleTokenSet is what an instruction rule's triggers are scored
+// against. The harness name is deliberately NOT in it: "claude_code" tokenizes
+// to "claude" and "code", so with it every rule mentioning code scored on every
+// claude_code task (live: a codex-routing rule was top-1 for "a hook test went
+// red under load"). A rule scoped to a harness says so in its `when: harness`
+// clause, which nodeWhenMatches checks directly.
 func instructionRuleTokenSet(ctx SurfaceContext) map[string]bool {
-	return tokenSet(strings.Join([]string{ctx.Task, ctx.RepoKind, ctx.Harness, ctx.FilePath, ctx.Phase}, " "))
+	return tokenSet(strings.Join([]string{ctx.Task, ctx.RepoKind, ctx.FilePath, ctx.Phase}, " "))
 }
 
 func nodeWhenMatches(n Node, ctx SurfaceContext, taskTokens, contextTokens map[string]bool) bool {
@@ -1546,9 +1562,34 @@ func tokenList(s string) []string {
 	return out
 }
 
+// usableCapabilityToken is the one rule for what counts as a task word. Tokens
+// under three characters are noise unless they are a known term of art
+// ("go", "ui"), and a run of digits is a version or a count, never a
+// capability ("1.6%" surfaced model nodes on "1" and "6", 2026-10-25).
 func usableCapabilityToken(tok string) bool {
 	tok = strings.TrimSpace(strings.ToLower(tok))
-	return tok != "" && !capabilityTokenStopWords[tok]
+	if tok == "" || capabilityTokenStopWords[tok] {
+		return false
+	}
+	if len(tok) < 3 {
+		return capabilityShortTokenKeep[tok]
+	}
+	allDigits := true
+	for i := 0; i < len(tok); i++ {
+		if tok[i] < '0' || tok[i] > '9' {
+			allDigits = false
+			break
+		}
+	}
+	return !allDigits
+}
+
+// capabilityShortTokenKeep lists the sub-3-character tokens that name a real
+// thing. "go" stays because the Go-language alias logic in tokenSet and
+// surfaceTriggerScore keys on it.
+var capabilityShortTokenKeep = map[string]bool{
+	"go": true, "ui": true, "ux": true, "qa": true, "ci": true, "cd": true,
+	"ai": true, "db": true, "js": true, "ts": true, "os": true, "pr": true,
 }
 
 func hasAnyToken(tokens map[string]bool, candidates map[string]bool) bool {
@@ -1602,6 +1643,24 @@ var capabilityTokenStopWords = map[string]bool{
 	// Agent describes the caller/role across too many tools and skills. Let
 	// concrete task words like harness, adapter, workbench, browser, or MCP match.
 	"agent": true, "agents": true,
+	// Filler that won top-5 slots on the live graph (12-task measurement,
+	// 2026-10-25): determiners, generic verbs and the words every tool
+	// description contains. "user"/"users" is here because 265 imported tool
+	// descriptions say "the user"; a skill about users should say onboarding,
+	// activation, journey.
+	"about": true, "after": true, "again": true, "all": true, "also": true, "any": true,
+	"both": true, "but": true, "can": true, "change": true, "changed": true, "changes": true, "could": true, "did": true, "do": true, "does": true,
+	"done": true, "each": true, "few": true, "find": true, "get": true, "gets": true,
+	"got": true, "has": true, "have": true, "help": true, "if": true, "just": true,
+	"like": true, "list": true, "make": true, "makes": true, "may": true, "might": true,
+	"more": true, "most": true, "must": true, "need": true, "needs": true, "new": true,
+	"next": true, "not": true, "one": true, "only": true, "other": true, "our": true, "own": true,
+	"please": true, "real": true, "same": true, "see": true, "set": true, "should": true,
+	"show": true, "so": true, "some": true, "such": true, "than": true, "then": true,
+	"there": true, "these": true, "those": true, "through": true, "too": true, "under": true,
+	"up": true, "us": true, "user": true, "users": true, "very": true, "want": true, "wants": true,
+	"we": true, "which": true, "while": true, "who": true, "will": true,
+	"would": true, "you": true, "your": true,
 }
 
 func appendJSONL(path string, v any) error {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -163,9 +164,16 @@ func ApplySkillManifest(homePath string, manifest SkillManifest, now time.Time) 
 			return report, fmt.Errorf("skill manifest would resurrect retired node %s; use a new identity or an explicit lifecycle review", skill.ID)
 		}
 		nodeIDs = append(nodeIDs, skill.ID)
-		for _, edge := range skillEdges(skill, now) {
+		for _, edge := range skillEdges(skill, manifest.ID, now) {
 			edgeIDs = append(edgeIDs, edge.Kind+":"+edge.From+"->"+edge.To)
 		}
+	}
+	// A surfaces_with edge to a harness node that does not exist is not fatal
+	// (the filter compares ids, so the skill still surfaces for that harness
+	// when asked), but it is how the dashed-spelling drift stayed invisible
+	// for six weeks. Say so in the report.
+	if detail := missingHarnessNodes(existingNodes, manifest, nodeIDs, now); detail != "" {
+		report.Checks = append(report.Checks, SkillManifestCheck{Name: "harness_nodes", Status: "warn", Detail: detail})
 	}
 
 	mutation := capabilityGraphMutation{
@@ -212,7 +220,7 @@ func ApplySkillManifest(homePath string, manifest SkillManifest, now time.Time) 
 					return err
 				}
 				report.NodeIDs = append(report.NodeIDs, skill.ID)
-				for _, edge := range skillEdges(skill, now) {
+				for _, edge := range skillEdges(skill, manifest.ID, now) {
 					if err := s.AddEdge(edge, now); err != nil {
 						return err
 					}
@@ -406,14 +414,19 @@ func cleanStrings(values []string) []string {
 	return out
 }
 
-func skillEdges(skill SkillManifestEntry, now time.Time) []Edge {
+// skillEdges derives the typed edges a manifest entry declares. Every edge
+// carries "skill_manifest:<manifest id>" as provenance: the live ledger held
+// 113 edges to misspelled harness nodes written between 2026-09-13 and
+// 2026-10-06 by several importers, and nothing on the edge said which.
+func skillEdges(skill SkillManifestEntry, manifestID string, now time.Time) []Edge {
 	var edges []Edge
+	provenance := "skill_manifest:" + strings.TrimSpace(manifestID)
 	add := func(kind, from, to string) {
 		to = strings.TrimSpace(to)
 		if to == "" {
 			return
 		}
-		edges = append(edges, Edge{Kind: kind, From: from, To: to, Confidence: 1, CreatedAt: now.UTC().Format(time.RFC3339)})
+		edges = append(edges, Edge{Kind: kind, From: from, To: to, Confidence: 1, Provenance: provenance, CreatedAt: now.UTC().Format(time.RFC3339)})
 	}
 	for _, to := range skill.Requires {
 		add(EdRequires, skill.ID, to)
@@ -436,10 +449,45 @@ func skillEdges(skill SkillManifestEntry, now time.Time) []Edge {
 	return edges
 }
 
+// skillHarnessID writes a compatible_harnesses entry with the graph's one
+// harness spelling (see harnessID). A bundle may say "claude-code"; the node
+// is "harness:claude_code".
 func skillHarnessID(harness string) string {
-	harness = strings.TrimSpace(strings.ToLower(harness))
-	if harness == "" || strings.HasPrefix(harness, "harness:") {
-		return harness
+	return harnessID(harness)
+}
+
+// missingHarnessNodes names the harness nodes a manifest's compatible_harnesses
+// point at that exist neither in the graph nor in the manifest itself.
+func missingHarnessNodes(existing []Node, manifest SkillManifest, manifestNodeIDs []string, now time.Time) string {
+	known := map[string]bool{}
+	for _, n := range existing {
+		if !n.Retired {
+			known[n.ID] = true
+		}
 	}
-	return "harness:" + harness
+	for _, id := range manifestNodeIDs {
+		known[id] = true
+	}
+	missing := map[string][]string{}
+	for _, skill := range manifest.Skills {
+		for _, edge := range skillEdges(skill, manifest.ID, now) {
+			if edge.Kind != EdSurfacesWith || !strings.HasPrefix(edge.To, "harness:") || known[edge.To] {
+				continue
+			}
+			missing[edge.To] = appendUniqueString(missing[edge.To], edge.From)
+		}
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	targets := make([]string, 0, len(missing))
+	for to := range missing {
+		targets = append(targets, to)
+	}
+	sort.Strings(targets)
+	parts := make([]string, 0, len(targets))
+	for _, to := range targets {
+		parts = append(parts, fmt.Sprintf("%s (%d skill(s), e.g. %s)", to, len(missing[to]), missing[to][0]))
+	}
+	return "no harness node for: " + strings.Join(parts, "; ")
 }

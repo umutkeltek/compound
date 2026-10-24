@@ -63,7 +63,7 @@
       ],
       "compatible_harnesses": [
         "codex",
-        "claude-code"
+        "claude_code"
       ],
       "read": [
         "SKILL.md",
@@ -110,7 +110,7 @@
       ],
       "compatible_harnesses": [
         "codex",
-        "claude-code"
+        "claude_code"
       ],
       "tier": 1,
       "read": [
@@ -169,7 +169,7 @@
       ],
       "compatible_harnesses": [
         "codex",
-        "claude-code"
+        "claude_code"
       ],
       "tier": 1,
       "read": [
@@ -228,7 +228,7 @@
       ],
       "compatible_harnesses": [
         "codex",
-        "claude-code"
+        "claude_code"
       ],
       "tier": 1,
       "read": [
@@ -285,7 +285,7 @@
       ],
       "compatible_harnesses": [
         "codex",
-        "claude-code"
+        "claude_code"
       ],
       "tier": 1,
       "read": [
@@ -340,7 +340,7 @@
       ],
       "compatible_harnesses": [
         "codex",
-        "claude-code"
+        "claude_code"
       ],
       "tier": 1,
       "read": [
@@ -393,7 +393,7 @@
       ],
       "compatible_harnesses": [
         "codex",
-        "claude-code"
+        "claude_code"
       ],
       "tier": 1,
       "read": [
@@ -452,7 +452,7 @@
       ],
       "compatible_harnesses": [
         "codex",
-        "claude-code"
+        "claude_code"
       ],
       "tier": 1,
       "read": [
@@ -505,7 +505,7 @@
       ],
       "compatible_harnesses": [
         "codex",
-        "claude-code"
+        "claude_code"
       ],
       "tier": 1,
       "read": [
@@ -568,7 +568,7 @@
       ],
       "compatible_harnesses": [
         "codex",
-        "claude-code"
+        "claude_code"
       ],
       "tier": 1,
       "read": [
@@ -625,7 +625,7 @@
       ],
       "compatible_harnesses": [
         "codex",
-        "claude-code"
+        "claude_code"
       ],
       "tier": 1,
       "read": [
@@ -686,7 +686,7 @@
       ],
       "compatible_harnesses": [
         "codex",
-        "claude-code"
+        "claude_code"
       ],
       "tier": 1,
       "read": [
@@ -747,7 +747,7 @@
       ],
       "compatible_harnesses": [
         "codex",
-        "claude-code"
+        "claude_code"
       ],
       "tier": 1,
       "read": [
@@ -808,7 +808,7 @@
       ],
       "compatible_harnesses": [
         "codex",
-        "claude-code"
+        "claude_code"
       ],
       "tier": 1,
       "read": [
@@ -869,7 +869,7 @@
       ],
       "compatible_harnesses": [
         "codex",
-        "claude-code"
+        "claude_code"
       ],
       "tier": 1,
       "read": [
@@ -932,7 +932,7 @@
       ],
       "compatible_harnesses": [
         "codex",
-        "claude-code"
+        "claude_code"
       ],
       "tier": 1,
       "read": [

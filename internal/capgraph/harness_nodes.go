@@ -138,7 +138,7 @@ func BrowserSurfacesWithHarness(homePath, harness string) (bool, error) {
 		if e.From != "skill:browser" {
 			continue
 		}
-		if e.To == want {
+		if harnessID(e.To) == want {
 			return true, nil
 		}
 	}

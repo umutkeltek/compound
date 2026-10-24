@@ -87,8 +87,8 @@ func (s *Store) CapabilityInventory() (CapabilityInventory, error) {
 			if !strings.HasPrefix(e.To, "harness:") {
 				continue
 			}
-			if st, ok := inv.States[e.From]; ok && !containsString(st.Harnesses, e.To) {
-				st.Harnesses = append(st.Harnesses, e.To)
+			if st, ok := inv.States[e.From]; ok && !containsString(st.Harnesses, harnessID(e.To)) {
+				st.Harnesses = append(st.Harnesses, harnessID(e.To))
 				sort.Strings(st.Harnesses)
 				inv.States[e.From] = st
 			}
@@ -132,11 +132,7 @@ func (st CapabilityState) Visible(harness, kind string, onlyUnreachable, onlyCor
 		return false
 	}
 	if harness != "" && len(st.Harnesses) > 0 {
-		want := harness
-		if !strings.HasPrefix(want, "harness:") {
-			want = "harness:" + want
-		}
-		if !containsString(st.Harnesses, want) {
+		if !containsString(st.Harnesses, harnessID(harness)) {
 			return false
 		}
 	}

@@ -240,8 +240,9 @@ func (s *Store) ComputeReachability() (Reachability, error) {
 			if scopedTo[e.From] == nil {
 				scopedTo[e.From] = map[string]bool{}
 			}
-			scopedTo[e.From][e.To] = true
-			harnessNames[e.To] = true
+			to := harnessID(e.To)
+			scopedTo[e.From][to] = true
+			harnessNames[to] = true
 		case EdFalseTriggeredBy, EdMissedWhen:
 			// Direction matters and is the opposite of the intuitive reading:
 			// these edges run SITUATION -> CAPABILITY ("in this context, that

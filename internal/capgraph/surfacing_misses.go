@@ -273,26 +273,12 @@ func capabilityNodeKnown(nodes []Node, nodeID string) bool {
 	return false
 }
 
+// skillSurfacingContextTokens is tokenList: one rule for what a task word is.
+// This file used to keep a second, shorter stop list and its own length floor;
+// two tokenizers in one package meant a miss could be recorded on a token the
+// surfacer would never match.
 func skillSurfacingContextTokens(context string) []string {
-	var out []string
-	for _, tok := range tokenList(context) {
-		if len(tok) < 3 || skillSurfacingStopWords[tok] {
-			continue
-		}
-		out = append(out, tok)
-	}
-	return out
-}
-
-var skillSurfacingStopWords = map[string]bool{
-	"and":  true,
-	"are":  true,
-	"but":  true,
-	"for":  true,
-	"the":  true,
-	"this": true,
-	"that": true,
-	"with": true,
+	return tokenList(context)
 }
 
 func SkillSurfacingMissesEvidenceRefs(misses SkillSurfacingMisses) []string {
