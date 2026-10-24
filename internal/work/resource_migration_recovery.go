@@ -20,13 +20,14 @@ const resourceMigrationPendingSchema = "compound.resource_migration_preparation.
 // The marker is the physical outcome; neither this record nor an absent result
 // alone proves publication.
 type resourceMigrationPending struct {
-	PolicyRevision string
-	SchemaVersion  string
-	Work           envelope.WorkEnvelope
-	Input          ResourceMigrationInput
-	BackingRoot    string
-	Action         envelope.ActionIntent
-	Decision       envelope.PolicyDecision
+	PredecessorPreparationRef string `json:",omitempty"`
+	PolicyRevision            string
+	SchemaVersion             string
+	Work                      envelope.WorkEnvelope
+	Input                     ResourceMigrationInput
+	BackingRoot               string
+	Action                    envelope.ActionIntent
+	Decision                  envelope.PolicyDecision
 }
 
 type ResourceMigrationRecoveryRequired struct {
@@ -93,9 +94,12 @@ func (s *Store) validateResourceMigrationPreparation(p resourceMigrationPending)
 	operation := "coordination.migrate"
 	if p.Input.ProofClasses {
 		operation = "coordination.proof-migrate"
-		if p.Action.Preview != proofMigrationPreview(p.Input, p.PolicyRevision) {
+		if p.Action.Preview != proofMigrationPreviewWithHistory(p.Input, p.PolicyRevision, p.PredecessorPreparationRef) {
 			return fmt.Errorf("proof migration input authority mismatch")
 		}
+	}
+	if _, err := s.readProofMigrationHistory(p); err != nil {
+		return err
 	}
 	if p.Action.IDs.WorkID != p.Work.ID || p.Action.Actor != p.Input.Actor ||
 		p.Action.Action != operation || p.Action.Target.Path != p.BackingRoot ||

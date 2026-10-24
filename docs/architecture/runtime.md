@@ -1504,6 +1504,21 @@ before activation. Expired/changed pause or approval requires fresh exact approv
 a changed policy requires a newly approved action. Physical completion may be
 reconciled after approval expiry, but never overwrites newer Work authority.
 
+
+A completed v0.2 preparation remains historical evidence when a distinct Work requests the
+explicit v0.3 upgrade. The native migration owner authenticates the stored action, consumed
+approval, completed predecessor Work with its retained action, exact completion event, and
+current v0.2 domain/fence/enrollment before preparing fresh approval. That new action binds
+the exact predecessor-body artifact reference as well as its own current Work and pause.
+Only after fresh approval does the owner preserve the exact old preparation in private
+immutable artifact custody and replace the preparation with the v0.3 successor. It never
+changes the completed predecessor Work. Missing, corrupt, unfinished, or mismatched history
+refuses unchanged. An interruption after custody but before successor preparation leaves the
+old record intact; consumed approval cannot replay, so recovery needs fresh pause evidence
+and approval. Prepared successors retain their history reference through expiry/reapproval:
+a held or denied replacement never erases the pending record. After the new marker progresses,
+recovery authenticates the custodied history without demanding the obsolete v0.2 marker.
+
 `land-lease status --proof` reports generation and both resources after activation.
 Doctor reports each capacity separately; historical output stays unchanged before
 cutover. This removes the single-slot conflict between independent native and
