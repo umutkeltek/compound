@@ -180,12 +180,14 @@ func (e *engine) resolveBatchAttempt(ids []string, regularKind string) (map[stri
 
 	// Everything still pending is absent from the segments. The loose layer is
 	// consulted exactly as getByID consults it: only while the migration
-	// completion gate is open, and fail-closed once it is closed.
+	// completion gate is open, and fail-closed once it is closed. The gate is
+	// read ONCE for the batch — one observation, not one stat per id.
+	looseEnabled := e.legacyFallbackEnabled()
 	for _, id := range ids {
 		if !pending[id] {
 			continue
 		}
-		if !e.legacyFallbackEnabled() {
+		if !looseEnabled {
 			errs[id] = fmt.Errorf("event %s not found in segments (migration complete): %w", id, os.ErrNotExist)
 			delete(pending, id)
 			continue
