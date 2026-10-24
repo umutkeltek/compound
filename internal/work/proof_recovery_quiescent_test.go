@@ -584,3 +584,115 @@ func TestQuiescentProofRecoveryRefusesChangedOwnPending(t *testing.T) {
 		})
 	}
 }
+
+func quiescentReleasedJournalFixture(t *testing.T) (*Store, ProofResourceReserveResult, QuiescentProofRecoveryInput, time.Time, proofResourceCompletionPending, string) {
+	t.Helper()
+	s, r, in, now := quiescentRecoveryFixture(t)
+	_ = r.ExecutionBarrier.Close()
+	var retained proofResourceCompletionPending
+	var path string
+	previous := proofResourceWriteEventRecord
+	proofResourceWriteEventRecord = func(store *Store, stage, id string, value any) error {
+		if stage == "completion" {
+			var present bool
+			var err error
+			retained, present, path, err = store.readProofResourceCompletionPending(in.ReservationID)
+			if err != nil || !present {
+				return fmt.Errorf("capture native journal: present=%v err=%v", present, err)
+			}
+		}
+		return previous(store, stage, id, value)
+	}
+	done, err := s.ReconcileQuiescentProofResource(r.Reservation.WorkID, in, now)
+	proofResourceWriteEventRecord = previous
+	if err != nil || !done.ResourceReleased || path == "" {
+		t.Fatalf("native release fixture: %+v %v", done, err)
+	}
+	// Recreate precisely the native durable image between holder release and the
+	// following unlink. Result/completion/attempt/work evidence was never forged.
+	if err := s.writeJSON(path, retained); err != nil {
+		t.Fatal(err)
+	}
+	return s, r, in, now, retained, path
+}
+func TestQuiescentProofRecoveryCleansOwnCommittedJournalAfterRelease(t *testing.T) {
+	for _, successor := range []bool{false, true} {
+		t.Run(fmt.Sprint(successor), func(t *testing.T) {
+			s, r, in, now, pending, path := quiescentReleasedJournalFixture(t)
+			if successor {
+				w := claimedProofWork(t, s, "foreign successor proof", proofActorAlpha, now)
+				profile := capacitySystemProfile(t, false)
+				next, err := s.ReserveProofResource(w.ID, ProofResourceReserveInput{Actor: proofActorAlpha, TTL: time.Minute, Workspace: profile.Repo, Command: "compound proof-check", Profile: profile}, time.Now())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer next.ExecutionBarrier.Close()
+			}
+			repo := r.Reservation.Profile.Repo
+			moved := repo + "-unavailable"
+			if err := os.Rename(repo, moved); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Rename(moved, repo) })
+			before := quiescentRecoveryBytes(t, s.home)
+			canonicalJournal, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			delete(before, canonicalJournal)
+			done, err := s.ReconcileQuiescentProofResource(r.Reservation.WorkID, in, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if done.ResourceReleased || done.RecoveryJournalRetained || done.Result.ID != pending.Result.ID || done.Result.Status != ProofResourceFailed || done.VerificationRef != "" || !strings.Contains(done.ReleaseWarning, "journal") {
+				t.Fatalf("cleanup manufactured release: %+v", done)
+			}
+			if !reflect.DeepEqual(before, quiescentRecoveryBytes(t, s.home)) {
+				t.Fatal("cleanup changed more than exact old journal, including successor")
+			}
+			requireQuiescentRefusalUnchanged(t, s, r.Reservation.WorkID, in, time.Now())
+		})
+	}
+}
+func TestQuiescentProofRecoveryRefusesUnprovenReleasedJournal(t *testing.T) {
+	for _, kind := range []string{"missing-completion", "forged-result", "forged-decision", "newer-work"} {
+		t.Run(kind, func(t *testing.T) {
+			s, r, in, now, pending, _ := quiescentReleasedJournalFixture(t)
+			switch kind {
+			case "missing-completion":
+				if err := s.events.Remove(pending.Completion.ID); err != nil {
+					t.Fatal(err)
+				}
+			case "forged-result":
+				changed := pending.Result
+				changed.FailureReason = "forged failure"
+				if err := s.events.Remove(pending.Completion.ID); err != nil {
+					t.Fatal(err)
+				}
+				if err := s.events.Remove(changed.ID); err != nil {
+					t.Fatal(err)
+				}
+				if err := s.writeEventJSON(changed.ID, changed); err != nil {
+					t.Fatal(err)
+				}
+				if err := s.writeEventJSON(pending.Completion.ID, pending.Completion); err != nil {
+					t.Fatal(err)
+				}
+			case "forged-decision":
+				changed := pending.Decision
+				changed.Reasons = []string{"different stored decision body"}
+				if err := s.events.Remove(changed.ID); err != nil {
+					t.Fatal(err)
+				}
+				if err := s.writeEventJSON(changed.ID, changed); err != nil {
+					t.Fatal(err)
+				}
+			case "newer-work":
+				if _, err := s.Advance(r.Reservation.WorkID, AdvanceInput{Actor: in.Actor, To: "running"}, now.Add(time.Second)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			requireQuiescentRefusalUnchanged(t, s, r.Reservation.WorkID, in, time.Now())
+		})
+	}
+}

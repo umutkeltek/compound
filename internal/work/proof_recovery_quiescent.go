@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/envelope"
 	"compound/internal/home"
 	"compound/internal/landlease"
 	"compound/internal/policy"
@@ -89,7 +90,7 @@ func (s *Store) ReconcileQuiescentProofResource(workID string, in QuiescentProof
 			return err
 		}
 		completionInput := ProofResourceCompleteInput{Actor: in.Actor, ReservationID: reservation.ID, FailureReason: quiescentProofFailure}
-		pending, present, _, err := s.readProofResourceCompletionPending(reservation.ID)
+		pending, present, pendingPath, err := s.readProofResourceCompletionPending(reservation.ID)
 		if err != nil {
 			return err
 		}
@@ -190,11 +191,38 @@ func (s *Store) ReconcileQuiescentProofResource(workID string, in QuiescentProof
 			acquiredAt = latest.RefreshedAt
 		}
 
-		resource := landlease.ProofResourceForIdentity(s.home, reservation.ProofCoordination)
-		status, err := resource.StatusReadOnly(now)
+		if err := s.validatePrivateSourceProfileAuthority(workID, in.Actor, reservation.Profile, now); err != nil {
+			return err
+		}
+		_, decision, _, err := s.proofResourceCompletionGovernance(w, reservation, in.Actor, now)
 		if err != nil {
 			return err
 		}
+		if !policy.Allowed(decision) {
+			return fmt.Errorf("quiescent recovery completion policy %s", decision.Outcome)
+		}
+		resource := landlease.ProofResourceForIdentity(s.home, reservation.ProofCoordination)
+		status, err := resource.ObserveHistoricalHolder(reservation.Holder, now)
+		if err != nil {
+			return err
+		}
+		if status.Holder != reservation.Holder {
+			if !present {
+				return fmt.Errorf("quiescent recovery original holder is absent or changed")
+			}
+			if err := s.validateQuiescentProofCommittedCleanup(w, pending); err != nil {
+				return err
+			}
+			if err := s.clearProofResourceCompletionPending(pendingPath, pending); err != nil {
+				return err
+			}
+			result = ProofResourceCompleteResult{
+				SchemaVersion: ProofResourceResultSchemaVersion, Result: pending.Result, Work: w,
+				ReleaseWarning: "original holder already absent; exact committed failure journal cleared only",
+			}
+			return nil
+		}
+
 		if status.IsExpired {
 			return fmt.Errorf("quiescent recovery refuses expired holder %s", reservation.ID)
 		}
@@ -207,16 +235,6 @@ func (s *Store) ReconcileQuiescentProofResource(workID string, in QuiescentProof
 		}
 		if _, err := resource.AttestExecutionTerminated(reservation.Holder); err != nil {
 			return err
-		}
-		if err := s.validatePrivateSourceProfileAuthority(workID, in.Actor, reservation.Profile, now); err != nil {
-			return err
-		}
-		_, decision, _, err := s.proofResourceCompletionGovernance(w, reservation, in.Actor, now)
-		if err != nil {
-			return err
-		}
-		if !policy.Allowed(decision) {
-			return fmt.Errorf("quiescent recovery completion policy %s", decision.Outcome)
 		}
 		// Do not call public CompleteProofResource: its error terminalizer deliberately
 		// mutates failed execution attempts. Refusals above must leave them untouched.
@@ -275,4 +293,51 @@ func RunQuiescentProofRecoveryCLI(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// validateQuiescentProofCommittedCleanup authenticates a native committed failure.
+// It authorizes only unlinking its exact old journal after the holder is gone.
+func (s *Store) validateQuiescentProofCommittedCleanup(w envelope.WorkEnvelope, pending proofResourceCompletionPending) error {
+	ra, err := s.runAttempts().Get(pending.Result.RunAttemptID)
+	if err != nil {
+		return err
+	}
+	if !proofRunAttemptMatchesPreparedCompletion(ra, pending) {
+		return fmt.Errorf("quiescent cleanup lacks matching terminal original")
+	}
+	committed, ok := s.visibleProofCompletionCommit(w.ID, pending, ra)
+	if !ok || !reflect.DeepEqual(committed, w) {
+		return fmt.Errorf("quiescent cleanup lacks durable committed failure")
+	}
+	var action envelope.ActionIntent
+	var decision envelope.PolicyDecision
+	var result ProofResourceResult
+	var completion ProofResourceCompletion
+	records := []struct {
+		id        string
+		got, want any
+	}{
+		{pending.Action.ID, &action, &pending.Action},
+		{pending.Decision.ID, &decision, &pending.Decision},
+		{pending.Result.ID, &result, &pending.Result},
+		{pending.Completion.ID, &completion, &pending.Completion},
+	}
+	for _, record := range records {
+		if err := s.readEventJSON(record.id, record.got); err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(record.got, record.want) {
+			return fmt.Errorf("quiescent cleanup committed record %s differs from sealed journal", record.id)
+		}
+	}
+	events, err := s.eventsFor(w.ID)
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		if reflect.DeepEqual(event, pending.LifecycleEvent) {
+			return nil
+		}
+	}
+	return fmt.Errorf("quiescent cleanup lacks committed lifecycle evidence")
 }
