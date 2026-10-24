@@ -14,7 +14,7 @@ import (
 
 	"compound/internal/envelope"
 	"compound/internal/home"
-	"compound/internal/policy"
+	"compound/internal/landlease"
 	"compound/internal/runattempt"
 )
 
@@ -204,61 +204,92 @@ func authenticateRetainedFailedProofResult(
 	return nil
 }
 
-// validateRetainedFailedProofBarriers authenticates the native pending, attempt, lineage and
-// holder barriers of the dedicated failure route BEFORE any recovery effect, so a missing or
-// malformed seal and an invalid or still-active attempt can never reach the owned report
-// publication or any native mutation.
+// requireRetainedFailedProofGovernanceSeal refuses a dedicated failure route whose retained
+// completion journal carries NO governance seal. The ordinary legacy reconstruction of a missing
+// seal stays untouched for every other path; the dedicated failure route never reconstructs one,
+// because a reconstructed seal would authenticate governance this recovery never reviewed.
 //
-// The dedicated route requires an EXISTING, valid completion governance seal. The ordinary
-// legacy normalization of a missing seal stays untouched for every other path.
-func (s *Store) validateRetainedFailedProofBarriers(
-	workID, actor string,
-	reservation ProofResourceReservation,
-	pending proofResourceCompletionPending,
-) error {
+// It runs under the lifecycle mutation guard, before the scarce mutation, the rearm and the owned
+// report restoration, so a journal without a seal can never reach a recovery effect.
+func (s *Store) requireRetainedFailedProofGovernanceSeal(reservationID string) error {
+	pending, present, _, err := s.readProofResourceCompletionPending(reservationID)
+	if err != nil {
+		return err
+	}
+	if !present {
+		return fmt.Errorf("retained failed proof completion journal %s is gone", reservationID)
+	}
 	if pending.GovernanceSeal == "" {
 		return fmt.Errorf("retained failed proof recovery requires an existing completion governance seal")
 	}
-	seal, err := proofResourceCompletionGovernanceSeal(pending.Action, pending.Decision)
+	return nil
+}
+
+// validateRetainedFailedProofCompletionLocked runs the FULL native validation of the retained
+// completion and the native execution/remote quiescence probe under the lifecycle mutation guard,
+// before the owned report is restored.
+//
+// It shares the ordinary native validator instead of a second set of hand-written partial checks:
+// the real current Work, the real retained RunAttempt and the derived completion expectation decide
+// the verdict. The dedicated route adds exactly one extra rule — an existing governance seal — and
+// one extra probe — native execution and remote fence quiescence.
+func (s *Store) validateRetainedFailedProofCompletionLocked(
+	workID string,
+	reservation ProofResourceReservation,
+	completeInput ProofResourceCompleteInput,
+) error {
+	var currentReservation ProofResourceReservation
+	if err := s.readProofReservationInto(reservation.ID, &currentReservation); err != nil {
+		return err
+	}
+	currentPending, present, _, err := s.readProofResourceCompletionPending(reservation.ID)
 	if err != nil {
-		return fmt.Errorf("retained failed proof completion governance seal cannot be computed: %w", err)
+		return err
 	}
-	if seal != pending.GovernanceSeal {
-		return fmt.Errorf("retained failed proof completion governance seal does not match its action and decision")
+	if !present {
+		return fmt.Errorf("retained failed proof completion journal %s is gone", reservation.ID)
 	}
-	if err := pending.Action.Validate(); err != nil {
-		return fmt.Errorf("retained failed proof completion action is invalid: %w", err)
+	if currentPending.GovernanceSeal == "" {
+		return fmt.Errorf("retained failed proof recovery requires an existing completion governance seal")
 	}
-	if err := pending.Decision.Validate(); err != nil {
-		return fmt.Errorf("retained failed proof completion decision is invalid: %w", err)
+	w, err := s.Get(workID)
+	if err != nil {
+		return err
 	}
-	if !policy.Allowed(pending.Decision) {
-		return fmt.Errorf("retained failed proof completion decision is not allowing")
-	}
-	ra, err := s.runAttempts().Get(pending.Result.RunAttemptID)
+	ra, err := s.runAttempts().Get(currentPending.Result.RunAttemptID)
 	if err != nil {
 		return fmt.Errorf("retained failed proof attempt cannot be read: %w", err)
 	}
-	if !runattempt.IsTerminal(ra.Status) {
-		return fmt.Errorf("retained failed proof attempt %s is still active", ra.ID)
+	expect, err := s.deriveProofResourceCompletionExpectation(workID, currentReservation, completeInput)
+	if err != nil {
+		return err
 	}
-	if ra.Status != runattempt.StatusFailed {
-		return fmt.Errorf("retained failed proof attempt %s status %q is not a terminal failure", ra.ID, ra.Status)
+	_, migrated, err := s.validateAndNormalizeProofResourceCompletionPending(
+		w,
+		currentReservation,
+		currentPending,
+		ra,
+		completeInput,
+		expect,
+	)
+	if err != nil {
+		return fmt.Errorf("retained failed proof completion is not authentic: %w", err)
 	}
-	if ra.WorkID != workID ||
-		ra.Actor != actor ||
-		ra.Harness != proofResourceHarness ||
-		ra.Origin != runattempt.OriginHarnessExecution {
-		return fmt.Errorf("retained failed proof attempt %s is not the reserved same-work execution", ra.ID)
+	if migrated {
+		return fmt.Errorf("retained failed proof recovery refuses a legacy completion governance reconstruction")
 	}
-	if ra.Workspace != reservation.Workspace || ra.Command != reservation.Command {
-		return fmt.Errorf("retained failed proof attempt %s does not carry the reserved workspace and command", ra.ID)
+	// Quiescence is a native fact read from the inherited execution barrier and the remote
+	// fences. It is never inferred from a terminal attempt status or from a process list.
+	resource := landlease.ProofResourceForIdentity(s.home, currentReservation.ProofCoordination)
+	pendingExecution, err := resource.ExecutionPending(currentReservation.Holder)
+	if err != nil {
+		return fmt.Errorf("retained failed proof execution quiescence is unattested: %w", err)
 	}
-	if ra.ActionIntentID != reservation.ActionIntentID && ra.ActionIntentID != pending.Action.ID {
-		return fmt.Errorf("retained failed proof attempt %s is not bound to the reserved action intent", ra.ID)
-	}
-	if ra.ID != reservation.RunAttemptID && ra.PredecessorID == "" {
-		return fmt.Errorf("retained failed proof retry attempt %s has no predecessor", ra.ID)
+	if pendingExecution {
+		return fmt.Errorf(
+			"retained failed proof recovery refuses an active or ambiguous execution: %s",
+			currentReservation.Holder,
+		)
 	}
 	return nil
 }

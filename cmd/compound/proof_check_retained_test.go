@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -86,6 +89,55 @@ func TestProofCheckRecoveryFlagDetectsExactTokensOnly(t *testing.T) {
 	}
 }
 
+// The retained command boundary is proven through the REAL cmdProofCheck, not through a helper:
+// the parent re-execs the test binary with an env toggle whose child arm enters cmdProofCheck
+// with the exact arguments. The observed exit code and output therefore come from the production
+// selector and dispatch — removing the routing from cmdProofCheck fails these tests.
+const proofCheckRetainedCLIChildEnv = "COMPOUND_PROOFCHECK_RETAINED_CLI_CHILD"
+
+// TestProofCheckRetainedRecoveryChildEntry is the child arm of the retained command-boundary
+// tests. It enters cmdProofCheck itself, so the parent's assertions observe the production
+// command, not a test-local substitute.
+func TestProofCheckRetainedRecoveryChildEntry(t *testing.T) {
+	raw := os.Getenv(proofCheckRetainedCLIChildEnv)
+	if raw == "" {
+		t.Skip("parent-only arm")
+	}
+	var args []string
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		t.Fatal(err)
+	}
+	cmdProofCheck(args)
+	// A route that returns instead of exiting is still an observed exit code.
+	os.Exit(0)
+}
+
+// proofCheckRetainedCLI runs the real cmdProofCheck in a child arm and reports its exit code and
+// its separated stdout and stderr.
+func proofCheckRetainedCLI(t *testing.T, args ...string) (int, string, string) {
+	t.Helper()
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestProofCheckRetainedRecoveryChildEntry$")
+	cmd.Env = append(os.Environ(), proofCheckRetainedCLIChildEnv+"="+string(encoded))
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	runErr := cmd.Run()
+	code := 0
+	var exitErr *exec.ExitError
+	switch {
+	case runErr == nil:
+	case errors.As(runErr, &exitErr):
+		code = exitErr.ExitCode()
+	default:
+		t.Fatalf("the retained recovery child arm did not run: %v", runErr)
+	}
+	return code, stdout.String(), stderr.String()
+}
+
 // The real command boundary refuses a retained recovery that matches nothing. It never writes
 // the --out path, never restores a report and never admits a battery: the refusal happens
 // before any source capture, so a moved or missing checkout cannot change the outcome.
@@ -122,20 +174,22 @@ func TestProofCheckRetainedRecoveryCommandBoundaryRefusesWithoutCaptureOrAdmissi
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
-			code := work.RunProofRecoveryCLI(args, &stdout, &stderr, proofCheckRestoreRetainedReport)
+			code, stdout, stderr := proofCheckRetainedCLI(t, args...)
 			if code != 2 {
-				t.Fatalf("a retained recovery that matches nothing must refuse: %d (%s)", code, stdout.String())
+				t.Fatalf("a retained recovery that matches nothing must refuse: %d (%s)", code, stdout)
 			}
-			if !strings.Contains(stderr.String(), "no exact retained failed proof completion") &&
-				!strings.Contains(stderr.String(), "read retained proof reservation") {
-				t.Fatalf("the refusal did not name the missing retained completion: %q", stderr.String())
+			if !strings.Contains(stderr, "no exact retained failed proof completion") &&
+				!strings.Contains(stderr, "read retained proof reservation") {
+				t.Fatalf("the refusal did not name the missing retained completion: %q", stderr)
 			}
 			if _, err := os.Stat(outPath); !os.IsNotExist(err) {
 				t.Fatal("a refused retained recovery wrote the --out path")
 			}
-			if stdout.Len() != 0 {
-				t.Fatalf("a refused retained recovery published output: %q", stdout.String())
+			if stdout != "" {
+				t.Fatalf("a refused retained recovery published output: %q", stdout)
+			}
+			if strings.Contains(stdout, "battery:") || strings.Contains(stdout, "- step:") {
+				t.Fatalf("the refused retained recovery published a battery report: %q", stdout)
 			}
 		})
 	}
@@ -146,8 +200,7 @@ func TestProofCheckRetainedRecoveryCommandBoundaryRefusesWithoutCaptureOrAdmissi
 	}
 	// The recovery route takes no checkout at all: a source argument is not even a defined
 	// option, so a moved or missing source checkout can neither be captured nor block it.
-	var stdout, stderr bytes.Buffer
-	code := work.RunProofRecoveryCLI([]string{
+	code, stdout, stderr := proofCheckRetainedCLI(t,
 		"--resume-retained", "pfr_synthetic",
 		"--work", "work_synthetic",
 		"--actor", "codex:proof-alpha",
@@ -155,9 +208,12 @@ func TestProofCheckRetainedRecoveryCommandBoundaryRefusesWithoutCaptureOrAdmissi
 		"--out", filepath.Join(t.TempDir(), "never-written.json"),
 		"--home", homePath,
 		"--repo", movedCheckout,
-	}, &stdout, &stderr, proofCheckRestoreRetainedReport)
-	if code != 2 || !strings.Contains(stderr.String(), "not defined") {
-		t.Fatalf("the recovery route accepted a source checkout argument: %d (%q)", code, stderr.String())
+	)
+	if code != 2 || !strings.Contains(stderr, "not defined") {
+		t.Fatalf("the recovery route accepted a source checkout argument: %d (%q)", code, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("the refused retained recovery published output: %q", stdout)
 	}
 }
 
@@ -169,8 +225,7 @@ func TestProofCheckConflictingRecoveryFlagsRefuse(t *testing.T) {
 		t.Fatal(err)
 	}
 	outPath := filepath.Join(t.TempDir(), "never-written.json")
-	var stdout, stderr bytes.Buffer
-	code := work.RunProofRecoveryCLI([]string{
+	code, stdout, stderr := proofCheckRetainedCLI(t,
 		"--resume-retained", "pfr_synthetic",
 		"--reconcile-quiescent", "pfr_synthetic",
 		"--work", "work_synthetic",
@@ -178,12 +233,12 @@ func TestProofCheckConflictingRecoveryFlagsRefuse(t *testing.T) {
 		"--expected-pending-sha256", strings.Repeat("a", 64),
 		"--out", outPath,
 		"--home", homePath,
-	}, &stdout, &stderr, proofCheckRestoreRetainedReport)
+	)
 	if code != 2 {
-		t.Fatalf("conflicting recovery flags must refuse: %d", code)
+		t.Fatalf("conflicting recovery flags must refuse: %d (%s)", code, stdout)
 	}
-	if !strings.Contains(stderr.String(), "mutually exclusive") {
-		t.Fatalf("the refusal did not name the conflicting recovery routes: %q", stderr.String())
+	if !strings.Contains(stderr, "mutually exclusive") {
+		t.Fatalf("the refusal did not name the conflicting recovery routes: %q", stderr)
 	}
 	if _, err := os.Stat(outPath); !os.IsNotExist(err) {
 		t.Fatal("a refused conflicting invocation wrote the --out path")

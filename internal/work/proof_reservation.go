@@ -975,12 +975,6 @@ func (s *Store) ResumeProofResourceCompletion(
 		if err := authenticateRetainedFailedProofResult(workID, in.Actor, reservation, pending); err != nil {
 			return ProofResourceCompleteResult{}, true, err
 		}
-		// The dedicated failure route validates the native pending, attempt, lineage and holder
-		// barriers before any effect, so a missing or malformed governance seal and an invalid
-		// or still-active attempt never reach the owned report publication.
-		if err := s.validateRetainedFailedProofBarriers(workID, in.Actor, reservation, pending); err != nil {
-			return ProofResourceCompleteResult{}, true, err
-		}
 	}
 	profile, profileErr := normalizeProofResourceProfile(in.Profile)
 	if profileErr == nil && strings.TrimSpace(in.Profile.Digest) != "" && in.Profile.Digest != profile.Digest {
@@ -1034,6 +1028,14 @@ func (s *Store) ResumeProofResourceCompletion(
 			if err := s.verifyRetainedPendingSHA256(reservation.ID, in.ExpectedPendingSHA256); err != nil {
 				return err
 			}
+			if in.RequireFailedResult {
+				// The dedicated failure route requires an EXISTING governance seal before any
+				// effect. The ordinary legacy reconstruction of a missing seal stays untouched
+				// for every other path.
+				if err := s.requireRetainedFailedProofGovernanceSeal(reservation.ID); err != nil {
+					return err
+				}
+			}
 			if expiredExact {
 				if err := s.rearmExpiredProofResourceCompletionLocked(
 					workID,
@@ -1056,6 +1058,19 @@ func (s *Store) ResumeProofResourceCompletion(
 				now,
 			); err != nil {
 				return err
+			}
+			if in.RequireFailedResult {
+				// The FULL native validation and the native execution/remote quiescence probe
+				// run HERE, under the same effects guard and BEFORE the owned report is
+				// restored. The ordinary live-holder path reaches this check even when the
+				// reconciliation returned early on an unchanged lease generation.
+				if err := s.validateRetainedFailedProofCompletionLocked(
+					workID,
+					reservation,
+					completeInput,
+				); err != nil {
+					return err
+				}
 			}
 			if pending.Result.ReportArtifactRef != "" {
 				if in.PrepareOwnedReport == nil {

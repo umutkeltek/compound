@@ -292,14 +292,16 @@ func TestRetainedFailedProofRecoveryFencesPendingBytesInsideTheNativeGuard(t *te
 }
 
 // The dedicated failure route requires an EXISTING, valid completion governance seal before any
-// effect. A missing or malformed seal must have zero callback and output effects.
+// effect. The refusal must be the SEAL refusal, not the expected-hash fence: the operator's
+// expected bytes are re-derived from the mutated journal, so the fence admits them and the seal
+// rule is the only thing left that can refuse.
 func TestRetainedFailedProofRecoveryRefusesMissingOrMalformedSeal(t *testing.T) {
 	for name, mutate := range map[string]func(map[string]any){
-		"missing_seal": func(body map[string]any) { delete(body, "governance_seal") },
+		"missing_seal":   func(body map[string]any) { delete(body, "governance_seal") },
 		"malformed_seal": func(body map[string]any) { body["governance_seal"] = strings.Repeat("0", 64) },
 	} {
 		t.Run(name, func(t *testing.T) {
-			f, acquired, _, sum, at := retainedFailedProofFixture(t)
+			f, acquired, _, _, at := retainedFailedProofFixture(t)
 			path, err := f.store.proofResourceCompletionPendingPath(acquired.Reservation.ID)
 			if err != nil {
 				t.Fatal(err)
@@ -320,20 +322,37 @@ func TestRetainedFailedProofRecoveryRefusesMissingOrMalformedSeal(t *testing.T) 
 			if err := os.WriteFile(path, forged, 0o600); err != nil {
 				t.Fatal(err)
 			}
+			// The operator expects the CURRENT journal bytes: the hash fence must admit them,
+			// so the seal rule is the only remaining refusal.
+			mutatedSum, err := f.store.proofResourceCompletionPendingSHA256(acquired.Reservation.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
 			attemptsBefore, err := f.store.runAttempts().List()
 			if err != nil {
 				t.Fatal(err)
 			}
-			// The seal mutation changes the journal bytes, so the fence refuses first. The seal
-			// refusal itself is proven by the barrier check below, which the dedicated route
-			// applies to the unchanged journal.
-			_, _, _ = f.store.ResumeRetainedFailedProofCompletion(f.workID, ProofResourceRetainedFailureInput{
-				Actor: proofActorAlpha, ReservationID: acquired.Reservation.ID, ExpectedPendingSHA256: sum,
+			eventsBefore, err := f.store.eventsFor(f.workID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			restored := 0
+			_, found, err := f.store.ResumeRetainedFailedProofCompletion(f.workID, ProofResourceRetainedFailureInput{
+				Actor: proofActorAlpha, ReservationID: acquired.Reservation.ID, ExpectedPendingSHA256: mutatedSum,
 				PrepareOwnedReport: func(result ProofResourceResult) error {
-					t.Fatal("a refused seal reached the owned report barrier")
+					restored++
 					return nil
 				},
 			}, at.Add(6*time.Minute))
+			if err == nil {
+				t.Fatalf("the dedicated failure route accepted a missing or malformed governance seal: found=%v", found)
+			}
+			if !strings.Contains(err.Error(), "governance seal") {
+				t.Fatalf("the refusal was not the governance seal refusal: %v", err)
+			}
+			if restored != 0 {
+				t.Fatal("a refused seal reached the owned report barrier")
+			}
 			attemptsAfter, err := f.store.runAttempts().List()
 			if err != nil {
 				t.Fatal(err)
@@ -341,20 +360,20 @@ func TestRetainedFailedProofRecoveryRefusesMissingOrMalformedSeal(t *testing.T) 
 			if len(attemptsAfter) != len(attemptsBefore) {
 				t.Fatalf("a refused seal mutated the attempt ledger: %d -> %d", len(attemptsBefore), len(attemptsAfter))
 			}
-			// The barrier refuses the very same missing/malformed seal directly, with the
-			// operator's expected bytes re-derived from the mutated journal.
-			mutated, err := f.store.proofResourceCompletionPendingSHA256(acquired.Reservation.ID)
+			eventsAfter, err := f.store.eventsFor(f.workID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			pending, _, _, err := f.store.readProofResourceCompletionPending(acquired.Reservation.ID)
+			if len(eventsAfter) != len(eventsBefore) {
+				t.Fatalf("a refused seal wrote lifecycle events: %d -> %d", len(eventsBefore), len(eventsAfter))
+			}
+			after, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := f.store.validateRetainedFailedProofBarriers(f.workID, proofActorAlpha, acquired.Reservation, pending); err == nil {
-				t.Fatal("the dedicated failure route accepted a missing or malformed governance seal")
+			if !bytes.Equal(after, forged) {
+				t.Fatal("a refused seal rewrote the retained completion journal")
 			}
-			_ = mutated
 		})
 	}
 }
