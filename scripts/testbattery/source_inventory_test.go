@@ -309,10 +309,8 @@ func sourceGit(t *testing.T, repo string, args ...string) {
 
 func sourceRun(t *testing.T, repo, mode string, extra ...string) (string, error) {
 	t.Helper()
-	args := []string{"run", "./scripts/testbattery"}
-	if mode != "test" {
-		args = append(args, mode)
-	}
+	// The mode is always explicit: a bare invocation is refused by the driver.
+	args := []string{"run", "./scripts/testbattery", mode}
 	args = append(args, extra...)
 	cmd := exec.Command("go", args...)
 	cmd.Dir = repo

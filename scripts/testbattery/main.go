@@ -19,6 +19,66 @@ import (
 
 type commandRunner func(context.Context, []string, io.Writer, io.Writer) error
 
+// usageLine is the single refusal message for every malformed invocation.
+// A help request prints the same line and exits 0.
+const usageLine = "usage: testbattery [test|general-release|home|vet|build|credential-password-alignment-native] [--source-head SHA] (source-owned inventories; no caller selectors)"
+
+// supportedModes is the closed set of explicit gates. There is deliberately no
+// default mode: a bare invocation must never start the whole inventory.
+var supportedModes = map[string]bool{
+	"test":                       true,
+	"general-release":            true,
+	"home":                       true,
+	"vet":                        true,
+	"build":                      true,
+	credentialAlignmentProofMode: true,
+}
+
+// invocation is the fully resolved CLI request. An explicit mode is always
+// present; help carries no mode because it never reaches the source tree.
+type invocation struct {
+	mode       string
+	sourceHead string
+	help       bool
+}
+
+// parseInvocation resolves the arguments before any inventory or child process
+// can exist. A missing mode is a caller mistake, not a request to run the
+// whole battery, so it is refused here rather than defaulted to "test".
+func parseInvocation(args []string) (invocation, error) {
+	if len(args) == 0 {
+		return invocation{}, errors.New("no mode given")
+	}
+	mode := ""
+	rest := args
+	if !strings.HasPrefix(args[0], "-") {
+		mode, rest = args[0], args[1:]
+	}
+	flags := flag.NewFlagSet("testbattery", flag.ContinueOnError)
+	// The driver owns every message it prints; the flag package must stay quiet.
+	flags.SetOutput(io.Discard)
+	sourceHead := flags.String("source-head", "", "require this sealed commit and clean source before and after the gate")
+	if err := flags.Parse(rest); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return invocation{help: true}, nil
+		}
+		return invocation{}, err
+	}
+	if mode == "" {
+		return invocation{}, errors.New("no mode given")
+	}
+	if !supportedModes[mode] {
+		return invocation{}, fmt.Errorf("unsupported mode %q", mode)
+	}
+	if flags.NArg() != 0 {
+		return invocation{}, fmt.Errorf("unexpected argument %q", flags.Arg(0))
+	}
+	if *sourceHead != "" && !sourceCommit.MatchString(*sourceHead) {
+		return invocation{}, errors.New("source snapshot requires a full commit SHA")
+	}
+	return invocation{mode: mode, sourceHead: *sourceHead}, nil
+}
+
 func runBattery(ctx context.Context, run commandRunner, stdout, stderr io.Writer) error {
 	return runBatteryPhase(ctx, "test", run, stdout, stderr)
 }
@@ -119,26 +179,31 @@ func runGo(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 }
 
 func main() {
-	mode := "test"
-	args := os.Args[1:]
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		mode, args = args[0], args[1:]
+	os.Exit(runMain(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+// runMain owns the CLI contract: a help request exits 0, a mode-less or
+// malformed invocation exits 2, and only an explicit mode can reach a child
+// process.
+func runMain(args []string, stdout, stderr io.Writer) int {
+	inv, err := parseInvocation(args)
+	if err != nil {
+		fmt.Fprintln(stderr, "testbattery:", err)
+		fmt.Fprintln(stderr, usageLine)
+		return 2
 	}
-	flags := flag.NewFlagSet("testbattery", flag.ContinueOnError)
-	sourceHead := flags.String("source-head", "", "require this sealed commit and clean source before and after the gate")
-	if flags.Parse(args) != nil || flags.NArg() != 0 ||
-		(mode != "test" && mode != "general-release" && mode != "home" && mode != "vet" && mode != "build" && mode != credentialAlignmentProofMode) ||
-		(*sourceHead != "" && !sourceCommit.MatchString(*sourceHead)) {
-		fmt.Fprintln(os.Stderr, "usage: testbattery [test|general-release|home|vet|build|credential-password-alignment-native] [--source-head SHA] (source-owned inventories; no caller selectors)")
-		os.Exit(2)
+	if inv.help {
+		fmt.Fprintln(stdout, usageLine)
+		return 0
 	}
 	// Only prevent subsequent launches after the owner's signal; children
 	// remain in its group. Standalone interruption likewise uses group signals.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	err := runBoundSourceGate(ctx, mode, *sourceHead, os.Stdout, os.Stderr)
+	err = runBoundSourceGate(ctx, inv.mode, inv.sourceHead, stdout, stderr)
 	stop()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "testbattery:", err)
-		os.Exit(1)
+		fmt.Fprintln(stderr, "testbattery:", err)
+		return 1
 	}
+	return 0
 }
