@@ -203,6 +203,10 @@ External audits (ChatGPT zip rounds, critique lists, prior review docs) are poin
 move faster than they do. **Before executing any audit's fix-list, verify each finding against current source and
 landed commits.** A finding already fixed gets CITED (with the commit), not re-implemented. Reconcile the audit
 against the live lane backlog and ratified records first — re-doing landed work is the predictable failure here.
+**Verify the claimed ROOT CAUSE against live records, not only source.** A note that says a lane "timed out" can
+describe a lane whose attempts all *succeeded* while its outputs were rejected by a validator — the fix the note
+implies (a timeout knob) is then the wrong fix. Read the run-attempt records and the validator's own rejection
+reasons before building what the note implies.
 
 ## Build discipline
 - The topology is the **target**, not a license to build all of it. One vertical slice, proven with a command +
