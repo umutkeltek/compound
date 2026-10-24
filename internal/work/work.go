@@ -120,6 +120,9 @@ func claimEventFromIsLegal(from string, repairOwnerless bool) bool {
 
 // Store is the work lifecycle store rooted at a COMPOUND_HOME.
 type Store struct {
+	// advanceClock is a test clock; nil always samples real admission time.
+	// Its argument lets deterministic fixtures preserve their explicit logical time.
+	advanceClock                  func(time.Time) time.Time
 	home                          string
 	events                        *eventstore.Store
 	readOnly                      bool
@@ -1760,7 +1763,11 @@ func (s *Store) Advance(workID string, in AdvanceInput, now time.Time) (envelope
 	var out envelope.WorkEnvelope
 	var advanceErr error
 	err := s.withLifecycleMutation(func() error {
-		out, advanceErr = s.advanceLocked(workID, in, now)
+		admissionTime := time.Now()
+		if s.advanceClock != nil {
+			admissionTime = s.advanceClock(now)
+		}
+		out, advanceErr = s.advanceLocked(workID, in, admissionTime)
 		return advanceErr
 	})
 	return out, err

@@ -407,6 +407,9 @@ func PrepareGovernedHarnessLaunch(in GovernedHarnessLaunchInput) (harness.RunInp
 	}
 	runInput := in.RunInput
 	runInput.ActionIntentID = in.ActionIntentID
+	runInput.StartRevalidate = func() error {
+		return RevalidateGovernedExecutionReservation(in.HomePath, in.RunningWork.ID, in.RunningWork.PolicyDecisionID, in.ActionIntentID)
+	}
 	runInput.StartGuard = NewGovernedExecutionReservationStartGuard(
 		in.HomePath,
 		in.RunningWork.ID,
@@ -963,36 +966,14 @@ func NewGovernedExecutionReservationStartGuard(
 	}
 }
 
-// RevalidateGovernedExecutionReservation checks the exact running
+// RevalidateGovernedExecutionReservation checks current launch authority and the exact running
 // state/policy/action generation under the caller's admission lock.
 func RevalidateGovernedExecutionReservation(homePath, workID, expectedPolicyDecisionID, expectedActionIntentID string) error {
-	workID = strings.TrimSpace(workID)
-	expectedPolicyDecisionID = strings.TrimSpace(expectedPolicyDecisionID)
-	expectedActionIntentID = strings.TrimSpace(expectedActionIntentID)
-	if workID == "" || expectedPolicyDecisionID == "" || expectedActionIntentID == "" {
-		return fmt.Errorf("governed execution reservation identity is incomplete")
-	}
 	store, err := work.OpenReadOnly(homePath)
 	if err != nil {
 		return fmt.Errorf("revalidate governed execution reservation: %w", err)
 	}
-	current, err := store.Get(workID)
-	if err != nil {
-		return fmt.Errorf("revalidate governed execution reservation: %w", err)
-	}
-	var currentActionIntentID string
-	if n := len(current.ActionIntentIDs); n > 0 {
-		currentActionIntentID = current.ActionIntentIDs[n-1]
-	}
-	if current.State != "running" || current.PolicyDecisionID != expectedPolicyDecisionID || currentActionIntentID != expectedActionIntentID {
-		return fmt.Errorf(
-			"governed execution reservation changed before launch: state=%s policy=%s action_intent=%s",
-			current.State,
-			current.PolicyDecisionID,
-			currentActionIntentID,
-		)
-	}
-	return nil
+	return store.ValidateExecutionStartAuthority(workID, expectedPolicyDecisionID, expectedActionIntentID, time.Now)
 }
 
 func revalidateGovernedClaudeLane(ctx context.Context, adapterName string, expected work.DelegateHarnessReadinessRequest) error {

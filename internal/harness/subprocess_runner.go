@@ -343,6 +343,11 @@ func runWithSubprocessOptions(
 			if err := ctx.Err(); err != nil {
 				return err
 			}
+			if in.StartRevalidate != nil {
+				if err := in.StartRevalidate(); err != nil {
+					return err
+				}
+			}
 			return cmd.Start()
 		})
 		if launched.ID != "" {

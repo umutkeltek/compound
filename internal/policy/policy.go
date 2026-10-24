@@ -669,7 +669,7 @@ func matchGrant(grants []StandingGrant, ai envelope.ActionIntent, cfg Config, no
 			continue
 		}
 		if g.ExpiresAt != "" {
-			if t, err := time.Parse(time.RFC3339, g.ExpiresAt); err == nil && now.After(t) {
+			if t, err := time.Parse(time.RFC3339, g.ExpiresAt); err == nil && !now.Before(t) {
 				misses = append(misses, fmt.Sprintf("standing grant %q expired at %s", grantID(g), g.ExpiresAt))
 				continue
 			}

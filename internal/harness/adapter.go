@@ -121,6 +121,9 @@ type RunInput struct {
 	// pipe setup; the guard must call that operation exactly once only when its
 	// live authority revalidation succeeds. Nil starts normally.
 	StartGuard func(context.Context, func() error) error
+	// StartRevalidate runs inside CommitLaunch after its locks and immediately before cmd.Start.
+	// It must be read-only and must not reacquire the outer admission lock.
+	StartRevalidate func() error
 	// Args is the argv (after the program path). May be empty.
 	Args []string
 	// Env is the additional env vars to set on the subprocess. Optional.

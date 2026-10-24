@@ -648,6 +648,24 @@ RunAttempt, retains prior history, and finalizes only its own running generation
 Early refusal leaves the WorkEnvelope unchanged; audit records may be emitted.
 A newer lifecycle generation wins over a stale launch/finalizer.
 
+Admission and launch both use current time. A lifecycle advance samples the
+store-owned wall clock inside its admission transaction; an older caller timestamp
+cannot authorize a mutation. Tests explicitly inject their logical clock.
+Grant windows are half-open `[not_before, expires_at)` across ordinary grants,
+autonomy envelopes, and desktop-surface grants. Equality at expiry refuses.
+
+The start guard retains the existing admission lock order and exact running
+work/policy/action generation. It reads the persisted admission evidence and
+current policy before sampling launch time. The shared subprocess runner repeats
+that read-only check inside `CommitLaunch`, after its work/per-attempt locks and
+immediately before `cmd.Start`. This inner check never reacquires admission and
+never persists replacement authority. A grant that expires or is revoked while
+launch waits therefore prevents the subprocess from starting. Already-started
+execution may finish after its launch grant expires; finalization keeps its
+existing generation CAS and then-current ordinary policy instead of requiring
+the original launch grant to remain live.
+
+
 Resume uses the build-implement halt at admission and immediately before OS start.
 Claude mutation resumes require fresh permission and blocking-hook readiness even
 for explicit bypass; the historical claimed-execution bypass exception is not

@@ -77,7 +77,7 @@ func desktopSurfaceGranted(grants []StandingGrant, surface string, now time.Time
 			continue
 		}
 		if g.ExpiresAt != "" {
-			if t, err := time.Parse(time.RFC3339, g.ExpiresAt); err != nil || now.After(t) {
+			if t, err := time.Parse(time.RFC3339, g.ExpiresAt); err != nil || !now.Before(t) {
 				continue
 			}
 		}

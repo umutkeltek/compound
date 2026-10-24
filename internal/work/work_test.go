@@ -22,6 +22,7 @@ func newStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
+	s.advanceClock = func(logical time.Time) time.Time { return logical }
 	return s
 }
 
