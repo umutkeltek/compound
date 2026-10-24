@@ -9,6 +9,7 @@ import (
 
 	"compound/internal/home"
 	"compound/internal/hookplan"
+	"compound/internal/routeevidence"
 	"compound/internal/work"
 )
 
@@ -72,7 +73,14 @@ func cmdCoordination(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-	report, err := store.Coordination(time.Now(), work.CoordinationOptions{Actor: actor})
+	// One request-scoped capacity observation for this projection: every
+	// eligible actor reads each capacity source at most once, and the
+	// observation is never installed globally — the package-level guard stays
+	// exactly as it was for every other caller.
+	report, err := store.Coordination(time.Now(), work.CoordinationOptions{
+		Actor:         actor,
+		CapacityGuard: routeevidence.CoordinationLaneCapacityObservation(routeevidence.LaneCapacityConfig{}),
+	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)

@@ -853,6 +853,26 @@ unreadable input reported by that index never restart a directory scan for each
 work item. Standalone item readers still load their own observations. Index
 warnings remain visible once, and hold-evidence consumption is unchanged.
 
+Coordination reads lane capacity through ONE request-scoped observation. The
+observation is a read-only projection, not an execution authority: it never
+dispatches, never records capacity-refusal evidence, never runs a live provider
+probe on the coordination path, and never replaces the package-level lane
+capacity guard used by dispatch and delegate. It reads each applicable capacity
+source at most once per request — the operator lane-alias file, the CodexBar
+usage feed, Compound's own supplement usage feed, the switchback account
+projection and the multi-auth quota cache — and evaluates every actor
+separately against those parsed bytes. Alias precedence, provider-family
+matching, freshness and future-timestamp rules, expected duration, resets,
+provenance, confirmation and alternative ladders, malformed-row skipping versus
+scanner errors, and absent versus unreadable sources are unchanged; the
+observation caches source facts, never actor verdicts, and never lets one actor
+see another's rows. An actor with no capacity family reads no capacity source.
+A declared-source or tuple-backed request keeps the existing fresh guard
+semantics, including its live-probe fallback. The projection chooses the guard
+once per request, so one request never mixes two gates, and a hard source
+failure is reported as an error rather than as an ungated actor: an unreadable
+capacity source must never read as unlimited capacity.
+
 Workbench and coordination build one request-local Git facts session per projection
 call. It reuses only repository-scoped read facts — canonical worktree root,
 normalized refs and their commit resolution, current branch, worktree status and

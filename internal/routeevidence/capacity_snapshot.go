@@ -189,15 +189,26 @@ func ReadLaneCapacityWithConfig(lane string, now time.Time, cfg LaneCapacityConf
 }
 
 func capacitySourceInstalled(paths LaneCapacityPaths) bool {
+	return capacitySourceInstalledCounted(paths, nil)
+}
+
+// capacitySourceInstalledCounted is capacitySourceInstalled with an optional per-path observer,
+// so a request-scoped observation can report how many existence probes it made. The boolean
+// result is identical to the uncounted form: "any configured capacity source file exists".
+func capacitySourceInstalledCounted(paths LaneCapacityPaths, onStat func(string)) bool {
+	installed := false
 	for _, path := range []string{paths.UsageHistoryPath, paths.QuotaCachePath, paths.AccountProjectionPath, paths.SupplementUsagePath} {
 		if strings.TrimSpace(path) == "" {
 			continue
 		}
+		if onStat != nil {
+			onStat(path)
+		}
 		if _, err := os.Stat(path); err == nil {
-			return true
+			installed = true
 		}
 	}
-	return false
+	return installed
 }
 
 type codexBarCapacityRow struct {
@@ -239,6 +250,24 @@ func capacityRowSourcesFor(paths LaneCapacityPaths) []capacityRowSource {
 // empty". An unreadable/corrupt file IS an error: silently treating "broken" as "empty" would hide
 // a real misconfiguration from the freshness veto above it.
 func readCapacityRowsFromSource(src capacityRowSource, now time.Time, matches func(string) bool) (rows []codexBarCapacityRow, installed bool, err error) {
+	parsed, installed, err := readCapacityRowsFromSourceFile(src)
+	if err != nil {
+		return nil, installed, err
+	}
+	return filterCapacityRows(parsed, now, matches), installed, nil
+}
+
+// readCapacityRowsFromSourceFile scans a single usage-row JSONL file and returns every row it can
+// parse, tagged with the source's label. A blank path or a missing file is not an error — it
+// contributes zero rows and reports installed=false so the caller can distinguish "nothing wired"
+// from "wired but empty". An unreadable/corrupt file IS an error: silently treating "broken" as
+// "empty" would hide a real misconfiguration from the freshness veto above it.
+//
+// The returned rows are the PARSED FILE, not the rows that constrain a decision. A row naming
+// another provider, or one sampled in the future, is still returned here and filtered by the
+// caller. That split is what lets one request parse each usage file once and then evaluate every
+// actor against the same parsed bytes, without any actor seeing another's rows.
+func readCapacityRowsFromSourceFile(src capacityRowSource) (rows []codexBarCapacityRow, installed bool, err error) {
 	if strings.TrimSpace(src.path) == "" {
 		return nil, false, nil
 	}
@@ -259,11 +288,11 @@ func readCapacityRowsFromSource(src capacityRowSource, now time.Time, matches fu
 		if err := json.Unmarshal(scanner.Bytes(), &row); err != nil {
 			continue
 		}
-		if !matches(row.Provider) || math.IsNaN(row.UsedPercent) || math.IsInf(row.UsedPercent, 0) {
+		if math.IsNaN(row.UsedPercent) || math.IsInf(row.UsedPercent, 0) {
 			continue
 		}
 		sampled, err := time.Parse(time.RFC3339, strings.TrimSpace(row.SampledAt))
-		if err != nil || sampled.After(now.Add(capacityClockSkew)) {
+		if err != nil {
 			continue
 		}
 		row.sampled = sampled
@@ -274,6 +303,24 @@ func readCapacityRowsFromSource(src capacityRowSource, now time.Time, matches fu
 		return nil, installed, fmt.Errorf("scan capacity usage history (%s): %w", src.label, err)
 	}
 	return rows, installed, nil
+}
+
+// filterCapacityRows keeps the rows that can constrain a decision for one provider family at one
+// instant: rows whose provider matches the requested family, and no row sampled beyond the
+// clock-skew allowance. The input slice is never mutated and the returned slice holds copies, so a
+// caller may keep the parsed file and let every actor filter its own view of it.
+func filterCapacityRows(rows []codexBarCapacityRow, now time.Time, matches func(string) bool) []codexBarCapacityRow {
+	out := make([]codexBarCapacityRow, 0, len(rows))
+	for _, row := range rows {
+		if !matches(row.Provider) {
+			continue
+		}
+		if row.sampled.After(now.Add(capacityClockSkew)) {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out
 }
 
 // readCapacityRowsFromSources merges matching rows from every source file that exists.
@@ -314,6 +361,13 @@ func readCodexBarCapacityMatching(sources []capacityRowSource, provider string, 
 	if err != nil {
 		return LaneCapacity{}, false, err
 	}
+	return decideCodexBarCapacity(rows, installed, provider, now, expectedMinutes, freshness)
+}
+
+// decideCodexBarCapacity is the freshness/cluster/window decision over an ALREADY-READ row set.
+// The row set is consumed in place (it is sorted here), so a caller that shares parsed rows
+// between actors must hand over its own copy — filterCapacityRows does exactly that.
+func decideCodexBarCapacity(rows []codexBarCapacityRow, installed bool, provider string, now time.Time, expectedMinutes int, freshness time.Duration) (LaneCapacity, bool, error) {
 	if !installed {
 		return LaneCapacity{}, false, nil
 	}
@@ -525,6 +579,16 @@ func CapacityFeedWarnings(cfg LaneCapacityConfig, now time.Time) []CapacityFeedW
 	return warnings
 }
 
+// quotaCacheAccount is one multi-auth account entry in the Codex quota cache.
+type quotaCacheAccount struct {
+	Status int `json:"status"`
+}
+
+// quotaCacheDocument is the parsed shape of the Codex multi-auth quota cache.
+type quotaCacheDocument struct {
+	ByAccountID map[string]quotaCacheAccount `json:"byAccountId"`
+}
+
 func readFreshQuotaWall(path, lane string, now time.Time) (LaneCapacity, bool, error) {
 	if lane != "codex" || strings.TrimSpace(path) == "" {
 		return LaneCapacity{}, false, nil
@@ -545,14 +609,16 @@ func readFreshQuotaWall(path, lane string, now time.Time) (LaneCapacity, bool, e
 	if err != nil {
 		return LaneCapacity{}, false, fmt.Errorf("read quota cache: %w", err)
 	}
-	var cache struct {
-		ByAccountID map[string]struct {
-			Status int `json:"status"`
-		} `json:"byAccountId"`
-	}
+	var cache quotaCacheDocument
 	if err := json.Unmarshal(data, &cache); err != nil {
 		return LaneCapacity{}, false, fmt.Errorf("parse quota cache: %w", err)
 	}
+	return decideFreshQuotaWall(observed, cache)
+}
+
+// decideFreshQuotaWall turns a parsed quota cache into the wall verdict. A 429 on ANY account
+// walls the codex family; the observed mtime is the provenance of that verdict.
+func decideFreshQuotaWall(observed time.Time, cache quotaCacheDocument) (LaneCapacity, bool, error) {
 	for _, account := range cache.ByAccountID {
 		if account.Status == 429 {
 			return LaneCapacity{
@@ -570,17 +636,37 @@ func readDeadAccountProjection(path, lane string, now time.Time) (LaneCapacity, 
 	if strings.TrimSpace(path) == "" {
 		return LaneCapacity{}, false, nil
 	}
+	projection, err := readAccountProjectionFile(path)
+	if err != nil {
+		return LaneCapacity{}, false, err
+	}
+	if projection == nil {
+		return LaneCapacity{}, false, nil
+	}
+	return decideDeadAccountProjection(projection, lane, now)
+}
+
+// readAccountProjectionFile reads and parses the switchback account projection. A missing file is
+// absent (nil, nil); an unreadable or malformed file is a hard error — the difference between
+// "no projection" and "broken projection" must never collapse.
+func readAccountProjectionFile(path string) (*AccountProjection, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return LaneCapacity{}, false, nil
+			return nil, nil
 		}
-		return LaneCapacity{}, false, fmt.Errorf("read account projection: %w", err)
+		return nil, fmt.Errorf("read account projection: %w", err)
 	}
 	var projection AccountProjection
 	if err := json.Unmarshal(data, &projection); err != nil {
-		return LaneCapacity{}, false, fmt.Errorf("parse account projection: %w", err)
+		return nil, fmt.Errorf("parse account projection: %w", err)
 	}
+	return &projection, nil
+}
+
+// decideDeadAccountProjection reports a lane DEAD when the account projection says every account
+// for that provider is unhealthy and the projection itself is fresh.
+func decideDeadAccountProjection(projection *AccountProjection, lane string, now time.Time) (LaneCapacity, bool, error) {
 	importedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(projection.ImportedAt))
 	if err != nil {
 		return LaneCapacity{}, false, nil
@@ -784,18 +870,24 @@ func WorkLaneCapacityGuard(cfg LaneCapacityConfig) work.LaneCapacityGuardFunc {
 		if err != nil {
 			return work.LaneCapacityGuardResult{}, err
 		}
-		return work.LaneCapacityGuardResult{
-			Capacity: work.DispatchLaneCapacity{
-				Remaining:  decision.Capacity.Remaining,
-				ResetsAt:   formatCapacityTime(decision.Capacity.ResetsAt),
-				LastProven: formatCapacityTime(decision.Capacity.LastProven),
-				State:      string(decision.Capacity.State),
-				DataRef:    decision.Capacity.DataRef,
-			},
-			Refused:              decision.Refused,
-			ConfirmationRequired: decision.ConfirmationRequired,
-			Message:              decision.Message,
-		}, nil
+		return laneCapacityGuardResult(decision), nil
+	}
+}
+
+// laneCapacityGuardResult projects a capacity decision onto the work-package guard result. The
+// production guard and the coordination observation share it so both speak the same wire shape.
+func laneCapacityGuardResult(decision LaneCapacityDecision) work.LaneCapacityGuardResult {
+	return work.LaneCapacityGuardResult{
+		Capacity: work.DispatchLaneCapacity{
+			Remaining:  decision.Capacity.Remaining,
+			ResetsAt:   formatCapacityTime(decision.Capacity.ResetsAt),
+			LastProven: formatCapacityTime(decision.Capacity.LastProven),
+			State:      string(decision.Capacity.State),
+			DataRef:    decision.Capacity.DataRef,
+		},
+		Refused:              decision.Refused,
+		ConfirmationRequired: decision.ConfirmationRequired,
+		Message:              decision.Message,
 	}
 }
 

@@ -183,6 +183,9 @@ compound **observes** executions; it does not become one. The rail is proven by 
 - **`compound coordination [--actor A]` is the read-only me / others / waiting-on projection** (the console's
   Me/Others/Waiting-on view). It projects the planning half every lane runs — workbench + candidate prep +
   wait/lane-capacity gate — for every actor **without executing any of it** (no claim/advance/admit/dispatch).
+  The lane-capacity gate is a request-scoped READ-ONLY observation: one capacity-source read per request
+  (not per actor), no refusal evidence, no live quota probe, and no change to the global guard that
+  dispatch/delegate use. An unreadable capacity source is reported as an error, never as an ungated actor.
 - **Claim a lane before building.** `proposed ≠ held`: dispatch consumes proposed work, so unclaimed work gets
   double-executed by a concurrent lane. Claim the item (`work claim`) and a NARROW scope (packages/files you will
   touch) before touching anything; do not parallel-edit the same `internal/` package as a live lane.
