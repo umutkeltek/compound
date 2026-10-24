@@ -307,6 +307,22 @@ func runWithSubprocessOptions(
 		}
 	}
 	cmd := build(ctx, in)
+	// The shared runner is the SOLE cancellation owner. Adapters that build
+	// with exec.CommandContext inherit two extra killers from os/exec: the
+	// default Cancel callback kills only the DIRECT process, and a nonzero
+	// WaitDelay arms a second direct-process killer that can also force-close
+	// the capture pipes. Either one races this runner's process-group kill
+	// and can leave a descendant holding the pipes open, so clear both here --
+	// after the adapter's build, before Start -- where nothing can re-arm them.
+	//
+	// This does NOT weaken pre-start rejection: os/exec keeps the context
+	// bound to the *exec.Cmd regardless of Cancel and refuses to start a
+	// command whose context is already done, and the runner's own ctx.Err()
+	// check inside start() refuses the launch before cmd.Start() is reached.
+	// After this normalization os/exec starts no ctx watchdog at all, so the
+	// runner's process-group kill is the only thing that can end the child.
+	cmd.Cancel = nil
+	cmd.WaitDelay = 0
 	// The observed leg is read from the command actually built and stamped
 	// once beside (never into) the requested snapshot; nothing observed, no block.
 	if obs, ok := observeLaunch(harnessName, cmd, hookReading, hookKnown); ok {
@@ -315,9 +331,11 @@ func runWithSubprocessOptions(
 		}
 	}
 	// Spawn the subprocess in its own process group (unix only; a no-op
-	// elsewhere) so the timeout kill below reaps the whole tree, not just the
-	// direct child -- see procgroup_unix.go for the orphaned-grandchild hang
-	// this prevents.
+	// elsewhere) so the timeout kill below reaps the whole PROCESS GROUP,
+	// not just the direct child -- see procgroup_unix.go for the
+	// orphaned-grandchild hang this prevents, and for the limit of that
+	// guarantee (a descendant that starts its own group/session is not
+	// reachable by the group signal).
 	setProcessGroup(cmd)
 	// Connect stdin to the subprocess. The old code ran
 	// io.Copy(io.Discard, in.Stdin) in a goroutine, silently throwing the

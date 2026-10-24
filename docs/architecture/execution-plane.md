@@ -460,6 +460,21 @@ The initial timeout remains armed for a child that closes its pipes early. This
 closes the one-shot fork/cancellation race without widening the signal target or
 changing the run budget.
 
+The shared runner is the sole cancellation owner of the adapter command. Immediately
+after the adapter builds the command and before it starts, the runner clears the
+command's inherited `Cancel` callback and `WaitDelay`, so `os/exec` arms no context
+watchdog: the default callback would kill only the direct process, and a nonzero
+`WaitDelay` would add a second direct-process killer that can also force-close the
+capture pipes. Either would race the runner's process-group kill. Pre-start rejection
+is unchanged — the runner refuses a launch whose context is already cancelled, and
+`os/exec` independently refuses to start a command with a done context.
+
+The process-group guarantee is exactly a group guarantee. The kill reaches the direct
+child and every descendant that stayed in the runner's process group. It does not
+reach a descendant that starts its own process group or session, nor work handed to
+a remote or external job; such a descendant can outlive the group kill, and no
+process-tree guarantee is claimed for it.
+
 ### Actuator admission accounting is not a mission budget
 
 The separate trusted-local actuator run, post, and execution-mode consumers reserve one
