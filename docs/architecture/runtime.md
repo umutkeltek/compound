@@ -926,7 +926,7 @@ membership ledger.
 ### Exact reviewed candidate proof adoption
 
 Distinct work items may share one original canonical proof only after explicit review of the
-same repository, fresh proof base and combined candidate.
+same repository, explicitly selected proof coverage base and combined candidate.
 
 `work proof-review WORK --actor ACTOR --file REVIEW` custodies a nonempty review
 body of at most 1 MiB for the currently held verifying work. It attaches the exact
@@ -953,13 +953,15 @@ head, and when that member's own range passes an independent `git diff --check`.
 alone never supplies coverage. Ancestry never supplies missing membership, review or
 acceptance.
 
-The proof base is the coverage base of that one proof, not the landing target. A reviewed
-batch may retain an earlier base than the current target tip only when the base and the
-target are both ancestors of the certified candidate and the native manifest admission
-above verified exact member inventory coverage plus the independent member diff-check; a
-different candidate, or an intentionally different base, needs a fresh proof. A target tip
-that moves during the proof keeps the identical base/candidate evidence while it stays
-inside the certified candidate.
+The proof base B describes coverage; the landing target T is separate. The
+ceremony may retain an earlier B for a reviewed batch only after checking
+`B != H`, `B <= T <= H`, and `B <= M <= H` for each member creation base M.
+For M equal to B, the full canonical range covers the member range. For B
+preceding M, native contained-base admission checks exact inventory coverage
+and the independent committed member diff-check. These checks do not claim
+that the historical M-before-B path performs a contained-member scan.
+A changed B or H requires a new proof. A target that advances within unchanged
+certified H retains the original B/H evidence and requires a fresh landing guard.
 
 Authenticated manifest custody must precede the original proof reservation; a later review
 cannot retroactively authorize an earlier execution. The original work executes the existing
@@ -978,9 +980,10 @@ refuse. A closed or archived source remains usable when that chain remains authe
 Historical admission policy is authenticated without demanding it stay the latest generation.
 Private source publication still requires its unchanged direct same-work proof. Each member
 retains separate acceptance, guarded landing, publication and consumer verification obligations.
-A stale main — one that no longer contains the certified candidate — rejects the landing
-without discarding the completed original evidence; a target tip that merely advanced inside
-the certified candidate keeps that evidence and only needs a fresh main-SHA guard.
+For a pending landing, the current target must remain an ancestor of certified H;
+a divergent target refuses without discarding completed evidence. A target that
+already contains H follows the normal landed checks. A target advancing within
+H preserves the same B/H evidence and requires a fresh main-SHA guard.
 
 ## 3. Hooks are clients, not brains
 

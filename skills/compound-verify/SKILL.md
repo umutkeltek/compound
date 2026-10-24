@@ -81,8 +81,9 @@ or termination assertions to accommodate setup latency.
 
 2. **Deterministic bundle:**
    ```bash
-   PRE_LAND_BASE_SHA=$(git rev-parse --verify "main^{commit}")
-   go run ./cmd/compound proof-check --base "$PRE_LAND_BASE_SHA" \
+   # Use the coverage base already selected and validated in compound-land §1.
+   test -n "${PROOF_BASE_SHA:-}" &&
+   go run ./cmd/compound proof-check --base "$PROOF_BASE_SHA" \
      --work <work_id> --actor "<harness>:<lane>" \
      --out <absolute-report.json>
    ```
@@ -172,10 +173,11 @@ or termination assertions to accommodate setup latency.
    clean tracked/index/nonignored-untracked state before and after each Go gate. Source left
    behind by a test fails that gate and prevents a later gate accepting a different inventory.
 
-   The certifying base is a caller-captured immutable full SHA — the reviewed coverage base
-   `PROOF_BASE_SHA` (B), not `git_delivery.expected_base_sha` and not automatically the landing
-   target tip `PRE_PROOF_TARGET_SHA` (T); Compound resolves it once. B defaults to T. A dirty or
-   uncommitted candidate is refused. The report seals repository fingerprint, base SHA, HEAD SHA,
+   The certifying base is the explicitly selected immutable `PROOF_BASE_SHA` (B).
+   Its validated value may equal the contract base or current target, but it is
+   never inferred blindly from either. Select it through `compound-land` §1;
+   Compound resolves it once. A dirty or uncommitted candidate is refused.
+   The report seals repository fingerprint, base SHA, HEAD SHA,
    tree SHA, and clean state; diff-check and redact inspect the same committed `base...HEAD`. A
    rebase, replay, or new HEAD invalidates the prior proof and requires a fresh battery. New
    `--out` reports are private, ordinary existing modes are preserved, symlink/non-regular/raced

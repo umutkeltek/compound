@@ -557,6 +557,9 @@ func TestProofAdoptionContainedBaseDiamondTargetInsideCertifiedHead(t *testing.T
 	if !strings.HasPrefix(ref, "proof-check:") {
 		t.Fatalf("source proof was relabelled: %s", ref)
 	}
+	if proof.ID != result.ID || proof.RunAttemptID != result.RunAttemptID {
+		t.Fatal("landing or closure replaced the original source proof")
+	}
 	if proof.SourceSnapshot == nil || proof.SourceSnapshot.BaseSHA != base || proof.SourceSnapshot.HeadSHA != head {
 		t.Fatalf("closed proof report is not exact B/H: %+v", proof.SourceSnapshot)
 	}
