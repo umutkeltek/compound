@@ -19,6 +19,7 @@ alone is insufficient. Missing license means no assumed copying rights.
 - License: not established in the inspected repository snapshot. Concepts referenced only; no copying grant inferred.
 - Consumers: research, UX, spec, delivery and learning. Product exploration before technical contracts; traces/failure analysis before reviewed implementation loops.
 - Limits: session anecdotes are not controlled efficacy results; upcoming sessions are not completed evidence.
+- Wider audit: the 84 dated project directories at `327d980819817d63d98cb1114eb4e6d2df9d0209` were audited separately and are summarised in [the session corpus audit](../../docs/operations/ai-that-works-session-audit-2026-10.md). That audit cites upstream paths and original synthesis only. The three files credited above are byte-identical at that revision, so this card's scope is unchanged; the audited snapshot ships no license file either.
 
 ## humanlayer/skills — HumanLayer
 

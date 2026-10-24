@@ -218,6 +218,19 @@ class ReviewTests(unittest.TestCase):
             self.assertEqual(report["schema_version"], review.REJECTION_SCHEMA)
             self.assertNotIn("assessment", report)
 
+    def test_retry_receives_the_reason_the_previous_attempt_was_rejected(self):
+        # A blind retry repeats the same defect until the bounded attempts run
+        # out. The next attempt must learn why the last one was rejected.
+        self.cli.invalid_quote = True
+        self.assertEqual(self.tick()["status"], "rejected")
+        self.cli.invalid_quote = False
+        self.assertEqual(self.tick()["status"], "reviewed")
+        prompts = [self.cli.arg(call, "--prompt") for call in self.cli.launches()]
+        self.assertEqual(len(prompts), 2)
+        self.assertNotIn("PREVIOUS ATTEMPT REJECTED", prompts[0])
+        self.assertIn("PREVIOUS ATTEMPT REJECTED", prompts[1])
+        self.assertIn("does not resolve to pinned source text", prompts[1])
+
     def test_failed_job_prefers_another_eligible_tuple(self):
         self.cli.invalid_quote = True
         self.assertEqual(self.tick()["status"], "rejected")
