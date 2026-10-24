@@ -3433,7 +3433,7 @@ func writeFileEntry(tw archiveEntryWriter, path, rel string, info fs.FileInfo) (
 		return ArchiveEntry{}, err
 	}
 	defer f.Close()
-	hdr, err := tar.FileInfoHeader(info, "")
+	hdr, err := archiveFileInfoHeader(info, "")
 	if err != nil {
 		return ArchiveEntry{}, err
 	}

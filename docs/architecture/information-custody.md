@@ -95,6 +95,10 @@ existing 30-second cooperative admission deadline is unchanged. A blocked
 filesystem syscall cannot be interrupted by that deadline; there is no unlimited
 locked fallback.
 
+Archive headers retain numeric UID/GID and file metadata without resolving host
+account names. Backup and capture therefore do not require an account service;
+restore continues to create files as the invoking user.
+
 Final reconciliation uses Darwin bulk metadata with aligned 128 KiB buffers and
 at most four traversal workers. Visits are serialized, each parent joins its
 descendants before checking its pinned identity, and delayed child opens retain

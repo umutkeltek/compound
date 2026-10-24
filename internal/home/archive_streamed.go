@@ -693,7 +693,7 @@ func writeRootedArchiveFileAt(tw archiveEntryWriter, root *os.Root, sourceRel, r
 	if metadataOverride != nil {
 		headerInfo = metadataOverride
 	}
-	hdr, err := tar.FileInfoHeader(headerInfo, "")
+	hdr, err := archiveFileInfoHeader(headerInfo, "")
 	if err != nil {
 		return ArchiveEntry{}, err
 	}
