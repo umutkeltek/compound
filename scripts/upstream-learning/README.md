@@ -91,7 +91,10 @@ rejection finding with the actual attempt and source revision, never an accepted
 assessment. That validation pass completes `audit_only`; the successful process
 retains its immutable outcome. Rejection replay checks the original transcript
 again before it can count toward job-local retries and the three-pass limit.
-Legacy work that promised valid hypotheses cannot be completed with a rejection;
+A rejected attempt hands its validator reason to the next attempt, so a retry
+corrects the named defect instead of repeating it blind. The reason is a
+deterministic validation message, never a source claim, and it grants no
+authority. Legacy work that promised valid hypotheses cannot be completed with a rejection;
 it requires a valid response through governed same-work continuation.
 
 Reports contain at most three hypotheses, each with a pinned source quote, named
