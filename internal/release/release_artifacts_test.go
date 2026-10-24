@@ -238,9 +238,7 @@ func TestReleaseArtifactsAreConsumableByUbuntuGNUTar(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Docker portability probe is integration coverage")
 	}
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("docker unavailable")
-	}
+	requireDockerDaemon(t)
 	repo := newReleaseBuildFixture(t)
 	builder := filepath.Join(repo, "release-artifacts-linux-amd64")
 	build := exec.Command("go", "build", "-o", builder, "./scripts/release-artifacts.go")
