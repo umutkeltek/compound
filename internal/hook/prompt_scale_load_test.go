@@ -39,7 +39,9 @@ func promptScaleLoadAverageOneMinute() (float64, bool) {
 // (claim loading, semantic folding, projection walk). On a hot 16-core box with all
 // caches warm, the prompt-scale run measures ~330ms CPU per prompt — a 500ms p95
 // budget leaves 50% headroom for a real regression while staying well below the 1.2s
-// wall-clock budget the load-aware sibling enforces.
+// wall-clock budget the load-aware sibling enforces. The always-run sibling applies it
+// to reference-host CPU time (promptScaleNormalizeCPU), so that box's speed is part of
+// the number; on it the two are the same.
 const promptScaleCPUBudgetPerPrompt = 500 * time.Millisecond
 
 // promptScalePerPromptCPUTime samples the process's Rusage before and after a single
