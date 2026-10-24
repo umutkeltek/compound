@@ -113,7 +113,7 @@ func TestCoordinationCapacityObservationReadsEachSourceOncePerRequest(t *testing
 	appendCapacityUsageRow(t, cfg, "codex", 100, now.Add(2*time.Hour), now.Add(-time.Minute))
 	writeQuotaCache(t, cfg, 429, now.Add(-time.Minute))
 
-	observation := NewCoordinationCapacityObservation(cfg)
+	observation := NewCoordinationCapacityObservation(cfg, home, now)
 	guard := observation.Guard()
 
 	claude, err := guard(coordinationCapacityRequest(home, "claude", now))
@@ -163,12 +163,13 @@ func TestCoordinationCapacityObservationReadsEachSourceOncePerRequest(t *testing
 	}
 }
 
-// F1b: an actor with no capacity family reads NO capacity source. The
+// F1b: an actor with no capacity family reads NO capacity source content. The
 // existence probes still happen (they are the "is anything wired" question);
-// the file contents are never touched.
+// the usage feeds, the quota cache and the account projection are never
+// touched. The alias file IS read — resolving a lane to a family needs it.
 func TestCoordinationCapacityObservationSkipsIneligibleActors(t *testing.T) {
 	cfg, home := coordinationCapacityFixture(t)
-	observation := NewCoordinationCapacityObservation(cfg)
+	observation := NewCoordinationCapacityObservation(cfg, home, coordinationCapacityNow)
 
 	result, err := observation.Guard()(coordinationCapacityRequest(home, "mystery-lane", coordinationCapacityNow))
 	if err != nil {
@@ -208,7 +209,7 @@ func TestCoordinationCapacityObservationNextRequestSeesChangedSource(t *testing.
 		globalCalls++
 		return work.LaneCapacityGuardResult{}, nil
 	}
-	first := NewCoordinationCapacityObservation(cfg)
+	first := NewCoordinationCapacityObservation(cfg, home, now)
 	result, err := first.Guard()(coordinationCapacityRequest(home, "claude", now))
 	if err != nil {
 		t.Fatalf("first request: %v", err)
@@ -219,7 +220,7 @@ func TestCoordinationCapacityObservationNextRequestSeesChangedSource(t *testing.
 
 	// The source changes underneath: the next request must see the new bytes.
 	writeCapacityUsage(t, cfg, "claude", 100, now.Add(2*time.Hour), now.Add(-time.Minute))
-	second := NewCoordinationCapacityObservation(cfg)
+	second := NewCoordinationCapacityObservation(cfg, home, now)
 	changed, err := second.Guard()(coordinationCapacityRequest(home, "claude", now))
 	if err != nil {
 		t.Fatalf("second request: %v", err)
@@ -228,18 +229,8 @@ func TestCoordinationCapacityObservationNextRequestSeesChangedSource(t *testing.
 		t.Fatalf("second request served stale capacity: %+v", changed)
 	}
 
-	// A later instant is a later request for the same observation: it re-reads
-	// rather than serving the first request's bytes.
-	later, err := first.Guard()(coordinationCapacityRequest(home, "claude", now.Add(time.Minute)))
-	if err != nil {
-		t.Fatalf("later request: %v", err)
-	}
-	if !later.Refused {
-		t.Fatalf("later request served stale capacity: %+v", later)
-	}
-
 	// A hard source error in one request does not leak into the next one.
-	broken := NewCoordinationCapacityObservation(cfg)
+	broken := NewCoordinationCapacityObservation(cfg, home, now)
 	if err := os.WriteFile(cfg.Paths.AccountProjectionPath, []byte("{not json"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -249,12 +240,64 @@ func TestCoordinationCapacityObservationNextRequestSeesChangedSource(t *testing.
 	if err := os.WriteFile(cfg.Paths.AccountProjectionPath, []byte(`{"schema_version":"compound.account_projection.v0.1","imported_at":"2026-07-13T09:00:00Z","providers":{}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	recovered := NewCoordinationCapacityObservation(cfg)
+	recovered := NewCoordinationCapacityObservation(cfg, home, now)
 	if _, err := recovered.Guard()(coordinationCapacityRequest(home, "claude", now)); err != nil {
 		t.Fatalf("request after a broken source must recover: %v", err)
 	}
 	if globalCalls != 0 {
 		t.Fatalf("the observation consulted the package-level lane capacity guard %d times", globalCalls)
+	}
+}
+
+// F2b: one observation serves one home at one request instant. A second home
+// or a second instant is REFUSED, never served from the first request's
+// facts. A new request is a new observation, which re-reads the source.
+func TestCoordinationCapacityObservationBindsOneHomeAndOneInstant(t *testing.T) {
+	cfg, home := coordinationCapacityFixture(t)
+	now := coordinationCapacityNow
+	writeCapacityUsage(t, cfg, "claude", 20, now.Add(2*time.Hour), now.Add(-time.Minute))
+
+	observation := NewCoordinationCapacityObservation(cfg, home, now)
+	guard := observation.Guard()
+	alive, err := guard(coordinationCapacityRequest(home, "claude", now))
+	if err != nil {
+		t.Fatalf("first request: %v", err)
+	}
+	if alive.Capacity.State != "alive" {
+		t.Fatalf("first request decision = %+v, want alive", alive)
+	}
+
+	otherHome := t.TempDir()
+	if _, err := guard(coordinationCapacityRequest(otherHome, "claude", now)); err == nil {
+		t.Fatal("an observation bound to one home must refuse a second home")
+	}
+	if _, err := guard(coordinationCapacityRequest(home, "claude", now.Add(time.Minute))); err == nil {
+		t.Fatal("an observation bound to one request instant must refuse a second instant")
+	}
+
+	// The refusals cost nothing: every source was still read exactly once. A claude
+	// lane never reads the codex-only quota cache.
+	access := observation.SourceAccess()
+	for _, path := range []string{
+		cfg.Paths.UsageHistoryPath,
+		cfg.Paths.SupplementUsagePath,
+		cfg.Paths.AccountProjectionPath,
+		cfg.Paths.AliasesPath,
+	} {
+		if got := access.Reads[path]; got != 1 {
+			t.Fatalf("source %s read %d times in one request, want exactly 1", filepath.Base(path), got)
+		}
+	}
+
+	// A NEW request is a new observation: it re-reads and sees the current bytes.
+	writeCapacityUsage(t, cfg, "claude", 100, now.Add(2*time.Hour), now.Add(-time.Minute))
+	fresh := NewCoordinationCapacityObservation(cfg, home, now)
+	changed, err := fresh.Guard()(coordinationCapacityRequest(home, "claude", now))
+	if err != nil {
+		t.Fatalf("fresh request: %v", err)
+	}
+	if !changed.Refused {
+		t.Fatalf("a fresh observation served stale capacity: %+v", changed)
 	}
 }
 
@@ -268,7 +311,7 @@ func TestCoordinationCapacityObservationKeepsAliasesAndMessagesActorSpecific(t *
 	appendCapacityUsageRow(t, cfg, "codex", 100, now.Add(2*time.Hour), now.Add(-time.Minute))
 	appendCapacityUsageRow(t, cfg, "qwen", 5, now.Add(2*time.Hour), now.Add(-time.Minute))
 
-	guard := NewCoordinationCapacityObservation(cfg).Guard()
+	guard := NewCoordinationCapacityObservation(cfg, home, now).Guard()
 	aliasedClaude, err := guard(coordinationCapacityRequest(home, "my-claude", now))
 	if err != nil {
 		t.Fatalf("aliased claude: %v", err)
@@ -311,6 +354,50 @@ func TestCoordinationCapacityObservationKeepsAliasesAndMessagesActorSpecific(t *
 	}
 	if !strings.Contains(qwen.Capacity.DataRef, "provider=qwen") {
 		t.Fatalf("qwen data_ref = %q, want the qwen family", qwen.Capacity.DataRef)
+	}
+}
+
+// F3b: aliases AND expected durations stay per actor. Two lanes resolve to
+// two families through the operator alias file, and one family answers
+// differently for two expected durations.
+func TestCoordinationCapacityObservationKeepsDurationsPerActor(t *testing.T) {
+	cfg, home := coordinationCapacityFixture(t)
+	now := coordinationCapacityNow
+	writeLaneAliasesFile(t, cfg, map[string]string{"my-claude": "claude", "my-codex": "codex"})
+	// The claude window resets in 30 minutes: alive for a 10-minute request,
+	// expiring (and therefore confirmation-gated) for a 45-minute one.
+	appendCapacityUsageRow(t, cfg, "claude", 20, now.Add(30*time.Minute), now.Add(-time.Minute))
+	appendCapacityUsageRow(t, cfg, "codex", 100, now.Add(2*time.Hour), now.Add(-time.Minute))
+
+	guard := NewCoordinationCapacityObservation(cfg, home, now).Guard()
+
+	short := coordinationCapacityRequest(home, "my-claude", now)
+	short.ExpectedMinutes = 10
+	shortResult, err := guard(short)
+	if err != nil {
+		t.Fatalf("short request: %v", err)
+	}
+	if shortResult.Capacity.State != "alive" || shortResult.ConfirmationRequired {
+		t.Fatalf("short request decision = %+v, want alive", shortResult)
+	}
+	long := coordinationCapacityRequest(home, "my-claude", now)
+	long.ExpectedMinutes = 45
+	longResult, err := guard(long)
+	if err != nil {
+		t.Fatalf("long request: %v", err)
+	}
+	if longResult.Capacity.State != "expiring" || !longResult.ConfirmationRequired {
+		t.Fatalf("long request decision = %+v, want expiring and confirmation-required", longResult)
+	}
+	codex, err := guard(coordinationCapacityRequest(home, "my-codex", now))
+	if err != nil {
+		t.Fatalf("aliased codex: %v", err)
+	}
+	if !codex.Refused || codex.Capacity.State != "walled" {
+		t.Fatalf("aliased codex decision = %+v, want refused/walled", codex)
+	}
+	if strings.Contains(codex.Capacity.DataRef, "provider=claude") {
+		t.Fatalf("the codex alias borrowed the claude row: %q", codex.Capacity.DataRef)
 	}
 }
 
@@ -424,7 +511,7 @@ func TestCoordinationCapacityObservationMatchesProductionGuard(t *testing.T) {
 			if err != nil {
 				t.Fatalf("production guard: %v", err)
 			}
-			observation, err := NewCoordinationCapacityObservation(cfg).Guard()(coordinationCapacityRequest(home, tc.lane, now))
+			observation, err := NewCoordinationCapacityObservation(cfg, home, now).Guard()(coordinationCapacityRequest(home, tc.lane, now))
 			if err != nil {
 				t.Fatalf("observation: %v", err)
 			}
@@ -442,7 +529,7 @@ func TestCoordinationCapacityObservationDistinguishesAbsentUnreadableAndMalforme
 
 	t.Run("absent source is not an error", func(t *testing.T) {
 		cfg, home := coordinationCapacityFixture(t)
-		result, err := NewCoordinationCapacityObservation(cfg).Guard()(coordinationCapacityRequest(home, "claude", now))
+		result, err := NewCoordinationCapacityObservation(cfg, home, now).Guard()(coordinationCapacityRequest(home, "claude", now))
 		if err != nil {
 			t.Fatalf("absent source must not be a hard error: %v", err)
 		}
@@ -461,7 +548,7 @@ func TestCoordinationCapacityObservationDistinguishesAbsentUnreadableAndMalforme
 		if _, err := os.ReadFile(cfg.Paths.UsageHistoryPath); err == nil {
 			t.Skip("this user bypasses file permissions; the unreadable-source case cannot be exercised")
 		}
-		_, err := NewCoordinationCapacityObservation(cfg).Guard()(coordinationCapacityRequest(home, "claude", now))
+		_, err := NewCoordinationCapacityObservation(cfg, home, now).Guard()(coordinationCapacityRequest(home, "claude", now))
 		if err == nil {
 			t.Fatal("an unreadable capacity source must be a hard error, never an ungated lane")
 		}
@@ -476,7 +563,7 @@ func TestCoordinationCapacityObservationDistinguishesAbsentUnreadableAndMalforme
 			t.Fatal(err)
 		}
 		appendCapacityUsageRow(t, cfg, "claude", 20, now.Add(2*time.Hour), now.Add(-time.Minute))
-		result, err := NewCoordinationCapacityObservation(cfg).Guard()(coordinationCapacityRequest(home, "claude", now))
+		result, err := NewCoordinationCapacityObservation(cfg, home, now).Guard()(coordinationCapacityRequest(home, "claude", now))
 		if err != nil {
 			t.Fatalf("a malformed row must be skipped, not fatal: %v", err)
 		}
@@ -490,7 +577,7 @@ func TestCoordinationCapacityObservationDistinguishesAbsentUnreadableAndMalforme
 		if err := os.WriteFile(cfg.Paths.AccountProjectionPath, []byte("{not json"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		_, err := NewCoordinationCapacityObservation(cfg).Guard()(coordinationCapacityRequest(home, "claude", now))
+		_, err := NewCoordinationCapacityObservation(cfg, home, now).Guard()(coordinationCapacityRequest(home, "claude", now))
 		if err == nil {
 			t.Fatal("a malformed account projection must be a hard error")
 		}
@@ -506,7 +593,7 @@ func TestCoordinationCapacityObservationDistinguishesAbsentUnreadableAndMalforme
 		if err := os.WriteFile(cfg.Paths.UsageHistoryPath, []byte(overlong), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		_, err := NewCoordinationCapacityObservation(cfg).Guard()(coordinationCapacityRequest(home, "claude", now))
+		_, err := NewCoordinationCapacityObservation(cfg, home, now).Guard()(coordinationCapacityRequest(home, "claude", now))
 		if err == nil {
 			t.Fatal("an unreadable usage feed must be a hard error, never an ungated lane")
 		}
@@ -543,6 +630,42 @@ func TestCoordinationCapacityFreshGuardRefusesWallDespiteReadOnly(t *testing.T) 
 	}
 }
 
+// F6b: the observation never leaks into the live guard. The production guard
+// re-reads the source on every call, so a lane that was alive at the
+// observation and walls afterwards is still refused by the live guard.
+func TestCoordinationCapacityObservationDoesNotChangeTheLiveGuard(t *testing.T) {
+	cfg, home := coordinationCapacityFixture(t)
+	now := coordinationCapacityNow
+	writeCapacityUsage(t, cfg, "codex", 20, now.Add(2*time.Hour), now.Add(-time.Minute))
+
+	observation := NewCoordinationCapacityObservation(cfg, home, now)
+	observed, err := observation.Guard()(coordinationCapacityRequest(home, "codex", now))
+	if err != nil {
+		t.Fatalf("observation: %v", err)
+	}
+	if observed.Refused {
+		t.Fatalf("alive lane refused: %+v", observed)
+	}
+
+	live := WorkLaneCapacityGuard(cfg)
+	alive, err := live(coordinationCapacityRequest(home, "codex", now))
+	if err != nil {
+		t.Fatalf("live guard: %v", err)
+	}
+	if alive.Refused {
+		t.Fatalf("the live guard refused an alive lane: %+v", alive)
+	}
+
+	writeCapacityUsage(t, cfg, "codex", 100, now.Add(2*time.Hour), now.Add(-time.Minute))
+	walled, err := live(coordinationCapacityRequest(home, "codex", now))
+	if err != nil {
+		t.Fatalf("live guard after the source changed: %v", err)
+	}
+	if !walled.Refused || walled.Capacity.State != "walled" {
+		t.Fatalf("the live guard did not see the wall: %+v", walled)
+	}
+}
+
 // F7: the observation is read-only (no refusal evidence in the home), runs no
 // live probe, and never replaces the package-level guard.
 func TestCoordinationCapacityObservationLeavesHomeUnchangedAndProbesNothing(t *testing.T) {
@@ -551,7 +674,7 @@ func TestCoordinationCapacityObservationLeavesHomeUnchangedAndProbesNothing(t *t
 	writeCapacityUsage(t, cfg, "codex", 100, now.Add(2*time.Hour), now.Add(-time.Minute))
 	before := coordinationCapacitySnapshot(t, home)
 
-	observation := NewCoordinationCapacityObservation(cfg)
+	observation := NewCoordinationCapacityObservation(cfg, home, now)
 	probes := 0
 	observation.probe = func(string, time.Time, time.Duration) (CodexBarCapacityEvidence, error) {
 		probes++
@@ -579,7 +702,7 @@ func TestCoordinationCapacityObservationLeavesHomeUnchangedAndProbesNothing(t *t
 func TestCoordinationCapacityObservationDeclaredSourceDelegatesToFreshGuard(t *testing.T) {
 	cfg, home := coordinationCapacityFixture(t)
 	now := coordinationCapacityNow
-	observation := NewCoordinationCapacityObservation(cfg)
+	observation := NewCoordinationCapacityObservation(cfg, home, now)
 	probes := 0
 	observation.probe = func(string, time.Time, time.Duration) (CodexBarCapacityEvidence, error) {
 		probes++
@@ -608,11 +731,120 @@ func TestCoordinationCapacityObservationDeclaredSourceDelegatesToFreshGuard(t *t
 	}
 }
 
+// F8: the observation is read-only BY CONSTRUCTION. A request that is not
+// read-only is refused before any branch runs, so it reads no source, probes
+// no provider and writes nothing to the home.
+func TestCoordinationCapacityObservationRefusesNonReadOnlyRequest(t *testing.T) {
+	cfg, home := coordinationCapacityFixture(t)
+	now := coordinationCapacityNow
+	writeCapacityUsage(t, cfg, "codex", 100, now.Add(2*time.Hour), now.Add(-time.Minute))
+	before := coordinationCapacitySnapshot(t, home)
+
+	for _, tc := range []struct {
+		name string
+		req  work.LaneCapacityGuardRequest
+	}{
+		{
+			name: "legacy lane",
+			req:  coordinationCapacityRequest(home, "codex", now),
+		},
+		{
+			name: "tuple backed without a declared source",
+			req: work.LaneCapacityGuardRequest{
+				HomePath: home, Lane: "codex", Now: now, ReadOnly: true, TupleBacked: true,
+			},
+		},
+		{
+			name: "declared source",
+			req: work.LaneCapacityGuardRequest{
+				HomePath:    home,
+				Lane:        "codex",
+				Now:         now,
+				ReadOnly:    true,
+				TupleBacked: true,
+				CapacitySource: &work.LaneCapacitySource{
+					Kind:             "codexbar",
+					FreshnessMinutes: 15,
+					// No zai row exists in the fixture, so the delegated fresh guard
+					// WOULD run a live probe for this provider if the request reached it.
+					Ref: "codexbar://provider/zai",
+				},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			observation := NewCoordinationCapacityObservation(cfg, home, now)
+			probes := 0
+			observation.probe = func(string, time.Time, time.Duration) (CodexBarCapacityEvidence, error) {
+				probes++
+				return CodexBarCapacityEvidence{}, errors.New("no live capacity available in this fixture")
+			}
+			req := tc.req
+			req.ReadOnly = false
+			if _, err := observation.Guard()(req); err == nil {
+				t.Fatal("a request that is not read-only must be refused")
+			}
+			access := observation.SourceAccess()
+			for path, count := range access.Reads {
+				t.Fatalf("a refused request read %s %d times, want 0", filepath.Base(path), count)
+			}
+			for path, count := range access.Stats {
+				t.Fatalf("a refused request probed %s %d times, want 0", filepath.Base(path), count)
+			}
+			if probes != 0 {
+				t.Fatalf("a refused request ran %d live capacity probes", probes)
+			}
+		})
+	}
+	after := coordinationCapacitySnapshot(t, home)
+	if before != after {
+		t.Fatalf("a refused request mutated the home:\nBEFORE\n%s\nAFTER\n%s", before, after)
+	}
+}
+
+// F9: a broad multi-provider feed must not be materialized. The fresh reader
+// filters inside the scan, and each actor copies only its OWN family's rows —
+// never an allocation proportional to the other providers' rows.
+func TestCoordinationCapacityObservationDoesNotMaterializeUnrelatedRows(t *testing.T) {
+	cfg, home := coordinationCapacityFixture(t)
+	now := coordinationCapacityNow
+	for i := 0; i < 200; i++ {
+		appendCapacityUsageRow(t, cfg, "codex", 10, now.Add(2*time.Hour), now.Add(-time.Minute))
+	}
+	appendCapacityUsageRow(t, cfg, "claude", 20, now.Add(2*time.Hour), now.Add(-time.Minute))
+
+	source := capacityRowSource{path: cfg.Paths.UsageHistoryPath, label: "codexbar/usage-history"}
+	fresh, _, err := readCapacityRowsFromSource(source, now, func(provider string) bool {
+		return normalizeLaneCapacityKey(provider) == "claude"
+	})
+	if err != nil {
+		t.Fatalf("fresh reader: %v", err)
+	}
+	if len(fresh) != 1 {
+		t.Fatalf("the fresh reader kept %d rows for one family, want 1", len(fresh))
+	}
+	if cap(fresh) >= 200 {
+		t.Fatalf("the fresh reader sized its rows to the whole feed: cap=%d", cap(fresh))
+	}
+
+	observation := NewCoordinationCapacityObservation(cfg, home, now)
+	if _, _, err := observation.facts.usageRows(); err != nil {
+		t.Fatalf("observation usage rows: %v", err)
+	}
+	claudeRows := observation.facts.rowsForFamily("claude", now)
+	if len(claudeRows) != 1 {
+		t.Fatalf("the observation kept %d rows for one family, want 1", len(claudeRows))
+	}
+	if cap(claudeRows) != 1 {
+		t.Fatalf("an actor's rows are sized to the whole feed: cap=%d", cap(claudeRows))
+	}
+}
+
 // A tuple-backed request with no declared source consults no capacity source
 // at all: runtime quota stays execution-gateway-owned.
 func TestCoordinationCapacityObservationTupleBackedWithoutSourceIsGatewayOwned(t *testing.T) {
 	cfg, home := coordinationCapacityFixture(t)
-	observation := NewCoordinationCapacityObservation(cfg)
+	observation := NewCoordinationCapacityObservation(cfg, home, coordinationCapacityNow)
 	result, err := observation.Guard()(work.LaneCapacityGuardRequest{
 		HomePath:    home,
 		Lane:        "codex",

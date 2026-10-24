@@ -124,12 +124,59 @@ func ReadLaneCapacity(lane string, now time.Time) (LaneCapacity, error) {
 	return ReadLaneCapacityWithConfig(lane, now, DefaultLaneCapacityConfig(os.Getenv("COMPOUND_HOME")))
 }
 
+// ReadLaneCapacityWithConfig reads the capacity sources for one evaluation. It is the
+// production front door: it re-reads every source on every call, so a decision always sees the
+// current bytes.
 func ReadLaneCapacityWithConfig(lane string, now time.Time, cfg LaneCapacityConfig) (LaneCapacity, error) {
 	cfg = normalizeLaneCapacityConfig(cfg, "")
-	key, aliasNote := resolveLaneCapacityKey(lane, cfg)
+	return readLaneCapacityWithFacts(lane, now, cfg.ExpectedMinutes, freshLaneCapacityFacts(cfg))
+}
+
+// laneCapacityFacts is the seam the lane-capacity composition runs over: where the source facts
+// come from. The fresh path reads them from disk on every evaluation; a request-scoped
+// observation serves the bytes it already read for that request. Both routes run the SAME
+// composition and the SAME resolver, so a decision can never differ between them.
+type laneCapacityFacts struct {
+	// aliases is the operator-owned lane-alias override map. Nil when the file is absent.
+	aliases map[string]string
+	// aliasErr is the alias-file read/parse failure. Non-nil means the file exists but could
+	// not be read, which composes a note onto a final-unknown state.
+	aliasErr error
+	// installed reports whether ANY configured capacity source file exists.
+	installed bool
+	// usage answers the usage-feed question for one provider family.
+	usage func(provider string, now time.Time, expectedMinutes int) (LaneCapacity, bool, error)
+	// quotaWall answers the multi-auth quota-cache question for one provider family.
+	quotaWall func(provider string, now time.Time) (LaneCapacity, bool, error)
+	// deadAccount answers the account-projection question for one provider family.
+	deadAccount func(provider string, now time.Time) (LaneCapacity, bool, error)
+}
+
+// freshLaneCapacityFacts reads every capacity source for one evaluation. This is the production
+// path: it re-reads on every call, so a decision always sees the current bytes.
+func freshLaneCapacityFacts(cfg LaneCapacityConfig) laneCapacityFacts {
+	aliases, aliasErr := loadLaneCapacityAliases(cfg.Paths.AliasesPath)
 	installed := capacitySourceInstalled(cfg.Paths)
-	capacity := LaneCapacity{State: CapacityUnknown, DataRef: "no matching capacity row", SourceInstalled: installed}
-	if !installed {
+	facts := laneCapacityFacts{aliases: aliases, aliasErr: aliasErr, installed: installed}
+	facts.usage = func(provider string, now time.Time, expectedMinutes int) (LaneCapacity, bool, error) {
+		return readCodexBarCapacity(cfg.Paths, provider, now, expectedMinutes, capacityFreshness(provider))
+	}
+	facts.quotaWall = func(provider string, now time.Time) (LaneCapacity, bool, error) {
+		return readFreshQuotaWall(cfg.Paths.QuotaCachePath, provider, now)
+	}
+	facts.deadAccount = func(provider string, now time.Time) (LaneCapacity, bool, error) {
+		return readDeadAccountProjection(cfg.Paths.AccountProjectionPath, provider, now)
+	}
+	return facts
+}
+
+// readLaneCapacityWithFacts is the ONE lane-capacity composition. It resolves the lane to a
+// capacity family, then layers the usage feed, the quota-cache wall and the account-projection
+// death in the same order and with the same precedence for every caller.
+func readLaneCapacityWithFacts(lane string, now time.Time, expectedMinutes int, facts laneCapacityFacts) (LaneCapacity, error) {
+	key, aliasNote := resolveLaneCapacityKeyFrom(lane, facts.aliases, facts.aliasErr)
+	capacity := LaneCapacity{State: CapacityUnknown, DataRef: "no matching capacity row", SourceInstalled: facts.installed}
+	if !facts.installed {
 		capacity.DataRef = "no capacity source installed"
 	}
 	if key == "" {
@@ -139,16 +186,16 @@ func ReadLaneCapacityWithConfig(lane string, now time.Time, cfg LaneCapacityConf
 		return capacity, nil
 	}
 
-	usage, ok, err := readCodexBarCapacity(cfg.Paths, key, now, cfg.ExpectedMinutes, capacityFreshness(key))
+	usage, ok, err := facts.usage(key, now, expectedMinutes)
 	if err != nil {
 		return LaneCapacity{}, err
 	}
 	if ok {
 		capacity = usage
 	} else if usage.DataRef != "" {
-		// Annotated unknown: readCodexBarCapacity returns a non-empty LaneCapacity even when
-		// no fresh row was found, so callers can tell WHY the lane is unknown — zero rows vs
-		// only-stale rows. Carry the annotation forward; wall/dead checks below may still
+		// Annotated unknown: the usage question returns a non-empty LaneCapacity even when no
+		// fresh row was found, so callers can tell WHY the lane is unknown — zero rows vs
+		// only-stale rows. Carry the annotation forward; the wall/dead checks below may still
 		// override if their own fresh evidence arrives.
 		capacity.DataRef = usage.DataRef
 		if !usage.LastProven.IsZero() {
@@ -159,7 +206,7 @@ func ReadLaneCapacityWithConfig(lane string, now time.Time, cfg LaneCapacityConf
 		}
 	}
 
-	wall, ok, err := readFreshQuotaWall(cfg.Paths.QuotaCachePath, key, now)
+	wall, ok, err := facts.quotaWall(key, now)
 	if err != nil {
 		return LaneCapacity{}, err
 	}
@@ -169,7 +216,7 @@ func ReadLaneCapacityWithConfig(lane string, now time.Time, cfg LaneCapacityConf
 		capacity = wall
 	}
 
-	dead, ok, err := readDeadAccountProjection(cfg.Paths.AccountProjectionPath, key, now)
+	dead, ok, err := facts.deadAccount(key, now)
 	if err != nil {
 		return LaneCapacity{}, err
 	}
@@ -178,7 +225,7 @@ func ReadLaneCapacityWithConfig(lane string, now time.Time, cfg LaneCapacityConf
 		dead.ResetsAt = capacity.ResetsAt
 		capacity = dead
 	}
-	capacity.SourceInstalled = installed
+	capacity.SourceInstalled = facts.installed
 	// Compose malformed-alias note onto any final-unknown state. Earlier branches already
 	// appended the note when key==""; this covers the resolved-but-stale branch where the
 	// lane resolves to a family but only stale rows are available.
@@ -245,30 +292,18 @@ func capacityRowSourcesFor(paths LaneCapacityPaths) []capacityRowSource {
 	}
 }
 
-// readCapacityRowsFromSource scans a single usage-row JSONL file, tagging every matching row with
-// the source's label. A blank path or a missing file is not an error — it simply contributes zero
+// scanCapacityRows scans one usage-row JSONL file and retains only the rows the accept
+// predicate approves. It is the shared parser for both capacity paths: the fresh reader accepts
+// the one provider family it was asked about, and a request-scoped observation accepts every
+// family it could evaluate. A blank path or a missing file is not an error — it contributes zero
 // rows and reports installed=false so the caller can distinguish "nothing wired" from "wired but
-// empty". An unreadable/corrupt file IS an error: silently treating "broken" as "empty" would hide
-// a real misconfiguration from the freshness veto above it.
-func readCapacityRowsFromSource(src capacityRowSource, now time.Time, matches func(string) bool) (rows []codexBarCapacityRow, installed bool, err error) {
-	parsed, installed, err := readCapacityRowsFromSourceFile(src)
-	if err != nil {
-		return nil, installed, err
-	}
-	return filterCapacityRows(parsed, now, matches), installed, nil
-}
-
-// readCapacityRowsFromSourceFile scans a single usage-row JSONL file and returns every row it can
-// parse, tagged with the source's label. A blank path or a missing file is not an error — it
-// contributes zero rows and reports installed=false so the caller can distinguish "nothing wired"
-// from "wired but empty". An unreadable/corrupt file IS an error: silently treating "broken" as
-// "empty" would hide a real misconfiguration from the freshness veto above it.
+// empty". An unreadable/corrupt file IS an error: silently treating "broken" as "empty" would
+// hide a real misconfiguration from the freshness veto above it.
 //
-// The returned rows are the PARSED FILE, not the rows that constrain a decision. A row naming
-// another provider, or one sampled in the future, is still returned here and filtered by the
-// caller. That split is what lets one request parse each usage file once and then evaluate every
-// actor against the same parsed bytes, without any actor seeing another's rows.
-func readCapacityRowsFromSourceFile(src capacityRowSource) (rows []codexBarCapacityRow, installed bool, err error) {
+// The accept predicate runs on the PARSED row, after the malformed/NaN/sampledAt rejections, so
+// no path can retain a row the decision could not use. Nothing that accept rejects is ever
+// materialized: a broad multi-provider feed costs a lookup only its own rows.
+func scanCapacityRows(src capacityRowSource, accept func(codexBarCapacityRow) bool) (rows []codexBarCapacityRow, installed bool, err error) {
 	if strings.TrimSpace(src.path) == "" {
 		return nil, false, nil
 	}
@@ -298,6 +333,9 @@ func readCapacityRowsFromSourceFile(src capacityRowSource) (rows []codexBarCapac
 		}
 		row.sampled = sampled
 		row.source = src.label
+		if accept != nil && !accept(row) {
+			continue
+		}
 		rows = append(rows, row)
 	}
 	if err := scanner.Err(); err != nil {
@@ -306,22 +344,13 @@ func readCapacityRowsFromSourceFile(src capacityRowSource) (rows []codexBarCapac
 	return rows, installed, nil
 }
 
-// filterCapacityRows keeps the rows that can constrain a decision for one provider family at one
-// instant: rows whose provider matches the requested family, and no row sampled beyond the
-// clock-skew allowance. The input slice is never mutated and the returned slice holds copies, so a
-// caller may keep the parsed file and let every actor filter its own view of it.
-func filterCapacityRows(rows []codexBarCapacityRow, now time.Time, matches func(string) bool) []codexBarCapacityRow {
-	out := make([]codexBarCapacityRow, 0, len(rows))
-	for _, row := range rows {
-		if !matches(row.Provider) {
-			continue
-		}
-		if row.sampled.After(now.Add(capacityClockSkew)) {
-			continue
-		}
-		out = append(out, row)
-	}
-	return out
+// readCapacityRowsFromSource scans a single usage-row JSONL file for ONE provider family at one
+// instant. The family filter and the clock-skew allowance run inside the scan, so a broad
+// multi-provider feed never materializes rows this lookup will not use.
+func readCapacityRowsFromSource(src capacityRowSource, now time.Time, matches func(string) bool) (rows []codexBarCapacityRow, installed bool, err error) {
+	return scanCapacityRows(src, func(row codexBarCapacityRow) bool {
+		return matches(row.Provider) && !row.sampled.After(now.Add(capacityClockSkew))
+	})
 }
 
 // readCapacityRowsFromSources merges matching rows from every source file that exists.
@@ -367,7 +396,7 @@ func readCodexBarCapacityMatching(sources []capacityRowSource, provider string, 
 
 // decideCodexBarCapacity is the freshness/cluster/window decision over an ALREADY-READ row set.
 // The row set is consumed in place (it is sorted here), so a caller that shares parsed rows
-// between actors must hand over its own copy — filterCapacityRows does exactly that.
+// between actors must hand over its own copy.
 func decideCodexBarCapacity(rows []codexBarCapacityRow, installed bool, provider string, now time.Time, expectedMinutes int, freshness time.Duration) (LaneCapacity, bool, error) {
 	if !installed {
 		return LaneCapacity{}, false, nil
@@ -590,8 +619,22 @@ type quotaCacheDocument struct {
 	ByAccountID map[string]quotaCacheAccount `json:"byAccountId"`
 }
 
+// quotaWallApplies reports whether the multi-auth quota cache can answer for a provider family
+// at all. The cache is a Codex-family artifact; no other family reads it.
+func quotaWallApplies(provider, path string) bool {
+	return provider == "codex" && strings.TrimSpace(path) != ""
+}
+
+// quotaCacheWithinFreshness reports whether the quota cache's observed mtime can constrain a
+// decision. A cache observed beyond the clock-skew allowance in the future, or older than the
+// wall-freshness window, is ignored.
+func quotaCacheWithinFreshness(observed, now time.Time) bool {
+	age := now.Sub(observed)
+	return age >= -capacityClockSkew && age <= capacityWallFreshness
+}
+
 func readFreshQuotaWall(path, lane string, now time.Time) (LaneCapacity, bool, error) {
-	if lane != "codex" || strings.TrimSpace(path) == "" {
+	if !quotaWallApplies(lane, path) {
 		return LaneCapacity{}, false, nil
 	}
 	info, err := os.Stat(path)
@@ -602,8 +645,7 @@ func readFreshQuotaWall(path, lane string, now time.Time) (LaneCapacity, bool, e
 		return LaneCapacity{}, false, fmt.Errorf("stat quota cache: %w", err)
 	}
 	observed := info.ModTime()
-	age := now.Sub(observed)
-	if age < -capacityClockSkew || age > capacityWallFreshness {
+	if !quotaCacheWithinFreshness(observed, now) {
 		return LaneCapacity{}, false, nil
 	}
 	data, err := os.ReadFile(path)
@@ -633,8 +675,13 @@ func decideFreshQuotaWall(observed time.Time, cache quotaCacheDocument) (LaneCap
 	return LaneCapacity{}, false, nil
 }
 
+// accountProjectionApplies reports whether an account projection is configured as a source.
+func accountProjectionApplies(path string) bool {
+	return strings.TrimSpace(path) != ""
+}
+
 func readDeadAccountProjection(path, lane string, now time.Time) (LaneCapacity, bool, error) {
-	if strings.TrimSpace(path) == "" {
+	if !accountProjectionApplies(path) {
 		return LaneCapacity{}, false, nil
 	}
 	projection, err := readAccountProjectionFile(path)
@@ -712,7 +759,7 @@ func GuardLaneCapacity(homePath, lane, capabilityClass string, now time.Time, co
 	if err != nil {
 		return LaneCapacityDecision{}, err
 	}
-	alternatives = capacityAlternativeLadder(homePath, capabilityClass, alternatives)
+	alternatives = capacityAlternativeLadder(capabilityClass, alternatives, freshRoutingDefaults(homePath))
 	return decideLaneCapacity(homePath, lane, now, confirm, alternatives, cfg, capacity)
 }
 
@@ -789,7 +836,7 @@ func guardDeclaredLaneCapacityWithConfigAndProbe(homePath, lane, capabilityClass
 	}
 	capacity.SourceInstalled = installed || capacity.SourceInstalled
 	capacity.DataRef = "source_ref=" + strings.TrimSpace(source.Ref) + "; " + strings.TrimSpace(capacity.DataRef)
-	alternatives = capacityAlternativeLadder(homePath, capabilityClass, alternatives)
+	alternatives = capacityAlternativeLadder(capabilityClass, alternatives, freshRoutingDefaults(homePath))
 	return decideLaneCapacity(homePath, lane, now, confirm, alternatives, cfg, capacity)
 }
 
@@ -913,10 +960,17 @@ func normalizeLaneCapacityConfig(cfg LaneCapacityConfig, homePath string) LaneCa
 	if strings.TrimSpace(cfg.Paths.SupplementUsagePath) == "" {
 		cfg.Paths.SupplementUsagePath = defaults.Paths.SupplementUsagePath
 	}
-	if cfg.ExpectedMinutes <= 0 {
-		cfg.ExpectedMinutes = defaultExpectedMinutes
-	}
+	cfg.ExpectedMinutes = expectedMinutes(cfg.ExpectedMinutes)
 	return cfg
+}
+
+// expectedMinutes is the effective window for one evaluation: the requested duration wins, and
+// an unset request falls back to the default window.
+func expectedMinutes(requested int) int {
+	if requested > 0 {
+		return requested
+	}
+	return defaultExpectedMinutes
 }
 
 // exactLaneCapacityFamily maps a literal, already-lowercased/trimmed lane name to its capacity
@@ -967,7 +1021,7 @@ func inferLaneCapacityFamily(base string) string {
 //
 // Real dispatch lane names carry sub-lane suffixes (`claude-main:sub-lane`) or operator-chosen
 // prefixes (`claude-opus-x`) that the legacy 3-entry switch never recognized — this is the
-// structural half of lane-capacity-alias resolution; resolveLaneCapacityKey layers the
+// structural half of lane-capacity-alias resolution; resolveLaneCapacityKeyFrom layers the
 // operator-owned alias override on top of it.
 func normalizeLaneCapacityKey(value string) string {
 	trimmed := strings.ToLower(strings.TrimSpace(value))
@@ -1023,31 +1077,32 @@ func loadLaneCapacityAliases(path string) (map[string]string, error) {
 	return aliases, nil
 }
 
-// resolveLaneCapacityKey layers the operator-owned alias override on top of the pure structural
-// normalizeLaneCapacityKey rules. Precedence: an exact built-in switch hit (the literal family
-// name, or its sub-lane-stripped base) is never overridden by an alias; short of that, an alias
-// match (checked on the full lowercased/trimmed name, then the ':'-stripped base) beats family
-// inference; a missing alias file is a no-op; a malformed alias file behaves like "no aliases"
-// but is reported via the returned note so ReadLaneCapacityWithConfig can surface it — composed
-// onto the DataRef only when the final state is unknown, per the packet's "no silent swallow,
-// no fleet-wide error either" rule. The alias file is loaded eagerly (even when a structural
-// match is found) so a malformed file can still surface on structurally-resolved lanes when
-// downstream evidence leaves the state unknown.
-func resolveLaneCapacityKey(lane string, cfg LaneCapacityConfig) (key string, unreadableAliasNote string) {
+// resolveLaneCapacityKeyFrom layers the operator-owned alias override on top of the pure
+// structural normalizeLaneCapacityKey rules, using an ALREADY-loaded alias map. Precedence: an
+// exact built-in switch hit (the literal family name, or its sub-lane-stripped base) is never
+// overridden by an alias; short of that, an alias match (checked on the full lowercased/trimmed
+// name, then the ':'-stripped base) beats family inference; a missing alias file is a no-op; a
+// malformed alias file behaves like "no aliases" but is reported via the returned note so the
+// final-unknown DataRef can surface it — composed onto the DataRef only when the final state is
+// unknown, per the packet's "no silent swallow, no fleet-wide error either" rule.
+//
+// The caller loads the alias file eagerly — even when a structural match is found — so a
+// malformed file can still surface on structurally-resolved lanes when downstream evidence
+// leaves the state unknown.
+func resolveLaneCapacityKeyFrom(lane string, aliases map[string]string, aliasErr error) (key string, unreadableAliasNote string) {
 	trimmed := strings.ToLower(strings.TrimSpace(lane))
 	if key := exactLaneCapacityFamily(trimmed); key != "" {
-		return aliasObservation(key, "", cfg)
+		return aliasResolved(key, aliasErr)
 	}
 	base := trimmed
 	if idx := strings.Index(base, ":"); idx >= 0 {
 		base = base[:idx]
 	}
 	if key := exactLaneCapacityFamily(base); key != "" {
-		return aliasObservation(key, "", cfg)
+		return aliasResolved(key, aliasErr)
 	}
 
-	aliases, err := loadLaneCapacityAliases(cfg.Paths.AliasesPath)
-	if err == nil {
+	if aliasErr == nil {
 		if family, ok := aliases[trimmed]; ok {
 			return family, ""
 		}
@@ -1057,25 +1112,19 @@ func resolveLaneCapacityKey(lane string, cfg LaneCapacityConfig) (key string, un
 	}
 
 	inferred := inferLaneCapacityFamily(base)
-	if inferred == "" && err != nil {
-		return "", "lane-aliases.json unreadable"
-	}
-	if err != nil {
+	if aliasErr != nil {
 		return inferred, "lane-aliases.json unreadable"
 	}
 	return inferred, ""
 }
 
-// aliasObservation loads the alias file (if any) for a structurally-resolved key purely to
-// observe whether it is malformed, so the unreadable-note can compose onto a final-unknown
-// DataRef downstream. The note is returned only when the file exists but fails to parse;
-// a missing file (IsNotExist) or a successfully-parsed file produces no note.
-func aliasObservation(key string, _ string, cfg LaneCapacityConfig) (string, string) {
-	aliases, err := loadLaneCapacityAliases(cfg.Paths.AliasesPath)
-	if err != nil {
+// aliasResolved keeps a structurally resolved family and attaches the unreadable-alias note when
+// the alias file exists but could not be parsed. The note is returned only when the file exists
+// but fails to parse; a missing file (IsNotExist) or a successfully-parsed file produces no note.
+func aliasResolved(key string, aliasErr error) (string, string) {
+	if aliasErr != nil {
 		return key, "lane-aliases.json unreadable"
 	}
-	_ = aliases
 	return key, ""
 }
 
@@ -1090,7 +1139,11 @@ func capacityFreshness(lane string) time.Duration {
 	}
 }
 
-func capacityAlternativeLadder(homePath, capabilityClass string, provided []string) []string {
+// capacityAlternativeLadder is the ONE alternative-ladder rule: an explicit ladder wins, an
+// empty capability class has no ladder, and a routing-defaults read that fails yields no ladder
+// rather than an error. The fresh path supplies defaults read from the model-capabilities
+// manifest; a request-scoped observation supplies the defaults it already read.
+func capacityAlternativeLadder(capabilityClass string, provided []string, defaults func() (map[string][]string, error)) []string {
 	if len(provided) > 0 {
 		return append([]string(nil), provided...)
 	}
@@ -1098,11 +1151,22 @@ func capacityAlternativeLadder(homePath, capabilityClass string, provided []stri
 	if class == "" {
 		return nil
 	}
-	manifest, _, _, err := loadModelCapabilitiesSnapshot(homePath)
+	routing, err := defaults()
 	if err != nil {
 		return nil
 	}
-	return append([]string(nil), manifest.RoutingDefaults[class]...)
+	return append([]string(nil), routing[class]...)
+}
+
+// freshRoutingDefaults reads the model-capabilities routing defaults for a home.
+func freshRoutingDefaults(homePath string) func() (map[string][]string, error) {
+	return func() (map[string][]string, error) {
+		manifest, _, _, err := loadModelCapabilitiesSnapshot(homePath)
+		if err != nil {
+			return nil, err
+		}
+		return manifest.RoutingDefaults, nil
+	}
 }
 
 func capacityDecisionMessage(lane string, capacity LaneCapacity, alternatives []string, outcome string) string {

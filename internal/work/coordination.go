@@ -110,7 +110,7 @@ type CoordinationReport struct {
 // The lane-capacity guard is chosen ONCE per request (the request's own guard
 // when given, otherwise the package-level one) and that one guard answers for
 // every actor, so a request never mixes two gates. A caller that injects a
-// request-scoped observation (routeevidence.CoordinationLaneCapacityObservation)
+// request-scoped observation (routeevidence.NewCoordinationCapacityObservation)
 // makes the projection read each capacity source at most once per request
 // instead of once per eligible actor.
 //
