@@ -431,7 +431,7 @@ def tick(cli, config, output, home, workspace, now, dry_run=False):
                 break
             if dry_run:
                 return {"status": "would_review", "role": role, "work_id": identity, "selected": routes[0], "mutations": False, "waiting": waits}
-            result = run_one(cli, home, output, workspace, observation, role, identity, routes[0], prior)
+            result = run_one(cli, home, output, workspace, observation, role, identity, routes[0], prior, rejection)
             result["waiting"] = waits
             return result
     result = {"status": "idle", "waiting": waits}
