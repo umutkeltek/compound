@@ -93,6 +93,11 @@ func TestProofCheckRecoveryFlagDetectsExactTokensOnly(t *testing.T) {
 // the parent re-execs the test binary with an env toggle whose child arm enters cmdProofCheck
 // with the exact arguments. The observed exit code and output therefore come from the production
 // selector and dispatch — removing the routing from cmdProofCheck fails these tests.
+//
+// The child arm runs from an ORPHANED working directory: it enters its own temporary working
+// directory and then removes it, so the retained route is exercised without a current source
+// checkout and without a resolvable current directory. The route reads its home and its output
+// from ABSOLUTE paths, so neither can depend on the missing directory.
 const proofCheckRetainedCLIChildEnv = "COMPOUND_PROOFCHECK_RETAINED_CLI_CHILD"
 
 // TestProofCheckRetainedRecoveryChildEntry is the child arm of the retained command-boundary
@@ -106,6 +111,50 @@ func TestProofCheckRetainedRecoveryChildEntry(t *testing.T) {
 	var args []string
 	if err := json.Unmarshal([]byte(raw), &args); err != nil {
 		t.Fatal(err)
+	}
+	// The recovery route resolves its home and its output from absolute paths, so the missing
+	// working directory cannot change the resolution of either.
+	for index := 0; index < len(args); index++ {
+		name, value := args[index], ""
+		switch {
+		case strings.HasPrefix(name, "--home="), strings.HasPrefix(name, "--out="):
+			value = name[strings.Index(name, "=")+1:]
+		case name == "--home", name == "--out":
+			if index+1 >= len(args) {
+				t.Fatalf("the retained route argument %q has no value", name)
+			}
+			index++
+			value = args[index]
+		default:
+			continue
+		}
+		if !filepath.IsAbs(value) {
+			t.Fatalf("the retained route argument %s is not absolute: %q", name, value)
+		}
+	}
+	// The child enters its OWN temporary working directory and then removes it. The retained route
+	// must not need a current source checkout, and it must not need a current directory either.
+	orphan, err := os.MkdirTemp("", "compound-retained-orphan-cwd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(orphan); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(orphan); err != nil {
+		t.Fatal(err)
+	}
+	// The working directory is really UNAVAILABLE: its recorded path no longer exists, and the
+	// current working directory does not resolve to an existing directory any more.
+	if _, statErr := os.Stat(orphan); !os.IsNotExist(statErr) {
+		t.Fatalf("the orphaned working directory still exists at %q: %v", orphan, statErr)
+	}
+	if wd, wdErr := os.Getwd(); wdErr == nil {
+		if _, statErr := os.Stat(wd); !os.IsNotExist(statErr) {
+			t.Fatalf("the current working directory is still reachable at %q: %v", wd, statErr)
+		}
+	} else if !errors.Is(wdErr, os.ErrNotExist) {
+		t.Fatalf("the current working directory could not be checked: %v", wdErr)
 	}
 	cmdProofCheck(args)
 	// A route that returns instead of exiting is still an observed exit code.

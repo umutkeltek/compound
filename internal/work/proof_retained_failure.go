@@ -225,44 +225,62 @@ func (s *Store) requireRetainedFailedProofGovernanceSeal(reservationID string) e
 	return nil
 }
 
-// validateRetainedFailedProofCompletionLocked runs the FULL native validation of the retained
+// retainedFailedProofAuthentication is the READ-ONLY authentication of a retained failed proof
+// completion. It carries everything the dedicated route needs before it may write anything.
+type retainedFailedProofAuthentication struct {
+	Work     envelope.WorkEnvelope
+	Pending  proofResourceCompletionPending
+	Chain    []runattempt.RunAttempt
+	Terminal runattempt.RunAttempt
+}
+
+// authenticateRetainedFailedProofCompletionLocked runs the FULL native validation of the retained
 // completion and the native execution/remote quiescence probe under the lifecycle mutation guard,
-// before the owned report is restored.
+// BEFORE any effect of the recovery.
 //
-// It shares the ordinary native validator instead of a second set of hand-written partial checks:
-// the real current Work, the real retained RunAttempt and the derived completion expectation decide
-// the verdict. The dedicated route adds exactly one extra rule — an existing governance seal — and
-// one extra probe — native execution and remote fence quiescence.
-func (s *Store) validateRetainedFailedProofCompletionLocked(
+// It is READ-ONLY: a refusal here leaves no native effect behind, and an expired holder is
+// refused before its rearm. It shares the ordinary native validator instead of a second set of
+// hand-written partial checks: the real current Work, the real retained RunAttempt and the derived
+// completion expectation decide the verdict. The dedicated route adds exactly three extra rules —
+// an existing governance seal, the current Work lease owner, and the full retry ancestry — and one
+// extra probe — native execution and remote fence quiescence.
+func (s *Store) authenticateRetainedFailedProofCompletionLocked(
 	workID string,
 	reservation ProofResourceReservation,
 	completeInput ProofResourceCompleteInput,
-) error {
+) (retainedFailedProofAuthentication, error) {
 	var currentReservation ProofResourceReservation
 	if err := s.readProofReservationInto(reservation.ID, &currentReservation); err != nil {
-		return err
+		return retainedFailedProofAuthentication{}, err
 	}
 	currentPending, present, _, err := s.readProofResourceCompletionPending(reservation.ID)
 	if err != nil {
-		return err
+		return retainedFailedProofAuthentication{}, err
 	}
 	if !present {
-		return fmt.Errorf("retained failed proof completion journal %s is gone", reservation.ID)
+		return retainedFailedProofAuthentication{}, fmt.Errorf("retained failed proof completion journal %s is gone", reservation.ID)
 	}
 	if currentPending.GovernanceSeal == "" {
-		return fmt.Errorf("retained failed proof recovery requires an existing completion governance seal")
+		return retainedFailedProofAuthentication{}, fmt.Errorf("retained failed proof recovery requires an existing completion governance seal")
+	}
+	// The Work lease owner is a native fact, not an operator claim: only the actor that
+	// currently owns the Work lease may finish a retained completion. The ordinary native
+	// completion rule owns that check; this route runs it under the SAME effects guard, before
+	// the owned report is restored, so a foreign lease owner never reaches an output.
+	if err := s.requireProofWorkLeaseOwner(workID, completeInput.Actor, "retained failed proof recovery"); err != nil {
+		return retainedFailedProofAuthentication{}, err
 	}
 	w, err := s.Get(workID)
 	if err != nil {
-		return err
+		return retainedFailedProofAuthentication{}, err
 	}
 	ra, err := s.runAttempts().Get(currentPending.Result.RunAttemptID)
 	if err != nil {
-		return fmt.Errorf("retained failed proof attempt cannot be read: %w", err)
+		return retainedFailedProofAuthentication{}, fmt.Errorf("retained failed proof attempt cannot be read: %w", err)
 	}
 	expect, err := s.deriveProofResourceCompletionExpectation(workID, currentReservation, completeInput)
 	if err != nil {
-		return err
+		return retainedFailedProofAuthentication{}, err
 	}
 	_, migrated, err := s.validateAndNormalizeProofResourceCompletionPending(
 		w,
@@ -273,23 +291,82 @@ func (s *Store) validateRetainedFailedProofCompletionLocked(
 		expect,
 	)
 	if err != nil {
-		return fmt.Errorf("retained failed proof completion is not authentic: %w", err)
+		return retainedFailedProofAuthentication{}, fmt.Errorf("retained failed proof completion is not authentic: %w", err)
 	}
 	if migrated {
-		return fmt.Errorf("retained failed proof recovery refuses a legacy completion governance reconstruction")
+		return retainedFailedProofAuthentication{}, fmt.Errorf("retained failed proof recovery refuses a legacy completion governance reconstruction")
+	}
+	// The FULL retry ancestry is authenticated through the existing native lineage owner.
+	// validateAndNormalizeProofResourceCompletionPending authenticates only the CURRENT
+	// attempt, so a corrupt predecessor is invisible to it.
+	chain, err := s.proofRunAttemptAncestry(w, currentReservation, currentPending.Result, ra)
+	if err != nil {
+		return retainedFailedProofAuthentication{}, fmt.Errorf("retained failed proof retry ancestry is not authentic: %w", err)
 	}
 	// Quiescence is a native fact read from the inherited execution barrier and the remote
 	// fences. It is never inferred from a terminal attempt status or from a process list.
 	resource := landlease.ProofResourceForIdentity(s.home, currentReservation.ProofCoordination)
 	pendingExecution, err := resource.ExecutionPending(currentReservation.Holder)
 	if err != nil {
-		return fmt.Errorf("retained failed proof execution quiescence is unattested: %w", err)
+		return retainedFailedProofAuthentication{}, fmt.Errorf("retained failed proof execution quiescence is unattested: %w", err)
 	}
 	if pendingExecution {
-		return fmt.Errorf(
+		return retainedFailedProofAuthentication{}, fmt.Errorf(
 			"retained failed proof recovery refuses an active or ambiguous execution: %s",
 			currentReservation.Holder,
 		)
+	}
+	return retainedFailedProofAuthentication{
+		Work:     w,
+		Pending:  currentPending,
+		Chain:    chain,
+		Terminal: ra,
+	}, nil
+}
+
+// repairRetainedFailedProofRetryReachability requires every attempt of the authenticated retry
+// ancestry to be reachable from the Work envelope, and repairs the ONE legitimate exception: the
+// terminal retry whose forward link is still pending because the interrupted native recovery was
+// minted and journaled before its Work reachability was persisted.
+//
+// Every membership exception of the chain is decided FIRST. The single permitted forward link is
+// written only after the WHOLE chain is known to be reachable otherwise, so a later unreachable
+// ancestor can never be discovered after the write.
+//
+// The repair is the EXISTING native reachability recovery, not a second implementation: the same
+// owner the ordinary completion path uses persists the forward link, the action/decision records
+// and the lifecycle evidence.
+func (s *Store) repairRetainedFailedProofRetryReachability(
+	workID string,
+	reservation ProofResourceReservation,
+	pending proofResourceCompletionPending,
+	chain []runattempt.RunAttempt,
+	terminal runattempt.RunAttempt,
+	now time.Time,
+) error {
+	w, err := s.Get(workID)
+	if err != nil {
+		return err
+	}
+	var repair *runattempt.RunAttempt
+	for index := range chain {
+		attempt := chain[index]
+		if oneOf(attempt.ID, w.RunAttemptIDs) {
+			continue
+		}
+		if attempt.ID != terminal.ID || terminal.ID == reservation.RunAttemptID {
+			return fmt.Errorf("retained failed proof retry lineage attempt %s is not reachable from work", attempt.ID)
+		}
+		if repair != nil {
+			return fmt.Errorf("retained failed proof retry lineage has more than one unreachable attempt")
+		}
+		repair = &attempt
+	}
+	if repair == nil {
+		return nil
+	}
+	if err := s.persistProofCompletionRetryReachability(&w, pending, *repair, now); err != nil {
+		return fmt.Errorf("retained failed proof retry reachability recovery: %w", err)
 	}
 	return nil
 }
