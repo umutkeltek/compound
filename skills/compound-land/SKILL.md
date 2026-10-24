@@ -223,6 +223,13 @@ and check each pinned member base with the same committed ancestry reader.
   or grep the new files against `docs_private/leak-tokens.txt` directly. Test FIXTURES are the
   usual offender: a realistic-looking fixture is exactly where a real private product name gets
   typed. Use synthetic names in fixtures always.
+- **The proof-ceremony doctrine guard has its own cheap preflight** — run
+  `go test ./internal/arch -count=1 -run '^TestProofCeremony'` (seconds, not the full battery)
+  after editing the served proof doctrine in `CONTRIBUTING.md`, `skills/compound-land/SKILL.md`,
+  or `skills/compound-verify/SKILL.md`. It is the same guard the canonical battery runs, so a
+  doctrine edit that breaks the captured-base or base-drift contract — a capture that is not one
+  lone `git rev-parse --verify` command, a base that is recaptured, or a base that drifts between
+  proofs — is caught here instead of forty minutes later inside a full battery.
 - When changing CLI source, run that same staged preflight even with no new files. The generic
   doctor regression is non-strict and tolerates size warnings; the dedicated CLI ratchet and
   strict doctor wiring tests catch them before banking and the full battery. Simplify or move responsibility to its

@@ -85,10 +85,20 @@ or termination assertions to accommodate setup latency.
    ```bash
    # Use the coverage base already selected and validated in compound-land §1.
    test -n "${PROOF_BASE_SHA:-}" &&
-   go run ./cmd/compound proof-check --base "$PROOF_BASE_SHA" \
+   CHECKED_PROOF_BASE_SHA=$(git rev-parse --verify "${PROOF_BASE_SHA:?complete compound-land base selection first}^{commit}") &&
+   test "$CHECKED_PROOF_BASE_SHA" = "$PROOF_BASE_SHA" &&
+   go run ./cmd/compound proof-check --base "$CHECKED_PROOF_BASE_SHA" \
      --work <work_id> --actor "<harness>:<lane>" \
      --out <absolute-report.json>
    ```
+   The base is inherited from `compound-land` §1 and re-checked here, never re-guessed.
+   `CHECKED_PROOF_BASE_SHA` resolves the inherited `PROOF_BASE_SHA` to a commit and the
+   equality check requires it to be that same commit. A nonempty name is not a base: a
+   nonempty `PROOF_BASE_SHA` can still be a moving or mistyped reference, so the resolution
+   and the equality check are what certify the base — the proof runs on
+   `CHECKED_PROOF_BASE_SHA`, never on the inherited name. Never recapture `main^{commit}`
+   here: after landing, `main` has moved, and re-reading it would certify a different
+   `base...HEAD` range than the one `compound-land` proved.
    The actor must already hold the named WorkEnvelope lease. Certifying proof is agent-invocable:
    non-terminal, redirected, and backgrounded stdout are supported; the authoritative full report
    is `--out`. Run it unpiped as its own command by default and preserve the actual process exit
@@ -159,7 +169,7 @@ or termination assertions to accommodate setup latency.
    `battery: FAILED release_pending=true`, and exits nonzero. The installed-runtime Workbench
    artifact is published only after green governed completion and release; candidate,
    release-pending, failed, invalid, dry-run, and CI reports cannot consume that action.
-   Green means: `go run ./scripts/testbattery` (every source package once with `-count=1 -timeout=40m`; general packages first, release durability tests alone next, home tests alone last), `go run ./scripts/testbattery vet`, `go run ./scripts/testbattery build`, `git diff --check`,
+   Green means: `go run ./scripts/testbattery general-release` then `go run ./scripts/testbattery home` (every source package once with `-count=1 -timeout=40m`; general packages first, release durability tests alone next, home tests alone last), `go run ./scripts/testbattery vet`, `go run ./scripts/testbattery build`, `git diff --check`,
    `architecture doctor --strict`, workbench projection, `memory doctor`, and the public redact
    scan of changed files all passed. Any red stops the close — fix or escalate, never weaken the
    check.

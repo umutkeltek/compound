@@ -18,9 +18,15 @@ var (
 	shellAssignment       = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
 	baseArgument          = regexp.MustCompile(`(?:^|\s)--base(?:=|\s+)(\S+)`)
 	nonCertifyingArgument = regexp.MustCompile(`(?:^|\s)--(?:ci-console|dev|ci|dry-run|timings)(?:\s|$)`)
-	proofTerm             = regexp.MustCompile(`(?i)\b(?:proof-check|certifying proof|canonical full profile|full profile)\b`)
-	terminalTerm          = regexp.MustCompile(`(?i)\b(?:terminal|tty|pty)\b`)
-	terminalRequired      = []*regexp.Regexp{
+	// proofBaseCapture matches exactly one shell command substitution that reads a single
+	// commit reference through git rev-parse --verify. The reference may be bare or quoted.
+	// It may not carry a second command, a command separator, or a nested substitution of
+	// either form — backtick substitution is excluded alongside $(...) — so only a lone
+	// capture can certify as an immutable base.
+	proofBaseCapture = regexp.MustCompile(`^\$\(git rev-parse --verify ((?:[^\s()'"\x60;&|]+|"[^"();&|\x60]*"|'[^'();&|\x60]*'))\)$`)
+	proofTerm        = regexp.MustCompile(`(?i)\b(?:proof-check|certifying proof|canonical full profile|full profile)\b`)
+	terminalTerm     = regexp.MustCompile(`(?i)\b(?:terminal|tty|pty)\b`)
+	terminalRequired = []*regexp.Regexp{
 		regexp.MustCompile(`(?i)\b(?:proof-check|certifying proof|canonical full profile|full profile)\b[^.;\n]{0,100}\b(?:requires?|must use|must run|only from)\s+(?:a\s+)?(?:real\s+)?(?:terminal|tty|pty)\b`),
 		regexp.MustCompile(`(?i)\b(?:real\s+)?(?:terminal|tty|pty)\s+is required\b[^.;\n]{0,80}\b(?:proof-check|certifying proof|canonical full profile|full profile)\b`),
 	}
@@ -179,6 +185,228 @@ func TestProofCeremonyCommandGuardRejectsPostLandBaseDrift(t *testing.T) {
 	}
 }
 
+func TestProofCeremonyCommandGuardAcceptsTerminalAndJoinedBases(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{
+			name: "literal base joined to the next guard",
+			body: "```bash\n" +
+				"PROOF_BASE_SHA=0123456789abcdef0123456789abcdef01234567 &&\n" +
+				"compound proof-check --base \"$PROOF_BASE_SHA\" --work work_literal\n" +
+				"```",
+		},
+		{
+			name: "captured base joined to the next guard",
+			body: "```bash\n" +
+				"PROOF_BASE_SHA=$(git rev-parse --verify \"main^{commit}\") &&\n" +
+				"compound proof-check --base \"$PROOF_BASE_SHA\" --work work_capture\n" +
+				"```",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			count, findings := certifyingProofCommandFindings(tc.body)
+			if count != 1 || len(findings) != 0 {
+				t.Fatalf("terminal-joined base count=%d findings=%v", count, findings)
+			}
+		})
+	}
+}
+
+func TestProofCeremonyCommandGuardAcceptsQuotedLiteralBases(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	for _, tc := range []struct {
+		name  string
+		value string
+	}{
+		{
+			name:  "unquoted literal",
+			value: sha,
+		},
+		{
+			name:  "double quoted literal",
+			value: `"` + sha + `"`,
+		},
+		{
+			name:  "single quoted literal",
+			value: "'" + sha + "'",
+		},
+		{
+			name:  "unquoted literal joined to the next guard",
+			value: sha + " &&",
+		},
+		{
+			name:  "double quoted literal joined to the next guard",
+			value: `"` + sha + `" &&`,
+		},
+		{
+			name:  "single quoted literal joined to the next guard",
+			value: "'" + sha + "' &&",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "```bash\n" +
+				"PROOF_BASE_SHA=" + tc.value + "\n" +
+				"compound proof-check --base \"$PROOF_BASE_SHA\" --work work_literal\n" +
+				"```"
+			count, findings := certifyingProofCommandFindings(body)
+			if count != 1 || len(findings) != 0 {
+				t.Fatalf("quoted literal base count=%d findings=%v", count, findings)
+			}
+		})
+	}
+}
+
+func TestProofCeremonyCommandGuardRejectsMalformedQuotedLiteralBases(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	for _, tc := range []struct {
+		name  string
+		value string
+	}{
+		{
+			name:  "unclosed double quote",
+			value: `"` + sha,
+		},
+		{
+			name:  "unopened double quote",
+			value: sha + `"`,
+		},
+		{
+			name:  "unclosed single quote",
+			value: "'" + sha,
+		},
+		{
+			name:  "unopened single quote",
+			value: sha + "'",
+		},
+		{
+			name:  "mismatched quote pair",
+			value: `"` + sha + "'",
+		},
+		{
+			name:  "doubled quote pair",
+			value: `""` + sha + `""`,
+		},
+		{
+			name:  "unclosed double quote joined to the next guard",
+			value: `"` + sha + " &&",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "```bash\n" +
+				"PROOF_BASE_SHA=" + tc.value + "\n" +
+				"compound proof-check --base \"$PROOF_BASE_SHA\" --work work_malformed\n" +
+				"```"
+			count, findings := certifyingProofCommandFindings(body)
+			if count != 1 || len(findings) != 1 {
+				t.Fatalf("malformed literal base count=%d findings=%v", count, findings)
+			}
+			if !strings.Contains(findings[0], "captured full-SHA variable") {
+				t.Fatalf("finding %q does not reject the malformed literal base", findings[0])
+			}
+		})
+	}
+}
+
+func TestProofCeremonyCommandGuardRejectsBacktickCapturedRefs(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+	}{
+		{
+			name:  "double quoted backtick substitution",
+			value: "$(git rev-parse --verify \"`id`^{commit}\")",
+		},
+		{
+			name:  "single quoted backtick substitution",
+			value: "$(git rev-parse --verify '`id`^{commit}')",
+		},
+		{
+			name:  "bare backtick substitution",
+			value: "$(git rev-parse --verify `id`^{commit})",
+		},
+		{
+			name:  "backtick substitution wrapping the commit suffix",
+			value: "$(git rev-parse --verify `id^{commit}`)",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "```bash\n" +
+				"PROOF_BASE_SHA=" + tc.value + "\n" +
+				"compound proof-check --base \"$PROOF_BASE_SHA\" --work work_backtick\n" +
+				"```"
+			count, findings := certifyingProofCommandFindings(body)
+			if count != 1 || len(findings) != 1 {
+				t.Fatalf("backtick captured ref count=%d findings=%v", count, findings)
+			}
+			if !strings.Contains(findings[0], "captured full-SHA variable") {
+				t.Fatalf("finding %q does not reject the backtick captured ref", findings[0])
+			}
+		})
+	}
+}
+
+func TestProofCeremonyCommandGuardRejectsUnboundCaptureChains(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+	}{
+		{
+			name:  "two captures chained internally",
+			value: `$(git rev-parse --verify "main^{commit}") && $(git rev-parse --verify "other^{commit}")`,
+		},
+		{
+			name:  "or operator chain",
+			value: `$(git rev-parse --verify "main^{commit}") || echo fallback`,
+		},
+		{
+			name:  "semicolon chain",
+			value: `$(git rev-parse --verify "main^{commit}") ; echo fallback`,
+		},
+		{
+			name:  "arbitrary trailing suffix",
+			value: `$(git rev-parse --verify "main^{commit}") trailing`,
+		},
+		{
+			name:  "nested capture",
+			value: `$(git rev-parse --verify "$(git rev-parse --verify "main^{commit}")")`,
+		},
+		{
+			name:  "two terminal and operators",
+			value: `$(git rev-parse --verify "main^{commit}") && &&`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "```bash\n" +
+				"PROOF_BASE_SHA=" + tc.value + "\n" +
+				"compound proof-check --base \"$PROOF_BASE_SHA\" --work work_chain\n" +
+				"```"
+			count, findings := certifyingProofCommandFindings(body)
+			if count != 1 || len(findings) != 1 {
+				t.Fatalf("unbound capture chain count=%d findings=%v", count, findings)
+			}
+			if !strings.Contains(findings[0], "captured full-SHA variable") {
+				t.Fatalf("finding %q does not reject the unbound capture chain", findings[0])
+			}
+		})
+	}
+}
+
+func TestProofCeremonyCommandGuardRejectsChainedPostProofReassignment(t *testing.T) {
+	body := "```bash\n" +
+		"PROOF_BASE_SHA=$(git rev-parse --verify \"main^{commit}\") &&\n" +
+		"compound proof-check --base \"$PROOF_BASE_SHA\" --work work_pre\n" +
+		"```\n\n```bash\n" +
+		"PROOF_BASE_SHA=$(git rev-parse --verify \"main^{commit}\") &&\n" +
+		"compound proof-check --base \"$PROOF_BASE_SHA\" --work work_post\n" +
+		"```"
+	count, findings := certifyingProofCommandFindings(body)
+	if count != 2 || len(findings) != 1 || !strings.Contains(findings[0], "reassigned") {
+		t.Fatalf("chained post-proof reassignment count=%d findings=%v", count, findings)
+	}
+}
+
 func TestProofCeremonyTerminalGuardAllowsExplicitNonRequirement(t *testing.T) {
 	if findings := staleProofTerminalFindings("Certifying proof is agent-invocable; a real TTY is not required."); len(findings) != 0 {
 		t.Fatalf("explicit non-requirement findings = %v", findings)
@@ -321,16 +549,33 @@ func shellLogicalLines(lines []string) []string {
 }
 
 func immutableProofBaseAssignment(value string) bool {
-	value = strings.TrimSpace(strings.Trim(value, "\"'"))
-	if fullProofBaseSHA.MatchString(value) {
+	value = strings.TrimSpace(value)
+	// A capture joined to the next guard by a terminal "&&" is still one capture.
+	// Trim at most that one operator: a second separator leaves an extra command.
+	value = strings.TrimSpace(strings.TrimSuffix(value, "&&"))
+	if fullProofBaseSHA.MatchString(trimPairedQuotes(value)) {
 		return true
 	}
-	if !strings.HasPrefix(value, "$(git rev-parse --verify ") || !strings.HasSuffix(value, ")") {
+	match := proofBaseCapture.FindStringSubmatch(value)
+	if match == nil {
 		return false
 	}
-	ref := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(value, "$(git rev-parse --verify "), ")"))
-	ref = strings.Trim(ref, "\"'")
+	ref := trimPairedQuotes(strings.TrimSpace(match[1]))
 	return strings.HasSuffix(ref, "^{commit}") && len(strings.TrimSuffix(ref, "^{commit}")) > 0
+}
+
+// trimPairedQuotes removes exactly one surrounding pair of matching single or double
+// quotes. Unpaired or mismatched quoting is left intact so the value fails validation
+// instead of being silently repaired into an accepted literal.
+func trimPairedQuotes(value string) string {
+	if len(value) < 2 {
+		return value
+	}
+	first, last := value[0], value[len(value)-1]
+	if (first == '"' || first == '\'') && last == first {
+		return value[1 : len(value)-1]
+	}
+	return value
 }
 
 func immutableProofBaseIdentity(value string, assignments map[string]bool) (string, string, bool) {
