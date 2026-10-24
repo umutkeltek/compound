@@ -13,6 +13,7 @@ import (
 
 	"compound/internal/authority/gitrepository"
 	"compound/internal/finding"
+	"compound/internal/runattempt"
 )
 
 // RunSourceRedaction moves the native dispatch into its owning work organ.
@@ -121,6 +122,21 @@ func ValidatePrivateSourceEvidence(step ProofCheckStep, source *gitrepository.Sn
 }
 
 func (s *Store) validatePrivateSourceProfileAuthority(workID, actor string, profile ProofResourceProfile, now time.Time) error {
+	return s.validatePrivateSourceProfileAuthorityAt(workID, actor, profile, now, true)
+}
+
+// A complete owned failure is audit evidence, never permission to publish source.
+// Preserve its historical review while retaining current authority for every
+// certifying, unknown, inconsistent, or foreign completion and new reservation.
+func (s *Store) validatePrivateSourceCompletionAuthority(workID, actor string, profile ProofResourceProfile, result ProofResourceResult, now time.Time) error {
+	failedAudit := result.WorkID == workID && result.Actor == actor &&
+		result.Status == ProofResourceFailed && result.RunAttemptStatus == runattempt.StatusFailed &&
+		result.OwnedReport && result.ReportArtifactRef != "" && result.ReportStatus == "failed" &&
+		result.ProducerExitKnown && result.ProducerExitCode != 0 && result.VerificationRef == ""
+	return s.validatePrivateSourceProfileAuthorityAt(workID, actor, profile, now, !failedAudit)
+}
+
+func (s *Store) validatePrivateSourceProfileAuthorityAt(workID, actor string, profile ProofResourceProfile, now time.Time, requireCurrent bool) error {
 	for _, gate := range profile.Gates {
 		step := ProofCheckStep{Name: gate.Name, Command: gate.Command, ProofRef: gate.ProofRef}
 		binding, reviewed, err := PrivateSourceBindingForStep(step)
@@ -133,7 +149,7 @@ func (s *Store) validatePrivateSourceProfileAuthority(workID, actor string, prof
 		if profile.SourceSnapshot == nil || profile.Kind != "canonical_full" {
 			return fmt.Errorf("private source authority requires an exact canonical source profile")
 		}
-		authority, err := s.resolvePrivateSourceReview(workID, actor, binding.ActionID, profile.Repo, *profile.SourceSnapshot, now, true)
+		authority, err := s.resolvePrivateSourceReview(workID, actor, binding.ActionID, profile.Repo, *profile.SourceSnapshot, now, requireCurrent)
 		if err != nil || authority.Binding != binding {
 			return fmt.Errorf("private source authority differs from sealed proof profile")
 		}
