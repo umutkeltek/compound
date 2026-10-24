@@ -153,7 +153,20 @@ type segmentFile struct {
 	seq  int
 }
 
+// familyInventoryObserver is a test-only seam fired once per family
+// directory ENUMERATION — the per-id cost the batch reader collapses to one
+// enumeration per family. It is nil in production (counter-seam precedent:
+// indexParseObserver in index.go).
+var familyInventoryObserver func(family string)
+
+func notifyFamilyInventory(family string) {
+	if familyInventoryObserver != nil {
+		familyInventoryObserver(family)
+	}
+}
+
 func (e *engine) familySegments(family string) ([]segmentFile, error) {
+	notifyFamilyInventory(family)
 	dir := filepath.Join(e.segRoot, family)
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
