@@ -68,6 +68,13 @@ if mkdir "$PROOF_GATE_ONCE" 2>/dev/null; then
   printf '%s\n' "$GOCACHE" > "$PROOF_GATE_OBSERVED_CACHE"
   cat sealed-sentinel.txt > "$PROOF_GATE_OBSERVED"
   : > "$PROOF_GATE_OBSERVED_COMPLETE"
+  # Hold the first gate here until the caller cancels the run. The gate must
+  # not exit on its own: a gate that returns lets the run race into later
+  # gates, and the cancellation then lands on an arbitrary step instead of
+  # this one. The whole process group is killed on cancellation.
+  while :; do
+    sleep 0.05
+  done
 fi
 exit 0
 `
@@ -99,7 +106,9 @@ exit 0
 	)
 	defer cancelRunner()
 	done := make(chan runnerResult, 1)
+	finished := make(chan struct{})
 	go func() {
+		defer close(finished)
 		report, runErr := proofCheckCanonicalRunner(
 			runnerContext,
 			repo,
@@ -111,6 +120,17 @@ exit 0
 		)
 		done <- runnerResult{report: report, err: runErr}
 	}()
+	// Registered before any failure below can end the test: an early Fatal
+	// still cancels the owned run and joins it, so no gate survives the
+	// temporary paths it observes.
+	t.Cleanup(func() {
+		cancelRunner()
+		select {
+		case <-finished:
+		case <-time.After(30 * time.Second):
+			t.Error("cancelled canonical run did not return")
+		}
+	})
 
 	waitForProofCheckTestPath(t, startedPath)
 	if err := os.WriteFile(sentinelPath, []byte(transientBody), 0o644); err != nil {
@@ -134,8 +154,22 @@ exit 0
 	cancelRunner()
 
 	result := <-done
-	if result.err != nil {
-		t.Fatal(result.err)
+	// Production proof-check reports the cancellation cause; a cancelled run is
+	// never a successful run.
+	if !errors.Is(result.err, context.Canceled) {
+		t.Fatalf("cancelled canonical run error = %v, want context.Canceled", result.err)
+	}
+	if result.report.Status != "failed" {
+		t.Fatalf("cancelled canonical report status = %q, want failed", result.report.Status)
+	}
+	if len(result.report.Steps) == 0 {
+		t.Fatal("cancelled canonical report carried no partial step")
+	}
+	if len(result.report.Steps) >= len(plan.Steps) {
+		t.Fatalf("cancelled canonical report carried %d steps, want a partial report of fewer than %d", len(result.report.Steps), len(plan.Steps))
+	}
+	if result.report.Steps[0].Status != "failed" {
+		t.Fatalf("cancelled canonical first step status = %q, want failed", result.report.Steps[0].Status)
 	}
 	if result.report.Repo != repo {
 		t.Fatalf("proof report repo = %q, want caller repo identity %q", result.report.Repo, repo)
