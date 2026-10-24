@@ -9,6 +9,7 @@ import (
 
 	"compound/internal/home"
 	"compound/internal/hookplan"
+	"compound/internal/routeevidence"
 	"compound/internal/work"
 )
 
@@ -63,16 +64,20 @@ func cmdCoordination(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
 	}
-	// Read-only by registry contract: coordination projects the planning half
-	// of `work continue` without executing any of it, so it must not materialize
-	// work/ or events/ just by looking (see work.OpenReadOnly). The governed
-	// `measure` subcommand keeps its own opener below.
+	// Read-only by registry contract: looking must not materialize work/ or
+	// events/ (see work.OpenReadOnly); `measure` keeps its own opener below.
 	store, err := work.OpenReadOnly(homePath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-	report, err := store.Coordination(time.Now(), work.CoordinationOptions{Actor: actor})
+	// One request-scoped, read-only capacity observation: every eligible actor
+	// reads each capacity source at most once; dispatch/delegate keep their own guard.
+	now := time.Now()
+	report, err := store.Coordination(now, work.CoordinationOptions{
+		Actor:         actor,
+		CapacityGuard: routeevidence.NewCoordinationCapacityObservation(routeevidence.LaneCapacityConfig{}, homePath, now).Guard(),
+	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -224,8 +229,7 @@ func printCoordinationFace(label string, face work.ActorCoordination) {
 			fmt.Printf("              %s\n", face.Doing.NextAction)
 		}
 	} else {
-		// Idle actors compress to one line: the per-workbench wait truth is
-		// noise for a fleet row holding nothing (it stays in --json).
+		// Idle actors compress to one line; the wait truth stays in --json.
 		if !face.CanContinue {
 			fmt.Printf("      doing:  idle (no safe continue step: %s)\n", firstNonEmptyCLI(face.WaitReason, "no open work"))
 		} else {

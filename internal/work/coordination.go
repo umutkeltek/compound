@@ -1,6 +1,7 @@
 package work
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -26,6 +27,13 @@ type CoordinationOptions struct {
 	// deterministically (presence then lexicographic); ActorExplicit reports
 	// whether the caller chose.
 	Actor string
+	// CapacityGuard overrides the package-level lane-capacity guard for THIS
+	// request only. Nil keeps the existing global guard. The guard is chosen
+	// once per request and used for every actor and every check, so one request
+	// never mixes two guards (and never observes a global that another writer
+	// swapped mid-projection). A caller that injects a request-scoped
+	// observation gets one source read per request instead of one per actor.
+	CapacityGuard LaneCapacityGuardFunc
 }
 
 // CoordinationLane is the lane-capacity gate for an actor at projection time:
@@ -98,12 +106,31 @@ type CoordinationReport struct {
 // Coordination projects the read-only coordination view. It is a pure observer:
 // workbench reads, dry-run candidate prep, and a ReadOnly lane-capacity probe —
 // it never dispatches, claims, advances, admits, or records.
+//
+// The lane-capacity guard is chosen ONCE per request (the request's own guard
+// when given, otherwise the package-level one) and that one guard answers for
+// every actor, so a request never mixes two gates. A caller that injects a
+// request-scoped observation (routeevidence.NewCoordinationCapacityObservation)
+// makes the projection read each capacity source at most once per request
+// instead of once per eligible actor.
+//
+// A guard failure is NOT swallowed. An unreadable capacity source used to
+// arrive as a nil lane, which the projection read as "no gate applied" — an
+// unreadable source looked exactly like an ungated actor. It now travels out
+// through this error return.
 func (s *Store) Coordination(now time.Time, opts CoordinationOptions) (CoordinationReport, error) {
 	report := CoordinationReport{
 		SchemaVersion: CoordinationSchemaVersion,
 		GeneratedAt:   now.UTC().Format(time.RFC3339),
 		Others:        []ActorCoordination{},
 		Waits:         []WaitEdge{},
+	}
+	// Choose the guard ONCE. The request's own guard wins; otherwise the
+	// package-level guard applies. Reading the global per actor could mix two
+	// guards inside one projection.
+	guard := opts.CapacityGuard
+	if guard == nil {
+		guard = LaneCapacityGuard
 	}
 	workbench, err := s.Workbench(now, WorkbenchOptions{RecentLimit: 8})
 	if err != nil {
@@ -124,7 +151,7 @@ func (s *Store) Coordination(now time.Time, opts CoordinationOptions) (Coordinat
 	gateNeeded := false
 	for _, actor := range actors {
 		_, isInvolved := involved[actor]
-		face, waits, needsGate, err := s.coordinationActor(now, actor, isInvolved, workbench, edgeKeys)
+		face, waits, needsGate, err := s.coordinationActor(now, actor, isInvolved, workbench, edgeKeys, guard)
 		if err != nil {
 			return CoordinationReport{}, err
 		}
@@ -156,14 +183,14 @@ func (s *Store) Coordination(now time.Time, opts CoordinationOptions) (Coordinat
 		// re-targets or flattens X to an empty face. Its shared-queue summary
 		// remains visible without inventing relationships to foreign work.
 		if explicit && strings.TrimSpace(me) != "" {
-			face, waits, needsGate, aerr := s.coordinationActor(now, me, true, workbench, edgeKeys)
+			face, waits, needsGate, aerr := s.coordinationActor(now, me, true, workbench, edgeKeys, guard)
 			if aerr != nil {
 				return CoordinationReport{}, aerr
 			}
 			report.Me = face
 			report.Waits = append(report.Waits, waits...)
 			report.Integrity = mergeUnique(report.Integrity, face.integrityNotes())
-			if needsGate && LaneCapacityGuard == nil {
+			if needsGate && guard == nil {
 				report.Integrity = mergeUnique(report.Integrity, []string{"lane_capacity_guard_not_installed"})
 			}
 		} else {
@@ -177,7 +204,7 @@ func (s *Store) Coordination(now time.Time, opts CoordinationOptions) (Coordinat
 		}
 		return report.Others[i].Actor < report.Others[j].Actor
 	})
-	if gateNeeded && LaneCapacityGuard == nil {
+	if gateNeeded && guard == nil {
 		report.Integrity = mergeUnique(report.Integrity, []string{"lane_capacity_guard_not_installed"})
 	}
 	return report, nil
@@ -187,8 +214,9 @@ func (s *Store) Coordination(now time.Time, opts CoordinationOptions) (Coordinat
 // reports whether the actor stood at a dispatch point where a lane-capacity
 // gate would decide (used only for the integrity note about a missing guard).
 // involved marks actors with a live lease or claim — only involved actors (or
-// an explicitly chosen me) contribute wait edges to the global graph.
-func (s *Store) coordinationActor(now time.Time, actor string, involved bool, workbench WorkbenchReport, edgeKeys map[string]struct{}) (ActorCoordination, []WaitEdge, bool, error) {
+// an explicitly chosen me) contribute wait edges to the global graph. guard is
+// the request's chosen lane-capacity guard: the same one for every actor.
+func (s *Store) coordinationActor(now time.Time, actor string, involved bool, workbench WorkbenchReport, edgeKeys map[string]struct{}, guard LaneCapacityGuardFunc) (ActorCoordination, []WaitEdge, bool, error) {
 	face := ActorCoordination{Actor: actor}
 	wb := workbench
 	wb.DispatchNext = workbenchDispatchNext(wb, actor)
@@ -199,7 +227,11 @@ func (s *Store) coordinationActor(now time.Time, actor string, involved bool, wo
 	waitWorkbench := coordinationWaitWorkbench(wb, actor)
 
 	atDispatchPoint := wb.DispatchNext.CanRun
-	face.Lane = s.coordinationLane(now, actor, wb)
+	lane, err := s.coordinationLane(now, actor, wb, guard)
+	if err != nil {
+		return ActorCoordination{}, nil, false, err
+	}
+	face.Lane = lane
 	gated := coordinationLaneGated(face.Lane)
 
 	canContinue, _ := continueCanContinue(wb, actor, "")
@@ -308,11 +340,17 @@ func coordinationWaitWorkbench(wb WorkbenchReport, actor string) WorkbenchReport
 // coordinationLane probes the lane-capacity gate for an actor exactly where a
 // dispatch would meet it: when the workbench says a run is dispatchable. The
 // probe is ReadOnly, the same seam DispatchPlan calls with ReadOnly:true.
-func (s *Store) coordinationLane(now time.Time, actor string, wb WorkbenchReport) *CoordinationLane {
-	if LaneCapacityGuard == nil || !wb.DispatchNext.CanRun {
-		return nil
+//
+// A guard error is NOT swallowed. An unreadable capacity source used to land
+// here as a nil lane, which the projection read as "no gate" — an unreadable
+// source looked exactly like an ungated actor. The error now travels out
+// through Coordination's own error return so the caller sees a hard failure
+// instead of a fabricated clearance.
+func (s *Store) coordinationLane(now time.Time, actor string, wb WorkbenchReport, guard LaneCapacityGuardFunc) (*CoordinationLane, error) {
+	if guard == nil || !wb.DispatchNext.CanRun {
+		return nil, nil
 	}
-	result, err := LaneCapacityGuard(LaneCapacityGuardRequest{
+	result, err := guard(LaneCapacityGuardRequest{
 		HomePath: s.home,
 		Lane:     actor,
 		WorkID:   strings.TrimSpace(wb.DispatchNext.WorkID),
@@ -320,7 +358,7 @@ func (s *Store) coordinationLane(now time.Time, actor string, wb WorkbenchReport
 		Now:      now,
 	})
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("coordination: lane capacity for actor %s: %w", actor, err)
 	}
 	lane := CoordinationLane{
 		State:                result.Capacity.State,
@@ -331,9 +369,9 @@ func (s *Store) coordinationLane(now time.Time, actor string, wb WorkbenchReport
 		Message:              result.Message,
 	}
 	if lane.State == "" && lane.Remaining == 0 && lane.ResetsAt == "" && !lane.Refused && !lane.ConfirmationRequired && lane.Message == "" {
-		return nil
+		return nil, nil
 	}
-	return &lane
+	return &lane, nil
 }
 
 func coordinationLaneGated(lane *CoordinationLane) bool {
