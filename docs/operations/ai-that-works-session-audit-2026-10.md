@@ -20,14 +20,25 @@ scripts/upstream-learning/upstream_scout.py   pinned upstream text → staged co
       → compound panel plan                    owner review over the candidate
 ```
 
-That path was exercised against this upstream repository during the audit: a six-file frontier
-(`README.md`, `2026-10-06-building-a-memory-pipeline/README.md`,
+That path was exercised against this upstream repository during the audit, in an isolated smoke
+instance. A six-file frontier (`README.md`, `2026-10-06-building-a-memory-pipeline/README.md`,
 `2026-07-28-your-model-is-already-obsolete/README.md`, `2026-08-04-slop-code-bench/README.md`,
 `2026-04-21-harness-engineering-without-the-hype/README.md`,
-`2026-02-10-agentic-backpressure-deep-dive/EPISODE.md`) produced one pinned
-`compound.source_observation.v0.1` record, one no-promote candidate, one `NoPromoteDecision`, one
-evidence-only evaluation node with `evaluated_by` and `validated_by` edges, and a reviewable panel
-plan. No capability was installed and no claim was promoted.
+`2026-02-10-agentic-backpressure-deep-dive/EPISODE.md`) produced exactly what it should:
+
+| Stage | Observed artifact |
+|---|---|
+| Pinned custody | Six `observed/findings/*` bodies whose content hashes match the observation's `pending_body:` refs |
+| Source observation | One `compound.source_observation.v0.1` record pinned to `git:327d980819817d63d98cb1114eb4e6d2df9d0209`, `promote_allowed: false` on its map |
+| Candidate | One `compound.source_candidate.v0.1` of kind `capability_observation`, `verdict: no_promote` |
+| Decision | One `compound.no_promote_decision.v0.1` — basis "source observation map forbids promotion", with content-hash evidence refs |
+| Evaluation | One `eval:capability-evaluation-audit-ai-that-works-session-corpus` node marked `evidence_only: true` |
+| Graph edges | `evaluated_by` and `validated_by` edges from the capability node to that evaluation node, both at confidence 0.74 |
+| Panel | A planned panel run resolving one `awaiting_verdict` target, four included lenses, twelve excluded lenses, and a judge route |
+
+Nothing was promoted: no memory claim exists, the capability carries no usage or injection, and
+the evaluation node is evidence-only. The capability graph node exists as a review target — a
+graph entry, not an installed, triggered, or consumed capability.
 
 | ID | Slice | Priority | Owner / seam | Upstream projects covered |
 |---|---|---|---|---|
