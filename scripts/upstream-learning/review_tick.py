@@ -371,12 +371,12 @@ def finish_review(cli, home, output, observation, role, identity, lane, prior):
     return {"status": "rejected" if rejected else "reviewed", "work_id": identity, "role": role, "finding": ref, "run_attempt_id": attempt}
 
 
-def run_one(cli, home, output, workspace, observation, role, identity, lane, prior=None):
+def run_one(cli, home, output, workspace, observation, role, identity, lane, prior=None, rejection=""):
     cli.call("work", "create", "--work-id", identity, "--owner", "compound:capability-learning", "--by", ACTOR, "--state", "ready", "--risk", "tier1", "--privacy", "private", "--canonical-surface", "compound://source/observations/" + observation["id"], "--predicate", PASS_PREDICATE, "--outcome", role + " " + observation["source"]["frontier"], "--creator-harness", "script", "--creator-model", "none", "--creator-lane", "upstream-review", "--launch-profile", lane["model_id"])
     cli.call("work", "claim", identity, "--by", ACTOR)
     # Governance owns execution/failure transitions. An interrupted running
     # attempt is observable pending work, never permission to launch a duplicate.
-    cli.call("work", "advance", identity, "--to", "running", "--by", ACTOR, "--execute", "--harness", lane["harness"], "--permission-mode", "plan", "--workspace", str(workspace), "--prompt", prompt_for(observation, role, prior))
+    cli.call("work", "advance", identity, "--to", "running", "--by", ACTOR, "--execute", "--harness", lane["harness"], "--permission-mode", "plan", "--workspace", str(workspace), "--prompt", prompt_for(observation, role, prior, rejection))
     # Intake/finalization failures preserve verifying so the next tick recovers
     # the same response, without another model call or another supporting vote.
     return finish_review(cli, home, output, observation, role, identity, lane, prior)
