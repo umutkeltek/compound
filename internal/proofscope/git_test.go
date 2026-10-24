@@ -64,7 +64,8 @@ func TestDeriveGitReadsCommitsNotWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := Scope{Mode: Affected, Reason: "diff", Base: base, Head: head,
-		Packages: pkgs("a", "b", "c", "e", "lit", "rr"), Changed: pkgs("a"), RootReaders: pkgs("rr")}
+		Packages: pkgs("a", "b", "c", "e", "lit", "rr"), Changed: pkgs("a"), RootReaders: pkgs("rr"),
+		Reached: pkgs("a", "b", "c", "e", "lit")}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v\nwant %+v", got, want)
 	}

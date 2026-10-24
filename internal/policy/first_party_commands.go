@@ -301,7 +301,7 @@ func firstPartyRuntimeHook(subcommand string, args []string) bool {
 
 // firstPartyProofCheckReviewRefused mirrors cmdProofCheck's pre-home usage
 // refusals for --redact-review exactly: the flag without an ID (or with a
-// flag-shaped value), or an ID combined with --dev/--dry-run/--ci/
+// flag-shaped value), or an ID combined with --dev/--presubmit/--dry-run/--ci/
 // --ci-console/--recover-legacy-retained/--timings. Any other shape is not a
 // refusal and must keep the ordinary home admission.
 func firstPartyProofCheckReviewRefused(args []string) bool {
@@ -324,7 +324,7 @@ func firstPartyProofCheckReviewRefused(args []string) bool {
 		}
 	}
 	for _, arg := range args {
-		if arg == "--dev" || strings.HasPrefix(arg, "--dev=") {
+		if arg == "--dev" || strings.HasPrefix(arg, "--dev=") || arg == "--presubmit" || strings.HasPrefix(arg, "--presubmit=") {
 			return true
 		}
 	}

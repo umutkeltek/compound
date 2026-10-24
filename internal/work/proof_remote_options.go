@@ -26,7 +26,7 @@ func proofCheckOptionScan(args []string) (seen map[string]bool, values map[strin
 	seen = map[string]bool{}
 	values = map[string]string{}
 	for i, arg := range args {
-		development = development || arg == "--dev" || strings.HasPrefix(arg, "--dev=")
+		development = development || ProofCheckNonCertifyingMode([]string{arg}) != ""
 		if !seen[arg] && i+1 < len(args) {
 			values[arg] = args[i+1]
 		}

@@ -3,6 +3,7 @@ package main
 import (
 	"compound/internal/home"
 	"compound/internal/work"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,76 +16,13 @@ const (
 	proofCheckDevelopmentSchemaVersion = "compound.proof_check_development_report.v0.1"
 )
 
+// proofCheckDevelopmentRequested selects the non-certifying runner: --dev or --presubmit.
 func proofCheckDevelopmentRequested(args []string) bool {
-	for _, arg := range args {
-		if arg == "--dev" || strings.HasPrefix(arg, "--dev=") {
-			return true
-		}
-	}
-	return false
+	return work.ProofCheckNonCertifyingMode(args) != ""
 }
 
 func validateProofCheckDevelopmentArgs(args []string) error {
-	governanceFlags := map[string]bool{
-		"--ci":                true,
-		"--ci-console":        true,
-		"--work":              true,
-		"--actor":             true,
-		"--ttl":               true,
-		"--steal":             true,
-		"--reason":            true,
-		"--execution-timeout": true,
-	}
-	booleanFlags := map[string]bool{
-		"--dev":     true,
-		"--json":    true,
-		"--dry-run": true,
-	}
-	valueFlags := map[string]bool{
-		"--repo": true,
-		"--base": true,
-		"--out":  true,
-	}
-	seen := map[string]bool{}
-	for i := 0; i < len(args); i++ {
-		arg := strings.TrimSpace(args[i])
-		flag := arg
-		if eq := strings.IndexByte(flag, '='); eq >= 0 {
-			flag = flag[:eq]
-		}
-		if governanceFlags[flag] {
-			return fmt.Errorf("--dev cannot be combined with %s", flag)
-		}
-		if booleanFlags[flag] {
-			if arg != flag {
-				return fmt.Errorf("%s does not accept a value", flag)
-			}
-			if seen[flag] {
-				return fmt.Errorf("%s may be provided only once", flag)
-			}
-			seen[flag] = true
-			continue
-		}
-		if valueFlags[flag] {
-			if arg != flag {
-				return fmt.Errorf("%s requires a separate value", flag)
-			}
-			if seen[flag] {
-				return fmt.Errorf("%s may be provided only once", flag)
-			}
-			if i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" || strings.HasPrefix(args[i+1], "--") {
-				return fmt.Errorf("%s requires a non-empty value", flag)
-			}
-			seen[flag] = true
-			i++
-			continue
-		}
-		if strings.HasPrefix(arg, "-") {
-			return fmt.Errorf("unsupported --dev flag %s", arg)
-		}
-		return fmt.Errorf("unexpected --dev argument %q", arg)
-	}
-	return nil
+	return work.ValidateProofCheckNonCertifyingArgs(args)
 }
 
 func cmdProofCheckDevelopment(args []string) {
@@ -110,7 +48,7 @@ func cmdProofCheckDevelopment(args []string) {
 	}
 
 	started := time.Now()
-	report, err := runDevelopmentProofCheck(repoPath, dryRun, baseRef, started)
+	report, err := runNonCertifyingProofCheck(repoPath, dryRun, baseRef, started, work.ProofCheckNonCertifyingMode(args))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "proof-check:", err)
 		os.Exit(2)
@@ -142,6 +80,11 @@ func cmdProofCheckDevelopment(args []string) {
 }
 
 func runDevelopmentProofCheck(repoPath string, dryRun bool, baseRef string, now time.Time) (proofCheckReport, error) {
+	return runNonCertifyingProofCheck(repoPath, dryRun, baseRef, now, "--dev")
+}
+
+// runNonCertifyingProofCheck runs --dev, or --presubmit with its diff-derived gates.
+func runNonCertifyingProofCheck(repoPath string, dryRun bool, baseRef string, now time.Time, mode string) (proofCheckReport, error) {
 	repo, err := resolveProofCheckRepo(repoPath)
 	if err != nil {
 		return proofCheckReport{}, err
@@ -150,11 +93,18 @@ func runDevelopmentProofCheck(repoPath string, dryRun bool, baseRef string, now 
 		return proofCheckReport{}, err
 	}
 	baseRef = strings.TrimSpace(baseRef)
-	steps, err := proofCheckDevelopmentSteps(repo, baseRef)
+	var steps []proofCheckStep
+	var presubmit *work.ProofCheckPresubmit
+	if mode == "--presubmit" {
+		steps, presubmit, err = work.ProofCheckPresubmitSteps(context.Background(), repo, baseRef)
+	} else {
+		steps, err = proofCheckDevelopmentSteps(repo, baseRef)
+	}
 	if err != nil {
 		return proofCheckReport{}, err
 	}
 	report := proofCheckReport{
+		Presubmit:     presubmit,
 		SchemaVersion: proofCheckDevelopmentSchemaVersion,
 		ProfileKind:   proofCheckProfileDevelopment,
 		Status:        "ok",
@@ -163,6 +113,9 @@ func runDevelopmentProofCheck(repoPath string, dryRun bool, baseRef string, now 
 		BaseRef:       baseRef,
 		DryRun:        dryRun,
 		Steps:         make([]proofCheckStep, 0, len(steps)),
+	}
+	if presubmit != nil {
+		report.SchemaVersion, report.ProfileKind = work.ProofCheckPresubmitSchemaVersion, work.ProofCheckProfilePresubmit
 	}
 	if dryRun {
 		report.Status = "planned"

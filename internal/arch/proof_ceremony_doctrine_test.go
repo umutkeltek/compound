@@ -17,7 +17,7 @@ var (
 	fullProofBaseSHA      = regexp.MustCompile(`^[0-9a-f]{40}(?:[0-9a-f]{24})?$`)
 	shellAssignment       = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
 	baseArgument          = regexp.MustCompile(`(?:^|\s)--base(?:=|\s+)(\S+)`)
-	nonCertifyingArgument = regexp.MustCompile(`(?:^|\s)--(?:ci-console|dev|ci|dry-run|timings)(?:\s|$)`)
+	nonCertifyingArgument = regexp.MustCompile(`(?:^|\s)--(?:ci-console|dev|presubmit|ci|dry-run|timings)(?:\s|$)`)
 	// proofBaseCapture matches exactly one shell command substitution that reads a single
 	// commit reference through git rev-parse --verify. The reference may be bare or quoted.
 	// It may not carry a second command, a command separator, or a nested substitution of
@@ -112,6 +112,8 @@ func TestProofCeremonyCommandGuardRejectsMovingCanonicalBases(t *testing.T) {
 func TestProofCeremonyCommandGuardAcceptsImmutableBasesAndNonCertifyingExamples(t *testing.T) {
 	nonCertifying := "```bash\n" +
 		"compound proof-check --dev --base main\n" +
+		"compound proof-check --presubmit --base main\n" +
+		"go run ./cmd/compound proof-check --presubmit --base \"$PRESUBMIT_BASE_SHA\" --out /tmp/presubmit.json\n" +
 		"compound proof-check --ci --base HEAD\n" +
 		"compound proof-check --ci-console --base refs/heads/main\n" +
 		"compound proof-check --dry-run --base main\n" +

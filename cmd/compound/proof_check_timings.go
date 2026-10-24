@@ -404,6 +404,8 @@ func cmdProofCheckTimings(args []string) {
 	profileKind := work.ProofResourceProfileCanonicalFull
 	if hasFlag(args, "--dev") {
 		profileKind = proofCheckProfileDevelopment
+	} else if hasFlag(args, "--presubmit") {
+		profileKind = work.ProofCheckProfilePresubmit
 	}
 	// Default to the tree the operator is standing in. Reporting a budget derived from a
 	// different repo's runs would be worse than reporting nothing.

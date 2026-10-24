@@ -256,9 +256,14 @@ type ProofCheckReport struct {
 	Warnings       []string                `json:"warnings,omitempty"`
 	ProofRefs      []string                `json:"proof_refs"`
 	Steps          []ProofCheckStep        `json:"steps"`
+	// Presubmit is set only on a non-certifying presubmit report.
+	Presubmit *ProofCheckPresubmit `json:"presubmit,omitempty"`
 }
 
 func ProofCheckVerdictLine(report ProofCheckReport, path string) string {
+	if report.ProfileKind == ProofCheckProfilePresubmit {
+		return ProofCheckPresubmitVerdictLine(report, path)
+	}
 	total := len(report.Steps)
 	passed := 0
 	skipped := 0

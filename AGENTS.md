@@ -239,7 +239,8 @@ reasons before building what the note implies.
 - **Presubmit before the land, canonical proof after it** (operator ruling 2026-10-23, Law 16).
   The blocking gate before any fast-forward is the scoped presubmit in `compound-land` §1 — build,
   vet, gofmt, diff-check, strict arch doctor, short tests of the affected packages, redact; minutes
-  on an idle laptop. The canonical battery runs
+  on an idle laptop; one command, `compound proof-check --presubmit --base <full-sha> --out <file>`,
+  derives the affected packages from the diff. The canonical battery runs
   once per landed tip on main, detached, and a red one is fixed forward or reverted the same day by
   the lane that landed it. Never block a landing on the canonical battery; never leave main red.
   Details and the measured why: `compound-land` §1.

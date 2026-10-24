@@ -88,11 +88,12 @@ var mintHomes = map[string]MintHome{
 		Consumer: "compound activity CLI (enable/disable/status/drain/sweep/aw materialize/tier1 collect) + attention activity-unaccounted watching group + activity-unaccounted operator_private lens",
 	},
 	// proofscope derives the go-test package scope for a sealed commit pair; it
-	// is evidence until testbattery verifies a claim against it.
+	// is evidence until testbattery verifies a claim against it; presubmit reads
+	// it today without certifying anything.
 	"organ:proofscope": {
 		Class:    MintEvidence,
 		Purpose:  "derive the exact go-test package scope for a sealed base/head commit pair",
-		Consumer: "scripts/testbattery scope preview (claim verification and the internal/work canonical go-test step follow in p2)",
+		Consumer: "compound proof-check --presubmit (non-certifying pre-landing go-test scope; claim verification and the internal/work canonical go-test step follow in p2)",
 	},
 	// store is the ADR-0005 pg experiment operator surface; it never promotes or gates
 	// memory truth — exports are governed writes with their own PolicyDecision door.

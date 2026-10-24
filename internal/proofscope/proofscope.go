@@ -3,7 +3,8 @@
 // exact sorted list of import paths to test. Derive is a pure function of two
 // git trees and the changed paths between them; DeriveGit reads git objects
 // only, never the worktree, COMPOUND_HOME or the network. The package certifies
-// nothing itself: testbattery verifies claims and work seals them.
+// nothing itself: `compound proof-check --presubmit` turns a scope into its
+// non-certifying go-test runs (Presubmit).
 //
 // Known residual blind spots (the nightly full run is the backstop):
 //   - tests that locate the repository by other means than the markers below:
@@ -46,6 +47,12 @@ type Scope struct {
 	Packages    []string `json:"packages,omitempty"`     // Affected only: sorted, unique import paths to test
 	Changed     []string `json:"changed,omitempty"`      // packages that own a changed path (explanatory)
 	RootReaders []string `json:"root_readers,omitempty"` // always-run set at head (explanatory)
+	// Reached is Changed plus every package reached from it by prod-import
+	// edges and one hop of test edges; PathReaders are the packages whose tests
+	// name a changed path. Packages is their union with RootReaders. Presubmit
+	// reads them separately because it defers the always-run set.
+	Reached     []string `json:"reached,omitempty"`
+	PathReaders []string `json:"path_readers,omitempty"`
 }
 
 // Snapshot is one commit's tree. Base needs Paths only.
@@ -255,10 +262,12 @@ func Derive(base, head Snapshot, changed []string) Scope {
 	for dir := range rootReaders {
 		all[dir] = true
 	}
+	pathReaders := make(map[string]bool)
 	for dir, f := range facts {
 		for target := range f.targets {
 			if triggers(target, changedPaths) {
 				all[dir] = true
+				pathReaders[dir] = true
 				break
 			}
 		}
@@ -272,6 +281,8 @@ func Derive(base, head Snapshot, changed []string) Scope {
 		Packages:    importPaths(all),
 		Changed:     importPaths(seeds),
 		RootReaders: importPaths(rootReaders),
+		Reached:     importPaths(tested),
+		PathReaders: importPaths(pathReaders),
 	}
 }
 

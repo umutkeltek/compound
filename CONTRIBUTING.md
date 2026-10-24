@@ -53,6 +53,7 @@ scoped presubmit in `skills/compound-land/SKILL.md` §1 (build, vet, gofmt,
 diff-check, strict doctor, short tests of the affected packages, redact;
 minutes); the canonical bundle runs once on the landed tip, after the land
 (operator ruling 2026-10-23, Law 16).
+Run it as one command: `go run ./cmd/compound proof-check --presubmit --base <full-sha> --out <file>`.
 Capture `PRE_LAND_BASE_SHA` before replay or land and reuse that exact full SHA
 for the post-land canonical battery. Never recapture `main^{commit}` after
 landing; if a rebase changes the candidate, capture a new base, rerun the

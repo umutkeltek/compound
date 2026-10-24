@@ -41,16 +41,17 @@ func cmdProofCheck(args []string) {
 		os.Exit(work.RunRemoteProofRecoveryCLI(args, os.Stdout, os.Stderr))
 	}
 	if hasFlag(args, "--help") || hasFlag(args, "-h") {
-		fmt.Println("usage: compound proof-check [--json] [--dry-run] [--dev|--ci|--ci-console] [--repo P] [--base REF] [--out FILE] [--work ID --actor ACTOR]")
+		fmt.Println("usage: compound proof-check [--json] [--dry-run] [--dev|--presubmit|--ci|--ci-console] [--repo P] [--base REF] [--out FILE] [--work ID --actor ACTOR]")
 		fmt.Println(work.RemoteProofHelp)
 		fmt.Println(work.ProofRecoveryHelp)
 		fmt.Println("  --dev         fast, cache-enabled, non-certifying developer feedback")
+		fmt.Println("  --presubmit   non-certifying pre-landing gate; go-test scope derived from --base FULL_SHA...HEAD")
 		fmt.Println("  --redact-review ACT_ID exact native public-content review for the complete source snapshot (canonical full proof only)")
 		fmt.Println("  --ci          run only the fresh-clone-portable gate subset (bare Go gates; what CI runs on push/PR)")
 		fmt.Println("  --ci-console  run console/TypeScript gates (needs bun + console/node_modules; CI console job, not bare-clone --ci)")
 		fmt.Println("  --out FILE    write full JSON and print final 'battery: ok|FAILED'; exit code stays truthful (0/1/2)")
 		fmt.Println("  --timings     report the recorded per-gate duration history instead of running the battery")
-		fmt.Println("                (--dev selects the development lane, --window N the sample depth)")
+		fmt.Println("                (--dev or --presubmit selects that lane, --window N the sample depth)")
 		fmt.Println("  --work ID --actor ACTOR  required for a full local battery; reserves the scarce proof resource")
 		fmt.Println("  --ttl DURATION            reservation TTL (minimum 30s, default 45m; renewed by RunAttempt heartbeat)")
 		fmt.Println("  --wait DURATION           queue up to DURATION for a busy proof resource instead of refusing")
@@ -1079,8 +1080,8 @@ func runProofCheckWithRangeContext(
 }
 
 func recordProofCheckRuntimeArtifact(homePath string, report proofCheckReport) (proofCheckReport, error) {
-	if report.ProfileKind == proofCheckProfileDevelopment {
-		return report, fmt.Errorf("development profile cannot record canonical installed-runtime proof")
+	if report.ProfileKind == proofCheckProfileDevelopment || report.ProfileKind == work.ProofCheckProfilePresubmit {
+		return report, fmt.Errorf("%s profile cannot record canonical installed-runtime proof", report.ProfileKind)
 	}
 	if strings.TrimSpace(homePath) == "" {
 		return report, fmt.Errorf("COMPOUND_HOME is empty")
@@ -1829,8 +1830,8 @@ func proofCheckContextWithExecutionBarrier(ctx context.Context, barrier *landlea
 }
 
 func printProofCheck(report proofCheckReport) {
-	if report.ProfileKind == proofCheckProfileDevelopment {
-		fmt.Printf("# proof-check development (non-certifying)\n")
+	if report.ProfileKind == proofCheckProfileDevelopment || report.ProfileKind == work.ProofCheckProfilePresubmit {
+		fmt.Printf("# proof-check %s (non-certifying)\n", report.ProfileKind)
 		fmt.Printf("- profile_kind: %s\n", report.ProfileKind)
 	} else {
 		fmt.Printf("# proof-check\n")

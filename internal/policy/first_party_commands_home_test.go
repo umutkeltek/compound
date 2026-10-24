@@ -90,6 +90,7 @@ func TestRequireHomeCompatibilityExemptsMalformedProofCheckReviewInvocations(t *
 		{"--redact-review", "--ci"},
 		{"--redact-review", "act_unapproved", "--dev"},
 		{"--redact-review", "act_unapproved", "--dev=lane"},
+		{"--redact-review", "act_unapproved", "--presubmit"},
 		{"--redact-review", "act_unapproved", "--ci"},
 		{"--redact-review", "act_unapproved", "--ci-console"},
 		{"--redact-review", "act_unapproved", "--dry-run"},

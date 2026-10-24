@@ -91,27 +91,38 @@ proof pool. That gate serialized every lane behind one thread while certifying n
 run on the same tip would not.
 
 ```bash
-PRESUBMIT_BASE_SHA=$(git rev-parse --verify "<reviewed-base-sha>^{commit}") &&
-go build ./... && go vet ./... &&
-test -z "$(git ls-files '*.go' | xargs gofmt -l)" &&
-git diff --check "$PRESUBMIT_BASE_SHA"...HEAD &&
-go run ./cmd/compound architecture doctor --strict &&
-go test -short -timeout=30m <affected packages>
+PRESUBMIT_BASE_SHA=$(git rev-parse --verify "<reviewed-base-sha>^{commit}")
+go run ./cmd/compound proof-check --presubmit --base "$PRESUBMIT_BASE_SHA" --out /tmp/<lane>-presubmit.json
 ```
 
-Then the redact gate (§5), unpiped, as its own command. Read each verdict; exit `0` is the only green.
+One command, one final `presubmit: ok|FAILED non_certifying=true scope=... passed=... failed=...`
+stdout line; exit `0` is the only green (`1` a gate is red, `2` usage or setup: the base is not a
+full SHA or not an ancestor of HEAD). Commit first: the scope is derived from the base and HEAD
+commits, and the `head-clean` gate fails on uncommitted tracked changes. Gates, in order:
+`head-clean`, `go build ./...`, `go vet ./...`, `gofmt` on tracked `*.go`,
+`git diff --check BASE...HEAD`, `architecture doctor --strict`,
+`go test -short -timeout=30m <affected packages>` (plus the restricted CLI run below),
+`console-tsc` when `console/` changed, and `redact-public` of the changed files. The `--out` JSON
+carries the derived scope under `presubmit.plan`.
 
-**Affected packages** — name them from the diff, never from memory:
-- Go files changed under dirs `D1..Dn` → `./D1/... ./Dn/... ./cmd/compound/`. The CLI package is the
-  integration surface that imports nearly every `internal/` package, so it catches cross-package
-  breaks. A hub package (`internal/work`, `internal/policy`) costs ~10 min idle; that is the honest
-  price of touching it, not a reason to skip it.
+Then the redact gate (§5), unpiped, as its own command; the presubmit's `redact-public` step does
+not replace it. Read each verdict; exit `0` is the only green.
+
+**Affected packages** — `--presubmit` derives them from the diff with `internal/proofscope`, never
+from memory. The rule it applies:
+- Go files changed under dirs `D1..Dn` → those packages, every package that imports them (directly
+  or transitively) or whose tests import them, every package whose tests name a changed path, plus
+  `./internal/arch/`. The CLI package `./cmd/compound/` runs whole when a changed package reaches
+  it; it is the integration surface that imports nearly every `internal/` package, so it catches
+  cross-package breaks. A hub package (`internal/work`, `internal/policy`) costs ~10 min idle; that
+  is the honest price of touching it, not a reason to skip it.
 - Only docs, skills, contracts or `AGENTS.md` changed → `./internal/arch/` (every served-doctrine
   guard lives there) plus the CLI readers by name:
   `go test -short ./cmd/compound/ -run 'Ceremony|ContractCompile|Orient|ProofCheck|Doctor'`.
-- `go.mod`, `go.sum`, `scripts/testbattery/` or a root file changed → the whole module:
-  `go run ./cmd/compound proof-check --dev --base "$PRESUBMIT_BASE_SHA" --out <file>` (cached
-  `go test -short ./...`; budget 10-20 min idle).
+- `go.mod`, `go.sum`, `scripts/testbattery/`, `internal/proofscope/`, a root file or a removed
+  package → the whole module: `go test -short ./...` (budget 10-20 min idle).
+- Other repository-root readers (packages whose tests read the whole tree) are listed in the report
+  as `deferred`; the canonical battery after the land runs them.
 
 Measured 2026-10-24 on this laptop, idle: `go build ./...` 67 s, `go vet ./...` 61 s, strict doctor
 8.5 s, `internal/arch` guards 9-27 s, the whole `cmd/compound` package 51 s. **Under a concurrent
