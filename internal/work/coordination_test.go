@@ -104,8 +104,8 @@ func TestCoordinationProjectsGenericActorsAndWaits(t *testing.T) {
 	if !contains(me.BlockedOn, "work.run_evidence:"+a) {
 		t.Fatalf("me.blocked_on = %v, want work.run_evidence:%s", me.BlockedOn, a)
 	}
-	if !contains(me.BlockedOn, "work.claimed_by_other_actor:"+b) {
-		t.Fatalf("me.blocked_on = %v, want claimed-by-other edge for %s", me.BlockedOn, b)
+	if contains(me.BlockedOn, "work.claimed_by_other_actor:"+b) {
+		t.Fatalf("unrelated claimed work became an actor constraint: %v", me.BlockedOn)
 	}
 
 	var other *ActorCoordination
@@ -420,10 +420,10 @@ func TestCoordinationCandidatePrepIsExact(t *testing.T) {
 
 // F8: an explicit actor nothing enumerates (no fleet row, lease, claim, or
 // preview) still gets its REAL workbench face projected — never flattened to
-// a zero face — and its waits land in the graph. "View as actor X" is X's
-// honest perspective, including what X is waiting on.
+// a zero face. Shared queue availability is preserved, while constraints
+// require owned/held/selected work or an actual lane gate.
 func TestCoordinationExplicitActorWithoutPresenceIsProjected(t *testing.T) {
-	s, a, b := coordinationFixture(t)
+	s, _, _ := coordinationFixture(t)
 	report, err := s.Coordination(fixedNow.Add(10*time.Minute), CoordinationOptions{Actor: "ghost"})
 	if err != nil {
 		t.Fatalf("coordination: %v", err)
@@ -434,20 +434,18 @@ func TestCoordinationExplicitActorWithoutPresenceIsProjected(t *testing.T) {
 	if report.Me.CanContinue {
 		t.Fatalf("ghost.can_continue = true (wait=%q blocked=%v)", report.Me.WaitReason, report.Me.BlockedOn)
 	}
-	// Ghost holds nothing; both live works block it — the same verdict
-	// `work continue` reaches for ghost: a running work waits on run evidence,
-	// a claimed-by-other work waits on the other actor.
-	if !contains(report.Me.BlockedOn, "work.run_evidence:"+a) || !contains(report.Me.BlockedOn, "work.claimed_by_other_actor:"+b) {
-		t.Fatalf("ghost.blocked_on = %v, want run_evidence for %s and claimed-by-other for %s", report.Me.BlockedOn, a, b)
+	// An actor with no owned/held/selected work sees shared queue availability,
+	// never fabricated constraints on other actors' tasks.
+	if len(report.Me.BlockedOn) != 0 {
+		t.Fatalf("idle actor has unrelated blocked chips: %v", report.Me.BlockedOn)
 	}
-	var ghostEdge bool
 	for _, edge := range report.Waits {
-		if edge.Actor == "ghost" && contains(edge.BlockedOn, "work.run_evidence:"+a) {
-			ghostEdge = true
+		if edge.Actor == "ghost" {
+			t.Fatalf("idle actor gained unrelated work constraint: %+v", edge)
 		}
 	}
-	if !ghostEdge {
-		t.Fatalf("waits missing ghost's edge: %+v", report.Waits)
+	if report.Me.WaitReason != "no_dispatchable_work" || report.Me.Open != 2 {
+		t.Fatalf("shared queue summary missing: %+v", report.Me)
 	}
 	var laneX bool
 	for _, other := range report.Others {

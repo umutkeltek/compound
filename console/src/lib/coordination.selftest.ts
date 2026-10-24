@@ -50,7 +50,6 @@ function mkReport(over: Record<string, unknown> = {}): Record<string, any> {
     others: [mkActor({ actor: "lane-y", doing: { work_id: "work_b", title: "write the docs", state: "claimed", next_action: "", claimed_by: "lane-y", owner: "lane-y" }, can_continue: true, wait_reason: "", blocked_on: [] })],
     waits: [
       { work: "work_a", actor: "lane-x", reason: "run_evidence", blocked_on: ["work.run_evidence:work_a"] },
-      { work: "work_b", actor: "lane-x", reason: "claimed_by_other_actor", blocked_on: ["work.claimed_by_other_actor:work_b"] },
     ],
     integrity: [],
     ...over,
@@ -96,21 +95,35 @@ export function runCoordinationSelfTest(): { ok: boolean; details: string[] } {
   {
     const view = buildCoordinationView(mkReport() as any);
     const runEvidence = view.waits.find((w) => w.work === "work_a");
-    const claimed = view.waits.find((w) => w.reason === "claimed_by_other_actor");
+    const claimed = buildWait({ work: "work_selected_foreign", actor: "lane-x", reason: "claimed_by_other_actor", blocked_on: ["work.claimed_by_other_actor:work_selected_foreign"] });
     checks.push({
       name: "work-scoped wait edge maps with blocked_on",
       ok: !!runEvidence && runEvidence.actor === "lane-x" && runEvidence.reason === "run_evidence" && runEvidence.blockedOn.includes("work.run_evidence:work_a"),
       detail: JSON.stringify(runEvidence),
     });
     checks.push({
-      name: "handoff edge (claimed by other actor) maps",
-      ok: !!claimed && claimed.work === "work_b" && claimed.blockedOn.includes("work.claimed_by_other_actor:work_b"),
+      name: "an exactly supplied foreign-item constraint survives mapping",
+      ok: !!claimed && claimed.work === "work_selected_foreign" && claimed.blockedOn.includes("work.claimed_by_other_actor:work_selected_foreign"),
       detail: JSON.stringify(claimed),
     });
     checks.push({
       name: "me doing + wait truth maps",
       ok: view.me.doing?.workId === "work_a" && view.me.canContinue === false && view.me.waitReason === "run_evidence" && view.me.blockedOn.includes("work.run_evidence:work_a"),
       detail: JSON.stringify({ doing: view.me.doing, wait: view.me.waitReason }),
+    });
+  }
+
+  // Shared queue counts do not become constraints on an idle actor.
+  {
+    const view = buildCoordinationView(mkReport({
+      actor: "lane-idle",
+      me: mkActor({ actor: "lane-idle", doing: null, wait_reason: "no_dispatchable_work", blocked_on: [], open: 500, in_progress: 300 }),
+      waits: [],
+    }) as any);
+    checks.push({
+      name: "idle actor keeps shared queue counts without invented waits or chips",
+      ok: view.me.open === 500 && view.me.inProgress === 300 && view.me.blockedOn.length === 0 && view.waits.length === 0,
+      detail: JSON.stringify({ open: view.me.open, inProgress: view.me.inProgress, blockedOn: view.me.blockedOn, waits: view.waits }),
     });
   }
 

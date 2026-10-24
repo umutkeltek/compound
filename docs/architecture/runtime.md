@@ -829,6 +829,26 @@ lease and cannot print green. A mismatch fails closed. Journal cleanup
 happens only after verification publication and lease release have committed. Reservation state may be exposed by UI/read models,
 but is not ContextPack/model context. Dry-run and CI subsets stay outside this certifying path.
 
+### Actor coordination constraints
+
+The read-only coordination projection uses the full shared Workbench for current
+dispatch selection, eligibility, candidate preparation and lane capacity. Its
+work constraints are narrower: the actor's current claims, unclaimed owned work,
+an exactly selected item, and actor-owned admission previews. Typed lane gates
+remain visible. Unrelated non-dispatchable work cannot create actor wait rows or
+blocked chips. With no relevant item or gate, the actor has a queue-availability
+summary and shared queue counts, not fabricated work dependencies. Console labels
+these as shared queue counts and Work constraints.
+
+Global continuation eligibility is unchanged: new ready shared work may legitimately
+allow an actor to continue, suppressing its wait display as before. This differs
+from unrelated claimed/running/held work inventing blockers. No verified general
+cross-work dependency model exists in this projection. Opaque evidence references
+and historic global wait summaries do not supply one; exactly supplied item
+classification is preserved without enumerating foreign work as dependencies.
+The projection keeps one Workbench snapshot, deterministic output and read-only
+home behavior. It does not truncate a larger dependency list or change policy.
+
 ### Lifecycle finalization cost and evidence scope
 
 Attaching a batch of retained RunAttempts reads the strict canonical lifecycle

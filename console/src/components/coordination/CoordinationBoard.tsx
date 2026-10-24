@@ -159,8 +159,8 @@ function ActorCard({
         <span className="text-md font-semibold text-ink">{actor.actor || "(none)"}</span>
         {isMe ? <span className="mono rounded-pill border border-work-line bg-panel px-1.5 py-0.5 text-2xs text-work">me</span> : null}
         <span className="ml-auto flex items-center gap-2 text-2xs tabular-nums text-faint">
+          <span>shared queue: {actor.open} open</span>
           <span>{actor.inProgress} in flight</span>
-          <span>{actor.open} open</span>
         </span>
       </div>
 
@@ -320,9 +320,9 @@ export function CoordinationBoard({ view, doorStatus, doorError, execDetail, run
         )}
       </section>
 
-      {/* WAITING-ON — the dependency edges: who is waiting on what to start. */}
+      {/* Work and lane constraints; shared queue availability is not a dependency. */}
       <section className="flex flex-col gap-2">
-        <SectionHeader tone="seam" label="Waiting-on" sub={`${view.waits.length} dependency edge${view.waits.length === 1 ? "" : "s"}`} />
+        <SectionHeader tone="seam" label="Work constraints" sub={`${view.waits.length} constraint${view.waits.length === 1 ? "" : "s"}`} />
         {view.waits.length === 0 ? (
           <EmptyState>Nothing is waiting on anything — every involved actor can continue.</EmptyState>
         ) : (

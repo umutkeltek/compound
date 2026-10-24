@@ -6,17 +6,13 @@ import (
 	"time"
 )
 
-// Coordination is the read-only coordination projection: "I am working on this,
-// that actor is working on that, and I am waiting on it to start the next job."
-// The load-bearing part is the waiting-on / blocked-on / handoff relationship,
-// not an inventory of agents.
-//
-// It runs exactly the PLANNING half `work continue` runs — workbench +
-// candidate prep (dry-run AdvancePlan, never recorded) + continueWait +
-// continueCanContinue + the dispatch-plan lane-capacity gate — and never the
-// executing half: no DispatchStep, no Advance, no Admit, no Record*. Calling
-// Coordination twice over an unchanged home is byte-identical (see
-// coordination_test.go falsifiers).
+// Coordination projects actor activity, evidenced work constraints and shared
+// queue availability. It keeps the planning half of work continue unchanged:
+// one Workbench, dry-run candidate prep, continue eligibility and a ReadOnly
+// lane-capacity probe. Constraint synthesis uses only held/owned work, the
+// exact selected item and actor-owned previews. Other open work is not an
+// execution dependency. No dispatch, claim, advance, admission or recording
+// occurs; an unchanged home remains byte-identical.
 //
 // Actors are generic: enumerated from the executor fleet rows, lease holders
 // (lease.By), and live claimers — nothing hardcoded. `codex`/`claude` are just
@@ -68,12 +64,13 @@ type ActorCoordination struct {
 	WaitReason  string             `json:"wait_reason,omitempty"`
 	BlockedOn   []string           `json:"blocked_on,omitempty"`
 	Lane        *CoordinationLane  `json:"lane,omitempty"`
-	Open        int                `json:"open"`
-	InProgress  int                `json:"in_progress"`
-	NeedsReview int                `json:"needs_review"`
+	// Counts describe the shared queue, not this actor's commitments.
+	Open        int `json:"open"`
+	InProgress  int `json:"in_progress"`
+	NeedsReview int `json:"needs_review"`
 }
 
-// WaitEdge is one global dependency edge: who is waiting on what to start.
+// WaitEdge is one evidenced work or lane constraint for an actor's queue.
 // Work-scoped edges carry the work; actor-scoped edges (lane gates, empty
 // workbench) leave Work empty.
 type WaitEdge struct {
@@ -85,7 +82,7 @@ type WaitEdge struct {
 }
 
 // CoordinationReport is compound.coordination.v0.1: me, every other actor
-// (generic), and the global wait graph — consumed by the console, the
+// (generic), and the actor work constraints — consumed by the console, the
 // terminal, or another agent.
 type CoordinationReport struct {
 	SchemaVersion string              `json:"schema_version"`
@@ -156,8 +153,8 @@ func (s *Store) Coordination(now time.Time, opts CoordinationOptions) (Coordinat
 		// Explicit actor with no live presence (no fleet row, lease, claim,
 		// or admission preview): still honor the choice AND project its real
 		// workbench perspective, so a console "view as actor X" never silently
-		// re-targets or flattens X to an empty face. The explicit me is treated
-		// as involved — its waits are first-class edges in the graph.
+		// re-targets or flattens X to an empty face. Its shared-queue summary
+		// remains visible without inventing relationships to foreign work.
 		if explicit && strings.TrimSpace(me) != "" {
 			face, waits, needsGate, aerr := s.coordinationActor(now, me, true, workbench, edgeKeys)
 			if aerr != nil {
@@ -199,6 +196,7 @@ func (s *Store) coordinationActor(now time.Time, actor string, involved bool, wo
 	face.InProgress = wb.Counts.InProgress
 	face.NeedsReview = wb.Counts.NeedsReview
 	face.Doing = coordinationDoing(wb, actor)
+	waitWorkbench := coordinationWaitWorkbench(wb, actor)
 
 	atDispatchPoint := wb.DispatchNext.CanRun
 	face.Lane = s.coordinationLane(now, actor, wb)
@@ -221,9 +219,8 @@ func (s *Store) coordinationActor(now time.Time, actor string, involved bool, wo
 	if canContinue {
 		face.NextAction = coordinationNextAction(wb, actor)
 	} else {
-		// Run the SAME wait synthesis `work continue` runs when its step made
-		// no progress — with the capacity verdict carried as the synthetic
-		// step status so dispatchStepWait emits the lane.* edges.
+		// Reuse continue's wait classifiers on the actor's scoped constraints,
+		// carrying the actual capacity verdict so lane.* gates stay visible.
 		synth := ContinueResult{Actor: actor}
 		switch {
 		case face.Lane != nil && face.Lane.Refused:
@@ -231,14 +228,16 @@ func (s *Store) coordinationActor(now time.Time, actor string, involved bool, wo
 		case face.Lane != nil && face.Lane.ConfirmationRequired:
 			synth.Status = "capacity_confirmation_required"
 		}
-		face.WaitReason, face.BlockedOn = continueWait(synth, wb)
-		face.NextAction = continueNoAction(wb, "")
-	}
-	if !wb.DispatchNext.CanRun {
-		face.BlockedOn = mergeUnique(face.BlockedOn, wb.DispatchNext.BlockedOn)
-		if strings.TrimSpace(face.WaitReason) == "" && strings.TrimSpace(wb.DispatchNext.WaitReason) != "" {
-			face.WaitReason = wb.DispatchNext.WaitReason
+		face.WaitReason, face.BlockedOn = continueWait(synth, waitWorkbench)
+		if len(waitWorkbench.Open) == 0 && len(waitWorkbench.AdmissionPreviews) == 0 && !gated {
+			// Shared-queue availability is an actor summary, not a work edge.
+			face.BlockedOn = nil
+			face.WaitReason = "no_dispatchable_work"
+			if wb.Counts.Open == 0 && len(wb.AdmissionPreviews) == 0 {
+				face.WaitReason = "no_open_work"
+			}
 		}
+		face.NextAction = continueNoAction(wb, "")
 	}
 
 	var waits []WaitEdge
@@ -254,10 +253,9 @@ func (s *Store) coordinationActor(now time.Time, actor string, involved bool, wo
 	// in the game (lease/claim) — an idle fleet row is idle, not "waiting,"
 	// and an actor that can continue waits on nothing.
 	if involved && !face.CanContinue {
-		// Work-scoped edges: classify each open work the same way
-		// dispatchStepWait classifies it, so the global edge list speaks the
-		// same work.* language the continue loop's blocked_on does.
-		for _, item := range wb.Open {
+		// Only the actor's actual queue or exact selected item can contribute
+		// work constraints. Other open projects are availability, not causality.
+		for _, item := range waitWorkbench.Open {
 			reason, token := coordinationItemWait(item, actor)
 			if reason == "" {
 				continue
@@ -270,7 +268,7 @@ func (s *Store) coordinationActor(now time.Time, actor string, involved bool, wo
 			})
 		}
 		// Actor-scoped edge: the continue-style wait (incl. lane.* edges).
-		if strings.TrimSpace(face.WaitReason) != "" || len(face.BlockedOn) > 0 {
+		if len(face.BlockedOn) > 0 || gated {
 			addEdge(WaitEdge{
 				Actor:     actor,
 				Reason:    face.WaitReason,
@@ -280,6 +278,31 @@ func (s *Store) coordinationActor(now time.Time, actor string, involved bool, wo
 		}
 	}
 	return face, waits, atDispatchPoint, nil
+}
+
+// coordinationWaitWorkbench scopes constraint synthesis without changing the
+// full workbench used for eligibility, selection, candidate prep or lane probes.
+// A named foreign item remains classifiable when an owner has selected it
+// exactly; mere presence elsewhere in the queue never supplies that relation.
+func coordinationWaitWorkbench(wb WorkbenchReport, actor string) WorkbenchReport {
+	out := wb
+	out.Open = nil
+	out.AdmissionPreviews = nil
+	for _, item := range wb.Open {
+		if item.ClaimedBy == actor ||
+			(strings.TrimSpace(item.ClaimedBy) == "" && item.Owner == actor) ||
+			(wb.DispatchNext.WorkID != "" && item.WorkID == wb.DispatchNext.WorkID) {
+			out.Open = append(out.Open, item)
+		}
+	}
+	for _, preview := range wb.AdmissionPreviews {
+		if preview.Actor == actor ||
+			(strings.TrimSpace(preview.Actor) == "" && preview.WorkOwner == actor) {
+			out.AdmissionPreviews = append(out.AdmissionPreviews, preview)
+		}
+	}
+	out.Counts.Open = len(out.Open)
+	return out
 }
 
 // coordinationLane probes the lane-capacity gate for an actor exactly where a
@@ -357,8 +380,8 @@ func coordinationItemWait(item WorkbenchItem, actor string) (reason, token strin
 
 // coordinationDoing picks the work that best represents what the actor is on.
 // Doing is strictly actor-scoped: only work the actor holds (claim, or owner
-// of a still-running work with no live claim). Another actor's running work is
-// a WAIT for this actor, never its doing. Nil means the actor is idle —
+// of a still-running work with no live claim). Another actor's running work
+// is neither its doing nor an inferred dependency. Nil means the actor is idle —
 // itself coordination truth.
 func coordinationDoing(wb WorkbenchReport, actor string) *CoordinationDoing {
 	if strings.TrimSpace(actor) == "" {
