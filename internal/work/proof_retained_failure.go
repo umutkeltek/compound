@@ -303,6 +303,10 @@ func (s *Store) authenticateRetainedFailedProofCompletionLocked(
 	if err != nil {
 		return retainedFailedProofAuthentication{}, fmt.Errorf("retained failed proof retry ancestry is not authentic: %w", err)
 	}
+	// Decide every reachability exception before rearm can persist recovery effects.
+	if _, err := retainedFailedProofRetryLink(w, currentReservation, chain, ra); err != nil {
+		return retainedFailedProofAuthentication{}, err
+	}
 	// Quiescence is a native fact read from the inherited execution barrier and the remote
 	// fences. It is never inferred from a terminal attempt status or from a process list.
 	resource := landlease.ProofResourceForIdentity(s.home, currentReservation.ProofCoordination)
@@ -322,6 +326,31 @@ func (s *Store) authenticateRetainedFailedProofCompletionLocked(
 		Chain:    chain,
 		Terminal: ra,
 	}, nil
+}
+
+// retainedFailedProofRetryLink decides the existing reachability rule without writing.
+// Authentication uses it before recovery effects; repair rechecks the current Work afterward.
+func retainedFailedProofRetryLink(
+	w envelope.WorkEnvelope,
+	reservation ProofResourceReservation,
+	chain []runattempt.RunAttempt,
+	terminal runattempt.RunAttempt,
+) (*runattempt.RunAttempt, error) {
+	var repair *runattempt.RunAttempt
+	for index := range chain {
+		attempt := chain[index]
+		if oneOf(attempt.ID, w.RunAttemptIDs) {
+			continue
+		}
+		if attempt.ID != terminal.ID || terminal.ID == reservation.RunAttemptID {
+			return nil, fmt.Errorf("retained failed proof retry lineage attempt %s is not reachable from work", attempt.ID)
+		}
+		if repair != nil {
+			return nil, fmt.Errorf("retained failed proof retry lineage has more than one unreachable attempt")
+		}
+		repair = &attempt
+	}
+	return repair, nil
 }
 
 // repairRetainedFailedProofRetryReachability requires every attempt of the authenticated retry
@@ -348,19 +377,9 @@ func (s *Store) repairRetainedFailedProofRetryReachability(
 	if err != nil {
 		return err
 	}
-	var repair *runattempt.RunAttempt
-	for index := range chain {
-		attempt := chain[index]
-		if oneOf(attempt.ID, w.RunAttemptIDs) {
-			continue
-		}
-		if attempt.ID != terminal.ID || terminal.ID == reservation.RunAttemptID {
-			return fmt.Errorf("retained failed proof retry lineage attempt %s is not reachable from work", attempt.ID)
-		}
-		if repair != nil {
-			return fmt.Errorf("retained failed proof retry lineage has more than one unreachable attempt")
-		}
-		repair = &attempt
+	repair, err := retainedFailedProofRetryLink(w, reservation, chain, terminal)
+	if err != nil {
+		return err
 	}
 	if repair == nil {
 		return nil

@@ -1278,3 +1278,102 @@ func TestRetainedFailedProofRecoveryRefusesHolderLostAfterOwnRearmBeforeOutput(t
 		t.Fatalf("the refusal was not the native proof resource holder refusal: %v", refusal)
 	}
 }
+
+func TestRetainedFailedProofRecoveryRefusesUnreachableAncestorBeforeEffects(t *testing.T) {
+	for _, window := range retainedFailedProofRecoveryWindows {
+		for _, currentLinked := range []bool{true, false} {
+			name := window.name + "/current_unlinked"
+			if currentLinked {
+				name = window.name + "/current_linked"
+			}
+			t.Run(name, func(t *testing.T) {
+				fixture := retainedFailedProofInterruptedRetryFixture
+				if currentLinked {
+					fixture = retainedFailedProofRetryAncestorFixture
+				}
+				f, acquired, sum, at, _ := fixture(t)
+				w, err := f.store.Get(f.workID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ids := w.RunAttemptIDs[:0]
+				for _, id := range w.RunAttemptIDs {
+					if id != acquired.Reservation.RunAttemptID {
+						ids = append(ids, id)
+					}
+				}
+				w.RunAttemptIDs = ids
+				if err := f.store.writeJSON(f.store.workPath(f.workID), &w); err != nil {
+					t.Fatal(err)
+				}
+				snapshot := func() []byte {
+					t.Helper()
+					records := map[string][]byte{}
+					err := filepath.WalkDir(f.store.home, func(path string, entry fs.DirEntry, walkErr error) error {
+						if walkErr != nil {
+							return walkErr
+						}
+						if entry.IsDir() || !strings.HasSuffix(path, ".json") {
+							return nil
+						}
+						body, err := os.ReadFile(path)
+						if err != nil {
+							return err
+						}
+						records[path] = body
+						return nil
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					body, err := json.Marshal(records)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return body
+				}
+				checkAt := at.Add(window.at)
+				resource := landlease.ProofResourceForIdentity(f.store.home, acquired.Reservation.ProofCoordination)
+				holderBefore, err := resource.Status(checkAt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				stateBefore := snapshot()
+				restored := 0
+				_, _, refusal := f.store.ResumeRetainedFailedProofCompletion(f.workID, ProofResourceRetainedFailureInput{
+					Actor:                 proofActorAlpha,
+					ReservationID:         acquired.Reservation.ID,
+					ExpectedPendingSHA256: sum,
+					PrepareOwnedReport: func(ProofResourceResult) error {
+						restored++
+						return nil
+					},
+				}, checkAt)
+				if refusal == nil || !strings.Contains(refusal.Error(), "not reachable from work") {
+					t.Fatalf("unreachable ancestor must refuse through native membership validation: %v", refusal)
+				}
+				if restored != 0 {
+					t.Fatalf("unreachable ancestor restored a report: %d", restored)
+				}
+				if !bytes.Equal(stateBefore, snapshot()) {
+					t.Fatal("changed native records before refusing unreachable ancestry")
+				}
+				holderAfter, err := resource.Status(checkAt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				beforeJSON, err := json.Marshal(holderBefore)
+				if err != nil {
+					t.Fatal(err)
+				}
+				afterJSON, err := json.Marshal(holderAfter)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(beforeJSON, afterJSON) {
+					t.Fatal("changed proof holder before refusing unreachable ancestry")
+				}
+			})
+		}
+	}
+}
