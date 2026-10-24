@@ -26,11 +26,19 @@ func (s *Store) resumeProofMigrationLocked(w envelope.WorkEnvelope, in ResourceM
 	if err := json.Unmarshal(data, &prior); err != nil {
 		return false, nil, err
 	}
-	if prior.Work.ID != w.ID || prior.Input.ProofTargetRevision != in.ProofTargetRevision {
+	if prior.Work.ID != w.ID {
+		// Only a DISTINCT Work's completed preparation is predecessor history.
 		if err := s.validateProofMigrationHistory(prior, w, in, backing, true); err != nil {
 			return false, nil, err
 		}
 		return false, data, nil
+	}
+	if prior.Input.ProofTargetRevision != in.ProofTargetRevision {
+		// Same Work, different exact raw target (an empty target is not an
+		// explicit revision). This preparation belongs to another exact request,
+		// and a pending preparation of the same Work is never completed history,
+		// so the exact preparation mismatch is refused instead of reclassified.
+		return false, nil, fmt.Errorf("proof migration preparation differs from exact work and enrollment")
 	}
 	if prior.SchemaVersion != resourceMigrationPendingSchema || !prior.Input.ProofClasses || prior.BackingRoot != backing || !reflect.DeepEqual(prior.Input.ProofHomes, in.ProofHomes) {
 		return false, nil, fmt.Errorf("proof migration preparation differs from exact work and enrollment")
