@@ -417,6 +417,16 @@ func restoreOwnedProofCheckReport(
 	return report, nil
 }
 
+// proofCheckRestoreRetainedReport restores a retained owned report through the existing --out custody.
+func proofCheckRestoreRetainedReport(homePath, artifactRef, outPath string) (proofCheckReport, error) {
+	custody, err := proofCheckCaptureOutPath(outPath)
+	if err != nil {
+		return proofCheckReport{}, err
+	}
+	defer custody.close()
+	return restoreOwnedProofCheckReport(homePath, artifactRef, outPath, &custody)
+}
+
 func readOwnedProofCheckReport(homePath, artifactRef string) (proofCheckReport, error) {
 	artifacts, err := home.NewArtifactStore(homePath)
 	if err != nil {

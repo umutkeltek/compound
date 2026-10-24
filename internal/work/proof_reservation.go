@@ -86,6 +86,15 @@ type ProofResourceResumeInput struct {
 	// PrepareOwnedReport is the projection-publication barrier for a retained report. Resume calls
 	// it only after exact pending-input validation and before completion may release exclusivity.
 	PrepareOwnedReport func(ProofResourceResult) error
+	// ReservationID pins the exact retained reservation this resume may finish. Empty keeps the
+	// ordinary behavior, which resolves the reservation from the live proof holder.
+	ReservationID string
+	// ExpectedPendingSHA256 fences the retained completion journal by its exact bytes. It is
+	// checked at admission and again inside the native mutation guards, before any effect.
+	ExpectedPendingSHA256 string
+	// RequireFailedResult restricts this resume to an owned, exact failed result. A successful,
+	// unknown, inconsistent or unowned result is refused.
+	RequireFailedResult bool
 }
 
 // ProofResourceGateProfile is the immutable identity of one canonical full-proof gate.
@@ -520,6 +529,10 @@ var proofResourceAcquireWithExecutionBarrierPrepared = func(home, holder string,
 	return landlease.ProofResource(home).AcquireWithExecutionBarrierPrepared(holder, ttl, now, prepare)
 }
 var proofResourceAfterScarceMutation = func(phase string) {}
+
+// proofResourceBeforeRetainedMutation is a deterministic test boundary immediately before the
+// expected-input fence inside the native mutation guard.
+var proofResourceBeforeRetainedMutation = func(reservationID string) {}
 var proofResourceWriteLegacyRecoveryJournal = func(
 	s *Store,
 	path string,
@@ -942,12 +955,26 @@ func (s *Store) ResumeProofResourceCompletion(
 	if err := s.readProofReservationInto(reservationID, &reservation); err != nil {
 		return ProofResourceCompleteResult{}, true, fmt.Errorf("read retained proof reservation %s: %w", reservationID, err)
 	}
+	if in.ReservationID != "" && reservation.ID != in.ReservationID {
+		return ProofResourceCompleteResult{}, true, fmt.Errorf(
+			"retained proof completion does not match the requested reservation %s",
+			in.ReservationID,
+		)
+	}
 	pending, present, _, err := s.readProofResourceCompletionPending(reservationID)
 	if err != nil {
 		return ProofResourceCompleteResult{}, true, err
 	}
 	if !present {
 		return ProofResourceCompleteResult{}, false, nil
+	}
+	if err := s.verifyRetainedPendingSHA256(reservation.ID, in.ExpectedPendingSHA256); err != nil {
+		return ProofResourceCompleteResult{}, true, err
+	}
+	if in.RequireFailedResult {
+		if err := authenticateRetainedFailedProofResult(workID, in.Actor, reservation, pending); err != nil {
+			return ProofResourceCompleteResult{}, true, err
+		}
 	}
 	profile, profileErr := normalizeProofResourceProfile(in.Profile)
 	if profileErr == nil && strings.TrimSpace(in.Profile.Digest) != "" && in.Profile.Digest != profile.Digest {
@@ -987,6 +1014,12 @@ func (s *Store) ResumeProofResourceCompletion(
 	}
 	if inputDigest != pending.InputDigest {
 		return ProofResourceCompleteResult{}, true, fmt.Errorf("retained proof completion input digest changed")
+	}
+	// The expected-input fence lives inside the native mutation guard: a wrapper-only precheck
+	// is racy, and the recovery may not begin on journal bytes the operator did not expect.
+	proofResourceBeforeRetainedMutation(reservation.ID)
+	if err := s.fenceRetainedPendingUnderMutationGuard(reservation.ID, in.ExpectedPendingSHA256); err != nil {
+		return ProofResourceCompleteResult{}, true, err
 	}
 	if expiredExact {
 		if err := s.rearmExpiredProofResourceCompletion(
@@ -1122,6 +1155,11 @@ func (s *Store) rearmExpiredProofResourceCompletion(
 			!reflect.DeepEqual(currentPending, pending) {
 			return fmt.Errorf("expired proof completion identity changed before rearm")
 		}
+		// The expected-input fence is re-checked inside the native mutation guard, before the
+		// scarce mutation and before the journal may be reseeded by a legitimate retry.
+		if err := s.verifyRetainedPendingSHA256(reservation.ID, in.ExpectedPendingSHA256); err != nil {
+			return err
+		}
 		expect, err := s.deriveProofResourceCompletionExpectation(workID, currentReservation, completeInput)
 		if err != nil {
 			return err
@@ -1244,6 +1282,11 @@ func (s *Store) reconcileRearmedProofResourceCompletion(
 			!reflect.DeepEqual(currentReservation, reservation) ||
 			!reflect.DeepEqual(currentPending, pending) {
 			return fmt.Errorf("rearmed proof completion identity changed before refresh reconciliation")
+		}
+		// The expected-input fence is re-checked inside the native mutation guard, before the
+		// scarce mutation and before the journal may be reseeded by a legitimate retry.
+		if err := s.verifyRetainedPendingSHA256(reservation.ID, in.ExpectedPendingSHA256); err != nil {
+			return err
 		}
 		latestReservation, err := s.proofReservationWithLatestRefresh(currentReservation)
 		if err != nil {

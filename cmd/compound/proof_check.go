@@ -34,8 +34,8 @@ var proofCheckCanonicalRunner = runProofCheckSealedSnapshotContext
 var proofCheckRuntimeArtifactRecorder = recordProofCheckRuntimeArtifact
 
 func cmdProofCheck(args []string) {
-	if hasFlag(args, "--reconcile-quiescent") {
-		os.Exit(work.RunQuiescentProofRecoveryCLI(args, os.Stdout, os.Stderr))
+	if hasFlag(args, "--reconcile-quiescent") || hasFlag(args, "--resume-retained") {
+		os.Exit(work.RunProofRecoveryCLI(args, os.Stdout, os.Stderr, proofCheckRestoreRetainedReport))
 	}
 	if hasFlag(args, "--remote-reconcile") {
 		os.Exit(work.RunRemoteProofRecoveryCLI(args, os.Stdout, os.Stderr))
@@ -43,7 +43,7 @@ func cmdProofCheck(args []string) {
 	if hasFlag(args, "--help") || hasFlag(args, "-h") {
 		fmt.Println("usage: compound proof-check [--json] [--dry-run] [--dev|--ci|--ci-console] [--repo P] [--base REF] [--out FILE] [--work ID --actor ACTOR]")
 		fmt.Println(work.RemoteProofHelp)
-		fmt.Println(work.QuiescentProofRecoveryHelp)
+		fmt.Println(work.ProofRecoveryHelp)
 		fmt.Println("  --dev         fast, cache-enabled, non-certifying developer feedback")
 		fmt.Println("  --redact-review ACT_ID exact native public-content review for the complete source snapshot (canonical full proof only)")
 		fmt.Println("  --ci          run only the fresh-clone-portable gate subset (bare Go gates; what CI runs on push/PR)")
