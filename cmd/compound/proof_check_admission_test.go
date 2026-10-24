@@ -3286,7 +3286,9 @@ func proofCheckGoCacheFixture(t *testing.T) (home string, cacheBase string) {
 	// t.TempDir's RemoveAll and fail the parent with "directory not empty".
 	disableGoTelemetryIn(t, home)
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "xdg-cache"))
+	t.Setenv("LocalAppData", filepath.Join(home, "local-cache"))
 	cacheBase, err := os.UserCacheDir()
 	if err != nil {
 		t.Fatalf("resolve isolated user cache dir: %v", err)
