@@ -58,6 +58,22 @@ remain mandatory; no review timestamp, expiry, result or source Work is rewritte
 New reservations, verified reports, unknown or inconsistent outcomes and source
 publication retain current authorization. A failed audit emits no VerificationID.
 
+A retained failed proof may also be finished after its source checkout moved or
+disappeared, through a recovery-only route that reads the persisted reservation's
+original workspace, command and sealed profile instead of the current checkout. It
+reuses the ordinary completion machinery and the existing output custody to restore
+the original owned report, and it never admits a battery. The exact Work, actor,
+reservation and the expected pending-journal bytes are mandatory, and the pending-byte
+fence is enforced inside the guard that performs the recovery effects — before any
+report, custody, rearm or attempt mutation — not only in a wrapper precheck. The
+dedicated route requires an existing, valid completion governance seal and validates
+the pending, attempt, lineage and holder barriers before it reaches the owned report.
+A hash the recovery itself generates later (a legitimate retry reseed) is allowed. The
+outcome stays a failed battery verdict with no VerificationID: the original report,
+attempts and refusals are preserved. A repetition, or any request that matches no
+retained completion, refuses without writing an output, recreating consumed evidence
+or admitting a battery.
+
 ## Evidence of later benefit
 
 A completed changed receipt and its transition establish a **proof-backed change**.

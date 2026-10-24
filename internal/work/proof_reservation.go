@@ -86,6 +86,15 @@ type ProofResourceResumeInput struct {
 	// PrepareOwnedReport is the projection-publication barrier for a retained report. Resume calls
 	// it only after exact pending-input validation and before completion may release exclusivity.
 	PrepareOwnedReport func(ProofResourceResult) error
+	// ReservationID pins the exact retained reservation this resume may finish. Empty keeps the
+	// ordinary behavior, which resolves the reservation from the live proof holder.
+	ReservationID string
+	// ExpectedPendingSHA256 fences the retained completion journal by its exact bytes. It is
+	// checked at admission and again inside the native mutation guards, before any effect.
+	ExpectedPendingSHA256 string
+	// RequireFailedResult restricts this resume to an owned, exact failed result. A successful,
+	// unknown, inconsistent or unowned result is refused.
+	RequireFailedResult bool
 }
 
 // ProofResourceGateProfile is the immutable identity of one canonical full-proof gate.
@@ -520,6 +529,10 @@ var proofResourceAcquireWithExecutionBarrierPrepared = func(home, holder string,
 	return landlease.ProofResource(home).AcquireWithExecutionBarrierPrepared(holder, ttl, now, prepare)
 }
 var proofResourceAfterScarceMutation = func(phase string) {}
+
+// proofResourceBeforeRetainedMutation is a deterministic test boundary immediately before the
+// expected-input fence inside the native mutation guard.
+var proofResourceBeforeRetainedMutation = func(reservationID string) {}
 var proofResourceWriteLegacyRecoveryJournal = func(
 	s *Store,
 	path string,
@@ -942,12 +955,26 @@ func (s *Store) ResumeProofResourceCompletion(
 	if err := s.readProofReservationInto(reservationID, &reservation); err != nil {
 		return ProofResourceCompleteResult{}, true, fmt.Errorf("read retained proof reservation %s: %w", reservationID, err)
 	}
+	if in.ReservationID != "" && reservation.ID != in.ReservationID {
+		return ProofResourceCompleteResult{}, true, fmt.Errorf(
+			"retained proof completion does not match the requested reservation %s",
+			in.ReservationID,
+		)
+	}
 	pending, present, _, err := s.readProofResourceCompletionPending(reservationID)
 	if err != nil {
 		return ProofResourceCompleteResult{}, true, err
 	}
 	if !present {
 		return ProofResourceCompleteResult{}, false, nil
+	}
+	if err := s.verifyRetainedPendingSHA256(reservation.ID, in.ExpectedPendingSHA256); err != nil {
+		return ProofResourceCompleteResult{}, true, err
+	}
+	if in.RequireFailedResult {
+		if err := authenticateRetainedFailedProofResult(workID, in.Actor, reservation, pending); err != nil {
+			return ProofResourceCompleteResult{}, true, err
+		}
 	}
 	profile, profileErr := normalizeProofResourceProfile(in.Profile)
 	if profileErr == nil && strings.TrimSpace(in.Profile.Digest) != "" && in.Profile.Digest != profile.Digest {
@@ -987,6 +1014,113 @@ func (s *Store) ResumeProofResourceCompletion(
 	}
 	if inputDigest != pending.InputDigest {
 		return ProofResourceCompleteResult{}, true, fmt.Errorf("retained proof completion input digest changed")
+	}
+	// The expected-input fence lives inside the guard that performs the recovery effects: a
+	// wrapper-only precheck is racy, and the recovery may not begin on journal bytes the
+	// operator did not expect. The fence is never a standalone empty lock window.
+	proofResourceBeforeRetainedMutation(reservation.ID)
+	if strings.TrimSpace(in.ExpectedPendingSHA256) != "" {
+		// ONE guard covers the fence, the rearm/reconcile and the owned-report publication, so
+		// changed bytes refuse before any report, custody, rearm or attempt mutation. The
+		// guard is entered once: the native completion takes its own guard afterwards, and the
+		// lifecycle lock is never reacquired while it is held.
+		if err := s.withLifecycleMutation(func() error {
+			if err := s.verifyRetainedPendingSHA256(reservation.ID, in.ExpectedPendingSHA256); err != nil {
+				return err
+			}
+			if in.RequireFailedResult {
+				// The dedicated failure route requires an EXISTING governance seal before any
+				// effect. The ordinary legacy reconstruction of a missing seal stays untouched
+				// for every other path.
+				if err := s.requireRetainedFailedProofGovernanceSeal(reservation.ID); err != nil {
+					return err
+				}
+			}
+			// The dedicated failure route authenticates EVERYTHING it needs BEFORE it writes
+			// anything: the current Work lease owner, the immutable retry ancestry and the
+			// native execution fence. The authentication is READ-ONLY and runs under the SAME
+			// effects guard as the effects it protects, so an expired holder with a corrupt
+			// ancestry refuses BEFORE its rearm and before any reachability repair.
+			var retainedAuth retainedFailedProofAuthentication
+			if in.RequireFailedResult {
+				auth, err := s.authenticateRetainedFailedProofCompletionLocked(
+					workID,
+					reservation,
+					completeInput,
+				)
+				if err != nil {
+					return err
+				}
+				retainedAuth = auth
+				// The exclusive proof resource must already belong to the exact reservation
+				// holder before ANY effect of the recovery. A stale holder refuses here,
+				// before the rearm preparation, the rearm and the reachability repair.
+				if err := s.requireProofResourceHolderForRearm(reservation, now); err != nil {
+					return fmt.Errorf("retained failed proof recovery: %w", err)
+				}
+			}
+			if expiredExact {
+				if err := s.rearmExpiredProofResourceCompletionLocked(
+					workID,
+					in,
+					reservation,
+					pending,
+					completeInput,
+					status,
+					now,
+				); err != nil {
+					return err
+				}
+			} else if err := s.reconcileRearmedProofResourceCompletionLocked(
+				workID,
+				in,
+				reservation,
+				pending,
+				completeInput,
+				status,
+				now,
+			); err != nil {
+				return err
+			}
+			if in.RequireFailedResult {
+				// The native finalizer rule still holds for the dedicated route: only the exact
+				// current holder of the exclusive proof resource may publish the owned report.
+				// The ACTUAL current status is read HERE, under the effects guard, so a
+				// legitimate own rearm is preserved and a stale holder refuses before the
+				// output.
+				if err := s.requireProofResourceHolder(reservation, now); err != nil {
+					return fmt.Errorf("retained failed proof recovery: %w", err)
+				}
+				// Work reachability is the last native fact this route needs. An interrupted
+				// retry may have been minted and journaled before its forward link into the
+				// Work envelope was persisted: that is a legitimate native recovery state, so
+				// the immutable ancestry is authenticated FIRST and the existing native
+				// reachability recovery then repairs the missing link.
+				if err := s.repairRetainedFailedProofRetryReachability(
+					workID,
+					reservation,
+					retainedAuth.Pending,
+					retainedAuth.Chain,
+					retainedAuth.Terminal,
+					now,
+				); err != nil {
+					return err
+				}
+			}
+			if pending.Result.ReportArtifactRef != "" {
+				if in.PrepareOwnedReport == nil {
+					return fmt.Errorf("retained proof completion requires owned report publication before release")
+				}
+				if err := in.PrepareOwnedReport(pending.Result); err != nil {
+					return fmt.Errorf("prepare retained owned proof report: %w", err)
+				}
+			}
+			return nil
+		}); err != nil {
+			return ProofResourceCompleteResult{}, true, err
+		}
+		result, err = s.completeProofResourceFenced(workID, completeInput, in.ExpectedPendingSHA256, now)
+		return result, true, err
 	}
 	if expiredExact {
 		if err := s.rearmExpiredProofResourceCompletion(
@@ -1091,6 +1225,64 @@ func (s *Store) deriveProofResourceCompletionExpectation(
 	}, nil
 }
 
+// requireProofWorkLeaseOwner is the single owner of the native rule that a proof completion may
+// only run for the actor that currently owns the Work lease. The stage names the caller so the
+// refusal keeps naming the exact native step that refused it.
+func (s *Store) requireProofWorkLeaseOwner(workID, actor, stage string) error {
+	claim, err := s.readLease(workID)
+	if err != nil || claim.By != actor {
+		return fmt.Errorf("%s requires work lease held by %q", stage, actor)
+	}
+	return nil
+}
+
+// proofResourceHolderStatus reads the ACTUAL current status of the coordinated proof resource.
+// Every holder rule of a proof completion reads the status through this one owner, so a caller
+// that already holds the effects guard observes the status as it is NOW and not the status it
+// captured before it took the guard.
+func (s *Store) proofResourceHolderStatus(reservation ProofResourceReservation, now time.Time) (landlease.StatusResult, error) {
+	status, err := landlease.ProofResourceForIdentity(s.home, reservation.ProofCoordination).Status(now)
+	if err != nil {
+		return landlease.StatusResult{}, fmt.Errorf("proof resource status: %w", err)
+	}
+	return status, nil
+}
+
+// requireProofResourceHolder is the single owner of the native finalizer rule that a proof
+// completion may only run while its own reservation holds the exclusive proof resource.
+//
+// A caller that legitimately rearmed its own expired holder observes its own live lease here, so
+// the rearmed generation is preserved and never compared with the expired status it replaced.
+func (s *Store) requireProofResourceHolder(reservation ProofResourceReservation, now time.Time) error {
+	status, err := s.proofResourceHolderStatus(reservation, now)
+	if err != nil {
+		return err
+	}
+	if !status.Held || status.Holder != reservation.Holder {
+		if status.Holder == reservation.Holder && status.IsExpired {
+			return fmt.Errorf("proof reservation %s expired at %s", reservation.ID, status.ExpiresAt)
+		}
+		return fmt.Errorf("proof reservation %s no longer holds exclusive resource; current holder %q", reservation.ID, status.Holder)
+	}
+	return nil
+}
+
+// requireProofResourceHolderForRearm is the same native rule at its PRE-EFFECT strictness: the
+// exclusive proof resource must already belong to the exact reservation holder. The holder need
+// not be live yet, because the rearm is what makes an expired holder of ours live again. The
+// expired status of a holder that is about to be rearmed is therefore never compared with the
+// lease it rearmed.
+func (s *Store) requireProofResourceHolderForRearm(reservation ProofResourceReservation, now time.Time) error {
+	status, err := s.proofResourceHolderStatus(reservation, now)
+	if err != nil {
+		return err
+	}
+	if status.Holder != reservation.Holder {
+		return fmt.Errorf("proof reservation %s no longer holds exclusive resource; current holder %q", reservation.ID, status.Holder)
+	}
+	return nil
+}
+
 func (s *Store) rearmExpiredProofResourceCompletion(
 	workID string,
 	in ProofResourceResumeInput,
@@ -1101,105 +1293,131 @@ func (s *Store) rearmExpiredProofResourceCompletion(
 	now time.Time,
 ) error {
 	return s.withLifecycleMutation(func() error {
-		w, err := s.Get(workID)
-		if err != nil {
-			return err
-		}
-		claim, err := s.readLease(workID)
-		if err != nil || claim.By != in.Actor {
-			return fmt.Errorf("expired proof completion rearm requires work lease held by %q", in.Actor)
-		}
-		var currentReservation ProofResourceReservation
-		if err := s.readProofReservationInto(reservation.ID, &currentReservation); err != nil {
-			return err
-		}
-		currentPending, present, pendingPath, err := s.readProofResourceCompletionPending(reservation.ID)
-		if err != nil {
-			return err
-		}
-		if !present ||
-			!reflect.DeepEqual(currentReservation, reservation) ||
-			!reflect.DeepEqual(currentPending, pending) {
-			return fmt.Errorf("expired proof completion identity changed before rearm")
-		}
-		expect, err := s.deriveProofResourceCompletionExpectation(workID, currentReservation, completeInput)
-		if err != nil {
-			return err
-		}
-		ra, err := s.runAttempts().Get(currentPending.Result.RunAttemptID)
-		if err != nil {
-			return err
-		}
-		normalized, migrated, err := s.validateAndNormalizeProofResourceCompletionPending(
-			w,
-			currentReservation,
-			currentPending,
-			ra,
+		return s.rearmExpiredProofResourceCompletionLocked(
+			workID,
+			in,
+			reservation,
+			pending,
 			completeInput,
-			expect,
-		)
-		if err != nil {
-			return err
-		}
-		if migrated {
-			if err := s.writeProofResourceCompletionPending(pendingPath, normalized); err != nil {
-				return fmt.Errorf("seal expired proof completion recovery journal: %w", err)
-			}
-			currentPending = normalized
-		}
-		action := s.proofResourceAction(
-			w,
-			currentReservation.ID,
-			in.Actor,
-			"completion_rearm",
-			"",
-			"",
-			"",
-			"",
+			expiredStatus,
 			now,
 		)
-		decision, err := s.evaluateProofResourceAction(action, now)
-		if err != nil {
-			return err
-		}
-		if !policy.Allowed(decision) {
-			return fmt.Errorf("expired proof completion rearm policy %s", decision.Outcome)
-		}
-		if err := s.persistProofScarceMutationPreparation(
-			&w,
-			action,
-			decision,
-			currentReservation,
-			currentPending.Result.RunAttemptID,
-			"completion_rearm",
-			now,
-		); err != nil {
-			return err
-		}
-		rearmed, err := landlease.ProofResourceForIdentity(s.home, reservation.ProofCoordination).RearmExpiredExact(expiredStatus, now)
-		if err != nil {
-			return fmt.Errorf("rearm exact expired proof completion holder: %w", err)
-		}
-		proofResourceAfterScarceMutation("completion_rearm")
-		refresh := ProofResourceRefresh{
-			SchemaVersion:    ProofResourceRefreshSchemaVersion,
-			ID:               idFor("pfrh_", currentReservation.ID, currentReservation.RunAttemptID, rearmed.ExpiresAt),
-			Kind:             "work.proof_resource.refresh",
-			CreatedAt:        now.UTC().Format(time.RFC3339Nano),
-			WorkID:           workID,
-			Actor:            in.Actor,
-			ReservationID:    currentReservation.ID,
-			RunAttemptID:     currentReservation.RunAttemptID,
-			Holder:           currentReservation.Holder,
-			WindowOpenedAt:   currentReservation.AcquiredAt,
-			RefreshedAt:      rearmed.AcquiredAt,
-			ExpiresAt:        rearmed.ExpiresAt,
-			TTLSeconds:       rearmed.TTLSeconds,
-			ActionIntentID:   action.ID,
-			PolicyDecisionID: decision.ID,
-		}
-		return s.persistProofRefresh(&w, action, decision, refresh, now)
 	})
+}
+
+// rearmExpiredProofResourceCompletionLocked is the rearm body for a caller that already holds
+// the lifecycle mutation guard. It never takes that guard again.
+func (s *Store) rearmExpiredProofResourceCompletionLocked(
+	workID string,
+	in ProofResourceResumeInput,
+	reservation ProofResourceReservation,
+	pending proofResourceCompletionPending,
+	completeInput ProofResourceCompleteInput,
+	expiredStatus landlease.StatusResult,
+	now time.Time,
+) error {
+	w, err := s.Get(workID)
+	if err != nil {
+		return err
+	}
+	if err := s.requireProofWorkLeaseOwner(workID, in.Actor, "expired proof completion rearm"); err != nil {
+		return err
+	}
+	var currentReservation ProofResourceReservation
+	if err := s.readProofReservationInto(reservation.ID, &currentReservation); err != nil {
+		return err
+	}
+	currentPending, present, pendingPath, err := s.readProofResourceCompletionPending(reservation.ID)
+	if err != nil {
+		return err
+	}
+	if !present ||
+		!reflect.DeepEqual(currentReservation, reservation) ||
+		!reflect.DeepEqual(currentPending, pending) {
+		return fmt.Errorf("expired proof completion identity changed before rearm")
+	}
+	// The expected-input fence is re-checked inside the native mutation guard, before the
+	// scarce mutation and before the journal may be reseeded by a legitimate retry.
+	if err := s.verifyRetainedPendingSHA256(reservation.ID, in.ExpectedPendingSHA256); err != nil {
+		return err
+	}
+	expect, err := s.deriveProofResourceCompletionExpectation(workID, currentReservation, completeInput)
+	if err != nil {
+		return err
+	}
+	ra, err := s.runAttempts().Get(currentPending.Result.RunAttemptID)
+	if err != nil {
+		return err
+	}
+	normalized, migrated, err := s.validateAndNormalizeProofResourceCompletionPending(
+		w,
+		currentReservation,
+		currentPending,
+		ra,
+		completeInput,
+		expect,
+	)
+	if err != nil {
+		return err
+	}
+	if migrated {
+		if err := s.writeProofResourceCompletionPending(pendingPath, normalized); err != nil {
+			return fmt.Errorf("seal expired proof completion recovery journal: %w", err)
+		}
+		currentPending = normalized
+	}
+	action := s.proofResourceAction(
+		w,
+		currentReservation.ID,
+		in.Actor,
+		"completion_rearm",
+		"",
+		"",
+		"",
+		"",
+		now,
+	)
+	decision, err := s.evaluateProofResourceAction(action, now)
+	if err != nil {
+		return err
+	}
+	if !policy.Allowed(decision) {
+		return fmt.Errorf("expired proof completion rearm policy %s", decision.Outcome)
+	}
+	if err := s.persistProofScarceMutationPreparation(
+		&w,
+		action,
+		decision,
+		currentReservation,
+		currentPending.Result.RunAttemptID,
+		"completion_rearm",
+		now,
+	); err != nil {
+		return err
+	}
+	rearmed, err := landlease.ProofResourceForIdentity(s.home, reservation.ProofCoordination).RearmExpiredExact(expiredStatus, now)
+	if err != nil {
+		return fmt.Errorf("rearm exact expired proof completion holder: %w", err)
+	}
+	proofResourceAfterScarceMutation("completion_rearm")
+	refresh := ProofResourceRefresh{
+		SchemaVersion:    ProofResourceRefreshSchemaVersion,
+		ID:               idFor("pfrh_", currentReservation.ID, currentReservation.RunAttemptID, rearmed.ExpiresAt),
+		Kind:             "work.proof_resource.refresh",
+		CreatedAt:        now.UTC().Format(time.RFC3339Nano),
+		WorkID:           workID,
+		Actor:            in.Actor,
+		ReservationID:    currentReservation.ID,
+		RunAttemptID:     currentReservation.RunAttemptID,
+		Holder:           currentReservation.Holder,
+		WindowOpenedAt:   currentReservation.AcquiredAt,
+		RefreshedAt:      rearmed.AcquiredAt,
+		ExpiresAt:        rearmed.ExpiresAt,
+		TTLSeconds:       rearmed.TTLSeconds,
+		ActionIntentID:   action.ID,
+		PolicyDecisionID: decision.ID,
+	}
+	return s.persistProofRefresh(&w, action, decision, refresh, now)
 }
 
 func (s *Store) reconcileRearmedProofResourceCompletion(
@@ -1217,142 +1435,173 @@ func (s *Store) reconcileRearmedProofResourceCompletion(
 		return nil
 	}
 	return s.withLifecycleMutation(func() error {
-		currentStatus, err := landlease.ProofResourceForIdentity(s.home, reservation.ProofCoordination).Status(now)
-		if err != nil {
-			return err
-		}
-		if !reflect.DeepEqual(currentStatus, liveStatus) {
-			return fmt.Errorf("rearmed proof completion lease changed before refresh reconciliation")
-		}
-		w, err := s.Get(workID)
-		if err != nil {
-			return err
-		}
-		claim, err := s.readLease(workID)
-		if err != nil || claim.By != in.Actor {
-			return fmt.Errorf("rearmed proof completion reconciliation requires work lease held by %q", in.Actor)
-		}
-		var currentReservation ProofResourceReservation
-		if err := s.readProofReservationInto(reservation.ID, &currentReservation); err != nil {
-			return err
-		}
-		currentPending, present, _, err := s.readProofResourceCompletionPending(reservation.ID)
-		if err != nil {
-			return err
-		}
-		if !present ||
-			!reflect.DeepEqual(currentReservation, reservation) ||
-			!reflect.DeepEqual(currentPending, pending) {
-			return fmt.Errorf("rearmed proof completion identity changed before refresh reconciliation")
-		}
-		latestReservation, err := s.proofReservationWithLatestRefresh(currentReservation)
-		if err != nil {
-			return err
-		}
-		if latestReservation.ExpiresAt == liveStatus.ExpiresAt &&
-			latestReservation.TTLSeconds == liveStatus.TTLSeconds {
-			return nil
-		}
-		expect, err := s.deriveProofResourceCompletionExpectation(workID, currentReservation, completeInput)
-		if err != nil {
-			return err
-		}
-		ra, err := s.runAttempts().Get(currentPending.Result.RunAttemptID)
-		if err != nil {
-			return err
-		}
-		_, migrated, err := s.validateAndNormalizeProofResourceCompletionPending(
-			w,
-			currentReservation,
-			currentPending,
-			ra,
+		return s.reconcileRearmedProofResourceCompletionLocked(
+			workID,
+			in,
+			reservation,
+			pending,
 			completeInput,
-			expect,
+			liveStatus,
+			now,
 		)
-		if err != nil {
-			return err
-		}
-		if migrated {
-			return fmt.Errorf("rearmed proof completion journal was not sealed before scarce mutation")
-		}
-
-		var decision envelope.PolicyDecision
-		if err := s.readEventJSON(w.PolicyDecisionID, &decision); err != nil {
-			return fmt.Errorf("read prepared rearm PolicyDecision: %w", err)
-		}
-		var action envelope.ActionIntent
-		if err := s.readEventJSON(decision.ActionIntentID, &action); err != nil {
-			return fmt.Errorf("read prepared rearm ActionIntent: %w", err)
-		}
-		actionTime, err := time.Parse(time.RFC3339Nano, action.CreatedAt)
-		if err != nil {
-			return fmt.Errorf("prepared rearm ActionIntent created_at: %w", err)
-		}
-		expectedAction := s.proofResourceAction(
-			w,
-			currentReservation.ID,
-			in.Actor,
-			"completion_rearm",
-			"",
-			"",
-			"",
-			"",
-			actionTime,
-		)
-		expectedDecision, err := s.evaluateProofResourceAction(expectedAction, actionTime)
-		if err != nil {
-			return err
-		}
-		if !reflect.DeepEqual(action, expectedAction) ||
-			!reflect.DeepEqual(decision, expectedDecision) ||
-			!policy.Allowed(decision) {
-			return fmt.Errorf("prepared rearm governance does not match canonical exact-holder recovery")
-		}
-		preparedAttached := []string{
-			action.ID,
-			decision.ID,
-			currentReservation.ID,
-			currentPending.Result.RunAttemptID,
-		}
-		prepared := false
-		events, err := s.eventsFor(workID)
-		if err != nil {
-			return err
-		}
-		for _, event := range events {
-			if event.WorkID == workID &&
-				event.By == in.Actor &&
-				event.Note == "proof resource completion_rearm governance persisted before scarce mutation" &&
-				reflect.DeepEqual(event.Attached, preparedAttached) {
-				prepared = true
-				break
-			}
-		}
-		if !prepared {
-			return fmt.Errorf("prepared rearm governance has no reachable pre-mutation event")
-		}
-		if _, err := landlease.ProofResourceForIdentity(s.home, reservation.ProofCoordination).AttestExecutionTerminated(currentReservation.Holder); err != nil {
-			return fmt.Errorf("reconcile rearmed proof execution termination: %w", err)
-		}
-		refresh := ProofResourceRefresh{
-			SchemaVersion:    ProofResourceRefreshSchemaVersion,
-			ID:               idFor("pfrh_", currentReservation.ID, currentReservation.RunAttemptID, liveStatus.ExpiresAt),
-			Kind:             "work.proof_resource.refresh",
-			CreatedAt:        action.CreatedAt,
-			WorkID:           workID,
-			Actor:            in.Actor,
-			ReservationID:    currentReservation.ID,
-			RunAttemptID:     currentReservation.RunAttemptID,
-			Holder:           currentReservation.Holder,
-			WindowOpenedAt:   currentReservation.AcquiredAt,
-			RefreshedAt:      liveStatus.AcquiredAt,
-			ExpiresAt:        liveStatus.ExpiresAt,
-			TTLSeconds:       liveStatus.TTLSeconds,
-			ActionIntentID:   action.ID,
-			PolicyDecisionID: decision.ID,
-		}
-		return s.persistProofRefresh(&w, action, decision, refresh, actionTime)
 	})
+}
+
+// reconcileRearmedProofResourceCompletionLocked is the reconciliation body for a caller that
+// already holds the lifecycle mutation guard. It never takes that guard again.
+func (s *Store) reconcileRearmedProofResourceCompletionLocked(
+	workID string,
+	in ProofResourceResumeInput,
+	reservation ProofResourceReservation,
+	pending proofResourceCompletionPending,
+	completeInput ProofResourceCompleteInput,
+	liveStatus landlease.StatusResult,
+	now time.Time,
+) error {
+	if !liveStatus.Held ||
+		liveStatus.Holder != reservation.Holder ||
+		liveStatus.AcquiredAt == reservation.AcquiredAt {
+		return nil
+	}
+	currentStatus, err := landlease.ProofResourceForIdentity(s.home, reservation.ProofCoordination).Status(now)
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(currentStatus, liveStatus) {
+		return fmt.Errorf("rearmed proof completion lease changed before refresh reconciliation")
+	}
+	w, err := s.Get(workID)
+	if err != nil {
+		return err
+	}
+	if err := s.requireProofWorkLeaseOwner(workID, in.Actor, "rearmed proof completion reconciliation"); err != nil {
+		return err
+	}
+	var currentReservation ProofResourceReservation
+	if err := s.readProofReservationInto(reservation.ID, &currentReservation); err != nil {
+		return err
+	}
+	currentPending, present, _, err := s.readProofResourceCompletionPending(reservation.ID)
+	if err != nil {
+		return err
+	}
+	if !present ||
+		!reflect.DeepEqual(currentReservation, reservation) ||
+		!reflect.DeepEqual(currentPending, pending) {
+		return fmt.Errorf("rearmed proof completion identity changed before refresh reconciliation")
+	}
+	// The expected-input fence is re-checked inside the native mutation guard, before the
+	// scarce mutation and before the journal may be reseeded by a legitimate retry.
+	if err := s.verifyRetainedPendingSHA256(reservation.ID, in.ExpectedPendingSHA256); err != nil {
+		return err
+	}
+	latestReservation, err := s.proofReservationWithLatestRefresh(currentReservation)
+	if err != nil {
+		return err
+	}
+	if latestReservation.ExpiresAt == liveStatus.ExpiresAt &&
+		latestReservation.TTLSeconds == liveStatus.TTLSeconds {
+		return nil
+	}
+	expect, err := s.deriveProofResourceCompletionExpectation(workID, currentReservation, completeInput)
+	if err != nil {
+		return err
+	}
+	ra, err := s.runAttempts().Get(currentPending.Result.RunAttemptID)
+	if err != nil {
+		return err
+	}
+	_, migrated, err := s.validateAndNormalizeProofResourceCompletionPending(
+		w,
+		currentReservation,
+		currentPending,
+		ra,
+		completeInput,
+		expect,
+	)
+	if err != nil {
+		return err
+	}
+	if migrated {
+		return fmt.Errorf("rearmed proof completion journal was not sealed before scarce mutation")
+	}
+
+	var decision envelope.PolicyDecision
+	if err := s.readEventJSON(w.PolicyDecisionID, &decision); err != nil {
+		return fmt.Errorf("read prepared rearm PolicyDecision: %w", err)
+	}
+	var action envelope.ActionIntent
+	if err := s.readEventJSON(decision.ActionIntentID, &action); err != nil {
+		return fmt.Errorf("read prepared rearm ActionIntent: %w", err)
+	}
+	actionTime, err := time.Parse(time.RFC3339Nano, action.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("prepared rearm ActionIntent created_at: %w", err)
+	}
+	expectedAction := s.proofResourceAction(
+		w,
+		currentReservation.ID,
+		in.Actor,
+		"completion_rearm",
+		"",
+		"",
+		"",
+		"",
+		actionTime,
+	)
+	expectedDecision, err := s.evaluateProofResourceAction(expectedAction, actionTime)
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(action, expectedAction) ||
+		!reflect.DeepEqual(decision, expectedDecision) ||
+		!policy.Allowed(decision) {
+		return fmt.Errorf("prepared rearm governance does not match canonical exact-holder recovery")
+	}
+	preparedAttached := []string{
+		action.ID,
+		decision.ID,
+		currentReservation.ID,
+		currentPending.Result.RunAttemptID,
+	}
+	prepared := false
+	events, err := s.eventsFor(workID)
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		if event.WorkID == workID &&
+			event.By == in.Actor &&
+			event.Note == "proof resource completion_rearm governance persisted before scarce mutation" &&
+			reflect.DeepEqual(event.Attached, preparedAttached) {
+			prepared = true
+			break
+		}
+	}
+	if !prepared {
+		return fmt.Errorf("prepared rearm governance has no reachable pre-mutation event")
+	}
+	if _, err := landlease.ProofResourceForIdentity(s.home, reservation.ProofCoordination).AttestExecutionTerminated(currentReservation.Holder); err != nil {
+		return fmt.Errorf("reconcile rearmed proof execution termination: %w", err)
+	}
+	refresh := ProofResourceRefresh{
+		SchemaVersion:    ProofResourceRefreshSchemaVersion,
+		ID:               idFor("pfrh_", currentReservation.ID, currentReservation.RunAttemptID, liveStatus.ExpiresAt),
+		Kind:             "work.proof_resource.refresh",
+		CreatedAt:        action.CreatedAt,
+		WorkID:           workID,
+		Actor:            in.Actor,
+		ReservationID:    currentReservation.ID,
+		RunAttemptID:     currentReservation.RunAttemptID,
+		Holder:           currentReservation.Holder,
+		WindowOpenedAt:   currentReservation.AcquiredAt,
+		RefreshedAt:      liveStatus.AcquiredAt,
+		ExpiresAt:        liveStatus.ExpiresAt,
+		TTLSeconds:       liveStatus.TTLSeconds,
+		ActionIntentID:   action.ID,
+		PolicyDecisionID: decision.ID,
+	}
+	return s.persistProofRefresh(&w, action, decision, refresh, actionTime)
 }
 
 func (s *Store) reserveProofResourceLocked(workID string, in ProofResourceReserveInput, now time.Time) (ProofResourceReserveResult, error) {
@@ -1946,8 +2195,27 @@ func (s *Store) RefreshProofResource(workID, reservationID, actor string, ttl ti
 // still exclusive, terminalizes the proof RunAttempt, and only then releases. An expired, stolen,
 // malformed, fabricated, piped, or exit-ambiguous result cannot enter VerificationIDs.
 func (s *Store) CompleteProofResource(workID string, in ProofResourceCompleteInput, now time.Time) (ProofResourceCompleteResult, error) {
+	return s.completeProofResourceFenced(workID, in, "", now)
+}
+
+// completeProofResourceFenced completes an exact retained proof completion under the initial
+// expected pending-byte fence. The fence is evaluated inside the SAME lifecycle guard that
+// performs the completion, before any mutation, and a fence refusal never terminalizes the
+// attempt: it is a refusal, not a failed proof completion. A hash the recovery itself
+// generates later (a legitimate retry reseed) is produced after this check and is allowed.
+func (s *Store) completeProofResourceFenced(
+	workID string,
+	in ProofResourceCompleteInput,
+	expectedPendingSHA256 string,
+	now time.Time,
+) (ProofResourceCompleteResult, error) {
 	var result ProofResourceCompleteResult
 	err := s.withLifecycleMutation(func() error {
+		if strings.TrimSpace(expectedPendingSHA256) != "" {
+			if err := s.verifyRetainedPendingSHA256(in.ReservationID, expectedPendingSHA256); err != nil {
+				return err
+			}
+		}
 		var err error
 		workID = strings.TrimSpace(workID)
 		result, err = s.completeProofResourceLocked(workID, in, now)
@@ -2022,9 +2290,8 @@ func (s *Store) completeProofResourceLocked(workID string, in ProofResourceCompl
 	if err != nil {
 		return ProofResourceCompleteResult{}, err
 	}
-	claim, err := s.readLease(workID)
-	if err != nil || claim.By != in.Actor {
-		return ProofResourceCompleteResult{}, fmt.Errorf("proof completion requires work lease held by %q", in.Actor)
+	if err := s.requireProofWorkLeaseOwner(workID, in.Actor, "proof completion"); err != nil {
+		return ProofResourceCompleteResult{}, err
 	}
 	var reservation ProofResourceReservation
 	if err := s.readProofReservationInto(in.ReservationID, &reservation); err != nil {
@@ -2034,15 +2301,8 @@ func (s *Store) completeProofResourceLocked(workID string, in ProofResourceCompl
 	if err != nil {
 		return ProofResourceCompleteResult{}, err
 	}
-	leaseStatus, err := landlease.ProofResourceForIdentity(s.home, reservation.ProofCoordination).Status(now)
-	if err != nil {
+	if err := s.requireProofResourceHolder(reservation, now); err != nil {
 		return ProofResourceCompleteResult{}, err
-	}
-	if !leaseStatus.Held || leaseStatus.Holder != reservation.Holder {
-		if leaseStatus.Holder == reservation.Holder && leaseStatus.IsExpired {
-			return ProofResourceCompleteResult{}, fmt.Errorf("proof reservation %s expired at %s", reservation.ID, leaseStatus.ExpiresAt)
-		}
-		return ProofResourceCompleteResult{}, fmt.Errorf("proof reservation %s no longer holds exclusive resource; current holder %q", reservation.ID, leaseStatus.Holder)
 	}
 
 	expect, err := s.deriveProofResourceCompletionExpectation(workID, reservation, in)
@@ -2519,48 +2779,78 @@ func (s *Store) validateCommittedProofResourceChainStatus(
 	return nil
 }
 
+// proofRunAttemptAncestry authenticates the immutable retry ancestry of a terminal proof
+// RunAttempt and returns the chain of attempts from the terminal attempt back to the reserved
+// original attempt.
+//
+// The walk is IDENTITY-only: every attempt must be the reserved same-work execution, a retry
+// must be governed by the proof completion action, and its predecessor must be terminal. Work
+// REACHABILITY is a separate native fact and is checked by the caller, because an interrupted
+// retry may have been minted and journaled before its forward link into the Work envelope was
+// persisted — the existing native reachability recovery owns that repair.
+func (s *Store) proofRunAttemptAncestry(
+	w envelope.WorkEnvelope,
+	reservation ProofResourceReservation,
+	result ProofResourceResult,
+	terminal runattempt.RunAttempt,
+) ([]runattempt.RunAttempt, error) {
+	seen := map[string]bool{}
+	chain := []runattempt.RunAttempt{}
+	current := terminal
+	for {
+		if current.ID == "" || seen[current.ID] {
+			return nil, fmt.Errorf("RunAttempt retry lineage is empty or cyclic")
+		}
+		seen[current.ID] = true
+		chain = append(chain, current)
+		if current.WorkID != w.ID ||
+			current.Actor != result.Actor ||
+			current.Harness != proofResourceHarness ||
+			current.Origin != runattempt.OriginHarnessExecution ||
+			current.Workspace != reservation.Workspace ||
+			current.Command != reservation.Command {
+			return nil, fmt.Errorf("RunAttempt retry lineage leaves reserved proof execution")
+		}
+		if current.ID == reservation.RunAttemptID {
+			if current.ActionIntentID != reservation.ActionIntentID {
+				return nil, fmt.Errorf("original proof RunAttempt governance identity changed")
+			}
+			return chain, nil
+		}
+		if current.ActionIntentID != result.ActionIntentID ||
+			current.PredecessorID == "" {
+			return nil, fmt.Errorf("retry RunAttempt is not governed by proof completion action")
+		}
+		predecessor, err := s.runAttempts().Get(current.PredecessorID)
+		if err != nil {
+			return nil, fmt.Errorf("proof retry predecessor %s: %w", current.PredecessorID, err)
+		}
+		if !runattempt.IsTerminal(predecessor.Status) ||
+			predecessor.CompletedAt.IsZero() {
+			return nil, fmt.Errorf("proof retry predecessor %s is not terminal", predecessor.ID)
+		}
+		current = predecessor
+	}
+}
+
+// validateProofRunAttemptLineage authenticates the FULL retry ancestry of a terminal proof
+// RunAttempt and requires every attempt in it to be reachable from the Work envelope.
 func (s *Store) validateProofRunAttemptLineage(
 	w envelope.WorkEnvelope,
 	reservation ProofResourceReservation,
 	result ProofResourceResult,
 	terminal runattempt.RunAttempt,
 ) error {
-	seen := map[string]bool{}
-	current := terminal
-	for {
-		if current.ID == "" || seen[current.ID] {
-			return fmt.Errorf("RunAttempt retry lineage is empty or cyclic")
-		}
-		seen[current.ID] = true
-		if !oneOf(current.ID, w.RunAttemptIDs) ||
-			current.WorkID != w.ID ||
-			current.Actor != result.Actor ||
-			current.Harness != proofResourceHarness ||
-			current.Origin != runattempt.OriginHarnessExecution ||
-			current.Workspace != reservation.Workspace ||
-			current.Command != reservation.Command {
+	chain, err := s.proofRunAttemptAncestry(w, reservation, result, terminal)
+	if err != nil {
+		return err
+	}
+	for _, attempt := range chain {
+		if !oneOf(attempt.ID, w.RunAttemptIDs) {
 			return fmt.Errorf("RunAttempt retry lineage leaves reserved proof execution")
 		}
-		if current.ID == reservation.RunAttemptID {
-			if current.ActionIntentID != reservation.ActionIntentID {
-				return fmt.Errorf("original proof RunAttempt governance identity changed")
-			}
-			return nil
-		}
-		if current.ActionIntentID != result.ActionIntentID ||
-			current.PredecessorID == "" {
-			return fmt.Errorf("retry RunAttempt is not governed by proof completion action")
-		}
-		predecessor, err := s.runAttempts().Get(current.PredecessorID)
-		if err != nil {
-			return fmt.Errorf("proof retry predecessor %s: %w", current.PredecessorID, err)
-		}
-		if !runattempt.IsTerminal(predecessor.Status) ||
-			predecessor.CompletedAt.IsZero() {
-			return fmt.Errorf("proof retry predecessor %s is not terminal", predecessor.ID)
-		}
-		current = predecessor
 	}
+	return nil
 }
 
 // proofReservationExpectedAction derives one exact governance action from the immutable
