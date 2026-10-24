@@ -172,12 +172,21 @@ go run ./cmd/compound proof-check --json --base "$PROOF_BASE_SHA" \
   --out <absolute-report.json>   # full canonical inventory
 ```
 
-Detached post-land form of the same command (same captured base, landed tip checked out on main):
+Detached post-land form of the same command (same captured base, landed tip checked out on main).
+A full local battery is admitted only with `--work`, `--actor` and `--out` (it reserves proof
+capacity bound to that WorkEnvelope; refused before any gate subprocess otherwise — proven
+2026-10-25):
 
 ```bash
 nohup nice -n 10 go run ./cmd/compound proof-check --json --base "$PROOF_BASE_SHA" \
+  --work <work_id> --actor "<harness>:<lane>" --wait 90m \
   --out <absolute-report.json> >/dev/null 2>&1 &
 ```
+
+A landing with no WorkEnvelope (a trivial docs/skill commit) has no canonical proof to produce;
+its post-land check is the full uncached Go suite on the landed tip — the operator's remote
+verifier when present (private overlay), else the scheduled nightly main battery — and the
+landing lane reads that result, not the schedule.
 
 Every capture and guard is joined to proof execution: a failed predicate cannot
 fall through to a new proof. Before this command, record the reviewed manifest
