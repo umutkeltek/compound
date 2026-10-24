@@ -123,15 +123,28 @@ def verify(agent, request):
     return (not expected_url or url == expected_url) and (not expected_text or expected_text in text), url
 
 
-@contextmanager
-def isolated_chrome(allowed_url):
-    """Never let Browser Harness auto-attach to an existing logged-in Chrome."""
+def chrome_binary():
+    """Return the Chrome executable for the isolated session, or None.
+
+    This is the one host lookup isolated_chrome makes. It is a separate seam so
+    the synthetic handoff tests can substitute a stand-in on any platform; the
+    darwin branch is a fixed app path that a PATH lookup cannot reach.
+    """
     chrome_path = (
         "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
         if sys.platform == "darwin"
         else shutil.which("google-chrome") or shutil.which("chromium")
     )
     if not chrome_path or not pathlib.Path(chrome_path).is_file():
+        return None
+    return chrome_path
+
+
+@contextmanager
+def isolated_chrome(allowed_url):
+    """Never let Browser Harness auto-attach to an existing logged-in Chrome."""
+    chrome_path = chrome_binary()
+    if not chrome_path:
         raise RuntimeError("isolated Chrome unavailable")
     # Browser Harness uses AF_UNIX paths; macOS's default TMPDIR is too deep.
     allowed_host = urlsplit(allowed_url).hostname

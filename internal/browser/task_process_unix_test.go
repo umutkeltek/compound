@@ -324,6 +324,46 @@ func TestJevReaperRefusesAbsentUnboundOrUninspectableGroup(t *testing.T) {
 	}
 }
 
+// The handoff test below substitutes chrome_binary. This pins the other half of
+// that seam: without a binary the bridge refuses before any spawn, and the real
+// lookup answers an existing file or None on this host, never a guessed path.
+func TestJevIsolatedChromeRefusesWithoutBinaryBeforeSpawn(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 unavailable")
+	}
+	source, err := filepath.Abs("jev_bridge.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const script = `import pathlib, runpy, sys
+source = sys.argv[1]
+isolated_chrome = runpy.run_path(source)["isolated_chrome"]
+scope = isolated_chrome.__wrapped__.__globals__
+scope["chrome_binary"] = lambda: None
+spawned = []
+def refuse_spawn(*args, **_kwargs):
+    spawned.append(args)
+    raise AssertionError("spawned without a Chrome binary")
+scope["subprocess"].Popen = refuse_spawn
+try:
+    with isolated_chrome("https://example.com/"):
+        raise AssertionError("entered without a Chrome binary")
+except RuntimeError as exc:
+    assert str(exc) == "isolated Chrome unavailable", exc
+else:
+    raise AssertionError("missing Chrome was ignored")
+assert not spawned, spawned
+found = runpy.run_path(source)["chrome_binary"]()
+assert found is None or pathlib.Path(found).is_file(), found
+`
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if output, err := exec.CommandContext(ctx, python, "-c", script, source).CombinedOutput(); err != nil {
+		t.Fatalf("missing-Chrome refusal failed: %v: %s", err, output)
+	}
+}
+
 func TestJevChromeSpawnHandoffAlwaysReapsDetachedChild(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {
@@ -339,7 +379,10 @@ session = pathlib.Path(session_dir)
 os.environ["COMPOUND_JEV_SESSION_DIR"] = session_dir
 isolated_chrome = runpy.run_path(source)["isolated_chrome"]
 scope = isolated_chrome.__wrapped__.__globals__
-scope["shutil"].which = lambda _name: sys.executable
+# Substitute the one host lookup, not shutil.which: on darwin the bridge uses a
+# fixed app path, so a PATH patch never reached the handoff on a Mac without
+# Chrome and the test failed before it could prove anything about reaping.
+scope["chrome_binary"] = lambda: sys.executable
 real_popen = subprocess.Popen
 def spawn_then_interrupt(*_args, **_kwargs):
     child = real_popen([sys.executable, "-c", "import time; time.sleep(60)"],
