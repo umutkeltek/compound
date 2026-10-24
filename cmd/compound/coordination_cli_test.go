@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -233,6 +234,60 @@ func TestCoordinationCLIUsesExplicitHome(t *testing.T) {
 	}
 	if report.Me.Actor != "lane-explicit" || report.Me.Doing == nil || report.Me.Doing.WorkID != workID {
 		t.Fatalf("explicit home was not consumed: %+v", report.Me)
+	}
+}
+
+// The coordination CLI composes ONE request-scoped capacity observation, bound
+// to the home and the request instant the store will use. The seeded fixture
+// advances its work to "running", which is NOT a dispatch point, so no CLI test
+// ever reached the lane-capacity guard: had the CLI's binding drifted from the
+// store's, every dispatch-point actor would have failed the binding and the
+// command would exit non-zero with no other test failing. This one seeds
+// CLAIMED work — a dispatch point — so the guard is actually called.
+func TestCoordinationCLICapacityObservationBindingMatchesTheStore(t *testing.T) {
+	t.Parallel()
+
+	if os.Getenv("COMPOUND_TEST_COORDINATION_BINDING") == "1" {
+		cmdCoordination([]string{"--home", os.Getenv("COMPOUND_TEST_HOME"), "--json"})
+		return
+	}
+	now := time.Now().UTC()
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", now); err != nil {
+		t.Fatalf("home init: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	w, err := store.Create(work.CreateInput{Owner: "lane-x", DesiredOutcome: "ship the parser", SuccessPredicate: "parser lands"}, now)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := store.Claim(w.ID, "lane-x", now); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestCoordinationCLICapacityObservationBindingMatchesTheStore$", "-test.timeout=20s")
+	cmd.Env = append(os.Environ(),
+		"COMPOUND_TEST_COORDINATION_BINDING=1",
+		"COMPOUND_TEST_HOME="+homePath,
+		// HOME points at the temp dir so the CodexBar usage feed and the multi-auth
+		// quota cache resolve inside it: the guard's answer must not depend on the
+		// machine's real capacity files.
+		"HOME="+homePath,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("coordination with a dispatch-point actor failed: %v\n%s", err, out)
+	}
+	var report work.CoordinationReport
+	if err := json.Unmarshal([]byte(strings.SplitN(string(out), "\n", 2)[0]), &report); err != nil {
+		t.Fatalf("parse coordination report: %v\n%s", err, out)
+	}
+	if report.Me.Lane == nil {
+		t.Fatalf("the lane-capacity guard was never reached: %+v", report.Me)
 	}
 }
 

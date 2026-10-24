@@ -186,9 +186,10 @@ compound **observes** executions; it does not become one. The rail is proven by 
   The lane-capacity gate is a request-scoped READ-ONLY observation bound to one home and one request
   instant: one capacity-source read per request (not per actor), a request that is not read-only is refused
   before any source is touched, and a second home or instant is refused rather than served from stale facts.
-  It records no refusal evidence, runs no live quota probe, and leaves the global guard that dispatch and
-  delegate use untouched — those consumers always re-read current authority. An unreadable capacity source
-  is reported as an error, never as an ungated actor.
+  It records no refusal evidence and runs no live quota probe on the coordination path (a declared-source
+  request keeps the existing fresh guard, including its live-probe fallback), and leaves the global guard
+  that dispatch and delegate use untouched — those consumers always re-read current authority. An
+  unreadable capacity source is reported as an error, never as an ungated actor.
 - **Claim a lane before building.** `proposed ≠ held`: dispatch consumes proposed work, so unclaimed work gets
   double-executed by a concurrent lane. Claim the item (`work claim`) and a NARROW scope (packages/files you will
   touch) before touching anything; do not parallel-edit the same `internal/` package as a live lane.

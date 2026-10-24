@@ -960,13 +960,14 @@ func normalizeLaneCapacityConfig(cfg LaneCapacityConfig, homePath string) LaneCa
 	if strings.TrimSpace(cfg.Paths.SupplementUsagePath) == "" {
 		cfg.Paths.SupplementUsagePath = defaults.Paths.SupplementUsagePath
 	}
-	cfg.ExpectedMinutes = expectedMinutes(cfg.ExpectedMinutes)
+	cfg.ExpectedMinutes = capacityExpectedMinutes(cfg.ExpectedMinutes)
 	return cfg
 }
 
-// expectedMinutes is the effective window for one evaluation: the requested duration wins, and
-// an unset request falls back to the default window.
-func expectedMinutes(requested int) int {
+// capacityExpectedMinutes is the effective window for one evaluation: the requested duration
+// wins, and an unset request falls back to the default window. The name carries the file's
+// capacity* prefix so it can never be shadowed by an `expectedMinutes` parameter.
+func capacityExpectedMinutes(requested int) int {
 	if requested > 0 {
 		return requested
 	}

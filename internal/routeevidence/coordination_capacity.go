@@ -41,7 +41,8 @@ import (
 
 // CoordinationSourceAccess counts how an observation touched each capacity source.
 type CoordinationSourceAccess struct {
-	// Reads counts content reads per source path.
+	// Reads counts content read attempts per source path. A path that does not exist still
+	// counts as one attempt: what the bound promises is that no source is read twice.
 	Reads map[string]int
 	// Stats counts existence probes per source path.
 	Stats map[string]int
@@ -167,7 +168,7 @@ func (o *CoordinationCapacityObservation) observe(req work.LaneCapacityGuardRequ
 // guardLegacy evaluates the legacy (undeclared) capacity path for one actor from the request's
 // cached facts, through the SAME composition the production guard runs.
 func (o *CoordinationCapacityObservation) guardLegacy(req work.LaneCapacityGuardRequest) (LaneCapacityDecision, error) {
-	expected := expectedMinutes(req.ExpectedMinutes)
+	expected := capacityExpectedMinutes(req.ExpectedMinutes)
 	capacity, err := readLaneCapacityWithFacts(req.Lane, req.Now, expected, o.facts.compositionFacts())
 	if err != nil {
 		return LaneCapacityDecision{}, err

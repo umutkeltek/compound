@@ -43,7 +43,27 @@ func coordinationCapacityFixture(t *testing.T) (LaneCapacityConfig, string) {
 		},
 		ExpectedMinutes: 60,
 	}
+	writeCapacityRoutingDefaults(t, home, "build-implement", []string{"fixture-claude", "fixture-codex"})
 	return cfg, home
+}
+
+// writeCapacityRoutingDefaults writes the model-capabilities manifest whose routing defaults pin
+// the alternative ladder for one capability class. The manifest is validated on load, so its
+// models, tiers and routing chain have to be real.
+func writeCapacityRoutingDefaults(t *testing.T, home, class string, models []string) {
+	t.Helper()
+	path := ModelCapabilitiesPath(home)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "version: 1\npurpose: fixture\ncapability_classes: [" + class + "]\nmodels:\n"
+	for _, model := range models {
+		body += "  " + model + ":\n    lane: fixture " + model + "\n    tier: cheap\n"
+	}
+	body += "routing_defaults:\n  " + class + ": [" + strings.Join(models, ", ") + "]\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func coordinationCapacityRequest(home, lane string, now time.Time) work.LaneCapacityGuardRequest {
@@ -406,9 +426,10 @@ func TestCoordinationCapacityObservationKeepsDurationsPerActor(t *testing.T) {
 func TestCoordinationCapacityObservationMatchesProductionGuard(t *testing.T) {
 	now := coordinationCapacityNow
 	for _, tc := range []struct {
-		name  string
-		lane  string
-		setup func(t *testing.T, cfg LaneCapacityConfig)
+		name            string
+		lane            string
+		capabilityClass string
+		setup           func(t *testing.T, cfg LaneCapacityConfig)
 	}{
 		{
 			name: "fresh alive row",
@@ -503,20 +524,52 @@ func TestCoordinationCapacityObservationMatchesProductionGuard(t *testing.T) {
 				writeCapacitySupplementRow(t, cfg, "claude", 100, now.Add(2*time.Hour), now.Add(-time.Minute))
 			},
 		},
+		{
+			name:            "capability class carries the routing ladder",
+			lane:            "claude",
+			capabilityClass: "build-implement",
+			setup: func(t *testing.T, cfg LaneCapacityConfig) {
+				// No capacity source: the decision is the unwired fail-open, and its
+				// message carries the ladder the manifest pinned for this class.
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, home := coordinationCapacityFixture(t)
 			tc.setup(t, cfg)
-			production, err := WorkLaneCapacityGuard(cfg)(coordinationCapacityRequest(home, tc.lane, now))
+			request := coordinationCapacityRequest(home, tc.lane, now)
+			request.CapabilityClass = tc.capabilityClass
+			production, err := WorkLaneCapacityGuard(cfg)(request)
 			if err != nil {
 				t.Fatalf("production guard: %v", err)
 			}
-			observation, err := NewCoordinationCapacityObservation(cfg, home, now).Guard()(coordinationCapacityRequest(home, tc.lane, now))
+			observation := NewCoordinationCapacityObservation(cfg, home, now)
+			observed, err := observation.Guard()(request)
 			if err != nil {
 				t.Fatalf("observation: %v", err)
 			}
-			if !reflect.DeepEqual(production, observation) {
-				t.Fatalf("observation diverged from the production guard\nproduction  = %+v\nobservation = %+v", production, observation)
+			if !reflect.DeepEqual(production, observed) {
+				t.Fatalf("observation diverged from the production guard\nproduction  = %+v\nobservation = %+v", production, observed)
+			}
+			if tc.capabilityClass != "" {
+				if !strings.Contains(observed.Message, "alternative_ladder=[fixture-claude -> fixture-codex]") {
+					t.Fatalf("the routing ladder did not reach the decision: %q", observed.Message)
+				}
+			}
+			// The work result drops LaneCapacity.Source and LaneCapacity.SourceInstalled,
+			// and SourceInstalled is what decides "unwired, fail open" versus "wired but
+			// blind, confirmation required". Compare the FULL capacity too, so that
+			// branch cannot drift unnoticed.
+			productionCapacity, err := ReadLaneCapacityWithConfig(tc.lane, now, cfg)
+			if err != nil {
+				t.Fatalf("production capacity: %v", err)
+			}
+			observedCapacity, err := readLaneCapacityWithFacts(tc.lane, now, capacityExpectedMinutes(request.ExpectedMinutes), observation.facts.compositionFacts())
+			if err != nil {
+				t.Fatalf("observed capacity: %v", err)
+			}
+			if !reflect.DeepEqual(productionCapacity, observedCapacity) {
+				t.Fatalf("observation capacity diverged from the production read\nproduction = %+v\nobservation = %+v", productionCapacity, observedCapacity)
 			}
 		})
 	}
