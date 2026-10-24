@@ -50,9 +50,10 @@ This skill replaces re-deriving the "standing session rules" from
   mtimes; use a bounded watcher, not blind sleep) does NOT block a land when your merge is pure
   ff AND `git diff --name-only <base>..<tip>` ∩ their dirty files = ∅. Then: back up their diff
   (`git diff > /tmp/<lane>-wip-backup.patch`), land the guarded ff from MAIN as its own command,
-  verify their WIP byte-identical after (diff checksum before/after), and run the post-land
-  battery AND `./install.sh` from a clean detached worktree at the landed SHA — never from the
-  mixed tree (a binary built there would embed their half-built WIP).
+  verify their WIP byte-identical after (diff checksum before/after), record the pure-ff equality
+  (landed `main` == the certified candidate HEAD) so `land-check --tip` cites the pre-land proof
+  instead of a second battery (§4), and run `./install.sh` from a clean detached worktree at the
+  landed SHA — never from the mixed tree (a binary built there would embed their half-built WIP).
 
 ### Reviewed members at one exact candidate
 
@@ -85,14 +86,35 @@ cache-enabled short feedback. It is explicitly non-certifying: it does not write
 the canonical installed-runtime proof artifact and never substitutes for the
 pre-land full proof below.
 
-Run the `compound-verify` skill. Capture the current target tip as
-`PRE_LAND_BASE_SHA` before each pre-land canonical proof and preserve that exact
-full SHA with its candidate report. A replay changes the candidate and requires
-renewed proof before landing. Minimum bar before any commit to main:
+Run the `compound-verify` skill. The pre-proof capture has TWO explicit variables, and
+they answer different questions:
+
+- `PROOF_BASE_SHA` (B) — the immutable reviewed **coverage base**: the commit the
+  canonical proof scans (`base...HEAD`). It decides WHAT the proof covered.
+- `PRE_PROOF_TARGET_SHA` (T) — the current actual **target tip** before the proof: the
+  commit the landing fast-forwards FROM. It decides WHERE the landing starts.
+
+The default is `B = T`. A reviewed batch may explicitly retain an EARLIER B than T ONLY
+after proving all three of: `B != H` (B is not the candidate itself), `B <= T <= H`, and
+the batch's native manifest acceptance (`work proof-manifest`) verifies exact member
+inventory coverage plus the independent committed member diff-check for every member.
+Select and validate B explicitly — never copy `git_delivery.expected_base_sha` blindly,
+and never guess an oldest ancestor. A different H, or an intentionally different B,
+needs a fresh canonical proof. Preserve both captured full SHAs with the candidate
+report. A replay changes the candidate and requires renewed proof before landing.
+Minimum bar before any commit to main:
 
 ```bash
-PRE_LAND_BASE_SHA=$(git rev-parse --verify "main^{commit}")
-go run ./cmd/compound proof-check --json --base "$PRE_LAND_BASE_SHA" \
+PROOF_BASE_SHA=$(git rev-parse --verify "<reviewed-base-sha>^{commit}")   # B
+PRE_PROOF_TARGET_SHA=$(git rev-parse --verify "main^{commit}")            # T
+CANDIDATE_SHA=$(git rev-parse --verify "HEAD^{commit}")                    # H
+# Fail closed: every object must exist and the reviewed ancestry must hold.
+git cat-file -e "$PROOF_BASE_SHA^{commit}" && \
+git cat-file -e "$PRE_PROOF_TARGET_SHA^{commit}" && \
+git cat-file -e "$CANDIDATE_SHA^{commit}" && \
+git merge-base --is-ancestor "$PROOF_BASE_SHA" "$PRE_PROOF_TARGET_SHA" && \
+git merge-base --is-ancestor "$PRE_PROOF_TARGET_SHA" "$CANDIDATE_SHA"
+go run ./cmd/compound proof-check --json --base "$PROOF_BASE_SHA" \
   --work <work_id> --actor "<harness>:<lane>" \
   --out <absolute-report.json>   # tests, vet, build, diff-check, console smokes,
                                 # doctor --strict, workbench, memory doctor, redact
@@ -155,8 +177,9 @@ go run ./cmd/compound proof-check --json --base "$PRE_LAND_BASE_SHA" \
   The red reports remain red; the differential reference says only that the candidate added no
   observed failure relative to its exact base. No scheduler or parallel authority is introduced.
 - Exit contract: `0` ok · `1` a gate FAILED · `2` usage/admission/publication/finalization error.
-- `--base` is a caller-captured immutable full SHA, not
-  `git_delivery.expected_base_sha`. It resolves once. Certifying proof refuses dirty or
+- `--base` is the caller-captured immutable coverage base `PROOF_BASE_SHA` (B) — not
+  `git_delivery.expected_base_sha`, and not automatically the landing target
+  `PRE_PROOF_TARGET_SHA` (T). It resolves once. Certifying proof refuses dirty or
   uncommitted candidates and seals repository fingerprint, base SHA, HEAD SHA, tree SHA,
   and clean state. Diff-check and redact both inspect the committed `base...HEAD`. A
   rebase, replay, or new HEAD invalidates the proof and requires a fresh battery.
@@ -244,7 +267,10 @@ go run ./cmd/compound proof-check --json --base "$PRE_LAND_BASE_SHA" \
 - **Reconcile current main against the reviewed candidate before replay.** An endpoint
   `main..HEAD` diff can show target-only files as deletions on an older branch; inspect the merge
   base and actual changes. If current main is already an ancestor of the exact certified H,
-  preserve that candidate and its original B/H proof, then use a fresh landing guard. Otherwise
+  preserve that candidate and its original B/H proof, then use a fresh landing guard. A target
+  that moved during the proof does NOT discard identical B/H evidence while the fresh target
+  stays inside the certified H (`B <= T' <= H`); only a different H, or an intentionally
+  different B, needs a fresh proof. Otherwise
   prepare a successor in an isolated worktree by replay or the reviewed integration merge
   procedure in §3; review the resulting tree and run a fresh full canonical proof.
 
@@ -361,9 +387,9 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   admission error path), then rerun the plain exact command on the freed resource.
 - **Package disjointness never preserves proof after replay or a new merge.** If reconciling
   main changes the candidate HEAD or proof base, attach the new H and complete a full canonical
-  proof for that exact B/H **before landing**. If main merely advances to an ancestor already
-  contained in unchanged certified H, retain the original B/H proof and take a fresh main-SHA
-  guard; do not relabel its base. Use the short landing lease and ordinary `--ff-only` landing.
+  proof for that exact B/H **before landing**. If main merely advances to a target tip T' inside
+  the unchanged certified H (`B <= T' <= H`), retain the original B/H proof and take a fresh
+  main-SHA guard; do not relabel its base. Use the short landing lease and ordinary `--ff-only` landing.
   Never land first and test later, or use `git update-ref` or target-ref CAS to bypass a stale
   guard, changed-source proof, acceptance or publication checks.
   The separate hijacked-checkout exception in §1 still requires an already-certified descendant;

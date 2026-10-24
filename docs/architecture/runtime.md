@@ -866,7 +866,7 @@ facts, and a new request builds a new observation that re-reads the sources.
 
 The observation reads each applicable capacity source at most once per request
 — the operator lane-alias file, the CodexBar usage feed, Compound's own
-supplement usage feed, the switchback account projection and the multi-auth
+supplement usage feed, the account capacity projection and the multi-auth
 quota cache — and evaluates every actor separately against those parsed bytes.
 The fresh and observed routes run the SAME composition, the SAME alias resolver
 and the SAME alternative-ladder rule, so a decision cannot differ between them.
@@ -953,6 +953,14 @@ head, and when that member's own range passes an independent `git diff --check`.
 alone never supplies coverage. Ancestry never supplies missing membership, review or
 acceptance.
 
+The proof base is the coverage base of that one proof, not the landing target. A reviewed
+batch may retain an earlier base than the current target tip only when the base and the
+target are both ancestors of the certified candidate and the native manifest admission
+above verified exact member inventory coverage plus the independent member diff-check; a
+different candidate, or an intentionally different base, needs a fresh proof. A target tip
+that moves during the proof keeps the identical base/candidate evidence while it stays
+inside the certified candidate.
+
 Authenticated manifest custody must precede the original proof reservation; a later review
 cannot retroactively authorize an earlier execution. The original work executes the existing
 complete `canonical_full` proof once. A destination
@@ -970,7 +978,9 @@ refuse. A closed or archived source remains usable when that chain remains authe
 Historical admission policy is authenticated without demanding it stay the latest generation.
 Private source publication still requires its unchanged direct same-work proof. Each member
 retains separate acceptance, guarded landing, publication and consumer verification obligations.
-A stale main rejects the landing without discarding the completed original evidence.
+A stale main — one that no longer contains the certified candidate — rejects the landing
+without discarding the completed original evidence; a target tip that merely advanced inside
+the certified candidate keeps that evidence and only needs a fresh main-SHA guard.
 
 ## 3. Hooks are clients, not brains
 

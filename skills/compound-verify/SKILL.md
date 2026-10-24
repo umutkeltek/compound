@@ -172,14 +172,15 @@ or termination assertions to accommodate setup latency.
    clean tracked/index/nonignored-untracked state before and after each Go gate. Source left
    behind by a test fails that gate and prevents a later gate accepting a different inventory.
 
-   The certifying base is a caller-captured immutable full SHA, not
-   `git_delivery.expected_base_sha`; Compound resolves it once. A dirty or uncommitted candidate
-   is refused. The report seals repository fingerprint, base SHA, HEAD SHA, tree SHA, and clean
-   state; diff-check and redact inspect the same committed `base...HEAD`. A rebase, replay, or
-   new HEAD invalidates the prior proof and requires a fresh battery. New `--out` reports are
-   private, ordinary existing modes are preserved, symlink/non-regular/raced targets are refused,
-   publication is atomic within the captured parent, and timing warnings are sealed before the
-   file, installed artifact, and JSON agree.
+   The certifying base is a caller-captured immutable full SHA — the reviewed coverage base
+   `PROOF_BASE_SHA` (B), not `git_delivery.expected_base_sha` and not automatically the landing
+   target tip `PRE_PROOF_TARGET_SHA` (T); Compound resolves it once. B defaults to T. A dirty or
+   uncommitted candidate is refused. The report seals repository fingerprint, base SHA, HEAD SHA,
+   tree SHA, and clean state; diff-check and redact inspect the same committed `base...HEAD`. A
+   rebase, replay, or new HEAD invalidates the prior proof and requires a fresh battery. New
+   `--out` reports are private, ordinary existing modes are preserved, symlink/non-regular/raced
+   targets are refused, publication is atomic within the captured parent, and timing warnings are
+   sealed before the file, installed artifact, and JSON agree.
 
    Selected console dependency prerequisites are checked before any gate starts.
    A missing dependency or unavailable TypeScript compiler refuses the run without

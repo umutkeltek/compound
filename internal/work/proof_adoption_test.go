@@ -479,6 +479,16 @@ func TestProofAdoptionStaleMainPreservesCompletedEvidence(t *testing.T) {
 	if !reflect.DeepEqual(w, after) {
 		t.Fatal("stale main destroyed completed proof acceptance")
 	}
+	// A target tip back INSIDE the certified candidate keeps that same proof:
+	// the resolution still names the original result, with no rerun.
+	landingGit(t, f.repo, "reset", "--hard", f.base)
+	inside, err := f.store.LandCheck(f.destination, LandCheckOptions{CandidateTipSHA: f.head, Actor: "codex"}, time.Now())
+	if err != nil || inside.Status != "ready_to_land" {
+		t.Fatalf("target inside certified head: %+v %v", inside, err)
+	}
+	if inside.ProofVerificationRef != report.ProofVerificationRef || inside.ProofHeadSHA != f.head {
+		t.Fatalf("proof evidence changed with the target tip: %+v %+v", inside, report)
+	}
 }
 
 func TestProofAdoptionMembershipMustPrecedeOriginalReservation(t *testing.T) {
