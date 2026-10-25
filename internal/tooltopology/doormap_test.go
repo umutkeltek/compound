@@ -394,6 +394,20 @@ func TestNonPassLineIsNotCutWhileBudgetRemains(t *testing.T) {
 		m.Doors = append(m.Doors, Door{Name: fmt.Sprintf("door-%02d", i), Status: StatusPass, Use: strings.Repeat("step ", 24)})
 		cases["long cause in a full block"] = m
 	}
+	// Several cut lines of uneven length near the cap: one that needs a few
+	// bytes must not strand the share the longer ones could still use.
+	for pass := 8; pass <= 16; pass += 4 {
+		m := DoorMap{SchemaVersion: DoorMapSchema, GeneratedAt: doorNow.Format(time.RFC3339), Doors: []Door{
+			{Name: "near", Status: StatusFail, Detail: strings.Repeat("n", 92)},
+			{Name: "mid", Status: StatusHuman, Detail: strings.Repeat("m", 130)},
+			{Name: "long-a", Status: StatusUnknown, Detail: strings.Repeat("a ", 300)},
+			{Name: "long-b", Status: StatusUnknown, Detail: strings.Repeat("b ", 300)},
+		}}
+		for i := 0; i < pass; i++ {
+			m.Doors = append(m.Doors, Door{Name: fmt.Sprintf("door-%02d", i), Status: StatusPass, Use: strings.Repeat("step ", 26)})
+		}
+		cases[fmt.Sprintf("uneven cuts with %d recipes", pass)] = m
+	}
 	for name, m := range cases {
 		t.Run(name, func(t *testing.T) {
 			got := RenderDoorMap(m, doorNow, doorNow)

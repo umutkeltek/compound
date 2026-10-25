@@ -98,11 +98,25 @@ func RenderDoorMap(m DoorMap, now, observed time.Time) string {
 	}
 	// A non-PASS line is cut at badLineBytes first. Bytes the cap still leaves
 	// unused go to the cut ones, so a door's cause is not cut while room remains.
-	if cut := cutNonPassDoors(m.Doors); cut > 0 {
-		if extra := (MaxServedBytes - len(out)) / cut; extra > 0 {
-			if grown := renderDoorMapWith(m, now, observed, slack, extra); len(grown) <= MaxServedBytes {
-				return grown
+	// A line that becomes whole frees the rest of its share, so the share is
+	// handed out again until no cut line can grow. A cut that lands after a
+	// space can shift a line by a byte or two, so an overshoot halves the step.
+	extra := 0
+	for round := 0; round < 12; round++ {
+		cut := cutNonPassDoors(m.Doors, badLineBytes+extra)
+		if cut == 0 {
+			break
+		}
+		step := (MaxServedBytes - len(out)) / cut
+		for step > 0 {
+			if grown := renderDoorMapWith(m, now, observed, slack, extra+step); len(grown) <= MaxServedBytes {
+				out, extra = grown, extra+step
+				break
 			}
+			step /= 2
+		}
+		if step == 0 {
+			break
 		}
 	}
 	return fitBlock(out)
@@ -140,10 +154,10 @@ func nonPassLine(d Door) string {
 	return fmt.Sprintf("%s %s: %s", strings.ToUpper(d.Status), d.Name, firstNonEmpty(d.Detail, d.Use))
 }
 
-func cutNonPassDoors(doors []Door) int {
+func cutNonPassDoors(doors []Door, limit int) int {
 	n := 0
 	for _, d := range doors {
-		if d.Status != StatusPass && len(nonPassLine(d)) > badLineBytes {
+		if d.Status != StatusPass && len(nonPassLine(d)) > limit {
 			n++
 		}
 	}
