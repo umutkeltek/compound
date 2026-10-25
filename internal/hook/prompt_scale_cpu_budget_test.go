@@ -93,7 +93,7 @@ func TestLiveUserPromptScaleStaysInsideCPUTimeBudget(t *testing.T) {
 			// The breaker exists to fail open when a prompt exceeds its
 			// injection budget — under a saturated parallel battery on a
 			// 2-core runner that can happen with no regression (run
-			// 35456765443: fail_open context_unavailable mid-loop). Under
+			// a 2-core CI run (its id is in git history): fail_open context_unavailable mid-loop). Under
 			// the same contention signal the budget assertions relax, a
 			// breaker trip skips; on a quiet machine it stays fatal —
 			// that is the wall-clock regression signal this family owns.
@@ -118,7 +118,7 @@ func TestLiveUserPromptScaleStaysInsideCPUTimeBudget(t *testing.T) {
 	t.Logf("prompt scale CPU-time budget=%s p95=%s max=%s (reference-host time); %s", budget, p95CPU, maxCPU, evidence)
 	// History, kept because it set these numbers. Before calibration the budget was raw CPU
 	// time, and two hosts broke it with no regression:
-	//   - CI run 35306043169: p95 1.35s on a 2-core runner inside the parallel battery, vs
+	//   - a 2-core CI run (id in git history): p95 1.35s on a 2-core runner inside the parallel battery, vs
 	//     the 500ms quiet budget the same binary met on an idle box (cache thrash and
 	//     scheduler effects inflate cycles for identical work). That added the 4x
 	//     contention ceiling below, under the load signal the wall-clock sibling skips on.
