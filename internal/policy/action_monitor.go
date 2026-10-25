@@ -768,7 +768,11 @@ func isHarnessInteractionTool(tool string) bool {
 	switch tool {
 	case "askuserquestion", "ask_user_question",
 		"todowrite", "todo_write",
-		"todoread", "todo_read":
+		"todoread", "todo_read",
+		// Harness-native clock, wait, agent-list, todo and async-question
+		// tools (Codex flattens a namespace into the name, as clockcurr_time).
+		// Each reads or waits inside the session it runs in.
+		"clockcurr_time", "clocksleep", "wait", "listagents", "todo", "request_user_input_async":
 		return true
 	}
 	return false

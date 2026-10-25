@@ -24,6 +24,7 @@ func TestHarnessInteractionToolsClassifyKnownReadSinkFree(t *testing.T) {
 		"AskUserQuestion", "ask_user_question",
 		"TodoWrite", "todo_write",
 		"TodoRead", "todo_read",
+		"clockcurr_time", "clocksleep", "wait", "listagents", "todo", "request_user_input_async",
 	} {
 		t.Run(tool, func(t *testing.T) {
 			got := ClassifyToolAction(ToolActionRequest{Tool: tool, Arguments: map[string]any{"question": "fixture"}})
@@ -70,7 +71,7 @@ func TestMonitorHarnessInteractionToolsRaiseNoSecurityFloor(t *testing.T) {
 		envelope.ConfidentialityInternal,
 		[]string{"reader"},
 	)
-	for _, tool := range []string{"AskUserQuestion", "TodoWrite", "TodoRead"} {
+	for _, tool := range []string{"AskUserQuestion", "TodoWrite", "TodoRead", "clockcurr_time", "clocksleep", "wait", "listagents", "todo", "request_user_input_async"} {
 		t.Run(tool, func(t *testing.T) {
 			request := monitorRequest(tool, map[string]any{"question": "fixture"})
 			request.Sources = []envelope.SourceEnvelope{source}
@@ -133,6 +134,8 @@ func TestHarnessSideEffectToolsStayFailClosed(t *testing.T) {
 		"Workflow",
 		"Artifact",
 		"ScheduleWakeup",
+		"readnotifications",
+		"pushnotification",
 		"ListMcpResourcesTool",
 		"ReadMcpResourceTool",
 	} {
