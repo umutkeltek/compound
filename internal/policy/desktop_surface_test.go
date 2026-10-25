@@ -27,6 +27,7 @@ func TestClassifyToolActionDesktopSurface(t *testing.T) {
 		{"agent-browser --cdp", "", nil, DesktopSurfaceOperatorBrowser},
 		{"agent-browser --auto-connect", "", nil, DesktopSurfaceOperatorBrowser},
 		{"agent-browser --connect", "", nil, DesktopSurfaceOperatorBrowser},
+		{"agent-browser connect positional", "", nil, DesktopSurfaceOperatorBrowser},
 		{"agent-browser behind timeout wrapper", "", nil, DesktopSurfaceOperatorBrowser},
 
 		// Claude-in-Chrome drives the operator's own Chrome.
@@ -86,6 +87,7 @@ func TestClassifyToolActionDesktopSurface(t *testing.T) {
 		"agent-browser --auto-connect":              "agent-browser --auto-connect snapshot -i",
 		"agent-browser --connect":                   "agent-browser --connect ws://127.0.0.1:9222 click @e1",
 		"agent-browser behind timeout wrapper":      "timeout 30 agent-browser --cdp=9444 snapshot",
+		"agent-browser connect positional":          "agent-browser connect 9444",
 		"peekaboo image":                            "peekaboo image --app Safari --path /tmp/shot.png",
 		"peekaboo see":                              "peekaboo see --app Safari",
 		"peekaboo list":                             "peekaboo list apps",

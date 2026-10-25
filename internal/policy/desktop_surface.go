@@ -236,7 +236,9 @@ func agentBrowserDesktopSurface(args []string) string {
 	for _, arg := range args {
 		flag, _, _ := strings.Cut(strings.ToLower(arg), "=")
 		switch flag {
-		case "--cdp", "--auto-connect", "--connect":
+		case "--cdp", "--auto-connect", "--connect", "connect":
+			// `connect <port|url>` is the positional form of --cdp. Any bare
+			// word "connect" fails closed to the operator's browser.
 			return DesktopSurfaceOperatorBrowser
 		case "--headed":
 			headed = true
