@@ -10,7 +10,9 @@ const humanOutputOrientReminder = "Begin non-trivial tasks with `compound orient
 // The door pointer rides only on static surfaces (tracked AGENTS.md/CLAUDE.md,
 // executor presets). Hook-served harnesses receive the door map itself at
 // session start, so the ContextPack summary stays inside its hook budget.
-const humanOutputDoorPointer = "Before acting on the machine (browser, GUI, simulator, App Store, web research), run `compound doors serve`; recipes: mac-actions skill."
+// Every command it names ships in this binary, so a fresh public clone can run
+// each one; private recipe collections are reached through the served map.
+const humanOutputDoorPointer = "Before acting on the machine (browser, GUI, simulator, App Store, web research), run `compound doors serve` (door map: one line per door, with its command); `compound doors show` (full recipes); `compound doors refresh` (re-check doors)."
 
 func HumanOutputBaseline() string       { return humanOutputBaseline }
 func HumanOutputOrientReminder() string { return humanOutputOrientReminder }

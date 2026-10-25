@@ -158,3 +158,28 @@ func TestStaticClientsDoNotRecreateMissingLegacyAuthorities(t *testing.T) {
 		}
 	}
 }
+
+// TestHumanOutputDoorPointerNamesShippedCommands pins the new-user contract: a
+// fresh public clone reads only the tracked instruction surfaces, so the
+// pointer must name at least three runnable door commands, each shipped by
+// this binary, and no skill (a skill named here may exist only in a private
+// overlay, which a public clone does not have).
+func TestHumanOutputDoorPointerNamesShippedCommands(t *testing.T) {
+	pointer := HumanOutputDoorPointer()
+	parts := strings.Split(pointer, "`")
+	var commands []string
+	for i := 1; i < len(parts); i += 2 {
+		commands = append(commands, parts[i])
+	}
+	if len(commands) < 3 {
+		t.Fatalf("door pointer names %d commands, want at least 3: %q", len(commands), pointer)
+	}
+	for _, command := range commands {
+		if !strings.HasPrefix(command, "compound doors ") {
+			t.Fatalf("door pointer command %q is not shipped by this binary", command)
+		}
+	}
+	if strings.Contains(strings.ToLower(pointer), "skill") {
+		t.Fatalf("door pointer must not send a public reader to a skill: %q", pointer)
+	}
+}
