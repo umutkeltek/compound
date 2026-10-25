@@ -380,6 +380,27 @@ These recommendations are falsified when current tests already prove the propose
 consumer or retired practice can be identified, or controlled evaluation shows no useful
 improvement. In those cases, close or park the proposal.
 
+### 8.1 A measurement defect that bounds every slice above
+
+Compound's capability-usage projection can only count the use of a **skill**.
+`normalizeSkillRef` (`internal/capgraph/usage.go`) accepts only `capability://skill:*` refs, and
+`NormalizeCapabilityUse` (`internal/hook/capability_use.go`) emits a use event only when the
+native tool name is `skill`. A tool, instruction rule, doctrine, lens, or procedure that is used
+therefore cannot reach a fired or declared-use count at all, so every such row in the
+`never_fired` summary is **unmeasured, not unused** — the projection's own field comment already
+says so ("Missing evidence does not prove non-use").
+
+Measured on the live home: `capability://tool:headroom` reports 31 offers, 0 fired and 0 declared
+use against 2269 recorded MCP invocations; `capability://tool:node-repl` reports 25/0/0 against
+1212; `capability://tool:codegraph` reports 14/0/0 against 12. 387 offered rows report
+never-fired while the hook stream records roughly 2.8 million tool invocations.
+
+Consequence for this audit: any decision justified by the usage signal — "this capability is
+unused, extend it", "this owner never fires, retire it" — reads a measurement artifact as
+behavior. Treat `never_fired` as a prompt for instrumentation, never as evidence of non-use,
+until `work_8e6509d7d901` lands. The S1–S5 recommendations above are chosen on mechanism and
+owner grounds and do not depend on this signal, so they stand.
+
 ## 9. Per-project ledger
 
 Every dated upstream project, its evidence depth, the audit verdict, priority, value, and the
