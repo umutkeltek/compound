@@ -374,3 +374,40 @@ func TestLiveShapedSnapshotServesEveryRecipeWhole(t *testing.T) {
 		t.Fatalf("block must keep non-passing doors and drop harness versions:\n%s", got)
 	}
 }
+
+// TestNonPassLineIsNotCutWhileBudgetRemains: a non-PASS line carries the cause
+// the reader must act on. It may be cut only when the served block has reached
+// its cap; a cut line next to unused bytes is a cause hidden for nothing.
+func TestNonPassLineIsNotCutWhileBudgetRemains(t *testing.T) {
+	cases := map[string]DoorMap{
+		"short block": {SchemaVersion: DoorMapSchema, GeneratedAt: doorNow.Format(time.RFC3339), Doors: []Door{
+			{Name: "surface", Status: StatusUnknown, Detail: strings.Repeat("cause ", 40)},
+			{Name: "web", Status: StatusPass, Use: "search-cli <query>"},
+		}},
+		"long cause in a full block": {SchemaVersion: DoorMapSchema, GeneratedAt: doorNow.Format(time.RFC3339), Doors: []Door{
+			{Name: "disk", Status: StatusFail, Detail: strings.Repeat("d", 78)},
+			{Name: "surface", Status: StatusUnknown, Detail: strings.Repeat("cause ", 400)},
+		}},
+	}
+	for i := 0; i < 12; i++ {
+		m := cases["long cause in a full block"]
+		m.Doors = append(m.Doors, Door{Name: fmt.Sprintf("door-%02d", i), Status: StatusPass, Use: strings.Repeat("step ", 24)})
+		cases["long cause in a full block"] = m
+	}
+	for name, m := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := RenderDoorMap(m, doorNow, doorNow)
+			if len(got) > MaxServedBytes {
+				t.Fatalf("served %d bytes, cap %d", len(got), MaxServedBytes)
+			}
+			for _, line := range strings.Split(got, "\n") {
+				if strings.HasPrefix(line, "PASS") || !strings.HasSuffix(line, "…") {
+					continue
+				}
+				if unused := MaxServedBytes - len(got); unused > 8 {
+					t.Fatalf("non-PASS line cut to %d bytes while %d of %d bytes are unused: %q", len(line), unused, MaxServedBytes, line)
+				}
+			}
+		})
+	}
+}

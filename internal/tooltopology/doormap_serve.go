@@ -86,22 +86,33 @@ const (
 // recipes and the launcher model list). If the enlarged render does not fit,
 // the base render is served.
 func RenderDoorMap(m DoorMap, now, observed time.Time) string {
-	base := renderDoorMapWith(m, now, observed, 0)
-	slack := MaxServedBytes - len(base) - 8
+	out := renderDoorMapWith(m, now, observed, 0, 0)
+	slack := MaxServedBytes - len(out) - 8
 	if slack <= 0 {
-		return fitBlock(base)
+		return fitBlock(out)
 	}
-	if bigger := renderDoorMapWith(m, now, observed, slack); len(bigger) <= MaxServedBytes {
-		return bigger
+	if bigger := renderDoorMapWith(m, now, observed, slack, 0); len(bigger) <= MaxServedBytes {
+		out = bigger
+	} else {
+		slack = 0
 	}
-	return fitBlock(base)
+	// A non-PASS line is cut at badLineBytes first. Bytes the cap still leaves
+	// unused go to the cut ones, so a door's cause is not cut while room remains.
+	if cut := cutNonPassDoors(m.Doors); cut > 0 {
+		if extra := (MaxServedBytes - len(out)) / cut; extra > 0 {
+			if grown := renderDoorMapWith(m, now, observed, slack, extra); len(grown) <= MaxServedBytes {
+				return grown
+			}
+		}
+	}
+	return fitBlock(out)
 }
 
-func renderDoorMapWith(m DoorMap, now, observed time.Time, slack int) string {
+func renderDoorMapWith(m DoorMap, now, observed time.Time, slack, badExtra int) string {
 	var lines []string
 	lines = append(lines, truncBytes(fmt.Sprintf("## Door map (cached, not live; doors checked %s ago at %s). Full: compound doors show",
 		humanAge(now.Sub(observed)), observed.UTC().Format("2006-01-02T15:04Z")), budgetHeader))
-	lines = append(lines, renderDoorLines(m.Doors, budgetDoors+slack/2)...)
+	lines = append(lines, renderDoorLines(m.Doors, budgetDoors+slack/2, badExtra)...)
 	if l := renderMCPLine(m.MCP, budgetMCP); l != "" {
 		lines = append(lines, l)
 	}
@@ -122,7 +133,26 @@ func fitBlock(s string) string {
 	return truncBytes(s, MaxServedBytes)
 }
 
-func renderDoorLines(doors []Door, budget int) []string {
+// badLineBytes caps a non-PASS line in the base render.
+const badLineBytes = 96
+
+func nonPassLine(d Door) string {
+	return fmt.Sprintf("%s %s: %s", strings.ToUpper(d.Status), d.Name, firstNonEmpty(d.Detail, d.Use))
+}
+
+func cutNonPassDoors(doors []Door) int {
+	n := 0
+	for _, d := range doors {
+		if d.Status != StatusPass && len(nonPassLine(d)) > badLineBytes {
+			n++
+		}
+	}
+	return n
+}
+
+// renderDoorLines sizes PASS recipes as if every non-PASS line were capped at
+// badLineBytes; badExtra lets non-PASS lines grow past that cap afterwards.
+func renderDoorLines(doors []Door, budget, badExtra int) []string {
 	if len(doors) == 0 {
 		return []string{"doors: none observed (no door report yet)"}
 	}
@@ -137,9 +167,8 @@ func renderDoorLines(doors []Door, budget int) []string {
 	var lines []string
 	used := 0
 	for _, d := range bad {
-		l := truncBytes(fmt.Sprintf("%s %s: %s", strings.ToUpper(d.Status), d.Name, firstNonEmpty(d.Detail, d.Use)), 96)
-		lines = append(lines, l)
-		used += len(l) + 1
+		used += len(truncBytes(nonPassLine(d), badLineBytes)) + 1
+		lines = append(lines, truncBytes(nonPassLine(d), badLineBytes+badExtra))
 	}
 	if len(good) == 0 {
 		return lines
