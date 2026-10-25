@@ -85,6 +85,9 @@ type ShellVerbCatalogRow struct {
 	BoolFlags    []string `yaml:"bool_flags,omitempty"`
 	// RequireFlags must all be set (bare or `=true`; the last occurrence wins).
 	RequireFlags []string `yaml:"require_flags,omitempty"`
+	// StrictFlags refuses any flag the row does not list, anywhere in the
+	// command and in `--flag=value` form, and any VAR=value prefix.
+	StrictFlags bool `yaml:"strict_flags,omitempty"`
 	// URLHost and Methods make an HTTP-client row (curl, http, https, xh):
 	// every URL in the request must be on URLHost and the method must be in
 	// Methods ("*" = any). A read row also refuses a request body or a local
@@ -631,6 +634,9 @@ func (row ShellVerbCatalogRow) match(binary string, args []string, assignmentPre
 	if row.URLHost != "" {
 		return row.matchHTTP(binary, args)
 	}
+	if row.StrictFlags && assignmentPrefix {
+		return "", false
+	}
 	matched := 0
 	set := map[string]bool{}
 	flagsDone := false
@@ -644,7 +650,7 @@ func (row ShellVerbCatalogRow) match(binary string, args []string, assignmentPre
 			name, value, attached := strings.Cut(arg, "=")
 			name = shellCatalogFlagName(name)
 			takesValue, known := row.flagArity[name]
-			if !known && !attached && matched < len(row.pattern) {
+			if !known && (row.StrictFlags || !attached && matched < len(row.pattern)) {
 				return "", false
 			}
 			if takesValue && !attached {

@@ -242,6 +242,55 @@ rows:
 	}
 }
 
+// TestShellVerbCatalogStrictFlagsRefuseUnlistedFlagsAnywhere pins strict_flags.
+// A plain row tolerates an unlisted flag after its pattern words, and any
+// --flag=value, so `doorcli click @e1 --state f.json` would ride a
+// local_reversible row. A strict row refuses those and a VAR=value prefix,
+// and the command keeps the fail-closed fallback.
+func TestShellVerbCatalogStrictFlagsRefuseUnlistedFlagsAnywhere(t *testing.T) {
+	home := catalogTestHome(t)
+	writeCatalogExtension(t, home, `schema_version: compound.shell_verb_catalog.v0.1
+rows:
+  - id: doorcli-act-strict
+    binary: doorcli
+    pattern: click
+    value_flags: [--session]
+    strict_flags: true
+    capability: browser.isolated.act
+    mutation_class: local_reversible
+    destination_kind: isolated-browser
+  - id: loosecli-act
+    binary: loosecli
+    pattern: click
+    value_flags: [--session]
+    capability: browser.isolated.act
+    mutation_class: local_reversible
+    destination_kind: isolated-browser
+`)
+	for _, command := range []string{"doorcli click @e1", "doorcli --session s1 click @e1", "doorcli click @e1 --session=s1"} {
+		if got := classifyCatalogCommand(command); got.CatalogRow != "doorcli-act-strict" {
+			t.Fatalf("%q: listed flags must keep the strict row, got %q", command, got.CatalogRow)
+		}
+	}
+	for _, command := range []string{
+		"doorcli click @e1 --state f.json",
+		"doorcli --state=f.json click @e1",
+		"doorcli click --headed @e1",
+		"DOOR_STATE=f.json doorcli click @e1",
+	} {
+		if got := classifyCatalogCommand(command); got.CatalogRow != "" || got.Known {
+			t.Fatalf("%q: an unlisted flag or env prefix must leave the strict row, got row %q class %q", command, got.CatalogRow, got.MutationClass)
+		}
+	}
+	// Control: the same shapes on a plain row still match, so the assertions
+	// above fail if strict_flags stops being read.
+	for _, command := range []string{"loosecli click @e1 --state f.json", "loosecli --state=f.json click @e1"} {
+		if got := classifyCatalogCommand(command); got.CatalogRow != "loosecli-act" {
+			t.Fatalf("%q: plain control row must match, got %q", command, got.CatalogRow)
+		}
+	}
+}
+
 func TestShellVerbCatalogExtensionInvalidRowIsNamedAndRejected(t *testing.T) {
 	cases := []struct {
 		name string
