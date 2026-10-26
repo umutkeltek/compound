@@ -13,16 +13,24 @@ import (
 	"compound/internal/work"
 )
 
+// LaunchdSourceReattestation binds a historical source to its explicitly
+// supplied current successor proof; the transition requires exact review.
+type LaunchdSourceReattestation struct {
+	Historical LaunchdSourceProof `json:"historical"`
+	Current    LaunchdSourceProof `json:"current"`
+}
+
 // LaunchdTerminalHandoff binds a successful predecessor's immutable native
 // outputs and authenticated terminal close. It is part of the successor's exact
 // authorization digest, never an implicit permission to take another owner.
 type LaunchdTerminalHandoff struct {
-	FromPlanID       string                  `json:"from_plan_id"`
-	PlanDigest       string                  `json:"plan_digest"`
-	CloseProof       work.TerminalCloseProof `json:"close_proof"`
-	TerminalSHA256   string                  `json:"terminal_sha256"`
-	PhaseChainSHA256 string                  `json:"phase_chain_sha256"`
-	Owner            []byte                  `json:"owner"`
+	FromPlanID           string                       `json:"from_plan_id"`
+	PlanDigest           string                       `json:"plan_digest"`
+	CloseProof           work.TerminalCloseProof      `json:"close_proof"`
+	TerminalSHA256       string                       `json:"terminal_sha256"`
+	PhaseChainSHA256     string                       `json:"phase_chain_sha256"`
+	Owner                []byte                       `json:"owner"`
+	SourceReattestations []LaunchdSourceReattestation `json:"source_reattestations,omitempty"`
 }
 
 // LaunchdNoEffectContinuation admits one new observation, not an effect retry.
@@ -231,6 +239,43 @@ func BuildLaunchdRepairPlanWithHandoff(ctx context.Context, home string, env Lau
 	return p, nil
 }
 
+// Historical source bytes remain evidence of the completed predecessor, not a
+// requirement to keep old executable versions installed forever. Any drift must
+// be explicitly covered by the successor's current source proofs and sealed in
+// its handoff, so the exact grant and consumed review authorize that transition.
+func launchdHistoricalSourceReattestations(historical, successor []LaunchdSourceProof) ([]LaunchdSourceReattestation, error) {
+	currentByPath := make(map[string]LaunchdSourceProof, len(successor))
+	for _, proof := range successor {
+		if !filepath.IsAbs(proof.Path) || filepath.Clean(proof.Path) != proof.Path {
+			return nil, fmt.Errorf("canonical successor source proof path required")
+		}
+		if _, duplicate := currentByPath[proof.Path]; duplicate {
+			return nil, fmt.Errorf("duplicate successor source proof path")
+		}
+		currentByPath[proof.Path] = proof
+	}
+	var changes []LaunchdSourceReattestation
+	seen := make(map[string]bool, len(historical))
+	for _, old := range historical {
+		if !filepath.IsAbs(old.Path) || filepath.Clean(old.Path) != old.Path || seen[old.Path] {
+			return nil, fmt.Errorf("unique canonical historical source proof path required")
+		}
+		seen[old.Path] = true
+		current, err := inspectLaunchdSource(LaunchdSourceProof{Path: old.Path})
+		if err != nil {
+			return nil, err
+		}
+		if current == old {
+			continue
+		}
+		if supplied, ok := currentByPath[old.Path]; !ok || supplied != current {
+			return nil, fmt.Errorf("historical source drift requires exact current successor proof: %s", old.Path)
+		}
+		changes = append(changes, LaunchdSourceReattestation{Historical: old, Current: current})
+	}
+	return changes, nil
+}
+
 func captureLaunchdTerminalHandoff(home string, p LaunchdRepairPlan, from string, successorOwns bool) (LaunchdTerminalHandoff, error) {
 	var h LaunchdTerminalHandoff
 	old, err := loadLaunchdPlan(home, from)
@@ -264,10 +309,9 @@ func captureLaunchdTerminalHandoff(home string, p LaunchdRepairPlan, from string
 	if err != nil || closed.State != "completed" {
 		return h, fmt.Errorf("authenticated completed predecessor work required: %v", err)
 	}
-	for _, proof := range old.SourceProofs {
-		if _, err = inspectLaunchdSource(proof); err != nil {
-			return h, err
-		}
+	reattestations, err := launchdHistoricalSourceReattestations(old.SourceProofs, p.SourceProofs)
+	if err != nil {
+		return h, err
 	}
 	indices := []int{0, 1, 2}
 	if old.Handoff != nil {
@@ -365,7 +409,7 @@ func captureLaunchdTerminalHandoff(home string, p LaunchdRepairPlan, from string
 		return h, err
 	}
 	return LaunchdTerminalHandoff{FromPlanID: from, PlanDigest: old.Digest, CloseProof: closed,
-		TerminalSHA256: launchdBytesDigest(terminalBytes), PhaseChainSHA256: launchdDigest(commits), Owner: launchdOwnerBytes(from)}, nil
+		TerminalSHA256: launchdBytesDigest(terminalBytes), PhaseChainSHA256: launchdDigest(commits), Owner: launchdOwnerBytes(from), SourceReattestations: reattestations}, nil
 }
 
 // An old pointer can become visible before a restoring CAS has its receipt.
