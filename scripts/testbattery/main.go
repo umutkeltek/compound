@@ -12,9 +12,10 @@ import (
 	"os/exec"
 	"os/signal"
 	"regexp"
-	"sort"
 	"strings"
 	"syscall"
+
+	"compound/internal/proofscope"
 )
 
 type commandRunner func(context.Context, []string, io.Writer, io.Writer) error
@@ -139,9 +140,7 @@ func runBatteryPhase(ctx context.Context, mode string, run commandRunner, stdout
 var packagePath = regexp.MustCompile(`^compound(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$`)
 
 func partitionPackages(inventory string) ([]string, []string, error) {
-	const homePackage = "compound/internal/home"
-	const releasePackage = "compound/internal/release"
-	var parallel, isolated []string
+	var packages []string
 	seen := make(map[string]bool)
 	for _, line := range strings.Split(strings.TrimSuffix(inventory, "\n"), "\n") {
 		pkg := strings.TrimSuffix(line, "\r")
@@ -149,21 +148,13 @@ func partitionPackages(inventory string) ([]string, []string, error) {
 			return nil, nil, fmt.Errorf("invalid or duplicate package inventory entry %q", pkg)
 		}
 		seen[pkg] = true
-		if pkg != homePackage && pkg != releasePackage {
-			parallel = append(parallel, pkg)
-		}
+		packages = append(packages, pkg)
 	}
-	if !seen[homePackage] || !seen[releasePackage] || len(parallel) == 0 {
+	phases := proofscope.TestPackagePhases(packages)
+	if len(phases) != 3 || phases[0].Name != "general" || phases[1].Name != "release" || phases[2].Name != "home" {
 		return nil, nil, errors.New("inventory requires release, home, and at least one general package")
 	}
-	// Release exercises real machine-wide sync barriers. Concurrent package writes
-	// can exhaust its checkpoint deadlines before the assertion is reached.
-	// Keep those durability checks intact and run each shared-resource owner alone.
-	for _, pkg := range []string{releasePackage, homePackage} {
-		isolated = append(isolated, pkg)
-	}
-	sort.Strings(parallel)
-	return parallel, isolated, nil
+	return phases[0].Packages, []string{phases[1].Packages[0], phases[2].Packages[0]}, nil
 }
 
 func runGo(ctx context.Context, args []string, stdout, stderr io.Writer) error {

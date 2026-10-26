@@ -239,15 +239,21 @@ func ProofCheckPresubmitGates(base, head, compoundExe string, plan proofscope.Pr
 		{Name: "architecture-doctor", Command: []string{compoundExe, "architecture", "doctor", "--strict"}, ProofRef: "presubmit:architecture-doctor-strict"},
 	}
 	for _, run := range plan.Runs {
-		name, ref := "go-test", "presubmit:go-test-short-affected"
-		if run.Run != "" {
-			name, ref = "go-test-cli-readers", "presubmit:go-test-short-cli-readers"
+		for _, phase := range proofscope.TestPackagePhases(run.Packages) {
+			name, ref := "go-test", "presubmit:go-test-short-affected"
+			if run.Run != "" {
+				name, ref = "go-test-cli-readers", "presubmit:go-test-short-cli-readers"
+			}
+			if phase.Name != "general" {
+				name += "-" + phase.Name
+				ref += "-" + phase.Name
+			}
+			command := []string{"go", "test", "-short", ProofCheckPresubmitTestTimeout}
+			if run.Run != "" {
+				command = append(command, "-run", run.Run)
+			}
+			steps = append(steps, ProofCheckStep{Name: name, Command: append(command, phase.Packages...), ProofRef: ref})
 		}
-		command := []string{"go", "test", "-short", ProofCheckPresubmitTestTimeout}
-		if run.Run != "" {
-			command = append(command, "-run", run.Run)
-		}
-		steps = append(steps, ProofCheckStep{Name: name, Command: append(command, run.Packages...), ProofRef: ref})
 	}
 	for _, path := range changed {
 		if path == "console" || strings.HasPrefix(path, "console/") {

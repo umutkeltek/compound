@@ -108,6 +108,8 @@ carries the derived scope under `presubmit.plan`.
 Then the redact gate (§5), unpiped, as its own command; the presubmit's `redact-public` step does
 not replace it. Read each verdict; exit `0` is the only green.
 
+The selected Go tests use the same package phases as the canonical runner: general packages, then Release, then Home. Release and Home each run alone when selected. Release exercises machine-wide sync barriers; separating the shared IO owners keeps checkpoint and scale assertions meaningful. Every selected package and test filter remains in the plan, with the same 30-minute package deadline.
+
 **Affected packages** — `--presubmit` derives them from the diff with `internal/proofscope`, never
 from memory. The rule it applies:
 - Go files changed under dirs `D1..Dn` → those packages, every package that imports them (directly

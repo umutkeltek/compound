@@ -252,3 +252,45 @@ func TestProofCheckPresubmitArgsAreStrict(t *testing.T) {
 		t.Fatal("reviewed redaction accepted in a presubmit")
 	}
 }
+
+func TestProofCheckPresubmitIsolatesSharedIOWithoutDroppingTests(t *testing.T) {
+	const home = "compound/internal/home"
+	const release = "compound/internal/release"
+	const cli = "compound/cmd/compound"
+	const core = "compound/internal/work"
+	tests := []struct {
+		name     string
+		packages []string
+		selector string
+		want     [][]string
+	}{
+		{"mixed", []string{home, core, release, cli}, "", [][]string{{cli, core}, {release}, {home}}},
+		{"home-only", []string{home}, "", [][]string{{home}}},
+		{"release-only", []string{release}, "", [][]string{{release}}},
+		{"general-only", []string{core, cli}, "", [][]string{{cli, core}}},
+		{"selection-preserved", []string{home, cli}, "Selected", [][]string{{cli}, {home}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plan := proofscope.PresubmitPlan{Runs: []proofscope.PresubmitRun{{Packages: tt.packages, Run: tt.selector}}}
+			steps := work.ProofCheckPresubmitGates(strings.Repeat("a", 40), strings.Repeat("b", 40), "compound", plan, nil)
+			var got [][]string
+			for _, step := range steps {
+				if len(step.Command) > 1 && step.Command[0] == "go" && step.Command[1] == "test" {
+					got = append(got, step.Command)
+				}
+			}
+			var want [][]string
+			for _, packages := range tt.want {
+				command := []string{"go", "test", "-short", "-timeout=30m"}
+				if tt.selector != "" {
+					command = append(command, "-run", tt.selector)
+				}
+				want = append(want, append(command, packages...))
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("shared IO phases must preserve complete scope, selectors and deadlines: got %v; want %v", got, want)
+			}
+		})
+	}
+}

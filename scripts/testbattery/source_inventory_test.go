@@ -95,6 +95,12 @@ func sourceFixture(t *testing.T) string {
 	if !ok {
 		t.Fatal("cannot locate production driver")
 	}
+	// Include the production phase policy used by the copied driver.
+	phasePolicy, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "internal", "proofscope", "test_phases.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceWrite(t, repo, "internal/proofscope/test_phases.go", string(phasePolicy))
 	entries, err := os.ReadDir(filepath.Dir(file))
 	if err != nil {
 		t.Fatal(err)
@@ -133,8 +139,8 @@ func TestSourceInventoryResolvesOneOwnedPackageSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := sourcePackageInventory{
-		All:   []string{"compound/evidence/owned", "compound/internal/home", "compound/internal/release", "compound/internal/work", "compound/newsource", "compound/onlytests", "compound/scripts/testbattery"},
-		Build: []string{"compound/evidence/owned", "compound/internal/home", "compound/internal/release", "compound/internal/work", "compound/newsource", "compound/scripts/testbattery"},
+		All:   []string{"compound/evidence/owned", "compound/internal/home", "compound/internal/proofscope", "compound/internal/release", "compound/internal/work", "compound/newsource", "compound/onlytests", "compound/scripts/testbattery"},
+		Build: []string{"compound/evidence/owned", "compound/internal/home", "compound/internal/proofscope", "compound/internal/release", "compound/internal/work", "compound/newsource", "compound/scripts/testbattery"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("source inventory = %+v; want %+v", got, want)
