@@ -92,6 +92,9 @@ func CommittedDiffCheck(ctx context.Context, repo, baseSHA, headSHA string) erro
 		return err
 	}
 	out, err := committedGitOutput(ctx, repo, "--attr-source="+headSHA, "diff", "--check", baseSHA+"..."+headSHA, "--")
+	if unsupportedAttributeSource(err) {
+		out, err = committedDiffCheckOlderGit(ctx, repo, baseSHA, headSHA)
+	}
 	if len(out) > committedContentMaxDiffCheckBytes {
 		return fmt.Errorf("committed diff-check report exceeds %d bytes", committedContentMaxDiffCheckBytes)
 	}
@@ -133,8 +136,14 @@ func requireCommittedCommits(ctx context.Context, repo, baseSHA, headSHA string)
 // ambient Git selector cannot substitute another index, object directory or
 // worktree, and stderr is kept out of the inventory stream.
 func committedGitOutput(ctx context.Context, repo string, args ...string) ([]byte, error) {
+	return committedGitOutputEnvironment(ctx, repo, ReadEnvironment(), args...)
+}
+
+// env is built by this package from sanitized reads and, for compatibility,
+// its own private attribute index. Caller Git selectors never enter this path.
+func committedGitOutputEnvironment(ctx context.Context, repo string, env []string, args ...string) ([]byte, error) {
 	cmd := CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...)
-	cmd.Env = ReadEnvironment()
+	cmd.Env = env
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

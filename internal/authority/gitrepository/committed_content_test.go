@@ -151,37 +151,62 @@ func TestCommittedContentFailsClosedOnUnusableObjects(t *testing.T) {
 // TestCommittedReadsUseCallerFactoryAndSanitizedEnvironment binds all shared
 // reads, including ancestry, to the caller's cancellation and execution owner.
 func TestCommittedReadsUseCallerFactoryAndSanitizedEnvironment(t *testing.T) {
-	repo := initSnapshotRepo(t)
-	base := snapshotGitOutput(t, repo, "rev-parse", "HEAD")
-	writeSnapshotFile(t, repo, "candidate.txt", "candidate\n")
-	snapshotRunGit(t, repo, "add", "candidate.txt")
-	snapshotRunGit(t, repo, "commit", "-m", "candidate")
-	head := snapshotGitOutput(t, repo, "rev-parse", "HEAD")
-	t.Setenv("GIT_DIR", filepath.Join(t.TempDir(), "absent"))
-	calls := 0
-	ctx := ContextWithCommandFactory(t.Context(), func(ctx context.Context, name string, args ...string) *exec.Cmd {
-		calls++
-		return exec.CommandContext(ctx, name, args...)
-	})
-	if ok, err := CommittedAncestor(ctx, repo, base, head); err != nil || !ok {
-		t.Fatalf("ancestry: %v %v", ok, err)
-	}
-	if _, err := CommittedContentPaths(ctx, repo, base, head); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := CommittedFileBody(ctx, repo, head, "candidate.txt"); err != nil {
-		t.Fatal(err)
-	}
-	if err := CommittedDiffCheck(ctx, repo, base, head); err != nil {
-		t.Fatal(err)
-	}
-	if calls != 10 {
-		t.Fatalf("factory calls = %d, want 10", calls)
-	}
-	canceled, cancel := context.WithCancel(ctx)
-	cancel()
-	if _, err := CommittedAncestor(canceled, repo, base, head); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled ancestry = %v", err)
+	for _, tc := range []struct {
+		name  string
+		older bool
+	}{{"native-git", false}, {"older-git", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := initSnapshotRepo(t)
+			base := snapshotGitOutput(t, repo, "rev-parse", "HEAD")
+			writeSnapshotFile(t, repo, "candidate.txt", "candidate\n")
+			snapshotRunGit(t, repo, "add", "candidate.txt")
+			snapshotRunGit(t, repo, "commit", "-m", "candidate")
+			head := snapshotGitOutput(t, repo, "rev-parse", "HEAD")
+			t.Setenv("GIT_DIR", filepath.Join(t.TempDir(), "absent"))
+			calls := 0
+			compatibility := false
+			ctx := ContextWithCommandFactory(t.Context(), func(ctx context.Context, name string, args ...string) *exec.Cmd {
+				calls++
+				for _, arg := range args {
+					if arg == "read-tree" {
+						compatibility = true
+					}
+				}
+				if tc.older {
+					return olderGitAttributeCommand(ctx, name, args...)
+				}
+				return exec.CommandContext(ctx, name, args...)
+			})
+			if ok, err := CommittedAncestor(ctx, repo, base, head); err != nil || !ok {
+				t.Fatalf("ancestry: %v %v", ok, err)
+			}
+			if _, err := CommittedContentPaths(ctx, repo, base, head); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := CommittedFileBody(ctx, repo, head, "candidate.txt"); err != nil {
+				t.Fatal(err)
+			}
+			if err := CommittedDiffCheck(ctx, repo, base, head); err != nil {
+				t.Fatal(err)
+			}
+			wantCalls := 10
+			if compatibility {
+				// Repository resolution, private read-tree, merge-base and
+				// cached diff must all use the same caller factory.
+				wantCalls += 4
+			}
+			if tc.older && !compatibility {
+				t.Fatal("older Git did not execute the compatibility path")
+			}
+			if calls != wantCalls {
+				t.Fatalf("factory calls = %d, want %d", calls, wantCalls)
+			}
+			canceled, cancel := context.WithCancel(ctx)
+			cancel()
+			if _, err := CommittedAncestor(canceled, repo, base, head); !errors.Is(err, context.Canceled) {
+				t.Fatalf("canceled ancestry = %v", err)
+			}
+		})
 	}
 }
 
