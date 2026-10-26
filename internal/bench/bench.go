@@ -151,23 +151,25 @@ type Metrics struct {
 }
 
 // Report is the evaluator's evidence artifact. Identity fields (BuildSHA, GraphHash, Suite,
-// Timestamp) key it to a specific build + graph state so two reports are comparable only when
-// they mean the same thing. It never carries the home path (a personal path) — public-safe.
+// Timestamp) identify the evaluated build and graph. InputDigest binds comparable evaluation
+// questions independently of those revisions. The report never carries the private home path.
 type Report struct {
-	Schema          string             `json:"schema"`
-	Suite           string             `json:"suite"`
-	SuiteKind       string             `json:"suite_kind,omitempty"` // synthetic_fixture | acceptance | golden | dogfood — a label, not authority
-	Actionable      *bool              `json:"actionable,omitempty"` // nil/true => director may mine; false => synthetic/diagnostic, director must ignore
-	Timestamp       string             `json:"timestamp"`
-	BuildSHA        string             `json:"build_sha"`
-	GraphHash       string             `json:"graph_hash"`
-	CaseCount       int                `json:"case_count"`
-	ScoredCount     int                `json:"scored_count"`
-	SkippedCount    int                `json:"skipped_count"`
-	Splits          map[string]Metrics `json:"splits"`
-	Overall         Metrics            `json:"overall"`
-	AbsentFromGraph []string           `json:"absent_from_graph"` // sorted unique across scored cases
-	Cases           []CaseResult       `json:"cases"`
+	Evaluation      *EvaluationContract `json:"evaluation_contract,omitempty"`
+	InputDigest     string              `json:"input_digest,omitempty"` // canonical evaluation inputs; absent on legacy reports
+	Schema          string              `json:"schema"`
+	Suite           string              `json:"suite"`
+	SuiteKind       string              `json:"suite_kind,omitempty"` // synthetic_fixture | acceptance | golden | dogfood — a label, not authority
+	Actionable      *bool               `json:"actionable,omitempty"` // nil/true => director may mine; false => synthetic/diagnostic, director must ignore
+	Timestamp       string              `json:"timestamp"`
+	BuildSHA        string              `json:"build_sha"`
+	GraphHash       string              `json:"graph_hash"`
+	CaseCount       int                 `json:"case_count"`
+	ScoredCount     int                 `json:"scored_count"`
+	SkippedCount    int                 `json:"skipped_count"`
+	Splits          map[string]Metrics  `json:"splits"`
+	Overall         Metrics             `json:"overall"`
+	AbsentFromGraph []string            `json:"absent_from_graph"` // sorted unique across scored cases
+	Cases           []CaseResult        `json:"cases"`
 }
 
 // IsActionable reports whether the director may mine this report for harness-edit candidates. An
@@ -256,16 +258,19 @@ func Run(opts Options) (Report, error) {
 		return Report{}, err
 	}
 
+	evaluation := evaluationContract(opts.Suite)
 	report := Report{
-		Schema:     SchemaVersion,
-		Suite:      opts.Suite.Suite,
-		SuiteKind:  opts.SuiteKind,
-		Actionable: opts.Actionable,
-		Timestamp:  opts.Now.UTC().Format(time.RFC3339),
-		BuildSHA:   strings.TrimSpace(opts.BuildSHA),
-		GraphHash:  graphHash,
-		CaseCount:  len(opts.Suite.Cases),
-		Splits:     map[string]Metrics{},
+		Evaluation:  &evaluation,
+		InputDigest: evaluationInputDigest(opts.Suite),
+		Schema:      SchemaVersion,
+		Suite:       opts.Suite.Suite,
+		SuiteKind:   opts.SuiteKind,
+		Actionable:  opts.Actionable,
+		Timestamp:   opts.Now.UTC().Format(time.RFC3339),
+		BuildSHA:    strings.TrimSpace(opts.BuildSHA),
+		GraphHash:   graphHash,
+		CaseCount:   len(opts.Suite.Cases),
+		Splits:      map[string]Metrics{},
 	}
 
 	// Cache the memory ranking per (repo_kind, topic, task) is unnecessary; each memory case
@@ -576,6 +581,10 @@ type SplitDelta struct {
 
 // CompareReport is the before→after delta with the held-in/held-out accept verdict.
 type CompareReport struct {
+	InputErrors    []string     `json:"input_errors,omitempty"`
+	InputMismatch  bool         `json:"input_mismatch"`
+	Lanes          []LaneDelta  `json:"lanes"`
+	RegressedLanes []string     `json:"regressed_lanes,omitempty"`
 	Schema         string       `json:"schema"`
 	BeforeSuite    string       `json:"before_suite"`
 	AfterSuite     string       `json:"after_suite"`
@@ -583,18 +592,16 @@ type CompareReport struct {
 	AfterBuildSHA  string       `json:"after_build_sha"`
 	Splits         []SplitDelta `json:"splits"`
 	Overall        SplitDelta   `json:"overall"`
-	Regressed      bool         `json:"regressed"`           // any split regressed => reject
+	Regressed      bool         `json:"regressed"`           // any split or lane regressed => reject
 	RegressedSplit []string     `json:"regressed_splits"`    // which splits regressed
-	Accept         bool         `json:"accept"`              // !Regressed && !SuiteMismatch
+	Accept         bool         `json:"accept"`              // complete comparable inputs, same suite, no split/lane regression
 	ProofRef       string       `json:"proof_ref,omitempty"` // bench_compare_accept:<suite> on accept — the token a harness-edit close cites to harden
 	SuiteMismatch  bool         `json:"suite_mismatch"`      // before/after are different suites — comparison is apples-to-oranges; never Accept
 }
 
-// Compare produces the per-split delta and the accept verdict. The accept rule is: accept ONLY
-// if NEITHER split regressed on hit@5 or MRR AND before/after are the same suite. Overfitting the
-// held-in set at the cost of held-out (or vice versa) is exactly the failure this gate exists to
-// catch; a suite mismatch is a different failure — an apples-to-oranges comparison that must never
-// be accepted even when the metrics happen to hold.
+// Compare certifies complete reports for the same evaluation inputs only when neither
+// a split nor any declared lane regresses. Build and graph revisions may differ.
+// Legacy reports remain readable, but cannot provide missing input identity.
 func Compare(before, after Report) CompareReport {
 	cr := CompareReport{
 		Schema:         CompareSchemaVersion,
@@ -613,15 +620,23 @@ func Compare(before, after Report) CompareReport {
 		cr.Splits = append(cr.Splits, d)
 	}
 	cr.Overall = splitDelta("overall", before.Overall, after.Overall)
-	// A suite mismatch is apples-to-oranges: the gate must not accept it even when no split
-	// regressed. Regressed stays purely about metric movement, so a caller can still tell "a metric
-	// moved the wrong way" apart from "the wrong suite was compared". The CLI may still record the
-	// delta past an explicit --allow-suite-mismatch, but Accept reflects the semantic truth.
-	cr.Accept = !cr.Regressed && !cr.SuiteMismatch
-	// On accept (same suite, no regression) emit the canonical proof token a harness-edit close
-	// cites so shouldHardenOnClose can verify the gate actually accepted — the operator copies this
-	// from a real accept rather than fabricating it. Empty on any reject, so a non-accept can never
-	// supply a hardening token. after.Suite == before.Suite here because a mismatch forces !Accept.
+	if err := certificationError(before); err != nil {
+		cr.InputErrors = append(cr.InputErrors, "before: "+err.Error())
+	}
+	if err := certificationError(after); err != nil {
+		cr.InputErrors = append(cr.InputErrors, "after: "+err.Error())
+	}
+	cr.InputMismatch = before.InputDigest != after.InputDigest || !sameCaseInventory(before, after)
+	if len(cr.InputErrors) == 0 && !cr.InputMismatch {
+		cr.Lanes = compareLanes(before, after)
+		for _, lane := range cr.Lanes {
+			if lane.Regressed {
+				cr.Regressed = true
+				cr.RegressedLanes = append(cr.RegressedLanes, lane.Split+"/"+lane.Lane)
+			}
+		}
+	}
+	cr.Accept = len(cr.InputErrors) == 0 && !cr.InputMismatch && !cr.Regressed && !cr.SuiteMismatch
 	if cr.Accept {
 		cr.ProofRef = "bench_compare_accept:" + after.Suite
 	}

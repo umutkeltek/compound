@@ -297,16 +297,20 @@ func TestCommittedMemoryFixtureScoresRealHits(t *testing.T) {
 // TestCompareFlagsHeldOutRegression falsifies the accept rule: a fabricated regression on
 // held_out ALONE (held_in unchanged) must be rejected with held_out named.
 func TestCompareFlagsHeldOutRegression(t *testing.T) {
-	before := Report{
-		Suite:   "capability-suite",
-		Splits:  map[string]Metrics{SplitHeldIn: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1}, SplitHeldOut: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1}},
-		Overall: Metrics{Cases: 10, Hit1: 1, Hit5: 1, MRR: 1},
+	before := certificationRun(t, certificationSuite(), true, true)
+	after := cloneCertificationReport(t, before)
+	for i := range after.Cases {
+		c := &after.Cases[i]
+		if c.Split == SplitHeldOut {
+			for j := range c.Expected {
+				c.Expected[j].Rank = 0
+				c.Expected[j].Hit = false
+			}
+			c.RR = 0
+			finalizeCase(c)
+		}
 	}
-	after := before
-	after.Splits = map[string]Metrics{
-		SplitHeldIn:  {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1},        // unchanged
-		SplitHeldOut: {Cases: 5, Hit1: 0.8, Hit5: 0.8, MRR: 0.75}, // regressed
-	}
+	refreshCertificationMetrics(&after)
 	cmp := Compare(before, after)
 	if !cmp.Regressed || cmp.Accept {
 		t.Fatalf("expected regression rejected, got regressed=%v accept=%v", cmp.Regressed, cmp.Accept)
@@ -316,11 +320,7 @@ func TestCompareFlagsHeldOutRegression(t *testing.T) {
 	}
 
 	// No-regression control (held_out improves) must accept.
-	improve := before
-	improve.Splits = map[string]Metrics{
-		SplitHeldIn:  {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1},
-		SplitHeldOut: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1},
-	}
+	improve := cloneCertificationReport(t, before)
 	if cmp := Compare(before, improve); cmp.Regressed || !cmp.Accept {
 		t.Fatalf("no-regression compare rejected: regressed=%v accept=%v", cmp.Regressed, cmp.Accept)
 	}
@@ -331,11 +331,7 @@ func TestCompareFlagsHeldOutRegression(t *testing.T) {
 // into Regressed, which stays purely about metric movement. The same suite with equal metrics
 // still accepts (control).
 func TestCompareRejectsSuiteMismatch(t *testing.T) {
-	before := Report{
-		Suite:   "capability-suite",
-		Splits:  map[string]Metrics{SplitHeldIn: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1}, SplitHeldOut: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1}},
-		Overall: Metrics{Cases: 10, Hit1: 1, Hit5: 1, MRR: 1},
-	}
+	before := certificationRun(t, certificationSuite(), true, true)
 	after := before
 	after.Suite = "memory-suite"
 
@@ -504,16 +500,10 @@ func TestMustOutrankWinnerAbsentIsParityGap(t *testing.T) {
 // TestCompareRegressesOnViolationIncrease falsifies the additive Compare rule: a split whose
 // violation total INCREASES (hit@5/MRR unchanged) must be rejected; a decrease must not.
 func TestCompareRegressesOnViolationIncrease(t *testing.T) {
-	before := Report{
-		Suite:   "s",
-		Splits:  map[string]Metrics{SplitHeldIn: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1}, SplitHeldOut: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1}},
-		Overall: Metrics{Cases: 10, Hit1: 1, Hit5: 1, MRR: 1},
-	}
-	worse := before
-	worse.Splits = map[string]Metrics{
-		SplitHeldIn:  {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1},                         // unchanged
-		SplitHeldOut: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1, ForbiddenViolations: 2}, // more leaks, same hits
-	}
+	before := certificationRun(t, certificationSuite(), true, true)
+	worse := cloneCertificationReport(t, before)
+	worse.Cases[2].ForbiddenViolations = []string{"leak-a", "leak-b"}
+	refreshCertificationMetrics(&worse)
 	cmp := Compare(before, worse)
 	if !cmp.Regressed || cmp.Accept {
 		t.Fatalf("violation increase should reject: regressed=%v accept=%v", cmp.Regressed, cmp.Accept)
@@ -523,26 +513,16 @@ func TestCompareRegressesOnViolationIncrease(t *testing.T) {
 	}
 
 	// Outrank-violation increase on held_in also regresses.
-	worse2 := before
-	worse2.Splits = map[string]Metrics{
-		SplitHeldIn:  {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1, OutrankViolations: 1},
-		SplitHeldOut: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1},
-	}
+	worse2 := cloneCertificationReport(t, before)
+	worse2.Cases[0].OutrankViolations = []string{"wrong order"}
+	refreshCertificationMetrics(&worse2)
 	if cmp := Compare(before, worse2); !cmp.Regressed || !reflect.DeepEqual(cmp.RegressedSplit, []string{SplitHeldIn}) {
 		t.Fatalf("outrank increase on held_in should reject with held_in named, got regressed=%v splits=%v", cmp.Regressed, cmp.RegressedSplit)
 	}
 
 	// A violation DECREASE (with hits held) is an improvement — must accept.
-	fewer := Report{
-		Suite:   "s",
-		Splits:  map[string]Metrics{SplitHeldIn: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1, ForbiddenViolations: 3}, SplitHeldOut: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1}},
-		Overall: Metrics{Cases: 10, Hit1: 1, Hit5: 1, MRR: 1, ForbiddenViolations: 3},
-	}
-	better := fewer
-	better.Splits = map[string]Metrics{
-		SplitHeldIn:  {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1, ForbiddenViolations: 0},
-		SplitHeldOut: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1},
-	}
+	fewer := worse
+	better := before
 	if cmp := Compare(fewer, better); cmp.Regressed || !cmp.Accept {
 		t.Fatalf("violation decrease should accept: regressed=%v accept=%v", cmp.Regressed, cmp.Accept)
 	}
@@ -606,4 +586,9 @@ func TestMemoryCaseSkippedWhenNoLedger(t *testing.T) {
 	if len(report.AbsentFromGraph) != 0 {
 		t.Fatalf("skipped memory case must not contribute absent ids, got %v", report.AbsentFromGraph)
 	}
+}
+
+func refreshCertificationMetrics(r *Report) {
+	r.Splits = map[string]Metrics{SplitHeldIn: aggregate(r.Cases, SplitHeldIn), SplitHeldOut: aggregate(r.Cases, SplitHeldOut)}
+	r.Overall = aggregate(r.Cases, "")
 }

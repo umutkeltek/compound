@@ -276,6 +276,8 @@ logic fails. Retire name-only eligibility and aggregate-only acceptance for appl
 **Why this, not the nearest alternative.** Repair comparison validity instead of building a general
 coding benchmark.
 
+The benchmark report now carries the complete declared evaluation inventory: case identity, kind, lane, split, expected outcomes and canonical input hashes. Certification checks scored coverage against that inventory, validates counts and metrics, and requires the same input identity across reports. Empty, legacy, shortened and unmatched evidence cannot produce an acceptance proof. Build, graph and method revisions may differ. Input identity establishes comparability; report authenticity still depends on the surrounding evidence custody.
+
 ## 4. Cluster map
 
 | Mechanism cluster | Upstream projects and evidence | Existing Compound owner; verdict |

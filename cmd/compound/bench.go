@@ -248,7 +248,15 @@ func runBenchCompare(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	} else {
-		printBenchCompareSummary(stdout, cmp)
+		bench.WriteCompareSummary(stdout, cmp)
+	}
+	if len(cmp.InputErrors) > 0 {
+		fmt.Fprintf(stderr, "bench compare: non-certifying reports: %s\n", strings.Join(cmp.InputErrors, "; "))
+		return 1
+	}
+	if cmp.InputMismatch {
+		fmt.Fprintln(stderr, "bench compare: evaluation inputs or case coverage differ; cannot certify")
+		return 1
 	}
 	// A suite mismatch is an apples-to-oranges comparison and must fail the gate. Accept already
 	// encodes this (it is false on mismatch); the exit code enforces it too unless the operator
@@ -259,8 +267,8 @@ func runBenchCompare(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if cmp.Regressed {
-		fmt.Fprintf(stderr, "bench compare: regression on %s (hit@5 or MRR lower); accept rule requires no regression on either split\n",
-			strings.Join(cmp.RegressedSplit, ", "))
+		fmt.Fprintf(stderr, "bench compare: regression on splits [%s], lanes [%s] (hit@5/MRR lower or assertion violations higher)\n",
+			strings.Join(cmp.RegressedSplit, ", "), strings.Join(cmp.RegressedLanes, ", "))
 		return 1
 	}
 	return 0
@@ -318,28 +326,6 @@ func printBenchSummary(w io.Writer, report bench.Report, artifactPath string) {
 		fmt.Fprintf(w, "absent_from_graph (%d): %s\n", len(report.AbsentFromGraph), strings.Join(report.AbsentFromGraph, ", "))
 	}
 	fmt.Fprintf(w, "report: %s\n", artifactPath)
-}
-
-func printBenchCompareSummary(w io.Writer, cmp bench.CompareReport) {
-	verdict := "ACCEPT"
-	if cmp.Regressed || cmp.SuiteMismatch {
-		verdict = "REJECT"
-	}
-	fmt.Fprintf(w, "# compound bench compare: %s\n", verdict)
-	if cmp.SuiteMismatch {
-		fmt.Fprintf(w, "warning: before suite %q != after suite %q (comparison is apples-to-oranges)\n", cmp.BeforeSuite, cmp.AfterSuite)
-	}
-	for _, d := range cmp.Splits {
-		flag := ""
-		if d.Regressed {
-			flag = "  <- REGRESSED"
-		}
-		fmt.Fprintf(w, "  %-9s hit@1 %+.3f  hit@5 %+.3f  mrr %+.3f%s\n", d.Split, d.Hit1Delta, d.Hit5Delta, d.MRRDelta, flag)
-	}
-	fmt.Fprintf(w, "  %-9s hit@1 %+.3f  hit@5 %+.3f  mrr %+.3f\n", "overall", cmp.Overall.Hit1Delta, cmp.Overall.Hit5Delta, cmp.Overall.MRRDelta)
-	if cmp.ProofRef != "" {
-		fmt.Fprintf(w, "proof: %s  (cite this in the harness-edit close ProofRefs to stamp should_harden)\n", cmp.ProofRef)
-	}
 }
 
 func slugifyBench(s string) string {

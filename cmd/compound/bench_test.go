@@ -270,16 +270,8 @@ func readSingleBenchArtifact(t *testing.T, home string) bench.Report {
 func TestBenchCompareProofTokenFlowsToHarnessEditClose(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	base := bench.Report{
-		Suite:   "capability-suite",
-		Splits:  map[string]bench.Metrics{bench.SplitHeldIn: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1}, bench.SplitHeldOut: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1}},
-		Overall: bench.Metrics{Cases: 10, Hit1: 1, Hit5: 1, MRR: 1},
-	}
-	regressed := base
-	regressed.Splits = map[string]bench.Metrics{
-		bench.SplitHeldIn:  {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1},
-		bench.SplitHeldOut: {Cases: 5, Hit1: 0.6, Hit5: 0.6, MRR: 0.5},
-	}
+	base := benchCompareFixture(t, true)
+	regressed := benchCompareFixture(t, false)
 	beforePath := filepath.Join(dir, "before.json")
 	afterOK := filepath.Join(dir, "ok.json")   // == before (accept)
 	afterBad := filepath.Join(dir, "bad.json") // regressed (reject)
@@ -406,21 +398,9 @@ func TestRunBenchAbsentGate(t *testing.T) {
 func TestRunBenchCompareRegressionGate(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	before := bench.Report{
-		Suite:   "capability-suite",
-		Splits:  map[string]bench.Metrics{bench.SplitHeldIn: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1}, bench.SplitHeldOut: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1}},
-		Overall: bench.Metrics{Cases: 10, Hit1: 1, Hit5: 1, MRR: 1},
-	}
-	regressed := before
-	regressed.Splits = map[string]bench.Metrics{
-		bench.SplitHeldIn:  {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1},
-		bench.SplitHeldOut: {Cases: 5, Hit1: 0.6, Hit5: 0.6, MRR: 0.5},
-	}
+	before := benchCompareFixture(t, true)
+	regressed := benchCompareFixture(t, false)
 	improved := before
-	improved.Splits = map[string]bench.Metrics{
-		bench.SplitHeldIn:  {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1},
-		bench.SplitHeldOut: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1},
-	}
 
 	beforePath := filepath.Join(dir, "before.json")
 	regressedPath := filepath.Join(dir, "regressed.json")
@@ -450,11 +430,7 @@ func TestRunBenchCompareRegressionGate(t *testing.T) {
 func TestRunBenchCompareSuiteMismatchGate(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	before := bench.Report{
-		Suite:   "capability-suite",
-		Splits:  map[string]bench.Metrics{bench.SplitHeldIn: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1}, bench.SplitHeldOut: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1}},
-		Overall: bench.Metrics{Cases: 10, Hit1: 1, Hit5: 1, MRR: 1},
-	}
+	before := benchCompareFixture(t, true)
 	after := before              // identical metrics...
 	after.Suite = "memory-suite" // ...but a DIFFERENT suite
 	beforePath := filepath.Join(dir, "before.json")
@@ -495,5 +471,175 @@ func TestRunBenchCompareSuiteMismatchGate(t *testing.T) {
 	}
 	if !cmp.SuiteMismatch || cmp.Accept {
 		t.Fatalf("--allow-suite-mismatch must keep suite_mismatch=true/accept=false, got mismatch=%v accept=%v", cmp.SuiteMismatch, cmp.Accept)
+	}
+}
+
+func benchCompareFixture(t *testing.T, heldOutHit bool) bench.Report {
+	t.Helper()
+	home := t.TempDir()
+	store, err := capgraph.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trigger := "beta"
+	if !heldOutHit {
+		trigger = "unmatched"
+	}
+	for _, n := range []capgraph.Node{
+		{ID: "skill:alpha", Kind: "skill", Name: "Alpha", Triggers: []string{"alpha"}},
+		{ID: "skill:beta", Kind: "skill", Name: "Beta", Triggers: []string{trigger}},
+	} {
+		if err := store.Add(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r, err := bench.Run(bench.Options{Home: home, Suite: bench.Suite{
+		Suite: "capability-suite",
+		Cases: []bench.Case{
+			{ID: "in", Kind: bench.KindCapability, Task: "alpha", Expected: []string{"skill:alpha"}, Split: bench.SplitHeldIn, Lane: "exact"},
+			{ID: "out", Kind: bench.KindCapability, Task: "beta", Expected: []string{"skill:beta"}, Split: bench.SplitHeldOut, Lane: "exact"},
+		},
+	}, Now: time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// Certification failures must reach the real command exit status and both output modes,
+// including the explicit suite-label escape hatch.
+func TestRunBenchCompareCertificationGate(t *testing.T) {
+	valid := benchCompareFixture(t, true)
+	variants := map[string]bench.Report{"empty": {}, "legacy": valid, "changed-inputs": valid}
+	legacy := variants["legacy"]
+	legacy.InputDigest = ""
+	variants["legacy"] = legacy
+	changed := variants["changed-inputs"]
+	changed.InputDigest = strings.Repeat("a", 64)
+	variants["changed-inputs"] = changed
+	for name, r := range variants {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			beforePath, afterPath := filepath.Join(dir, "before.json"), filepath.Join(dir, "after.json")
+			for path, report := range map[string]bench.Report{beforePath: valid, afterPath: r} {
+				data, err := json.Marshal(report)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err = os.WriteFile(path, data, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, jsonOut := range []bool{false, true} {
+				args := []string{"compare", "--before", beforePath, "--after", afterPath, "--allow-suite-mismatch"}
+				if jsonOut {
+					args = append(args, "--json")
+				}
+				var out, errBuf bytes.Buffer
+				if code := runBench(args, &out, &errBuf); code == 0 {
+					t.Fatalf("invalid compare exited zero: %s", out.String())
+				}
+				if errBuf.Len() == 0 {
+					t.Fatal("rejection lacks diagnostic")
+				}
+				if jsonOut {
+					var c bench.CompareReport
+					if err := json.Unmarshal(out.Bytes(), &c); err != nil {
+						t.Fatal(err)
+					}
+					if c.Accept || c.ProofRef != "" {
+						t.Fatalf("invalid input certified: %+v", c)
+					}
+					if len(c.InputErrors) == 0 && !c.InputMismatch {
+						t.Fatalf("missing certification reason: %+v", c)
+					}
+				} else if !strings.Contains(out.String(), "REJECT") || strings.Contains(out.String(), "proof:") {
+					t.Fatalf("misleading summary: %s", out.String())
+				}
+			}
+		})
+	}
+}
+
+func TestRunBenchCompareRejectsTruncatedDeclaredContract(t *testing.T) {
+	home := t.TempDir()
+	store, err := capgraph.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Add(capgraph.Node{ID: "skill:alpha", Kind: "skill", Name: "Alpha", Triggers: []string{"alpha"}}); err != nil {
+		t.Fatal(err)
+	}
+	suite := bench.Suite{Suite: "declared-coverage"}
+	for _, split := range []string{bench.SplitHeldIn, bench.SplitHeldOut} {
+		for _, lane := range []string{"exact", "casual"} {
+			suite.Cases = append(suite.Cases, bench.Case{ID: split + "-" + lane, Kind: bench.KindCapability, Task: "alpha", Expected: []string{"skill:alpha"}, Split: split, Lane: lane})
+		}
+	}
+	full, err := bench.Run(bench.Options{Home: home, Suite: suite, Now: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	suite.Cases = []bench.Case{suite.Cases[0], suite.Cases[2]}
+	short, err := bench.Run(bench.Options{Home: home, Suite: suite, Now: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	short.InputDigest = full.InputDigest
+	fullBytes, _ := json.Marshal(full)
+	var fullMap map[string]json.RawMessage
+	if err := json.Unmarshal(fullBytes, &fullMap); err != nil {
+		t.Fatal(err)
+	}
+	shortBytes, _ := json.Marshal(short)
+	var shortMap map[string]json.RawMessage
+	if err := json.Unmarshal(shortBytes, &shortMap); err != nil {
+		t.Fatal(err)
+	}
+	if contract, ok := fullMap["evaluation_contract"]; ok {
+		shortMap["evaluation_contract"] = contract
+	}
+	shortBytes, err = json.Marshal(shortMap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	before, after := filepath.Join(dir, "before.json"), filepath.Join(dir, "after.json")
+	writePair := func(data []byte) {
+		t.Helper()
+		for _, path := range []string{before, after} {
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	writePair(fullBytes)
+	var out, errOut bytes.Buffer
+	args := []string{"compare", "--before", before, "--after", after}
+	if code := runBench(args, &out, &errOut); code != 0 {
+		t.Fatalf("valid full control refused: %d %s", code, errOut.String())
+	}
+	writePair(shortBytes)
+	for _, jsonOut := range []bool{false, true} {
+		out.Reset()
+		errOut.Reset()
+		cmd := append(append([]string{}, args...), "--allow-suite-mismatch")
+		if jsonOut {
+			cmd = append(cmd, "--json")
+		}
+		if code := runBench(cmd, &out, &errOut); code == 0 {
+			t.Fatalf("truncated declared contract certified by CLI: %s", out.String())
+		}
+		if jsonOut {
+			var c bench.CompareReport
+			if err := json.Unmarshal(out.Bytes(), &c); err != nil {
+				t.Fatal(err)
+			}
+			if c.Accept || c.ProofRef != "" || len(c.InputErrors) == 0 {
+				t.Fatalf("invalid evidence certified: %+v", c)
+			}
+		} else if !strings.Contains(out.String(), "REJECT") {
+			t.Fatalf("missing REJECT: %s", out.String())
+		}
 	}
 }
