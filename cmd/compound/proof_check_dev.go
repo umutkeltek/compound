@@ -48,7 +48,8 @@ func cmdProofCheckDevelopment(args []string) {
 	}
 
 	started := time.Now()
-	report, err := runNonCertifyingProofCheck(repoPath, dryRun, baseRef, started, work.ProofCheckNonCertifyingMode(args))
+	ctx := work.ContextWithGateOutputReportPath(context.Background(), outTarget)
+	report, err := runNonCertifyingProofCheckContext(ctx, repoPath, dryRun, baseRef, started, work.ProofCheckNonCertifyingMode(args))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "proof-check:", err)
 		os.Exit(2)
@@ -85,6 +86,10 @@ func runDevelopmentProofCheck(repoPath string, dryRun bool, baseRef string, now 
 
 // runNonCertifyingProofCheck runs --dev, or --presubmit with its diff-derived gates.
 func runNonCertifyingProofCheck(repoPath string, dryRun bool, baseRef string, now time.Time, mode string) (proofCheckReport, error) {
+	return runNonCertifyingProofCheckContext(context.Background(), repoPath, dryRun, baseRef, now, mode)
+}
+
+func runNonCertifyingProofCheckContext(ctx context.Context, repoPath string, dryRun bool, baseRef string, now time.Time, mode string) (proofCheckReport, error) {
 	repo, err := resolveProofCheckRepo(repoPath)
 	if err != nil {
 		return proofCheckReport{}, err
@@ -96,7 +101,7 @@ func runNonCertifyingProofCheck(repoPath string, dryRun bool, baseRef string, no
 	var steps []proofCheckStep
 	var presubmit *work.ProofCheckPresubmit
 	if mode == "--presubmit" {
-		steps, presubmit, err = work.ProofCheckPresubmitSteps(context.Background(), repo, baseRef)
+		steps, presubmit, err = work.ProofCheckPresubmitSteps(ctx, repo, baseRef)
 	} else {
 		steps, err = proofCheckDevelopmentSteps(repo, baseRef)
 	}
@@ -125,7 +130,7 @@ func runNonCertifyingProofCheck(repoPath string, dryRun bool, baseRef string, no
 		if dryRun {
 			result.Status = "planned"
 		} else {
-			result = runProofCheckStep(repo, step, baseRef)
+			result = runProofCheckStepContext(ctx, repo, step, baseRef)
 			if result.Status == "failed" {
 				report.Status = "failed"
 			}

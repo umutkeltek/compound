@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"compound/internal/work"
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -262,4 +264,123 @@ func itoaForTest(i int) string {
 		i /= 10
 	}
 	return string(buf[pos:])
+}
+
+const nonCertifyingOutputHelperEnv = "COMPOUND_TEST_NONCERTIFYING_OUTPUT_HELPER"
+
+// Exercise the real noncertifying dispatch: a completed red Go gate must leave
+// its full diagnostic output even when a later gate terminates the process.
+func TestProofCheckNonCertifyingFailedOutputSurvivesLaterInterruption(t *testing.T) {
+	for _, mode := range []string{"--dev", "--presubmit"} {
+		t.Run(strings.TrimPrefix(mode, "--"), func(t *testing.T) {
+			repo, base := newProofCheckPresubmitRepo(t)
+			proofCheckDevelopmentWriteFile(t, filepath.Join(repo, "internal/home/home.go"), "package home\n")
+			proofCheckDevelopmentWriteFile(t, filepath.Join(repo, "internal/work/work.go"), "package work\n\nimport (\n\t_ \"compound/internal/home\"\n\t_ \"compound/internal/landlease\"\n)\n")
+			proofCheckPresubmitCommit(t, repo, "select isolated home phase")
+
+			root := t.TempDir()
+			expected := []byte(strings.Repeat("output-before-tail\n", 600) + "--- FAIL: TestRetainedNonCertifyingFailure (0.01s)\nFAIL\tcompound/synthetic\t0.01s\n")
+			bodyPath := filepath.Join(root, "failure.txt")
+			if err := os.WriteFile(bodyPath, expected, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			realGo, err := exec.LookPath("go")
+			if err != nil {
+				t.Fatal(err)
+			}
+			fakeGo := filepath.Join(root, "go")
+			script := "#!/bin/sh\ncase \"$1\" in\n  test|run|architecture) ;;\n  *) exec \"$COMPOUND_TEST_REAL_GO\" \"$@\" ;;\nesac\nprintf '%s\\n' --invocation-- \"$@\" >> \"$COMPOUND_TEST_NONCERTIFYING_ARGV\"\nif [ \"$1\" = test ]; then\n  case \" $* \" in *\" compound/internal/home \"*)\n    printf 'later gate reached\\n' > \"$COMPOUND_TEST_NONCERTIFYING_MARKER\"\n    kill -TERM \"$PPID\"\n    exit 29\n  esac\n  cat \"$COMPOUND_TEST_NONCERTIFYING_FAILURE_BODY\"\n  exit 1\nfi\nexit 0\n"
+			if err := os.WriteFile(fakeGo, []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			outPath := filepath.Join(root, "report.json")
+			marker := filepath.Join(root, "interrupted")
+			argvPath := filepath.Join(root, "argv")
+			exe, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(exe, "-test.run=^TestProofCheckNonCertifyingOutputHelper$", "-test.timeout=30s")
+			cmd.Env = append(os.Environ(),
+				nonCertifyingOutputHelperEnv+"=1",
+				"COMPOUND_TEST_NONCERTIFYING_MODE="+mode,
+				"COMPOUND_TEST_NONCERTIFYING_REPO="+repo,
+				"COMPOUND_TEST_NONCERTIFYING_BASE="+base,
+				"COMPOUND_TEST_NONCERTIFYING_OUT="+outPath,
+				"COMPOUND_TEST_NONCERTIFYING_GO="+fakeGo,
+				"COMPOUND_TEST_REAL_GO="+realGo,
+				"PATH="+root+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"COMPOUND_TEST_NONCERTIFYING_FAILURE_BODY="+bodyPath,
+				"COMPOUND_TEST_NONCERTIFYING_MARKER="+marker,
+				"COMPOUND_TEST_NONCERTIFYING_ARGV="+argvPath,
+				"COMPOUND_HOME="+filepath.Join(root, "compound-home"),
+				"HOME="+root,
+				"XDG_CACHE_HOME="+filepath.Join(root, "cache"),
+				"GOCACHE="+filepath.Join(root, "go-cache"),
+			)
+			output, err := cmd.CombinedOutput()
+			exit, ok := err.(*exec.ExitError)
+			if !ok || (mode == "--dev" && exit.ExitCode() != 29) || (mode == "--presubmit" && exit.ExitCode() != -1) {
+				t.Fatalf("later gate did not interrupt as configured: %v\n%s", err, output)
+			}
+			if _, err := os.Stat(marker); err != nil {
+				t.Fatalf("later gate was not reached: %v", err)
+			}
+			body, err := os.ReadFile(outPath + ".gates/go-test.log")
+			if err != nil {
+				t.Fatalf("completed failed gate output was lost before final report: %v", err)
+			}
+			if !bytes.Equal(body, expected) {
+				t.Fatalf("retained output differs: got %d bytes, want %d", len(body), len(expected))
+			}
+			argv, err := os.ReadFile(argvPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fresh := strings.Contains(string(argv), "--invocation--\ntest\n-short\n-count=1\n")
+			if fresh != (mode == "--presubmit") {
+				t.Fatalf("presubmit must force fresh execution while dev keeps cached iteration:\n%s", argv)
+			}
+			if _, err := os.Stat(outPath); !os.IsNotExist(err) {
+				t.Fatalf("interrupted run must not publish a final report: %v", err)
+			}
+		})
+	}
+}
+
+func TestProofCheckNonCertifyingOutputHelper(t *testing.T) {
+	if os.Getenv(nonCertifyingOutputHelperEnv) != "1" {
+		return
+	}
+	mode := os.Getenv("COMPOUND_TEST_NONCERTIFYING_MODE")
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	interrupt := func() {
+		if err := os.WriteFile(os.Getenv("COMPOUND_TEST_NONCERTIFYING_MARKER"), []byte("later gate reached\n"), 0o600); err != nil {
+			os.Exit(28)
+		}
+		os.Exit(29)
+	}
+	proofCheckRuntimeExecutable = func(name string) (string, error) {
+		if name == "go" {
+			return os.Getenv("COMPOUND_TEST_NONCERTIFYING_GO"), nil
+		}
+		if name == exe {
+			// Development dispatches the doctor after its red Go gate.
+			if mode == "--dev" {
+				interrupt()
+			}
+			return os.Getenv("COMPOUND_TEST_NONCERTIFYING_GO"), nil
+		}
+		return name, nil
+	}
+	cmdProofCheckDevelopment([]string{
+		mode,
+		"--repo", os.Getenv("COMPOUND_TEST_NONCERTIFYING_REPO"),
+		"--base", os.Getenv("COMPOUND_TEST_NONCERTIFYING_BASE"),
+		"--out", os.Getenv("COMPOUND_TEST_NONCERTIFYING_OUT"),
+	})
+	os.Exit(27)
 }

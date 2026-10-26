@@ -111,7 +111,7 @@ func TestProofCheckPresubmitDerivesGatesFromTheDiff(t *testing.T) {
 		}
 	}
 	wantTests := map[string][]string{
-		"go-test": {"go", "test", "-short", "-timeout=30m", "compound/cmd/compound", "compound/internal/arch", "compound/internal/landlease", "compound/internal/work"},
+		"go-test": {"go", "test", "-short", "-count=1", "-timeout=30m", "compound/cmd/compound", "compound/internal/arch", "compound/internal/landlease", "compound/internal/work"},
 	}
 	if got := proofCheckPresubmitGoTests(report); !reflect.DeepEqual(got, wantTests) {
 		t.Fatalf("go-test runs = %v; want %v", got, wantTests)
@@ -132,8 +132,8 @@ func TestProofCheckPresubmitDocsOnlyRunsDoctrineReaders(t *testing.T) {
 
 	report, verdict := proofCheckPresubmitDryRun(t, repo, base)
 	wantTests := map[string][]string{
-		"go-test":             {"go", "test", "-short", "-timeout=30m", "compound/internal/arch"},
-		"go-test-cli-readers": {"go", "test", "-short", "-timeout=30m", "-run", proofscope.PresubmitCLIReaders, "compound/cmd/compound"},
+		"go-test":             {"go", "test", "-short", "-count=1", "-timeout=30m", "compound/internal/arch"},
+		"go-test-cli-readers": {"go", "test", "-short", "-count=1", "-timeout=30m", "-run", proofscope.PresubmitCLIReaders, "compound/cmd/compound"},
 	}
 	if got := proofCheckPresubmitGoTests(report); !reflect.DeepEqual(got, wantTests) {
 		t.Fatalf("go-test runs = %v; want %v", got, wantTests)
@@ -169,7 +169,7 @@ func TestProofCheckPresubmitRunsWholeModuleForModuleAndRemovedPackages(t *testin
 			if tc.name == "removed package" {
 				inventory = slices.DeleteFunc(inventory, func(pkg string) bool { return pkg == "compound/internal/policy" })
 			}
-			want := map[string][]string{"go-test": append([]string{"go", "test", "-short", "-timeout=30m"}, inventory...)}
+			want := map[string][]string{"go-test": append([]string{"go", "test", "-short", "-count=1", "-timeout=30m"}, inventory...)}
 			if got := proofCheckPresubmitGoTests(report); !reflect.DeepEqual(got, want) {
 				t.Fatalf("go-test runs = %v; want %v", got, want)
 			}
@@ -282,7 +282,7 @@ func TestProofCheckPresubmitIsolatesSharedIOWithoutDroppingTests(t *testing.T) {
 			}
 			var want [][]string
 			for _, packages := range tt.want {
-				command := []string{"go", "test", "-short", "-timeout=30m"}
+				command := []string{"go", "test", "-short", "-count=1", "-timeout=30m"}
 				if tt.selector != "" {
 					command = append(command, "-run", tt.selector)
 				}
