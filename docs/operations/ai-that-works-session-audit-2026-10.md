@@ -399,9 +399,19 @@ never-fired while the hook stream records roughly 2.8 million tool invocations.
 
 Consequence for this audit: any decision justified by the usage signal — "this capability is
 unused, extend it", "this owner never fires, retire it" — reads a measurement artifact as
-behavior. Treat `never_fired` as a prompt for instrumentation, never as evidence of non-use,
-until `work_8e6509d7d901` lands. The S1–S5 recommendations above are chosen on mechanism and
-owner grounds and do not depend on this signal, so they stand.
+behavior. Treat `never_fired` as a prompt for instrumentation, never as evidence of non-use.
+The S1–S5 recommendations above are chosen on mechanism and owner grounds and do not depend on
+this signal, so they stand.
+
+The repair (`work_8e6509d7d901`) is a projection-only change: the projection now normalizes a
+ref of any kind, counts non-skill pack offers instead of dropping them, and attributes a
+recorded tool invocation to the node it evidences. The invoked tool's native name is read from
+the hook event's `side_effects`, where the hook has always recorded it, so the repair reaches
+the entire existing history and no shared envelope contract changes. Measured on the live home,
+total fired counts go from 221 to 7,998, and `capability://tool:headroom.headroom-retrieve` and
+`capability://mcp:headroom` each reach 2,271 fires. A tool the graph does not hold stays
+unmeasurable: inventing a node for it would put a capability in the projection that no catalog
+declared.
 
 ## 9. Per-project ledger
 

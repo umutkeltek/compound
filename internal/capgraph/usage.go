@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -219,6 +220,31 @@ func BuildCapabilityUsage(homePath string, opts UsageBuildOptions) (CapabilityUs
 	packCache := map[string]*envelope.ContextPack{} // id -> pack (nil = missing/invalid)
 	packsLoaded := map[string]bool{}
 
+	// The graph's node set, so a recorded tool invocation can be attributed
+	// to the capability it evidences. A tool the graph does not hold is
+	// UNMEASURABLE, and attributing it anyway would put a capability in
+	// the projection that no catalog ever declared.
+	//
+	// The keys are NODE ids ("tool:headroom.headroom-retrieve"): that is the
+	// graph's own vocabulary, and the projection converts to a capability
+	// ref when it counts.
+	nodeIDs := map[string]bool{}
+	nodeNameIDs := map[string][]string{}
+	if store, storeErr := Open(homePath); storeErr == nil {
+		if graphNodes, nodesErr := store.List(); nodesErr == nil {
+			for _, n := range graphNodes {
+				id := strings.TrimSpace(n.ID)
+				if id == "" {
+					continue
+				}
+				nodeIDs[id] = true
+				if name := strings.TrimSpace(strings.ToLower(n.Name)); name != "" {
+					nodeNameIDs[name] = append(nodeNameIDs[name], id)
+				}
+			}
+		}
+	}
+
 	events, err := eventstore.Open(homePath)
 	if err != nil {
 		return proj, err
@@ -406,7 +432,12 @@ func BuildCapabilityUsage(homePath string, opts UsageBuildOptions) (CapabilityUs
 			continue
 		}
 		for _, offer := range pack.CapabilityOffers {
-			ref, ok := normalizeSkillRef(offer.Ref)
+			// A pack offers capabilities of every kind -- tools, instruction
+			// rules, lenses, doctrines -- and a DROPPED offer is an offer
+			// nobody can account for: the capability was served, and the
+			// projection reported it as never touched. Only a ref that names
+			// no known kind is dropped.
+			ref, ok := normalizeCapabilityRef(offer.Ref)
 			if !ok {
 				continue
 			}
@@ -424,7 +455,7 @@ func BuildCapabilityUsage(homePath string, opts UsageBuildOptions) (CapabilityUs
 				EventID:       ev.ID,
 				OccurredAt:    ev.CreatedAt,
 				Ref:           ref,
-				Skill:         strings.TrimPrefix(ref, "capability://skill:"),
+				Skill:         capabilityRefName(ref),
 				Harness:       ev.Harness,
 				Lane:          usageLane(ev, ""),
 				WorkID:        ev.IDs.WorkID,
@@ -441,7 +472,9 @@ func BuildCapabilityUsage(homePath string, opts UsageBuildOptions) (CapabilityUs
 		if use == nil {
 			continue
 		}
-		ref, ok := normalizeSkillRef(use.Ref)
+		// A use names a capability of any kind. A skill use keeps the
+		// historical collapse; a tool use names its node id directly.
+		ref, ok := normalizeCapabilityRef(use.Ref)
 		if !ok {
 			continue
 		}
@@ -457,7 +490,7 @@ func BuildCapabilityUsage(homePath string, opts UsageBuildOptions) (CapabilityUs
 			EventID:    ev.ID,
 			OccurredAt: ev.CreatedAt,
 			Ref:        ref,
-			Skill:      strings.TrimPrefix(ref, "capability://skill:"),
+			Skill:      capabilityRefName(ref),
 			Harness:    ev.Harness,
 			Lane:       usageLane(ev, use.Lane),
 			WorkID:     ev.IDs.WorkID,
@@ -466,6 +499,35 @@ func BuildCapabilityUsage(homePath string, opts UsageBuildOptions) (CapabilityUs
 			Trigger:    trigger,
 			Outcome:    use.Outcome,
 		})
+	}
+	// A recorded TOOL invocation is evidence of a tool's use. The event
+	// carries the native name; the graph decides which node ids it
+	// evidences. This is the path that was missing: a tool invoked
+	// thousands of times had no way to reach a fired count, so it read as
+	// never fired -- the measurement defect, not a behaviour fact.
+	for _, ev := range hookEvents {
+		// The invoked tool's NATIVE name, read from the event's
+		// side_effects where the hook has always recorded it.
+		for _, native := range toolInvocations(ev) {
+			for _, ref := range toolUseRefs(native, nodeIDs, nodeNameIDs) {
+				a := capFor(caps, ref)
+				a.fired++
+				a.lastFired = laterTS(a.lastFired, ev.CreatedAt)
+				a.firedIn = append(a.firedIn, refReceipt{id: ev.ID, ts: ev.CreatedAt})
+				proj.Events = append(proj.Events, CapabilityUsageEvent{
+					EventID:    ev.ID,
+					OccurredAt: ev.CreatedAt,
+					Ref:        ref,
+					Skill:      capabilityRefName(ref),
+					Harness:    ev.Harness,
+					Lane:       usageLane(ev, ""),
+					WorkID:     ev.IDs.WorkID,
+					SessionID:  ev.IDs.SessionID,
+					HookName:   ev.HookName,
+					Outcome:    "used",
+				})
+			}
+		}
 	}
 	sort.Slice(proj.Events, func(i, j int) bool {
 		if proj.Events[i].OccurredAt != proj.Events[j].OccurredAt {
@@ -627,7 +689,11 @@ func dedupeUsageSet(values []string) map[string]bool {
 	out := map[string]bool{}
 	for _, value := range values {
 		ref := strings.TrimSpace(value)
-		if normalized, ok := normalizeSkillRef(ref); ok {
+		// A receipt may declare a use of any capability kind. Normalizing a
+		// skill ref keeps its historical canonical form; a non-skill ref is
+		// already canonical, and dropping it here would erase a declared
+		// use of a tool, rule or lens before it could be counted.
+		if normalized, ok := normalizeCapabilityRef(ref); ok {
 			ref = normalized
 		}
 		if ref != "" {
@@ -637,6 +703,15 @@ func dedupeUsageSet(values []string) map[string]bool {
 	return out
 }
 
+// normalizeSkillRef normalizes a SKILL ref to its canonical
+// "capability://skill:<name>" form. It is deliberately skill-only: a skill's
+// name IS its identity, so "skill://x", "skill:x" and
+// "capability://skill:x" are the same capability and collapse to one form.
+//
+// It is NOT the general capability-ref normalizer. A tool, rule, lens or
+// doctrine carries a node id, not a name, and "tool:headroom" is not
+// "capability://tool:headroom" by spelling alone -- only the graph knows
+// which ids exist. See normalizeCapabilityRef.
 func normalizeSkillRef(raw string) (string, bool) {
 	ref := strings.TrimSpace(raw)
 	switch {
@@ -655,6 +730,194 @@ func normalizeSkillRef(raw string) (string, bool) {
 	}
 	return "capability://skill:" + ref, true
 }
+
+// normalizeCapabilityRef normalizes a capability ref of ANY kind to its
+// canonical "capability://<kind>:<name>" form.
+//
+// The defect this exists to fix: a capability that is not a skill (a tool, an
+// instruction rule, a lens, a doctrine) could never reach a fired or
+// declared-use count, because every consumer funnelled through
+// normalizeSkillRef, which accepts skill refs only. A tool offered 800 times
+// and invoked 2,269 times still read as never fired, because the EVIDENCE
+// EXISTED and the READER COULD NOT HOLD IT.
+//
+// A skill ref keeps its historical collapse (see normalizeSkillRef) so no
+// existing skill row changes identity. Every other kind is accepted as
+// already-canonical: "capability://tool:headroom.headroom-retrieve" stays
+// exactly that. The graph decides which ids exist; this only decides that a
+// ref is well-formed and names a known kind.
+func normalizeCapabilityRef(raw string) (string, bool) {
+	ref := strings.TrimSpace(raw)
+	if ref == "" {
+		return "", false
+	}
+	if skill, ok := normalizeSkillRef(ref); ok {
+		return skill, true
+	}
+	rest, ok := strings.CutPrefix(ref, "capability://")
+	if !ok {
+		return "", false
+	}
+	kind, name, ok := strings.Cut(rest, ":")
+	if !ok {
+		return "", false
+	}
+	kind = strings.TrimSpace(kind)
+	name = strings.TrimSpace(name)
+	if kind == "" || name == "" {
+		return "", false
+	}
+	if !capabilityRefKindRe.MatchString(kind) {
+		return "", false
+	}
+	if !capabilityRefNameRe.MatchString(name) {
+		return "", false
+	}
+	return "capability://" + kind + ":" + name, true
+}
+
+// toolInvocations returns the native tool names a hook event observed.
+//
+// The tool name is read from the event's side_effects, where the hook has
+// ALWAYS merged it: a PostToolUse event records the invoked tool alongside
+// the adapter's governed artifacts. Reading it there rather than from a new
+// envelope field means the repair reaches the entire existing history, and
+// it leaves the shared event contract untouched.
+//
+// A side effect is only treated as a tool invocation when it HAS the shape of
+// one -- an "mcp__server__method" name, or a bare native tool name with no
+// path, scheme or space in it. The hook also merges non-tool refs into
+// side_effects (source-control refs, output refs, registry paths), and those
+// must never be read as tool calls.
+func toolInvocations(ev envelope.HookEvent) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	for _, effect := range ev.SideEffects {
+		name := strings.TrimSpace(effect)
+		if name == "" {
+			continue
+		}
+		if strings.HasPrefix(name, "mcp__") {
+			add(name)
+			continue
+		}
+		if !strings.ContainsAny(name, "/:@ ") && !strings.HasPrefix(name, "compound://") {
+			add(name)
+		}
+	}
+	return out
+}
+
+// toolUseRefs resolves a recorded native tool invocation to the capability
+// node ids it evidences.
+//
+// A harness invokes an MCP tool by its NATIVE name ("mcp__server__method"),
+// which the graph does not store: the graph stores the catalog's own id
+// ("tool:server.method", slugged) and name ("server.method", raw). This maps
+// one to the others using the SAME slug convention the catalog builder used
+// (internal/tooltopology: lowercase, non-alphanumeric runs joined by "-"),
+// so the attribution is derived, not guessed.
+//
+// It returns nothing when the invocation names a capability the graph does
+// not hold: a server with no node is UNMEASURABLE, and inventing a node for
+// it would put a capability in the graph that no catalog ever declared.
+//
+// The method-level tool node and the server-level mcp node are BOTH credited:
+// invoking headroom.headroom_retrieve is evidence for the tool AND for the
+// server that carries it, and the graph holds them as separate capabilities.
+func toolUseRefs(native string, nodes map[string]bool, nameToID map[string][]string) []string {
+	native = strings.TrimSpace(native)
+	if !strings.HasPrefix(native, "mcp__") {
+		return nil
+	}
+	body := strings.TrimPrefix(native, "mcp__")
+	parts := strings.Split(body, "__")
+	if len(parts) < 2 {
+		return nil
+	}
+	server := parts[0]
+	method := strings.Join(parts[1:], "__")
+	if server == "" || method == "" {
+		return nil
+	}
+	var out []string
+	// The graph names its nodes "tool:<server>.<method>"; a capability REF
+	// is the same identity with the "capability://" scheme. Resolve in node
+	// space (the graph's own vocabulary) and convert to ref space, so the
+	// projection counts the same identity the graph holds.
+	add := func(nodeID string) {
+		if nodeID == "" || !nodes[nodeID] {
+			return
+		}
+		ref := "capability://" + nodeID
+		for _, existing := range out {
+			if existing == ref {
+				return
+			}
+		}
+		out = append(out, ref)
+	}
+	// The catalog's canonical id form: "tool:<slug(server)>.<slug(method)>".
+	add("tool:" + usageSlug(server) + "." + usageSlug(method))
+	// The server-level node the method belongs to.
+	add("mcp:" + usageSlug(server))
+	// The catalog's raw name form, for a catalog that kept the name verbatim.
+	for _, id := range nameToID[strings.ToLower(server+"."+method)] {
+		add(id)
+	}
+	return out
+}
+
+// usageSlug is the graph's canonical id slug: lowercase, non-alphanumeric
+// runs joined by "-". It is the same rule the topology catalog builder uses
+// to mint "tool:<server>.<method>" ids, so a native invocation and a graph
+// id land on the same spelling.
+func usageSlug(s string) string {
+	var parts []string
+	for _, part := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
+	}) {
+		parts = append(parts, part)
+	}
+	if len(parts) == 0 {
+		return "unknown"
+	}
+	return strings.Join(parts, "-")
+}
+
+// capabilityRefName returns the NAME inside a canonical capability ref, for
+// any kind. It is the honest value for a usage row's Skill column: a skill
+// row shows the skill name, and a tool row shows the tool node's name
+// ("headroom.headroom-retrieve"), because the graph's own node name is the
+// only thing that identifies it.
+func capabilityRefName(ref string) string {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(ref), "capability://")
+	if !ok {
+		return ""
+	}
+	_, name, ok := strings.Cut(rest, ":")
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(name)
+}
+
+// capabilityRefKindRe is the bounded grammar of a capability kind: the
+// graph's own node-kind vocabulary, lower case, no separators.
+var capabilityRefKindRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+
+// capabilityRefNameRe is the bounded grammar of a capability name inside a
+// ref: the same character class a skill name uses, so a ref can never carry
+// a path, a URI or whitespace.
+var capabilityRefNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
 
 func boundedUsageTrigger(raw string) string {
 	trigger := strings.Join(strings.Fields(raw), " ")
