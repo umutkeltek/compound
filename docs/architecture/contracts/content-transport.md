@@ -63,6 +63,17 @@ hashing its own differently serialized object.
 | `rejected`, `cancelled`, `error` | attempt or schedule object; definitive terminal failure with no publication | failed |
 | `unknown` | attempt or schedule object | reconciliation required |
 
+When an accepted schedule exists, observations must retain its exact identity.
+A request-bound `published` observation may omit `schedule_id` only when its
+`remote_id` exactly equals the stored schedule ID: some providers publish the
+same remote object they previously queued. A different publication ID still
+requires the explicit matching schedule ID. Equality alone is not publication:
+the positive publication object, observed nonfuture timestamp, and complete
+original request/account/transport binding remain mandatory. Unknown effects
+cannot use this exception. The stored schedule, original request and receipt
+remain unchanged; the provider observation is retained verbatim without filling
+in an omitted field, and the original scheduling response artifact is preserved.
+
 A failure whose external effect is uncertain must be `unknown`, not `error`.
 A known publication-only adapter may normalize its endpoint's bare ID only after
 it has positive publication evidence and can bind the answer to this request.
