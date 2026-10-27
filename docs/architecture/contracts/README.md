@@ -528,6 +528,25 @@ It cannot promote truth by itself.
 
 Capability graph imports add a source-authority handoff after successful topology or skill-manifest import: `compound capability import-topology` and `compound capability import-skills` write `registries/capability-source-authority.jsonl`, mark `compound://registries/capability-graph` authoritative, mark the imported source view `evidence_only_input`, and retire `source_view_authority:<source_path>`. The source file remains rollback/evidence input; the graph is the consumer authority.
 
+### Capability-usage projection
+
+`compound://projections/capability-usage` is the generated view of capability consumption. It is
+a projection, never truth (see § Generated views): rebuilt from scratch, written only under
+`projections/`, and read by the director.
+
+**Every capability kind is measurable here.** A ref of any kind — `capability://skill:…`,
+`capability://tool:…`, `capability://mcp:…` — is normalized and counted, and a recorded
+invocation is attributed to the node it evidences. A ref kind the projection drops is not
+merely unmeasured: it reads as **never fired**, and `never_fired` is what the director
+consumes to propose trimming offers. A dropped kind therefore makes an actively used
+capability look unused, and the director would propose removing it.
+
+This is not a hypothetical. The projection normalized skill refs only, so every tool and MCP
+node read 0 fired against thousands of recorded invocations (`work_8e6509d7d901`; live
+home: total fired 221 → 7,998, and `capability://tool:headroom.headroom-retrieve` reached
+2,271 fires). A tool the graph does not hold stays unmeasurable — inventing a node for it
+would put a capability in the projection that no catalog declared.
+
 Build order (most likely to let fragmentation back in first): **OwnerWritebackGate/NoPromoteDecision** first slice landed; `projection doctor --writeback`, `runtime doctor --writeback`, and `decisions doctor --writeback` consume it for stale/drifted generated views, failing runtime reports, and decision lifecycle gaps. `runtime repair-plan` consumes the same runtime writeback gate and emits JSON/Markdown owner-review artifacts for runtime contract repair without editing owner files. `projection doctor --source-observe` and `projection dashboard-read-model --source-observe` convert stale/drifted freshness into the same `SourceObservation -> method_upgrade candidate -> NoPromoteDecision` path used by source adapters, so generated-view drift does not live in a report-only side channel. `projection doctor --record-context` and `projection dashboard-read-model --record-context` persist scoped `ProjectionFreshness` records that `orient` can include as generated context evidence. `projection repair-plan` consumes both paths and emits review artifacts for owner regeneration without running a generator or editing the generated view. `distiller run` now records duplicate memory outputs and duplicate non-memory candidate meanings as idempotent `NoPromoteDecision` rows instead of letting them re-enter as new work. `source observe` maps generated/source observations into candidate inboxes plus explicit no-promote rows; it observes existing owners and cannot promote truth. `capability import-topology` maps observed tool/MCP topology, generated resolver JSON, or `mcporter list --json` catalog output into CapabilityGraph nodes and fallback edges while recording the imported topology source as no-promote capability observation evidence; `capability import-skills` maps normalized manifests or generated skill-manifest JSON into CapabilityGraph offers while recording the manifest source as no-promote capability observation evidence; `capability import-evaluations` maps scored capability-evaluation records into eval graph nodes and evidence edges for already-known capabilities while recording the evaluation source as no-promote capability observation evidence; `capability evaluation-plan` turns one unknown evaluated capability into review artifacts plus a `needs_review` skill-manifest draft, and `capability evaluation-review` turns an edited review decision into a reviewed manifest without graph mutation. work/session closure auto-closes the runtime feedback loop when graph state exists, and `capability consume-receipts` replays the same idempotent path. None of these commands execute tools or skills.
 Each is **defined here before implementation** so agents stop re-deriving them; each is built
 only when a vertical slice needs it (`../../roadmap/phases.md`).
