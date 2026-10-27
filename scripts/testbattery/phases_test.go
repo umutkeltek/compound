@@ -10,7 +10,7 @@ import (
 )
 
 func TestFixedTestPhasesCoverInventoryExactlyOnce(t *testing.T) {
-	inventory := sourcePackageInventory{All: []string{"compound/internal/work", "compound/internal/home", "compound/internal/release", "compound/scripts/testbattery"}}
+	inventory := sourcePackageInventory{All: []string{"compound/cmd/compound", "compound/internal/work", "compound/internal/home", "compound/internal/release", "compound/scripts/testbattery"}}
 	calls := func(mode string) [][]string {
 		var got [][]string
 		err := runSourceGate(t.Context(), mode, func(context.Context, io.Writer) (sourcePackageInventory, error) { return inventory, nil }, func(_ context.Context, args []string, _, _ io.Writer) error {
@@ -99,15 +99,15 @@ func TestFixedTestPhasesWithoutGeneralPackages(t *testing.T) {
 		mode string
 		want []string
 	}{
-		{"test", []string{"compound/internal/work", "compound/internal/release", "compound/internal/home"}},
-		{"general-release", []string{"compound/internal/work", "compound/internal/release"}},
+		{"test", []string{"compound/cmd/compound", "compound/internal/work", "compound/internal/release", "compound/internal/home"}},
+		{"general-release", []string{"compound/cmd/compound", "compound/internal/work", "compound/internal/release"}},
 		{"home", []string{"compound/internal/home"}},
 	} {
 		t.Run(tt.mode, func(t *testing.T) {
 			var got []string
 			err := runBatteryPhase(t.Context(), tt.mode, func(_ context.Context, args []string, out, _ io.Writer) error {
 				if args[0] == "list" {
-					fmt.Fprintln(out, "compound/internal/home\ncompound/internal/work\ncompound/internal/release")
+					fmt.Fprintln(out, "compound/internal/home\ncompound/cmd/compound\ncompound/internal/work\ncompound/internal/release")
 					return nil
 				}
 				if len(args) != 4 || !reflect.DeepEqual(args[:3], []string{"test", "-count=1", "-timeout=40m"}) {
