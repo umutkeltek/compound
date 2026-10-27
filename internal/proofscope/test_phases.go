@@ -9,12 +9,15 @@ type TestPackagePhase struct {
 }
 
 // TestPackagePhases accepts a source-owned full inventory or affected subset.
-// Release exercises machine-wide sync barriers, and Home has scale assertions.
-// Each runs alone, after the general packages. Selection and coverage are kept.
+// Work has substantial serial IO, Release exercises machine-wide sync barriers,
+// and Home has scale assertions. Each runs alone, after general packages.
+// Selection and coverage are kept.
 func TestPackagePhases(packages []string) []TestPackagePhase {
-	var general, release, home []string
+	var general, work, release, home []string
 	for _, pkg := range packages {
 		switch pkg {
+		case "compound/internal/work":
+			work = append(work, pkg)
 		case "compound/internal/release":
 			release = append(release, pkg)
 		case "compound/internal/home":
@@ -27,6 +30,7 @@ func TestPackagePhases(packages []string) []TestPackagePhase {
 	var phases []TestPackagePhase
 	for _, phase := range []TestPackagePhase{
 		{Name: "general", Packages: general},
+		{Name: "work", Packages: work},
 		{Name: "release", Packages: release},
 		{Name: "home", Packages: home},
 	} {

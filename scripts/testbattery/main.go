@@ -96,22 +96,22 @@ func runBatteryPhase(ctx context.Context, mode string, run commandRunner, stdout
 	if err != nil || ctx.Err() != nil {
 		return fmt.Errorf("inventory: %w", errors.Join(err, ctx.Err()))
 	}
-	parallel, isolated, err := partitionPackages(inventory.String())
+	phases, err := partitionPackages(inventory.String())
 	if err != nil {
 		return err
 	}
-	phases := [][]string{parallel}
-	for _, pkg := range isolated {
-		phases = append(phases, []string{pkg})
-	}
-	switch mode {
-	case "general-release":
-		phases = phases[:2]
-	case "home":
-		phases = phases[2:]
+	if mode != "test" {
+		selected := phases[:0]
+		for _, phase := range phases {
+			if (mode == "home") == (phase.Name == "home") {
+				selected = append(selected, phase)
+			}
+		}
+		phases = selected
 	}
 	var failures []error
-	for i, packages := range phases {
+	for i, phase := range phases {
+		packages := phase.Packages
 		if err := ctx.Err(); err != nil {
 			return errors.Join(append(failures, err)...)
 		}
@@ -139,22 +139,22 @@ func runBatteryPhase(ctx context.Context, mode string, run commandRunner, stdout
 // This is the current module's inventory, not caller-supplied patterns or flags.
 var packagePath = regexp.MustCompile(`^compound(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$`)
 
-func partitionPackages(inventory string) ([]string, []string, error) {
+func partitionPackages(inventory string) ([]proofscope.TestPackagePhase, error) {
 	var packages []string
 	seen := make(map[string]bool)
 	for _, line := range strings.Split(strings.TrimSuffix(inventory, "\n"), "\n") {
 		pkg := strings.TrimSuffix(line, "\r")
 		if !packagePath.MatchString(pkg) || seen[pkg] {
-			return nil, nil, fmt.Errorf("invalid or duplicate package inventory entry %q", pkg)
+			return nil, fmt.Errorf("invalid or duplicate package inventory entry %q", pkg)
 		}
 		seen[pkg] = true
 		packages = append(packages, pkg)
 	}
 	phases := proofscope.TestPackagePhases(packages)
-	if len(phases) != 3 || phases[0].Name != "general" || phases[1].Name != "release" || phases[2].Name != "home" {
-		return nil, nil, errors.New("inventory requires release, home, and at least one general package")
+	if !seen["compound/internal/release"] || !seen["compound/internal/home"] || len(packages) < 3 {
+		return nil, errors.New("inventory requires release, home, and at least one other package")
 	}
-	return phases[0].Packages, []string{phases[1].Packages[0], phases[2].Packages[0]}, nil
+	return phases, nil
 }
 
 func runGo(ctx context.Context, args []string, stdout, stderr io.Writer) error {

@@ -92,3 +92,33 @@ func TestFixedTestPhasesKeepInventoryFailureAndCancellation(t *testing.T) {
 		}
 	}
 }
+
+func TestFixedTestPhasesWithoutGeneralPackages(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		mode string
+		want []string
+	}{
+		{"test", []string{"compound/internal/work", "compound/internal/release", "compound/internal/home"}},
+		{"general-release", []string{"compound/internal/work", "compound/internal/release"}},
+		{"home", []string{"compound/internal/home"}},
+	} {
+		t.Run(tt.mode, func(t *testing.T) {
+			var got []string
+			err := runBatteryPhase(t.Context(), tt.mode, func(_ context.Context, args []string, out, _ io.Writer) error {
+				if args[0] == "list" {
+					fmt.Fprintln(out, "compound/internal/home\ncompound/internal/work\ncompound/internal/release")
+					return nil
+				}
+				if len(args) != 4 || !reflect.DeepEqual(args[:3], []string{"test", "-count=1", "-timeout=40m"}) {
+					t.Fatalf("isolated phase changed flags or overlaps packages: %v", args)
+				}
+				got = append(got, args[3])
+				return nil
+			}, io.Discard, io.Discard)
+			if err != nil || !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("calls=%v error=%v; want %v", got, err, tt.want)
+			}
+		})
+	}
+}

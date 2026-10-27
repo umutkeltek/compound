@@ -95,9 +95,10 @@ func TestCLIExplicitTestModeStillCoversTheWholeInventory(t *testing.T) {
 		t.Fatalf("explicit test mode: %v\n%s", err, out)
 	}
 	for _, want := range []string{
-		"testbattery: phase 1/3",
-		"testbattery: phase 2/3",
-		"testbattery: phase 3/3",
+		"testbattery: phase 1/4",
+		"testbattery: phase 2/4",
+		"testbattery: phase 3/4",
+		"testbattery: phase 4/4",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("explicit test mode lost %q: %s", want, out)

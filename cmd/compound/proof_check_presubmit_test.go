@@ -101,7 +101,7 @@ func TestProofCheckPresubmitDerivesGatesFromTheDiff(t *testing.T) {
 			t.Fatalf("step %s status=%s proof_ref=%s", step.Name, step.Status, step.ProofRef)
 		}
 	}
-	wantNames := []string{"go-build", "go-vet", "gofmt", "diff-check", "architecture-doctor", "go-test", "redact-public"}
+	wantNames := []string{"go-build", "go-vet", "gofmt", "diff-check", "architecture-doctor", "go-test", "go-test-work", "redact-public"}
 	if !reflect.DeepEqual(names, wantNames) {
 		t.Fatalf("steps = %v; want %v", names, wantNames)
 	}
@@ -111,7 +111,8 @@ func TestProofCheckPresubmitDerivesGatesFromTheDiff(t *testing.T) {
 		}
 	}
 	wantTests := map[string][]string{
-		"go-test": {"go", "test", "-short", "-count=1", "-timeout=30m", "compound/cmd/compound", "compound/internal/arch", "compound/internal/landlease", "compound/internal/work"},
+		"go-test":      {"go", "test", "-short", "-count=1", "-timeout=30m", "compound/cmd/compound", "compound/internal/arch", "compound/internal/landlease"},
+		"go-test-work": {"go", "test", "-short", "-count=1", "-timeout=30m", "compound/internal/work"},
 	}
 	if got := proofCheckPresubmitGoTests(report); !reflect.DeepEqual(got, wantTests) {
 		t.Fatalf("go-test runs = %v; want %v", got, wantTests)
@@ -119,7 +120,7 @@ func TestProofCheckPresubmitDerivesGatesFromTheDiff(t *testing.T) {
 	if diffCheck := report.Steps[3].Command; !reflect.DeepEqual(diffCheck, []string{"git", "diff", "--check", base + "...HEAD"}) {
 		t.Fatalf("diff-check = %v", diffCheck)
 	}
-	if !strings.HasPrefix(verdict, "presubmit: planned non_certifying=true scope=affected reason=diff packages=4 deferred=0 planned=7 total=7 out=") {
+	if !strings.HasPrefix(verdict, "presubmit: planned non_certifying=true scope=affected reason=diff packages=4 deferred=0 planned=8 total=8 out=") {
 		t.Fatalf("verdict line = %q", verdict)
 	}
 }
@@ -169,7 +170,13 @@ func TestProofCheckPresubmitRunsWholeModuleForModuleAndRemovedPackages(t *testin
 			if tc.name == "removed package" {
 				inventory = slices.DeleteFunc(inventory, func(pkg string) bool { return pkg == "compound/internal/policy" })
 			}
-			want := map[string][]string{"go-test": append([]string{"go", "test", "-short", "-count=1", "-timeout=30m"}, inventory...)}
+			general := slices.DeleteFunc(append([]string(nil), inventory...), func(pkg string) bool {
+				return pkg == "compound/internal/work"
+			})
+			want := map[string][]string{
+				"go-test":      append([]string{"go", "test", "-short", "-count=1", "-timeout=30m"}, general...),
+				"go-test-work": {"go", "test", "-short", "-count=1", "-timeout=30m", "compound/internal/work"},
+			}
 			if got := proofCheckPresubmitGoTests(report); !reflect.DeepEqual(got, want) {
 				t.Fatalf("go-test runs = %v; want %v", got, want)
 			}
@@ -264,11 +271,13 @@ func TestProofCheckPresubmitIsolatesSharedIOWithoutDroppingTests(t *testing.T) {
 		selector string
 		want     [][]string
 	}{
-		{"mixed", []string{home, core, release, cli}, "", [][]string{{cli, core}, {release}, {home}}},
+		{"mixed", []string{home, core, release, cli}, "", [][]string{{cli}, {core}, {release}, {home}}},
 		{"home-only", []string{home}, "", [][]string{{home}}},
 		{"release-only", []string{release}, "", [][]string{{release}}},
-		{"general-only", []string{core, cli}, "", [][]string{{cli, core}}},
+		{"work-only", []string{core}, "", [][]string{{core}}},
+		{"general-only", []string{cli}, "", [][]string{{cli}}},
 		{"selection-preserved", []string{home, cli}, "Selected", [][]string{{cli}, {home}}},
+		{"work-selection-preserved", []string{home, core, cli}, "Selected", [][]string{{cli}, {core}, {home}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
