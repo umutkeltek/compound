@@ -46,18 +46,20 @@ type probeContract struct {
 }
 
 type probeSelectionPlan struct {
-	Class         string
-	MatchedTopics []string
-	Groups        []probeGroupPlan
-	Revision      string
+	AddressedDefaultScope bool
+	Class                 string
+	MatchedTopics         []string
+	Groups                []probeGroupPlan
+	Revision              string
 }
 
 type probeGroupPlan struct {
-	Group    string
-	Root     string
-	Budget   int
-	Subtree  []string
-	topicSet map[string]bool
+	ExplicitScope bool
+	Group         string
+	Root          string
+	Budget        int
+	Subtree       []string
+	topicSet      map[string]bool
 }
 
 type probeGroupSelection struct {
@@ -216,7 +218,7 @@ func buildProbeSelectionPlan(homePath string, in Input, store probeTopicStore, v
 	if len(topics) == 0 && !explicit {
 		return nil, nil
 	}
-	matchedTopics := classifyProbeTopics(resolvedTaskContract(in).Intent, topics)
+	matchedTopics := classifyProbeTopics(memoryWorkQueryText(resolvedTaskContract(in).Intent), topics)
 	if len(matchedTopics) == 0 && !explicit {
 		return nil, nil
 	}
@@ -224,10 +226,10 @@ func buildProbeSelectionPlan(homePath string, in Input, store probeTopicStore, v
 	if !ok || len(class.Probes) == 0 {
 		return nil, nil
 	}
-	plan := &probeSelectionPlan{Class: class.Class, MatchedTopics: matchedTopics}
+	plan := &probeSelectionPlan{Class: class.Class, MatchedTopics: matchedTopics, AddressedDefaultScope: explicit && class.Class == registry.DefaultClass && len(memoryWorkAddresses(resolvedTaskContract(in).Intent)) > 0}
 	hasBuiltInTrigger := false
 	for _, probe := range class.Probes {
-		group := probeGroupPlan{Group: probe.Group, Budget: probe.Budget}
+		group := probeGroupPlan{Group: probe.Group, Budget: probe.Budget, ExplicitScope: plan.AddressedDefaultScope}
 		if root, resolved := resolveProbeTopic(topics, probe.Group); resolved {
 			group.Root = root
 			group.Subtree = view.TopicSubtree(root)
@@ -359,11 +361,12 @@ func probeSelectionRevision(registry probeContractRegistry, plan *probeSelection
 		Subtree []string `json:"subtree,omitempty"`
 	}
 	body := struct {
-		Registry      probeContractRegistry `json:"registry"`
-		Class         string                `json:"class"`
-		MatchedTopics []string              `json:"matched_topics,omitempty"`
-		Groups        []revisionGroup       `json:"groups"`
-	}{Registry: registry, Class: plan.Class, MatchedTopics: plan.MatchedTopics}
+		Registry              probeContractRegistry `json:"registry"`
+		AddressedDefaultScope bool                  `json:"addressed_default_scope,omitempty"`
+		Class                 string                `json:"class"`
+		MatchedTopics         []string              `json:"matched_topics,omitempty"`
+		Groups                []revisionGroup       `json:"groups"`
+	}{Registry: registry, Class: plan.Class, MatchedTopics: plan.MatchedTopics, AddressedDefaultScope: plan.AddressedDefaultScope}
 	for _, group := range plan.Groups {
 		body.Groups = append(body.Groups, revisionGroup{
 			Group:   group.Group,
@@ -396,7 +399,7 @@ func loadProbeGroupedRefsFromView(in Input, rule MemoryRule, semanticRanks map[s
 	for _, seed := range plan.MatchedTopics {
 		entities[memoryKey(seed)] = true
 	}
-	taskTokens := memoryTextTokens(resolvedTaskContract(in).Intent)
+	taskTokens := memoryTaskTokens(resolvedTaskContract(in).Intent)
 	claims := view.Claims()
 	claimByID := make(map[string]mem.Claim, len(claims))
 	for _, claim := range claims {
@@ -517,6 +520,9 @@ func probeClaimCandidate(in Input, rule MemoryRule, semanticRanks map[string]flo
 	if !productRecallFenceAllowsClaim(dependencies.ProductFence, claim) {
 		return probeMemoryCandidate{}, false, true, envelope.ExcludedRef{}
 	}
+	if reason := addressedWorkStatusExclusionReason(claim, entities, taskTokens, sem, group.ExplicitScope || strings.TrimSpace(in.Topic) != ""); reason != "" {
+		return probeMemoryCandidate{}, false, false, envelope.ExcludedRef{Ref: "claim://" + claim.ID, Reason: reason}
+	}
 	if baseRelevance > 0 {
 		if temperature := memoryTemperatureTerm(temps, claim.ID); temperature != 0 {
 			dependencies.AppliedTemperatures[claim.ID] = temperature
@@ -561,6 +567,9 @@ func probePositionCandidate(in Input, rule MemoryRule, semanticRanks map[string]
 	}
 	if !productRecallFenceAllowsClaim(dependencies.ProductFence, claim) {
 		return probeMemoryCandidate{}, false, true, envelope.ExcludedRef{}
+	}
+	if reason := addressedWorkStatusExclusionReason(claim, entities, taskTokens, sem, group.ExplicitScope || strings.TrimSpace(in.Topic) != ""); reason != "" {
+		return probeMemoryCandidate{}, false, false, envelope.ExcludedRef{Ref: "claim://" + claim.ID, Reason: reason}
 	}
 	ref := contextPositionRef{
 		Ref:        active.Ref,

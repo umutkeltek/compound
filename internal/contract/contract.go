@@ -2653,7 +2653,7 @@ func loadMemoryRefsFromView(in Input, rule MemoryRule, semanticRanks map[string]
 		productFence = dependencies.ProductFence
 	}
 	seedProductFenceEntity(entities, productFence)
-	taskTokens := memoryTextTokens(in.Task)
+	taskTokens := memoryTaskTokens(in.Task)
 	if len(entities) == 0 && len(taskTokens) == 0 {
 		return nil, nil, nil
 	}
@@ -2708,6 +2708,12 @@ func loadMemoryRefsFromView(in Input, rule MemoryRule, semanticRanks map[string]
 				Seq:    claim.Seq,
 				Rank:   relevanceRank,
 			})
+			continue
+		}
+		if reason := addressedWorkStatusExclusionReason(claim, entities, taskTokens, sem, topicSet != nil); reason != "" {
+			if relevanceRank > 0 {
+				excluded = append(excluded, contextMemoryRef{Ref: "claim://" + claim.ID, Reason: reason, Seq: claim.Seq, Rank: relevanceRank})
+			}
 			continue
 		}
 		rank := ambientMemoryRank(claim, rule, entities, taskTokens, sem, temps, selfEntities)
@@ -2814,7 +2820,7 @@ func BenchMemoryRank(homePath string, in Input, pol OrientationPolicy) (ranked [
 		present[claim.ID] = true
 	}
 	entities := memoryEntityKeys(in)
-	taskTokens := memoryTextTokens(in.Task)
+	taskTokens := memoryTaskTokens(in.Task)
 	if len(entities) == 0 && len(taskTokens) == 0 {
 		// Ledger is available but the task carries no usable recall signal; nothing ranks.
 		return nil, present, true, nil
@@ -2840,6 +2846,9 @@ func BenchMemoryRank(homePath string, in Input, pol OrientationPolicy) (ranked [
 		}
 		relevanceRank := memoryRelevanceRank(claim, entities, taskTokens, 0, temps)
 		if memoryPolicyExclusionReason(claim, rule, relevanceRank, selfEntities) != "" {
+			continue
+		}
+		if addressedWorkStatusExclusionReason(claim, entities, taskTokens, 0, topicSet != nil) != "" {
 			continue
 		}
 		rank := ambientMemoryRank(claim, rule, entities, taskTokens, 0, temps, selfEntities)
@@ -2913,7 +2922,7 @@ func loadPositionRefsFromView(in Input, rule MemoryRule, semanticRanks map[strin
 	}
 	entities := memoryEntityKeys(in)
 	seedProductFenceEntity(entities, productFence)
-	taskTokens := memoryTextTokens(in.Task)
+	taskTokens := memoryTaskTokens(in.Task)
 	if len(entities) == 0 && len(taskTokens) == 0 {
 		return nil, nil, nil
 	}
@@ -2994,6 +3003,12 @@ func loadPositionRefsFromView(in Input, rule MemoryRule, semanticRanks map[strin
 				Seq:    activeClaim.Seq,
 				Rank:   relevanceRank,
 			})
+			continue
+		}
+		if reason := addressedWorkStatusExclusionReason(activeClaim, entities, taskTokens, sem, topicSet != nil); reason != "" {
+			if relevanceRank > 0 {
+				excluded = append(excluded, contextPositionRef{Ref: activePosition.Ref, Reason: reason, Seq: position.AsOfSeq, Rank: relevanceRank})
+			}
 			continue
 		}
 		rank := ambientMemoryRank(activeClaim, rule, entities, taskTokens, sem, nil, selfEntities)
@@ -3246,6 +3261,12 @@ func memoryTaskOverlapScore(claim mem.Claim, taskTokens map[string]bool) float64
 	}
 	score := 0.0
 	for token := range taskTokens {
+		if isMemoryWorkAddress(token) {
+			if memoryClaimMentionsWork(claim, token) {
+				score++
+			}
+			continue
+		}
 		if claimTokens[token] {
 			score++
 		}
@@ -3508,6 +3529,10 @@ func decisionTaskOverlapScore(claim mem.Claim, task string, taskTokens map[strin
 }
 
 func taskMentionsDecisionIdentity(task, decisionID string) bool {
+	return textMentionsIdentity(task, decisionID)
+}
+
+func textMentionsIdentity(task, decisionID string) bool {
 	task = strings.ToLower(task)
 	decisionID = strings.ToLower(strings.TrimSpace(decisionID))
 	if task == "" || decisionID == "" {

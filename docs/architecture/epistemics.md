@@ -37,3 +37,21 @@ Admission precedence is fixed: **global/per-class halt → editable surface → 
 Known open gaps stay packet-sized: expectation claims outside product loops belong to the EffectiveContract stage; directional generic/specific recall belongs to the directional graph packet; full scope lattice content belongs to the later scope-lattice work. These are not separate doctrine engines.
 
 The matching importable CapabilityGraph doctrine nodes live in `fixtures/skills/epistemics-doctrine.yaml`. They use the existing `compound.skill_manifest.v0.1` adapter and `kind: doctrine`, so they can enter the graph through the same reviewed capability import path as other capability rows.
+
+### Addressed-work recall scope
+
+An explicit Work address is an opaque retrieval anchor; its identifier fragments
+do not request product or system topics. For an addressed-work query, another
+subject's operational status needs a matching current-workspace or named subject,
+an exact target Work reference in meaning/provenance, a semantic signal, or
+explicitly selected topic scope. A configured default probe contract also supplies
+deliberate scope; a built-in classifier matching a generic task word does not.
+The same eligibility check runs before a probe's base rank can admit a status.
+
+This narrows context selection, never marks the status false, stale, or retired.
+Reusable facts, constraints and preferences retain their lexical eligibility.
+Ordinary queries, semantic scores, and visibility/policy gates retain their existing
+behavior. Withheld positions retain existing identity/topic-only omission handling:
+the fold does not carry the visibility/canon fields needed for a new typed decision.
+Opaque Work fragments cannot manufacture that topic match. Explicit topic inspection
+and historical ledger drilldown remain available.
