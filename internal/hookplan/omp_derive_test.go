@@ -38,6 +38,10 @@ func TestOmpShimSourceCarriesTranscriptPathContract(t *testing.T) {
 		`slugFromCwd`,
 		`transcript_path`,
 		`.omp/agent/sessions`,
+		// Native context takes priority over compatibility disk discovery.
+		`getSessionId`,
+		`getSessionFile`,
+		`sessionFixture(context)`,
 	}
 	for _, needle := range required {
 		if !strings.Contains(ompHookShimSource, needle) {

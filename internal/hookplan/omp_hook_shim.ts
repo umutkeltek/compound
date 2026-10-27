@@ -25,12 +25,19 @@
  * Switchback may load this exact owned shim explicitly.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, openSync, readSync, closeSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 
-/** Structural slice of omp's HookAPI this shim consumes. */
+/** Structural slice of OMP's (event, ctx) API; no installed-package dependency. */
+interface CompoundHookContext {
+	cwd?: string;
+	sessionManager?: {
+		getSessionId?: () => unknown;
+		getSessionFile?: () => unknown;
+	};
+}
 interface CompoundHookApi {
-	on(event: string, handler: (payload?: unknown) => unknown): void;
+	on(event: string, handler: (payload?: unknown, ctx?: CompoundHookContext) => unknown): void;
 }
 
 interface ToolCallPayload {
@@ -65,20 +72,9 @@ const COMPOUND = `${homedir()}/.local/bin/compound`;
 const HARNESS = "oh_my_pi";
 const CALL_TIMEOUT_MS = 8_000;
 
-// Session-file discovery (slice 3). omp DOES persist session files at
-// ~/.omp/agent/sessions/<cwd-slug>/<ISO>_<uuid>.jsonl where the second
-// line of every file is `{"type":"session","version":3,"id":"<uuid>",
-// "cwd":"<abs>"}`. We pick the newest file whose line-2 cwd matches the
-// current process and forward its absolute path as `transcript_path` on
-// every call. The Go-side mirror lives in internal/hookplan/omp_derive.go
-// and is the testable companion; the two MUST stay in lockstep.
-//
-// When discovery fails (no matching session file) we OMIT transcript_path
-// rather than send a wrong path -- scanSessionTranscript would mistake a
-// neighbouring agent's log for ours and inflate skills_fired with phantom
-// evidence. session_id keeps the synthetic value as a fallback; if omp's
-// embedded id is recoverable we prefer it so SessionStart/SessionEnd share
-// the same correlation key.
+// Legacy discovery is only for callers without OMP's native session API.
+// Its Go-side compatibility mirror lives in omp_derive.go. Native contexts
+// never scan neighbouring files: a session's own transcript may still be lazy.
 // Same bound as OmpDeriveSession on the Go side (internal/hookplan/omp_derive.go):
 // when a cwd slug holds thousands of stale session files, only header-read
 // the newest OMP_DERIVE_MAX_PROBE by mtime. The contract still returns the
@@ -121,14 +117,8 @@ function deriveOmpSession(homedirValue: string, cwd: string): { sessionId: strin
 	let newestMtime = 0;
 	let newestEmbeddedId = "";
 	for (const c of top) {
-		let head = "";
-		try {
-			const buf = readFileSync(c.path, { encoding: "utf-8", flag: "r" });
-			head = buf.slice(0, 1024);
-		} catch { continue; }
-		const lines = head.split("\n");
-		const headerLine = lines.find((ln) => ln.trim().length > 0 && ln.includes('"type":"session"')) ?? "";
-		const headerProbe = parseSessionHeader(headerLine);
+		let headerProbe: { id: string; cwd: string } | null;
+		try { headerProbe = readSessionHeader(c.path); } catch { continue; }
 		if (!headerProbe) continue;
 		if (headerProbe.cwd !== cwd) continue;
 		if (c.mtime <= newestMtime) continue;
@@ -162,14 +152,52 @@ function parseSessionHeader(line: string): { id: string; cwd: string } | null {
 	}
 }
 
-const discovered = deriveOmpSession(homedir(), process.cwd());
-const sessionId = discovered.sessionId;
-const sessionFixture: { session_id: string; cwd: string; transcript_path?: string } = {
-	session_id: sessionId,
-	cwd: process.cwd(),
-};
-if (discovered.transcriptPath) {
-	sessionFixture.transcript_path = discovered.transcriptPath;
+// Bound I/O before allocation; transcripts can grow throughout a session.
+function readSessionHeader(path: string): { id: string; cwd: string } | null {
+	const fd = openSync(path, "r");
+	try {
+		const buffer = Buffer.alloc(4_096);
+		const size = readSync(fd, buffer, 0, buffer.length, 0);
+		for (const line of buffer.toString("utf8", 0, size).split("\n")) {
+			const header = parseSessionHeader(line);
+			if (header) return header;
+		}
+		return null;
+	} finally { closeSync(fd); }
+}
+
+type SessionFixture = { session_id: string; cwd: string; transcript_path?: string };
+const fallbackSessionId = "omp-" + process.pid + "-" + Date.now().toString(36);
+
+// Resolve every boundary: native initialization, switches, and forks can all
+// happen after the hook module was loaded.
+function sessionFixture(ctx?: CompoundHookContext): SessionFixture {
+	const cwd = typeof ctx?.cwd === "string" && ctx.cwd.trim() ? ctx.cwd : process.cwd();
+	const manager = ctx?.sessionManager;
+	if (manager !== undefined) {
+		const fixture: SessionFixture = { session_id: fallbackSessionId, cwd };
+		try {
+			const id = typeof manager?.getSessionId === "function" ? manager.getSessionId() : undefined;
+			if (typeof id !== "string" || !id.trim()) return fixture;
+			fixture.session_id = id;
+			const path = manager.getSessionFile?.();
+			if (typeof path === "string" && path && existsSync(path) && statSync(path).isFile()) {
+				const header = readSessionHeader(path);
+				if (header?.id === id && header.cwd === cwd) fixture.transcript_path = path;
+			}
+		} catch {
+			// A lazy/moving file does not erase an obtained native ID or
+			// authorize borrowing another same-cwd session.
+		}
+		return fixture;
+	}
+	const discovered = deriveOmpSession(homedir(), cwd);
+	const fixture: SessionFixture = {
+		session_id: discovered.transcriptPath ? discovered.sessionId : fallbackSessionId,
+		cwd,
+	};
+	if (discovered.transcriptPath) fixture.transcript_path = discovered.transcriptPath;
+	return fixture;
 }
 
 function callCompound(verb: string, fixture: Record<string, unknown>): CompoundHookDocument | null {
@@ -235,25 +263,33 @@ export default function compoundHook(pi: CompoundHookApi): void {
 	// omp gives session_start no message channel, so keep its context (the
 	// session summary and the door map) and prepend it to the first message.
 	let startContext = "";
-	pi.on("session_start", () => {
-		const ctx = callCompound("session-start", sessionFixture)?.hookSpecificOutput?.additionalContext;
+	let startContextSessionId = "";
+	let startContextCwd = "";
+	pi.on("session_start", (_payload, context) => {
+		const fixture = sessionFixture(context);
+		const ctx = callCompound("session-start", fixture)?.hookSpecificOutput?.additionalContext;
 		startContext = typeof ctx === "string" ? ctx.trim() : "";
+		startContextSessionId = fixture.session_id;
+		startContextCwd = fixture.cwd;
 	});
 
-	pi.on("before_agent_start", (payload) => {
+	pi.on("before_agent_start", (payload, context) => {
 		const event = (payload ?? {}) as BeforeAgentStartPayload;
-		const doc = callCompound("user-prompt-submit", { ...sessionFixture, prompt: event.prompt ?? "" });
+		const fixture = sessionFixture(context);
+		const doc = callCompound("user-prompt-submit", { ...fixture, prompt: event.prompt ?? "" });
 		const ctx = doc?.hookSpecificOutput?.additionalContext;
-		const parts = [startContext, typeof ctx === "string" ? ctx : ""].filter((part) => part.length > 0);
+		const parts = [fixture.session_id === startContextSessionId && fixture.cwd === startContextCwd ? startContext : "", typeof ctx === "string" ? ctx : ""].filter((part) => part.length > 0);
 		startContext = "";
+		startContextSessionId = "";
+		startContextCwd = "";
 		if (parts.length === 0) return undefined;
 		return { message: parts.join("\n\n") };
 	});
 
-	pi.on("tool_call", (payload) => {
+	pi.on("tool_call", (payload, context) => {
 		const event = (payload ?? {}) as ToolCallPayload;
 		const doc = callCompound("pre-tool-use", {
-			...sessionFixture,
+			...sessionFixture(context),
 			tool_name: event.toolName ?? "unknown",
 			tool_use_id: event.toolCallId ?? "",
 			tool_input: event.input ?? {},
@@ -281,16 +317,16 @@ export default function compoundHook(pi: CompoundHookApi): void {
 		}
 		return undefined;
 	});
-	pi.on("tool_result", (payload) => {
+	pi.on("tool_result", (payload, context) => {
 		const event = (payload ?? {}) as ToolResultPayload;
 		callCompound("post-tool-use", {
-			...sessionFixture,
+			...sessionFixture(context),
 			tool_name: event.toolName ?? "unknown",
 			tool_use_id: event.toolCallId ?? "",
 		});
 	});
 
-	pi.on("session_shutdown", () => {
-		callCompound("session-end", sessionFixture);
+	pi.on("session_shutdown", (_payload, context) => {
+		callCompound("session-end", sessionFixture(context));
 	});
 }

@@ -998,6 +998,14 @@ H preserves the same B/H evidence and requires a fresh main-SHA guard.
 
 ## 3. Hooks are clients, not brains
 
+The OMP shim reads each boundary's native HookContext sessionManager identity and
+transcript path with its cwd. A native ID remains authoritative while the file is
+lazy; an absent or mismatched transcript is omitted, never replaced by a newer
+same-cwd session. Header validation reads at most 4 KiB. Switches and forks resolve
+at the next event, and cached start context never crosses session IDs. Callers
+without the native API retain bounded compatibility discovery; that fallback does
+not prove that a native receiver was addressed.
+
 > Hooks are clients. compound is authority.
 
 Hook event names are adapter vocabulary, not semantic authority. The stable input is a lifecycle intention such
