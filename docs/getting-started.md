@@ -375,6 +375,23 @@ The managed interactive default observes actions, not blocks them.
 [Harness Wiring](harness-wiring.md) covers OpenCode, isolated guarded profiles
 and adapter limitations. Listed or installed does not mean execution-ready.
 
+The hook check verifies registration, not model-executor readiness. Governed
+model execution also needs your chosen harness installed and authenticated,
+Compound's model-route metadata for that executor, and an authorized saved
+selection on the work item. Inspect the route setup without launching a model:
+
+```sh
+compound route model-capabilities --json
+compound route lane-projection --harness codex --json
+```
+
+Use `--harness claude-code` instead if that is your chosen harness. A fresh home
+can report missing `registries/model-capabilities.yaml`; repeating hook
+installation will not create it. Follow [First model route](harness-wiring.md#first-model-route)
+to enroll your existing executor configuration. If it is not configured yet,
+the [local-command demonstration](#2-orient-on-your-repo) remains available;
+it does not run a model.
+
 Start your harness in your project and give it a bounded goal, for example:
 
 > Inspect this project's tests and identify one reproducible maintenance issue.
@@ -389,6 +406,11 @@ selection before execution. Compound does not promise that every harness turns
 arbitrary prose into an admitted task. The [explicit lifecycle demonstration](#2-orient-on-your-repo)
 below shows those mechanics for integrators; it is not a request to make users
 copy IDs every session.
+
+Before launching, have the harness or setup helper run the work-bound
+[readiness check](harness-wiring.md#first-model-route) for the claimed work,
+chosen harness and real project directory. It does not launch a model or prove
+that a model request will succeed.
 
 ## Daily use and recovery
 
@@ -427,6 +449,8 @@ does not authorize deleting a checkout. Retirement uses exact reviewed plans.
 
 The remaining walkthrough teaches the underlying objects using a local command,
 without a model call. Its outcome is inspectable history, not proof of learning.
+Completing it does not enroll a model route or prove that an agent can execute
+the same goal.
 
 ## 2. Orient on YOUR repo
 

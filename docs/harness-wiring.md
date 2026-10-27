@@ -410,6 +410,50 @@ mutates your harness.
 
 ## Governed execution and supervised sessions
 
+### First model route
+
+Managed hook registration and governed model execution have separate setup.
+A healthy fresh home can have working hooks but no model-route authority.
+Your chosen harness must already be installed and authenticated; Compound also
+needs metadata matching its executable, provider/model route, permission posture,
+and any declared capacity source.
+
+Inspect the current authority without contacting a provider:
+
+```sh
+compound route model-capabilities --json
+compound route lane-projection --harness codex --json
+```
+
+For Claude Code, use `--harness claude-code`. If the authority is absent, these
+commands report the missing `registries/model-capabilities.yaml`. Use your
+setup's existing model-capability manifest for the executor you intend to run:
+
+```sh
+compound route import-model-capabilities /absolute/path/to/your-model-capabilities.yaml
+```
+
+Importing enrolls that configuration in Compound's model-router authority; it
+does not install a harness, authenticate an account, or call a model. The
+[synthetic manifest](../fixtures/route/model-capabilities-tuple.yaml) shows the
+format for integrators; it is not a working provider configuration. If you do
+not have a manifest for your actual executor, stop model setup here and use the
+local-command demonstration in [Getting Started](getting-started.md#2-orient-on-your-repo)
+until that configuration is available. Do not import a synthetic fixture to
+make readiness pass.
+
+Once the harness has created and claimed the bounded task and saved its
+authorized executor selection, check that work's configuration and context:
+
+```sh
+compound harness readiness --harness codex --workspace /absolute/project --work <claimed-work-id> --json
+```
+
+Use the same runtime home, chosen harness and real project directory as the
+claimed work. Resolve the reported prerequisites before launch. This is a
+read-only readiness check, not a provider authentication test or permission to
+execute. Without `--work`, task-context readiness remains unproven.
+
 The registry says what a harness can do; `compound://registries/model-router`
 owns the executable lane tuple used to run it. A tuple binds the harness id,
 wrapper aliases, requested provider route, optional `provider_route_kind`,
