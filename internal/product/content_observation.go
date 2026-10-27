@@ -90,8 +90,14 @@ func recordBoundContentObservation(homePath, id string, req ContentPostTransport
 	if d.Outbound.Status == "failed" {
 		return d, fmt.Errorf("observation conflicts with terminal failed attempt")
 	}
-	if d.Schedule != nil && obs.ScheduleID != d.Schedule.ScheduleID {
-		return d, fmt.Errorf("observation schedule identity changed")
+	if d.Schedule != nil {
+		// Some providers publish the same object they previously scheduled.
+		// An omitted schedule ID is safe only when the positive publication
+		// names that exact object; different IDs still need an explicit link.
+		sameObjectPublication := obs.Status == "published" && obs.ScheduleID == "" && obs.RemoteID == d.Schedule.ScheduleID
+		if obs.ScheduleID != d.Schedule.ScheduleID && !sameObjectPublication {
+			return d, fmt.Errorf("observation schedule identity changed")
+		}
 	}
 	store, err := home.NewArtifactStore(homePath)
 	if err != nil {

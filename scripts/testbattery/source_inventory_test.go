@@ -255,7 +255,8 @@ func TestSourceGateUsesInventoryProjectionsAndStopsOnDiscoveryFailure(t *testing
 			switch mode {
 			case "test":
 				want = [][]string{
-					{"test", "-count=1", "-timeout=40m", "compound/internal/work", "compound/onlytests"},
+					{"test", "-count=1", "-timeout=40m", "compound/onlytests"},
+					{"test", "-count=1", "-timeout=40m", "compound/internal/work"},
 					{"test", "-count=1", "-timeout=40m", "compound/internal/release"},
 					{"test", "-count=1", "-timeout=40m", "compound/internal/home"},
 				}
@@ -338,7 +339,7 @@ func TestSealedSourceGatesRejectSourceCreatedByTests(t *testing.T) {
 		if err == nil || !strings.Contains(out, "source snapshot drift") || strings.Contains(out, "undefined: MissingUntestedHelper") {
 			t.Fatalf("%s did not refuse changed source inventory: error=%v\n%s", mode, err, out)
 		}
-		if mode == "test" && !strings.Contains(out, "testbattery: phase 3/3") {
+		if mode == "test" && !strings.Contains(out, "testbattery: phase 4/4") {
 			t.Fatalf("drift control failed before the real test ran: %s", out)
 		}
 	}

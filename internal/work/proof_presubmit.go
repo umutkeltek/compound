@@ -248,7 +248,7 @@ func ProofCheckPresubmitGates(base, head, compoundExe string, plan proofscope.Pr
 				name += "-" + phase.Name
 				ref += "-" + phase.Name
 			}
-			command := []string{"go", "test", "-short", ProofCheckPresubmitTestTimeout}
+			command := []string{"go", "test", "-short", "-count=1", ProofCheckPresubmitTestTimeout}
 			if run.Run != "" {
 				command = append(command, "-run", run.Run)
 			}

@@ -132,7 +132,7 @@ func discoverSourcePackages(ctx context.Context, stderr io.Writer) (result sourc
 	}
 	sort.Strings(packages)
 	inventory := strings.Join(packages, "\n") + "\n"
-	if _, _, err := partitionPackages(inventory); err != nil {
+	if _, err := partitionPackages(inventory); err != nil {
 		return result, err
 	}
 	sort.Strings(buildPackages)

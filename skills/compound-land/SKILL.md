@@ -101,14 +101,20 @@ full SHA or not an ancestor of HEAD). Commit first: the scope is derived from th
 commits, and the build and vet gates run `go run ./scripts/testbattery build|vet --source-head HEAD_SHA`,
 which refuse a dirty tree. Gates, in order: build and vet of the Git source inventory, `gofmt` on
 tracked `*.go`, `git diff --check BASE...HEAD`, `architecture doctor --strict`,
-`go test -short -timeout=30m <affected packages>` (plus the restricted CLI run below),
+`go test -short -count=1 -timeout=30m <affected packages>` (plus the restricted CLI run below),
 `console-tsc` when `console/` changed, and `redact-public` of the changed files. The `--out` JSON
 carries the derived scope under `presubmit.plan`.
 
 Then the redact gate (§5), unpiped, as its own command; the presubmit's `redact-public` step does
 not replace it. Read each verdict; exit `0` is the only green.
 
-The selected Go tests use the same package phases as the canonical runner: general packages, then Release, then Home. Release and Home each run alone when selected. Release exercises machine-wide sync barriers; separating the shared IO owners keeps checkpoint and scale assertions meaningful. Every selected package and test filter remains in the plan, with the same 30-minute package deadline.
+Presubmit forces fresh test execution with `-count=1`; Go still reuses compiled packages.
+The everyday `--dev` lane keeps its test-result cache. Both non-certifying modes retain a
+completed failed gate's full output at `<out>.gates/<gate>.log` before starting the next
+gate, so a later interruption does not erase that failure evidence. These logs are
+diagnostics; an interrupted run without its final report has not passed.
+
+The selected Go tests use the same package phases as the canonical runner: general packages, then CLI, then Work, then Release, then Home. CLI, Work, Release, and Home each run alone when selected. CLI and Work have substantial serial workloads, and Release exercises machine-wide sync barriers; separating these shared IO owners keeps package deadlines and checkpoint scale assertions meaningful. Every selected package and test filter remains in the plan, with the same 30-minute package deadline.
 
 **Affected packages** — `--presubmit` derives them from the diff with `internal/proofscope`, never
 from memory. The rule it applies:

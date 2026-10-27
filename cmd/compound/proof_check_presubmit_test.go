@@ -101,7 +101,7 @@ func TestProofCheckPresubmitDerivesGatesFromTheDiff(t *testing.T) {
 			t.Fatalf("step %s status=%s proof_ref=%s", step.Name, step.Status, step.ProofRef)
 		}
 	}
-	wantNames := []string{"go-build", "go-vet", "gofmt", "diff-check", "architecture-doctor", "go-test", "redact-public"}
+	wantNames := []string{"go-build", "go-vet", "gofmt", "diff-check", "architecture-doctor", "go-test", "go-test-cli", "go-test-work", "redact-public"}
 	if !reflect.DeepEqual(names, wantNames) {
 		t.Fatalf("steps = %v; want %v", names, wantNames)
 	}
@@ -111,7 +111,9 @@ func TestProofCheckPresubmitDerivesGatesFromTheDiff(t *testing.T) {
 		}
 	}
 	wantTests := map[string][]string{
-		"go-test": {"go", "test", "-short", "-timeout=30m", "compound/cmd/compound", "compound/internal/arch", "compound/internal/landlease", "compound/internal/work"},
+		"go-test":      {"go", "test", "-short", "-count=1", "-timeout=30m", "compound/internal/arch", "compound/internal/landlease"},
+		"go-test-cli":  {"go", "test", "-short", "-count=1", "-timeout=30m", "compound/cmd/compound"},
+		"go-test-work": {"go", "test", "-short", "-count=1", "-timeout=30m", "compound/internal/work"},
 	}
 	if got := proofCheckPresubmitGoTests(report); !reflect.DeepEqual(got, wantTests) {
 		t.Fatalf("go-test runs = %v; want %v", got, wantTests)
@@ -119,7 +121,7 @@ func TestProofCheckPresubmitDerivesGatesFromTheDiff(t *testing.T) {
 	if diffCheck := report.Steps[3].Command; !reflect.DeepEqual(diffCheck, []string{"git", "diff", "--check", base + "...HEAD"}) {
 		t.Fatalf("diff-check = %v", diffCheck)
 	}
-	if !strings.HasPrefix(verdict, "presubmit: planned non_certifying=true scope=affected reason=diff packages=4 deferred=0 planned=7 total=7 out=") {
+	if !strings.HasPrefix(verdict, "presubmit: planned non_certifying=true scope=affected reason=diff packages=4 deferred=0 planned=9 total=9 out=") {
 		t.Fatalf("verdict line = %q", verdict)
 	}
 }
@@ -132,8 +134,8 @@ func TestProofCheckPresubmitDocsOnlyRunsDoctrineReaders(t *testing.T) {
 
 	report, verdict := proofCheckPresubmitDryRun(t, repo, base)
 	wantTests := map[string][]string{
-		"go-test":             {"go", "test", "-short", "-timeout=30m", "compound/internal/arch"},
-		"go-test-cli-readers": {"go", "test", "-short", "-timeout=30m", "-run", proofscope.PresubmitCLIReaders, "compound/cmd/compound"},
+		"go-test":                 {"go", "test", "-short", "-count=1", "-timeout=30m", "compound/internal/arch"},
+		"go-test-cli-readers-cli": {"go", "test", "-short", "-count=1", "-timeout=30m", "-run", proofscope.PresubmitCLIReaders, "compound/cmd/compound"},
 	}
 	if got := proofCheckPresubmitGoTests(report); !reflect.DeepEqual(got, wantTests) {
 		t.Fatalf("go-test runs = %v; want %v", got, wantTests)
@@ -169,7 +171,14 @@ func TestProofCheckPresubmitRunsWholeModuleForModuleAndRemovedPackages(t *testin
 			if tc.name == "removed package" {
 				inventory = slices.DeleteFunc(inventory, func(pkg string) bool { return pkg == "compound/internal/policy" })
 			}
-			want := map[string][]string{"go-test": append([]string{"go", "test", "-short", "-timeout=30m"}, inventory...)}
+			general := slices.DeleteFunc(append([]string(nil), inventory...), func(pkg string) bool {
+				return pkg == "compound/internal/work" || pkg == "compound/cmd/compound"
+			})
+			want := map[string][]string{
+				"go-test":      append([]string{"go", "test", "-short", "-count=1", "-timeout=30m"}, general...),
+				"go-test-cli":  {"go", "test", "-short", "-count=1", "-timeout=30m", "compound/cmd/compound"},
+				"go-test-work": {"go", "test", "-short", "-count=1", "-timeout=30m", "compound/internal/work"},
+			}
 			if got := proofCheckPresubmitGoTests(report); !reflect.DeepEqual(got, want) {
 				t.Fatalf("go-test runs = %v; want %v", got, want)
 			}
@@ -258,17 +267,21 @@ func TestProofCheckPresubmitIsolatesSharedIOWithoutDroppingTests(t *testing.T) {
 	const release = "compound/internal/release"
 	const cli = "compound/cmd/compound"
 	const core = "compound/internal/work"
+	const general = "compound/internal/arch"
 	tests := []struct {
 		name     string
 		packages []string
 		selector string
 		want     [][]string
 	}{
-		{"mixed", []string{home, core, release, cli}, "", [][]string{{cli, core}, {release}, {home}}},
+		{"mixed", []string{home, core, release, cli, general}, "", [][]string{{general}, {cli}, {core}, {release}, {home}}},
 		{"home-only", []string{home}, "", [][]string{{home}}},
 		{"release-only", []string{release}, "", [][]string{{release}}},
-		{"general-only", []string{core, cli}, "", [][]string{{cli, core}}},
+		{"work-only", []string{core}, "", [][]string{{core}}},
+		{"cli-only", []string{cli}, "", [][]string{{cli}}},
+		{"general-only", []string{general}, "", [][]string{{general}}},
 		{"selection-preserved", []string{home, cli}, "Selected", [][]string{{cli}, {home}}},
+		{"work-selection-preserved", []string{home, core, cli}, "Selected", [][]string{{cli}, {core}, {home}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -282,7 +295,7 @@ func TestProofCheckPresubmitIsolatesSharedIOWithoutDroppingTests(t *testing.T) {
 			}
 			var want [][]string
 			for _, packages := range tt.want {
-				command := []string{"go", "test", "-short", "-timeout=30m"}
+				command := []string{"go", "test", "-short", "-count=1", "-timeout=30m"}
 				if tt.selector != "" {
 					command = append(command, "-run", tt.selector)
 				}
