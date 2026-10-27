@@ -145,7 +145,7 @@ func classifyToolAction(request ToolActionRequest, cfg Config) ActionClassificat
 	case isMemoryTool(tool):
 		classification.Domain = ActionDomainMemory
 		classification.TargetKind = "memory"
-		classification.RequiredSink = memorySink(operation)
+		classification.RequiredSink = memorySink(tool, operation)
 		classification.MutationClass = "local_reversible"
 		classification.Reversibility = "manual"
 		classification.BlastRadius = "memory"
@@ -617,6 +617,18 @@ func isMemoryTool(tool string) bool {
 		strings.Contains(tool, "gbrain") || strings.Contains(tool, "candidate.promote")
 }
 
+// isRentedMemoryEngineTool recognizes the RENTED memory engine surface. Its
+// writes land in the engine's own store; the engine is a bridge/index and never
+// authority (see the MemoryEngine contract and decision
+// d-gate-gbrain-corpus-evidence-2026-07-11: gbrain corpus enters Compound
+// through the distiller/candidate door only, never ambient).
+//
+// The check is on the TOOL NAME, not the verb, because ownership is a property
+// of the surface, not of the word the surface happens to use.
+func isRentedMemoryEngineTool(tool string) bool {
+	return strings.Contains(strings.ToLower(tool), "gbrain")
+}
+
 func isSecretTool(tool string) bool {
 	return containsAnyMonitor(tool, "secret", "credential", "keychain", "vault", "token.read", "password")
 }
@@ -839,11 +851,84 @@ func actionLooksReadOnly(operation string) bool {
 	return containsAnyMonitor(operation, "read", "get", "list", "search", "query", "fetch", "inspect", "status", "view")
 }
 
-func memorySink(operation string) string {
-	if containsAnyMonitor(operation, "promote", "authority", "commit", "canon") {
-		return "memory_authority"
+// compoundMemoryAuthorityVerbs are the verbs that make a COMPOUND-NATIVE memory
+// operation an AUTHORITY write -- it changes current truth (a promoted Claim,
+// a canonicalized position), not a reviewable candidate.
+//
+// The set is closed and explicit on purpose. The previous rule was the
+// inverse: an operation was an authority write only when its name happened to
+// mention promote/authority/commit/canon, and EVERYTHING else took the
+// permissive candidate sink. That made the DENIAL depend on the spelling of
+// the verb -- the same authority effect was reachable as "adjudicate",
+// "decide", "apply", "persist", and "store", so a source allowed only
+// memory_candidate could drive an authority write by picking a different word.
+//
+// Fail closed instead: within the compound-native memory surface, an
+// operation that is not on this list takes the STRICT sink. A new memory verb
+// is therefore refused against authority rather than silently admitted as a
+// candidate write, and widening the permissive door is an explicit, reviewable
+// edit to this list.
+//
+// "candidate", "note", and "extract" are here because they produce a PARKED,
+// reviewable item that no reader treats as current truth until an operator
+// adjudicates it. "promote_candidate" is here for the same reason: it names
+// the candidate it promotes FROM, and the actual authority write is the
+// separate promotion door.
+var compoundMemoryAuthorityVerbs = map[string]bool{
+	"promote":           true,
+	"authority":         true,
+	"commit":            true,
+	"canon":             true,
+	"canonicalize":      true,
+	"set_canonical":     true,
+	"adjudicate":        true,
+	"decide":            true,
+	"apply":             true,
+	"persist":           true,
+	"store":             true,
+	"memory_promote":    true,
+	"promote_candidate": true,
+	"authority_commit":  true,
+}
+
+// candidateOnlyMemoryVerbs are the COMPOUND-NATIVE memory verbs that provably
+// write only a CANDIDATE. They take the permissive sink.
+var candidateOnlyMemoryVerbs = map[string]bool{
+	"candidate": true,
+	"note":      true,
+	"extract":   true,
+}
+
+// memorySink names the sink a memory operation must be allowed to reach.
+//
+// There are TWO memory surfaces and they are governed differently.
+//
+// COMPOUND-NATIVE memory (memory.*, memory_*, candidate.promote) owns the
+// authority memory. There, fail closed: only a verb on the closed
+// candidate-only list takes the permissive sink; every other compound-native
+// memory verb is an authority write.
+//
+// The RENTED memory engine (gbrain) is NOT Compound authority memory. Its
+// writes land in the engine's own store, and its corpus enters Compound only
+// through the distiller/candidate door (decision
+// d-gate-gbrain-corpus-evidence-2026-07-11). So every rented-engine write
+// takes the candidate sink -- which is also what the live 89-tool gbrain
+// surface already resolves to, so this pins the existing behavior instead of
+// changing it.
+//
+// Before this split, the rented engine's spelling decided the sink: a gbrain
+// verb containing "promote" took the AUTHORITY sink while every other gbrain
+// verb took the candidate sink. That was the engine's WORD talking about
+// Compound's authority, which is precisely the confusion the split removes.
+func memorySink(tool, operation string) string {
+	op := strings.ToLower(strings.TrimSpace(operation))
+	if isRentedMemoryEngineTool(tool) {
+		return "memory_candidate"
 	}
-	return "memory_candidate"
+	if candidateOnlyMemoryVerbs[op] {
+		return "memory_candidate"
+	}
+	return "memory_authority"
 }
 
 func containsAnyMonitor(value string, needles ...string) bool {
