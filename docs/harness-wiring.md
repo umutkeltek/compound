@@ -442,8 +442,8 @@ local-command demonstration in [Getting Started](getting-started.md#2-orient-on-
 until that configuration is available. Do not import a synthetic fixture to
 make readiness pass.
 
-Once the harness has created and claimed the bounded task and saved its
-authorized executor selection, check that work's configuration and context:
+Once the harness has created and claimed the bounded task, check that work's
+context and the intended executor's configuration:
 
 ```sh
 compound harness readiness --harness codex --workspace /absolute/project --work <claimed-work-id> --json
