@@ -377,8 +377,8 @@ and adapter limitations. Listed or installed does not mean execution-ready.
 
 The hook check verifies registration, not model-executor readiness. Governed
 model execution also needs your chosen harness installed and authenticated,
-Compound's model-route metadata for that executor, and an authorized saved
-selection on the work item. Inspect the route setup without launching a model:
+Compound's model-route metadata for that executor, and an authorized executor
+route for the work. Inspect the route setup without launching a model:
 
 ```sh
 compound route model-capabilities --json
