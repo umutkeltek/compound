@@ -59,7 +59,12 @@ func ReadIdentityContext(parent context.Context, repo, ref string) (Identity, er
 	if err != nil {
 		return Identity{}, fmt.Errorf("read Git object format: %w", err)
 	}
-	objectFormat = strings.TrimSpace(objectFormat)
+	return readIdentityWithObjectFormat(ctx, repo, ref, strings.TrimSpace(objectFormat))
+}
+
+// readIdentityWithObjectFormat consumes the format just observed by this same
+// request. Standalone identity reads still resolve their format freshly.
+func readIdentityWithObjectFormat(ctx context.Context, repo, ref, objectFormat string) (Identity, error) {
 	if objectFormat != "sha1" && objectFormat != "sha256" {
 		return Identity{}, fmt.Errorf("unsupported Git object format %q", objectFormat)
 	}

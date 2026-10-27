@@ -125,21 +125,25 @@ func (s *Store) validateSourceActionAdmission(w envelope.WorkEnvelope, ai envelo
 	if err := s.validateBoundGitDelivery(w); err != nil {
 		return fmt.Errorf("source action %s git_delivery: %w", ai.ID, err)
 	}
+	if publication {
+		snapshot, err := gitrepository.CaptureCleanSnapshot(root, w.GitDelivery.ExpectedBaseSHA)
+		if err != nil {
+			return fmt.Errorf("source publication %s canonical proof profile: %w", ai.ID, err)
+		}
+		if snapshot.RepositoryFingerprint != w.GitDelivery.RepositoryFingerprint {
+			return fmt.Errorf("source action %s repository fingerprint differs from work %s git_delivery", ai.ID, w.ID)
+		}
+		if err := ValidateCanonicalProofProfile(root, snapshot); err != nil {
+			return fmt.Errorf("source publication %s canonical proof profile: %w; enroll the repository's supported native proof declaration before publication", ai.ID, err)
+		}
+		return nil
+	}
 	identity, err := gitrepository.ReadIdentity(root, w.GitDelivery.ExpectedBaseSHA)
 	if err != nil {
 		return fmt.Errorf("source action %s repository identity: %w", ai.ID, err)
 	}
 	if identity.Fingerprint != w.GitDelivery.RepositoryFingerprint {
 		return fmt.Errorf("source action %s repository fingerprint differs from work %s git_delivery", ai.ID, w.ID)
-	}
-	if publication {
-		snapshot, err := gitrepository.CaptureCleanSnapshot(root, w.GitDelivery.ExpectedBaseSHA)
-		if err != nil {
-			return fmt.Errorf("source publication %s canonical proof profile: %w", ai.ID, err)
-		}
-		if err := ValidateCanonicalProofProfile(root, snapshot); err != nil {
-			return fmt.Errorf("source publication %s canonical proof profile: %w; enroll the repository's supported native proof declaration before publication", ai.ID, err)
-		}
 	}
 	return nil
 }

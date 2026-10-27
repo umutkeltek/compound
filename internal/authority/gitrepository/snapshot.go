@@ -86,25 +86,31 @@ func readSnapshotContext(parent context.Context, repo, baseRef string) (Snapshot
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 
-	baseSHA, err := gitOutput(ctx, repo, "rev-parse", "--verify", baseRef+"^{commit}")
+	// Read these related object names together, then validate every field:
+	// --revs-only may omit an invalid expression without returning an error.
+	objects, err := gitOutput(ctx, repo, "rev-parse", "--show-object-format", "--revs-only", "--end-of-options", baseRef+"^{commit}", "HEAD^{commit}", "HEAD^{tree}")
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("resolve Git base %q: %w", baseRef, err)
+		return Snapshot{}, fmt.Errorf("resolve Git source objects: %w", err)
 	}
-	headSHA, err := gitOutput(ctx, repo, "rev-parse", "--verify", "HEAD^{commit}")
-	if err != nil {
-		return Snapshot{}, fmt.Errorf("resolve Git HEAD: %w", err)
+	fields := strings.Split(strings.TrimSuffix(objects, "\n"), "\n")
+	if len(fields) != 4 {
+		return Snapshot{}, fmt.Errorf("Git source object read returned %d fields, want object format and three full object IDs", len(fields))
 	}
-	treeSHA, err := gitOutput(ctx, repo, "rev-parse", "--verify", "HEAD^{tree}")
-	if err != nil {
-		return Snapshot{}, fmt.Errorf("resolve Git HEAD tree: %w", err)
+	objectFormat, baseSHA, headSHA, treeSHA := fields[0], fields[1], fields[2], fields[3]
+	objectIDLength := 40
+	switch objectFormat {
+	case "sha1":
+	case "sha256":
+		objectIDLength = 64
+	default:
+		return Snapshot{}, fmt.Errorf("unsupported Git object format %q", objectFormat)
 	}
-	baseSHA = strings.TrimSpace(baseSHA)
-	headSHA = strings.TrimSpace(headSHA)
-	treeSHA = strings.TrimSpace(treeSHA)
-	if !validObjectID(baseSHA) || !validObjectID(headSHA) || !validObjectID(treeSHA) {
-		return Snapshot{}, fmt.Errorf("Git source identity did not resolve to full object IDs")
+	for _, id := range []string{baseSHA, headSHA, treeSHA} {
+		if len(id) != objectIDLength || !validObjectID(id) {
+			return Snapshot{}, fmt.Errorf("Git source identity did not resolve to full %s object IDs", objectFormat)
+		}
 	}
-	identity, err := ReadIdentityContext(ctx, repo, baseSHA)
+	identity, err := readIdentityWithObjectFormat(ctx, repo, baseSHA, objectFormat)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("read repository identity: %w", err)
 	}
