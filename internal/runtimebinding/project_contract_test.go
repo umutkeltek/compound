@@ -16,13 +16,13 @@ func TestProjectContractBundle(t *testing.T) {
 	if b.RuntimeBinding.OwnerEntity != "project:synthetic-product" {
 		t.Fatalf("owner = %q", b.RuntimeBinding.OwnerEntity)
 	}
-	if b.RuntimeBinding.HostBinding != "example-apps.internal" {
+	if b.RuntimeBinding.HostBinding != "apps.example" {
 		t.Fatalf("host binding = %q", b.RuntimeBinding.HostBinding)
 	}
 	if b.RuntimeBinding.RiskTier != "tier2" {
 		t.Fatalf("risk = %q", b.RuntimeBinding.RiskTier)
 	}
-	if got := contains(b.RuntimeBinding.DataBindings, "authority:example-db.internal"); !got {
+	if got := contains(b.RuntimeBinding.DataBindings, "authority:db.example"); !got {
 		t.Fatalf("data bindings missing authority: %+v", b.RuntimeBinding.DataBindings)
 	}
 	if got := contains(b.ServiceContract.InterfaceRefs, "health:https://synthetic.example.invalid/health"); !got {
