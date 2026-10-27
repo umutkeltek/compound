@@ -21,7 +21,7 @@ func writeInfraServicesEntityFixture(t *testing.T, path string) {
 		"    role: example_role_a",
 		"    authority: example_authority_a",
 		"    status: active",
-		"  other-svc.internal:",
+		"  other-svc.example:",
 		"    role: example_role_b",
 		"    authority: example_authority_b",
 		"",
@@ -72,7 +72,7 @@ func TestInfraServiceEntitiesRegisterFromInstalledRegistryAndResolve(t *testing.
 		t.Fatalf("alias resolution = %+v", byAlias)
 	}
 
-	unknown, err := store.ResolveEntity("nosuch.internal")
+	unknown, err := store.ResolveEntity("nosuch.example")
 	if err != nil {
 		t.Fatal(err)
 	}

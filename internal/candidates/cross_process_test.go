@@ -144,15 +144,12 @@ func TestWriteCandidateAtomicReplacement(t *testing.T) {
 		var decoded rec
 		t.Fatalf("reader observed torn replacement: bytes=%d valid_json=%t decode_err=%v", len(invalid), json.Valid(invalid), json.Unmarshal(invalid, &decoded))
 	}
-	// The helper loop is the torn-read property; proving rename publication
-	// by inode inequality ACROSS those 40 cycles is filesystem-dependent:
-	// ext4 hands just-freed inodes straight back to the next staged temp, so
-	// the final inode can equal the original by reuse (CI runners, run
-	// 35454311917; APFS never reuses, which is why darwin never saw it).
-	// One controlled replacement from this process is the portable proof:
-	// stageAndReplaceCandidate stages the temp while the target still
-	// exists, so the staged inode is distinct from the target's on every
-	// POSIX filesystem, and rename publication cannot preserve the old one.
+	// The helper loop proves readers never observe a torn replacement.
+	// Comparing inodes across all iterations is filesystem-dependent:
+	// ext4 may immediately reuse a freed inode. Use one controlled
+	// replacement for the portable rename proof. Staging the temporary file
+	// while the target still exists gives them distinct inode identities
+	// before rename publishes the replacement.
 	preLoopEnd, err := os.Stat(target)
 	if err != nil {
 		t.Fatal(err)
