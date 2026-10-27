@@ -108,6 +108,11 @@ func runNonCertifyingProofCheckContext(ctx context.Context, repoPath string, dry
 	if err != nil {
 		return proofCheckReport{}, err
 	}
+	if mode == "--presubmit" && !dryRun {
+		if err := work.ValidateConsoleProofPrerequisites(repo, steps); err != nil {
+			return proofCheckReport{}, err
+		}
+	}
 	report := proofCheckReport{
 		Presubmit:     presubmit,
 		SchemaVersion: proofCheckDevelopmentSchemaVersion,

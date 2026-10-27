@@ -3,7 +3,9 @@ package main
 import (
 	"compound/internal/proofscope"
 	"compound/internal/work"
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -366,6 +368,140 @@ func TestProofCheckPresubmitHookPhaseRetainsPriorGatesAndFilteredMembership(t *t
 				if seen[pkg] != 1 {
 					t.Fatalf("%s count = %d", pkg, seen[pkg])
 				}
+			}
+		})
+	}
+}
+
+// These runner tests block ordinary gates at the runtime resolver and direct
+// gofmt/redact calls with explicit failing command stubs.
+// Scope derivation still reads a real committed diff, so readiness is checked
+// against the selected inventory rather than a hand-built list of steps.
+func proofCheckPresubmitObserveGateResolution(t *testing.T) (*int, string) {
+	t.Helper()
+	gateLog := filepath.Join(t.TempDir(), "gate-commands.log")
+	bin := t.TempDir()
+	for _, name := range []string{"gofmt", "redact"} {
+		body := "#!/bin/sh\nprintf '%s\\n' \"$0\" >> \"$COMPOUND_TEST_GATE_LOG\"\nprintf '%s\\n' 'presubmit test direct gate blocked' >&2\nexit 97\n"
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("COMPOUND_TEST_GATE_LOG", gateLog)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	previous := proofCheckRuntimeExecutable
+	calls := new(int)
+	proofCheckRuntimeExecutable = func(string) (string, error) {
+		*calls = *calls + 1
+		return "", errors.New("presubmit test gate resolution reached")
+	}
+	t.Cleanup(func() { proofCheckRuntimeExecutable = previous })
+	return calls, gateLog
+}
+
+func TestProofCheckPresubmitConsolePrerequisitesBeforeGates(t *testing.T) {
+	for _, tc := range []struct{ name, shape, reason string }{
+		{"missing dependencies", "missing", "console_deps_missing"},
+		{"non-directory dependencies", "file", "console_deps_missing"},
+		{"missing compiler", "directory", "console_compiler_missing"},
+		{"non-executable compiler", "compiler", "console_compiler_unavailable"},
+		{"non-file compiler", "compiler-directory", "console_compiler_unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, base := newProofCheckPresubmitRepo(t)
+			proofCheckDevelopmentWriteFile(t, filepath.Join(repo, "console", "fixture.ts"), "export const value = 1;\n")
+			proofCheckPresubmitCommit(t, repo, "console change")
+			modules := filepath.Join(repo, "console", "node_modules")
+			switch tc.shape {
+			case "file":
+				proofCheckDevelopmentWriteFile(t, modules, "not a directory")
+			case "directory", "compiler", "compiler-directory":
+				bin := filepath.Join(modules, ".bin")
+				if err := os.MkdirAll(bin, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if tc.shape == "compiler" {
+					proofCheckDevelopmentWriteFile(t, filepath.Join(bin, "tsc"), "#!/bin/sh\nexit 0\n")
+					if err := os.Chmod(filepath.Join(bin, "tsc"), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				} else if tc.shape == "compiler-directory" {
+					if err := os.Mkdir(filepath.Join(bin, "tsc"), 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+
+			calls, gateLog := proofCheckPresubmitObserveGateResolution(t)
+			report, err := runNonCertifyingProofCheckContext(context.Background(), repo, false, base, time.Now(), "--presubmit")
+			if err == nil || !strings.Contains(err.Error(), "proof prerequisites: "+tc.reason+": gate=console-tsc;") {
+				t.Fatalf("want named setup refusal %s, got report=%+v err=%v", tc.reason, report, err)
+			}
+			if _, statErr := os.Stat(gateLog); !os.IsNotExist(statErr) {
+				t.Fatalf("unready presubmit invoked a direct gate: stat=%v", statErr)
+			}
+			if *calls != 0 || !reflect.DeepEqual(report, proofCheckReport{}) {
+				t.Fatalf("unready presubmit reached a gate or constructed gate evidence: resolutions=%d report=%+v", *calls, report)
+			}
+		})
+	}
+}
+
+func TestProofCheckPresubmitConsolePrerequisitesRespectModeAndSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		selected bool
+		ready    bool
+		dryRun   bool
+		mode     string
+	}{
+		{name: "ready compiler", selected: true, ready: true, mode: "--presubmit"},
+		{name: "unselected console", mode: "--presubmit"},
+		{name: "dry-run without dependencies", selected: true, dryRun: true, mode: "--presubmit"},
+		{name: "development without dependencies", selected: true, mode: "--dev"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, base := newProofCheckPresubmitRepo(t)
+			path, body := "internal/policy/policy.go", "package policy\n\nconst P = 1\n"
+			if tc.selected {
+				path, body = "console/fixture.ts", "export const value = 1;\n"
+			}
+			proofCheckDevelopmentWriteFile(t, filepath.Join(repo, path), body)
+			proofCheckPresubmitCommit(t, repo, tc.name)
+			if tc.ready {
+				compiler := filepath.Join(repo, "console", "node_modules", ".bin", "tsc")
+				proofCheckDevelopmentWriteFile(t, compiler, "#!/bin/sh\nexit 0\n")
+				if err := os.Chmod(compiler, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			calls, gateLog := proofCheckPresubmitObserveGateResolution(t)
+			report, err := runNonCertifyingProofCheckContext(context.Background(), repo, tc.dryRun, base, time.Now(), tc.mode)
+			if err != nil {
+				t.Fatalf("admitted runner returned a setup error: %v", err)
+			}
+			var consoleSelected bool
+			for _, step := range report.Steps {
+				consoleSelected = consoleSelected || step.Name == "console-tsc"
+				if tc.dryRun && step.Status != "planned" {
+					t.Fatalf("dry-run executed a gate: %+v", step)
+				}
+			}
+			if consoleSelected != tc.selected {
+				t.Fatalf("console gate selected=%v; want %v", consoleSelected, tc.selected)
+			}
+			if tc.dryRun {
+				if _, statErr := os.Stat(gateLog); !os.IsNotExist(statErr) {
+					t.Fatalf("dry-run invoked a direct gate: stat=%v", statErr)
+				}
+				if *calls != 0 || report.Status != "planned" || report.ProfileKind != work.ProofCheckProfilePresubmit {
+					t.Fatalf("dry-run changed readiness or inventory behavior: resolutions=%d report=%+v", *calls, report)
+				}
+			} else if *calls == 0 || report.Status != "failed" || len(report.Steps) == 0 || !strings.Contains(report.Steps[0].OutputTail, "presubmit test gate resolution reached") {
+				t.Fatalf("admitted runner did not reach its normal first gate: resolutions=%d report=%+v", *calls, report)
+			}
+			if tc.mode == "--dev" && report.ProfileKind != proofCheckProfileDevelopment {
+				t.Fatalf("development profile changed: %q", report.ProfileKind)
 			}
 		})
 	}
