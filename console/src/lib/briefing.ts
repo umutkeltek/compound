@@ -466,6 +466,63 @@ export function rowTsMs(item: Json): number {
   return d ? d.getTime() : 0;
 }
 
+/** Preserve the memory read's evidence state through both home-page cards. */
+export type MemoryBriefing = {
+  observation: ProjectionStatus | "invalid";
+  lastGoodAt: string | null;
+  generatedAt: string | null;
+  totals: { promoted: number; parked: number; awaiting: number; reopened: number } | null;
+  promotedThisWeek: number | null;
+  delta: number | null;
+};
+
+export function memoryBriefing(read: ProjectionRead, now = Date.now()): MemoryBriefing {
+  const base = { observation: read.status, lastGoodAt: read.lastGoodAt, generatedAt: read.generatedAt,
+    totals: null, promotedThisWeek: null, delta: null };
+  if (read.status === "unreachable" || !read.value) return { ...base, observation: "unreachable" };
+  const counts = (read.value.counts as Json | undefined)?.by_state;
+  if (!counts || typeof counts !== "object" || Array.isArray(counts) ||
+      !Array.isArray(read.value.items) ||
+      Object.values(counts).some(value => typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)) {
+    return { ...base, observation: "invalid" };
+  }
+  const byState = counts as Record<string, number>;
+  const items = arr(read.value.items);
+  const observedByState: Record<string, number> = {};
+  for (const item of items) {
+    const state = item && typeof item === "object" ? str(item.state) : "";
+    if (!state) return { ...base, observation: "invalid" };
+    observedByState[state] = (observedByState[state] ?? 0) + 1;
+  }
+  if (Object.entries(observedByState).some(([state, count]) => (byState[state] ?? 0) < count)) {
+    return { ...base, observation: "invalid" };
+  }
+  const change = weeklyChange(items, rowTsMs, item => str(item.state) === "promoted", now);
+  const live = read.status === "live";
+  return {
+    ...base,
+    totals: {
+      promoted: byState.promoted ?? 0,
+      parked: byState.parked ?? 0,
+      awaiting: byState.proposed ?? 0,
+      reopened: (byState.needs_review ?? 0) + items.filter(item =>
+        str(item.state) !== "needs_review" && str(item.review_state) === "needs_review").length,
+    },
+    promotedThisWeek: live ? items.filter(item => {
+      const date = toDate(item.created_at);
+      return str(item.state) === "promoted" && date != null && date.getTime() >= now - 7 * 24 * 3_600_000;
+    }).length : null,
+    delta: live && change.covered ? change.delta : null,
+  };
+}
+
+export function memoryBriefingNotice(memory: MemoryBriefing): string {
+  if (memory.observation === "invalid") return "Memory report incomplete";
+  if (!memory.totals) return "Memory unavailable";
+  if (memory.observation === "stale") return "Last known memory; current read unavailable";
+  return "";
+}
+
 /* ---------- oldest-age helper for the attention pill ---------- */
 
 export function oldestCreatedAt(groups: AttentionGroup[]): Date | undefined {

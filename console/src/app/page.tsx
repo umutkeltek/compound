@@ -18,6 +18,7 @@ import {
   autonomyPosture,
   deriveContinue,
   headlineAct,
+  memoryBriefing,
   oldestCreatedAt,
   pipelineStages,
   rowTsMs,
@@ -28,7 +29,6 @@ import { arr, getExecutors, HEAVY_PROJECTION_TIMEOUT_MS, num, runJson, runProjec
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { moveTypeGroup, summarizeMoveTypeMix } from "@/lib/move-mix";
-import { toDate } from "@/lib/time";
 import { latestProofBackedChange } from "@/representation";
 
 export const dynamic = "force-dynamic";
@@ -54,14 +54,14 @@ export default async function Briefing() {
   const sixHours = 6 * 3_600_000;
   const windowBucket = Math.floor(Date.now() / sixHours) * sixHours;
   const memoryWindowStart = new Date(windowBucket - 15 * 24 * 3_600_000).toISOString();
-  const [attentionProjection, executors, workbenchRead, memory, policyAuthority, homeDoctor] = await Promise.all([
+  const [attentionProjection, executors, workbenchRead, memoryRead, policyAuthority, homeDoctor] = await Promise.all([
     getAttentionProjection({ timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }),
     getExecutors(),
     runProjection(["workbench", "--json", "--recent", "500"], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }),
     runProjection(
       ["memory", "candidates", "--json", "--state", "promoted", "--created-after", memoryWindowStart, "--limit", "4000"],
       { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS },
-    ).then((r) => r.value),
+    ),
     runJson(["policy", "operator-authority", "--json"]),
     runProjection(["home", "doctor", "--json"], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }),
   ]);
@@ -99,22 +99,7 @@ export default async function Briefing() {
     (item) => moveTypeGroup(str(item.move_type) || str(item.move)) === "outward",
   );
 
-  // Mind Δ / Knows off the memory candidates projection.
-  const memoryCounts = (memory?.counts?.by_state ?? {}) as Record<string, number>;
-  const memoryItems = arr(memory?.items);
-  const weekAgo = Date.now() - 7 * 24 * 3_600_000;
-  const promotedThisWeek = memoryItems.filter((candidate) => {
-    if (str(candidate.state) !== "promoted") return false;
-    const date = toDate(candidate.created_at);
-    return date != null && date.getTime() >= weekAgo;
-  }).length;
-  // Global needs_review count (counts stay full-set under the window filter);
-  // the per-item review_state join is bounded to the fetched window, so the
-  // global count — not a scan of the bounded items — is the honest number.
-  const reopened = num(memoryCounts.needs_review) + memoryItems.filter(
-    (candidate) => str(candidate.state) !== "needs_review" && str(candidate.review_state) === "needs_review",
-  ).length;
-  const mindChange = weeklyChange(memoryItems, rowTsMs, (candidate) => str(candidate.state) === "promoted");
+  const memory = memoryBriefing(memoryRead);
 
   const autonomy = autonomyPosture(policyAuthority);
   const health = selfHealing(homeDoctor);
@@ -126,7 +111,7 @@ export default async function Briefing() {
   const stamps: { label: string; generatedAt: string; source: string }[] = [
     { label: "Decide", generatedAt: attentionRead.generatedAt ?? "", source: "compound attention --json" },
     { label: "World", generatedAt: workbenchRead.generatedAt ?? "", source: "compound workbench --json --recent 500" },
-    { label: "Mind", generatedAt: str(memory?.generated_at), source: "compound memory candidates --json" },
+    { label: "Mind", generatedAt: memoryRead.generatedAt ?? "", source: "compound memory candidates --json" },
     { label: "Health", generatedAt: health.observation === "live" ? homeDoctor.generatedAt ?? "" : "", source: "compound home doctor --json" },
   ];
 
@@ -176,15 +161,9 @@ export default async function Briefing() {
           total: mix.total,
           lowOutward: mix.lowOutward,
         }}
-        mind={{
-          promoted: memoryCounts.promoted ?? 0,
-          parked: memoryCounts.parked ?? 0,
-          awaiting: memoryCounts.proposed ?? 0,
-          promotedThisWeek,
-        }}
+        mind={memory}
         autonomy={autonomy}
         worldDelta={worldChange.covered ? worldChange.delta : null}
-        mindDelta={mindChange.covered ? mindChange.delta : null}
       /></div>
 
       {/* ---------- below the fold ---------- */}
@@ -208,12 +187,7 @@ export default async function Briefing() {
 
       <section data-depth-min="technical">
         <SectionLabel>Knows</SectionLabel>
-        <KnowsStrip
-          promoted={memoryCounts.promoted ?? 0}
-          parked={memoryCounts.parked ?? 0}
-          reopened={reopened}
-          promotedThisWeek={promotedThisWeek}
-        />
+        <KnowsStrip memory={memory} />
       </section>
 
       <footer data-depth-min="technical" className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-hair pt-4 text-2xs text-faint">

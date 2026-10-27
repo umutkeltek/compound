@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 
 import { Panel } from "@/components/briefing/primitives";
 import { DeltaPill } from "@/components/kit";
-import type { AutonomyPosture } from "@/lib/briefing";
+import { memoryBriefingNotice, type AutonomyPosture, type MemoryBriefing } from "@/lib/briefing";
 
 /**
  * The KPI strip (redesign plan Part 3 / DESIGN.md §3 KPI stat): World Δ · Mind Δ
@@ -65,15 +65,12 @@ export function KpiStrip({
   mind,
   autonomy,
   worldDelta,
-  mindDelta,
 }: {
   world: { outward: number; meaning: number; rules: number; upkeep: number; total: number; lowOutward: boolean };
-  mind: { promoted: number; parked: number; awaiting: number; promotedThisWeek: number };
+  mind: MemoryBriefing;
   autonomy: AutonomyPosture;
   /** week-over-week change in outward moves — null when the window can't cover the prior week (§9.6). */
   worldDelta?: number | null;
-  /** week-over-week change in promotions — null when uncovered. */
-  mindDelta?: number | null;
 }) {
   return (
     <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -107,26 +104,22 @@ export function KpiStrip({
       <KpiTile
         label="Mind Δ · 7d"
         dot="bg-memory"
-        value={
-          <>
-            {mind.promotedThisWeek > 0 ? "+" : ""}
-            {mind.promotedThisWeek.toLocaleString("en-US")}
-          </>
-        }
-        delta={
-          mindDelta != null ? <DeltaPill value={mindDelta} showZero title="promotions vs previous 7 days" /> : null
-        }
-        sub={<>promoted · {mind.awaiting.toLocaleString("en-US")} awaiting · {mind.parked.toLocaleString("en-US")} parked</>}
+        value={mind.promotedThisWeek == null ? "—" : `${mind.promotedThisWeek > 0 ? "+" : ""}${mind.promotedThisWeek.toLocaleString("en-US")}`}
+        delta={mind.delta != null ? <DeltaPill value={mind.delta} showZero title="promotions vs previous 7 days" /> : null}
+        sub={mind.totals ? <>promoted · {mind.totals.awaiting.toLocaleString("en-US")} awaiting · {mind.totals.parked.toLocaleString("en-US")} parked</> : memoryBriefingNotice(mind)}
       >
-        <StackBar
-          segments={[
-            { value: mind.promoted, className: "bg-good", label: "Promoted" },
-            { value: mind.awaiting, className: "bg-memory", label: "Awaiting" },
-            { value: mind.parked, className: "bg-faint", label: "Parked" },
-          ]}
-        />
+        {mind.totals ? <StackBar segments={[
+          { value: mind.totals.promoted, className: "bg-good", label: "Promoted" },
+          { value: mind.totals.awaiting, className: "bg-memory", label: "Awaiting" },
+          { value: mind.totals.parked, className: "bg-faint", label: "Parked" },
+        ]} /> : null}
+        {mind.observation === "stale" && mind.totals ? (
+          <span className="mt-2 text-xs text-seam">
+            {memoryBriefingNotice(mind)}
+            {mind.lastGoodAt ? <span className="block">Last successful read: <time dateTime={mind.lastGoodAt}>{mind.lastGoodAt}</time></span> : null}
+          </span>
+        ) : null}
       </KpiTile>
-
       <KpiTile
         label="Autonomy"
         dot={autonomy.tone === "good" ? "bg-good" : "bg-seam"}

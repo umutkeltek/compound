@@ -90,7 +90,7 @@ Optional local-only gates:
 
 ## Truth Contract
 
-- Every card declares source freshness.
+- Every card declares source freshness. The home memory cards preserve unavailable, incomplete, last-known and live reads; only a valid live empty report represents zero. Stale totals keep their last-successful-read time and do not claim a current weekly change.
 - Reads are projection-only. The document API has no private file-read path and
   returns 403; new private data must first reach a Compound-owned projection or
   scoped CLI read surface.
