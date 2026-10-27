@@ -76,6 +76,21 @@ func TestContentRecoveryTransportProcess(t *testing.T) {
 			obs.RemoteID = ""
 		case "future-publication":
 			obs.PublishedAt = time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+		case "pure-unknown":
+			obs.ObjectType, obs.Status = "attempt", "unknown"
+			obs.RemoteID, obs.PublishedAt, obs.URL = "", "", ""
+			if fields, err := os.ReadFile(filepath.Join(dir, "unknown-fields")); err == nil {
+				if err := json.Unmarshal(fields, &obs); err != nil {
+					os.Exit(15)
+				}
+			}
+		case "malformed":
+			raw := []byte("{\n")
+			if err := os.WriteFile(filepath.Join(dir, "response"), raw, 0600); err != nil {
+				os.Exit(16)
+			}
+			os.Stdout.Write(raw)
+			os.Exit(0)
 		case "unknown", "processing", "error":
 			obs.ObjectType, obs.Status = "attempt", string(mode)
 			obs.PublishedAt, obs.URL = "", ""
@@ -83,7 +98,14 @@ func TestContentRecoveryTransportProcess(t *testing.T) {
 	} else {
 		os.Exit(12)
 	}
-	json.NewEncoder(os.Stdout).Encode(obs)
+	var response bytes.Buffer
+	if err := json.NewEncoder(&response).Encode(obs); err != nil {
+		os.Exit(13)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "response"), response.Bytes(), 0600); err != nil {
+		os.Exit(14)
+	}
+	os.Stdout.Write(response.Bytes())
 	os.Exit(0)
 }
 

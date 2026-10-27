@@ -74,6 +74,21 @@ cannot use this exception. The stored schedule, original request and receipt
 remain unchanged; the provider observation is retained verbatim without filling
 in an omitted field, and the original scheduling response artifact is preserved.
 
+A fully request-bound `attempt` / `unknown` observation may omit every schedule and
+publication identity field (`schedule_id`, `scheduled_at`, `remote_id`, `published_at`,
+and `url`). It retains the original attempt, request, schedule, receipt and draft state,
+records the verbatim observation, and marks only the outbound status
+`reconciliation_required`. Every field must be empty; whitespace does not qualify.
+Nonempty conflicts, processing, terminal errors and positive publication keep their
+existing identity checks. Terminal posted or failed attempts never demote to unknown.
+
+Every complete successful observe response is custodied before validation as diagnostic
+evidence. The CLI exposes `diagnostic_observation_ref`, including when validation
+refuses the response. This reference alone certifies no publication or terminal failure.
+A rejected response never replaces the draft's last accepted response, schedule or
+receipt. Empty, failed or truncated transport output remains excluded by the observation
+transport boundary.
+
 A failure whose external effect is uncertain must be `unknown`, not `error`.
 A known publication-only adapter may normalize its endpoint's bare ID only after
 it has positive publication evidence and can bind the answer to this request.

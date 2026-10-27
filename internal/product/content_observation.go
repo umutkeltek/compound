@@ -91,11 +91,14 @@ func recordBoundContentObservation(homePath, id string, req ContentPostTransport
 		return d, fmt.Errorf("observation conflicts with terminal failed attempt")
 	}
 	if d.Schedule != nil {
-		// Some providers publish the same object they previously scheduled.
-		// An omitted schedule ID is safe only when the positive publication
-		// names that exact object; different IDs still need an explicit link.
+		// A same-object positive publication may omit its schedule ID. A fully
+		// bound attempt-only UNKNOWN may carry no remote identity assertion.
+		// Both retain the saved schedule; different IDs still need an explicit link.
 		sameObjectPublication := obs.Status == "published" && obs.ScheduleID == "" && obs.RemoteID == d.Schedule.ScheduleID
-		if obs.ScheduleID != d.Schedule.ScheduleID && !sameObjectPublication {
+		pureUnknown := obs.ObjectType == "attempt" && obs.Status == "unknown" &&
+			obs.ScheduleID == "" && obs.ScheduledAt == "" && obs.RemoteID == "" &&
+			obs.PublishedAt == "" && obs.URL == ""
+		if obs.ScheduleID != d.Schedule.ScheduleID && !sameObjectPublication && !pureUnknown {
 			return d, fmt.Errorf("observation schedule identity changed")
 		}
 	}

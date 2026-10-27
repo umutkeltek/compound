@@ -42,7 +42,10 @@ type ContentPostRun struct {
 	NextCommand   string                       `json:"next_command,omitempty"`
 	ReceiptID     string                       `json:"receipt_id,omitempty"`
 	PostImageRef  string                       `json:"post_image_ref,omitempty"`
-	Draft         *ContentDraft                `json:"draft,omitempty"`
+	// DiagnosticObservationRef custodies complete observe bytes as evidence, including rejected responses.
+	// It does not certify publication or replace the draft's accepted response.
+	DiagnosticObservationRef string        `json:"diagnostic_observation_ref,omitempty"`
+	Draft                    *ContentDraft `json:"draft,omitempty"`
 }
 
 // contentPostExecute permits failure injection after reservation; production
@@ -292,9 +295,16 @@ func reconcileContentPost(homePath, id, transport string, now time.Time) (Conten
 	if err != nil {
 		return out, err
 	}
+	diagnosticRef, err := store.Put(observed)
+	if err != nil {
+		return out, fmt.Errorf("custody complete transport observation: %w", err)
+	}
+	out.DiagnosticObservationRef = diagnosticRef
 	d, err = recordBoundContentObservation(homePath, id, request, "observe", observed, "", contentObservationNow())
 	if err != nil {
 		return out, err
 	}
-	return contentAttemptResult(d), nil
+	out = contentAttemptResult(d)
+	out.DiagnosticObservationRef = diagnosticRef
+	return out, nil
 }
