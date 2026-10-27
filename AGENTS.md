@@ -253,6 +253,19 @@ reasons before building what the note implies.
   pipeline's exit becomes `tail`'s (always `0`) and a red gate reads green. Run unpiped; read the verdict.
 - **Never "fix" a red gate by weakening it** — deleting the test, raising a budget, disabling the check. That is
   the one unforgivable move here. Write tests that would *fail* if the system's depth were wrong.
+- **A canonical battery is a 30–90 minute job; run it detached and give it room.** It reserves shared proof
+  capacity, and a shared box runs other lanes' batteries at the same time. A `bash` wrapper that caps the call at
+  its own timeout kills the battery mid-run and leaves an orphan attempt holding the capacity until its lease
+  expires. Launch it so it survives the call, then poll the report file. If the wrapper already killed it, sweep
+  the stale attempt (`run-attempt sweep --attempt <ratt_id>`) once the lease expires, and re-run.
+- **A red battery is not automatically a regression — read the failure shape.** `signal: killed` and
+  `panic: test timed out after 40m0s` are resource exhaustion on a contended box, not logic failures, and they
+  predate most changes. Re-run the failing package alone and compare wall time: minutes alone versus 40 minutes
+  inside the battery means the package was starved. Re-run the battery when the box is quiet.
+- **Main can advance while your battery runs.** A proof seals the HEAD it observed, so a concurrent landing
+  makes the proof's head differ from the candidate you attached. After the battery, re-read `git rev-parse main`:
+  if it moved, attach the new tip (`work advance --artifact commit:<new-tip>`) and re-run land-check — do not
+  re-run the battery for a tip it already certified.
 - **"landed ≠ working."** A merged commit is not a live change. Prove wiring / data / cutover / proof: name the
   live consumer and watch it consume in ITS output (grep-in-source is not consumption); no consumer ⇒ `audit_only`
   ⇒ not done. The full battery + verdict format live in `compound-verify` — run it before any close.
