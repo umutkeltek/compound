@@ -157,7 +157,7 @@ func (e *gitCommandError) Error() string {
 func gitOutput(ctx context.Context, repo string, args ...string) (string, error) {
 	cmd := CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...)
 	cmd.Env = ReadEnvironment()
-	out, err := cmd.CombinedOutput()
+	out, err := CommandOutput(ctx, cmd, true)
 	if ctx.Err() != nil {
 		return "", context.Cause(ctx)
 	}

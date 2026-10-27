@@ -2,6 +2,7 @@ package proofscope
 
 import (
 	"bytes"
+	"compound/internal/authority/gitrepository"
 	"context"
 	"errors"
 	"fmt"
@@ -147,7 +148,7 @@ func gitOutput(ctx context.Context, repoDir string, stdin *bytes.Buffer, args ..
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
+	if err := gitrepository.RunCommand(ctx, cmd); err != nil {
 		return nil, fmt.Errorf("proofscope: git %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.Bytes(), ctx.Err()

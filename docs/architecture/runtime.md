@@ -574,6 +574,74 @@ durations are capped at 45 minutes. Invalid or negative Compound durations refus
 before a work mutation or execution RunAttempt is minted. Detached execution
 reserves two minutes of its 45-minute wrapper budget for finalization.
 
+### Native noncertifying presubmit execution
+
+A separately built candidate executable can run `proof-check --presubmit --repo REPO
+--base FULL_SHA --out FILE --work WORK --actor ACTOR --execution-timeout DURATION`
+directly. Work must be verifying, held by the actor, and carry the exact candidate commit;
+the base and repository fingerprint bind its immutable Git delivery contract. The native
+owner persists an ActionIntent and allowing PolicyDecision, then atomically mints its
+RunAttempt with that intent before any Git/Go subprocess or output write probe. The
+binary digest and actual chosen budget are part of the binding. Compile the candidate
+in a separate bounded governed step; `go run` performs preparation before native admission.
+
+The explicit active budget is positive and at most 4h, an upper ceiling that returns
+early on completion. It accommodates up to six unchanged sequential 30-minute test phases
+plus preparation and non-test gates. Generic governed harness execution remains capped
+at 45 minutes; gate selection and test timeouts do not change. Native presubmit uses
+existing `system_full` capacity and the existing inherited execution barrier because its
+build/vet/test phases share the same constrained host. It adds no queue, daemon, transport
+enrollment or canonical reservation kind.
+
+Existing Git preparation, scope derivation, Go-list preparation and gate subprocesses
+consume one context-scoped command-runner callback. Ordinary callers keep their existing
+execution path. The first real child start records content-free committed launch evidence;
+origin-only metadata never fabricates execution. A sealed clean source snapshot and
+derived gate inventory precede gate 1. Registered groups stream current raw output into
+exclusive files under a rooted per-attempt output directory. Private content-addressed
+journals retain gate/command started, completed and cancelled checkpoints plus partial
+reports and raw-output paths.
+
+Ordinary cleanup uses an exact OS process-group boundary independent of inherited file
+descriptors. Darwin observes its still-unreaped direct child as a zombie, then uses
+`kern.proc.pgrp` to observe only that pinned group until every other member is gone.
+It stops and joins numeric-PGID signalers before reaping the leader. Linux requires
+`PIDFD_SIGNAL_PROCESS_GROUP`, introduced in kernel 6.9: a side-effect-free self-pidfd
+signal-zero probe refuses unsupported kernels or permission failures. Each real child
+gets an exact group pidfd before any Wait; Linux may reap the leader while all later
+group probes and signals use that same held kernel handle. It never substitutes a
+numeric PID lookup. Both paths cover ordinary same-group Go descendants that close
+stdout/stderr and drop every ownership descriptor.
+
+Kernel query or identity uncertainty records `containment_uncertain` and retains the
+exact durable resource holder without claiming cleanup. Darwin does not explicitly reap
+on that path; Linux may already have reaped while retaining its exact pidfd. A failed CLI
+may exit; there is no keeper or daemon. Ordinary admission refuses a different expired
+predecessor rather than treating expiry as recovery. Descendants that escape the owned
+group/session, SIGKILL and persistence impossibility remain explicit recovery limits.
+
+Every post-mint ordinary return terminalizes the attempt and retains a distinct
+`presubmit-execution` result; a panic records failed execution before propagating.
+Preparation, output, deadline and finalization failures never render a green native
+verdict. Newer Work generations remain byte-for-byte authoritative; reverse attempt/
+action linkage retains audit evidence without manufacturing a same-state transition.
+Overlapping nonterminal same-work native producers refuse before replacing policy.
+A later terminal native retry records exact predecessor lineage before its first child;
+unchanged Work close validators still require an actual succeeded execution.
+
+The fixed `--presubmit-recover-execution RATT_ID --work WORK --actor ACTOR --reason TEXT`
+door validates the original native journal, request binding, attempt and intent/policy,
+then requires exact-holder barrier quiescence under fresh policy. Durable command
+sequences record `group_started` and `group_closed`. Recovery is limited to pre-child
+loss or groups with native closed observations. A prepared/committed launch without
+registered group evidence, an unclosed group, or observed containment uncertainty refuses
+even after the file barrier clears. Mid-gate SIGKILL therefore needs separate exact
+external/manual recovery; a reason string never substitutes for missing evidence.
+The door can rearm and release only its exact eligible native holder and records failed
+execution-only evidence. It never signals a stored PID or accepts canonical proof.
+Presubmit artifacts attach to Work artifacts, never verification IDs; canonical report
+validation, completion and adoption remain unchanged.
+
 ### Explicit same-work execution resume
 
 `work continue --selected --actor <lease-holder>` is an explicit continuation,

@@ -34,6 +34,9 @@ var proofCheckCanonicalRunner = runProofCheckSealedSnapshotContext
 var proofCheckRuntimeArtifactRecorder = recordProofCheckRuntimeArtifact
 
 func cmdProofCheck(args []string) {
+	if work.HasProofRecoveryFlag(args, work.PresubmitRecoveryFlag) {
+		os.Exit(work.RunPresubmitRecoveryCLI(args, os.Stdout, os.Stderr))
+	}
 	if work.HasProofRecoveryFlag(args, "--reconcile-quiescent") || work.HasProofRecoveryFlag(args, "--resume-retained") {
 		os.Exit(work.RunProofRecoveryCLI(args, os.Stdout, os.Stderr, proofCheckRestoreRetainedReport))
 	}
@@ -44,6 +47,8 @@ func cmdProofCheck(args []string) {
 		fmt.Println("usage: compound proof-check [--json] [--dry-run] [--dev|--presubmit|--ci|--ci-console] [--repo P] [--base REF] [--out FILE] [--work ID --actor ACTOR]")
 		fmt.Println(work.RemoteProofHelp)
 		fmt.Println(work.ProofRecoveryHelp)
+		fmt.Println(work.PresubmitRecoveryHelp)
+		fmt.Println(" --presubmit --work WORK --actor ACTOR --execution-timeout DURATION uses native noncertifying execution; positive budget at most 4h, unchanged test phases")
 		fmt.Println("  --dev         fast, cache-enabled, non-certifying developer feedback")
 		fmt.Println("  --presubmit   non-certifying pre-landing gate; go-test scope derived from --base FULL_SHA...HEAD")
 		fmt.Println("  --redact-review ACT_ID exact native public-content review for the complete source snapshot (canonical full proof only)")
@@ -63,6 +68,10 @@ func cmdProofCheck(args []string) {
 		fmt.Println("                governed proof that the oldest stopped predecessor was terminated and waited")
 		fmt.Println("  --recover-legacy-retained release exact pre-v0.3 journal without verification;")
 		fmt.Println("                never runs gates and exits 2 because fresh source-bound v0.3 battery is required")
+		return
+	}
+	if work.IsGovernedPresubmitArgs(args) {
+		cmdProofCheckNativePresubmit(args)
 		return
 	}
 	routeOptions, err := work.ParseProofCheckRouteOptions(args)
@@ -1381,7 +1390,7 @@ func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckS
 		if proofCheckUsesGo(step) {
 			cmd.Env = proofCheckCommandEnv(ctx, repo)
 		}
-		output, err = cmd.CombinedOutput()
+		output, err = gitrepository.CommandOutput(ctx, cmd, true)
 	}
 	result.DurationMS = time.Since(start).Milliseconds()
 	result.OutputTail = work.ProofGateOutputTail(output, 4000)
@@ -1465,7 +1474,7 @@ func runProofCheckCodexPreToolUseNativeGateContext(ctx context.Context, repo str
 		cmd.Stdin = strings.NewReader(input)
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
-		stdout, err := cmd.Output()
+		stdout, err := gitrepository.CommandOutput(ctx, cmd, false)
 		evidence := bytes.Join([][]byte{stdout, stderr.Bytes()}, nil)
 		exitCode := 0
 		if err != nil {
@@ -1585,7 +1594,7 @@ func runProofCheckBunTools(ctx context.Context, repo string) ([]byte, error) {
 	cmd := proofCheckCommandContext(ctx, "bun", args...)
 	cmd.Dir = repo
 	cmd.Env = proofCheckCommandEnv(ctx, repo)
-	return cmd.CombinedOutput()
+	return gitrepository.CommandOutput(ctx, cmd, true)
 }
 
 func runProofCheckGofmt(repo string) ([]byte, error) {
@@ -1603,7 +1612,7 @@ func runProofCheckGofmtContext(ctx context.Context, repo string) ([]byte, error)
 	args := append([]string{"-l"}, files...)
 	cmd := proofCheckCommandContext(ctx, "gofmt", args...)
 	cmd.Dir = repo
-	output, err := cmd.CombinedOutput()
+	output, err := gitrepository.CommandOutput(ctx, cmd, true)
 	if err != nil {
 		return output, err
 	}
@@ -1640,7 +1649,7 @@ func runProofCheckRedactContext(ctx context.Context, repo, baseRef string, headR
 			cmd := proofCheckCommandContext(ctx, "redact", "--repo-visibility", "public", "--max-bytes", "8388608", "--source-path", input.Path)
 			cmd.Dir = repo
 			cmd.Stdin = bytes.NewReader(input.Body)
-			out, err := cmd.CombinedOutput()
+			out, err := gitrepository.CommandOutput(ctx, cmd, true)
 			combined.WriteString(input.Path + ":\n")
 			combined.Write(out)
 			if err != nil {
@@ -1660,7 +1669,7 @@ func runProofCheckRedactContext(ctx context.Context, repo, baseRef string, headR
 	for _, file := range files {
 		cmd := proofCheckCommandContext(ctx, "redact", "--repo-visibility", "public", "--max-bytes", "8388608", "--from-file", file)
 		cmd.Dir = repo
-		out, err := cmd.CombinedOutput()
+		out, err := gitrepository.CommandOutput(ctx, cmd, true)
 		combined.Write(out)
 		if err != nil {
 			return combined.Bytes(), err
@@ -1782,7 +1791,7 @@ func proofCheckGitNULList(repo string, args ...string) ([]string, error) {
 func proofCheckGitNULListContext(ctx context.Context, repo string, args ...string) ([]string, error) {
 	cmd := proofCheckCommandContext(ctx, "git", args...)
 	cmd.Dir = repo
-	out, err := cmd.Output()
+	out, err := gitrepository.CommandOutput(ctx, cmd, false)
 	if err != nil {
 		return nil, err
 	}

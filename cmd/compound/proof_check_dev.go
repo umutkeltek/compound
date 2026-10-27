@@ -127,25 +127,19 @@ func runNonCertifyingProofCheckContext(ctx context.Context, repoPath string, dry
 	if presubmit != nil {
 		report.SchemaVersion, report.ProfileKind = work.ProofCheckPresubmitSchemaVersion, work.ProofCheckProfilePresubmit
 	}
+	if authority, ok := work.PresubmitExecutionFromContext(ctx); ok {
+		report.SourceSnapshot = authority.SourceSnapshot
+	}
+	if err := work.SealPresubmitInventory(ctx, steps, presubmit); err != nil {
+		report.Status = "failed"
+		return report, err
+	}
 	if dryRun {
 		report.Status = "planned"
 	}
-	for _, step := range steps {
-		result := step
-		if dryRun {
-			result.Status = "planned"
-		} else {
-			result = runProofCheckStepContext(ctx, repo, step, baseRef)
-			if result.Status == "failed" {
-				report.Status = "failed"
-			}
-		}
-		if result.Status == "ok" || result.Status == "planned" {
-			report.ProofRefs = append(report.ProofRefs, result.ProofRef)
-		}
-		report.Steps = append(report.Steps, result)
-	}
-	return report, nil
+	return work.RunNonCertifyingProofGates(ctx, report, steps, func(ctx context.Context, step work.ProofCheckStep) work.ProofCheckStep {
+		return runProofCheckStepContext(ctx, repo, step, baseRef)
+	})
 }
 
 func proofCheckValidateDevelopmentOutPath(path string) error {
@@ -277,4 +271,20 @@ func proofCheckDevelopmentSteps(repo, baseRef string) ([]proofCheckStep, error) 
 		ProofRef: "development:redact-public-clean",
 	})
 	return steps, nil
+}
+
+func cmdProofCheckNativePresubmit(args []string) {
+	os.Exit(work.RunNativePresubmitCLI(args, os.Stdout, os.Stderr, func(ctx context.Context, request work.PresubmitExecutionRequest) (work.ProofCheckReport, error) {
+		proofCheckPruneGoCaches(request.Args)
+		target, custody, err := proofCheckPrepareDevelopmentOutPath(request.OutPath)
+		if err != nil {
+			return work.ProofCheckReport{}, err
+		}
+		defer custody.close()
+		ctx = work.ContextWithGateOutputReportPath(ctx, target)
+		report, err := runNonCertifyingProofCheckContext(ctx, request.Repo, false, request.BaseRef, time.Now(), "--presubmit")
+		return work.FinishNativePresubmitReport(ctx, request, report, err, func(report work.ProofCheckReport) error {
+			return proofCheckWriteReportFileWithCustody(target, report, custody)
+		})
+	}))
 }

@@ -146,7 +146,7 @@ func committedGitOutputEnvironment(ctx context.Context, repo string, env []strin
 	cmd.Env = env
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	out, err := CommandOutput(ctx, cmd, false)
 	if ctx.Err() != nil {
 		return nil, context.Cause(ctx)
 	}
