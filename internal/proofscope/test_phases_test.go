@@ -38,3 +38,63 @@ func TestTestPackagePhasesKeepCLIAndWorkSeparateAndAllPackages(t *testing.T) {
 		})
 	}
 }
+
+func TestTestPackagePhasesIsolatesHookAndPreservesMembership(t *testing.T) {
+	t.Parallel()
+	const hook = "compound/internal/hook"
+	const home = "compound/internal/home"
+	const release = "compound/internal/release"
+	const work = "compound/internal/work"
+	const cli = "compound/cmd/compound"
+	tests := []struct {
+		name     string
+		packages []string
+		want     []TestPackagePhase
+	}{
+		{"empty", nil, nil},
+		{"hook-only", []string{hook}, []TestPackagePhase{{Name: "hook", Packages: []string{hook}}}},
+		{"hook-absent", []string{home, release, work, cli}, []TestPackagePhase{
+			{Name: "cli", Packages: []string{cli}}, {Name: "work", Packages: []string{work}},
+			{Name: "release", Packages: []string{release}}, {Name: "home", Packages: []string{home}},
+		}},
+		{"exact-hook-path-only", []string{"compound/internal/hookplan", hook, "compound/internal/hook/child"}, []TestPackagePhase{
+			{Name: "general", Packages: []string{"compound/internal/hook/child", "compound/internal/hookplan"}},
+			{Name: "hook", Packages: []string{hook}},
+		}},
+		{"mixed", []string{home, hook, "compound/scripts/testbattery", work, cli, release}, []TestPackagePhase{
+			{Name: "general", Packages: []string{"compound/scripts/testbattery"}},
+			{Name: "cli", Packages: []string{cli}}, {Name: "work", Packages: []string{work}},
+			{Name: "release", Packages: []string{release}}, {Name: "hook", Packages: []string{hook}},
+			{Name: "home", Packages: []string{home}},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := append([]string(nil), tt.packages...)
+			got := TestPackagePhases(tt.packages)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("phases = %#v; want %#v", got, tt.want)
+			}
+			if !reflect.DeepEqual(tt.packages, before) {
+				t.Fatalf("mutated selection: %v; want %v", tt.packages, before)
+			}
+			seen := make(map[string]int)
+			for _, phase := range got {
+				if len(phase.Packages) == 0 {
+					t.Fatalf("empty phase %q", phase.Name)
+				}
+				for _, pkg := range phase.Packages {
+					seen[pkg]++
+				}
+			}
+			if len(seen) != len(tt.packages) {
+				t.Fatalf("coverage = %v", seen)
+			}
+			for _, pkg := range tt.packages {
+				if seen[pkg] != 1 {
+					t.Fatalf("%s count = %d", pkg, seen[pkg])
+				}
+			}
+		})
+	}
+}

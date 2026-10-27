@@ -10,7 +10,7 @@ import (
 )
 
 func TestFixedTestPhasesCoverInventoryExactlyOnce(t *testing.T) {
-	inventory := sourcePackageInventory{All: []string{"compound/cmd/compound", "compound/internal/work", "compound/internal/home", "compound/internal/release", "compound/scripts/testbattery"}}
+	inventory := sourcePackageInventory{All: []string{"compound/cmd/compound", "compound/internal/work", "compound/internal/home", "compound/internal/release", "compound/internal/hook", "compound/scripts/testbattery"}}
 	calls := func(mode string) [][]string {
 		var got [][]string
 		err := runSourceGate(t.Context(), mode, func(context.Context, io.Writer) (sourcePackageInventory, error) { return inventory, nil }, func(_ context.Context, args []string, _, _ io.Writer) error {
@@ -26,6 +26,15 @@ func TestFixedTestPhasesCoverInventoryExactlyOnce(t *testing.T) {
 	split := append(calls("general-release"), calls("home")...)
 	if !reflect.DeepEqual(all, split) {
 		t.Fatalf("split changed inventory or order: all=%v split=%v", all, split)
+	}
+	wantOrder := []string{"compound/scripts/testbattery", "compound/cmd/compound", "compound/internal/work", "compound/internal/release", "compound/internal/hook", "compound/internal/home"}
+	if len(split) != len(wantOrder) {
+		t.Fatalf("phases = %v; want six disjoint phases", split)
+	}
+	for i, pkg := range wantOrder {
+		if !reflect.DeepEqual(split[i][3:], []string{pkg}) {
+			t.Fatalf("phase %d = %v; want singleton %s", i+1, split[i], pkg)
+		}
 	}
 	seen := map[string]int{}
 	for _, args := range split {

@@ -114,7 +114,7 @@ completed failed gate's full output at `<out>.gates/<gate>.log` before starting 
 gate, so a later interruption does not erase that failure evidence. These logs are
 diagnostics; an interrupted run without its final report has not passed.
 
-The selected Go tests use the same package phases as the canonical runner: general packages, then CLI, then Work, then Release, then Home. CLI, Work, Release, and Home each run alone when selected. CLI and Work have substantial serial workloads, and Release exercises machine-wide sync barriers; separating these shared IO owners keeps package deadlines and checkpoint scale assertions meaningful. Every selected package and test filter remains in the plan, with the same 30-minute package deadline.
+The selected Go tests use the same package phases as the canonical runner: general packages, then CLI, then Work, then Release, then Hook, then Home. CLI, Work, Release, Hook, and Home each run alone when selected. CLI and Work have substantial serial workloads, and Release exercises machine-wide sync barriers; separating these shared IO owners keeps package deadlines meaningful. Hook and Home scale assertions also run without other selected packages from this suite. This does not prevent contention from other processes. Every selected package and test filter remains in the plan, with the same 30-minute package deadline.
 
 **Affected packages** — `--presubmit` derives them from the diff with `internal/proofscope`, never
 from memory. The rule it applies:

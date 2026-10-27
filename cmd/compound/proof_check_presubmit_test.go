@@ -267,6 +267,7 @@ func TestProofCheckPresubmitIsolatesSharedIOWithoutDroppingTests(t *testing.T) {
 	const release = "compound/internal/release"
 	const cli = "compound/cmd/compound"
 	const core = "compound/internal/work"
+	const hook = "compound/internal/hook"
 	const general = "compound/internal/arch"
 	tests := []struct {
 		name     string
@@ -274,7 +275,12 @@ func TestProofCheckPresubmitIsolatesSharedIOWithoutDroppingTests(t *testing.T) {
 		selector string
 		want     [][]string
 	}{
-		{"mixed", []string{home, core, release, cli, general}, "", [][]string{{general}, {cli}, {core}, {release}, {home}}},
+		{"mixed", []string{home, core, release, hook, cli, general}, "", [][]string{{general}, {cli}, {core}, {release}, {hook}, {home}}},
+		{"empty", nil, "", nil},
+		{"hook-only", []string{hook}, "", [][]string{{hook}}},
+		{"hook-absent", []string{home, core, release, cli, general}, "", [][]string{{general}, {cli}, {core}, {release}, {home}}},
+		{"exact-hook-path-only", []string{"compound/internal/hookplan", hook}, "", [][]string{{"compound/internal/hookplan"}, {hook}}},
+		{"hook-selection-preserved", []string{home, hook, general}, "^TestSelected$", [][]string{{general}, {hook}, {home}}},
 		{"home-only", []string{home}, "", [][]string{{home}}},
 		{"release-only", []string{release}, "", [][]string{{release}}},
 		{"work-only", []string{core}, "", [][]string{{core}}},
@@ -303,6 +309,63 @@ func TestProofCheckPresubmitIsolatesSharedIOWithoutDroppingTests(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("shared IO phases must preserve complete scope, selectors and deadlines: got %v; want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestProofCheckPresubmitHookPhaseRetainsPriorGatesAndFilteredMembership(t *testing.T) {
+	for _, selector := range []string{"", "^TestSelected$"} {
+		t.Run("selector="+selector, func(t *testing.T) {
+			packages := []string{"compound/internal/arch", "compound/cmd/compound", "compound/internal/work", "compound/internal/release", "compound/internal/home"}
+			plan := proofscope.PresubmitPlan{Runs: []proofscope.PresubmitRun{{Packages: packages, Run: selector}}}
+			gates := func(plan proofscope.PresubmitPlan) []work.ProofCheckStep {
+				return work.ProofCheckPresubmitGates(strings.Repeat("a", 40), strings.Repeat("b", 40), "compound", plan, []string{"console/fixture.ts"})
+			}
+			prior := gates(plan)
+			plan.Runs[0].Packages = append(append([]string(nil), packages...), "compound/internal/hook")
+			current := gates(plan)
+			var retained []work.ProofCheckStep
+			seen := map[string]int{}
+			hookCount := 0
+			for _, step := range current {
+				if step.Command[0] == "go" && step.Command[1] == "test" {
+					wantPrefix := []string{"go", "test", "-short", "-count=1", "-timeout=30m"}
+					packageOffset := len(wantPrefix)
+					if selector != "" {
+						wantPrefix = append(wantPrefix, "-run", selector)
+						packageOffset = len(wantPrefix)
+					}
+					if !reflect.DeepEqual(step.Command[:packageOffset], wantPrefix) {
+						t.Fatalf("changed flags/filter: %v", step.Command)
+					}
+					for _, pkg := range step.Command[packageOffset:] {
+						seen[pkg]++
+					}
+					if slices.Contains(step.Command[packageOffset:], "compound/internal/hook") {
+						hookCount++
+						name, ref := "go-test-hook", "presubmit:go-test-short-affected-hook"
+						if selector != "" {
+							name, ref = "go-test-cli-readers-hook", "presubmit:go-test-short-cli-readers-hook"
+						}
+						if step.Name != name || step.ProofRef != ref || !reflect.DeepEqual(step.Command[packageOffset:], []string{"compound/internal/hook"}) {
+							t.Fatalf("hook phase = %+v; want exact isolated name/ref/membership", step)
+						}
+						continue
+					}
+				}
+				retained = append(retained, step)
+			}
+			if hookCount != 1 || len(current) != len(prior)+1 || !reflect.DeepEqual(retained, prior) {
+				t.Fatalf("prior gates changed or hook not singleton: hooks=%d\nprior=%v\ncurrent=%v", hookCount, prior, current)
+			}
+			if len(seen) != len(packages)+1 {
+				t.Fatalf("coverage = %v", seen)
+			}
+			for _, pkg := range plan.Runs[0].Packages {
+				if seen[pkg] != 1 {
+					t.Fatalf("%s count = %d", pkg, seen[pkg])
+				}
 			}
 		})
 	}
