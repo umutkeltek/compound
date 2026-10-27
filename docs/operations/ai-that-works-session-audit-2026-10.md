@@ -172,6 +172,18 @@ interleavings must show:
 - Synthetic prohibited source-to-sink transfers remain denied regardless of spelling.
 - Permitted controls succeed; missing hooks or changed configuration invalidate qualification.
 
+Fixed in this change: the memory action's REQUIRED SINK was derived from the spelling of its
+verb, so a compound-native authority write spelled `adjudicate`, `decide`, `apply`, `persist`,
+or `store` took the permissive candidate sink and a candidate-only source could drive it. The
+sink now fails closed within the compound-native surface (only a verb on the closed candidate-only
+list takes the permissive sink) and the rented memory engine is separated from Compound authority
+entirely, so the engine's own verb no longer decides Compound's authority. Proven by
+`TestCompoundMemoryAuthorityVerbsFailClosedRegardlessOfSpelling`,
+`TestRentedMemoryEngineWritesAlwaysTakeCandidateSink`, and
+`TestAuthorityMemoryPromotionDeniedRegardlessOfSpelling`, which fail against the pre-fix code and
+pass after it. The live 89-tool gbrain surface keeps its current sink, so this does not widen or
+narrow live traffic.
+
 **Cost / risk.** Roughly 2–5 days for the first boundary; broader adapter coverage is separate.
 Check/effect races and false cancellation guarantees dominate.
 
@@ -205,6 +217,29 @@ reuses `internal/distiller/eval.go`.
 and latency on pinned cases with declared repetitions. Missing usage or prices, unmatched
 populations, insufficient repetitions, and critical regressions cannot recommend replacement.
 Generation success is insufficient. Consumer: the operator deciding that specific route change.
+
+Fixed in this change: `RouteOutcomeReview` assesses ONE route outcome against ONE receipt, and the
+promotion tallies count wins and losses from verdicts somebody else already wrote — neither checks
+that the two sides ran the SAME cases, that cost and usage were measured, that enough repetitions
+ran, or that a critical case regressed. `compound route comparison --input <file>` now performs that
+matched, receipt-backed assessment for ONE decision and refuses to recommend a replacement when the
+populations are unmatched, a case ran fewer than the declared repetitions, a run has no measured
+usage or cost, a run has no receipt binding or an unknown receipt outcome, or a critical case the
+incumbent completed did not complete on the candidate. A route that produced output but whose receipt
+did not complete the work is not a success. Proven by `TestRouteComparisonBlocksOnMissingUsageOrCost`,
+`TestRouteComparisonBlocksOnUnmatchedPopulation`,
+`TestRouteComparisonBlocksOnInsufficientRepetitions`,
+`TestRouteComparisonBlocksOnCriticalCaseRegression`, and
+`TestRouteComparisonRejectsGenerationSuccessWithoutReceiptOutcome`, which fail against the
+pre-change code and pass after it.
+
+Live evidence makes the gap concrete. In `ledger/execution-route-evidence.jsonl`, 125,906 of
+143,931 rows carry NO cost, so a cost comparison over that population would read missing prices
+as zero; the assessment refuses those runs rather than scoring them. The same ledger gives every
+row a DISTINCT `request_id` (143,931 rows, 143,931 request ids), so no matched population exists
+in it today. That is why the comparison takes the case identity from the OPERATOR's pinned
+`cases[].case_id` rather than inferring it: an inferred population would pair different cases and
+call it a match. Building the matched population is the operator's step, not the tool's.
 
 **Cost / risk.** Medium implementation effort plus separately bounded provider spend. Cache
 conditions, unequal tool semantics, and model drift can invalidate comparisons.
