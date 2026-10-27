@@ -1,0 +1,178 @@
+package main
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"compound/internal/routeevidence"
+)
+
+// routeComparisonReview builds one route outcome review for the CLI fixture.
+func routeComparisonReview(id, model, requestID, outcome string, stateChanged bool, tokens int, cost int64) routeevidence.RouteOutcomeReview {
+	return routeevidence.RouteOutcomeReview{
+		SchemaVersion:       routeevidence.RouteOutcomeReviewSchemaVersion,
+		ID:                  id,
+		CreatedAt:           "2026-10-27T10:00:00Z",
+		Status:              "recorded",
+		RouteEvidenceID:     "ev_" + id,
+		RequestID:           requestID,
+		WorkID:              "work_" + id,
+		ReceiptID:           "rec_" + id,
+		ReceiptOutcome:      outcome,
+		ReceiptStateChanged: stateChanged,
+		RouteStatus:         "completed",
+		SelectedTarget:      routeevidence.Target{Provider: "fixture-provider", Model: model, Protocol: "mcp"},
+		Usage:               routeevidence.Usage{TotalTokens: tokens, PromptTokens: tokens},
+		CostMicros:          cost,
+		LatencyMS:           120,
+		EvidenceRefs:        []string{"ev_" + id, "rec_" + id},
+	}
+}
+
+// The CLI must reach the assessment and print the verdict. A matched,
+// measured comparison with no critical regression recommends the replacement.
+func TestRouteComparisonCLIRecommendsMatchedComparison(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "comparison.json")
+	body, err := json.Marshal(map[string]any{
+		"schema_version":  routeevidence.RouteComparisonInputSchemaVersion,
+		"decision_id":     "decision_route_change_fixture",
+		"incumbent_route": map[string]any{"provider": "fixture-provider", "model": "model-a", "protocol": "mcp"},
+		"candidate_route": map[string]any{"provider": "fixture-provider", "model": "model-b", "protocol": "mcp"},
+		"cases": []map[string]any{{
+			"case_id": "case_pinned",
+			"incumbent": []routeevidence.RouteOutcomeReview{
+				routeComparisonReview("inc_a", "model-a", "req_inc_1", "completed", true, 1000, 500),
+			},
+			"candidate": []routeevidence.RouteOutcomeReview{
+				routeComparisonReview("cand_a", "model-b", "req_cand_1", "completed", true, 900, 450),
+			},
+		}},
+		"critical_cases":  []string{"case_pinned"},
+		"min_repetitions": 1,
+	})
+	if err != nil {
+		t.Fatalf("marshal comparison input: %v", err)
+	}
+	if err := os.WriteFile(input, body, 0o600); err != nil {
+		t.Fatalf("write comparison input: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdRoute([]string{"comparison", "--input", input})
+	})
+	for _, want := range []string{
+		"# route comparison rcmp_",
+		"- decision: decision_route_change_fixture",
+		"- assessment_class: comparison_supports_replacement",
+		"- recommend_replacement: true",
+		"- matched_cases: 1",
+		"- incumbent_route: fixture-provider/model-a (mcp)",
+		"- candidate_route: fixture-provider/model-b (mcp)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("comparison output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// A comparison whose candidate regressed on a critical case must refuse, and
+// the refusal must name the reason.
+func TestRouteComparisonCLIRefusesCriticalRegression(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "comparison.json")
+	body, err := json.Marshal(map[string]any{
+		"schema_version":  routeevidence.RouteComparisonInputSchemaVersion,
+		"decision_id":     "decision_route_change_fixture",
+		"incumbent_route": map[string]any{"provider": "fixture-provider", "model": "model-a", "protocol": "mcp"},
+		"candidate_route": map[string]any{"provider": "fixture-provider", "model": "model-b", "protocol": "mcp"},
+		"cases": []map[string]any{{
+			"case_id": "case_pinned",
+			"incumbent": []routeevidence.RouteOutcomeReview{
+				routeComparisonReview("inc_a", "model-a", "req_inc_1", "completed", true, 1000, 500),
+			},
+			"candidate": []routeevidence.RouteOutcomeReview{
+				routeComparisonReview("cand_a", "model-b", "req_cand_1", "failed", false, 1000, 500),
+			},
+		}},
+		"critical_cases":  []string{"case_pinned"},
+		"min_repetitions": 1,
+	})
+	if err != nil {
+		t.Fatalf("marshal comparison input: %v", err)
+	}
+	if err := os.WriteFile(input, body, 0o600); err != nil {
+		t.Fatalf("write comparison input: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdRoute([]string{"comparison", "--input", input})
+	})
+	for _, want := range []string{
+		"- recommend_replacement: false",
+		"- critical_regressions: 1",
+		"- blocked:",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("comparison output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// The comparison is EVIDENCE: recording it must not mutate routing policy,
+// promote a claim, or spend.
+func TestRouteComparisonCLIRecordWritesEvidenceOnly(t *testing.T) {
+	homePath := t.TempDir()
+	dir := t.TempDir()
+	input := filepath.Join(dir, "comparison.json")
+	body, err := json.Marshal(map[string]any{
+		"schema_version":  routeevidence.RouteComparisonInputSchemaVersion,
+		"decision_id":     "decision_route_change_fixture",
+		"incumbent_route": map[string]any{"provider": "fixture-provider", "model": "model-a", "protocol": "mcp"},
+		"candidate_route": map[string]any{"provider": "fixture-provider", "model": "model-b", "protocol": "mcp"},
+		"cases": []map[string]any{{
+			"case_id": "case_pinned",
+			"incumbent": []routeevidence.RouteOutcomeReview{
+				routeComparisonReview("inc_a", "model-a", "req_inc_1", "completed", true, 1000, 500),
+			},
+			"candidate": []routeevidence.RouteOutcomeReview{
+				routeComparisonReview("cand_a", "model-b", "req_cand_1", "completed", true, 900, 450),
+			},
+		}},
+		"critical_cases":  []string{"case_pinned"},
+		"min_repetitions": 1,
+	})
+	if err != nil {
+		t.Fatalf("marshal comparison input: %v", err)
+	}
+	if err := os.WriteFile(input, body, 0o600); err != nil {
+		t.Fatalf("write comparison input: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdRoute([]string{"comparison", "--input", input, "--record"})
+	})
+	if !strings.Contains(out, "- recorded:") {
+		t.Fatalf("comparison output missing the recorded path:\n%s", out)
+	}
+	// The evidence artifact exists.
+	recorded := outputValue(out, "- recorded:")
+	if recorded == "" {
+		t.Fatalf("comparison output missing the recorded path:\n%s", out)
+	}
+	if _, err := os.Stat(recorded); err != nil {
+		t.Fatalf("recorded comparison artifact missing: %v", err)
+	}
+	// It must not have promoted a claim or minted a route decision.
+	for _, forbidden := range []string{
+		filepath.Join(homePath, "ledger", "claims.jsonl"),
+		filepath.Join(homePath, "ledger", "decisions.jsonl"),
+	} {
+		if _, err := os.Stat(forbidden); !os.IsNotExist(err) {
+			t.Fatalf("route comparison must not write %s, stat err=%v", forbidden, err)
+		}
+	}
+}
