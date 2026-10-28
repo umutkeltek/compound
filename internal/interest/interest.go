@@ -57,6 +57,14 @@ const (
 	// scopes it: "repository:<fingerprint>", one ref per repository it covers.
 	SignatureEvidencePrefix  = "signature:"
 	RepositoryEvidencePrefix = "repository:"
+	// RepositoryWildcard after RepositoryEvidencePrefix ("repository:*") is an
+	// explicit claim that the cause is repository-independent (a machine, tool
+	// or environment cause such as a redact false positive or a load timeout),
+	// so the explanation covers every repository the signature was seen in,
+	// including ones the projection's capped Repositories list does not show.
+	// It is a stated scope, not the absence of one: naming nothing on a
+	// multi-repository signature still reads as ScopeUnscoped.
+	RepositoryWildcard = "*"
 
 	// proofResultKind and proofResultFailed duplicate internal/work's
 	// ProofResourceResult.Kind value and ProofResourceFailed (no upward import).
@@ -99,20 +107,24 @@ type Totals struct {
 
 // Signature is one cluster. Repositories are fingerprints, never checkout paths.
 type Signature struct {
-	ID            string        `json:"id"`
-	Step          string        `json:"step"`
-	Signature     string        `json:"signature"`
-	Tests         []string      `json:"tests"`
-	Occurrences   int           `json:"occurrences"`
-	FirstSeen     string        `json:"first_seen"`
-	LastSeen      string        `json:"last_seen"`
-	WorkIDs       []string      `json:"work_ids"`
-	Repositories  []string      `json:"repositories"`
-	ResourceShape bool          `json:"resource_shape"`
-	State         string        `json:"state"`
-	ExplainedBy   []Explanation `json:"explained_by"`
-	Related       []Explanation `json:"related"`
-	AttentionRank int           `json:"attention_rank"`
+	ID           string   `json:"id"`
+	Step         string   `json:"step"`
+	Signature    string   `json:"signature"`
+	Tests        []string `json:"tests"`
+	Occurrences  int      `json:"occurrences"`
+	FirstSeen    string   `json:"first_seen"`
+	LastSeen     string   `json:"last_seen"`
+	WorkIDs      []string `json:"work_ids"`
+	Repositories []string `json:"repositories"`
+	// RepositoriesTotal is the uncapped count behind the Repositories sample, so a
+	// reader can tell when the sample is partial and an explanation must claim
+	// repository:* rather than enumerate.
+	RepositoriesTotal int           `json:"repositories_total"`
+	ResourceShape     bool          `json:"resource_shape"`
+	State             string        `json:"state"`
+	ExplainedBy       []Explanation `json:"explained_by"`
+	Related           []Explanation `json:"related"`
+	AttentionRank     int           `json:"attention_rank"`
 }
 
 type Explanation struct {
@@ -528,6 +540,7 @@ func classify(obs []observation, exps []explainer) []Signature {
 	for _, c := range clusters {
 		s := c.sig
 		s.WorkIDs, s.Repositories, s.Tests = sorted(c.works, 10), sorted(c.repos, 5), sorted(c.tests, 10)
+		s.RepositoriesTotal = len(c.repos)
 		s.ExplainedBy, s.Related = explain(s, c.repos, exps)
 		switch {
 		case len(s.ExplainedBy) > 0:
@@ -606,8 +619,12 @@ func explain(s Signature, seen map[string]bool, exps []explainer) (explained, re
 	return firstExplanations(explained), firstExplanations(related)
 }
 
-// uncoveredScope is "" when the named repositories cover every one seen.
+// uncoveredScope is "" when the named repositories cover every one seen; a
+// repository:* claim covers all of them by declaration.
 func uncoveredScope(named, seen map[string]bool) string {
+	if named[RepositoryWildcard] {
+		return ""
+	}
 	if len(named) == 0 {
 		if len(seen) > 1 {
 			return ScopeUnscoped

@@ -176,7 +176,7 @@ error line, normalized so it carries no path or hash. Each signature is in one o
 
 | State | Meaning | Attention |
 |---|---|---|
-| `assimilated` | A finding names the signature id exactly (topic or `signature:` evidence ref), and its `repository:` refs cover every repository the signature was seen in (naming none covers a signature seen in one) | None. No progress is left to earn |
+| `assimilated` | A finding names the signature id exactly (topic or `signature:` evidence ref), and its `repository:` refs cover every repository the signature was seen in (naming none covers a signature seen in one; `repository:*` declares a repository-independent cause such as a redact false positive or a load timeout, and `repositories_total` says how many the capped list hides) | None. No progress is left to earn |
 | `learnable` | No explanation, and the signature recurs across different work items or days | First. The steep part of the learning curve |
 | `singleton` | Seen once, or one work retried within a day; no explanation | Wait. Regularity and noise cannot be told apart yet, however many retries |
 
