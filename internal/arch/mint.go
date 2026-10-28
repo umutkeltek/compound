@@ -95,6 +95,13 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "derive the exact go-test package scope for a sealed base/head commit pair",
 		Consumer: "compound proof-check --presubmit (non-certifying pre-landing go-test scope; claim verification and the internal/work canonical go-test step follow in p2)",
 	},
+	// interest ranks failed-proof signatures by whether an explanation is held; it
+	// is a read-only projection that gates and promotes nothing.
+	"organ:interest": {
+		Class:    MintEvidence,
+		Purpose:  "rank failed-proof signatures as assimilated, learnable or singleton and measure compression progress as observations newly absorbed by an explanation",
+		Consumer: "`compound interest list` operator door and the private meter line (NOW.md); orient join is slice 3",
+	},
 	// store is the ADR-0005 pg experiment operator surface; it never promotes or gates
 	// memory truth — exports are governed writes with their own PolicyDecision door.
 	"organ:store": {

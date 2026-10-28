@@ -8,6 +8,7 @@ import (
 	browsercli "compound/internal/browser"
 	executorlenscli "compound/internal/executorlens"
 	gamecli "compound/internal/game/cli"
+	interestcli "compound/internal/interest"
 	lanematrixcli "compound/internal/lanematrix"
 	noticecli "compound/internal/operatornotice"
 	"compound/internal/policy"
@@ -207,6 +208,7 @@ func compoundCommandRegistry() map[string]compoundCommand {
 			withSubcommandFlagAdmission("cool", "--experimental", policy.FirstPartyCommandGoverned).
 			withSubcommandAdmission("list", policy.FirstPartyCommandRead),
 		"mcp-transport": heldCommand(cmdMCPTransport),
+		"interest":      heldCommand(interestcli.RunCLI),
 		"negatives":     heldCommand(cmdNegatives),
 		"architecture": heldCommand(archcli.Run).
 			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead),

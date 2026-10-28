@@ -97,6 +97,8 @@ gates. `compound orient --task` serves only promoted results.
   frontmatter claims map the paper onto Compound's spine (`compound memory import-page`,
   candidates on a `curated_page` basis). The page's "slices" section names the executor
   whose next branch changes, which is the test that a synthesis is more than a document.
+- **Principle papers** (`knowledge/compression-progress-arxiv-0812-4360.md`): same door; slice 1
+  (`compound interest`) lands with the page and ranks reds by compression progress, not volume.
 - **Expertise packs** (`knowledge/expertise-packs.md`): "everything a world-class X
   knows" compressed into a `source.kind: expertise-synthesis` bundle of `technique`
   items. Model-synthesized profession knowledge enters as low-trust evidence, grounds
