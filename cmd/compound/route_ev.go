@@ -10,6 +10,7 @@ import (
 	"compound/internal/lanebeliefs"
 	"compound/internal/routeev"
 	"compound/internal/routeevidence"
+	routeevidencecli "compound/internal/routeevidence/cli"
 )
 
 // routeEvUsage is the S2 CLI surface (spec docs_private/plan/ev-card-spec.md §7): price a
@@ -276,4 +277,19 @@ func laneCardSummary(lane routeev.LaneCard) string {
 	}
 	parts = append(parts, fmt.Sprintf("(attempts=%d completions=%d)", lane.Attempts, lane.Completions))
 	return strings.Join(parts, " ")
+}
+
+// tryRouteComparisonCommand handles `compound route comparison ...`.
+//
+// The command body lives with its owner in internal/routeevidence/cli, so
+// cmd/compound keeps only the dispatch and the cmd/compound LOC/file budget
+// does not grow.
+func tryRouteComparisonCommand(args []string, homePath string) bool {
+	if len(args) == 0 || args[0] != "comparison" {
+		return false
+	}
+	if code := routeevidencecli.RunComparison(args[1:], homePath, os.Stdout, os.Stderr); code != 0 {
+		os.Exit(code)
+	}
+	return true
 }

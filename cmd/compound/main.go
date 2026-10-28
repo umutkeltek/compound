@@ -383,6 +383,7 @@ compound proof-check [--json] [--dry-run] [--dev] [--repo P] [--out FILE] determ
   compound route execution-profile (--list|--profile ID ...) [--json] provider-neutral resolved intent; no provider call or home mutation
   compound route cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record] provider cost coverage -> route observation/no-promote
   compound route outcome-review (--route-id ID|--route-evidence file) --receipt file [--target file] [--record] join route evidence to work outcome
+  compound route comparison --input file [--record] matched, receipt-backed assessment of one route-change decision
   compound route plan --candidate C [--target file]              route_observation candidate -> reviewed routing-policy draft
   compound route plan --capability-class C [--privacy-sensitive] planned lane chain from Compound route authority
   compound route ev --capability-class C --deviation-lane L [--risk-grade gate|judge|tidy] [--class-bucket unknown] [--json] price a deviation against the served policy line (compound.route.evcard.v0.1); advisory, never auto-blocks
@@ -905,6 +906,9 @@ func cmdRoute(args []string) {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
+	}
+	if tryRouteComparisonCommand(args, homePath) {
+		return
 	}
 	if tryRoutePromotionCommand(args, homePath) {
 		return
