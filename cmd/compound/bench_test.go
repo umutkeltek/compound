@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -641,5 +643,57 @@ func TestRunBenchCompareRejectsTruncatedDeclaredContract(t *testing.T) {
 		} else if !strings.Contains(out.String(), "REJECT") {
 			t.Fatalf("missing REJECT: %s", out.String())
 		}
+	}
+}
+
+// TestWriteBenchReportNeverReplacesEarlierEvidence: a self-improvement comparison needs its
+// baseline report after the treatment run. Two same-suite reports stamped at one instant, a
+// concurrent burst of writers, and two suites whose names slug to the same text must each keep
+// their own file with their original bytes; rewriting byte-identical bytes stays one file.
+func TestWriteBenchReportNeverReplacesEarlierEvidence(t *testing.T) {
+	t.Parallel()
+	homePath := t.TempDir()
+	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	report := func(suite, build string) bench.Report {
+		return bench.Report{Schema: bench.SchemaVersion, Suite: suite, BuildSHA: build, Timestamp: now.Format(time.RFC3339)}
+	}
+	reports := []bench.Report{report("capability", "baseline"), report("capability", "treatment"), report("Foo Bar", "x"), report("foo-bar", "x")}
+	for i := range 8 {
+		reports = append(reports, report("capability", fmt.Sprintf("concurrent-%d", i)))
+	}
+	paths := make([]string, len(reports))
+	errs := make([]error, len(reports))
+	var wg sync.WaitGroup
+	for i, r := range reports {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			paths[i], errs[i] = writeBenchReport(homePath, r, now)
+		}()
+	}
+	wg.Wait()
+	seen := map[string]bool{}
+	for i, r := range reports {
+		if errs[i] != nil {
+			t.Fatalf("write %s/%s: %v", r.Suite, r.BuildSHA, errs[i])
+		}
+		if seen[paths[i]] {
+			t.Fatalf("report %s/%s reused path %s", r.Suite, r.BuildSHA, paths[i])
+		}
+		seen[paths[i]] = true
+		want, err := json.MarshalIndent(r, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := os.ReadFile(paths[i]); err != nil || !bytes.Equal(got, append(want, '\n')) {
+			t.Fatalf("report %s/%s bytes changed at %s: err=%v\n%s", r.Suite, r.BuildSHA, paths[i], err, got)
+		}
+	}
+	again, err := writeBenchReport(homePath, reports[0], now)
+	if err != nil || again != paths[0] {
+		t.Fatalf("identical rewrite = %q, %v; want %q", again, err, paths[0])
+	}
+	if entries, err := os.ReadDir(filepath.Join(homePath, "reviews", "bench")); err != nil || len(entries) != len(reports) {
+		t.Fatalf("reviews/bench holds %d entries (err=%v), want %d", len(entries), err, len(reports))
 	}
 }
