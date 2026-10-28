@@ -323,6 +323,43 @@ func TestExactExplanationMustCoverEveryRepository(t *testing.T) {
 	}
 }
 
+// A repository:* claim covers every repository by declaration, including the
+// ones the capped Repositories sample hides; repositories_total exposes the gap.
+func TestRepositoryWildcardCoversBeyondTheCappedSample(t *testing.T) {
+	h := t.TempDir()
+	fps := []string{"fp-a", "fp-b", "fp-c", "fp-d", "fp-e", "fp-f", "fp-g"}
+	for i, fp := range fps {
+		ref := putReport(t, h, "", fp, stepFixture{"redact-public", "failed", "MEDIUM pii.phone.e164 40:58 12*****\n"})
+		putResult(t, h, "pfrs_fixture_w"+string(rune('1'+i)), "work_fixture_"+fp, "failed", t0.Add(-time.Duration(i+1)*time.Hour), ref, fp)
+	}
+	sig := "MEDIUM pii.phone.e<n> <n>:<n> <n><mask>"
+	id := SignatureID("redact-public", sig)
+	s := bySignature(t, mustBuild(t, h, t0), sig)
+	if s.RepositoriesTotal != 7 || len(s.Repositories) != 5 || s.State != StateLearnable {
+		t.Fatalf("capped sample must still report the total: %+v", s)
+	}
+	// Naming only the five the sample shows is uncovered: two repositories are hidden.
+	refs := []string{SignatureEvidencePrefix + id}
+	for _, fp := range s.Repositories {
+		refs = append(refs, RepositoryEvidencePrefix+fp)
+	}
+	if _, err := finding.Record(h, finding.Finding{Topic: "sample only", Body: "fixture digits trip the phone detector", EvidenceRefs: refs}, t0); err != nil {
+		t.Fatal(err)
+	}
+	s = bySignature(t, mustBuild(t, h, t0), sig)
+	if s.State != StateLearnable || len(s.ExplainedBy) != 0 || len(s.Related) != 1 || s.Related[0].Scope != ScopeUncovered {
+		t.Fatalf("enumerating the capped sample must not cover hidden repositories: %+v", s)
+	}
+	star, err := finding.Record(h, finding.Finding{Topic: "machine cause", Body: "fixture digits trip the phone detector on every checkout", EvidenceRefs: []string{SignatureEvidencePrefix + id, RepositoryEvidencePrefix + RepositoryWildcard}}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s = bySignature(t, mustBuild(t, h, t0), sig)
+	if s.State != StateAssimilated || !reflect.DeepEqual(s.ExplainedBy, []Explanation{{Ref: "finding:" + star.ID, Match: MatchExact}}) {
+		t.Fatalf("repository:* must cover every repository: %+v", s)
+	}
+}
+
 // One work retrying the same failure 100 times in a day is a singleton; two
 // independent works hitting a failure once each is learnable and ranks first.
 func TestLearnableRanksBeforeHeavilyRetriedSingleton(t *testing.T) {
