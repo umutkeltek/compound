@@ -266,6 +266,15 @@ reasons before building what the note implies.
   makes the proof's head differ from the candidate you attached. After the battery, re-read `git rev-parse main`:
   if it moved, attach the new tip (`work advance --artifact commit:<new-tip>`) and re-run land-check — do not
   re-run the battery for a tip it already certified.
+- **Do not compete with your OWN battery.** While a canonical battery runs, do NOT start an isolation
+  run of the package you suspect it timed out on. The battery and your isolation run then starve each
+  other on the same box, and the isolation run ALSO times out — so the re-run proves nothing and costs
+  the battery its window. Measured on 2026-10-28: four concurrent `go test ./internal/work` runs launched
+  as "isolation checks" pushed the battery's `internal/work` gate to its 40-minute timeout (51/53 gates
+  passed, 2 timed out, zero assertion failures) while the isolation runs failed the same way on the
+  UNCHANGED base tree. Kill the competing runs first, let the box go quiet, then re-run the battery ONCE.
+  When a battery gate times out, the cheapest discriminator is the failure SHAPE (timeout vs assertion),
+  not a concurrent re-run.
 - **"landed ≠ working."** A merged commit is not a live change. Prove wiring / data / cutover / proof: name the
   live consumer and watch it consume in ITS output (grep-in-source is not consumption); no consumer ⇒ `audit_only`
   ⇒ not done. The full battery + verdict format live in `compound-verify` — run it before any close.
