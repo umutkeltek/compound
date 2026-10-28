@@ -102,10 +102,10 @@ func TestRouteComparisonRecommendsWhenMatchedAndMeasured(t *testing.T) {
 func TestRouteComparisonBlocksOnMissingUsageOrCost(t *testing.T) {
 	base := func() ([]RouteOutcomeReview, []RouteOutcomeReview) {
 		return []RouteOutcomeReview{
-				comparisonCase(t, "inc_a", "model-a", "req_a", "completed", true, 1000, 500, 120),
-			}, []RouteOutcomeReview{
-				comparisonCase(t, "cand_a", "model-b", "req_a", "completed", true, 1000, 500, 120),
-			}
+			comparisonCase(t, "inc_a", "model-a", "req_a", "completed", true, 1000, 500, 120),
+		}, []RouteOutcomeReview{
+			comparisonCase(t, "cand_a", "model-b", "req_a", "completed", true, 1000, 500, 120),
+		}
 	}
 	for _, tc := range []struct {
 		name    string
@@ -145,15 +145,15 @@ func TestRouteComparisonBlocksOnMissingUsageOrCost(t *testing.T) {
 			incumbent, candidate := base()
 			tc.mutate(incumbent, candidate)
 			comparison := BuildRouteComparison(RouteComparisonInput{
-				DecisionID:      "decision_route_change_fixture",
-				IncumbentRoute:  Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
-				CandidateRoute:  Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
+				DecisionID:     "decision_route_change_fixture",
+				IncumbentRoute: Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
+				CandidateRoute: Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
 				Cases: []RouteComparisonCaseInput{
-			{CaseID: "req_a", Incumbent: incumbent[:1], Candidate: candidate[:1]},
-			{CaseID: "req_b", Incumbent: incumbent[1:]},
-			{CaseID: "req_c", Candidate: candidate[1:]},
-		},
-				CriticalCases:   []string{"req_a"},
+					{CaseID: "req_a", Incumbent: incumbent[:1], Candidate: candidate[:1]},
+					{CaseID: "req_b", Incumbent: incumbent[1:]},
+					{CaseID: "req_c", Candidate: candidate[1:]},
+				},
+				CriticalCases:  []string{"req_a"},
 				MinRepetitions: 1,
 			})
 			if comparison.Assessment.RecommendReplacement {
@@ -178,15 +178,15 @@ func TestRouteComparisonBlocksOnUnmatchedPopulation(t *testing.T) {
 		comparisonCase(t, "cand_c", "model-b", "req_c", "completed", true, 1000, 500, 120),
 	}
 	comparison := BuildRouteComparison(RouteComparisonInput{
-		DecisionID:      "decision_route_change_fixture",
-		IncumbentRoute:  Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
-		CandidateRoute:  Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
+		DecisionID:     "decision_route_change_fixture",
+		IncumbentRoute: Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
+		CandidateRoute: Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
 		Cases: []RouteComparisonCaseInput{
 			{CaseID: "req_a", Incumbent: incumbent[:1], Candidate: candidate[:1]},
 			{CaseID: "req_b", Incumbent: incumbent[1:]},
 			{CaseID: "req_c", Candidate: candidate[1:]},
 		},
-		CriticalCases:   []string{"req_a"},
+		CriticalCases:  []string{"req_a"},
 		MinRepetitions: 1,
 	})
 	if comparison.Assessment.RecommendReplacement {
@@ -206,11 +206,11 @@ func TestRouteComparisonBlocksOnInsufficientRepetitions(t *testing.T) {
 		comparisonCase(t, "cand_a", "model-b", "req_a", "completed", true, 1000, 500, 120),
 	}
 	comparison := BuildRouteComparison(RouteComparisonInput{
-		DecisionID:      "decision_route_change_fixture",
-		IncumbentRoute:  Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
-		CandidateRoute:  Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
-		Cases:           []RouteComparisonCaseInput{{CaseID: "req_a", Incumbent: incumbent, Candidate: candidate}},
-		CriticalCases:   []string{"req_a"},
+		DecisionID:     "decision_route_change_fixture",
+		IncumbentRoute: Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
+		CandidateRoute: Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
+		Cases:          []RouteComparisonCaseInput{{CaseID: "req_a", Incumbent: incumbent, Candidate: candidate}},
+		CriticalCases:  []string{"req_a"},
 		MinRepetitions: 3,
 	})
 	if comparison.Assessment.RecommendReplacement {
@@ -232,11 +232,11 @@ func TestRouteComparisonBlocksOnCriticalCaseRegression(t *testing.T) {
 		comparisonCase(t, "cand_a", "model-b", "req_a", "failed", false, 1000, 500, 120),
 	}
 	comparison := BuildRouteComparison(RouteComparisonInput{
-		DecisionID:      "decision_route_change_fixture",
-		IncumbentRoute:  Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
-		CandidateRoute:  Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
-		Cases:           []RouteComparisonCaseInput{{CaseID: "req_a", Incumbent: incumbent, Candidate: candidate}},
-		CriticalCases:   []string{"req_a"},
+		DecisionID:     "decision_route_change_fixture",
+		IncumbentRoute: Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
+		CandidateRoute: Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
+		Cases:          []RouteComparisonCaseInput{{CaseID: "req_a", Incumbent: incumbent, Candidate: candidate}},
+		CriticalCases:  []string{"req_a"},
 		MinRepetitions: 1,
 	})
 	if comparison.Assessment.RecommendReplacement {
@@ -263,11 +263,11 @@ func TestRouteComparisonRejectsGenerationSuccessWithoutReceiptOutcome(t *testing
 		comparisonCase(t, "cand_a", "model-b", "req_a", "no_op", false, 1000, 500, 120),
 	}
 	comparison := BuildRouteComparison(RouteComparisonInput{
-		DecisionID:      "decision_route_change_fixture",
-		IncumbentRoute:  Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
-		CandidateRoute:  Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
-		Cases:           []RouteComparisonCaseInput{{CaseID: "req_a", Incumbent: incumbent, Candidate: candidate}},
-		CriticalCases:   []string{"req_a"},
+		DecisionID:     "decision_route_change_fixture",
+		IncumbentRoute: Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
+		CandidateRoute: Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
+		Cases:          []RouteComparisonCaseInput{{CaseID: "req_a", Incumbent: incumbent, Candidate: candidate}},
+		CriticalCases:  []string{"req_a"},
 		MinRepetitions: 1,
 	})
 	if comparison.Assessment.RecommendReplacement {
@@ -289,11 +289,11 @@ func TestRouteComparisonIsEvidenceOnly(t *testing.T) {
 		comparisonCase(t, "cand_a", "model-b", "req_a", "completed", true, 1000, 500, 120),
 	}
 	comparison := BuildRouteComparison(RouteComparisonInput{
-		DecisionID:      "decision_route_change_fixture",
-		IncumbentRoute:  Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
-		CandidateRoute:  Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
-		Cases:           []RouteComparisonCaseInput{{CaseID: "req_a", Incumbent: incumbent, Candidate: candidate}},
-		CriticalCases:   []string{"req_a"},
+		DecisionID:     "decision_route_change_fixture",
+		IncumbentRoute: Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
+		CandidateRoute: Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
+		Cases:          []RouteComparisonCaseInput{{CaseID: "req_a", Incumbent: incumbent, Candidate: candidate}},
+		CriticalCases:  []string{"req_a"},
 		MinRepetitions: 1,
 	})
 	joined := strings.ToLower(strings.Join(comparison.Warnings, " "))
@@ -311,9 +311,9 @@ func TestRouteComparisonIsEvidenceOnly(t *testing.T) {
 // An input with no cases at all cannot recommend anything.
 func TestRouteComparisonBlocksOnEmptyPopulation(t *testing.T) {
 	comparison := BuildRouteComparison(RouteComparisonInput{
-		DecisionID:      "decision_route_change_fixture",
-		IncumbentRoute:  Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
-		CandidateRoute:  Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
+		DecisionID:     "decision_route_change_fixture",
+		IncumbentRoute: Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
+		CandidateRoute: Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
 		MinRepetitions: 1,
 	})
 	if comparison.Assessment.RecommendReplacement {
@@ -334,11 +334,11 @@ func TestRouteComparisonRequiresReceiptBinding(t *testing.T) {
 	}
 	candidate[0].ReceiptID = ""
 	comparison := BuildRouteComparison(RouteComparisonInput{
-		DecisionID:      "decision_route_change_fixture",
-		IncumbentRoute:  Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
-		CandidateRoute:  Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
-		Cases:           []RouteComparisonCaseInput{{CaseID: "req_a", Incumbent: incumbent, Candidate: candidate}},
-		CriticalCases:   []string{"req_a"},
+		DecisionID:     "decision_route_change_fixture",
+		IncumbentRoute: Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
+		CandidateRoute: Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
+		Cases:          []RouteComparisonCaseInput{{CaseID: "req_a", Incumbent: incumbent, Candidate: candidate}},
+		CriticalCases:  []string{"req_a"},
 		MinRepetitions: 1,
 	})
 	if comparison.Assessment.RecommendReplacement {
@@ -359,11 +359,11 @@ func TestRouteComparisonBlocksOnUnknownReceiptOutcome(t *testing.T) {
 		comparisonCase(t, "cand_a", "model-b", "req_a", "wibble", false, 1000, 500, 120),
 	}
 	comparison := BuildRouteComparison(RouteComparisonInput{
-		DecisionID:      "decision_route_change_fixture",
-		IncumbentRoute:  Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
-		CandidateRoute:  Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
-		Cases:           []RouteComparisonCaseInput{{CaseID: "req_a", Incumbent: incumbent, Candidate: candidate}},
-		CriticalCases:   []string{"req_a"},
+		DecisionID:     "decision_route_change_fixture",
+		IncumbentRoute: Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
+		CandidateRoute: Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
+		Cases:          []RouteComparisonCaseInput{{CaseID: "req_a", Incumbent: incumbent, Candidate: candidate}},
+		CriticalCases:  []string{"req_a"},
 		MinRepetitions: 1,
 	})
 	if comparison.Assessment.RecommendReplacement {
@@ -381,11 +381,11 @@ func TestRouteComparisonTreatsFailedReceiptAsFailure(t *testing.T) {
 		comparisonCase(t, "cand_a", "model-b", "req_a", "failed", false, 1000, 500, 120),
 	}
 	comparison := BuildRouteComparison(RouteComparisonInput{
-		DecisionID:      "decision_route_change_fixture",
-		IncumbentRoute:  Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
-		CandidateRoute:  Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
-		Cases:           []RouteComparisonCaseInput{{CaseID: "req_a", Incumbent: incumbent, Candidate: candidate}},
-		CriticalCases:   []string{"req_a"},
+		DecisionID:     "decision_route_change_fixture",
+		IncumbentRoute: Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
+		CandidateRoute: Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
+		Cases:          []RouteComparisonCaseInput{{CaseID: "req_a", Incumbent: incumbent, Candidate: candidate}},
+		CriticalCases:  []string{"req_a"},
 		MinRepetitions: 1,
 	})
 	if comparison.Assessment.RecommendReplacement {
@@ -419,11 +419,11 @@ func TestRouteComparisonIsValidEnvelope(t *testing.T) {
 		comparisonCase(t, "cand_a", "model-b", "req_a", "completed", true, 1000, 500, 120),
 	}
 	comparison := BuildRouteComparison(RouteComparisonInput{
-		DecisionID:      "decision_route_change_fixture",
-		IncumbentRoute:  Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
-		CandidateRoute:  Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
-		Cases:           []RouteComparisonCaseInput{{CaseID: "req_a", Incumbent: incumbent, Candidate: candidate}},
-		CriticalCases:   []string{"req_a"},
+		DecisionID:     "decision_route_change_fixture",
+		IncumbentRoute: Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
+		CandidateRoute: Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
+		Cases:          []RouteComparisonCaseInput{{CaseID: "req_a", Incumbent: incumbent, Candidate: candidate}},
+		CriticalCases:  []string{"req_a"},
 		MinRepetitions: 1,
 	})
 	if comparison.SchemaVersion != RouteComparisonSchemaVersion {
@@ -469,11 +469,11 @@ func TestRouteComparisonCaseIdentityIsOperatorPinned(t *testing.T) {
 		comparisonCase(t, "cand_a", "model-b", "req_candidate_1", "completed", true, 900, 450, 100),
 	}
 	comparison := BuildRouteComparison(RouteComparisonInput{
-		DecisionID:      "decision_route_change_fixture",
-		IncumbentRoute:  Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
-		CandidateRoute:  Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
-		Cases:           []RouteComparisonCaseInput{{CaseID: "case_pinned_by_operator", Incumbent: incumbent, Candidate: candidate}},
-		CriticalCases:   []string{"case_pinned_by_operator"},
+		DecisionID:     "decision_route_change_fixture",
+		IncumbentRoute: Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
+		CandidateRoute: Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
+		Cases:          []RouteComparisonCaseInput{{CaseID: "case_pinned_by_operator", Incumbent: incumbent, Candidate: candidate}},
+		CriticalCases:  []string{"case_pinned_by_operator"},
 		MinRepetitions: 1,
 	})
 	if !comparison.Assessment.RecommendReplacement {

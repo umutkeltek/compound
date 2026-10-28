@@ -30,26 +30,26 @@ const RouteComparisonSchemaVersion = "compound.route_comparison.v0.1"
 // It is EVIDENCE. It does not change routing policy, does not mutate a
 // gateway, does not spend, and does not claim task success.
 type RouteComparison struct {
-	SchemaVersion  string   `json:"schema_version"`
-	ID             string   `json:"id"`
-	CreatedAt      string   `json:"created_at"`
-	DecisionID     string   `json:"decision_id"`
-	IncumbentRoute Target   `json:"incumbent_route"`
-	CandidateRoute Target   `json:"candidate_route"`
-	Cases          []RouteComparisonCase `json:"cases"`
+	SchemaVersion  string                    `json:"schema_version"`
+	ID             string                    `json:"id"`
+	CreatedAt      string                    `json:"created_at"`
+	DecisionID     string                    `json:"decision_id"`
+	IncumbentRoute Target                    `json:"incumbent_route"`
+	CandidateRoute Target                    `json:"candidate_route"`
+	Cases          []RouteComparisonCase     `json:"cases"`
 	Assessment     RouteComparisonAssessment `json:"assessment"`
-	EvidenceRefs   []string `json:"evidence_refs"`
-	Warnings       []string `json:"warnings"`
+	EvidenceRefs   []string                  `json:"evidence_refs"`
+	Warnings       []string                  `json:"warnings"`
 }
 
 // RouteComparisonCase is one PINNED case, with the runs each side produced on
 // it. A case is keyed by the request id -- the same request must have been run
 // on both sides for the comparison to be matched.
 type RouteComparisonCase struct {
-	CaseID         string                  `json:"case_id"`
-	Critical       bool                    `json:"critical"`
-	IncumbentRuns  []RouteComparisonRun    `json:"incumbent_runs"`
-	CandidateRuns  []RouteComparisonRun    `json:"candidate_runs"`
+	CaseID        string               `json:"case_id"`
+	Critical      bool                 `json:"critical"`
+	IncumbentRuns []RouteComparisonRun `json:"incumbent_runs"`
+	CandidateRuns []RouteComparisonRun `json:"candidate_runs"`
 }
 
 // RouteComparisonRun is one receipt-backed run of a route on a case.
@@ -98,21 +98,21 @@ type RouteComparisonAssessment struct {
 // request id and an inferred population would silently compare different
 // cases.
 type RouteComparisonInput struct {
-	DecisionID      string
-	IncumbentRoute  Target
-	CandidateRoute  Target
-	Cases           []RouteComparisonCaseInput
-	CriticalCases   []string
+	DecisionID     string
+	IncumbentRoute Target
+	CandidateRoute Target
+	Cases          []RouteComparisonCaseInput
+	CriticalCases  []string
 	MinRepetitions int
-	CreatedAt       string
+	CreatedAt      string
 }
 
 // RouteComparisonCaseInput is one pinned case, with the runs each side
 // produced on it.
 type RouteComparisonCaseInput struct {
-	CaseID      string
-	Incumbent   []RouteOutcomeReview
-	Candidate   []RouteOutcomeReview
+	CaseID    string
+	Incumbent []RouteOutcomeReview
+	Candidate []RouteOutcomeReview
 }
 
 // routeComparisonReceiptOutcomes is Compound's receipt outcome vocabulary. A

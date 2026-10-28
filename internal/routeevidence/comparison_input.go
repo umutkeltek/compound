@@ -15,13 +15,13 @@ import (
 // It is an input, not an authority record. The comparison it feeds is
 // evidence-only and never changes routing policy.
 type RouteComparisonFile struct {
-	SchemaVersion  string                  `json:"schema_version"`
-	DecisionID     string                  `json:"decision_id"`
-	IncumbentRoute Target                  `json:"incumbent_route"`
-	CandidateRoute Target                  `json:"candidate_route"`
+	SchemaVersion  string                    `json:"schema_version"`
+	DecisionID     string                    `json:"decision_id"`
+	IncumbentRoute Target                    `json:"incumbent_route"`
+	CandidateRoute Target                    `json:"candidate_route"`
 	Cases          []RouteComparisonCaseFile `json:"cases"`
-	CriticalCases  []string                `json:"critical_cases,omitempty"`
-	MinRepetitions int                     `json:"min_repetitions,omitempty"`
+	CriticalCases  []string                  `json:"critical_cases,omitempty"`
+	MinRepetitions int                       `json:"min_repetitions,omitempty"`
 }
 
 // RouteComparisonCaseFile is one PINNED case. The case id is declared by the
@@ -79,13 +79,13 @@ func LoadRouteComparisonInput(path string) (RouteComparisonInput, error) {
 		})
 	}
 	return RouteComparisonInput{
-		DecisionID:      file.DecisionID,
-		IncumbentRoute:  file.IncumbentRoute,
-		CandidateRoute:  file.CandidateRoute,
-		Cases:           cases,
-		CriticalCases:   file.CriticalCases,
-		MinRepetitions:  file.MinRepetitions,
-		CreatedAt:       "",
+		DecisionID:     file.DecisionID,
+		IncumbentRoute: file.IncumbentRoute,
+		CandidateRoute: file.CandidateRoute,
+		Cases:          cases,
+		CriticalCases:  file.CriticalCases,
+		MinRepetitions: file.MinRepetitions,
+		CreatedAt:      "",
 	}, nil
 }
 

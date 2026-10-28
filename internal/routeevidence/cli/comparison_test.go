@@ -1,6 +1,7 @@
-package main
+package routeevidencecli
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -61,9 +62,7 @@ func TestRouteComparisonCLIRecommendsMatchedComparison(t *testing.T) {
 		t.Fatalf("write comparison input: %v", err)
 	}
 
-	out := captureStdout(t, func() {
-		cmdRoute([]string{"comparison", "--input", input})
-	})
+	out := captureComparisonStdout(t, input, false)
 	for _, want := range []string{
 		"# route comparison rcmp_",
 		"- decision: decision_route_change_fixture",
@@ -108,9 +107,7 @@ func TestRouteComparisonCLIRefusesCriticalRegression(t *testing.T) {
 		t.Fatalf("write comparison input: %v", err)
 	}
 
-	out := captureStdout(t, func() {
-		cmdRoute([]string{"comparison", "--input", input})
-	})
+	out := captureComparisonStdout(t, input, false)
 	for _, want := range []string{
 		"- recommend_replacement: false",
 		"- critical_regressions: 1",
@@ -125,7 +122,6 @@ func TestRouteComparisonCLIRefusesCriticalRegression(t *testing.T) {
 // The comparison is EVIDENCE: recording it must not mutate routing policy,
 // promote a claim, or spend.
 func TestRouteComparisonCLIRecordWritesEvidenceOnly(t *testing.T) {
-	homePath := t.TempDir()
 	dir := t.TempDir()
 	input := filepath.Join(dir, "comparison.json")
 	body, err := json.Marshal(map[string]any{
@@ -152,14 +148,13 @@ func TestRouteComparisonCLIRecordWritesEvidenceOnly(t *testing.T) {
 		t.Fatalf("write comparison input: %v", err)
 	}
 
-	out := captureStdout(t, func() {
-		cmdRoute([]string{"comparison", "--input", input, "--record"})
-	})
+	homePath := t.TempDir()
+	out := captureComparisonStdoutIn(t, homePath, input, true)
 	if !strings.Contains(out, "- recorded:") {
 		t.Fatalf("comparison output missing the recorded path:\n%s", out)
 	}
 	// The evidence artifact exists.
-	recorded := outputValue(out, "- recorded:")
+	recorded := comparisonOutputValue(out, "- recorded:")
 	if recorded == "" {
 		t.Fatalf("comparison output missing the recorded path:\n%s", out)
 	}
@@ -175,4 +170,44 @@ func TestRouteComparisonCLIRecordWritesEvidenceOnly(t *testing.T) {
 			t.Fatalf("route comparison must not write %s, stat err=%v", forbidden, err)
 		}
 	}
+}
+
+// captureComparisonStdout runs the comparison body the way cmd/compound does
+// and returns what it printed.
+func captureComparisonStdout(t *testing.T, input string, record bool) string {
+	t.Helper()
+	args := []string{"--input", input}
+	if record {
+		args = append(args, "--record")
+	}
+	var stdout, stderr bytes.Buffer
+	if code := RunComparison(args, t.TempDir(), &stdout, &stderr); code != 0 {
+		t.Fatalf("comparison exit code = %d, stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	return stdout.String()
+}
+
+// comparisonOutputValue extracts the value after a "key: " marker.
+func comparisonOutputValue(out, marker string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, marker) {
+			return strings.TrimSpace(strings.TrimPrefix(line, marker))
+		}
+	}
+	return ""
+}
+
+// captureComparisonStdoutIn runs the comparison body against a named home and
+// returns what it printed.
+func captureComparisonStdoutIn(t *testing.T, homePath, input string, record bool) string {
+	t.Helper()
+	args := []string{"--input", input}
+	if record {
+		args = append(args, "--record")
+	}
+	var stdout, stderr bytes.Buffer
+	if code := RunComparison(args, homePath, &stdout, &stderr); code != 0 {
+		t.Fatalf("comparison exit code = %d, stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	return stdout.String()
 }

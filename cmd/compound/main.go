@@ -907,6 +907,9 @@ func cmdRoute(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
 	}
+	if tryRouteComparisonCommand(args, homePath) {
+		return
+	}
 	if tryRoutePromotionCommand(args, homePath) {
 		return
 	}
@@ -1100,46 +1103,6 @@ func cmdRoute(args []string) {
 		fmt.Printf("- capability_classes: %d\n", report.CapabilityClassCount)
 		fmt.Printf("- routing_defaults: %d\n", report.RoutingDefaultCount)
 		fmt.Println("- verdict: compound_primary")
-		return
-	}
-	if args[0] == "comparison" {
-		inputPath := valueFlag(args[1:], "--input")
-		input, err := routeevidence.LoadRouteComparisonInput(inputPath)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "route comparison:", err)
-			os.Exit(1)
-		}
-		comparison := routeevidence.BuildRouteComparison(input)
-		if hasFlag(args[1:], "--record") {
-			path, err := routeevidence.RecordRouteComparison(homePath, comparison)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "route comparison:", err)
-				os.Exit(1)
-			}
-			fmt.Printf("- recorded: %s\n", path)
-		}
-		fmt.Printf("# route comparison %s\n", comparison.ID)
-		fmt.Printf("- decision: %s\n", comparison.DecisionID)
-		fmt.Printf("- incumbent_route: %s/%s (%s)\n", comparison.IncumbentRoute.Provider, comparison.IncumbentRoute.Model, comparison.IncumbentRoute.Protocol)
-		fmt.Printf("- candidate_route: %s/%s (%s)\n", comparison.CandidateRoute.Provider, comparison.CandidateRoute.Model, comparison.CandidateRoute.Protocol)
-		fmt.Printf("- assessment_class: %s\n", comparison.Assessment.Class)
-		fmt.Printf("- recommend_replacement: %t\n", comparison.Assessment.RecommendReplacement)
-		fmt.Printf("- matched_cases: %d\n", comparison.Assessment.MatchedCases)
-		fmt.Printf("- incumbent_cases: %d\n", comparison.Assessment.IncumbentCases)
-		fmt.Printf("- candidate_cases: %d\n", comparison.Assessment.CandidateCases)
-		fmt.Printf("- min_repetitions: %d\n", comparison.Assessment.MinRepetitions)
-		fmt.Printf("- incumbent_successes: %d\n", comparison.Assessment.IncumbentSuccesses)
-		fmt.Printf("- candidate_successes: %d\n", comparison.Assessment.CandidateSuccesses)
-		fmt.Printf("- candidate_failures: %d\n", comparison.Assessment.CandidateFailures)
-		fmt.Printf("- critical_regressions: %d\n", comparison.Assessment.CriticalRegressions)
-		fmt.Printf("- incumbent_cost_micros: %d\n", comparison.Assessment.IncumbentCostMicros)
-		fmt.Printf("- candidate_cost_micros: %d\n", comparison.Assessment.CandidateCostMicros)
-		fmt.Printf("- incumbent_latency_ms: %d\n", comparison.Assessment.IncumbentLatencyMS)
-		fmt.Printf("- candidate_latency_ms: %d\n", comparison.Assessment.CandidateLatencyMS)
-		fmt.Printf("- rationale: %s\n", comparison.Assessment.Rationale)
-		for _, reason := range comparison.Assessment.BlockingReasons {
-			fmt.Printf("- blocked: %s\n", reason)
-		}
 		return
 	}
 	if args[0] == "outcome-review" {
