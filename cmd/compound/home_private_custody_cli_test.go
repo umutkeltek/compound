@@ -21,6 +21,10 @@ func TestHomePrivateCustodyCLIJSONTextAndExitCodes(t *testing.T) {
 		cmdHome([]string{"doctor", "--json"})
 		os.Exit(0)
 	}
+	if os.Getenv(homePrivateCustodyChildEnv) == "doctor-deep-json" {
+		cmdHome([]string{"doctor", "--json", "--deep"})
+		os.Exit(0)
+	}
 	if os.Getenv(homePrivateCustodyChildEnv) == "repair-json" {
 		cmdHome([]string{"private-custody", "repair", "--json"})
 		os.Exit(0)
@@ -56,6 +60,23 @@ func TestHomePrivateCustodyCLIJSONTextAndExitCodes(t *testing.T) {
 	}
 	if dr.PrivateCustody.SchemaVersion == "" || dr.PrivateCustody.Counts.Drift == 0 {
 		t.Fatalf("doctor missing private custody drift: %+v", dr.PrivateCustody)
+	}
+	if dr.PrivateCustody.Mode != "fast" {
+		t.Fatalf("default doctor mode = %q, want fast", dr.PrivateCustody.Mode)
+	}
+
+	deep := exec.Command(os.Args[0], "-test.run=^TestHomePrivateCustodyCLIJSONTextAndExitCodes$")
+	deep.Env = append(os.Environ(), homePrivateCustodyChildEnv+"=doctor-deep-json", "COMPOUND_HOME="+homePath)
+	deepOut, err := deep.CombinedOutput()
+	if err == nil {
+		t.Fatalf("deep doctor drift exit nil, want non-zero; output:\n%s", deepOut)
+	}
+	var deepReport homeDoctorJSONReport
+	if err := json.Unmarshal(deepOut, &deepReport); err != nil {
+		t.Fatalf("deep doctor json parse: %v\n%s", err, deepOut)
+	}
+	if deepReport.PrivateCustody.Mode != "deep" {
+		t.Fatalf("deep doctor mode = %q, want deep", deepReport.PrivateCustody.Mode)
 	}
 
 	repairText := exec.Command(os.Args[0], "-test.run=^TestHomePrivateCustodyCLIJSONTextAndExitCodes$")

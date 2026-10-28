@@ -25,7 +25,11 @@ type PrivateStageRecovery struct {
 
 type PrivateCustodyOptions struct {
 	DryRun, Repair bool
-	RecoverStages  []PrivateStageRecovery
+	// SkipDigest keeps the fast diagnosis path: validate names, ownership,
+	// modes, regular-file shape, and link count, but do not read every object
+	// body. Repair always verifies content digests.
+	SkipDigest    bool
+	RecoverStages []PrivateStageRecovery
 }
 
 type privateCustodyHooks struct {
@@ -45,6 +49,7 @@ type PrivateCustodyReport struct {
 	OK            bool                    `json:"ok"`
 	Changed       bool                    `json:"changed"`
 	DryRun        bool                    `json:"dry_run"`
+	Mode          string                  `json:"mode,omitempty"`
 	Counts        PrivateCustodyCounts    `json:"counts"`
 	Findings      []PrivateCustodyFinding `json:"findings,omitempty"`
 	Actions       []PrivateCustodyAction  `json:"actions,omitempty"`
@@ -82,6 +87,7 @@ func DiagnosePrivateCustody(homePath string) PrivateCustodyReport {
 }
 func RepairPrivateCustody(homePath string, opts PrivateCustodyOptions) PrivateCustodyReport {
 	opts.Repair = true
+	opts.SkipDigest = false
 	return PrivateCustody(homePath, opts)
 }
 
@@ -95,7 +101,11 @@ func privateCustodyWithHooks(homePath string, opts PrivateCustodyOptions, hooks 
 	if absErr == nil {
 		homePath = absHome
 	}
-	r := PrivateCustodyReport{SchemaVersion: PrivateCustodyReportSchema, Root: filepath.Join(homePath, "private", "artifacts", "sha256"), OK: true, Status: "ok", DryRun: opts.DryRun}
+	mode := "deep"
+	if opts.SkipDigest {
+		mode = "fast"
+	}
+	r := PrivateCustodyReport{SchemaVersion: PrivateCustodyReportSchema, Root: filepath.Join(homePath, "private", "artifacts", "sha256"), OK: true, Status: "ok", DryRun: opts.DryRun, Mode: mode}
 	if rawHome == "" || absErr != nil {
 		if absErr == nil {
 			absErr = fmt.Errorf("home path is required")
@@ -559,7 +569,12 @@ func checkPrivateObjectsAt(r *PrivateCustodyReport, root *os.Root, homePath stri
 			r.addFinding(display, "private_digest_object", "manual", "64 lowercase hex regular mode=0600", name, "manual", "invalid digest object name")
 			continue
 		}
-		info, err := stableDigestInfo(root, rel, display, name)
+		var info os.FileInfo
+		if opts.SkipDigest {
+			info, err = fastDigestInfo(root, rel, display)
+		} else {
+			info, err = stableDigestInfo(root, rel, display, name)
+		}
 		if err != nil {
 			r.addFinding(display, "private_digest_object", "manual", "regular sha256 matches filename mode=0600", "invalid", "manual", err.Error())
 			continue
@@ -572,7 +587,7 @@ func checkPrivateObjectsAt(r *PrivateCustodyReport, root *os.Root, homePath stri
 			repairRootedChmod(r, root, rel, display, "private_digest_object", 0o600, info.Mode().Perm(), false, opts, hooks)
 			continue
 		}
-		r.addFinding(display, "private_digest_object", "ok", "regular mode=0600", "regular mode=0600", "none", "")
+		r.Counts.OK++
 	}
 	for _, stage := range opts.RecoverStages {
 		if _, ok := selected[stage.Name]; ok {
@@ -621,6 +636,20 @@ func stableDigestInfo(root *os.Root, rel, display, digest string) (os.FileInfo, 
 		return nil, fmt.Errorf("content hash does not match digest filename")
 	}
 	return opened, nil
+}
+
+func fastDigestInfo(root *os.Root, rel, display string) (os.FileInfo, error) {
+	info, err := root.Lstat(rel)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", display)
+	}
+	if !singleLinkPrivateObject(info) {
+		return nil, fmt.Errorf("digest object must have exactly one filesystem link")
+	}
+	return info, nil
 }
 
 func repairRootedChmod(r *PrivateCustodyReport, root *os.Root, rel, display, kind string, want, got os.FileMode, isDir bool, opts PrivateCustodyOptions, hooks privateCustodyHooks) bool {

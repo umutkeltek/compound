@@ -467,6 +467,9 @@ type Report struct {
 // still be allowed to run on a hygiene-dirty home to clean it).
 type DoctorOptions struct {
 	Now time.Time
+	// PrivateCustodyDeep verifies every private artifact digest. The default
+	// fast mode checks names, ownership, modes, and link shape only.
+	PrivateCustodyDeep bool
 }
 
 func Doctor(homePath string) Report {
@@ -526,7 +529,7 @@ func DoctorWithOptions(homePath string, opts DoctorOptions) Report {
 	r.BackupWarnings = backupFreshnessWarnings(homePath, now)
 	r.Setup = DoctorSetup(SetupOptions{})
 	r.SetupOK = r.Setup.OK
-	r.PrivateCustody = DiagnosePrivateCustody(homePath)
+	r.PrivateCustody = PrivateCustody(homePath, PrivateCustodyOptions{SkipDigest: !opts.PrivateCustodyDeep})
 	return r
 }
 
