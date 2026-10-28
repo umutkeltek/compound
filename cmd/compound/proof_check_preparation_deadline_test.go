@@ -231,6 +231,15 @@ func TestProofCheckExecutionPlanRetainsCancellation(t *testing.T) {
 	}
 }
 func TestProofCheckExecutionDeadlineStopsBeforeNextGate(t *testing.T) {
+	// Use a stable synthetic runtime to isolate the gate execution deadline.
+	originalRuntimeExecutable := proofCheckRuntimeExecutable
+	t.Cleanup(func() { proofCheckRuntimeExecutable = originalRuntimeExecutable })
+	proofCheckRuntimeExecutable = func(logical string) (string, error) {
+		if logical == "compound" {
+			return "/bin/sh", nil
+		}
+		return originalRuntimeExecutable(logical)
+	}
 	repo := initCompoundCommandGitRepo(t)
 	source, err := gitrepository.CaptureCleanSnapshot(repo, "HEAD")
 	if err != nil {
