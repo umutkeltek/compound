@@ -176,19 +176,25 @@ error line, normalized so it carries no path or hash. Each signature is in one o
 
 | State | Meaning | Attention |
 |---|---|---|
-| `assimilated` | A Compound-owned explanation (a finding or a negatives record) names the signature | None. No progress is left to earn |
+| `assimilated` | A finding names the signature id exactly (topic or `signature:` evidence ref), and its `repository:` refs cover every repository the signature was seen in (naming none covers a signature seen in one) | None. No progress is left to earn |
 | `learnable` | No explanation, and the signature recurs across different work items or days | First. The steep part of the learning curve |
-| `singleton` | Seen once, no explanation | Wait. Regularity and noise cannot be told apart yet |
+| `singleton` | Seen once, or one work retried within a day; no explanation | Wait. Regularity and noise cannot be told apart yet, however many retries |
 
-A `resource_shape` hint marks timeouts and killed processes, the shape most likely to be
-machine noise. **Progress** is the first derivative: the signatures that became `assimilated`
+Rank follows that column: every `learnable` signature before any `singleton`, then
+`assimilated`. It is attention by recurrence, not severity; a single data-integrity failure
+can need action at once and this projection does not judge that. A `resource_shape` hint marks
+timeouts and killed processes; within a state they rank after regular shapes because the
+signature alone says less, though load, a leak or a broken host can sit behind one. **Progress** is the first derivative: the signatures that became `assimilated`
 since the previous build, each weighted by its occurrences. One explanation that absorbs many
 failed results is the paper's discovery. The headline is the assimilated share, now and before.
 
 **What is not transferable as-is.** Compound cannot measure a compressor in bits, so occurrences
 absorbed stand in for bits saved. The signature is a naive heuristic: two causes can share one,
-one cause can split across two. A fuzzy join (a finding that only names the test) still counts
-as `assimilated` but carries `match: fuzzy`. `learnable` is a crude prior, not a learned model.
+one cause can split across two. A note that only names the test (`TestAlpha still fails, cause
+unknown`), a negatives record that quotes the signature, and an exact finding whose scope misses a
+repository are `related` evidence, listed on the signature but never counted as assimilated: a
+mention is not an explanation, and an explanation is not a verified repair. `learnable` is a
+crude prior, not a learned model.
 
 ## Slices, smallest first
 

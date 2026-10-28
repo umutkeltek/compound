@@ -1,11 +1,14 @@
 // Package interest is the read-only, rebuildable interestingness projection over
 // failed proof results (Schmidhuber, "Driven by Compression Progress"). Each failed
 // work.proof_resource.result is reduced to one public-safe signature from its
-// proof report; signatures cluster and each cluster is assimilated (a finding or
-// a negatives record explains it), learnable (it recurs unexplained across work
-// ids or days) or singleton. Attention goes to learnable regularity, not to error
-// volume, and progress is the derivative: the observations an explanation newly
-// absorbed since the previous persisted projection.
+// proof report; signatures cluster and each cluster is assimilated (a finding
+// names its signature exactly, for every repository it was seen in), learnable
+// (it recurs unexplained across work ids or days) or singleton. A note that only
+// mentions the failure is related evidence, not an explanation, and an
+// explanation is not a verified repair. Attention goes to learnable regularity,
+// not to error volume or severity, and progress is the derivative: the
+// observations an explanation newly absorbed since the previous persisted
+// projection.
 //
 // Discipline mirrors internal/negatives: rebuilt from scratch, written only under
 // projections/, and telemetry never reds anything (an unreadable input is a
@@ -36,7 +39,7 @@ import (
 )
 
 const (
-	SchemaVersion = "compound.interest.v0.1"
+	SchemaVersion = "compound.interest.v0.2"
 	ProjectionRef = "compound://projections/interest"
 	RelPath       = "projections/interest.json"
 	DefaultWindow = 30 * 24 * time.Hour
@@ -46,10 +49,14 @@ const (
 	StateSingleton   = "singleton"
 	MatchExact       = "exact"
 	MatchFuzzy       = "fuzzy"
+	ScopeUnscoped    = "unscoped"  // names no repository; the signature was seen in several
+	ScopeUncovered   = "uncovered" // names repositories that miss one the signature was seen in
 
 	// SignatureEvidencePrefix ties a finding to one signature exactly:
-	// evidence_refs contains "signature:<psig id>".
-	SignatureEvidencePrefix = "signature:"
+	// evidence_refs contains "signature:<psig id>". RepositoryEvidencePrefix
+	// scopes it: "repository:<fingerprint>", one ref per repository it covers.
+	SignatureEvidencePrefix  = "signature:"
+	RepositoryEvidencePrefix = "repository:"
 
 	// proofResultKind and proofResultFailed duplicate internal/work's
 	// ProofResourceResult.Kind value and ProofResourceFailed (no upward import).
@@ -104,12 +111,14 @@ type Signature struct {
 	ResourceShape bool          `json:"resource_shape"`
 	State         string        `json:"state"`
 	ExplainedBy   []Explanation `json:"explained_by"`
+	Related       []Explanation `json:"related"`
 	AttentionRank int           `json:"attention_rank"`
 }
 
 type Explanation struct {
 	Ref   string `json:"ref"`
 	Match string `json:"match"`
+	Scope string `json:"scope,omitempty"`
 }
 
 type Progress struct {
@@ -151,9 +160,9 @@ type cluster struct {
 }
 
 type explainer struct {
-	ref   string
-	exact map[string]bool
-	text  string
+	ref          string
+	exact, repos map[string]bool
+	text         string
 }
 
 type warnings []Warning
@@ -468,13 +477,16 @@ func readExplanations(homePath string, now time.Time, w *warnings) []explainer {
 			w.add("finding", "not_a_finding", e.Name()+": unreadable, not JSON, or no finding id")
 			continue
 		}
-		exact := map[string]bool{strings.TrimSpace(f.Topic): true}
+		exact, repos := map[string]bool{strings.TrimSpace(f.Topic): true}, map[string]bool{}
 		for _, ref := range f.EvidenceRefs {
-			if id, ok := strings.CutPrefix(strings.TrimSpace(ref), SignatureEvidencePrefix); ok {
+			ref = strings.TrimSpace(ref)
+			if id, ok := strings.CutPrefix(ref, SignatureEvidencePrefix); ok {
 				exact[id] = true
+			} else if fp, ok := strings.CutPrefix(ref, RepositoryEvidencePrefix); ok {
+				add(repos, fp)
 			}
 		}
-		out = append(out, explainer{ref: "finding:" + f.ID, exact: exact, text: f.Topic + "\n" + f.Body})
+		out = append(out, explainer{ref: "finding:" + f.ID, exact: exact, repos: repos, text: f.Topic + "\n" + f.Body})
 	}
 	neg, _, err := negatives.ReadFresh(homePath, now)
 	if err != nil {
@@ -487,7 +499,7 @@ func readExplanations(homePath string, now time.Time, w *warnings) []explainer {
 }
 
 // classify clusters observations, joins explanations, sets state and rank:
-// unexplained first, then occurrences desc, last_seen desc, id asc.
+// learnable, singleton, assimilated; then occurrences desc, last_seen desc, id asc.
 func classify(obs []observation, exps []explainer) []Signature {
 	clusters := map[string]*cluster{}
 	for _, o := range obs {
@@ -516,7 +528,7 @@ func classify(obs []observation, exps []explainer) []Signature {
 	for _, c := range clusters {
 		s := c.sig
 		s.WorkIDs, s.Repositories, s.Tests = sorted(c.works, 10), sorted(c.repos, 5), sorted(c.tests, 10)
-		s.ExplainedBy = explain(s, exps)
+		s.ExplainedBy, s.Related = explain(s, c.repos, exps)
 		switch {
 		case len(s.ExplainedBy) > 0:
 			s.State = StateAssimilated
@@ -527,12 +539,14 @@ func classify(obs []observation, exps []explainer) []Signature {
 		}
 		out = append(out, s)
 	}
-	explained := func(s Signature) bool { return s.State == StateAssimilated }
+	order := map[string]int{StateLearnable: 0, StateSingleton: 1, StateAssimilated: 2}
 	slices.SortFunc(out, func(a, b Signature) int {
-		// Unexplained first; within a state, regular shapes before resource
-		// shapes (a kill or a cut-off run is the noise the paper calls boring:
-		// incompressible until the machine changes); then volume, recency, id.
-		return cmp.Or(compareBool(explained(a), explained(b)), compareBool(a.ResourceShape, b.ResourceShape),
+		// Learnable first: independent recurrence outranks one work's retries,
+		// however many. This is attention, not severity, which the projection
+		// does not judge. Within a state, regular shapes before resource shapes:
+		// a kill or cut-off run says less on its own, though load, a leak or a
+		// broken host can sit behind it. Then volume, recency, id.
+		return cmp.Or(cmp.Compare(order[a.State], order[b.State]), compareBool(a.ResourceShape, b.ResourceShape),
 			cmp.Compare(b.Occurrences, a.Occurrences), strings.Compare(b.LastSeen, a.LastSeen), strings.Compare(a.ID, b.ID))
 	})
 	for i := range out {
@@ -561,26 +575,54 @@ func compareBool(a, b bool) int {
 	return -1
 }
 
-// explain joins a signature to held explanations. Exact: a finding topic or
-// signature: evidence ref names the id. Fuzzy: the text names the signature's
-// test as a whole word (TestAlpha never matches TestAlphaBeta), or holds the
-// exact normalized signature when it is long enough not to match any prose.
-func explain(s Signature, exps []explainer) []Explanation {
+// explain joins a signature to held explanations. Only an exact match whose
+// scope covers the signature explains it: a finding topic or signature:
+// evidence ref names the id, and its repository: refs name every repository
+// the signature was seen in (naming none covers a signature seen in at most
+// one). Everything else that matches is related: an exact match with a
+// narrower scope, or a fuzzy one, whose text names the signature's test as a
+// whole word (TestAlpha never matches TestAlphaBeta) or holds the exact
+// normalized signature when it is long enough not to match any prose.
+func explain(s Signature, seen map[string]bool, exps []explainer) (explained, related []Explanation) {
 	var word *regexp.Regexp
 	token, _ := strings.CutPrefix(s.Signature, "fail:")
 	if testTokenRE.MatchString(token) { // identifier characters only: regex-safe
 		word = regexp.MustCompile(`(^|[^A-Za-z0-9_])` + token + `($|[^A-Za-z0-9_])`)
 	}
 	bySignature := len([]rune(s.Signature)) >= minFuzzySignatureRunes
-	out := []Explanation{}
+	explained, related = []Explanation{}, []Explanation{}
 	for _, e := range exps {
 		if e.exact[s.ID] {
-			out = append(out, Explanation{Ref: e.ref, Match: MatchExact})
+			if scope := uncoveredScope(e.repos, seen); scope == "" {
+				explained = append(explained, Explanation{Ref: e.ref, Match: MatchExact})
+			} else {
+				related = append(related, Explanation{Ref: e.ref, Match: MatchExact, Scope: scope})
+			}
 		} else if (word != nil && strings.Contains(e.text, token) && word.MatchString(e.text)) ||
 			(bySignature && strings.Contains(e.text, s.Signature)) {
-			out = append(out, Explanation{Ref: e.ref, Match: MatchFuzzy})
+			related = append(related, Explanation{Ref: e.ref, Match: MatchFuzzy})
 		}
 	}
+	return firstExplanations(explained), firstExplanations(related)
+}
+
+// uncoveredScope is "" when the named repositories cover every one seen.
+func uncoveredScope(named, seen map[string]bool) string {
+	if len(named) == 0 {
+		if len(seen) > 1 {
+			return ScopeUnscoped
+		}
+		return ""
+	}
+	for r := range seen {
+		if !named[r] {
+			return ScopeUncovered
+		}
+	}
+	return ""
+}
+
+func firstExplanations(out []Explanation) []Explanation {
 	slices.SortFunc(out, func(a, b Explanation) int { // "exact" sorts before "fuzzy"
 		return cmp.Or(strings.Compare(a.Match, b.Match), strings.Compare(a.Ref, b.Ref))
 	})
@@ -596,6 +638,9 @@ func applyProgress(homePath string, proj *Projection, w *warnings) {
 		return
 	} else if !ok {
 		w.add("projection", "no_previous", "no previous projection; progress starts at this build")
+		return
+	} else if prev.SchemaVersion != SchemaVersion {
+		w.add("projection", "schema_changed", "previous projection uses "+prev.SchemaVersion+"; its states do not compare, progress starts at this build")
 		return
 	}
 	before := map[string]string{}

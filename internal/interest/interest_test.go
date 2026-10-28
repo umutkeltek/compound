@@ -3,9 +3,11 @@ package interest
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -258,26 +260,109 @@ func TestFindingEvidenceAssimilatesAndProgressCountsAbsorbed(t *testing.T) {
 	}
 }
 
-func TestFuzzyJoinOnWholeTestName(t *testing.T) {
+// A note that names a failing test is related evidence, never an explanation:
+// "TestAlpha still fails. The root cause is unknown." diagnoses nothing, so it
+// must not move the signature to assimilated or count as absorbed progress.
+func TestFuzzyMentionIsRelatedNotAssimilated(t *testing.T) {
 	h := t.TempDir()
 	seedAlpha(t, h)
 	if _, err := finding.Record(h, finding.Finding{Topic: "battery note", Body: "TestAlphaBeta is a different test"}, t0); err != nil {
 		t.Fatal(err)
 	}
-	if s := bySignature(t, mustBuild(t, h, t0), "fail:TestAlpha"); s.State != StateLearnable {
-		t.Fatalf("TestAlphaBeta must not explain TestAlpha: %+v", s)
+	before := mustBuild(t, h, t0)
+	if s := bySignature(t, before, "fail:TestAlpha"); s.State != StateLearnable || len(s.Related) != 0 {
+		t.Fatalf("TestAlphaBeta must not relate to TestAlpha: %+v", s)
 	}
-	f, err := finding.Record(h, finding.Finding{Topic: "battery note", Body: "TestAlpha flakes when the host is loaded"}, t0)
+	if _, err := WriteProjection(h, before); err != nil {
+		t.Fatal(err)
+	}
+	f, err := finding.Record(h, finding.Finding{Topic: "battery note", Body: "TestAlpha still fails. The root cause is unknown."}, t0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := bySignature(t, mustBuild(t, h, t0), "fail:TestAlpha")
-	if s.State != StateAssimilated || !reflect.DeepEqual(s.ExplainedBy, []Explanation{{Ref: "finding:" + f.ID, Match: MatchFuzzy}}) {
-		t.Fatalf("fuzzy join = %+v", s)
+	after := mustBuild(t, h, t0.Add(time.Hour))
+	s := bySignature(t, after, "fail:TestAlpha")
+	if s.State != StateLearnable || len(s.ExplainedBy) != 0 || !reflect.DeepEqual(s.Related, []Explanation{{Ref: "finding:" + f.ID, Match: MatchFuzzy}}) {
+		t.Fatalf("an unresolved mention must stay learnable with related evidence: %+v", s)
+	}
+	if len(after.Progress.NewlyAssimilated) != 0 || after.Totals.AssimilatedResults != 0 {
+		t.Fatalf("a mention must not count as absorbed: progress=%+v totals=%+v", after.Progress, after.Totals)
 	}
 }
 
-func TestNegativesRecordExplainsExactSignatureFuzzily(t *testing.T) {
+// An exact explanation covers only the repositories it names. A signature seen
+// in two repositories is not assimilated by a finding that names none (scope
+// unknown) or only one of them; naming both assimilates it.
+func TestExactExplanationMustCoverEveryRepository(t *testing.T) {
+	h := t.TempDir()
+	alpha := putReport(t, h, "", "fp-alpha", stepFixture{"go-test", "failed", goTestTail("TestAlpha")})
+	beta := putReport(t, h, "", "fp-beta", stepFixture{"go-test", "failed", goTestTail("TestAlpha")})
+	putResult(t, h, "pfrs_fixture_s1", "work_fixture_a", "failed", t0.Add(-3*time.Hour), alpha, "fp-alpha")
+	putResult(t, h, "pfrs_fixture_s2", "work_fixture_b", "failed", t0.Add(-2*time.Hour), beta, "fp-beta")
+	id := SignatureID("go-test", "fail:TestAlpha")
+	record := func(body string, refs ...string) string {
+		t.Helper()
+		f, err := finding.Record(h, finding.Finding{Topic: "proof battery note", Body: body, EvidenceRefs: append([]string{SignatureEvidencePrefix + id}, refs...)}, t0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return "finding:" + f.ID
+	}
+	unscoped := record("root cause seen on one checkout")
+	alphaOnly := record("root cause on the alpha checkout", RepositoryEvidencePrefix+"fp-alpha")
+	s := bySignature(t, mustBuild(t, h, t0), "fail:TestAlpha")
+	wantRelated := []Explanation{{Ref: unscoped, Match: MatchExact, Scope: ScopeUnscoped}, {Ref: alphaOnly, Match: MatchExact, Scope: ScopeUncovered}}
+	slices.SortFunc(wantRelated, func(a, b Explanation) int { return strings.Compare(a.Ref, b.Ref) })
+	if s.State != StateLearnable || len(s.ExplainedBy) != 0 || !reflect.DeepEqual(s.Related, wantRelated) {
+		t.Fatalf("partial scope must not assimilate: %+v", s)
+	}
+	both := record("root cause on both checkouts", RepositoryEvidencePrefix+"fp-alpha", RepositoryEvidencePrefix+"fp-beta")
+	s = bySignature(t, mustBuild(t, h, t0), "fail:TestAlpha")
+	if s.State != StateAssimilated || !reflect.DeepEqual(s.ExplainedBy, []Explanation{{Ref: both, Match: MatchExact}}) || len(s.Related) != 2 {
+		t.Fatalf("covering scope must assimilate: %+v", s)
+	}
+}
+
+// One work retrying the same failure 100 times in a day is a singleton; two
+// independent works hitting a failure once each is learnable and ranks first.
+func TestLearnableRanksBeforeHeavilyRetriedSingleton(t *testing.T) {
+	h := t.TempDir()
+	retried := putReport(t, h, "", "fp-alpha", stepFixture{"go-test", "failed", goTestTail("TestRetriedFixture")})
+	for i := range 100 {
+		putResult(t, h, fmt.Sprintf("pfrs_fixture_retry_%03d", i), "work_fixture_a", "failed", t0.Add(-time.Duration(i+1)*time.Minute), retried, "fp-alpha")
+	}
+	recurring := putReport(t, h, "", "fp-alpha", stepFixture{"go-test", "failed", goTestTail("TestRecurringFixture")})
+	putResult(t, h, "pfrs_fixture_rec1", "work_fixture_b", "failed", t0.Add(-3*time.Hour), recurring, "fp-alpha")
+	putResult(t, h, "pfrs_fixture_rec2", "work_fixture_c", "failed", t0.Add(-2*time.Hour), recurring, "fp-alpha")
+	proj := mustBuild(t, h, t0)
+	a, b := bySignature(t, proj, "fail:TestRetriedFixture"), bySignature(t, proj, "fail:TestRecurringFixture")
+	if a.State != StateSingleton || a.Occurrences != 100 || b.State != StateLearnable || b.AttentionRank != 1 || a.AttentionRank != 2 {
+		t.Fatalf("retried=%+v recurring=%+v; want learnable rank 1 before the 100-retry singleton", a, b)
+	}
+}
+
+// A previous projection built under another schema assigned states by other
+// rules, so diffing against it would report a fake derivative.
+func TestSchemaChangeRestartsProgress(t *testing.T) {
+	h := t.TempDir()
+	seedAlpha(t, h)
+	old := mustBuild(t, h, t0)
+	old.SchemaVersion = "compound.interest.v0.1"
+	for i := range old.Signatures {
+		old.Signatures[i].State = StateAssimilated
+	}
+	if _, err := WriteProjection(h, old); err != nil {
+		t.Fatal(err)
+	}
+	proj := mustBuild(t, h, t0.Add(time.Hour))
+	if !hasWarning(proj, "projection", "schema_changed") || proj.Progress.PreviousComputedAt != "" || len(proj.Progress.NewlyLearnable) != 0 {
+		t.Fatalf("progress across a schema change = %+v warnings=%+v", proj.Progress, proj.Warnings)
+	}
+}
+
+// A negatives record says what was tried and failed; quoting the signature
+// relates it to the failure but does not explain it.
+func TestNegativesRecordIsRelatedEvidence(t *testing.T) {
 	h := t.TempDir()
 	line := "open fresh native report: openat result.junit.xml: no such file or directory"
 	ref := putReport(t, h, "", "fp-alpha", stepFixture{"consumer-proof", "failed", "consumer starting\n" + line + "\n"})
@@ -298,8 +383,8 @@ func TestNegativesRecordExplainsExactSignatureFuzzily(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := bySignature(t, mustBuild(t, h, t0), line)
-	if s.State != StateAssimilated || len(s.ExplainedBy) != 1 || s.ExplainedBy[0].Match != MatchFuzzy ||
-		!strings.HasPrefix(s.ExplainedBy[0].Ref, "candidate://") || !strings.HasSuffix(s.ExplainedBy[0].Ref, "fp_fixture_junit") {
+	if s.State != StateSingleton || len(s.ExplainedBy) != 0 || len(s.Related) != 1 || s.Related[0].Match != MatchFuzzy ||
+		!strings.HasPrefix(s.Related[0].Ref, "candidate://") || !strings.HasSuffix(s.Related[0].Ref, "fp_fixture_junit") {
 		t.Fatalf("negatives join = %+v", s)
 	}
 }
@@ -464,8 +549,8 @@ func TestShortSignatureIsNeverFuzzilyExplained(t *testing.T) {
 	if _, err := finding.Record(h, finding.Finding{Topic: "battery note", Body: "the battery printed FAIL again"}, t0); err != nil {
 		t.Fatal(err)
 	}
-	if s := bySignature(t, mustBuild(t, h, t0), "FAIL"); s.State != StateSingleton {
-		t.Fatalf("a bare FAIL signature must not be fuzzily assimilated: %+v", s)
+	if s := bySignature(t, mustBuild(t, h, t0), "FAIL"); s.State != StateSingleton || len(s.Related) != 0 {
+		t.Fatalf("a bare FAIL signature must not match prose: %+v", s)
 	}
 }
 
