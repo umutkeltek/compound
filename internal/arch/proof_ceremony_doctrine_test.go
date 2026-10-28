@@ -17,7 +17,7 @@ var (
 	fullProofBaseSHA      = regexp.MustCompile(`^[0-9a-f]{40}(?:[0-9a-f]{24})?$`)
 	shellAssignment       = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
 	baseArgument          = regexp.MustCompile(`(?:^|\s)--base(?:=|\s+)(\S+)`)
-	nonCertifyingArgument = regexp.MustCompile(`(?:^|\s)--(?:ci-console|dev|presubmit|ci|dry-run|timings)(?:\s|$)`)
+	nonCertifyingArgument = regexp.MustCompile(`(?:^|\s)--(?:ci-console|dev|presubmit|presubmit-recover-execution|ci|dry-run|timings)(?:\s|$)`)
 	// proofBaseCapture matches exactly one shell command substitution that reads a single
 	// commit reference through git rev-parse --verify. The reference may be bare or quoted.
 	// It may not carry a second command, a command separator, or a nested substitution of
@@ -104,6 +104,55 @@ func TestProofCeremonyCommandGuardRejectsMovingCanonicalBases(t *testing.T) {
 			count, findings := certifyingProofCommandFindings(body)
 			if count != 1 || len(findings) != 1 {
 				t.Fatalf("canonical moving base count=%d findings=%v", count, findings)
+			}
+		})
+	}
+}
+
+func TestProofCeremonyCommandGuardClassifiesPresubmitRecovery(t *testing.T) {
+	tests := []struct {
+		name          string
+		command       string
+		wantCanonical int
+	}{
+		{
+			name: "documented recovery",
+			command: "\"$PRESUBMIT_EXE\" proof-check --presubmit-recover-execution \"$PRESUBMIT_RUN\" \\\n" +
+				"  --work \"$WORK\" --actor \"$ACTOR\" --reason \"exact stopped producer and quiescent owned execution\"",
+		},
+		{
+			name:          "canonical still requires base",
+			command:       "compound proof-check --work work_example",
+			wantCanonical: 1,
+		},
+		{
+			name:          "suffixed recovery lookalike",
+			command:       "compound proof-check --presubmit-recover-execution-extra ratt_example --work work_example",
+			wantCanonical: 1,
+		},
+		{
+			name:          "truncated recovery lookalike",
+			command:       "compound proof-check --presubmit-recover ratt_example --work work_example",
+			wantCanonical: 1,
+		},
+		{
+			name:          "unsupported equals recovery syntax",
+			command:       "compound proof-check --presubmit-recover-execution=ratt_example --work work_example",
+			wantCanonical: 1,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			count, findings := certifyingProofCommandFindings("```bash\n" + tc.command + "\n```")
+			if count != tc.wantCanonical {
+				t.Fatalf("canonical count=%d, want %d; findings=%v", count, tc.wantCanonical, findings)
+			}
+			if tc.wantCanonical == 0 {
+				if len(findings) != 0 {
+					t.Fatalf("noncertifying recovery findings=%v", findings)
+				}
+			} else if len(findings) != 1 || !strings.Contains(findings[0], "canonical proof-check command lacks --base:") {
+				t.Fatalf("base-less canonical command findings=%v", findings)
 			}
 		})
 	}
