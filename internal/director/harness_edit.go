@@ -400,8 +400,9 @@ func benchAbsentRefs(report bench.Report) []string {
 }
 
 // loadLatestBenchReports reads $COMPOUND_HOME/reviews/bench/*.json and keeps the
-// newest report per suite. Filenames are <ts>-<suite>.json, so lexicographic order
-// is chronological and the last entry per suite wins. Reimplemented here (small,
+// newest report per suite. Filenames start with a fixed-width UTC stamp
+// (<ts>-<suite>[-<digest>].json), so lexicographic order is chronological and the
+// last entry per suite wins. Reimplemented here (small,
 // read-only) rather than importing cmd.
 func loadLatestBenchReports(homePath string) ([]bench.Report, error) {
 	dir := filepath.Join(homePath, "reviews", "bench")
