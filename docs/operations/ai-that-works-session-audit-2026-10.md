@@ -181,7 +181,7 @@ entirely, so the engine's own verb no longer decides Compound's authority. Prove
 `TestCompoundMemoryAuthorityVerbsFailClosedRegardlessOfSpelling`,
 `TestRentedMemoryEngineWritesAlwaysTakeCandidateSink`, and
 `TestAuthorityMemoryPromotionDeniedRegardlessOfSpelling`, which fail against the pre-fix code and
-pass after it. The live 89-tool gbrain surface keeps its current sink, so this does not widen or
+pass after it. The live 89-tool rented-engine surface keeps its current sink, so this does not widen or
 narrow live traffic.
 
 **Cost / risk.** Roughly 2–5 days for the first boundary; broader adapter coverage is separate.
