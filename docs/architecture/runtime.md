@@ -602,6 +602,12 @@ exclusive files under a rooted per-attempt output directory. Private content-add
 journals retain gate/command started, completed and cancelled checkpoints plus partial
 reports and raw-output paths.
 
+Snapshot, repository-identity and committed-content reads retain the caller's
+overall budget. Each Git read has its own unchanged five-second limit through
+that same execution owner, so durable bookkeeping for earlier commands cannot
+expire later commands. Parent cancellation and earlier absolute deadlines still
+win; no subprocess bypasses the owner.
+
 Ordinary cleanup uses an exact OS process-group boundary independent of inherited file
 descriptors. Darwin observes its still-unreaped direct child as a zombie, then uses
 `kern.proc.pgrp` to observe only that pinned group until every other member is gone.

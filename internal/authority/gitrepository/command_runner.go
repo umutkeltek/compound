@@ -4,7 +4,13 @@ import (
 	"bytes"
 	"context"
 	"os/exec"
+	"time"
 )
+
+// gitReadCommandTimeout bounds one Git read through its execution owner.
+// Composed reads retain the caller deadline instead of sharing this allowance
+// across independently journaled commands.
+const gitReadCommandTimeout = 5 * time.Second
 
 type commandRunnerKey struct{}
 

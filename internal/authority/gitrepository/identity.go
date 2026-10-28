@@ -15,7 +15,6 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
-	"time"
 )
 
 // Identity is stable for ordinary descendants of Ref while binding the
@@ -42,8 +41,9 @@ func ReadIdentity(repo, ref string) (Identity, error) {
 	return ReadIdentityContext(context.Background(), repo, ref)
 }
 
-// ReadIdentityContext preserves the caller's cancellation and the existing local upper bound.
-func ReadIdentityContext(parent context.Context, repo, ref string) (Identity, error) {
+// ReadIdentityContext preserves caller cancellation and bounds each Git command
+// independently. The caller deadline still caps the complete identity read.
+func ReadIdentityContext(ctx context.Context, repo, ref string) (Identity, error) {
 	repo = strings.TrimSpace(repo)
 	ref = strings.TrimSpace(ref)
 	if repo == "" {
@@ -53,8 +53,6 @@ func ReadIdentityContext(parent context.Context, repo, ref string) (Identity, er
 		return Identity{}, fmt.Errorf("repository identity ref required")
 	}
 
-	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
-	defer cancel()
 	objectFormat, err := gitOutput(ctx, repo, "rev-parse", "--show-object-format")
 	if err != nil {
 		return Identity{}, fmt.Errorf("read Git object format: %w", err)
@@ -155,6 +153,8 @@ func (e *gitCommandError) Error() string {
 }
 
 func gitOutput(ctx context.Context, repo string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, gitReadCommandTimeout)
+	defer cancel()
 	cmd := CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...)
 	cmd.Env = ReadEnvironment()
 	out, err := CommandOutput(ctx, cmd, true)

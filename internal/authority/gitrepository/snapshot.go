@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 )
 
 // Snapshot seals the immutable Git source identity certified by a proof
@@ -24,7 +23,9 @@ func CaptureCleanSnapshot(repo, baseRef string) (Snapshot, error) {
 	return CaptureCleanSnapshotContext(context.Background(), repo, baseRef)
 }
 
-// CaptureCleanSnapshotContext binds all snapshot reads to the caller's cancellation.
+// CaptureCleanSnapshotContext preserves caller cancellation and gives each Git
+// command its own bounded allowance. Earlier commands' owner bookkeeping does
+// not consume later commands' allowance; the caller deadline caps the whole read.
 func CaptureCleanSnapshotContext(ctx context.Context, repo, baseRef string) (Snapshot, error) {
 	snapshot, err := readSnapshotContext(ctx, repo, baseRef)
 	if err != nil {
@@ -74,7 +75,7 @@ func RevalidateSnapshotContext(ctx context.Context, repo string, expected Snapsh
 func readSnapshot(repo, baseRef string) (Snapshot, error) {
 	return readSnapshotContext(context.Background(), repo, baseRef)
 }
-func readSnapshotContext(parent context.Context, repo, baseRef string) (Snapshot, error) {
+func readSnapshotContext(ctx context.Context, repo, baseRef string) (Snapshot, error) {
 	repo = strings.TrimSpace(repo)
 	baseRef = strings.TrimSpace(baseRef)
 	if repo == "" {
@@ -83,8 +84,6 @@ func readSnapshotContext(parent context.Context, repo, baseRef string) (Snapshot
 	if baseRef == "" {
 		return Snapshot{}, fmt.Errorf("repository base ref required")
 	}
-	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
-	defer cancel()
 
 	// Read these related object names together, then validate every field:
 	// --revs-only may omit an invalid expression without returning an error.
