@@ -381,3 +381,63 @@ claim promoted by evidence reopens the moment evidence turns.
 The core is Go: CLI, ledger, scope, recall planning, importers, and future local
 daemon. TypeScript remains useful for UI and historical prototypes. Python should
 stay at ML edges when needed.
+
+
+## Explicit recall and automatic source capture
+
+`compound memory search "a question"` searches configured source indexes without
+a lane or path. The typed report separates adjudicated current claims from
+retrieved source evidence. Current claims use the existing gated lexical query;
+source candidates use the configured embeddings. Scores are compared only within
+one embedding identity; different identities are interleaved by rank. One best
+chunk per distinct body plus bounded adjacent context prevents duplicate exports
+from taking the whole budget. `--history` includes superseded source versions.
+A source's latest snapshot is not an adjudication of the statements inside it.
+
+Private snippets remain suppressed unless the caller passes
+`--include-private-text`. Source text never enters ambient ContextPacks through
+this feature. Existing claim promotion and personal-corpus recall gates still
+apply. An empty result is not proof that a conversation never happened: the
+report names every configured lane and its coverage state. Missing indexes,
+failed sources, incomplete capture, unfinished backfill and stale refreshes are
+visible. Similarity candidates do not assert that an answer is supported.
+
+For automatic capture, supply an approved `corpus_lanes` configuration to
+`compound-memory-service setup --binary /absolute/bin/compound --home
+/absolute/compound-home --workspace /absolute/project --config sources.json`
+inside an authorized `work advance --execute` setup action. The source installer
+ships this helper; it does not silently enable capture. Each lane declares a
+private, local embedder and `source: {root: /absolute/approved/root, format:
+markdown|codex|claude}`. JSONL conversations preserve original bytes in source
+custody. The derived retrieval view retains user/assistant text and record
+attribution while excluding tools, reasoning and known harness injections.
+Compressed archives and unlisted formats are outside this connector's coverage.
+
+Setup creates a dedicated maintenance WorkEnvelope through native commands.
+Existing live PostToolUse and SessionEnd hooks request background
+`work advance --execute --resume-verifying` refreshes. The native execution rail
+owns each action, policy decision, attempt and failure; a held or foreign-owned
+work item is not taken over. Normal child failures return to verifying and can
+retry. Abrupt host/process death during a running reservation remains a visible
+stop requiring governed recovery; an audit sweep is not treated as proof that
+execution is quiescent. Persisted snapshots and indexes remain readable. No new OS scheduler is installed. Ordinary hooks
+throttle refresh to five minutes; session end can refresh a newly changed
+transcript inside an approved root. File changes while no harness is active are
+picked up at the next eligible hook. Source indexing never runs on the prompt
+injection path.
+
+Each capture pass selects recent changes, up to 128 files and normally 128 MiB;
+one file may exceed the batch byte budget but cannot exceed 1 GiB. Oversized,
+missing, changing and incomplete files are reported, not called complete.
+Unfinished JSONL records never enter the owned version chain. Subsequent passes
+resume historical backfill. Unchanged-file detection uses size and nanosecond
+mtime and reports that basis; it is not a full disk-integrity audit.
+Owned snapshots survive source removal. A return to earlier bytes creates a new
+observed occurrence rather than reviving a superseded version.
+
+The full-flow CLI test initializes a fresh home, uses normal setup, writes a
+conversation, invokes Codex PostToolUse, recalls from a new process, then invokes
+Claude SessionEnd after a correction and verifies both latest and history.
+It performs no manual indexing or ledger repair between those steps. The
+synthetic embedder proves wiring and privacy, not natural-language recall quality;
+real-history evaluation is a separate acceptance check.

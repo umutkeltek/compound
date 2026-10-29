@@ -54,7 +54,8 @@ type QueryNeighbor struct {
 const MaxNeighborRadius = 5
 
 type QueryOptions struct {
-	IncludeText bool
+	IncludeText    bool
+	IncludeHistory bool
 	// NeighborRadius expands each hit with up to this many chunks on each
 	// side, within the same item. 0 (the zero value) disables expansion, so
 	// every caller predating this option is byte-identical. A negative radius
@@ -87,6 +88,9 @@ func Query(ctx context.Context, homePath string, lane LaneConfig, embedder Embed
 }
 
 func QueryWithOptions(ctx context.Context, homePath string, lane LaneConfig, embedder Embedder, text string, k int, opts QueryOptions) (QueryReport, error) {
+	if err := ctx.Err(); err != nil {
+		return QueryReport{}, err
+	}
 	lane, err := ValidateLaneConfig(lane)
 	if err != nil {
 		return QueryReport{}, err
@@ -102,9 +106,15 @@ func QueryWithOptions(ctx context.Context, homePath string, lane LaneConfig, emb
 		return QueryReport{}, err
 	}
 	transport := NewIndexTransport(homePath, lane, embedder)
+	transport.ctx = ctx
+	transport.manifest = &manifest
+	transport.includeHistory = opts.IncludeHistory
 	engine := mem.NewProtocolEngine(transport, lane.Embedder.Identity())
 	defer engine.Close()
 	hits, err := runCorpusEngineQuery(engine, text, k)
+	if cancelErr := ctx.Err(); cancelErr != nil {
+		return QueryReport{}, cancelErr
+	}
 	if err != nil {
 		return QueryReport{}, err
 	}
@@ -330,15 +340,20 @@ func validateQueryItemAccess(homePath string, lane LaneConfig) (Manifest, error)
 		// stance, so an index-public item reclassified to private suppresses
 		// body text (and never reads source bytes) on the very next query.
 		indexed.Items[i].Privacy = currentItem.Privacy
+		indexed.Items[i].VersionState = currentItem.VersionState
+		indexed.Items[i].SupersededBy = currentItem.SupersededBy
 	}
 	return indexed, nil
 }
 
 type IndexTransport struct {
-	homePath string
-	lane     LaneConfig
-	embedder Embedder
-	loaded   *loadedIndex
+	ctx            context.Context
+	manifest       *Manifest
+	includeHistory bool
+	homePath       string
+	lane           LaneConfig
+	embedder       Embedder
+	loaded         *loadedIndex
 }
 
 type loadedIndex struct {
@@ -348,7 +363,7 @@ type loadedIndex struct {
 }
 
 func NewIndexTransport(homePath string, lane LaneConfig, embedder Embedder) *IndexTransport {
-	return &IndexTransport{homePath: homePath, lane: lane, embedder: embedder}
+	return &IndexTransport{ctx: context.Background(), homePath: homePath, lane: lane, embedder: embedder}
 }
 
 func (t *IndexTransport) RoundTrip(req mem.Request) (mem.Response, error) {
@@ -414,7 +429,7 @@ func (t *IndexTransport) load() (*loadedIndex, error) {
 }
 
 func (t *IndexTransport) query(index *loadedIndex, req mem.Request) ([]mem.Hit, error) {
-	queryVectors, err := t.embedder.Embed(context.Background(), []string{req.Text})
+	queryVectors, err := t.embedder.Embed(t.ctx, []string{req.Text})
 	if err != nil {
 		return nil, err
 	}
@@ -429,7 +444,20 @@ func (t *IndexTransport) query(index *loadedIndex, req mem.Request) ([]mem.Hit, 
 	for _, id := range req.Allowlist {
 		allow[id] = true
 	}
-	current := manifestChunkHashes(index.manifest)
+	manifest := index.manifest
+	if t.manifest != nil {
+		manifest = *t.manifest
+	}
+	current := manifestChunkHashes(manifest)
+	if !t.includeHistory {
+		for _, item := range manifest.Items {
+			if item.VersionState == "superseded" {
+				for _, chunk := range item.Chunks {
+					delete(current, buildChunkID(item.ID, chunk.Ordinal))
+				}
+			}
+		}
+	}
 	var hits []mem.Hit
 	for id, vec := range index.vectors.Vectors {
 		if _, ok := current[id]; !ok {

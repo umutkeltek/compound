@@ -167,6 +167,7 @@ type CoordinationDeliveryInput struct {
 // Result is what a hook produces: the normalized event, the typed objects, and the small
 // harness-facing output line.
 type Result struct {
+	MemoryRefresh        string                   `json:"memory_refresh,omitempty"`
 	Event                envelope.HookEvent       `json:"event"`
 	Produced             []envelope.Envelope      `json:"produced"`
 	Summary              string                   `json:"summary"`
@@ -462,6 +463,9 @@ func Run(fx Fixture, deps Deps, now time.Time) (Result, error) {
 		}
 		res.CoordinationDelivery = &delivery
 		refreshPostToolCaches(deps.HomePath, fx.Live, name == "PostToolUse" && res.Event.CapabilityUse != nil, now)
+		memoryFixture := fx
+		memoryFixture.Hook = name
+		res.MemoryRefresh = refreshApprovedMemory(deps.HomePath, memoryFixture, now)
 		return res, nil
 	}
 	if err := validateHookResult(res); err != nil {
@@ -478,6 +482,9 @@ func Run(fx Fixture, deps Deps, now time.Time) (Result, error) {
 		}
 	}
 	refreshPostToolCaches(deps.HomePath, fx.Live, name == "PostToolUse" && res.Event.CapabilityUse != nil, now)
+	memoryFixture := fx
+	memoryFixture.Hook = name
+	res.MemoryRefresh = refreshApprovedMemory(deps.HomePath, memoryFixture, now)
 	return res, nil
 }
 

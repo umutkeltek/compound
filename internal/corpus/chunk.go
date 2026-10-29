@@ -1,6 +1,7 @@
 package corpus
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -29,9 +30,18 @@ type Chunk struct {
 }
 
 func ChunkItem(item sourceobs.SourceManifestItem, body string, cfg ChunkConfig) ([]Chunk, error) {
+	return chunkItemContext(context.Background(), item, body, cfg)
+}
+func chunkItemContext(ctx context.Context, item sourceobs.SourceManifestItem, body string, cfg ChunkConfig) ([]Chunk, error) {
 	cfg, err := cfg.withDefaults()
 	if err != nil {
 		return nil, err
+	}
+	if strings.HasSuffix(item.SourceKind, "_transcript_v1") {
+		body, err = conversationTextContext(ctx, strings.TrimSuffix(item.SourceKind, "_transcript_v1"), body)
+		if err != nil {
+			return nil, err
+		}
 	}
 	body = strings.ReplaceAll(body, "\r\n", "\n")
 	body = strings.ReplaceAll(body, "\r", "\n")
@@ -42,6 +52,9 @@ func ChunkItem(item sourceobs.SourceManifestItem, body string, cfg ChunkConfig) 
 	}
 	var chunks []Chunk
 	for i, draft := range base {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		text := draft.text
 		if i > 0 && cfg.Overlap > 0 {
 			overlap := tailRunes(base[i-1].text, cfg.Overlap)
