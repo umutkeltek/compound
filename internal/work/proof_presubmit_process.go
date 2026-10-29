@@ -144,26 +144,34 @@ func (s *Store) preparePresubmitRuntime(ctx context.Context, out *PresubmitExecu
 		defer close(rt.heartbeatDone)
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
-		for {
-			select {
-			case <-hbCtx.Done():
-				return
-			case <-ticker.C:
-				e := rt.check(hbCtx)
-				if e == nil {
-					_, e = s.runAttempts().Heartbeat(out.RunAttemptID, time.Now())
-				}
-				if e == nil {
-					_, e = rt.resource.Refresh(out.Holder, presubmitLeaseTTL, time.Now())
-				}
-				if e != nil {
-					cancel(fmt.Errorf("presubmit heartbeat: %w", e))
-					return
-				}
+		runPresubmitHeartbeat(ctx, hbCtx, ticker.C, func(checkCtx context.Context) error {
+			e := rt.check(checkCtx)
+			if e == nil {
+				_, e = s.runAttempts().Heartbeat(out.RunAttemptID, time.Now())
 			}
-		}
+			if e == nil {
+				_, e = rt.resource.Refresh(out.Holder, presubmitLeaseTTL, time.Now())
+			}
+			return e
+		}, cancel)
 	}()
 	return rt, nil
+}
+
+func runPresubmitHeartbeat(ctx, stopCtx context.Context, ticks <-chan time.Time, refresh func(context.Context) error, cancel context.CancelCauseFunc) {
+	for {
+		select {
+		case <-stopCtx.Done():
+			return
+		case <-ticks:
+			// Stopping the heartbeat must not cancel an in-flight authority check.
+			// The execution context still carries real cancellation and deadlines.
+			if err := refresh(ctx); err != nil {
+				cancel(fmt.Errorf("presubmit heartbeat: %w", err))
+				return
+			}
+		}
+	}
 }
 
 func (rt *presubmitRuntime) check(ctx context.Context) error {

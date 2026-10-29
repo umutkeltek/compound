@@ -634,7 +634,10 @@ group/session, SIGKILL and persistence impossibility remain explicit recovery li
 Every post-mint ordinary return terminalizes the attempt and retains a distinct
 `presubmit-execution` result; a panic records failed execution before propagating.
 Preparation, output, deadline and finalization failures never render a green native
-verdict. Newer Work generations remain byte-for-byte authoritative; reverse attempt/
+verdict. Heartbeat shutdown stops scheduling and drains any in-flight check under the parent
+execution context. Normal shutdown cannot manufacture an execution cancellation; real
+parent cancellation, deadline expiry, and authority failures remain failing outcomes.
+Newer Work generations remain byte-for-byte authoritative; reverse attempt/
 action linkage retains audit evidence without manufacturing a same-state transition.
 Overlapping nonterminal same-work native producers refuse before replacing policy.
 A later terminal native retry records exact predecessor lineage before its first child;
