@@ -1236,6 +1236,10 @@ func buildReviewQueueReport(homePath, area string, includeArchived bool) (review
 		return reviewartifact.QueueReport{}, err
 	}
 	reviewartifact.RefreshSystemicBlocker(&report)
+	// Skipped malformed review files go to stderr so JSON stdout stays parseable.
+	for _, warning := range report.Warnings {
+		fmt.Fprintln(os.Stderr, "warning:", warning)
+	}
 	return report, nil
 }
 

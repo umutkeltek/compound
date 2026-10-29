@@ -2,6 +2,7 @@ package reviewartifact
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -36,7 +37,12 @@ type QueueReport struct {
 	// jargon on every card. It is additive and optional: it never changes
 	// SchemaVersion, and consumers that ignore it see the unchanged projection.
 	SystemicBlocker *SystemicBlocker `json:"systemic_blocker,omitempty"`
-	Items           []QueueItem      `json:"items"`
+	// Warnings names files under the review root that were skipped because
+	// they are not a JSON object (foreign evidence, a truncated write). One
+	// such file must not hide every valid review; each warning carries the
+	// path and the parse error. Additive and optional, like SystemicBlocker.
+	Warnings []string    `json:"warnings,omitempty"`
+	Items    []QueueItem `json:"items"`
 }
 
 // SystemicBlocker names one reason that blocks the whole decide surface at once.
@@ -253,6 +259,12 @@ func Queue(homePath string, opt QueueOptions, now time.Time) (QueueReport, error
 			return nil
 		}
 		item, err := queueItem(root, path)
+		if warning, skip := skippedMalformedArtifact(err, opt.Area); skip {
+			if warning != "" {
+				report.Warnings = append(report.Warnings, warning)
+			}
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -277,11 +289,12 @@ func Queue(homePath string, opt QueueOptions, now time.Time) (QueueReport, error
 		return QueueReport{}, err
 	}
 	if opt.IncludeArchived {
-		archived, err := archivedQueueItems(homePath, opt.Area, archiveEntries)
+		archived, warnings, err := archivedQueueItems(homePath, opt.Area, archiveEntries)
 		if err != nil {
 			return QueueReport{}, err
 		}
 		report.Items = append(report.Items, archived...)
+		report.Warnings = append(report.Warnings, warnings...)
 	}
 	sort.Slice(report.Items, func(i, j int) bool {
 		return queueItemLess(report.Items[i], report.Items[j])
@@ -863,7 +876,7 @@ func queueItemForRel(path, rel string) (QueueItem, error) {
 	}
 	var payload map[string]any
 	if err := json.Unmarshal(data, &payload); err != nil {
-		return QueueItem{}, fmt.Errorf("parse review artifact %s: %w", path, err)
+		return QueueItem{}, &malformedReviewArtifactError{path: path, area: area, err: err}
 	}
 	stem := strings.TrimSuffix(filepath.Base(path), ".json")
 	item := QueueItem{
@@ -972,12 +985,43 @@ func queueItemForRel(path, rel string) (QueueItem, error) {
 	return item, nil
 }
 
-func archivedQueueItems(homePath, area string, entries []home.OperationalArchiveEntry) ([]QueueItem, error) {
+// malformedReviewArtifactError marks a `*.json` file under the review root
+// that does not decode into a JSON object: foreign evidence (a checksum list
+// written as a top-level array) or a truncated write. It is the only loader
+// error the queue tolerates; every other read or sidecar error still fails.
+type malformedReviewArtifactError struct {
+	path string
+	area string
+	err  error
+}
+
+func (e *malformedReviewArtifactError) Error() string {
+	return fmt.Sprintf("parse review artifact %s: %v", e.path, e.err)
+}
+
+func (e *malformedReviewArtifactError) Unwrap() error { return e.err }
+
+// skippedMalformedArtifact reports whether err is a malformed review artifact
+// the queue must skip, and the warning to record for it. A file outside the
+// requested area is skipped silently: that listing would not show it anyway.
+func skippedMalformedArtifact(err error, area string) (string, bool) {
+	var malformed *malformedReviewArtifactError
+	if !errors.As(err, &malformed) {
+		return "", false
+	}
+	if area != "" && malformed.area != area {
+		return "", true
+	}
+	return "skipped malformed review artifact: " + malformed.Error(), true
+}
+
+func archivedQueueItems(homePath, area string, entries []home.OperationalArchiveEntry) ([]QueueItem, []string, error) {
 	byOriginal := map[string]home.OperationalArchiveEntry{}
 	for _, entry := range entries {
 		byOriginal[entry.OriginalPath] = entry
 	}
 	var out []QueueItem
+	var warnings []string
 	for _, entry := range entries {
 		if entry.Kind != "review" || filepath.Ext(entry.OriginalPath) != ".json" || !coreReviewJSON(entry.OriginalPath) {
 			continue
@@ -987,14 +1031,18 @@ func archivedQueueItems(homePath, area string, entries []home.OperationalArchive
 			continue
 		}
 		item, err := queueItemForRel(filepath.Join(homePath, filepath.FromSlash(entry.ArchivePath)), rel)
+		if warning, skip := skippedMalformedArtifact(err, ""); skip {
+			warnings = append(warnings, warning)
+			continue
+		}
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		item.Status = FirstNonEmpty(item.Status, entry.Status, "archived")
 		item.ExtraPaths = archivedReviewExtraPaths(entries, byOriginal, homePath, entry.OriginalPath)
 		out = append(out, item)
 	}
-	return out, nil
+	return out, warnings, nil
 }
 
 func attachArchivedReviewExtraPaths(homePath string, items []QueueItem, entries []home.OperationalArchiveEntry) error {
