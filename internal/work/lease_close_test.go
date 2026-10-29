@@ -687,7 +687,7 @@ func TestClosePlanReportsLeaseHolderDenialWithoutMutating(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := s.ClosePlan(workID, fixedNow, ClosePlanOptions{Actor: "actor-b", Outcome: "completed", MoveType: "control_plane_repair"})
+	plan, err := s.ClosePlan(workID, fixedNow, ClosePlanOptions{Actor: "actor-b", Outcome: "completed", MoveType: "control_plane_repair", ProofRefs: []string{"check:lease-close-control"}})
 	if err != nil {
 		t.Fatalf("close-plan: %v", err)
 	}
@@ -710,6 +710,7 @@ func TestClosePlanReportsLeaseHolderDenialWithoutMutating(t *testing.T) {
 	stealPlan, err := s.ClosePlan(workID, fixedNow, ClosePlanOptions{
 		Actor: "actor-b", Outcome: "completed", MoveType: "control_plane_repair",
 		Steal: true, StealReason: "codex executor is dead",
+		ProofRefs: []string{"check:lease-close-control"},
 	})
 	if err != nil {
 		t.Fatalf("close-plan with steal: %v", err)

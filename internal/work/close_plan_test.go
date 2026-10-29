@@ -13,10 +13,11 @@ func TestClosePlanEvaluatesPolicyWithoutClosing(t *testing.T) {
 	s := newStore(t)
 	workID := readyRunningWork(t, s)
 	plan, err := s.ClosePlan(workID, fixedNow, ClosePlanOptions{
-		Actor:    "codex",
-		Outcome:  "completed",
-		MoveType: "control_plane_repair",
-		Record:   true,
+		Actor:     "codex",
+		Outcome:   "completed",
+		MoveType:  "control_plane_repair",
+		ProofRefs: []string{"check:close-plan-positive"},
+		Record:    true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -389,4 +390,121 @@ func readyRunningWork(t *testing.T, s *Store) string {
 		t.Fatal(err)
 	}
 	return running.ID
+}
+
+func TestClosePlanReceiptPreflightMatchesClose(t *testing.T) {
+	cases := []struct {
+		name         string
+		moveType     string
+		proofRefs    []string
+		artifact     string
+		verification string
+		wantError    string
+	}{
+		{name: "rule ordinary proof", moveType: "rule_delta", proofRefs: []string{"artifact:ordinary-evidence"}, wantError: "rule_delta requires failure/rule/check/guard proof_ref"},
+		{name: "rule explicit check", moveType: "rule_delta", proofRefs: []string{"check:receipt-preflight"}},
+		{name: "rule attached verification", moveType: "rule_delta", verification: "check:attached-receipt-preflight"},
+		{name: "repair attached artifact", moveType: "control_plane_repair", artifact: "artifact:repair-evidence"},
+		{name: "repair explicit proof", moveType: "control_plane_repair", proofRefs: []string{"artifact:ordinary-evidence"}},
+		{name: "repair no proof", moveType: "control_plane_repair", wantError: "control_plane_repair requires"},
+		{name: "memory no candidate", moveType: "memory_delta", proofRefs: []string{"check:unrelated"}, wantError: "memory_delta requires"},
+		{name: "audit no proof", moveType: "audit_only"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newStore(t)
+			workID := readyRunningWork(t, s)
+			if _, err := s.Advance(workID, AdvanceInput{To: "verifying", Actor: "codex", ArtifactID: tc.artifact, VerificationID: tc.verification}, fixedNow); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(s.workPath(workID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := s.ClosePlan(workID, fixedNow, ClosePlanOptions{Actor: "codex", Outcome: "completed", MoveType: tc.moveType, ProofRefs: tc.proofRefs})
+			if err != nil {
+				t.Fatal(err)
+			}
+			after, err := os.ReadFile(s.workPath(workID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(before) != string(after) {
+				t.Fatal("planning mutated the Work")
+			}
+			if !plan.Policy.Allowed {
+				t.Fatalf("receipt readiness must not rewrite allowed policy: %+v", plan.Policy)
+			}
+			if tc.wantError != "" {
+				if plan.Status != "not_closeable" || len(plan.CloseCommand) != 0 || !strings.Contains(plan.NoAction, tc.wantError) {
+					t.Errorf("plan did not expose receipt refusal %q: status=%s command=%v no_action=%q", tc.wantError, plan.Status, plan.CloseCommand, plan.NoAction)
+				}
+				found := false
+				for _, check := range plan.Checks {
+					if check.Name == "receipt_validation" && !check.Met && strings.Contains(check.Detail, tc.wantError) {
+						found = true
+					}
+				}
+				if !found {
+					t.Errorf("missing actionable receipt validation precondition: %+v", plan.Checks)
+				}
+			} else if plan.Status != "close_policy_allowed" || len(plan.CloseCommand) == 0 {
+				t.Errorf("valid receipt plan refused: %+v", plan)
+			}
+			result, closeErr := s.Close(workID, CloseInput{Actor: "codex", Outcome: "completed", MoveType: tc.moveType, ProofRefs: tc.proofRefs}, fixedNow)
+			if tc.wantError != "" {
+				if closeErr == nil || !strings.Contains(closeErr.Error(), tc.wantError) {
+					t.Fatalf("matching close did not retain authoritative refusal %q: %v", tc.wantError, closeErr)
+				}
+				current, err := s.Get(workID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if current.State != "verifying" || current.IDs.TransitionID != "" {
+					t.Fatalf("invalid receipt changed lifecycle: %+v", current)
+				}
+			} else if closeErr != nil || result.Work.State != "completed" {
+				t.Fatalf("matching close failed: %+v %v", result, closeErr)
+			}
+		})
+	}
+}
+
+func TestClosePlanReceiptPreflightPreservesTerminalReplay(t *testing.T) {
+	s := newStore(t)
+	workID := readyRunningWork(t, s)
+	original, err := s.Close(workID, CloseInput{Actor: "codex", Outcome: "completed", MoveType: "control_plane_repair", ProofRefs: []string{"check:original-close"}}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := s.ClosePlan(workID, fixedNow, ClosePlanOptions{Actor: "codex", Outcome: "completed", MoveType: "control_plane_repair"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != "close_policy_allowed" || len(plan.CloseCommand) == 0 {
+		t.Fatalf("terminal replay preflight refused: %+v", plan)
+	}
+	replay, err := s.Close(workID, CloseInput{Actor: "codex", Outcome: "completed", MoveType: "control_plane_repair"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay.Receipt.ID != original.Receipt.ID || replay.Transition.ID != original.Transition.ID {
+		t.Fatal("terminal replay created a different receipt or transition")
+	}
+}
+
+func TestClosePlanReceiptPreflightPreservesAdditionalCloseInputs(t *testing.T) {
+	s := newStore(t)
+	workID := readyRunningWork(t, s)
+	plan, err := s.ClosePlan(workID, fixedNow, ClosePlanOptions{Actor: "codex", Outcome: "completed", MoveType: "memory_delta"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != "not_closeable" || !strings.Contains(plan.NoAction, "memory_delta requires") {
+		t.Fatalf("missing memory input not surfaced: %+v", plan)
+	}
+	result, err := s.Close(workID, CloseInput{Actor: "codex", Outcome: "completed", MoveType: "memory_delta", MemoryCandidates: []string{"memory-candidate:close-input"}}, fixedNow)
+	if err != nil || result.Work.State != "completed" {
+		t.Fatalf("planner changed authoritative Close input support: %+v %v", result, err)
+	}
 }

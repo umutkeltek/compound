@@ -5102,7 +5102,7 @@ func TestWorkClosePlanAndCloseCommandRecordPolicy(t *testing.T) {
 	if _, err := store.Claim(ready.ID, "codex", cliTestNow); err != nil {
 		t.Fatalf("claim work: %v", err)
 	}
-	if _, err := store.Advance(ready.ID, work.AdvanceInput{To: "running", Actor: "codex"}, cliTestNow); err != nil {
+	if _, err := store.Advance(ready.ID, work.AdvanceInput{To: "running", Actor: "codex", VerificationID: "check:close-plan-cli-control"}, cliTestNow); err != nil {
 		t.Fatalf("advance work: %v", err)
 	}
 	out := captureStdout(t, func() {
@@ -5221,7 +5221,7 @@ func TestWorkCloseCommandStealOverridesLeaseHolder(t *testing.T) {
 	if _, err := store.Claim(held.ID, "actor-a", cliTestNow); err != nil {
 		t.Fatalf("claim work: %v", err)
 	}
-	if _, err := store.Advance(held.ID, work.AdvanceInput{To: "running", Actor: "actor-a"}, cliTestNow); err != nil {
+	if _, err := store.Advance(held.ID, work.AdvanceInput{To: "running", Actor: "actor-a", VerificationID: "check:close-plan-cli-control"}, cliTestNow); err != nil {
 		t.Fatalf("advance work: %v", err)
 	}
 

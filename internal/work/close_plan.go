@@ -216,6 +216,15 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 		},
 		Checks: s.closePreconditionChecks(w, outcome, moveType, actor, leaseStatus),
 	}
+	receiptNoAction := ""
+	if w.State != outcome && canTransition(w.State, outcome) {
+		detail := "generated close command satisfies receipt validation"
+		if err := validateClosePlanReceipt(w, outcome, moveType, proofRefs, now); err != nil {
+			receiptNoAction = fmt.Sprintf("generated close receipt invalid: %v", err)
+			detail = receiptNoAction
+		}
+		plan.Checks = append(plan.Checks, ClosePrecondition{Name: "receipt_validation", Met: receiptNoAction == "", Detail: detail})
+	}
 	if actionPlan != nil {
 		plan.ActionExecutionPlanPath = actionPlanPath
 		plan.ActionExecutionPlanID = actionPlan.ID
@@ -259,6 +268,8 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 		plan.NoAction = heldReleaseErr.Error()
 	case leaseStatus.Blocked:
 		plan.NoAction = leaseStatus.Message
+	case receiptNoAction != "":
+		plan.NoAction = receiptNoAction
 	case w.State == outcome || canTransition(w.State, outcome):
 		plan.CloseCommand = []string{"compound", "work", "close", w.ID, "--outcome", outcome, "--move-type", moveType, "--by", actor}
 		if leaseStatus.Stolen {
@@ -285,6 +296,22 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 		plan.PlanPath = path
 	}
 	return plan, nil
+}
+
+// validateClosePlanReceipt previews only inputs carried by the generated command
+// and its Work. It emits nothing, preserves terminal replay, and leaves Close's
+// richer inputs and authoritative receipt validation unchanged.
+func validateClosePlanReceipt(w envelope.WorkEnvelope, outcome, moveType string, proofRefs []string, now time.Time) error {
+	rec := envelope.Receipt{
+		Header:     newCloseHeaderWithLane(envelope.SVReceipt, idFor("rec_", w.ID, ts(now)), now, w.ID, w.IDs.ContextPackID, w.Privacy, w.Risk, ""),
+		Outcome:    receiptOutcome[outcome],
+		MoveType:   moveType,
+		StateDelta: envelope.StateDelta{Artifacts: orEmpty(w.ArtifactIDs), Verification: orEmpty(w.VerificationIDs)},
+		Memory:     envelope.ReceiptMemory{Candidates: orEmpty(w.MemoryCandidateIDs)},
+		ProofRefs:  proofRefs,
+	}
+	rec.StateDelta.Changed = rec.EffectiveChanged()
+	return rec.Validate()
 }
 
 func stringIn(set []string, v string) bool {
