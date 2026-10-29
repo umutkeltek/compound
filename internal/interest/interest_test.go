@@ -228,7 +228,7 @@ func TestFindingEvidenceAssimilatesAndProgressCountsAbsorbed(t *testing.T) {
 	f, err := finding.Record(h, finding.Finding{
 		Topic:        "proof battery note",
 		Body:         "root cause recorded for this failure cluster",
-		EvidenceRefs: []string{SignatureEvidencePrefix + alpha.ID, RepositoryEvidencePrefix + "fp-alpha"},
+		EvidenceRefs: []string{ExplanationDeclarationRef, SignatureEvidencePrefix + alpha.ID, RepositoryEvidencePrefix + "fp-alpha"},
 	}, t0)
 	if err != nil {
 		t.Fatal(err)
@@ -236,7 +236,7 @@ func TestFindingEvidenceAssimilatesAndProgressCountsAbsorbed(t *testing.T) {
 
 	after := mustBuild(t, h, t0.Add(time.Hour))
 	got := bySignature(t, after, "fail:TestAlpha")
-	if got.State != StateAssimilated || !reflect.DeepEqual(got.ExplainedBy, []Explanation{{Ref: "finding:" + f.ID, Match: MatchExact}}) {
+	if got.State != StateAssimilated || !reflect.DeepEqual(got.ExplainedBy, []Explanation{{Ref: "finding:" + f.ID, Match: MatchExact, Status: StatusDeclared}}) {
 		t.Fatalf("after explanation = %+v", got)
 	}
 	if !reflect.DeepEqual(after.Progress.NewlyAssimilated, []Absorbed{{ID: alpha.ID, Occurrences: 2}}) {
@@ -282,7 +282,7 @@ func TestFuzzyMentionIsRelatedNotAssimilated(t *testing.T) {
 	}
 	after := mustBuild(t, h, t0.Add(time.Hour))
 	s := bySignature(t, after, "fail:TestAlpha")
-	if s.State != StateLearnable || len(s.ExplainedBy) != 0 || !reflect.DeepEqual(s.Related, []Explanation{{Ref: "finding:" + f.ID, Match: MatchFuzzy}}) {
+	if s.State != StateLearnable || len(s.ExplainedBy) != 0 || !reflect.DeepEqual(s.Related, []Explanation{{Ref: "finding:" + f.ID, Match: MatchFuzzy, Status: StatusUnknown}}) {
 		t.Fatalf("an unresolved mention must stay learnable with related evidence: %+v", s)
 	}
 	if len(after.Progress.NewlyAssimilated) != 0 || after.Totals.AssimilatedResults != 0 {
@@ -302,7 +302,7 @@ func TestExactExplanationMustCoverEveryRepository(t *testing.T) {
 	id := SignatureID("go-test", "fail:TestAlpha")
 	record := func(body string, refs ...string) string {
 		t.Helper()
-		f, err := finding.Record(h, finding.Finding{Topic: "proof battery note", Body: body, EvidenceRefs: append([]string{SignatureEvidencePrefix + id}, refs...)}, t0)
+		f, err := finding.Record(h, finding.Finding{Topic: "proof battery note", Body: body, EvidenceRefs: append([]string{ExplanationDeclarationRef, SignatureEvidencePrefix + id}, refs...)}, t0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -311,14 +311,14 @@ func TestExactExplanationMustCoverEveryRepository(t *testing.T) {
 	unscoped := record("root cause seen on one checkout")
 	alphaOnly := record("root cause on the alpha checkout", RepositoryEvidencePrefix+"fp-alpha")
 	s := bySignature(t, mustBuild(t, h, t0), "fail:TestAlpha")
-	wantRelated := []Explanation{{Ref: unscoped, Match: MatchExact, Scope: ScopeUnscoped}, {Ref: alphaOnly, Match: MatchExact, Scope: ScopeUncovered}}
+	wantRelated := []Explanation{{Ref: unscoped, Match: MatchExact, Scope: ScopeUnscoped, Status: StatusDeclared}, {Ref: alphaOnly, Match: MatchExact, Scope: ScopeUncovered, Status: StatusDeclared}}
 	slices.SortFunc(wantRelated, func(a, b Explanation) int { return strings.Compare(a.Ref, b.Ref) })
 	if s.State != StateLearnable || len(s.ExplainedBy) != 0 || !reflect.DeepEqual(s.Related, wantRelated) {
 		t.Fatalf("partial scope must not assimilate: %+v", s)
 	}
 	both := record("root cause on both checkouts", RepositoryEvidencePrefix+"fp-alpha", RepositoryEvidencePrefix+"fp-beta")
 	s = bySignature(t, mustBuild(t, h, t0), "fail:TestAlpha")
-	if s.State != StateAssimilated || !reflect.DeepEqual(s.ExplainedBy, []Explanation{{Ref: both, Match: MatchExact}}) || len(s.Related) != 2 {
+	if s.State != StateAssimilated || !reflect.DeepEqual(s.ExplainedBy, []Explanation{{Ref: both, Match: MatchExact, Status: StatusDeclared}}) || len(s.Related) != 2 {
 		t.Fatalf("covering scope must assimilate: %+v", s)
 	}
 }
@@ -339,7 +339,7 @@ func TestRepositoryWildcardCoversBeyondTheCappedSample(t *testing.T) {
 		t.Fatalf("capped sample must still report the total: %+v", s)
 	}
 	// Naming only the five the sample shows is uncovered: two repositories are hidden.
-	refs := []string{SignatureEvidencePrefix + id}
+	refs := []string{ExplanationDeclarationRef, SignatureEvidencePrefix + id}
 	for _, fp := range s.Repositories {
 		refs = append(refs, RepositoryEvidencePrefix+fp)
 	}
@@ -350,12 +350,12 @@ func TestRepositoryWildcardCoversBeyondTheCappedSample(t *testing.T) {
 	if s.State != StateLearnable || len(s.ExplainedBy) != 0 || len(s.Related) != 1 || s.Related[0].Scope != ScopeUncovered {
 		t.Fatalf("enumerating the capped sample must not cover hidden repositories: %+v", s)
 	}
-	star, err := finding.Record(h, finding.Finding{Topic: "machine cause", Body: "fixture digits trip the phone detector on every checkout", EvidenceRefs: []string{SignatureEvidencePrefix + id, RepositoryEvidencePrefix + RepositoryWildcard}}, t0)
+	star, err := finding.Record(h, finding.Finding{Topic: "machine cause", Body: "fixture digits trip the phone detector on every checkout", EvidenceRefs: []string{ExplanationDeclarationRef, SignatureEvidencePrefix + id, RepositoryEvidencePrefix + RepositoryWildcard}}, t0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s = bySignature(t, mustBuild(t, h, t0), sig)
-	if s.State != StateAssimilated || !reflect.DeepEqual(s.ExplainedBy, []Explanation{{Ref: "finding:" + star.ID, Match: MatchExact}}) {
+	if s.State != StateAssimilated || !reflect.DeepEqual(s.ExplainedBy, []Explanation{{Ref: "finding:" + star.ID, Match: MatchExact, Status: StatusDeclared}}) {
 		t.Fatalf("repository:* must cover every repository: %+v", s)
 	}
 }
@@ -654,7 +654,7 @@ func TestUnknownExplanationScopeNeverAssimilates(t *testing.T) {
 				t.Fatal(err)
 			}
 			id := SignatureID("go-test", "fail:TestScopedFixture")
-			refs := []string{SignatureEvidencePrefix + id}
+			refs := []string{ExplanationDeclarationRef, SignatureEvidencePrefix + id}
 			for _, fp := range tc.named {
 				refs = append(refs, RepositoryEvidencePrefix+fp)
 			}
@@ -664,7 +664,7 @@ func TestUnknownExplanationScopeNeverAssimilates(t *testing.T) {
 			}
 			after := mustBuild(t, h, t0.Add(time.Hour))
 			s := bySignature(t, after, "fail:TestScopedFixture")
-			want := []Explanation{{Ref: "finding:" + f.ID, Match: MatchExact, Scope: ScopeUnscoped}}
+			want := []Explanation{{Ref: "finding:" + f.ID, Match: MatchExact, Scope: ScopeUnscoped, Status: StatusDeclared}}
 			if s.State != StateLearnable || len(s.ExplainedBy) != 0 || !reflect.DeepEqual(s.Related, want) {
 				t.Fatalf("unknown scope must remain related: %+v", s)
 			}
@@ -679,12 +679,150 @@ func TestExplicitSingleRepositoryExplanationAssimilates(t *testing.T) {
 	h := t.TempDir()
 	seedAlpha(t, h)
 	id := SignatureID("go-test", "fail:TestAlpha")
-	f, err := finding.Record(h, finding.Finding{Topic: "scoped cause", Body: "diagnosis on the named repository", EvidenceRefs: []string{SignatureEvidencePrefix + id, RepositoryEvidencePrefix + "fp-alpha"}}, t0)
+	f, err := finding.Record(h, finding.Finding{Topic: "scoped cause", Body: "diagnosis on the named repository", EvidenceRefs: []string{ExplanationDeclarationRef, SignatureEvidencePrefix + id, RepositoryEvidencePrefix + "fp-alpha"}}, t0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := bySignature(t, mustBuild(t, h, t0), "fail:TestAlpha")
-	if s.State != StateAssimilated || !reflect.DeepEqual(s.ExplainedBy, []Explanation{{Ref: "finding:" + f.ID, Match: MatchExact}}) {
+	if s.State != StateAssimilated || !reflect.DeepEqual(s.ExplainedBy, []Explanation{{Ref: "finding:" + f.ID, Match: MatchExact, Status: StatusDeclared}}) {
 		t.Fatalf("explicit matching scope rejected: %+v", s)
+	}
+}
+
+func TestExactAssociationWithoutDeclaredExplanation(t *testing.T) {
+	for _, association := range []string{"topic", "reference"} {
+		t.Run(association, func(t *testing.T) {
+			h := t.TempDir()
+			seedAlpha(t, h)
+			before := mustBuild(t, h, t0)
+			if _, err := WriteProjection(h, before); err != nil {
+				t.Fatal(err)
+			}
+			id := SignatureID("go-test", "fail:TestAlpha")
+			note := finding.Finding{Topic: "battery note", Body: "TestAlpha still fails. The root cause is unknown.", EvidenceRefs: []string{RepositoryEvidencePrefix + "fp-alpha"}}
+			if association == "topic" {
+				note.Topic = id
+			} else {
+				note.EvidenceRefs = append(note.EvidenceRefs, SignatureEvidencePrefix+id)
+			}
+			f, err := finding.Record(h, note, t0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			after := mustBuild(t, h, t0.Add(time.Hour))
+			s := bySignature(t, after, "fail:TestAlpha")
+			if s.State != StateLearnable || len(s.ExplainedBy) != 0 || len(s.Related) != 1 {
+				t.Fatalf("unresolved exact association must stay related: %+v", s)
+			}
+			body, _ := json.Marshal(s.Related[0])
+			var related map[string]string
+			if err := json.Unmarshal(body, &related); err != nil || related["ref"] != "finding:"+f.ID || related["match"] != MatchExact || related["status"] != "unknown" {
+				t.Fatalf("unknown explanation status must be visible: %s (%v)", body, err)
+			}
+			if after.Totals.AssimilatedResults != 0 || len(after.Progress.NewlyAssimilated) != 0 {
+				t.Fatalf("an exact association is not learning: %+v %+v", after.Totals, after.Progress)
+			}
+		})
+	}
+}
+
+func TestExplicitExplanationDeclaration(t *testing.T) {
+	h := t.TempDir()
+	seedAlpha(t, h)
+	before := mustBuild(t, h, t0)
+	if _, err := WriteProjection(h, before); err != nil {
+		t.Fatal(err)
+	}
+	id := SignatureID("go-test", "fail:TestAlpha")
+	f, err := finding.Record(h, finding.Finding{Topic: "fixture diagnosis", Body: "The test reads an absent fixture; this explains the observed failure.", EvidenceRefs: []string{"explanation:declared", SignatureEvidencePrefix + id, RepositoryEvidencePrefix + "fp-alpha"}}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := mustBuild(t, h, t0.Add(time.Hour))
+	s := bySignature(t, after, "fail:TestAlpha")
+	if s.State != StateAssimilated || len(s.ExplainedBy) != 1 {
+		t.Fatalf("declared scoped explanation was not joined: %+v", s)
+	}
+	body, _ := json.Marshal(s.ExplainedBy[0])
+	var explanation map[string]string
+	if err := json.Unmarshal(body, &explanation); err != nil || explanation["status"] != "declared" {
+		t.Fatalf("author-declared status must be explicit: %s (%v)", body, err)
+	}
+	if !reflect.DeepEqual(after.Progress.NewlyAssimilated, []Absorbed{{ID: id, Occurrences: 2}}) || f.SourceClass != "evidence" {
+		t.Fatalf("declaration must preserve evidence authority: progress=%+v finding=%+v", after.Progress, f)
+	}
+}
+
+func TestDeclarationWithoutExactAssociation(t *testing.T) {
+	h := t.TempDir()
+	seedAlpha(t, h)
+	if _, err := finding.Record(h, finding.Finding{Topic: "fixture diagnosis", Body: "TestAlpha has an author-declared explanation.", EvidenceRefs: []string{"explanation:declared", RepositoryEvidencePrefix + "fp-alpha"}}, t0); err != nil {
+		t.Fatal(err)
+	}
+	s := bySignature(t, mustBuild(t, h, t0), "fail:TestAlpha")
+	if s.State != StateLearnable || len(s.ExplainedBy) != 0 || len(s.Related) != 1 || s.Related[0].Match != MatchFuzzy {
+		t.Fatalf("declaration must not promote a fuzzy association: %+v", s)
+	}
+}
+
+func TestSupersededExplanationReturnsToLearnable(t *testing.T) {
+	h := t.TempDir()
+	seedAlpha(t, h)
+	id := SignatureID("go-test", "fail:TestAlpha")
+	first, err := finding.Record(h, finding.Finding{Topic: "fixture diagnosis", Body: "The missing fixture explains this failure.", EvidenceRefs: []string{"explanation:declared", SignatureEvidencePrefix + id, RepositoryEvidencePrefix + "fp-alpha"}}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := mustBuild(t, h, t0)
+	if bySignature(t, before, "fail:TestAlpha").State != StateAssimilated {
+		t.Fatal("declared explanation did not establish the positive control")
+	}
+	if _, err := WriteProjection(h, before); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := finding.Record(h, finding.Finding{Topic: "fixture diagnosis revised", Body: "The earlier diagnosis was retracted. TestAlpha's root cause is unknown.", Supersedes: first.ID, EvidenceRefs: []string{SignatureEvidencePrefix + id, RepositoryEvidencePrefix + "fp-alpha"}}, t0.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	after := mustBuild(t, h, t0.Add(time.Hour))
+	s := bySignature(t, after, "fail:TestAlpha")
+	if s.State != StateLearnable || len(s.ExplainedBy) != 0 || len(s.Related) != 2 {
+		t.Fatalf("superseded explanation must not assimilate: %+v", s)
+	}
+	if !reflect.DeepEqual(after.Progress.NewlyLearnable, []string{id}) || len(after.Progress.NewlyAssimilated) != 0 {
+		t.Fatalf("retracted diagnosis must return attention without learning credit: %+v", after.Progress)
+	}
+}
+
+func TestUnknownFindingLifecycleDoesNotConfirmExplanation(t *testing.T) {
+	h := t.TempDir()
+	seedAlpha(t, h)
+	id := SignatureID("go-test", "fail:TestAlpha")
+	if _, err := finding.Record(h, finding.Finding{Topic: "fixture diagnosis", Body: "A declared diagnosis whose current lifecycle must remain readable.", EvidenceRefs: []string{"explanation:declared", SignatureEvidencePrefix + id, RepositoryEvidencePrefix + "fp-alpha"}}, t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h, finding.Subdir, "invalid-fixture.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	proj := mustBuild(t, h, t0)
+	s := bySignature(t, proj, "fail:TestAlpha")
+	if s.State != StateLearnable || len(s.ExplainedBy) != 0 || !hasWarning(proj, "finding", "lifecycle_unreadable") {
+		t.Fatalf("unknown current finding status must stay uncertain: %+v warnings=%+v", s, proj.Warnings)
+	}
+}
+
+func TestPreviousStatusSchemaRestartsProgress(t *testing.T) {
+	h := t.TempDir()
+	seedAlpha(t, h)
+	old := mustBuild(t, h, t0)
+	old.SchemaVersion = "compound.interest.v0.3"
+	for i := range old.Signatures {
+		old.Signatures[i].State = StateAssimilated
+	}
+	if _, err := WriteProjection(h, old); err != nil {
+		t.Fatal(err)
+	}
+	proj := mustBuild(t, h, t0.Add(time.Hour))
+	if !hasWarning(proj, "projection", "schema_changed") || proj.Progress.PreviousComputedAt != "" || len(proj.Progress.NewlyAssimilated) != 0 || len(proj.Progress.NewlyLearnable) != 0 {
+		t.Fatalf("old status rules must not produce new progress: %+v warnings=%+v", proj.Progress, proj.Warnings)
 	}
 }

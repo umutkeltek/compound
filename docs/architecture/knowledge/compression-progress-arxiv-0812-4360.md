@@ -176,7 +176,7 @@ error line, normalized so it carries no path or hash. Each signature is in one o
 
 | State | Meaning | Attention |
 |---|---|---|
-| `assimilated` | A finding names the signature id exactly (topic or `signature:` evidence ref), and its `repository:` refs cover every repository the signature was seen in (scope is explicit and every observation names its repository; `repository:*` declares a repository-independent cause such as a redact false positive or a load timeout, and `repositories_total` says how many the capped list hides) | None. No progress is left to earn |
+| `assimilated` | A current finding carries `explanation:declared`, names the signature id exactly (topic or `signature:` evidence ref), and its `repository:` refs cover every repository the signature was seen in (scope is explicit and every observation names its repository; `repository:*` declares a repository-independent cause such as a redact false positive or a load timeout, and `repositories_total` says how many the capped list hides) | Lower. Retrieve the declared explanation and check whether it still applies |
 | `learnable` | No explanation, and the signature recurs across different work items or days | First. The steep part of the learning curve |
 | `singleton` | Seen once, or one work retried within a day; no explanation | Wait. Regularity and noise cannot be told apart yet, however many retries |
 
@@ -193,7 +193,7 @@ absorbed stand in for bits saved. The signature is a naive heuristic: two causes
 one cause can split across two. A note that only names the test (`TestAlpha still fails, cause
 unknown`), a negatives record that quotes the signature, and an exact finding whose scope misses a
 repository are `related` evidence, listed on the signature but never counted as assimilated: a
-mention is not an explanation, and an explanation is not a verified repair. Missing scope on a finding or any observation remains related even in a single-repository cluster. Schema v0.3 restarts progress from earlier projections rather than comparing classifications made under the implicit-scope rule. `learnable` is a
+mention is not an explanation, and an explanation is not a verified repair. Missing scope on a finding or any observation remains related even in a single-repository cluster. Exact association and scope without `explanation:declared` remain related with `status: unknown`. This marker is the author's declaration that the body supplies a diagnosis, not independent acceptance or verified repair. The existing finding lifecycle owner identifies superseded declarations; those remain related with `status: superseded` and cannot earn learning credit. A retracted diagnosis returns recurring failures to `learnable`. An unreadable lifecycle leaves status unknown. Findings are append-only: record a revised body with `Supersedes` rather than trying to add refs to an unchanged finding. Schema v0.4 restarts progress from earlier projections rather than comparing classifications made under the former scope or status rules. `learnable` is a
 crude prior, not a learned model.
 
 ## Slices, smallest first

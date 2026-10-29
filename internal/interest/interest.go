@@ -2,7 +2,8 @@
 // failed proof results (Schmidhuber, "Driven by Compression Progress"). Each failed
 // work.proof_resource.result is reduced to one public-safe signature from its
 // proof report; signatures cluster and each cluster is assimilated (a finding
-// names its signature exactly, for every repository it was seen in), learnable
+// declares an explanation, names its signature exactly and covers every observed
+// repository), learnable
 // (it recurs unexplained across work ids or days) or singleton. A note that only
 // mentions the failure is related evidence, not an explanation, and an
 // explanation is not a verified repair. Attention goes to learnable regularity,
@@ -39,10 +40,17 @@ import (
 )
 
 const (
-	SchemaVersion = "compound.interest.v0.3"
+	SchemaVersion = "compound.interest.v0.4"
 	ProjectionRef = "compound://projections/interest"
 	RelPath       = "projections/interest.json"
 	DefaultWindow = 30 * 24 * time.Hour
+
+	// ExplanationDeclarationRef is an author declaration that a finding supplies
+	// a diagnosis, never independent acceptance or proof of repair.
+	ExplanationDeclarationRef = "explanation:declared"
+	StatusDeclared            = "declared"
+	StatusUnknown             = "unknown"
+	StatusSuperseded          = "superseded"
 
 	StateAssimilated = "assimilated"
 	StateLearnable   = "learnable"
@@ -131,6 +139,8 @@ type Explanation struct {
 	Ref   string `json:"ref"`
 	Match string `json:"match"`
 	Scope string `json:"scope,omitempty"`
+	// Status describes an author declaration and the existing finding lifecycle.
+	Status string `json:"status"`
 }
 
 type Progress struct {
@@ -176,6 +186,7 @@ type explainer struct {
 	ref          string
 	exact, repos map[string]bool
 	text         string
+	status       string
 }
 
 type warnings []Warning
@@ -476,6 +487,14 @@ func SignatureID(step, signature string) string {
 // on topic or a signature: evidence ref, fuzzy on text) and negatives (fuzzy).
 func readExplanations(homePath string, now time.Time, w *warnings) []explainer {
 	var out []explainer
+	lifecycle, lifecycleErr := finding.Doctor(homePath, now, 0)
+	if lifecycleErr != nil {
+		w.add("finding", "lifecycle_unreadable", "current finding lifecycle is unreadable; explanation status stays unknown")
+	}
+	superseded := map[string]bool{}
+	for _, f := range lifecycle.Superseded {
+		superseded[f.ID] = true
+	}
 	dir := filepath.Join(homePath, filepath.FromSlash(finding.Subdir))
 	entries, err := os.ReadDir(dir)
 	if err != nil && !os.IsNotExist(err) {
@@ -491,15 +510,23 @@ func readExplanations(homePath string, now time.Time, w *warnings) []explainer {
 			continue
 		}
 		exact, repos := map[string]bool{strings.TrimSpace(f.Topic): true}, map[string]bool{}
+		status := StatusUnknown
 		for _, ref := range f.EvidenceRefs {
 			ref = strings.TrimSpace(ref)
-			if id, ok := strings.CutPrefix(ref, SignatureEvidencePrefix); ok {
+			if ref == ExplanationDeclarationRef {
+				status = StatusDeclared
+			} else if id, ok := strings.CutPrefix(ref, SignatureEvidencePrefix); ok {
 				exact[id] = true
 			} else if fp, ok := strings.CutPrefix(ref, RepositoryEvidencePrefix); ok {
 				add(repos, fp)
 			}
 		}
-		out = append(out, explainer{ref: "finding:" + f.ID, exact: exact, repos: repos, text: f.Topic + "\n" + f.Body})
+		if lifecycleErr != nil {
+			status = StatusUnknown
+		} else if superseded[f.ID] {
+			status = StatusSuperseded
+		}
+		out = append(out, explainer{ref: "finding:" + f.ID, exact: exact, repos: repos, text: f.Topic + "\n" + f.Body, status: status})
 	}
 	neg, _, err := negatives.ReadFresh(homePath, now)
 	if err != nil {
@@ -591,7 +618,8 @@ func compareBool(a, b bool) int {
 }
 
 // explain joins a signature to held explanations. Only an exact match whose
-// scope covers the signature explains it: a finding topic or signature:
+// scope covers the signature explains it, with a current explanation:declared
+// author declaration: a finding topic or signature:
 // evidence ref names the id, and its repository: refs name every repository
 // the signature was seen in, with every observation scoped. Missing scope
 // stays uncertain even for one repository. Other matches are related: an exact match with a
@@ -601,21 +629,27 @@ func compareBool(a, b bool) int {
 func explain(s Signature, seen map[string]bool, unknownRepository bool, exps []explainer) (explained, related []Explanation) {
 	var word *regexp.Regexp
 	token, _ := strings.CutPrefix(s.Signature, "fail:")
-	if testTokenRE.MatchString(token) { // identifier characters only: regex-safe
+	if testTokenRE.MatchString(token) {
 		word = regexp.MustCompile(`(^|[^A-Za-z0-9_])` + token + `($|[^A-Za-z0-9_])`)
 	}
 	bySignature := len([]rune(s.Signature)) >= minFuzzySignatureRunes
 	explained, related = []Explanation{}, []Explanation{}
 	for _, e := range exps {
+		status := e.status
+		if status == "" {
+			status = StatusUnknown
+		}
 		if e.exact[s.ID] {
-			if scope := uncoveredScope(e.repos, seen, unknownRepository); scope == "" {
-				explained = append(explained, Explanation{Ref: e.ref, Match: MatchExact})
+			scope := uncoveredScope(e.repos, seen, unknownRepository)
+			match := Explanation{Ref: e.ref, Match: MatchExact, Scope: scope, Status: status}
+			if status == StatusDeclared && scope == "" {
+				explained = append(explained, match)
 			} else {
-				related = append(related, Explanation{Ref: e.ref, Match: MatchExact, Scope: scope})
+				related = append(related, match)
 			}
 		} else if (word != nil && strings.Contains(e.text, token) && word.MatchString(e.text)) ||
 			(bySignature && strings.Contains(e.text, s.Signature)) {
-			related = append(related, Explanation{Ref: e.ref, Match: MatchFuzzy})
+			related = append(related, Explanation{Ref: e.ref, Match: MatchFuzzy, Status: status})
 		}
 	}
 	return firstExplanations(explained), firstExplanations(related)
@@ -670,7 +704,7 @@ func applyProgress(homePath string, proj *Projection, w *warnings) {
 		if s.State == StateAssimilated && (was == StateLearnable || was == StateSingleton) {
 			proj.Progress.NewlyAssimilated = append(proj.Progress.NewlyAssimilated, Absorbed{ID: s.ID, Occurrences: s.Occurrences})
 		}
-		if s.State == StateLearnable && (!existed || was == StateSingleton) {
+		if s.State == StateLearnable && (!existed || was != StateLearnable) {
 			proj.Progress.NewlyLearnable = append(proj.Progress.NewlyLearnable, s.ID)
 		}
 	}
