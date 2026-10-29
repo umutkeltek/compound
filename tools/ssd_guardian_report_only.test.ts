@@ -7,8 +7,8 @@ import { spawnSync } from "node:child_process";
 const scripts = join(import.meta.dir, "../scripts/ssd-guardian");
 const preload = join(scripts, "test-fixtures/report_only_preload.ts");
 const entries = ["daily_toolchain_reclaim.ts", "enforce_ssd_budget.ts", "disk_pressure_guard.ts", "weekly_reclaim.ts", "fix_work_symlink_drift.ts", "sweep_build_caches.ts"];
-function fixture() {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "guardian-report-fixture-")));
+function fixture(parent = tmpdir()) {
+  const root = realpathSync(mkdtempSync(join(parent, "guardian-report-fixture-")));
   const old = new Date(Date.now() - 90 * 86_400_000);
   const paths = ["physical-go/aa/compiler-d", "Library/Caches/compound-proof-gocache/0123456789abcdef/aa/cache-d", "work/Caches/compound-proof-gocache/0123456789abcdef/aa/cache-d", "Library/Caches/Homebrew/download", ".cargo/registry/src/source/package", ".cargo/registry/cache/source/package.crate", "Library/Developer/CoreSimulator/Devices/device/data", "Projects/product/build/original", "Projects/product/.build/original", ".codex/sessions/original.jsonl", ".claude/projects/original.jsonl", ".switchback/state/body/index.sqlite", ".switchback/state/body/index.sqlite-wal", ".switchback/state/body/index.sqlite-shm", ".compound/exports/backup.tar", "temp/gocache-mixed/model.gguf", "temp/gocache-mixed/sessions/history.jsonl", "temp/gocache-mixed/body/original", "temp/agent-session-backup-fixture/original", "temp/switchback-forward-proxy-fixture/original", "temp/compound-proofcheck-sealed-fixture/original", "backups/staging/original", "literal-$(touch SHOULD_NOT_EXIST)-`touch ALSO_NOT_CREATED`/original"];
   for (const path of paths) { const full = join(root, path); mkdirSync(join(full, ".."), { recursive: true }); writeFileSync(full, "synthetic original " + path); utimesSync(full, old, old); }
@@ -48,7 +48,7 @@ function run(root: string, script: string, args: string[], scenario: object = {}
   expect(result.error).toBeUndefined();
   return { ...result, trace, report: result.stdout.trim() ? JSON.parse(result.stdout) : null };
 }
-function owned(testBody: (root: string) => void) { const root = fixture(); try { testBody(root); } finally { rmSync(root,{recursive:true,force:true}); } }
+function owned(testBody: (root: string) => void, parent = tmpdir()) { const root = fixture(parent); try { testBody(root); } finally { rmSync(root,{recursive:true,force:true}); } }
 for (const name of entries) test(`scheduled report-only boundary: ${name} --apply`, () => owned((root) => {
   const before = snapshot(root);
   const args = ["--apply", ...(name === "daily_toolchain_reclaim.ts" ? ["--force"] : [])];
@@ -101,6 +101,58 @@ test("empty successful sweep measurement is unavailable", () => owned((root) => 
   const { status,report } = run(root,"sweep_build_caches.ts",["--apply"],{empty_measure:true});
   expect(status).toBe(2); expect(report.findings.filter((f:any) => f.status === "failed").length).toBeGreaterThan(0); expect(report.findings[0].size_bytes).toBeNull();
 }));
+
+test("sweep does not traverse a Projects root symlink", () => owned((root) => {
+  const sibling = join(root, "sibling-projects");
+  const build = join(sibling, "product", "build");
+  mkdirSync(build, { recursive: true }); writeFileSync(join(build, "original"), "sibling original");
+  const old = new Date(Date.now() - 90 * 86_400_000); utimesSync(build, old, old);
+  rmSync(join(root, "Projects"), { recursive: true, force: true });
+  symlinkSync(sibling, join(root, "Projects"));
+  const before = snapshot(root);
+  const { status, report, trace } = run(root, "sweep_build_caches.ts", ["--apply"]);
+  const measurements = trace.filter((row) => ["/usr/bin/du", "du"].includes(row.command));
+  if (report.findings.length || measurements.length)
+    console.error("root-symlink-readback " + JSON.stringify({ findings: report.findings, measurements }));
+  expect(report.findings).toEqual([]); expect(measurements).toEqual([]); expect(status).toBe(0);
+  expect(report.mode).toBe("report_only"); expect(report.mutation_authorized).toBe(false);
+  expect(report.reclaimed_bytes).toBe(0); expect(report.planned_reclaim_bytes).toBe(0);
+  expect(snapshot(root)).toEqual(before);
+  expect(readFileSync(join(root, "reports/retained-evidence.json"), "utf8")).toBe("retained earlier receipt");
+}));
+
+for (const ancestor of ["Library", "Volumes"]) for (const emptyMeasure of [false, true])
+  test(`sweep beneath ${ancestor} ancestor: ${emptyMeasure ? "unavailable measurement" : "deferred candidates"}`, () => {
+    const parent = realpathSync(mkdtempSync(join(tmpdir(), "guardian-ancestor-fixture-")));
+    try {
+      const nested = join(parent, ancestor); mkdirSync(nested);
+      owned((root) => {
+        const old = new Date(Date.now() - 90 * 86_400_000);
+        for (const excluded of ["Library", "Volumes", "operating-system"]) {
+          const path = join(root, "Projects", "product", excluded, "build");
+          mkdirSync(path, { recursive: true }); writeFileSync(join(path, "original"), "excluded original");
+          utimesSync(path, old, old);
+        }
+        const before = snapshot(root);
+        const { status, report, trace } = run(root, "sweep_build_caches.ts", ["--apply"], { empty_measure: emptyMeasure });
+        expect(status).toBe(emptyMeasure ? 2 : 3);
+        expect(report.findings.map((f: any) => f.path).sort()).toEqual(["build", ".build"].map((name) => join(root, "Projects", "product", name)).sort());
+        for (const finding of report.findings) {
+          expect(finding.status).toBe(emptyMeasure ? "failed" : "deferred");
+          if (emptyMeasure) expect(finding.size_bytes).toBeNull();
+          else expect(finding.size_bytes).toBeGreaterThan(0);
+        }
+        expect(report.failed_count).toBe(emptyMeasure ? 2 : 0);
+        expect(report.mode).toBe("report_only"); expect(report.requested_apply).toBe(true);
+        expect(report.execution_policy).toBe("report_only"); expect(report.mutation_authorized).toBe(false);
+        expect(report.reclaimed_bytes).toBe(0); expect(report.planned_reclaim_bytes).toBe(0); expect(report.retry_required).toBe(true);
+        expect(trace.find((row) => row.command === "/usr/bin/find").cwd).toBe(root);
+        expect(trace.some((row) => row.report_write === "exclusive-create")).toBe(true);
+        expect(snapshot(root)).toEqual(before);
+        expect(readFileSync(join(root, "reports/retained-evidence.json"), "utf8")).toBe("retained earlier receipt");
+      }, nested);
+    } finally { rmSync(parent, { recursive: true, force: true }); }
+  });
 
 for (const name of entries) test(`unknown flags cannot broaden ${name}`, () => owned((root) => {
   const { status,report,trace } = run(root,name,["--apply","--delete-approved"]);
