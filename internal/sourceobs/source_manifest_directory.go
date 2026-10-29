@@ -23,9 +23,10 @@ type sourceManifestFileSnapshot struct {
 }
 
 type sourceManifestSnapshotBatch struct {
-	deferred int
-	files    []sourceManifestFileSnapshot
-	spoolDir string
+	refusedSymlinks int
+	deferred        int
+	files           []sourceManifestFileSnapshot
+	spoolDir        string
 }
 
 func (b *sourceManifestSnapshotBatch) Close() error {
@@ -158,10 +159,10 @@ func createSourceManifestDirectory(homePath, sourceFamily, root string, sourceIn
 }
 
 func snapshotSourceManifestDirectory(root string) (string, *sourceManifestSnapshotBatch, error) {
-	return snapshotSourceManifestDirectoryFormat(context.Background(), root, ".md", false, nil)
+	return snapshotSourceManifestDirectoryFormat(context.Background(), root, ".md", false, nil, false)
 }
 
-func snapshotSourceManifestDirectoryFormat(ctx context.Context, root, extension string, allowEmpty bool, selectFile func(string, os.FileInfo) bool) (string, *sourceManifestSnapshotBatch, error) {
+func snapshotSourceManifestDirectoryFormat(ctx context.Context, root, extension string, allowEmpty bool, selectFile func(string, os.FileInfo) bool, continueAfterRefusedSymlink bool) (string, *sourceManifestSnapshotBatch, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
 		return "", nil, fmt.Errorf("source directory required")
@@ -187,6 +188,7 @@ func snapshotSourceManifestDirectoryFormat(ctx context.Context, root, extension 
 	}
 	defer rootHandle.Close()
 
+	refusedSymlinks := 0
 	candidates := make([]sourceManifestDirectoryCandidate, 0)
 	seen := make(map[string]string)
 	err = filepath.WalkDir(absoluteRoot, func(path string, entry os.DirEntry, walkErr error) error {
@@ -206,6 +208,10 @@ func snapshotSourceManifestDirectoryFormat(ctx context.Context, root, extension 
 		relative = filepath.ToSlash(relative)
 		if entry.Type()&os.ModeSymlink != 0 {
 			if filepath.Ext(entry.Name()) == extension {
+				if continueAfterRefusedSymlink {
+					refusedSymlinks++
+					return nil
+				}
 				return fmt.Errorf("source directory %s contains markdown symlink %s; symlinks are refused", absoluteRoot, relative)
 			}
 			return nil
@@ -242,6 +248,7 @@ func snapshotSourceManifestDirectoryFormat(ctx context.Context, root, extension 
 	if err != nil {
 		return "", nil, err
 	}
+	batch.refusedSymlinks = refusedSymlinks
 	for _, candidate := range candidates {
 		if selectFile != nil && !selectFile(candidate.relative, candidate.info) {
 			continue

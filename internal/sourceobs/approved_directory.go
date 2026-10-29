@@ -12,10 +12,16 @@ import (
 	"time"
 )
 
+type CaptureOptions struct {
+	// Refuse each link without reading it, while capturing regular files.
+	ContinueAfterRefusedSymlink bool
+}
+
 type CaptureBatchReport struct {
-	Oversized int
-	Deferred  int
-	Missing   int
+	RefusedSymlinks int
+	Oversized       int
+	Deferred        int
+	Missing         int
 	SourceManifestReport
 	Captured  int
 	Unchanged int
@@ -34,6 +40,12 @@ func CaptureApprovedDirectory(ctx context.Context, homePath, family, root, forma
 // and skips already-custodied unchanged files using size + nanosecond mtime.
 // This is an incremental freshness check, not a content-integrity audit.
 func CaptureApprovedDirectoryBatch(ctx context.Context, homePath, family, root, format string, now time.Time) (CaptureBatchReport, error) {
+	return CaptureApprovedDirectoryBatchWithOptions(ctx, homePath, family, root, format, now, CaptureOptions{})
+}
+
+// CaptureApprovedDirectoryBatchWithOptions makes partial capture an explicit choice.
+// The default entry point continues to refuse the entire batch on a symlink.
+func CaptureApprovedDirectoryBatchWithOptions(ctx context.Context, homePath, family, root, format string, now time.Time, opts CaptureOptions) (CaptureBatchReport, error) {
 	result := CaptureBatchReport{}
 	existing, loadErr := LoadSourceManifest(homePath, family)
 	if loadErr != nil && !os.IsNotExist(loadErr) {
@@ -78,12 +90,13 @@ func CaptureApprovedDirectoryBatch(ctx context.Context, homePath, family, root, 
 	if strings.TrimSpace(family) == "" {
 		return CaptureBatchReport{}, fmt.Errorf("source family required")
 	}
-	absolute, batch, err := snapshotSourceManifestDirectoryFormat(ctx, root, ext, true, choose)
+	absolute, batch, err := snapshotSourceManifestDirectoryFormat(ctx, root, ext, true, choose, opts.ContinueAfterRefusedSymlink)
 	if err != nil {
 		return CaptureBatchReport{}, err
 	}
 	defer batch.Close()
 	result.Deferred = batch.deferred
+	result.RefusedSymlinks = batch.refusedSymlinks
 	if format != "markdown" {
 		valid := batch.files[:0]
 		for _, snapshot := range batch.files {
