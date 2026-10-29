@@ -48,6 +48,21 @@ func TestPresubmitKilledProducerHelper(t *testing.T) {
 			os.Exit(23)
 		}
 		started := make(chan struct{})
+		runningRecorded := make(chan struct{})
+		var runningOnce sync.Once
+		rt := ctx.Value(nativePresubmitRuntimeKey{}).(*presubmitRuntime)
+		record := rt.checkpointRecord
+		rt.checkpointRecord = func(out *PresubmitExecutionResult) error {
+			if err := record(out); err != nil {
+				return err
+			}
+			checkpoint := out.Checkpoints[len(out.Checkpoints)-1]
+			if checkpoint.CommandSequence > 0 && checkpoint.Status == "running" &&
+				checkpoint.GroupStarted && !checkpoint.GroupClosed && checkpoint.ProcessGroupID > 0 {
+				runningOnce.Do(func() { close(runningRecorded) })
+			}
+			return nil
+		}
 		writer := &presubmitStartWriter{started: started}
 		go func() {
 			cmd := exec.Command("sh", "-c", "printf child-live; read fixture_line || true")
@@ -56,6 +71,7 @@ func TestPresubmitKilledProducerHelper(t *testing.T) {
 			_ = gitrepository.RunCommand(ctx, cmd)
 		}()
 		<-started
+		<-runningRecorded
 		os.Exit(23)
 		return ProofCheckReport{}, nil
 	})
