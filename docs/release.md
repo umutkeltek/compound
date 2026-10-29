@@ -5,6 +5,13 @@ version. It does not infer the application's version from source Git tags,
 so linked worktrees, shared prior clones and later tag creation preserve the
 same packaged identity.
 
+The emitted SBOM retains the generator vendor, name and version. Only the
+CycloneDX generator metadata self-hashes are omitted because the native generator
+executables differ between Mac and Linux. Build output records the selected
+SBOM_TOOL executable SHA-256; application, dependency and other tool hashes stay
+in the SBOM. The complete nine-file comparison remains required. Source-version
+checks read stdout while retaining download and compiler diagnostics on stderr.
+
 GitHub-hosted Actions have been disabled in this repository since 2026-10-16.
 The tracked `.github/workflows/proof.yml` and `.github/workflows/release.yml` are
 inactive references retained for tests. The single `.woodpecker.yml` pipeline

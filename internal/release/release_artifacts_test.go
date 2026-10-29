@@ -3,6 +3,7 @@ package release
 import (
 	"archive/tar"
 	"compress/gzip"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -330,7 +331,8 @@ func newReleaseBuildFixture(t *testing.T) string {
 set -eu
 case "$1" in
   run)
-    printf 'compound %s (build dev)\n' "${COMPOUND_RELEASE_VERSION}"
+    if [ -n "${RELEASE_TEST_VERSION_STDERR:-}" ]; then printf '%s\n' "$RELEASE_TEST_VERSION_STDERR" >&2; fi
+    printf 'compound %s (build dev)\n' "${RELEASE_TEST_SOURCE_VERSION:-$COMPOUND_RELEASE_VERSION}"
     ;;
   build)
     output=
@@ -388,7 +390,14 @@ case "$(basename "$binary")" in
   *) printf 'unexpected binary: %s\n' "$binary" >&2; exit 64 ;;
 esac
 case "${RELEASE_TEST_SBOM_OUTPUT_KIND:-regular}" in
-  regular) printf '{"bomFormat":"CycloneDX","specVersion":"1.6","application":"%s","version":"%s"}\n' "$main" "$version" > "$output" ;;
+  regular)
+    if [ -n "${RELEASE_TEST_GENERATOR_HASH:-}" ]; then
+      printf '{"bomFormat":"CycloneDX","specVersion":"1.6","application":"%s","version":"%s","metadata":{"tools":[{"vendor":"CycloneDX","name":"cyclonedx-gomod","version":"v1.10.0","hashes":[{"alg":"SHA-256","content":"%s"}]},{"vendor":"Other","name":"other-tool","hashes":[{"alg":"SHA-256","content":"other-tool-hash"}]}]},"components":[{"name":"dependency","hashes":[{"alg":"SHA-256","content":"%s"}]}]}\n' "$main" "$version" "$RELEASE_TEST_GENERATOR_HASH" "$RELEASE_TEST_COMPONENT_HASH" > "$output"
+    else
+      printf '{"bomFormat":"CycloneDX","specVersion":"1.6","application":"%s","version":"%s"}\n' "$main" "$version" > "$output"
+    fi
+    ;;
+  malformed) printf '{"metadata":' > "$output" ;;
   symlink) ln -s "$RELEASE_TEST_SBOM_SYMLINK_TARGET" "$output" ;;
   directory) mkdir "$output" ;;
   *) printf 'unexpected SBOM output kind: %s\n' "$RELEASE_TEST_SBOM_OUTPUT_KIND" >&2; exit 64 ;;
@@ -530,5 +539,107 @@ func runReleaseGit(t *testing.T, dir string, args ...string) {
 	cmd.Dir = dir
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+}
+
+func TestReleaseArtifactsIgnoreGeneratorSelfHashes(t *testing.T) {
+	repo := newReleaseBuildFixture(t)
+	build := func(hash, component string) string {
+		t.Helper()
+		dist := filepath.Join(t.TempDir(), "dist")
+		output, err := fixtureReleaseBuildWithEnv(repo, dist, "0.1.0", []string{
+			"RELEASE_TEST_GENERATOR_HASH=" + hash, "RELEASE_TEST_COMPONENT_HASH=" + component,
+		})
+		if err != nil {
+			t.Fatalf("fixture build: %v\n%s", err, output)
+		}
+		return dist
+	}
+	component := strings.Repeat("c", 64)
+	first := build(strings.Repeat("a", 64), component)
+	second := build(strings.Repeat("b", 64), component)
+	for _, name := range releaseDirNames(t, first) {
+		a, err := os.ReadFile(filepath.Join(first, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile(filepath.Join(second, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(a) != string(b) {
+			t.Fatalf("native generator selfhash changed release artifact %s", name)
+		}
+	}
+	for _, name := range releaseDirNames(t, first) {
+		if !strings.HasSuffix(name, ".cdx.json") {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(first, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(body, &doc); err != nil {
+			t.Fatal(err)
+		}
+		tools := doc["metadata"].(map[string]any)["tools"].([]any)
+		generator := tools[0].(map[string]any)
+		if _, exists := generator["hashes"]; exists {
+			t.Fatalf("generator selfhash still shipped: %s", body)
+		}
+		if generator["vendor"] != "CycloneDX" || generator["name"] != "cyclonedx-gomod" || generator["version"] != "v1.10.0" {
+			t.Fatalf("generator identity lost: %+v", generator)
+		}
+		if tools[1].(map[string]any)["hashes"].([]any)[0].(map[string]any)["content"] != "other-tool-hash" {
+			t.Fatal("another tool hash was removed or changed")
+		}
+		if doc["components"].([]any)[0].(map[string]any)["hashes"].([]any)[0].(map[string]any)["content"] != component {
+			t.Fatal("dependency hash was removed or changed")
+		}
+	}
+	third := build(strings.Repeat("b", 64), strings.Repeat("d", 64))
+	a, err := os.ReadFile(filepath.Join(first, "SHA256SUMS"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(third, "SHA256SUMS"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(a) == string(b) {
+		t.Fatal("a dependency hash change was hidden from the full bundle comparison")
+	}
+}
+
+func TestReleaseArtifactsSourceVersionUsesStdout(t *testing.T) {
+	repo := newReleaseBuildFixture(t)
+	output, err := fixtureReleaseBuildWithEnv(repo, filepath.Join(t.TempDir(), "dist"), "0.1.0",
+		[]string{"RELEASE_TEST_VERSION_STDERR=go: downloading example.invalid/module v0.1.0"})
+	if err != nil {
+		t.Fatalf("cold-cache diagnostics became version data: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "go: downloading example.invalid/module") {
+		t.Fatal("diagnostic output was discarded")
+	}
+	output, err = fixtureReleaseBuildWithEnv(repo, filepath.Join(t.TempDir(), "dist"), "0.1.0",
+		[]string{"RELEASE_TEST_SOURCE_VERSION=0.2.0", "RELEASE_TEST_VERSION_STDERR=compound 0.1.0 (build dev)"})
+	if err == nil || !strings.Contains(string(output), "does not match source version output") {
+		t.Fatalf("stderr supplied a false valid source version: %v\n%s", err, output)
+	}
+}
+
+func TestReleaseArtifactsRefuseMalformedSBOM(t *testing.T) {
+	repo := newReleaseBuildFixture(t)
+	dist := filepath.Join(t.TempDir(), "dist")
+	output, err := fixtureReleaseBuildWithEnv(repo, dist, "0.1.0", []string{"RELEASE_TEST_SBOM_OUTPUT_KIND=malformed"})
+	if err == nil {
+		t.Fatal("malformed SBOM was published")
+	}
+	if !strings.Contains(string(output), "decode SBOM") {
+		t.Fatalf("unclear malformed SBOM refusal: %s", output)
+	}
+	if _, err := os.Lstat(dist); !os.IsNotExist(err) {
+		t.Fatalf("malformed evidence published DIST: %v", err)
 	}
 }
