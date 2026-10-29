@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/breadth"
 	"compound/internal/mem"
 	"compound/internal/sourceobs"
 )
@@ -50,14 +51,18 @@ func Search(ctx context.Context, homePath string, lanes []LaneConfig, factory Em
 	terms := questionTerms(query)
 	store, err := mem.OpenReadOnly(homePath)
 	if err == nil {
-		var claims []mem.Claim
-		claims, err = store.QueryBreadthReadOnly(strings.Join(terms, " "), 50, &mem.LexicalEngine{})
-		for _, claim := range claims {
-			if currentClaimMatches(claim, terms) {
+		var engine mem.Engine
+		engine, err = breadth.NewMemoryReader(ctx, homePath)
+		if err == nil {
+			var current mem.ReadOnlyBreadthQueryResult
+			current, err = store.QueryBreadthReadOnlyResult(query, k, engine)
+			r.CurrentStatus = "compound-breadth-readonly"
+			if len(current.DegradedLanes) > 0 {
+				r.CurrentStatus = "degraded: " + strings.Join(current.DegradedLanes, ",")
+				r.Status = "degraded"
+			}
+			for _, claim := range current.Claims {
 				r.CurrentClaims = append(r.CurrentClaims, claimView(claim, terms))
-				if len(r.CurrentClaims) == k {
-					break
-				}
 			}
 		}
 	}

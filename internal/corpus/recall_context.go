@@ -38,25 +38,6 @@ func questionTerms(query string) []string {
 	}
 	return out
 }
-func currentClaimMatches(c mem.Claim, terms []string) bool {
-	if len(terms) == 0 {
-		return false
-	}
-	identity := strings.ToLower(c.Entity + " " + c.Predicate)
-	object := strings.ToLower(c.Object)
-	all := true
-	for _, term := range terms {
-		if strings.Contains(identity, term) {
-			return true
-		}
-		if !strings.Contains(object, term) {
-			all = false
-		}
-	}
-	// A long status object matching only generic words such as "memory" is not
-	// evidence about a specifically named system. Keep exact object matches.
-	return all
-}
 func claimView(c mem.Claim, terms []string) CurrentClaim {
 	excerpt, truncated := recallExcerpt(c.Object, 800, terms)
 	return CurrentClaim{ID: c.ID, Entity: c.Entity, Predicate: c.Predicate, ObjectExcerpt: excerpt,

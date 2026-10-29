@@ -1,22 +1,10 @@
 package corpus
 
 import (
-	"compound/internal/mem"
 	"strings"
 	"testing"
 )
 
-func TestCurrentRecallDoesNotTreatQuestionBoilerplateAsRelevance(t *testing.T) {
-	terms := questionTerms("What did we decide after comparing MemoryCastle with other memory systems?")
-	unrelated := mem.Claim{Entity: "product:fixture", Predicate: "learned.14", Object: "We did compare the memory limits after deployment with other systems."}
-	if currentClaimMatches(unrelated, terms) {
-		t.Fatal("unrelated status admitted by question boilerplate")
-	}
-	relevant := mem.Claim{Entity: "MemoryCastle", Predicate: "decision", Object: "Keep ownership in the ledger."}
-	if !currentClaimMatches(relevant, terms) {
-		t.Fatal("named system missing")
-	}
-}
 func TestRecallContextBudgetMarksIncompleteExcerpts(t *testing.T) {
 	r := RecallReport{}
 	for i := 0; i < 25; i++ {

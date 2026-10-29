@@ -22,13 +22,16 @@ const (
 )
 
 type Engine struct {
-	claims       []mem.ClaimText
-	docs         []doc
-	gen          int64
-	ready        bool
-	embedder     EmbedderAdapter
-	compoundHome string
-	cache        *vectorCache
+	ctx               context.Context
+	readOnly          bool
+	vectorUnavailable bool
+	claims            []mem.ClaimText
+	docs              []doc
+	gen               int64
+	ready             bool
+	embedder          EmbedderAdapter
+	compoundHome      string
+	cache             *vectorCache
 }
 
 type doc struct {
@@ -41,6 +44,8 @@ type doc struct {
 }
 
 type EngineConfig struct {
+	Context      context.Context
+	ReadOnly     bool
 	Embedder     EmbedderAdapter
 	CompoundHome string
 }
@@ -52,7 +57,11 @@ type QueryResult struct {
 }
 
 func NewEngine(cfg EngineConfig) (*Engine, error) {
-	e := &Engine{embedder: cfg.Embedder, compoundHome: cfg.CompoundHome}
+	ctx := cfg.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	e := &Engine{ctx: ctx, readOnly: cfg.ReadOnly, embedder: cfg.Embedder, compoundHome: cfg.CompoundHome}
 	if cfg.Embedder != nil && cfg.Embedder.Dim() > 0 {
 		cache, err := newVectorCache(cfg.CompoundHome, cfg.Embedder.Identity())
 		if err != nil {
@@ -87,7 +96,7 @@ func (e *Engine) IndexWithError(claims []mem.ClaimText, gen int64) (int, error) 
 		e.docs = append(e.docs, doc{claim: c, tokens: tokens, freq: freq, wrapped: wrapped, textHash: textHash(wrapped)})
 	}
 	if e.embedder != nil {
-		if err := e.indexVectors(context.Background(), gen); err != nil {
+		if err := e.indexVectors(e.ctx, gen); err != nil {
 			return 0, err
 		}
 	}
@@ -120,7 +129,10 @@ func (e *Engine) QueryWithLanes(text, gate string, allowlist []string, k int) (Q
 	bm25 := e.bm25(text, allowedDocs)
 	reference := referenceContains(text, allowedDocs)
 	if e.embedder != nil {
-		queryVectors, err := e.embedder.Embed(context.Background(), []string{text})
+		if e.vectorUnavailable {
+			return QueryResult{Hits: lexicalRanking(bm25, reference, k), DegradedLanes: []string{"vector"}, Warning: "read-only vector cache is incomplete; governed refresh required"}, nil
+		}
+		queryVectors, err := e.embedder.Embed(e.ctx, []string{text})
 		if err != nil || len(queryVectors) != 1 {
 			warn := fmt.Sprintf("vector lane degraded: %v", err)
 			if err == nil {
@@ -479,6 +491,11 @@ func (e *Engine) indexVectors(ctx context.Context, gen int64) error {
 		missingTexts = append(missingTexts, d.wrapped)
 		missingPositions = append(missingPositions, i)
 	}
+	if e.readOnly && len(missingTexts) > 0 {
+		e.vectorUnavailable = true
+		return nil
+	}
+	e.vectorUnavailable = false
 	if len(missingTexts) > 0 {
 		vecs, err := e.embedder.Embed(ctx, missingTexts)
 		if err != nil {
@@ -504,6 +521,9 @@ func (e *Engine) indexVectors(ctx context.Context, gen int64) error {
 	}
 	for i := range rows {
 		e.docs[i].vector = rows[i].Vector
+	}
+	if e.readOnly {
+		return nil
 	}
 	if e.cache == nil {
 		return errors.New("vector cache unavailable")

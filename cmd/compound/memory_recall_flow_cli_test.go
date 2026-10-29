@@ -39,6 +39,19 @@ func TestMemoryRecallFreshSetupAutomaticCaptureAcrossHarnesses(t *testing.T) {
 		return body
 	}
 	run(nil, "home", "init")
+	for _, harness := range []string{"codex", "claude-code"} {
+		var pack struct {
+			Summary string `json:"summary_md"`
+		}
+		body := run(nil, "orient", "--harness", harness, "--cwd", root, "--task", "Recall our prior archive decision")
+		if err := json.Unmarshal(body, &pack); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(pack.Summary, "compound memory search") || !strings.Contains(pack.Summary, "operator-authorized scope") {
+			t.Fatalf("%s lacks the scoped recall door: %s", harness, pack.Summary)
+		}
+	}
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Input json.RawMessage `json:"input"`
@@ -146,4 +159,17 @@ func TestMemoryRecallFreshSetupAutomaticCaptureAcrossHarnesses(t *testing.T) {
 		t.Fatalf("history: %+v", history)
 	}
 	t.Log(fmt.Sprintf("fresh setup -> Codex PostToolUse -> owned capture -> fresh CLI -> Claude SessionEnd correction -> fresh CLI/history; work=%s", id))
+}
+
+func TestPathlessMemorySearchRefusesExternalStoreFallback(t *testing.T) {
+	cmd := exec.Command(compoundTestBinary(t), "memory", "search", "prior archive decision", "--json")
+	cmd.Env = parityTestEnv(os.Environ(), map[string]string{
+		"COMPOUND_HOME":  t.TempDir(),
+		"COMPOUND_STORE": "postgre",
+		"COMPOUND_DSN":   "",
+	})
+	body, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(body), "unsupported COMPOUND_STORE") {
+		t.Fatalf("file-backed recall under unsupported store: %v %s", err, body)
+	}
 }

@@ -124,6 +124,13 @@ func cmdCorpusDoctor(args []string) {
 }
 
 func cmdMemoryCorpusSearch(homePath string, args []string) {
+	if !boolFlag(args, "--lane") {
+		if err := memoryExternalStoreRefusal(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
+
 	cfg, _, err := loadMemoryEngineConfig(homePath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "memory search: invalid configuration")

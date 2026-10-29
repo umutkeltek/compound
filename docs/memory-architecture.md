@@ -387,9 +387,10 @@ stay at ML edges when needed.
 
 `compound memory search "a question"` searches configured source indexes without
 a lane or path. The typed report separates adjudicated current claims from
-retrieved source evidence. Current claims use the existing gated lexical query with question boilerplate removed
-and a conservative entity/predicate or complete object-term relevance check;
-source candidates use the configured embeddings. Scores are compared only within
+retrieved source evidence. Current claims use the same owned BM25/vector ranker and gated alias expansion
+as the existing memory engine. Recall reads stamped vectors without writing or
+embedding missing documents; an incomplete cache reports vector degradation and
+retains lexical retrieval. Source candidates use configured embeddings. Scores are compared only within
 one embedding identity; different identities are interleaved by rank. One best
 chunk per distinct body plus bounded adjacent context prevents duplicate exports
 from taking the whole budget. `--history` includes superseded source versions.
