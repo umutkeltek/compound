@@ -65,6 +65,10 @@ func TestInstalledPackageDeliveryClosesExactEffect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	plan, err := s.ClosePlan(w.ID, fixedNow.Add(4*time.Minute), ClosePlanOptions{Actor: "operator:test", Outcome: "completed", MoveType: "control_plane_repair", ProofRefs: []string{captured.Delivery.EvidenceRef}})
+	if err != nil || plan.Status != "close_policy_allowed" || !plan.Policy.Allowed || plan.NoAction != "" || len(plan.CloseCommand) == 0 {
+		t.Fatalf("bound package evidence must be plan-ready: %+v %v", plan, err)
+	}
 	_, err = s.Close(w.ID, CloseInput{Actor: "operator:test", Outcome: "completed", MoveType: "control_plane_repair", ProofRefs: []string{captured.Delivery.EvidenceRef}}, fixedNow.Add(4*time.Minute))
 	if err != nil {
 		t.Fatal(err)
@@ -130,9 +134,21 @@ func TestInstalledPackageDeliveryRechecksBytesAndRetainsSourceGate(t *testing.T)
 				}
 				return
 			}
-			plan, err := s.ClosePlan(w.ID, fixedNow.Add(5*time.Minute), ClosePlanOptions{Actor: "operator:test", Outcome: "completed", MoveType: "control_plane_repair"})
-			if err == nil && plan.Status != "not_closeable" {
-				t.Fatal("changed footprint or uncovered source accepted")
+			plan, err := s.ClosePlan(w.ID, fixedNow.Add(5*time.Minute), ClosePlanOptions{Actor: "operator:test", Outcome: "completed", MoveType: "control_plane_repair", ProofRefs: []string{captured.Delivery.EvidenceRef}})
+			if err != nil {
+				t.Fatalf("close plan: %v", err)
+			}
+			if plan.Status != "not_closeable" {
+				t.Fatalf("changed footprint or uncovered source accepted: %+v", plan)
+			}
+			receiptReady := false
+			for _, check := range plan.Checks {
+				if check.Name == "receipt_validation" {
+					receiptReady = check.Met
+				}
+			}
+			if !receiptReady {
+				t.Fatalf("receipt preflight masked delivery refusal: %+v", plan.Checks)
 			}
 		})
 	}

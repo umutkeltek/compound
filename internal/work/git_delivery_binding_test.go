@@ -410,9 +410,10 @@ func TestRepoScopedContextAloneDoesNotInventGitDeliveryAuthority(t *testing.T) {
 	activateLandingWork(t, store, w.ID, now)
 
 	plan, err := store.ClosePlan(w.ID, now.Add(3*time.Minute), ClosePlanOptions{
-		Actor:    "codex",
-		Outcome:  "completed",
-		MoveType: "control_plane_repair",
+		Actor:     "codex",
+		Outcome:   "completed",
+		MoveType:  "control_plane_repair",
+		ProofRefs: []string{"check:focused-tests"},
 	})
 	if err != nil {
 		t.Fatal(err)
