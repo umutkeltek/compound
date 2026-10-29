@@ -121,6 +121,16 @@ func WritePrivateCustodyReport(w io.Writer, report PrivateCustodyReport) error {
 	if _, err := fmt.Fprintf(w, "private_custody.status: %s\n", report.Status); err != nil {
 		return err
 	}
+	if report.Mode != "" {
+		if _, err := fmt.Fprintf(w, "private_custody.mode: %s\n", report.Mode); err != nil {
+			return err
+		}
+	}
+	if report.Mode == "fast" {
+		if _, err := fmt.Fprintln(w, "private_custody.note: metadata only; run home doctor --deep to verify content digests"); err != nil {
+			return err
+		}
+	}
 	if _, err := fmt.Fprintf(w, "private_custody.checked: %d drift=%d manual=%d repaired=%d\n", report.Counts.Checked, report.Counts.Drift, report.Counts.Manual, report.Counts.Repaired); err != nil {
 		return err
 	}

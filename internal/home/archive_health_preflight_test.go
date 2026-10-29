@@ -33,7 +33,7 @@ func TestArchiveHealthPreflightMatchesDoctorHealthVerdict(t *testing.T) {
 		if err := os.WriteFile(objectPath, []byte("body does not match its digest name"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		doctor := Doctor(homePath)
+		doctor := DoctorWithOptions(homePath, DoctorOptions{PrivateCustodyDeep: true})
 		if !doctor.OK || doctor.PrivateCustody.OK {
 			t.Fatalf("doctor verdict lost diagnostic/health separation: OK=%t private_custody.OK=%t", doctor.OK, doctor.PrivateCustody.OK)
 		}

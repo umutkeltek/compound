@@ -554,6 +554,45 @@ func TestRepairPrivateCustodyDryRun(t *testing.T) {
 	}
 }
 
+func TestDoctorPrivateCustodyFastSkipsDigestHashes(t *testing.T) {
+	homePath := filepath.Join(t.TempDir(), ".compound")
+	if err := Init(homePath, "global", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	digest := writePrivateObject(t, homePath, []byte("expected"), 0o600)
+	if err := os.WriteFile(filepath.Join(homePath, "private", "artifacts", "sha256", digest), []byte("tampered"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	fast := Doctor(homePath)
+	if fast.PrivateCustody.Mode != "fast" {
+		t.Fatalf("fast mode = %q", fast.PrivateCustody.Mode)
+	}
+	if !fast.PrivateCustody.OK || fast.PrivateCustody.Counts.OK == 0 {
+		t.Fatalf("fast custody = %+v, want metadata-only ok", fast.PrivateCustody)
+	}
+	if len(fast.PrivateCustody.Findings) > 8 {
+		t.Fatalf("fast findings = %d, want bounded non-object rows", len(fast.PrivateCustody.Findings))
+	}
+
+	deep := DoctorWithOptions(homePath, DoctorOptions{PrivateCustodyDeep: true})
+	if deep.PrivateCustody.Mode != "deep" {
+		t.Fatalf("deep mode = %q", deep.PrivateCustody.Mode)
+	}
+	if deep.PrivateCustody.OK {
+		t.Fatalf("deep custody = %+v, want tampered digest detected", deep.PrivateCustody)
+	}
+	found := false
+	for _, finding := range deep.PrivateCustody.Findings {
+		if finding.Kind == "private_digest_object" && strings.Contains(finding.Detail, "content hash does not match") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("deep findings = %+v, want content hash mismatch", deep.PrivateCustody.Findings)
+	}
+}
+
 func writePrivateObject(t *testing.T, homePath string, body []byte, mode os.FileMode) string {
 	t.Helper()
 	root := filepath.Join(homePath, "private", "artifacts", "sha256")
