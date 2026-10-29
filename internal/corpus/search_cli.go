@@ -18,6 +18,7 @@ func SearchCLI(ctx context.Context, hp string, lanes []LaneConfig, args []string
 	k, neighbors := 10, 0
 	opts := QueryOptions{}
 	asJSON := false
+	neighborsGiven := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch a {
@@ -41,6 +42,7 @@ func SearchCLI(ctx context.Context, hp string, lanes []LaneConfig, args []string
 				k = n
 			} else {
 				neighbors = n
+				neighborsGiven = true
 			}
 		case "--include-private-text", "--include-text":
 			opts.IncludeText = true
@@ -94,7 +96,7 @@ func SearchCLI(ctx context.Context, hp string, lanes []LaneConfig, args []string
 		fmt.Fprintln(errout, "memory search: lane not configured")
 		return 1
 	}
-	if neighbors == 0 {
+	if !neighborsGiven {
 		opts.NeighborRadius = 1
 	}
 	r := Search(ctx, hp, lanes, NewConfiguredEmbedder, query, k, opts)
@@ -106,10 +108,16 @@ func SearchCLI(ctx context.Context, hp string, lanes []LaneConfig, args []string
 		fmt.Fprintf(out, "Recall: %s; %d current claim(s), %d source candidate(s).\n", r.Status, len(r.CurrentClaims), len(r.Evidence))
 		fmt.Fprintln(out, r.EvidenceMeaning)
 		for _, c := range r.CurrentClaims {
-			fmt.Fprintf(out, "current %s: %s.%s = %s\n", c.ID, c.Entity, c.Predicate, c.Object)
+			fmt.Fprintf(out, "current %s: %s.%s = %s\n", c.ID, c.Entity, c.Predicate, c.ObjectExcerpt)
+			if c.ExcerptTruncated {
+				fmt.Fprintln(out, "  (excerpt truncated; inspect the cited claim)")
+			}
 		}
 		for _, e := range r.Evidence {
 			fmt.Fprintf(out, "source %s [%s, %s, %s]\n%s\n", e.EvidenceRef, e.VersionState, e.SnapshotTime, e.TextStatus, e.Text)
+			if e.TextTruncated || e.ContextOmitted {
+				fmt.Fprintln(out, "  (bounded excerpt; inspect the cited source for remaining context)")
+			}
 			for _, n := range e.Neighbors {
 				fmt.Fprintf(out, "  context %s: %s\n", n.ChunkID, n.Text)
 			}

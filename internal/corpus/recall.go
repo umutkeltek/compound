@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"compound/internal/mem"
@@ -12,6 +14,8 @@ import (
 )
 
 type Evidence struct {
+	TextTruncated  bool `json:"text_truncated,omitempty"`
+	ContextOmitted bool `json:"context_omitted,omitempty"`
 	QueryHit
 	Lane         string `json:"lane"`
 	EvidenceRef  string `json:"evidence_ref"`
@@ -22,14 +26,14 @@ type Evidence struct {
 	FileHash string `json:"file_hash"`
 }
 type RecallReport struct {
-	SchemaVersion   string      `json:"schema_version"`
-	Query           string      `json:"query"`
-	Status          string      `json:"status"`
-	EvidenceMeaning string      `json:"evidence_meaning"`
-	CurrentClaims   []mem.Claim `json:"current_claims"`
-	CurrentStatus   string      `json:"current_status"`
-	Evidence        []Evidence  `json:"evidence"`
-	Coverage        []Coverage  `json:"coverage"`
+	SchemaVersion   string         `json:"schema_version"`
+	Query           string         `json:"query"`
+	Status          string         `json:"status"`
+	EvidenceMeaning string         `json:"evidence_meaning"`
+	CurrentClaims   []CurrentClaim `json:"current_claims"`
+	CurrentStatus   string         `json:"current_status"`
+	Evidence        []Evidence     `json:"evidence"`
+	Coverage        []Coverage     `json:"coverage"`
 }
 
 // Search is the common explicit-recall consumer. It neither captures nor promotes.
@@ -38,14 +42,24 @@ type RecallReport struct {
 func Search(ctx context.Context, homePath string, lanes []LaneConfig, factory EmbedderFactory, query string, k int, opts QueryOptions) RecallReport {
 	r := RecallReport{SchemaVersion: "compound.recall.v0.1", Query: query, Status: "ok",
 		EvidenceMeaning: "retrieval candidates; source statements are not adjudicated current facts",
-		CurrentClaims:   []mem.Claim{}, CurrentStatus: "lexical", Evidence: []Evidence{}, Coverage: []Coverage{}}
+		CurrentClaims:   []CurrentClaim{}, CurrentStatus: "lexical", Evidence: []Evidence{}, Coverage: []Coverage{}}
 	if k < 1 || k > 50 {
 		r.Status = "invalid_limit"
 		return r
 	}
+	terms := questionTerms(query)
 	store, err := mem.OpenReadOnly(homePath)
 	if err == nil {
-		r.CurrentClaims, err = store.QueryBreadthReadOnly(query, k, &mem.LexicalEngine{})
+		var claims []mem.Claim
+		claims, err = store.QueryBreadthReadOnly(strings.Join(terms, " "), 50, &mem.LexicalEngine{})
+		for _, claim := range claims {
+			if currentClaimMatches(claim, terms) {
+				r.CurrentClaims = append(r.CurrentClaims, claimView(claim, terms))
+				if len(r.CurrentClaims) == k {
+					break
+				}
+			}
+		}
 	}
 	if err != nil {
 		r.CurrentStatus = "unavailable"
@@ -54,7 +68,7 @@ func Search(ctx context.Context, homePath string, lanes []LaneConfig, factory Em
 	groups := make([][]Evidence, 0, len(lanes))
 	identityGroups := map[string]int{}
 	for _, lane := range lanes {
-		c := Coverage{Lane: lane.Lane, Status: "ok"}
+		c := Coverage{Lane: lane.Lane, Status: "snapshot_only", FreshnessBasis: "owned snapshot; original source freshness is not monitored"}
 		var prior Coverage
 		if lane.Source != nil {
 			if err := readJSONFile(refreshPath(homePath, lane), &prior); err == nil {
@@ -92,6 +106,19 @@ func Search(ctx context.Context, homePath string, lanes []LaneConfig, factory Em
 				if me != nil {
 					c.Status = "source_manifest_unavailable"
 				} else {
+					c.Items = len(manifest.Items)
+					c.InventoryKnown = true
+					var progress ProgressFile
+					if pe := readJSONFile(filepath.Join(IndexDir(homePath, lane), "progress.json"), &progress); pe == nil {
+						c.Chunks = progress.TotalChunks
+						c.IndexPendingChunks = progress.PendingChunks
+						if c.IndexedAt == "" {
+							c.IndexedAt = progress.UpdatedAt
+						}
+						if progress.PendingChunks > 0 {
+							c.Status = "index_incomplete"
+						}
+					}
 					items := map[string]sourceobs.SourceManifestItem{}
 					for _, item := range manifest.Items {
 						items[item.ID] = item
@@ -115,7 +142,7 @@ func Search(ctx context.Context, homePath string, lanes []LaneConfig, factory Em
 				}
 			}
 		}
-		if c.Status != "ok" {
+		if c.Status != "ok" && c.Status != "snapshot_only" {
 			r.Status = "degraded"
 		}
 		r.Coverage = append(r.Coverage, c)
@@ -167,6 +194,7 @@ func Search(ctx context.Context, homePath string, lanes []LaneConfig, factory Em
 			break
 		}
 	}
+	boundRecallContext(&r, terms)
 	if len(lanes) == 0 {
 		r.Status = "not_configured"
 	}

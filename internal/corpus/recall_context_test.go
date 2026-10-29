@@ -1,0 +1,44 @@
+package corpus
+
+import (
+	"compound/internal/mem"
+	"strings"
+	"testing"
+)
+
+func TestCurrentRecallDoesNotTreatQuestionBoilerplateAsRelevance(t *testing.T) {
+	terms := questionTerms("What did we decide after comparing MemoryCastle with other memory systems?")
+	unrelated := mem.Claim{Entity: "product:fixture", Predicate: "learned.14", Object: "We did compare the memory limits after deployment with other systems."}
+	if currentClaimMatches(unrelated, terms) {
+		t.Fatal("unrelated status admitted by question boilerplate")
+	}
+	relevant := mem.Claim{Entity: "MemoryCastle", Predicate: "decision", Object: "Keep ownership in the ledger."}
+	if !currentClaimMatches(relevant, terms) {
+		t.Fatal("named system missing")
+	}
+}
+func TestRecallContextBudgetMarksIncompleteExcerpts(t *testing.T) {
+	r := RecallReport{}
+	for i := 0; i < 25; i++ {
+		r.CurrentClaims = append(r.CurrentClaims, CurrentClaim{ObjectExcerpt: strings.Repeat("claim ", 200)})
+	}
+	for i := 0; i < 10; i++ {
+		r.Evidence = append(r.Evidence, Evidence{QueryHit: QueryHit{Text: strings.Repeat("archive ", 1000), Neighbors: []QueryNeighbor{{Text: strings.Repeat("context ", 1000)}}}})
+	}
+	boundRecallContext(&r, []string{"archive"})
+	total := 0
+	for _, c := range r.CurrentClaims {
+		total += len([]rune(c.ObjectExcerpt))
+	}
+	marked := false
+	for _, e := range r.Evidence {
+		total += len([]rune(e.Text))
+		marked = marked || e.TextTruncated || e.ContextOmitted
+		for _, n := range e.Neighbors {
+			total += len([]rune(n.Text))
+		}
+	}
+	if total > recallTextBudget || !marked {
+		t.Fatalf("budget=%d truncated=%v", total, marked)
+	}
+}

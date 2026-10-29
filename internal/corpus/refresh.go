@@ -18,20 +18,22 @@ type SourceConfig struct {
 }
 type EmbedderFactory func(LaneConfig) (Embedder, error)
 type Coverage struct {
-	MissingFiles   int    `json:"missing_files,omitempty"`
-	OversizedFiles int    `json:"oversized_files,omitempty"`
-	DeferredFiles  int    `json:"deferred_files,omitempty"`
-	FreshnessBasis string `json:"freshness_basis,omitempty"`
-	CapturedFiles  int    `json:"captured_files,omitempty"`
-	UnchangedFiles int    `json:"unchanged_files,omitempty"`
-	PendingFiles   int    `json:"pending_files,omitempty"`
-	Lane           string `json:"lane"`
-	Status         string `json:"status"`
-	CheckedAt      string `json:"checked_at,omitempty"`
-	CapturedAt     string `json:"captured_at,omitempty"`
-	IndexedAt      string `json:"indexed_at,omitempty"`
-	Items          int    `json:"items"`
-	Chunks         int    `json:"chunks"`
+	IndexPendingChunks int    `json:"index_pending_chunks,omitempty"`
+	InventoryKnown     bool   `json:"inventory_known"`
+	MissingFiles       int    `json:"missing_files,omitempty"`
+	OversizedFiles     int    `json:"oversized_files,omitempty"`
+	DeferredFiles      int    `json:"deferred_files,omitempty"`
+	FreshnessBasis     string `json:"freshness_basis,omitempty"`
+	CapturedFiles      int    `json:"captured_files,omitempty"`
+	UnchangedFiles     int    `json:"unchanged_files,omitempty"`
+	PendingFiles       int    `json:"pending_files,omitempty"`
+	Lane               string `json:"lane"`
+	Status             string `json:"status"`
+	CheckedAt          string `json:"checked_at,omitempty"`
+	CapturedAt         string `json:"captured_at,omitempty"`
+	IndexedAt          string `json:"indexed_at,omitempty"`
+	Items              int    `json:"items"`
+	Chunks             int    `json:"chunks"`
 }
 type RefreshReport struct {
 	Status  string     `json:"status"`
@@ -68,6 +70,7 @@ func Refresh(ctx context.Context, homePath string, lanes []LaneConfig, factory E
 					c.PendingFiles = captured.Pending
 					c.CapturedAt = c.CheckedAt
 					c.Items = captured.ItemCount
+					c.InventoryKnown = true
 					if captured.ItemCount == 0 {
 						c.Status = "empty"
 					} else {

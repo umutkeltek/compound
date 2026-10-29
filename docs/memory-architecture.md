@@ -387,12 +387,16 @@ stay at ML edges when needed.
 
 `compound memory search "a question"` searches configured source indexes without
 a lane or path. The typed report separates adjudicated current claims from
-retrieved source evidence. Current claims use the existing gated lexical query;
+retrieved source evidence. Current claims use the existing gated lexical query with question boilerplate removed
+and a conservative entity/predicate or complete object-term relevance check;
 source candidates use the configured embeddings. Scores are compared only within
 one embedding identity; different identities are interleaved by rank. One best
 chunk per distinct body plus bounded adjacent context prevents duplicate exports
 from taking the whole budget. `--history` includes superseded source versions.
 A source's latest snapshot is not an adjudication of the statements inside it.
+Claim excerpts and retrieved source text share a 16,000-rune context budget.
+Truncation and omitted adjacent context are explicit; use the cited claim/source
+or the lane-specific query to inspect the full evidence.
 
 Private snippets remain suppressed unless the caller passes
 `--include-private-text`. Source text never enters ambient ContextPacks through
