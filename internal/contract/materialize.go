@@ -9,8 +9,8 @@
 //	type BodyResolver interface { Resolve(task string) ([]BodyCandidate, error) }
 //
 // cmd/compound owns the resolvers (a corpus-backed wrapper + a source-ref file
-// resolver); contract owns the rank-greedy packer and the exclusion laws. Synthetic
-// resolvers in tests pin every falsifier (F1–F6) without crossing the seam.
+// resolver); contract owns the packer, exclusion laws, and generic degradation
+// markers. Synthetic resolvers pin every falsifier (F1–F6) without crossing the seam.
 //
 // LAWS (load-bearing — pinned by materialize_test.go):
 //
@@ -32,6 +32,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"sort"
+	"strings"
 
 	"compound/internal/envelope"
 )
@@ -93,6 +94,48 @@ const (
 // proxy in internal/panel/caller.go:107, not reusable here).
 func EstimatedTokens(s string) int {
 	return (len(s) + 3) / 4
+}
+
+// OrientBodyConfigUnavailableRef is the single generic degradation candidate a
+// malformed/unreadable memory-engine config contributes to the orient body
+// resolver. It carries no path, parse error, or config byte — only that the
+// optional configured body source was unavailable. The CLI surfaces this in
+// OrientConsumerEvidence.DegradationObserved; the retrievalparity evaluator
+// package has no knowledge of this string.
+const OrientBodyConfigUnavailableRef = "corpus://configuration-unavailable"
+
+// OrientBodyLaneUnavailableRef returns one opaque, deterministic per-lane
+// degradation ref derived from a hash of the lane id (never the raw endpoint,
+// query, or lane body). The 12-hex suffix keeps the wire footprint bounded and
+// stable across runs.
+func OrientBodyLaneUnavailableRef(laneID string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(laneID)))
+	return "corpus://lane-unavailable/" + hex.EncodeToString(sum[:])[:12]
+}
+
+// OrientBodyDegraded reports optional body-source degradation from the omission
+// ledger. Callers need not interpret the generic marker shapes; ordinary source,
+// suppression, and budget omissions do not indicate optional resolver failure.
+func OrientBodyDegraded(pack envelope.ContextPack) bool {
+	if pack.BodyPack == nil {
+		return false
+	}
+	for _, o := range pack.BodyPack.Omitted {
+		if isOrientBodyDegradationRef(o.Ref) {
+			return true
+		}
+	}
+	return false
+}
+
+// isOrientBodyDegradationRef recognizes the shared markers without importing a
+// concrete body resolver.
+func isOrientBodyDegradationRef(ref string) bool {
+	trimmed := strings.TrimSpace(ref)
+	if trimmed == OrientBodyConfigUnavailableRef {
+		return true
+	}
+	return strings.HasPrefix(trimmed, "corpus://lane-unavailable/")
 }
 
 // MaterializeBodyPack packs task-ranked candidates under a token budget, applying

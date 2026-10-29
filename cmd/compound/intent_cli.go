@@ -40,7 +40,7 @@ var materializeBodiesForOrient = func(homePath string, pack envelope.ContextPack
 		// dropping the optional body source. The text is empty, the status is
 		// unresolvable, the materializer maps it to body_pack.omitted.reason=unresolvable.
 		candidates = append(candidates, contract.BodyCandidate{
-			Ref:    orientBodyConfigUnavailableRef,
+			Ref:    contract.OrientBodyConfigUnavailableRef,
 			Source: "corpus:configuration",
 			Rank:   0,
 			Status: contract.BodyStatusUnresolvable,
@@ -105,7 +105,7 @@ func materializeOrientContextPackDetailed(
 		// for any of the resolver's generic degradation refs. This is how the CLI
 		// learns whether the resolver degraded without coupling the parity
 		// evaluator to the resolver's ref shapes.
-		degraded = packReportsOrientBodyDegradation(pack)
+		degraded = contract.OrientBodyDegraded(pack)
 	}
 	runtime.EffectiveContract = ec
 	runtime.ContextPack = pack
@@ -128,34 +128,6 @@ func materializeOrientContextPackDetailed(
 		BodyPackUsedTokens: usedTokens,
 		Degraded:           degraded,
 	}, nil
-}
-
-// packReportsOrientBodyDegradation returns true if the body_pack omission
-// ledger contains any of the resolver's generic degradation refs. Kept local
-// to this file so the parity evaluator does not need to know the resolver's
-// internal ref shapes.
-func packReportsOrientBodyDegradation(pack envelope.ContextPack) bool {
-	if pack.BodyPack == nil {
-		return false
-	}
-	for _, o := range pack.BodyPack.Omitted {
-		if isOrientBodyDegradationRef(o.Ref) {
-			return true
-		}
-	}
-	return false
-}
-
-// isOrientBodyDegradationRef returns true if ref is one of the resolver's
-// generic degradation refs. Kept here as a single source of truth for the
-// resolver's surface, used both by the live CLI and by tests asserting the
-// exact omission string.
-func isOrientBodyDegradationRef(ref string) bool {
-	trimmed := strings.TrimSpace(ref)
-	if trimmed == orientBodyConfigUnavailableRef {
-		return true
-	}
-	return strings.HasPrefix(trimmed, "corpus://lane-unavailable/")
 }
 
 // materializeOrientContextPack is the one cmd-layer orientation path used by

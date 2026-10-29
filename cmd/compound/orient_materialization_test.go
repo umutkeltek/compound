@@ -551,3 +551,78 @@ func TestOrientInitializationAccessDiagnostics(t *testing.T) {
 		}
 	}
 }
+
+func TestMaterializeOrientContextPackReportsPersistedBodyDegradation(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		ref      string
+		wantRef  string
+		status   string
+		text     string
+		budget   int
+		reason   string
+		degraded bool
+	}{
+		{name: "configuration unavailable", ref: contract.OrientBodyConfigUnavailableRef, wantRef: "corpus://configuration-unavailable", status: contract.BodyStatusUnresolvable, budget: 8, reason: contract.OmitUnresolvable, degraded: true},
+		{name: "lane unavailable", ref: contract.OrientBodyLaneUnavailableRef(" \tlane-example\n"), wantRef: "corpus://lane-unavailable/d14a13512dd6", status: contract.BodyStatusUnresolvable, budget: 8, reason: contract.OmitUnresolvable, degraded: true},
+		{name: "ordinary unresolved source", ref: "corpus://configuration-unavailable-other", wantRef: "corpus://configuration-unavailable-other", status: contract.BodyStatusUnresolvable, budget: 8, reason: contract.OmitUnresolvable},
+		{name: "private body suppressed", ref: "corpus://private-example", wantRef: "corpus://private-example", status: contract.BodyStatusSuppressedPrivate, budget: 8, reason: contract.OmitSuppressedPrivate},
+		{name: "budget exhausted", ref: "source://large-example", wantRef: "source://large-example", status: contract.BodyStatusOK, text: "body exceeds one token", budget: 1, reason: contract.OmitBudgetExhausted},
+		{name: "bodies disabled", ref: contract.OrientBodyConfigUnavailableRef, status: contract.BodyStatusUnresolvable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			homePath := t.TempDir()
+			t.Setenv("COMPOUND_HOME", homePath)
+			if err := home.Init(homePath, "test", cliTestNow); err != nil {
+				t.Fatal(err)
+			}
+			in := contract.Input{Harness: "codex", Cwd: t.TempDir(), Task: tc.name, RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute"}
+			priorRuntime, priorBodies := materializeRuntimeForOrient, materializeBodiesForOrient
+			materializeRuntimeForOrient = func(in contract.Input, pol contract.OrientationPolicy, _ string, now time.Time) (contract.RuntimeMaterialization, error) {
+				return contract.RuntimeMaterialization{EffectiveContract: contract.Compile(in, pol, now), ContextPack: contract.Pack(in, pol, now)}, nil
+			}
+			bodyCalls := 0
+			materializeBodiesForOrient = func(_ string, pack envelope.ContextPack, _, _ string, budget int) (envelope.ContextPack, error) {
+				bodyCalls++
+				candidates := []contract.BodyCandidate{{Ref: tc.ref, Source: "fixture", Rank: 1, Text: tc.text, Status: tc.status}}
+				return contract.ApplyBodyPack(pack, contract.MaterializeBodyPack(candidates, pack, budget)), nil
+			}
+			t.Cleanup(func() { materializeRuntimeForOrient, materializeBodiesForOrient = priorRuntime, priorBodies })
+
+			result, err := materializeOrientContextPackDetailed(homePath, in, tc.budget, cliTestNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Degraded != tc.degraded {
+				t.Fatalf("live degradation = %v, want %v", result.Degraded, tc.degraded)
+			}
+			persistedBytes, err := os.ReadFile(filepath.Join(homePath, "context", "packs", result.Pack.ID+".json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var persisted envelope.ContextPack
+			if err := json.Unmarshal(persistedBytes, &persisted); err != nil {
+				t.Fatal(err)
+			}
+			if persisted.ID != result.Pack.ID || persisted.IDs.ContractID != result.Pack.IDs.ContractID || !reflect.DeepEqual(persisted.BodyPack, result.Pack.BodyPack) {
+				t.Fatal("sealed live and persisted body packs differ")
+			}
+			if contract.OrientBodyDegraded(persisted) != tc.degraded {
+				t.Fatalf("persisted degradation = %v, want %v", contract.OrientBodyDegraded(persisted), tc.degraded)
+			}
+			if tc.budget == 0 {
+				if bodyCalls != 0 || persisted.BodyPack != nil {
+					t.Fatal("disabled body materialization must remain absent")
+				}
+				return
+			}
+			if bodyCalls != 1 || persisted.BodyPack == nil || len(persisted.BodyPack.Bodies) != 0 || len(persisted.BodyPack.Omitted) != 1 {
+				t.Fatalf("expected one real materialization and one persisted omission: calls=%d pack=%+v", bodyCalls, persisted.BodyPack)
+			}
+			omitted := persisted.BodyPack.Omitted[0]
+			if omitted.Ref != tc.wantRef || omitted.Reason != tc.reason {
+				t.Fatalf("persisted omission = %+v, want ref %q reason %q", omitted, tc.wantRef, tc.reason)
+			}
+		})
+	}
+}
