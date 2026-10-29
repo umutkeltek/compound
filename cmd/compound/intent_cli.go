@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -76,20 +77,20 @@ func materializeOrientContextPackDetailed(
 ) (orientMaterializationResult, error) {
 	restoreEngine, err := configureMemoryEngineFromHome(homePath, "")
 	if err != nil {
-		return orientMaterializationResult{}, err
+		return orientMaterializationResult{}, orientInitializationError("configure memory reader", err)
 	}
 	defer restoreEngine()
 
 	orientationPolicy, _, err := contract.LoadPolicy(homePath)
 	if err != nil {
-		return orientMaterializationResult{}, err
+		return orientMaterializationResult{}, orientInitializationError("load orientation policy", err)
 	}
 	retrievalStarted := time.Now()
 	runtime, materializeErr := materializeRuntimeForOrient(in, orientationPolicy, homePath, now)
 	pack := runtime.ContextPack
 	retrievalparity.Record(homePath, retrievalparity.NewOrientRow(in.Task, parityOrientInput(in), pack.ActiveMemory, time.Since(retrievalStarted), materializeErr == nil, time.Now()))
 	if materializeErr != nil {
-		return orientMaterializationResult{}, materializeErr
+		return orientMaterializationResult{}, orientInitializationError("materialize runtime context", materializeErr)
 	}
 	ec := runtime.EffectiveContract
 	if pack.IDs.ContractID != ec.ID {
@@ -99,7 +100,7 @@ func materializeOrientContextPackDetailed(
 	if bodyBudget > 0 {
 		pack, err = materializeBodiesForOrient(homePath, pack, in.Cwd, in.Task, bodyBudget)
 		if err != nil {
-			return orientMaterializationResult{}, err
+			return orientMaterializationResult{}, orientInitializationError("materialize context bodies", err)
 		}
 		// After materialization, scan the returned pack's body_pack omission ledger
 		// for any of the resolver's generic degradation refs. This is how the CLI
@@ -116,7 +117,7 @@ func materializeOrientContextPackDetailed(
 	ec = runtime.EffectiveContract
 	pack = runtime.ContextPack
 	if _, err := contract.RecordRuntimeMaterialization(homePath, runtime); err != nil {
-		return orientMaterializationResult{}, err
+		return orientMaterializationResult{}, orientInitializationError("persist runtime context", err)
 	}
 	var usedTokens int
 	if pack.BodyPack != nil {
@@ -128,6 +129,15 @@ func materializeOrientContextPackDetailed(
 		BodyPackUsedTokens: usedTokens,
 		Degraded:           degraded,
 	}, nil
+}
+
+// orientInitializationError identifies filesystem denial without guessing its
+// sandbox, OS, or ACL source, and preserves the original operation and path.
+func orientInitializationError(stage string, err error) error {
+	if !errors.Is(err, os.ErrPermission) {
+		return err
+	}
+	return fmt.Errorf("orientation %s: filesystem access denied: %w", stage, err)
 }
 
 // packReportsOrientBodyDegradation returns true if the body_pack omission
