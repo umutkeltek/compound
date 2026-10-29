@@ -228,7 +228,7 @@ func TestFindingEvidenceAssimilatesAndProgressCountsAbsorbed(t *testing.T) {
 	f, err := finding.Record(h, finding.Finding{
 		Topic:        "proof battery note",
 		Body:         "root cause recorded for this failure cluster",
-		EvidenceRefs: []string{SignatureEvidencePrefix + alpha.ID},
+		EvidenceRefs: []string{SignatureEvidencePrefix + alpha.ID, RepositoryEvidencePrefix + "fp-alpha"},
 	}, t0)
 	if err != nil {
 		t.Fatal(err)
@@ -627,5 +627,64 @@ func TestRunCLIBuildThenList(t *testing.T) {
 	var proj Projection
 	if err := json.Unmarshal(stdout.Bytes(), &proj); err != nil || proj.SchemaVersion != SchemaVersion || proj.ProjectionRef != ProjectionRef {
 		t.Fatalf("list --json = %v %q", err, stdout.String())
+	}
+}
+
+func TestUnknownExplanationScopeNeverAssimilates(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		observed []string
+		named    []string
+	}{
+		{"one repository without declared scope", []string{"fp-alpha", "fp-alpha"}, nil},
+		{"unknown repositories without declared scope", []string{"", ""}, nil},
+		{"unknown repositories with named scope", []string{"", ""}, []string{"fp-alpha"}},
+		{"unknown repositories with wildcard scope", []string{"", ""}, []string{RepositoryWildcard}},
+		{"mixed known and unknown repository", []string{"fp-alpha", ""}, []string{"fp-alpha"}},
+		{"mixed known and unknown with wildcard", []string{"fp-alpha", ""}, []string{RepositoryWildcard}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := t.TempDir()
+			for i, fp := range tc.observed {
+				ref := putReport(t, h, "", fp, stepFixture{"go-test", "failed", goTestTail("TestScopedFixture")})
+				putResult(t, h, fmt.Sprintf("pfrs_scope_%d", i), fmt.Sprintf("work_scope_%d", i), "failed", t0.Add(-time.Duration(i+1)*time.Hour), ref, fp)
+			}
+			before := mustBuild(t, h, t0)
+			if _, err := WriteProjection(h, before); err != nil {
+				t.Fatal(err)
+			}
+			id := SignatureID("go-test", "fail:TestScopedFixture")
+			refs := []string{SignatureEvidencePrefix + id}
+			for _, fp := range tc.named {
+				refs = append(refs, RepositoryEvidencePrefix+fp)
+			}
+			f, err := finding.Record(h, finding.Finding{Topic: "scoped cause", Body: "diagnosis with scope still requiring evidence", EvidenceRefs: refs}, t0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			after := mustBuild(t, h, t0.Add(time.Hour))
+			s := bySignature(t, after, "fail:TestScopedFixture")
+			want := []Explanation{{Ref: "finding:" + f.ID, Match: MatchExact, Scope: ScopeUnscoped}}
+			if s.State != StateLearnable || len(s.ExplainedBy) != 0 || !reflect.DeepEqual(s.Related, want) {
+				t.Fatalf("unknown scope must remain related: %+v", s)
+			}
+			if after.Totals.AssimilatedResults != 0 || len(after.Progress.NewlyAssimilated) != 0 {
+				t.Fatalf("unknown scope counted as learning: totals=%+v progress=%+v", after.Totals, after.Progress)
+			}
+		})
+	}
+}
+
+func TestExplicitSingleRepositoryExplanationAssimilates(t *testing.T) {
+	h := t.TempDir()
+	seedAlpha(t, h)
+	id := SignatureID("go-test", "fail:TestAlpha")
+	f, err := finding.Record(h, finding.Finding{Topic: "scoped cause", Body: "diagnosis on the named repository", EvidenceRefs: []string{SignatureEvidencePrefix + id, RepositoryEvidencePrefix + "fp-alpha"}}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := bySignature(t, mustBuild(t, h, t0), "fail:TestAlpha")
+	if s.State != StateAssimilated || !reflect.DeepEqual(s.ExplainedBy, []Explanation{{Ref: "finding:" + f.ID, Match: MatchExact}}) {
+		t.Fatalf("explicit matching scope rejected: %+v", s)
 	}
 }

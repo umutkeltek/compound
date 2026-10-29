@@ -39,7 +39,7 @@ import (
 )
 
 const (
-	SchemaVersion = "compound.interest.v0.2"
+	SchemaVersion = "compound.interest.v0.3"
 	ProjectionRef = "compound://projections/interest"
 	RelPath       = "projections/interest.json"
 	DefaultWindow = 30 * 24 * time.Hour
@@ -49,7 +49,7 @@ const (
 	StateSingleton   = "singleton"
 	MatchExact       = "exact"
 	MatchFuzzy       = "fuzzy"
-	ScopeUnscoped    = "unscoped"  // names no repository; the signature was seen in several
+	ScopeUnscoped    = "unscoped"  // explanation or an observation lacks repository scope
 	ScopeUncovered   = "uncovered" // names repositories that miss one the signature was seen in
 
 	// SignatureEvidencePrefix ties a finding to one signature exactly:
@@ -62,8 +62,8 @@ const (
 	// or environment cause such as a redact false positive or a load timeout),
 	// so the explanation covers every repository the signature was seen in,
 	// including ones the projection's capped Repositories list does not show.
-	// It is a stated scope, not the absence of one: naming nothing on a
-	// multi-repository signature still reads as ScopeUnscoped.
+	// It is a stated scope, not the absence of one. Missing explanation or
+	// observation scope still reads as ScopeUnscoped.
 	RepositoryWildcard = "*"
 
 	// proofResultKind and proofResultFailed duplicate internal/work's
@@ -169,6 +169,7 @@ type observation struct {
 type cluster struct {
 	sig                       Signature
 	works, repos, tests, days map[string]bool
+	unknownRepository         bool
 }
 
 type explainer struct {
@@ -532,6 +533,7 @@ func classify(obs []observation, exps []explainer) []Signature {
 		c.days[at[:len(time.DateOnly)]] = true
 		add(c.works, o.workID)
 		add(c.repos, o.repo)
+		c.unknownRepository = c.unknownRepository || strings.TrimSpace(o.repo) == ""
 		for _, t := range o.tests {
 			add(c.tests, t)
 		}
@@ -541,7 +543,7 @@ func classify(obs []observation, exps []explainer) []Signature {
 		s := c.sig
 		s.WorkIDs, s.Repositories, s.Tests = sorted(c.works, 10), sorted(c.repos, 5), sorted(c.tests, 10)
 		s.RepositoriesTotal = len(c.repos)
-		s.ExplainedBy, s.Related = explain(s, c.repos, exps)
+		s.ExplainedBy, s.Related = explain(s, c.repos, c.unknownRepository, exps)
 		switch {
 		case len(s.ExplainedBy) > 0:
 			s.State = StateAssimilated
@@ -591,12 +593,12 @@ func compareBool(a, b bool) int {
 // explain joins a signature to held explanations. Only an exact match whose
 // scope covers the signature explains it: a finding topic or signature:
 // evidence ref names the id, and its repository: refs name every repository
-// the signature was seen in (naming none covers a signature seen in at most
-// one). Everything else that matches is related: an exact match with a
+// the signature was seen in, with every observation scoped. Missing scope
+// stays uncertain even for one repository. Other matches are related: an exact match with a
 // narrower scope, or a fuzzy one, whose text names the signature's test as a
 // whole word (TestAlpha never matches TestAlphaBeta) or holds the exact
 // normalized signature when it is long enough not to match any prose.
-func explain(s Signature, seen map[string]bool, exps []explainer) (explained, related []Explanation) {
+func explain(s Signature, seen map[string]bool, unknownRepository bool, exps []explainer) (explained, related []Explanation) {
 	var word *regexp.Regexp
 	token, _ := strings.CutPrefix(s.Signature, "fail:")
 	if testTokenRE.MatchString(token) { // identifier characters only: regex-safe
@@ -606,7 +608,7 @@ func explain(s Signature, seen map[string]bool, exps []explainer) (explained, re
 	explained, related = []Explanation{}, []Explanation{}
 	for _, e := range exps {
 		if e.exact[s.ID] {
-			if scope := uncoveredScope(e.repos, seen); scope == "" {
+			if scope := uncoveredScope(e.repos, seen, unknownRepository); scope == "" {
 				explained = append(explained, Explanation{Ref: e.ref, Match: MatchExact})
 			} else {
 				related = append(related, Explanation{Ref: e.ref, Match: MatchExact, Scope: scope})
@@ -621,14 +623,11 @@ func explain(s Signature, seen map[string]bool, exps []explainer) (explained, re
 
 // uncoveredScope is "" when the named repositories cover every one seen; a
 // repository:* claim covers all of them by declaration.
-func uncoveredScope(named, seen map[string]bool) string {
-	if named[RepositoryWildcard] {
-		return ""
+func uncoveredScope(named, seen map[string]bool, unknownRepository bool) string {
+	if unknownRepository || len(seen) == 0 || len(named) == 0 {
+		return ScopeUnscoped
 	}
-	if len(named) == 0 {
-		if len(seen) > 1 {
-			return ScopeUnscoped
-		}
+	if named[RepositoryWildcard] {
 		return ""
 	}
 	for r := range seen {

@@ -176,7 +176,7 @@ error line, normalized so it carries no path or hash. Each signature is in one o
 
 | State | Meaning | Attention |
 |---|---|---|
-| `assimilated` | A finding names the signature id exactly (topic or `signature:` evidence ref), and its `repository:` refs cover every repository the signature was seen in (naming none covers a signature seen in one; `repository:*` declares a repository-independent cause such as a redact false positive or a load timeout, and `repositories_total` says how many the capped list hides) | None. No progress is left to earn |
+| `assimilated` | A finding names the signature id exactly (topic or `signature:` evidence ref), and its `repository:` refs cover every repository the signature was seen in (scope is explicit and every observation names its repository; `repository:*` declares a repository-independent cause such as a redact false positive or a load timeout, and `repositories_total` says how many the capped list hides) | None. No progress is left to earn |
 | `learnable` | No explanation, and the signature recurs across different work items or days | First. The steep part of the learning curve |
 | `singleton` | Seen once, or one work retried within a day; no explanation | Wait. Regularity and noise cannot be told apart yet, however many retries |
 
@@ -193,7 +193,7 @@ absorbed stand in for bits saved. The signature is a naive heuristic: two causes
 one cause can split across two. A note that only names the test (`TestAlpha still fails, cause
 unknown`), a negatives record that quotes the signature, and an exact finding whose scope misses a
 repository are `related` evidence, listed on the signature but never counted as assimilated: a
-mention is not an explanation, and an explanation is not a verified repair. `learnable` is a
+mention is not an explanation, and an explanation is not a verified repair. Missing scope on a finding or any observation remains related even in a single-repository cluster. Schema v0.3 restarts progress from earlier projections rather than comparing classifications made under the implicit-scope rule. `learnable` is a
 crude prior, not a learned model.
 
 ## Slices, smallest first
