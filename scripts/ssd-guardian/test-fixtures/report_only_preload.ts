@@ -33,7 +33,7 @@ function result(stdout = "", status = 0) { return { status, stdout, stderr: "", 
 let dfCount = 0;
 mock.module("node:child_process", () => ({ ...cp,
   spawnSync(command: string, args: string[], options: any = {}) {
-    record({ command, args });
+    record({ command, args, ...(options.cwd === undefined ? {} : { cwd: options.cwd }) });
     if (["/bin/df", "df"].includes(command)) {
       dfCount++; if (scenario.df_error) return result("invalid capacity");
       const available = scenario.low_disk ? (dfCount === 1 ? 1000 : 2000) : 500 * 1024 * 1024;
@@ -42,7 +42,9 @@ mock.module("node:child_process", () => ({ ...cp,
     if (command === "getconf" && args[0] === "DARWIN_USER_TEMP_DIR") return result(join(root, "temp") + "\n");
     if (command === "lsof") return result(`p424242\ncLM Studio\nf17\ns34359738368\nn${root}/temp/deleted-model\n`);
     if (["/usr/bin/du", "du", "/usr/bin/find"].includes(command)) {
-      const target = command.endsWith("find") ? args[1] : args.at(-1)!;
+      if (options.cwd !== undefined && (!within(root, options.cwd) || !within(root, realFs.realpathSync(options.cwd))))
+        forbidden("external scan cwd", options.cwd);
+      const target = resolve(options.cwd ?? process.cwd(), command.endsWith("find") ? args[1] : args.at(-1)!);
       if (!within(root, target)) forbidden("external scan", target);
       if (args.some((a) => ["-delete", "-exec", "-execdir", "-ok", "-fprint", "-fprintf"].includes(a))) forbidden("mutating find", args);
       if (scenario.empty_measure && command.endsWith("du")) return result("");

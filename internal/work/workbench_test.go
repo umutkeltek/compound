@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -728,6 +729,14 @@ Success: should not count as Codex adjacent work.
 		action, ok := adjacentActionByID(adjacent.NonPacketActions, id)
 		if !ok {
 			t.Fatalf("missing adjacent non-packet action %s: %+v", id, adjacent.NonPacketActions)
+		}
+		if id == "workbench-projection-refresh" {
+			// The caller-supplied packet directory is intentional; no other argv is allowed.
+			want := []string{"compound", "workbench", "--json", "--packet-dir", packetDir}
+			if !slices.Equal(action.Command, want) {
+				t.Fatalf("workbench refresh command = %q, want %q", action.Command, want)
+			}
+			continue
 		}
 		joined := strings.Join(action.Command, " ")
 		if strings.Contains(joined, "/Users/") || strings.Contains(joined, ".compound/private") {

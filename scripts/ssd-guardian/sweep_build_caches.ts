@@ -16,7 +16,7 @@
 import { spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { emit, measure } from "./report_only";
 
 const APPLY = process.argv.includes("--apply");
@@ -40,10 +40,11 @@ type Finding = {
 };
 
 const alternatives = (items: string[], flag: string) => items.flatMap((item, i) => [...(i ? ["-o"] : []), flag, item]);
-const r = spawnSync("/usr/bin/find", ["-P", PROJECTS, "-xdev", "-maxdepth", "6", "(",
+// Scan relative to HOME while -P still applies to the Projects root itself.
+const r = spawnSync("/usr/bin/find", ["-P", "Projects", "-xdev", "-maxdepth", "6", "(",
   ...alternatives(FIND_PRUNE.map((p) => `*${p}*`), "-path"), ")", "-prune", "-o", "-type", "d", "(",
   ...alternatives(TARGET_DIRS, "-name"), ")", "-mtime", `+${AGE_DAYS - 1}`, "-print0", "-prune"],
-  { stdio: "pipe", timeout: 45_000, maxBuffer: 8 * 1024 * 1024 });
+  { cwd: HOME, stdio: "pipe", timeout: 45_000, maxBuffer: 8 * 1024 * 1024 });
 if (r.error || r.status !== 0) {
   console.log(JSON.stringify({ status: "failed", reason: (r.stderr?.toString() ?? "").slice(0, 400) }));
   process.exit(1);
@@ -51,7 +52,7 @@ if (r.error || r.status !== 0) {
 
 const raw = r.stdout?.toString() ?? "";
 if (raw && !raw.endsWith("\0")) { console.error("truncated candidate inventory"); process.exit(2); }
-const candidatePaths = raw ? raw.slice(0, -1).split("\0") : [];
+const candidatePaths = raw ? raw.slice(0, -1).split("\0").map((path) => resolve(HOME, path)) : [];
 
 const findings: Finding[] = [];
 const BATCH = 1;
