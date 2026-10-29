@@ -10,6 +10,7 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -107,9 +108,19 @@ func run() error {
 	if strings.TrimSpace(reported) != "compound "+version+" (build dev)" {
 		return fmt.Errorf("VERSION=%s does not match source version output %q", version, strings.TrimSpace(reported))
 	}
-	if _, err := exec.LookPath(sbomTool); err != nil && filepath.Base(sbomTool) == sbomTool {
+	toolPath, err := exec.LookPath(sbomTool)
+	if err != nil {
 		return fmt.Errorf("SBOM tool not found: %s", sbomTool)
 	}
+	toolPath, err = filepath.EvalSymlinks(toolPath)
+	if err != nil {
+		return fmt.Errorf("resolve SBOM tool: %w", err)
+	}
+	toolDigest, err := sha256File(toolPath)
+	if err != nil {
+		return fmt.Errorf("hash SBOM tool: %w", err)
+	}
+	fmt.Printf("release-artifacts: SBOM_TOOL sha256=%s\n", toolDigest)
 
 	parent := filepath.Dir(dist)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
@@ -246,10 +257,16 @@ func buildPlatform(root, stage, buildGo, sbomTool, version, commit string, platf
 	if _, err := requireRegularFile(filepath.Join(stage, compoundSBOM), "SBOM output"); err != nil {
 		return builtArtifact{}, err
 	}
+	if err := normalizeSBOMGeneratorMetadata(filepath.Join(stage, compoundSBOM)); err != nil {
+		return builtArtifact{}, err
+	}
 	if _, err := commandOutput(root, env, sbomTool, "bin", "-json", "-noserial", "-notimestamp", "-output", filepath.Join(stage, breadthSBOM), "-version", version, breadthPath); err != nil {
 		return builtArtifact{}, fmt.Errorf("generate breadth-engine SBOM for %s/%s: %w", platform.os, platform.arch, err)
 	}
 	if _, err := requireRegularFile(filepath.Join(stage, breadthSBOM), "SBOM output"); err != nil {
+		return builtArtifact{}, err
+	}
+	if err := normalizeSBOMGeneratorMetadata(filepath.Join(stage, breadthSBOM)); err != nil {
 		return builtArtifact{}, err
 	}
 	return builtArtifact{
@@ -260,6 +277,84 @@ func buildPlatform(root, stage, buildGo, sbomTool, version, commit string, platf
 		compoundSBOM: compoundSBOM,
 		breadthSBOM:  breadthSBOM,
 	}, nil
+}
+
+func normalizeSBOMGeneratorMetadata(path string) error {
+	f, opened, err := openRegularFile(path, "SBOM output")
+	if err != nil {
+		return err
+	}
+	body, readErr := io.ReadAll(f)
+	closeErr := f.Close()
+	if readErr != nil {
+		return readErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return fmt.Errorf("decode SBOM: %w", err)
+	}
+	var metadata map[string]json.RawMessage
+	if raw, ok := doc["metadata"]; ok {
+		if err := json.Unmarshal(raw, &metadata); err != nil {
+			return fmt.Errorf("decode SBOM metadata: %w", err)
+		}
+	} else {
+		return nil
+	}
+	raw, ok := metadata["tools"]
+	if !ok {
+		return nil
+	}
+	var tools []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &tools); err != nil {
+		return fmt.Errorf("decode SBOM tools: %w", err)
+	}
+	changed := false
+	for _, tool := range tools {
+		var vendor, name string
+		_ = json.Unmarshal(tool["vendor"], &vendor)
+		_ = json.Unmarshal(tool["name"], &name)
+		if vendor == "CycloneDX" && name == "cyclonedx-gomod" {
+			if _, exists := tool["hashes"]; exists {
+				// The pinned generator hashes its own native executable. Keep its
+				// identity/version and every other hash; this host-specific value
+				// belongs in the build receipt, not the cross-host release bytes.
+				delete(tool, "hashes")
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return nil
+	}
+	metadata["tools"], err = json.Marshal(tools)
+	if err != nil {
+		return err
+	}
+	doc["metadata"], err = json.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+	normalized, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return err
+	}
+	normalized = append(normalized, '\n')
+	temp := path + ".normalized"
+	if err := writeFreshRegular(temp, normalized, 0o644, "normalized SBOM output"); err != nil {
+		return err
+	}
+	defer os.Remove(temp)
+	if err := verifyRegularIdentity(path, "SBOM output", opened); err != nil {
+		return err
+	}
+	if err := os.Rename(temp, path); err != nil {
+		return fmt.Errorf("publish normalized SBOM: %w", err)
+	}
+	return nil
 }
 
 func writeDeterministicArchive(target, bundle, compoundPath, breadthPath string, identity []byte) (returnErr error) {
@@ -429,7 +524,9 @@ func commandOutput(dir string, env []string, executable string, args ...string) 
 	if env != nil {
 		cmd.Env = env
 	}
-	body, err := cmd.CombinedOutput()
+	// Stdout is command protocol data; keep diagnostics visible on stderr.
+	cmd.Stderr = os.Stderr
+	body, err := cmd.Output()
 	if err != nil {
 		return string(body), fmt.Errorf("%s %s: %w\n%s", executable, strings.Join(args, " "), err, body)
 	}
