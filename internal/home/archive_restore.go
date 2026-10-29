@@ -128,7 +128,7 @@ func restoreArchiveWithLimits(archivePath, targetHome string, now time.Time, lim
 		if err := target.validatePinnedHomeWithStreamed(true); err != nil {
 			return RestoreReport{}, fmt.Errorf("restored home failed rooted health check: %w", err)
 		}
-	} else if report := DoctorWithOptions(stagingPath, DoctorOptions{Now: now}); !report.OK || !report.PrivateCustody.OK {
+	} else if report := DoctorWithOptions(stagingPath, DoctorOptions{Now: now, PrivateCustodyDeep: true}); !report.OK || !report.PrivateCustody.OK {
 		return RestoreReport{}, fmt.Errorf(
 			"restored home failed doctor: manifest_ok=%t dirs=%d/%d habitat_ok=%t unknown_roots=%v unknown_entries=%v private_custody=%s findings=%v",
 			report.ManifestOK,

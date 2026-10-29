@@ -23,8 +23,8 @@
 // BodyStatusUnresolvable candidates; the materializer lands them in
 // body_pack.omitted with reason unresolvable. The materializer/CLI consumer
 // records degradation through OrientConsumerEvidence.DegradationObserved —
-// this file owns the ref shapes so the evaluator package stays free of runtime
-// resolver knowledge.
+// internal/contract owns the marker shapes and classification so the evaluator
+// package stays free of runtime resolver knowledge.
 //
 // This file is the ONLY place internal/corpus is imported by the body-materializer
 // surface (the dependency-inversion LAW: internal/contract stays corpus-free).
@@ -32,8 +32,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"os"
 	"strings"
 
@@ -46,23 +44,6 @@ import (
 // The materializer (not the resolver) is responsible for budget-aware selection,
 // so the resolver returns up to this many hits per lane and lets the packer choose.
 const corpusQueryTopK = 10
-
-// orientBodyConfigUnavailableRef is the single generic degradation candidate a
-// malformed/unreadable memory-engine config contributes to the orient body
-// resolver. It carries no path, parse error, or config byte — only that the
-// optional configured body source was unavailable. The CLI surfaces this in
-// OrientConsumerEvidence.DegradationObserved; the retrievalparity evaluator
-// package has no knowledge of this string.
-const orientBodyConfigUnavailableRef = "corpus://configuration-unavailable"
-
-// orientBodyLaneUnavailableRef returns one opaque, deterministic per-lane
-// degradation ref derived from a hash of the lane id (never the raw endpoint,
-// query, or lane body). The 12-hex suffix keeps the wire footprint bounded and
-// stable across runs.
-func orientBodyLaneUnavailableRef(laneID string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(laneID)))
-	return "corpus://lane-unavailable/" + hex.EncodeToString(sum[:])[:12]
-}
 
 // orientBodyResolver is the production body resolver for `compound orient`: corpus
 // hits (per configured lane) plus source-ref file bodies (per pack.Included order).
@@ -173,7 +154,7 @@ func (r *orientBodyResolver) resolveCorpus(task string) ([]contract.BodyCandidat
 		if err != nil {
 			r.degraded = true
 			out = append(out, contract.BodyCandidate{
-				Ref:    orientBodyLaneUnavailableRef(lane.Lane),
+				Ref:    contract.OrientBodyLaneUnavailableRef(lane.Lane),
 				Source: "corpus:" + lane.Lane,
 				Rank:   0,
 				Status: contract.BodyStatusUnresolvable,
@@ -184,7 +165,7 @@ func (r *orientBodyResolver) resolveCorpus(task string) ([]contract.BodyCandidat
 		if err != nil {
 			r.degraded = true
 			out = append(out, contract.BodyCandidate{
-				Ref:    orientBodyLaneUnavailableRef(lane.Lane),
+				Ref:    contract.OrientBodyLaneUnavailableRef(lane.Lane),
 				Source: "corpus:" + lane.Lane,
 				Rank:   0,
 				Status: contract.BodyStatusUnresolvable,

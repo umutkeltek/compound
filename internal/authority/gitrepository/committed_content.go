@@ -132,7 +132,8 @@ func requireCommittedCommits(ctx context.Context, repo, baseSHA, headSHA string)
 
 // committedGitOutput runs one read-only Git command in the repository through
 // the caller's execution owner, so a governed proof keeps its child-process
-// isolation and execution barrier. The read environment is sanitized so an
+// isolation and execution barrier. Each command retains its own five-second
+// bound under the caller deadline. The read environment is sanitized so an
 // ambient Git selector cannot substitute another index, object directory or
 // worktree, and stderr is kept out of the inventory stream.
 func committedGitOutput(ctx context.Context, repo string, args ...string) ([]byte, error) {
@@ -142,13 +143,18 @@ func committedGitOutput(ctx context.Context, repo string, args ...string) ([]byt
 // env is built by this package from sanitized reads and, for compatibility,
 // its own private attribute index. Caller Git selectors never enter this path.
 func committedGitOutputEnvironment(ctx context.Context, repo string, env []string, args ...string) ([]byte, error) {
+	ctx, cancel := gitReadContext(ctx)
+	defer cancel()
 	cmd := CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...)
 	cmd.Env = env
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	out, err := CommandOutput(ctx, cmd, false)
 	if ctx.Err() != nil {
 		return nil, context.Cause(ctx)
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil, err
 	}
 	if err != nil {
 		return out, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))

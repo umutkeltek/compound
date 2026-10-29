@@ -2,6 +2,7 @@ package work
 
 import (
 	"bytes"
+	"compound/internal/authority/gitrepository"
 	"compound/internal/proofscope"
 	"context"
 	"fmt"
@@ -54,6 +55,10 @@ func ProofCheckNonCertifyingMode(args []string) string {
 // `proof-check --dev` and `proof-check --presubmit`: no governance or
 // canonical selector, each flag at most once, values as separate tokens.
 func ValidateProofCheckNonCertifyingArgs(args []string) error {
+	if IsGovernedPresubmitArgs(args) {
+		_, err := ParsePresubmitExecutionRequest(args)
+		return err
+	}
 	mode := ProofCheckNonCertifyingMode(args)
 	if mode == "" {
 		mode = "--dev"
@@ -193,7 +198,7 @@ func presubmitDropNoGoFiles(ctx context.Context, repo string, plan *proofscope.P
 	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	out, err := gitrepository.CommandOutput(ctx, cmd, false)
 	if err != nil {
 		return nil, fmt.Errorf("go list presubmit packages: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
@@ -325,7 +330,7 @@ func presubmitGit(ctx context.Context, repo string, args ...string) (string, err
 	cmd.Dir = repo
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	out, err := gitrepository.CommandOutput(ctx, cmd, false)
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}

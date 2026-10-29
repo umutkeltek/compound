@@ -1,6 +1,6 @@
 ---
 name: compound-land
-description: The landing ceremony for getting a change onto main in the compound repo — scope claim, minutes-scale presubmit, rehearsed merge, --ff-only with a fresh main-SHA guard, canonical battery after the land, post-land duties. Use when committing, merging, landing an executor/worker's diff or worktree, or when asked to "land"/"commit"/"merge" anything here.
+description: The landing ceremony for getting a change onto main in the compound repo — scope claim, scoped noncertifying presubmit, rehearsed merge, --ff-only with a fresh main-SHA guard, canonical battery after the land, post-land duties. Use when committing, merging, landing an executor/worker's diff or worktree, or when asked to "land"/"commit"/"merge" anything here.
 ---
 
 # compound-land — how a change actually reaches main
@@ -73,7 +73,7 @@ adoption capability itself through a direct source proof before using it in a li
 ## 1 · Presubmit before the land; canonical proof after it
 
 The ceremony has five gates, in force order: **scope-claim** (§0 — land-lease + worklog claim) ·
-**presubmit** (§1 — scoped build/vet/doctor/affected tests, minutes) ·
+**presubmit** (§1 — governed scoped build/vet/doctor/affected tests) ·
 **fresh-SHA guard** (§3 — `MAIN_SHA` read this turn) · **redact** (§5 — unpiped, its own command) ·
 **tree-identity** (§4 — containment proved before any removal). **A later gate cannot prove that an
 earlier gate passed: a green presubmit does not prove the scope claim, and a clean redact does not
@@ -84,7 +84,7 @@ gate's own result.
 ### Presubmit (every landing, before the fast-forward)
 
 Operator ruling 2026-10-23, Law 16 (govern in proportion to risk): the blocking gate before a
-landing is a minutes-scale presubmit scoped to what changed, not the canonical battery. Measured
+landing is a scoped noncertifying presubmit. Canonical proof runs after the land. Measured
 2026-10-24 over the last 50 canonical runs: `go-test` alone was p50 43.5 min of a 49.7-min battery,
 40% of runs were red under laptop load, and every repository on the machine queued on one shared
 proof pool. That gate serialized every lane behind one thread while certifying nothing a post-land
@@ -92,12 +92,49 @@ run on the same tip would not.
 
 ```bash
 PRESUBMIT_BASE_SHA=$(git rev-parse --verify "<reviewed-base-sha>^{commit}")
-go run ./cmd/compound proof-check --presubmit --base "$PRESUBMIT_BASE_SHA" --out /tmp/<lane>-presubmit.json
+# Build this reviewed candidate executable in a separate bounded governed step.
+# Do not put the long producer inside work advance --execute's 45-minute wrapper.
+"$PRESUBMIT_EXE" proof-check --presubmit --repo "$PWD" --base "$PRESUBMIT_BASE_SHA" \
+  --work "$WORK" --actor "$ACTOR" --execution-timeout 4h --out /tmp/<lane>-presubmit.json
 ```
 
+The Work must be verifying, held by this actor, bound to that immutable delivery base,
+and carry the exact candidate as its latest commit artifact. Invoke the fresh executable
+directly: native admission records its ActionIntent, allowing PolicyDecision and atomically
+bound RunAttempt before Git/Go preparation or output write probes. A separate bounded
+governed build may compile the executable; `go run` would compile before native admission.
+
+`--execution-timeout` chooses a positive active budget up to 4h. This is an upper ceiling,
+not an expected wait: the command returns when the unchanged gates finish. The ceiling
+covers up to six unchanged sequential 30-minute test phases plus preparation and other
+gates. The generic harness cap remains 45 minutes. The native producer uses existing
+`system_full` proof capacity and its execution barrier to avoid competing full-load work;
+it creates no new queue or reservation type that can certify source.
+
+Per-gate checkpoints and current raw output persist beside the report in an exclusive,
+rooted per-attempt directory and in private execution artifacts. Ordinary deadline,
+SIGINT and SIGTERM cancel exact owned groups, including Go descendants that drop inherited
+descriptors. Darwin keeps the leader unreaped until its exact group drains. Linux requires
+the group-pidfd capability introduced in kernel 6.9, holds that handle across any early
+leader reap, and never signals a recycled numeric group. Unsupported capability refuses.
+Use the fixed native recovery door only for authentic pre-child loss or durably closed
+groups:
+
+```bash
+"$PRESUBMIT_EXE" proof-check --presubmit-recover-execution "$PRESUBMIT_RUN" \
+  --work "$WORK" --actor "$ACTOR" --reason "exact stopped producer and quiescent owned execution"
+```
+
+Recovery records failed execution evidence and releases only its exact eligible holder.
+It refuses an unregistered or unclosed started group even if the file barrier has cleared.
+Mid-gate SIGKILL and observed containment uncertainty need separate exact external/manual
+recovery; the reason string is not cleanup evidence. Ordinary admission refuses expired
+predecessors too. The door never signals stored PIDs, certifies source, or substitutes
+for a new presubmit or canonical proof. Escaped groups/sessions and persistence
+impossibility remain explicit limits; retain uncertainty rather than claiming cleanup.
+
 One command, one final `presubmit: ok|FAILED non_certifying=true scope=... passed=... failed=...`
-stdout line; exit `0` is the only green (`1` a gate is red, `2` usage or setup: the base is not a
-full SHA or not an ancestor of HEAD). Commit first: the scope is derived from the base and HEAD
+stdout line; exit `0` is the only green (`1` execution, gate, or report failure; `2` usage). Commit first: the scope is derived from the base and HEAD
 commits, and the build and vet gates run `go run ./scripts/testbattery build|vet --source-head HEAD_SHA`,
 which refuse a dirty tree. Gates, in order: build and vet of the Git source inventory, `gofmt` on
 tracked `*.go`, `git diff --check BASE...HEAD`, `architecture doctor --strict`,
@@ -128,7 +165,7 @@ from memory. The rule it applies:
   guard lives there) plus the CLI readers by name:
   `go test -short ./cmd/compound/ -run 'Ceremony|ContractCompile|Orient|ProofCheck|Doctor'`.
 - `go.mod`, `go.sum`, `scripts/testbattery/`, `internal/proofscope/`, a root file or a removed
-  package → every package of the Git inventory at HEAD, named one by one (budget 10-20 min idle).
+  package → every package of the Git inventory at HEAD, named one by one.
   Never a bare `./...` walk: it reaches gitignored `docs_private/**/*.go` and broke the `--dev`
   lane's build on 2026-10-24.
 - Other repository-root readers (packages whose tests read the whole tree) are listed in the report
@@ -138,9 +175,10 @@ Measured 2026-10-24 on this laptop, idle: `go build ./...` 67 s, `go vet ./...` 
 8.5 s, `internal/arch` guards 9-27 s, the whole `cmd/compound` package 51 s. **Under a concurrent
 canonical battery (load 10-12, swap full) the same `cmd/compound` package did not finish inside 10
 minutes, and `proof-check --dev` took 17.8 min and went red on 10-minute package timeouts.** The
-presubmit is minutes only when no canonical battery shares the laptop — which is why the canonical
-battery runs after the land, detached and nice'd or on the remote verifier, never concurrently
-with a landing on the same machine.
+presubmit has no unconditional minutes-scale promise. Duration depends on the selected
+packages and host load; its explicit native ceiling prevents wrapper restarts and preserves
+truthful partial progress. The canonical battery runs after the land, detached and nice'd
+or on the remote verifier.
 
 Add, when they apply, before the presubmit (seconds each):
 - new tracked text files → `git add` them first; the leak gate sees tracked files only (ordering hazard below);

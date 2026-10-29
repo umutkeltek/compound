@@ -77,7 +77,24 @@ or termination assertions to accommodate setup latency.
 1. **Never trust the checked-in binary.** `./compound` at repo root is a local build artifact and
    is routinely stale. Verify through `go run ./cmd/compound <verb>` or a fresh `make install`.
 
-   The scoped presubmit (`compound-land` §1) is what every landing runs before its fast-forward;
+   The governed native scoped presubmit (`compound-land` §1) is what every landing runs
+   before its fast-forward: invoke the separately built reviewed executable directly with
+   `--presubmit --work WORK --actor ACTOR --base FULL_SHA --out FILE --execution-timeout 4h`.
+   The positive chosen budget is a ceiling of at most 4h, not an expected duration. Its
+   ActionIntent, PolicyDecision and native RunAttempt precede all preparation effects.
+   Do not nest this long producer in the generic 45-minute governed harness wrapper.
+   Existing test selection and 30-minute test-phase deadlines remain unchanged.
+   `presubmit-execution:artifact:sha256:...` is an execution-only artifact, never a
+   `proof-check:pfrs_*` verification or adoption input. Interrupted native owners use
+   `--presubmit-recover-execution RATT_ID --work WORK --actor ACTOR --reason TEXT`
+   only for pre-child loss or durably closed groups with an exact quiescent barrier.
+   Unregistered/unclosed groups, mid-gate SIGKILL and observed containment uncertainty
+   need separate exact external/manual recovery; a clear barrier alone is insufficient.
+   Ordinary admission refuses expired predecessors. Recovery records failure and never
+   substitutes for canonical completion. Darwin uses the pinned unreaped group; Linux
+   requires the group-pidfd capability introduced in kernel 6.9, with no numeric fallback.
+
+   The legacy
    `go run ./cmd/compound proof-check --dev --base <full-sha> --out <file>` is its whole-module
    cached variant. Both are non-certifying: neither writes the canonical installed-runtime proof
    artifact or satisfies the deterministic bundle below, which runs on the landed tip after the

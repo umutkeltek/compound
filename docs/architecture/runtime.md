@@ -49,7 +49,7 @@ Review intents explicitly declare `requires_exact_approval`. Policy applies this
 
 Explicit rollback needs a fresh rollback review following the owned phase receipt anchor. It may boot out only this plan's loaded path/argv, restore the exact disabled override and restore original bytes only over its own candidate. Foreign file/service/override edits refuse every rollback effect. Crash journals and original bytes remain under existing `reviews/launchd-repair`; successful apply and failed/partial results retain exact-plan rollback ownership and block a new same-label plan until verified terminal rollback/reconciliation. No new scheduler, WorkDelivery kind or memory authority is introduced.
 
-`schedule repair plan --handoff-from OLD_PLAN` permits an explicit successor only after the predecessor has a complete successful native apply chain, authentic consumed review approval, and an authenticated completed Work close. Planning still requires separately authorized quiescence: exact predecessor candidate bytes/argv/mode at the same user/domain/label/path, disabled and unloaded, with current source proofs and unchanged foreign overrides. The successor plan seals the predecessor plan, terminal report, native phase chain, close proof and exact owner bytes into its authorization digest; a fresh exact successor grant and consumed review approval remain required. Historical executable/script upgrades require an explicit `source_reattestations` entry binding each changed predecessor path and its old/current resolved path and SHA256. Every changed path must have one canonical, exact current proof in the successor's supplied source set; missing, stale or duplicate proofs refuse. These attestations enter the successor authorization digest and existing exact review, while historical plans and receipts remain immutable. Current sources are rechecked before ownership CAS and every OS phase; post-review drift refuses. Unchanged handoffs omit the new field and preserve their serialized proof contract. Under the same label lock, an additional native `handoff` phase revalidates those proofs and atomically compares/replaces the ownership pointer before any plist or launchctl effect. Its journal uses apply index 3, preceding unchanged legacy indexes 0–2. The native receipt binds before/after ownership hashes. An interrupted owner CAS without a sealed outcome receipts ambiguity and stops; replay never repeats it or proceeds to OS repair. Fresh reviewed rollback restores original bytes and disabled/unloaded state before a final receipted `restore_owner` phase returns the exact predecessor pointer. A restored pointer remains ineligible until its started successor's native rollback completes; a missing handoff-start file cannot hide remaining apply/rollback journals. Planned successors with no phase evidence do not reserve ownership. Immutable predecessor and successor history remains intact; active, failed, partial or ambiguous predecessors, unreviewed source changes and runtime/ownership drift cannot be handed off.
+`schedule repair plan --handoff-from OLD_PLAN` permits an explicit successor only after the predecessor has a complete successful native apply chain, authentic consumed review approval, and an authenticated completed Work close. The predecessor terminal observation authenticates its own sealed foreign-override baseline. Unrelated overrides may change between completed transactions; each successor captures a fresh exact baseline and still rejects later foreign drift during review, apply, and rollback. Planning still requires separately authorized quiescence: exact predecessor candidate bytes/argv/mode at the same user/domain/label/path, disabled and unloaded, with current source proofs and unchanged foreign overrides. The successor plan seals the predecessor plan, terminal report, native phase chain, close proof and exact owner bytes into its authorization digest; a fresh exact successor grant and consumed review approval remain required. Historical executable/script upgrades require an explicit `source_reattestations` entry binding each changed predecessor path and its old/current resolved path and SHA256. Every changed path must have one canonical, exact current proof in the successor's supplied source set; missing, stale or duplicate proofs refuse. These attestations enter the successor authorization digest and existing exact review, while historical plans and receipts remain immutable. Current sources are rechecked before ownership CAS and every OS phase; post-review drift refuses. Unchanged handoffs omit the new field and preserve their serialized proof contract. Under the same label lock, an additional native `handoff` phase revalidates those proofs and atomically compares/replaces the ownership pointer before any plist or launchctl effect. Its journal uses apply index 3, preceding unchanged legacy indexes 0–2. The native receipt binds before/after ownership hashes. An interrupted owner CAS without a sealed outcome receipts ambiguity and stops; replay never repeats it or proceeds to OS repair. Fresh reviewed rollback restores original bytes and disabled/unloaded state before a final receipted `restore_owner` phase returns the exact predecessor pointer. A restored pointer remains ineligible until its started successor's native rollback completes; a missing handoff-start file cannot hide remaining apply/rollback journals. Planned successors with no phase evidence do not reserve ownership. Immutable predecessor and successor history remains intact; active, failed, partial or ambiguous predecessors, unreviewed source changes and runtime/ownership drift cannot be handed off.
 
 When the failed handoff's native outcome proves exact predecessor ownership, file and runtime remained unchanged, and no later forward phase exists, fresh reviewed rollback can receipt that unchanged ownership without a CAS. Only this read-only observation may repeat after interruption, under fresh lease/work/policy/review/source/readback checks. The actual forward failure and its native receipt remain failed and immutable; a changed owner, tampered proof or later phase refuses no-effect classification.
 
@@ -573,6 +573,85 @@ An absent or zero Compound timeout retains the five-minute default; positive
 durations are capped at 45 minutes. Invalid or negative Compound durations refuse
 before a work mutation or execution RunAttempt is minted. Detached execution
 reserves two minutes of its 45-minute wrapper budget for finalization.
+
+### Native noncertifying presubmit execution
+
+A separately built candidate executable can run `proof-check --presubmit --repo REPO
+--base FULL_SHA --out FILE --work WORK --actor ACTOR --execution-timeout DURATION`
+directly. Work must be verifying, held by the actor, and carry the exact candidate commit;
+the base and repository fingerprint bind its immutable Git delivery contract. The native
+owner persists an ActionIntent and allowing PolicyDecision, then atomically mints its
+RunAttempt with that intent before any Git/Go subprocess or output write probe. The
+binary digest and actual chosen budget are part of the binding. Compile the candidate
+in a separate bounded governed step; `go run` performs preparation before native admission.
+
+The explicit active budget is positive and at most 4h, an upper ceiling that returns
+early on completion. It accommodates up to six unchanged sequential 30-minute test phases
+plus preparation and non-test gates. Generic governed harness execution remains capped
+at 45 minutes; gate selection and test timeouts do not change. Native presubmit uses
+existing `system_full` capacity and the existing inherited execution barrier because its
+build/vet/test phases share the same constrained host. It adds no queue, daemon, transport
+enrollment or canonical reservation kind.
+
+Existing Git preparation, scope derivation, Go-list preparation and gate subprocesses
+consume one context-scoped command-runner callback. Ordinary callers keep their existing
+execution path. The first real child start records content-free committed launch evidence;
+origin-only metadata never fabricates execution. A sealed clean source snapshot and
+derived gate inventory precede gate 1. Registered groups stream current raw output into
+exclusive files under a rooted per-attempt output directory. Private content-addressed
+journals retain gate/command started, completed and cancelled checkpoints plus partial
+reports and raw-output paths.
+
+Snapshot, repository-identity and committed-content reads retain the caller's
+overall budget. Each Git subprocess keeps its unchanged five-second execution limit through
+that same execution owner, so durable bookkeeping for earlier commands cannot
+expire later commands. Parent cancellation and earlier absolute deadlines still
+win; no subprocess bypasses the owner.
+The native owner keeps pre-launch checkpoint and authority work under the parent
+operation deadline. It starts the Git allowance at the locked launch, supervises
+the registered process group and drains its output before post-start persistence.
+It disarms that clock only when the group has drained. Ordinary and generic Git readers retain their
+five-second context bound; neither path changes caller cancellation or source fences.
+
+Ordinary cleanup uses an exact OS process-group boundary independent of inherited file
+descriptors. Darwin observes its still-unreaped direct child as a zombie, then uses
+`kern.proc.pgrp` to observe only that pinned group until every other member is gone.
+It stops and joins numeric-PGID signalers before reaping the leader. Linux requires
+`PIDFD_SIGNAL_PROCESS_GROUP`, introduced in kernel 6.9: a side-effect-free self-pidfd
+signal-zero probe refuses unsupported kernels or permission failures. Each real child
+gets an exact group pidfd before any Wait; Linux may reap the leader while all later
+group probes and signals use that same held kernel handle. It never substitutes a
+numeric PID lookup. Both paths cover ordinary same-group Go descendants that close
+stdout/stderr and drop every ownership descriptor.
+
+Kernel query or identity uncertainty records `containment_uncertain` and retains the
+exact durable resource holder without claiming cleanup. Darwin does not explicitly reap
+on that path; Linux may already have reaped while retaining its exact pidfd. A failed CLI
+may exit; there is no keeper or daemon. Ordinary admission refuses a different expired
+predecessor rather than treating expiry as recovery. Descendants that escape the owned
+group/session, SIGKILL and persistence impossibility remain explicit recovery limits.
+
+Every post-mint ordinary return terminalizes the attempt and retains a distinct
+`presubmit-execution` result; a panic records failed execution before propagating.
+Preparation, output, deadline and finalization failures never render a green native
+verdict. Newer Work generations remain byte-for-byte authoritative; reverse attempt/
+action linkage retains audit evidence without manufacturing a same-state transition.
+Overlapping nonterminal same-work native producers refuse before replacing policy.
+A later terminal native retry records exact predecessor lineage before its first child;
+unchanged Work close validators still require an actual succeeded execution.
+
+The fixed `--presubmit-recover-execution RATT_ID --work WORK --actor ACTOR --reason TEXT`
+door validates the original native journal, request binding, attempt and intent/policy,
+then requires exact-holder barrier quiescence under fresh policy. Durable command
+sequences record `group_started` and `group_closed`. Recovery is limited to pre-child
+loss or groups with native closed observations. A prepared/committed launch without
+registered group evidence, an unclosed group, or observed containment uncertainty refuses
+even after the file barrier clears. Mid-gate SIGKILL therefore needs separate exact
+external/manual recovery; a reason string never substitutes for missing evidence.
+The door can rearm and release only its exact eligible native holder and records failed
+execution-only evidence. It never signals a stored PID or accepts canonical proof.
+Presubmit artifacts attach to Work artifacts, never verification IDs; canonical report
+validation, completion and adoption remain unchanged.
 
 ### Explicit same-work execution resume
 

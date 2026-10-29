@@ -398,7 +398,9 @@ func captureLaunchdTerminalHandoff(home string, p LaunchdRepairPlan, from string
 	if err = readLaunchdArtifact(home, old.ID+".apply.terminal.json", &terminal); err != nil {
 		return h, err
 	}
-	if terminal.PlanID != old.ID || terminal.Direction != "apply" || terminal.Outcome != "completed" || terminal.Failure != "" || !reflect.DeepEqual(terminal.Phases, commits) || terminal.Runtime.Error != "" || !reflect.DeepEqual(terminal.Runtime.ForeignOverrides, p.Runtime.ForeignOverrides) {
+	// Authenticate historical observations against their own sealed baseline.
+	// The successor captures and enforces its fresh baseline independently.
+	if terminal.PlanID != old.ID || terminal.Direction != "apply" || terminal.Outcome != "completed" || terminal.Failure != "" || !reflect.DeepEqual(terminal.Phases, commits) || terminal.Runtime.Error != "" || !reflect.DeepEqual(terminal.Runtime.ForeignOverrides, old.Runtime.ForeignOverrides) {
 		return h, fmt.Errorf("sealed predecessor success does not bind the native phase chain")
 	}
 	if err = launchdStateMatches(old, old.Candidate, terminal.Runtime, old.Candidate, "enabled", "loaded"); err != nil {

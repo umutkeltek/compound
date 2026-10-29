@@ -18,6 +18,7 @@ import (
 )
 
 func TestHomeFixtureRestrictedRunnerExecutesThenReuses(t *testing.T) {
+	t.Setenv("GOFLAGS", "")
 	f := newHomeProofFixture(t)
 	temporary := newIsolatedHomeFixtureTestRoot(t)
 	cacheRoot, err := filepath.EvalSymlinks(temporary)

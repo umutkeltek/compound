@@ -4160,6 +4160,8 @@ func cmdHome(args []string) {
 			fmt.Print(home.PrivateCustodyUsage)
 		case "backup":
 			fmt.Println("usage: compound home backup --target <new-archive.tar.gz> [--format v1|streamed-v2|streamed-v3|streamed-v3-event-snapshot] [--home <path>]")
+		case "doctor":
+			fmt.Println("usage: compound home doctor [--json] [--deep] [--home <path>]; --deep verifies private artifact content digests (slow)")
 		default:
 			fmt.Println("usage: compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact|private-custody> [--home <path>] [--local|--global]")
 		}
@@ -4181,7 +4183,7 @@ func cmdHome(args []string) {
 	case "where":
 		fmt.Println(resolve())
 	case "doctor", "":
-		report := home.Doctor(resolve())
+		report := home.DoctorWithOptions(resolve(), home.DoctorOptions{PrivateCustodyDeep: hasFlag(args, "--deep")})
 		if hasFlag(args, "--json") {
 			jsonReport := buildHomeDoctorReport(report)
 			printJSON(jsonReport)

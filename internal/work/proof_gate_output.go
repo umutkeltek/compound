@@ -173,6 +173,13 @@ func AttachFailedGateOutput(
 	output []byte,
 	surfacePersistErr bool,
 ) {
+	if rt, ok := ctx.Value(nativePresubmitRuntimeKey{}).(*presubmitRuntime); ok {
+		if len(rt.outputPaths) > 0 {
+			result.OutputPath = rt.outputPaths[len(rt.outputPaths)-1]
+		}
+		return
+	}
+
 	if reportPath := GateOutputReportPathFromContext(ctx); reportPath != "" {
 		persisted, err := PersistGateOutput(reportPath, stepName, output)
 		if err != nil {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -504,5 +505,38 @@ func TestProofCheckPresubmitConsolePrerequisitesRespectModeAndSelection(t *testi
 				t.Fatalf("development profile changed: %q", report.ProfileKind)
 			}
 		})
+	}
+}
+
+func TestGovernedPresubmitCLIUsesNativeAdmissionBeforeOutputProbe(t *testing.T) {
+	const childEnv = "COMPOUND_SYNTHETIC_NATIVE_PRESUBMIT_CLI"
+	if os.Getenv(childEnv) == "1" {
+		cmdProofCheck([]string{"--presubmit", "--base", strings.Repeat("a", 40), "--work", "work_synthetic_missing", "--actor", "synthetic-owner", "--execution-timeout", "1m", "--out", os.Getenv(childEnv + "_OUT")})
+		return
+	}
+	nativeHome, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Chmod(nativeHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = work.Open(nativeHome); err != nil {
+		t.Fatal(err)
+	}
+	report := filepath.Join(t.TempDir(), "report.json")
+	command := exec.Command(os.Args[0], "-test.run=^TestGovernedPresubmitCLIUsesNativeAdmissionBeforeOutputProbe$")
+	command.Env = append(os.Environ(), childEnv+"=1", childEnv+"_OUT="+report, "COMPOUND_HOME="+nativeHome)
+	output, err := command.CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.Contains(string(output), "presubmit execution:") || !strings.Contains(string(output), "status=refused") {
+		t.Fatalf("native admission dispatch/result missing: err=%v output=%s", err, output)
+	}
+	if _, err = os.Stat(report); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("refused native admission probed/wrote report: %v", err)
+	}
+	gates, err := filepath.Glob(report + ".presubmit-*")
+	if err != nil || len(gates) != 0 {
+		t.Fatalf("refused native admission created output custody: %v %v", gates, err)
 	}
 }
