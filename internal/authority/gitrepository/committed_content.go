@@ -143,7 +143,7 @@ func committedGitOutput(ctx context.Context, repo string, args ...string) ([]byt
 // env is built by this package from sanitized reads and, for compatibility,
 // its own private attribute index. Caller Git selectors never enter this path.
 func committedGitOutputEnvironment(ctx context.Context, repo string, env []string, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, gitReadCommandTimeout)
+	ctx, cancel := gitReadContext(ctx)
 	defer cancel()
 	cmd := CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...)
 	cmd.Env = env
@@ -152,6 +152,9 @@ func committedGitOutputEnvironment(ctx context.Context, repo string, env []strin
 	out, err := CommandOutput(ctx, cmd, false)
 	if ctx.Err() != nil {
 		return nil, context.Cause(ctx)
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil, err
 	}
 	if err != nil {
 		return out, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))

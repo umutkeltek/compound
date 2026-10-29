@@ -153,13 +153,16 @@ func (e *gitCommandError) Error() string {
 }
 
 func gitOutput(ctx context.Context, repo string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, gitReadCommandTimeout)
+	ctx, cancel := gitReadContext(ctx)
 	defer cancel()
 	cmd := CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...)
 	cmd.Env = ReadEnvironment()
 	out, err := CommandOutput(ctx, cmd, true)
 	if ctx.Err() != nil {
 		return "", context.Cause(ctx)
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return "", err
 	}
 	if err != nil {
 		exitCode := -1

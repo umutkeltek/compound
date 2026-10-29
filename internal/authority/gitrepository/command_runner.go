@@ -7,29 +7,53 @@ import (
 	"time"
 )
 
-// gitReadCommandTimeout bounds one Git read through its execution owner.
-// Composed reads retain the caller deadline instead of sharing this allowance
-// across independently journaled commands.
+// gitReadCommandTimeout bounds one Git subprocess. Native launch-aware owners
+// keep preparation under the parent operation deadline and start this allowance
+// at their checked launch. Ordinary and generic runners retain their context bound.
 const gitReadCommandTimeout = 5 * time.Second
 
 type commandRunnerKey struct{}
+type gitReadTimeoutKey struct{}
 
-// ContextWithCommandRunner binds a native execution owner to existing source
-// reads. It changes no command selection or behavior for ordinary callers.
+// ContextWithCommandRunner binds an owner without changing its deadline contract.
 func ContextWithCommandRunner(ctx context.Context, run func(context.Context, *exec.Cmd) error) context.Context {
 	return context.WithValue(ctx, commandRunnerKey{}, run)
 }
 
+// ContextWithLaunchTimeoutCommandRunner opts an execution owner into enforcing
+// the supplied subprocess allowance at launch, independently of its bookkeeping.
+// A zero allowance leaves the original operation context in force.
+func ContextWithLaunchTimeoutCommandRunner(ctx context.Context, run func(context.Context, *exec.Cmd, time.Duration) error) context.Context {
+	return context.WithValue(ctx, commandRunnerKey{}, run)
+}
+
+func gitReadContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if run, ok := ctx.Value(commandRunnerKey{}).(func(context.Context, *exec.Cmd, time.Duration) error); ok && run != nil {
+		return context.WithValue(ctx, gitReadTimeoutKey{}, gitReadCommandTimeout), func() {}
+	}
+	return context.WithTimeout(ctx, gitReadCommandTimeout)
+}
+
 func RunCommand(ctx context.Context, cmd *exec.Cmd) error {
-	if run, ok := ctx.Value(commandRunnerKey{}).(func(context.Context, *exec.Cmd) error); ok && run != nil {
-		return run(ctx, cmd)
+	switch run := ctx.Value(commandRunnerKey{}).(type) {
+	case func(context.Context, *exec.Cmd, time.Duration) error:
+		if run != nil {
+			timeout, _ := ctx.Value(gitReadTimeoutKey{}).(time.Duration)
+			return run(ctx, cmd, timeout)
+		}
+	case func(context.Context, *exec.Cmd) error:
+		if run != nil {
+			return run(ctx, cmd)
+		}
 	}
 	return cmd.Run()
 }
 
-// CommandOutput preserves the standard exec path outside native execution.
+// CommandOutput preserves buffers and the direct exec path outside owned runs.
 func CommandOutput(ctx context.Context, cmd *exec.Cmd, combined bool) ([]byte, error) {
-	if _, ok := ctx.Value(commandRunnerKey{}).(func(context.Context, *exec.Cmd) error); !ok {
+	switch ctx.Value(commandRunnerKey{}).(type) {
+	case func(context.Context, *exec.Cmd) error, func(context.Context, *exec.Cmd, time.Duration) error:
+	default:
 		if combined {
 			return cmd.CombinedOutput()
 		}

@@ -43,31 +43,32 @@ type PresubmitCheckpoint struct {
 }
 
 type presubmitRuntime struct {
-	store          *Store
-	out            *PresubmitExecutionResult
-	resource       *landlease.Resource
-	barrier        *landlease.ExecutionBarrier
-	leaseHeld      bool
-	root           *os.Root
-	parentRoot     *os.Root
-	parentInfo     os.FileInfo
-	outputInfo     os.FileInfo
-	outputDir      string
-	sequence       int
-	nextGate       int
-	completedGates int
-	groupStarted   bool
-	groupClosed    bool
-	groupID        int
-	stage          string
-	outputPaths    []string
-	stopHeartbeat  context.CancelFunc
-	heartbeatDone  chan struct{}
-	cancel         context.CancelCauseFunc
+	store            *Store
+	out              *PresubmitExecutionResult
+	resource         *landlease.Resource
+	barrier          *landlease.ExecutionBarrier
+	leaseHeld        bool
+	root             *os.Root
+	parentRoot       *os.Root
+	parentInfo       os.FileInfo
+	outputInfo       os.FileInfo
+	outputDir        string
+	sequence         int
+	nextGate         int
+	completedGates   int
+	groupStarted     bool
+	groupClosed      bool
+	checkpointRecord func(*PresubmitExecutionResult) error
+	groupID          int
+	stage            string
+	outputPaths      []string
+	stopHeartbeat    context.CancelFunc
+	heartbeatDone    chan struct{}
+	cancel           context.CancelCauseFunc
 }
 
 func (s *Store) preparePresubmitRuntime(ctx context.Context, out *PresubmitExecutionResult, cancel context.CancelCauseFunc) (*presubmitRuntime, error) {
-	rt := &presubmitRuntime{store: s, out: out, cancel: cancel, stage: "preparation"}
+	rt := &presubmitRuntime{store: s, out: out, cancel: cancel, stage: "preparation", checkpointRecord: s.checkpointPresubmitExecution}
 	out.Holder = "proof:presubmit:" + out.RunAttemptID + ":" + out.WorkID + ":" + out.Actor
 	generation, err := landlease.ProofCoordinationGeneration(s.home)
 	if err != nil {
@@ -200,7 +201,7 @@ func (rt *presubmitRuntime) checkLocked(ctx context.Context) error {
 
 // run owns every preparation and gate child under the same native budget and
 // barrier. It records CommitLaunch only around the first actual cmd.Start.
-func (rt *presubmitRuntime) run(ctx context.Context, cmd *exec.Cmd) (runErr error) {
+func (rt *presubmitRuntime) run(ctx context.Context, cmd *exec.Cmd, executionTimeout time.Duration) (runErr error) {
 	if err := rt.check(ctx); err != nil {
 		return err
 	}
@@ -252,13 +253,128 @@ func (rt *presubmitRuntime) run(ctx context.Context, cmd *exec.Cmd) (runErr erro
 	// A separate duplicate is not required for sequential starts; the parent's
 	// barrier stays open until all registered children and capture are joined.
 	cmd.ExtraFiles = append(cmd.ExtraFiles, rt.barrier.InheritableFiles()...)
+	commandCtx := ctx
+	cancelCommand := context.CancelCauseFunc(func(error) {})
+	var deadline *time.Timer
+	var group presubmitOwnedProcessGroup
+	var groupOpenErr error
+	var earlyWait <-chan error
+	stopGroupKiller := func() {}
+	defer func() {
+		stopGroupKiller()
+		if group != nil {
+			runErr = errors.Join(runErr, group.close())
+		}
+		if deadline != nil {
+			deadline.Stop()
+		}
+		cancelCommand(nil)
+	}()
+
+	var destinationMu sync.Mutex
+	var copies sync.WaitGroup
+	copies.Add(2)
+	var copyMu sync.Mutex
+	var copyErr, captureCloseErr error
+	copyOutput := func(reader *os.File, destination io.Writer) {
+		defer copies.Done()
+		_, e := io.Copy(io.MultiWriter(raw, &presubmitLockedWriter{mu: &destinationMu, writer: destination}), reader)
+		if e != nil {
+			copyMu.Lock()
+			copyErr = errors.Join(copyErr, e)
+			copyMu.Unlock()
+			rt.cancel(fmt.Errorf("presubmit raw output: %w", e))
+		}
+	}
+	// Drain before Start: post-start authority persistence must never become
+	// backpressure against a child whose execution clock is already running.
+	go copyOutput(stdoutR, stdoutDest)
+	go copyOutput(stderrR, stderrDest)
+	var closeWriters sync.Once
+	closeCaptureWriters := func() {
+		closeWriters.Do(func() {
+			captureCloseErr = errors.Join(stdoutW.Close(), stderrW.Close())
+			if captureCloseErr != nil {
+				rt.cancel(fmt.Errorf("presubmit capture writers: %w", captureCloseErr))
+			}
+		})
+	}
+	captureDone := make(chan struct{})
+	watchdogDone := make(chan struct{})
+	watchdogStarted := false
+	startCaptureWatchdog := func() {
+		watchdogStarted = true
+		// An escaped pipe owner must not hold capture after cancellation.
+		// Closing capture is recorded failure, never proof of quiescence.
+		go func() {
+			defer close(watchdogDone)
+			select {
+			case <-captureDone:
+				return
+			case <-commandCtx.Done():
+			}
+			timer := time.NewTimer(2 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-captureDone:
+			case <-timer.C:
+				_ = stdoutR.Close()
+				_ = stderrR.Close()
+			}
+		}()
+	}
+	var captureJoin sync.Once
+	joinCapture := func() {
+		captureJoin.Do(func() {
+			closeCaptureWriters()
+			copies.Wait()
+			close(captureDone)
+			if watchdogStarted {
+				<-watchdogDone
+			}
+		})
+	}
+	// The callback may never run, or group registration/publication may fail.
+	// Every path closes the parent's writers and joins its capture goroutines.
+	defer func() {
+		joinCapture()
+		runErr = errors.Join(runErr, copyErr, captureCloseErr)
+	}()
 	start := func() error {
-		// The second exact check closes the admission-to-launch gap without
-		// manufacturing another policy/action generation.
+		// All admission and authority checks use the original operation deadline.
 		if e := rt.checkLocked(ctx); e != nil {
 			return e
 		}
-		return cmd.Start()
+		if executionTimeout > 0 {
+			commandCtx, cancelCommand = context.WithCancelCause(ctx)
+			deadline = time.NewTimer(executionTimeout)
+		}
+		startCaptureWatchdog()
+		startErr := cmd.Start()
+		// Close only parent handles; child descriptors stay owned by capture.
+		// Neither close nor copy failures may misclassify an actual launch.
+		closeCaptureWriters()
+		if cmd.Process != nil {
+			rt.groupID, rt.groupStarted = cmd.Process.Pid, true
+			group, groupOpenErr = presubmitOpenGroup(cmd.Process.Pid)
+			if groupOpenErr != nil {
+				rt.out.ContainmentUncertain = true
+				rt.cancel(groupOpenErr)
+				_ = cmd.Process.Kill()
+			} else {
+				// Linux keeps its group pidfd across early reap. Darwin keeps the leader
+				// unreaped until the exact group drains. Supervision precedes every durable
+				// post-start write, including CommitLaunch publication.
+				if group.reapEarly() {
+					done := make(chan error, 1)
+					go func() { done <- cmd.Wait() }()
+					earlyWait = done
+				}
+				stopGroupKiller = watchPresubmitCommandGroup(commandCtx, cancelCommand, deadline, group)
+			}
+		}
+		// Only the actual Start result classifies committed versus start_error.
+		return startErr
 	}
 	attempt, err := rt.store.runAttempts().Get(rt.out.RunAttemptID)
 	if err != nil {
@@ -279,16 +395,9 @@ func (rt *presubmitRuntime) run(ctx context.Context, cmd *exec.Cmd) (runErr erro
 			return errors.Join(err, rt.checkpoint(rt.stage, "failed"))
 		}
 	}
-	rt.groupID = cmd.Process.Pid
-	rt.groupStarted = true
-	group, groupOpenErr := presubmitOpenGroup(cmd.Process.Pid)
 	if groupOpenErr != nil {
-		rt.out.ContainmentUncertain = true
-		rt.cancel(groupOpenErr)
-		_ = cmd.Process.Kill()
 		return errors.Join(err, groupOpenErr)
 	}
-	defer func() { runErr = errors.Join(runErr, group.close()) }()
 	startErr := err
 	rt.groupID = cmd.Process.Pid
 	startErr = errors.Join(startErr, rt.checkpoint(rt.stage, "running"))
@@ -296,80 +405,10 @@ func (rt *presubmitRuntime) run(ctx context.Context, cmd *exec.Cmd) (runErr erro
 		rt.cancel(startErr)
 	}
 
-	_ = stdoutW.Close()
-	_ = stderrW.Close()
-	var destinationMu sync.Mutex
-	var copies sync.WaitGroup
-	copies.Add(2)
-	var earlyWait <-chan error
-	if group.reapEarly() {
-		done := make(chan error, 1)
-		go func() { done <- cmd.Wait() }()
-		earlyWait = done
-	}
-	var copyMu sync.Mutex
-	var copyErr error
-	copyOutput := func(reader *os.File, destination io.Writer) {
-		defer copies.Done()
-		_, e := io.Copy(io.MultiWriter(raw, &presubmitLockedWriter{mu: &destinationMu, writer: destination}), reader)
-		if e != nil {
-			copyMu.Lock()
-			copyErr = errors.Join(copyErr, e)
-			copyMu.Unlock()
-			rt.cancel(fmt.Errorf("presubmit raw output: %w", e))
-		}
-	}
-	go copyOutput(stdoutR, stdoutDest)
-	go copyOutput(stderrR, stderrDest)
-	stopKills := make(chan struct{})
-	killsDone := make(chan struct{})
-	go func() {
-		defer close(killsDone)
-		select {
-		case <-ctx.Done():
-			_ = group.kill()
-		case <-stopKills:
-			return
-		}
-		ticker := time.NewTicker(25 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-stopKills:
-				return
-			case <-ticker.C:
-				_ = group.kill()
-			}
-		}
-	}()
-	// An escaped pipe owner must not hold capture forever after cancellation.
-	// Closing capture is a recorded containment failure, never quiescence.
-	captureDone := make(chan struct{})
-	watchdogDone := make(chan struct{})
-	go func() {
-		defer close(watchdogDone)
-		select {
-		case <-captureDone:
-			return
-		case <-ctx.Done():
-		}
-		timer := time.NewTimer(2 * time.Second)
-		defer timer.Stop()
-		select {
-		case <-captureDone:
-			return
-		case <-timer.C:
-			_ = stdoutR.Close()
-			_ = stderrR.Close()
-		}
-	}()
-	copies.Wait()
-	close(captureDone)
-	<-watchdogDone
-	groupErr := rt.joinOwnedGroup(ctx, group)
+	joinCapture()
+	groupErr := rt.joinOwnedGroup(commandCtx, group)
 	// Stop and join every numeric-PGID signaler before any Darwin reap.
-	close(stopKills)
-	<-killsDone
+	stopGroupKiller()
 	var waitErr error
 	if groupErr == nil {
 		rt.groupClosed = true
@@ -390,15 +429,68 @@ func (rt *presubmitRuntime) run(ctx context.Context, cmd *exec.Cmd) (runErr erro
 	// The failed CLI may exit; its exact durable holder remains fenced.
 
 	status := "completed"
-	if ctx.Err() != nil {
+	if commandCtx.Err() != nil {
 		status = "cancelled"
 	}
 	if rt.out.ContainmentUncertain {
 		status = "containment-uncertain"
 	}
-	finalErr := errors.Join(startErr, waitErr, copyErr, groupErr, context.Cause(ctx))
+	finalErr := errors.Join(startErr, waitErr, groupErr, context.Cause(commandCtx))
 	checkpointErr := rt.checkpoint(rt.stage, status)
 	return errors.Join(finalErr, checkpointErr)
+}
+
+// watchPresubmitCommandGroup begins before post-start bookkeeping. A completed
+// group disarms its execution clock; parent cancellation still governs the rest
+// of the operation. A live group at expiry is cancelled and joined by run.
+func watchPresubmitCommandGroup(ctx context.Context, cancel context.CancelCauseFunc, deadline *time.Timer, group presubmitOwnedProcessGroup) func() {
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	var once sync.Once
+	go func() {
+		defer close(done)
+		if deadline != nil {
+			defer deadline.Stop()
+			poll := time.NewTicker(10 * time.Millisecond)
+			defer poll.Stop()
+		execution:
+			for {
+				select {
+				case <-stop:
+					return
+				case <-ctx.Done():
+					break execution
+				case <-poll.C:
+					if empty, err := group.drained(); err == nil && empty {
+						return
+					}
+				case <-deadline.C:
+					if empty, err := group.drained(); err == nil && empty {
+						return
+					}
+					cancel(context.DeadlineExceeded)
+					break execution
+				}
+			}
+		}
+		select {
+		case <-stop:
+			return
+		case <-ctx.Done():
+		}
+		_ = group.kill()
+		ticker := time.NewTicker(25 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				_ = group.kill()
+			}
+		}
+	}()
+	return func() { once.Do(func() { close(stop) }); <-done }
 }
 
 type presubmitSyncWriter struct {
@@ -418,7 +510,7 @@ func (w *presubmitSyncWriter) Write(p []byte) (int, error) {
 
 func (rt *presubmitRuntime) checkpoint(gate, status string) error {
 	rt.out.Checkpoints = append(rt.out.Checkpoints, PresubmitCheckpoint{CommandSequence: rt.sequence, GroupStarted: rt.groupStarted, GroupClosed: rt.groupClosed, Gate: gate, Status: status, At: time.Now().UTC(), ProcessGroupID: rt.groupID, OutputPaths: presubmitLatestOutput(rt.outputPaths)})
-	return rt.store.checkpointPresubmitExecution(rt.out)
+	return rt.checkpointRecord(rt.out)
 }
 
 func (s *Store) checkpointPresubmitExecution(out *PresubmitExecutionResult) error {
@@ -544,7 +636,7 @@ func PresubmitGateCompleted(ctx context.Context, step ProofCheckStep, report *Pr
 // canonical callers retain their existing subprocess execution path.
 func bindPresubmitCommandRunner(ctx context.Context, rt *presubmitRuntime) context.Context {
 	ctx = context.WithValue(ctx, nativePresubmitRuntimeKey{}, rt)
-	return gitrepository.ContextWithCommandRunner(ctx, rt.run)
+	return gitrepository.ContextWithLaunchTimeoutCommandRunner(ctx, rt.run)
 }
 
 type presubmitLockedWriter struct {
