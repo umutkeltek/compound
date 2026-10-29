@@ -1,6 +1,7 @@
 package sourceobs
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -22,6 +23,7 @@ type sourceManifestFileSnapshot struct {
 }
 
 type sourceManifestSnapshotBatch struct {
+	deferred int
 	files    []sourceManifestFileSnapshot
 	spoolDir string
 }
@@ -39,6 +41,7 @@ func (b *sourceManifestSnapshotBatch) Close() error {
 type sourceManifestDirectoryCandidate struct {
 	relative string
 	absolute string
+	info     os.FileInfo
 }
 
 type sourceManifestDirectoryBuildHooks struct {
@@ -155,6 +158,10 @@ func createSourceManifestDirectory(homePath, sourceFamily, root string, sourceIn
 }
 
 func snapshotSourceManifestDirectory(root string) (string, *sourceManifestSnapshotBatch, error) {
+	return snapshotSourceManifestDirectoryFormat(context.Background(), root, ".md", false, nil)
+}
+
+func snapshotSourceManifestDirectoryFormat(ctx context.Context, root, extension string, allowEmpty bool, selectFile func(string, os.FileInfo) bool) (string, *sourceManifestSnapshotBatch, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
 		return "", nil, fmt.Errorf("source directory required")
@@ -183,6 +190,9 @@ func snapshotSourceManifestDirectory(root string) (string, *sourceManifestSnapsh
 	candidates := make([]sourceManifestDirectoryCandidate, 0)
 	seen := make(map[string]string)
 	err = filepath.WalkDir(absoluteRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			return fmt.Errorf("read source directory entry %s: %w", path, walkErr)
 		}
@@ -195,7 +205,7 @@ func snapshotSourceManifestDirectory(root string) (string, *sourceManifestSnapsh
 		}
 		relative = filepath.ToSlash(relative)
 		if entry.Type()&os.ModeSymlink != 0 {
-			if filepath.Ext(entry.Name()) == ".md" {
+			if filepath.Ext(entry.Name()) == extension {
 				return fmt.Errorf("source directory %s contains markdown symlink %s; symlinks are refused", absoluteRoot, relative)
 			}
 			return nil
@@ -204,7 +214,7 @@ func snapshotSourceManifestDirectory(root string) (string, *sourceManifestSnapsh
 		if err != nil {
 			return fmt.Errorf("stat source directory entry %s: %w", path, err)
 		}
-		if info.IsDir() || !info.Mode().IsRegular() || filepath.Ext(entry.Name()) != ".md" {
+		if info.IsDir() || !info.Mode().IsRegular() || filepath.Ext(entry.Name()) != extension {
 			return nil
 		}
 		normalized := filepath.Clean(path)
@@ -212,16 +222,19 @@ func snapshotSourceManifestDirectory(root string) (string, *sourceManifestSnapsh
 			return fmt.Errorf("duplicate normalized source path %s (%s and %s)", normalized, previous, relative)
 		}
 		seen[normalized] = relative
-		candidates = append(candidates, sourceManifestDirectoryCandidate{relative: relative, absolute: normalized})
+		candidates = append(candidates, sourceManifestDirectoryCandidate{relative: relative, absolute: normalized, info: info})
 		return nil
 	})
 	if err != nil {
 		return "", nil, err
 	}
-	if len(candidates) == 0 {
+	if len(candidates) == 0 && !allowEmpty {
 		return "", nil, fmt.Errorf("source directory %s contains no regular .md files", absoluteRoot)
 	}
 	sort.Slice(candidates, func(i, j int) bool {
+		if selectFile != nil && !candidates[i].info.ModTime().Equal(candidates[j].info.ModTime()) {
+			return candidates[i].info.ModTime().After(candidates[j].info.ModTime())
+		}
 		return candidates[i].relative < candidates[j].relative
 	})
 
@@ -230,6 +243,13 @@ func snapshotSourceManifestDirectory(root string) (string, *sourceManifestSnapsh
 		return "", nil, err
 	}
 	for _, candidate := range candidates {
+		if selectFile != nil && !selectFile(candidate.relative, candidate.info) {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			batch.Close()
+			return "", nil, err
+		}
 		file, err := rootHandle.Open(filepath.FromSlash(candidate.relative))
 		if err != nil {
 			batch.Close()
@@ -252,9 +272,13 @@ func snapshotSourceManifestDirectory(root string) (string, *sourceManifestSnapsh
 			batch.Close()
 			return "", nil, fmt.Errorf("markdown source %s changed to a symlink or different file during snapshot", candidate.absolute)
 		}
-		snapshot, spoolErr := spoolSourceManifestSnapshot(file, candidate.absolute, openedInfo, batch.spoolDir)
+		snapshot, spoolErr := spoolSourceManifestSnapshotContext(ctx, file, candidate.absolute, openedInfo, batch.spoolDir)
 		closeErr := file.Close()
 		if spoolErr != nil {
+			if selectFile != nil && ctx.Err() == nil {
+				batch.deferred++
+				continue
+			}
 			batch.Close()
 			return "", nil, spoolErr
 		}
@@ -321,6 +345,21 @@ func snapshotSourceManifestFile(sourcePath, spoolDir string) (sourceManifestFile
 }
 
 func spoolSourceManifestSnapshot(file *os.File, sourcePath string, before os.FileInfo, spoolDir string) (sourceManifestFileSnapshot, error) {
+	return spoolSourceManifestSnapshotContext(context.Background(), file, sourcePath, before, spoolDir)
+}
+
+type sourceContextReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (r sourceContextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.r.Read(p)
+}
+func spoolSourceManifestSnapshotContext(ctx context.Context, file *os.File, sourcePath string, before os.FileInfo, spoolDir string) (sourceManifestFileSnapshot, error) {
 	if !before.Mode().IsRegular() {
 		return sourceManifestFileSnapshot{}, fmt.Errorf("source %s is not a regular file", sourcePath)
 	}
@@ -340,7 +379,7 @@ func spoolSourceManifestSnapshot(file *os.File, sourcePath string, before os.Fil
 		return sourceManifestFileSnapshot{}, fmt.Errorf("secure source snapshot %s: %w", sourcePath, err)
 	}
 	hasher := sha256.New()
-	written, err := io.Copy(io.MultiWriter(spool, hasher), file)
+	written, err := io.Copy(io.MultiWriter(spool, hasher), sourceContextReader{ctx: ctx, r: file})
 	if err != nil {
 		return sourceManifestFileSnapshot{}, fmt.Errorf("read source %s: %w", sourcePath, err)
 	}

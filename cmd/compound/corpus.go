@@ -4,14 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
-	"compound/internal/breadth"
 	"compound/internal/corpus"
 	"compound/internal/home"
-	"compound/internal/retrievalparity"
 )
 
 func cmdCorpus(args []string) {
@@ -20,6 +17,34 @@ func cmdCorpus(args []string) {
 		os.Exit(2)
 	}
 	switch args[0] {
+	case "refresh":
+		hp, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		cfg, _, err := loadMemoryEngineConfig(hp)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "corpus refresh: invalid configuration")
+			os.Exit(1)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		defer cancel()
+		report := corpus.Refresh(ctx, hp, cfg.CorpusLanes, corpus.NewConfiguredEmbedder, time.Now())
+		printJSON(report)
+		if report.Status != "ok" && report.Status != "backfilling" {
+			os.Exit(1)
+		}
+	case "configure":
+		hp, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if err := corpus.Configure(hp, valueFlag(args, "--file")); err != nil {
+			fmt.Fprintln(os.Stderr, "corpus configure:", err)
+			os.Exit(1)
+		}
 	case "index":
 		cmdCorpusIndex(args[1:])
 	case "doctor":
@@ -31,7 +56,7 @@ func cmdCorpus(args []string) {
 }
 
 func corpusUsage() string {
-	return "usage: compound corpus <index --lane L [--rebuild] [--json]|doctor --lane L [--json]>"
+	return "usage: compound corpus <configure --file FILE|refresh|index --lane L [--rebuild] [--json]|doctor --lane L [--json]>"
 }
 
 func cmdCorpusIndex(args []string) {
@@ -41,7 +66,7 @@ func cmdCorpusIndex(args []string) {
 		os.Exit(2)
 	}
 	homePath, lane := mustCorpusLane(laneName)
-	embedder, err := newCorpusEmbedder(lane)
+	embedder, err := corpus.NewConfiguredEmbedder(lane)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "corpus index:", err)
 		os.Exit(1)
@@ -99,59 +124,22 @@ func cmdCorpusDoctor(args []string) {
 }
 
 func cmdMemoryCorpusSearch(homePath string, args []string) {
-	laneName := valueFlag(args, "--lane")
-	query := firstPositional(args, map[string]bool{"--lane": true, "--k": true, "--neighbors": true})
-	if laneName == "" || query == "" {
-		fmt.Fprintln(os.Stderr, "usage: compound memory search --lane L <query> [--k N] [--include-private-text] [--neighbors R] [--json]")
-		os.Exit(2)
+	if !boolFlag(args, "--lane") {
+		if err := memoryExternalStoreRefusal(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	}
-	_, lane := mustCorpusLaneFromHome(homePath, laneName)
-	embedder, err := newCorpusEmbedder(lane)
+
+	cfg, _, err := loadMemoryEngineConfig(homePath)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "memory search:", err)
+		fmt.Fprintln(os.Stderr, "memory search: invalid configuration")
 		os.Exit(1)
 	}
-	k := 10
-	if raw := valueFlag(args, "--k"); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n < 0 {
-			fmt.Fprintln(os.Stderr, "memory search: --k must be non-negative integer")
-			os.Exit(2)
-		}
-		k = n
-	}
-	neighbors := 0
-	if raw := valueFlag(args, "--neighbors"); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n < 0 {
-			fmt.Fprintln(os.Stderr, "memory search: --neighbors must be non-negative integer")
-			os.Exit(2)
-		}
-		if n > corpus.MaxNeighborRadius {
-			fmt.Fprintf(os.Stderr, "memory search: --neighbors %d exceeds max %d\n", n, corpus.MaxNeighborRadius)
-			os.Exit(2)
-		}
-		neighbors = n
-	}
-	includeText := corpusIncludePrivateText(args)
-	retrievalStarted := time.Now()
-	report, err := corpus.QueryWithOptions(context.Background(), homePath, lane, embedder, query, k, corpus.QueryOptions{IncludeText: includeText, NeighborRadius: neighbors})
-	retrievalparity.Record(homePath, retrievalparity.NewRow(retrievalparity.ConsumerSearch, query, parityCorpusRefs(report), time.Since(retrievalStarted), err == nil, time.Now()))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "memory search:", err)
-		os.Exit(1)
-	}
-	if boolFlag(args, "--json") {
-		printJSON(report)
-		return
-	}
-	fmt.Printf("# %d corpus hit(s) for %q lane=%s\n", len(report.Hits), report.Query, report.Lane)
-	for _, hit := range report.Hits {
-		fmt.Printf("%s item=%s score=%.4f %s\n", hit.ChunkID, hit.ItemID, hit.Score, hit.Title)
-		fmt.Printf("  text[%s]: %s\n", hit.TextStatus, corpusHitTextLine(hit))
-		for _, n := range hit.Neighbors {
-			fmt.Printf("  neighbor[%s] ord=%d: %s\n", n.TextStatus, n.Ordinal, corpusHitTextLine(corpus.QueryHit{TextStatus: n.TextStatus, Text: n.Text}))
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if code := corpus.SearchCLI(ctx, homePath, cfg.CorpusLanes, args, os.Stdout, os.Stderr); code != 0 {
+		os.Exit(code)
 	}
 }
 
@@ -221,44 +209,6 @@ func mustCorpusLaneFromHome(homePath, laneName string) (string, corpus.LaneConfi
 	return "", corpus.LaneConfig{}
 }
 
-type configuredCorpusEmbedder struct {
-	adapter  breadth.EmbedderAdapter
-	identity string
-	dim      int
-}
-
-func newCorpusEmbedder(lane corpus.LaneConfig) (corpus.Embedder, error) {
-	provider := lane.Embedder.Provider
-	if strings.EqualFold(provider, "local") {
-		provider = "ollama"
-	}
-	adapter, err := breadth.NewOpenAICompatEmbedder(breadth.OpenAICompatEmbedderConfig{
-		Provider: provider,
-		Model:    lane.Embedder.Model,
-		BaseURL:  lane.Embedder.BaseURL,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return configuredCorpusEmbedder{adapter: adapter, identity: lane.Embedder.Identity(), dim: lane.Embedder.Dims}, nil
-}
-
-func (e configuredCorpusEmbedder) Identity() string { return e.identity }
-func (e configuredCorpusEmbedder) Dim() int         { return e.dim }
-
-func (e configuredCorpusEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
-	vectors, err := e.adapter.Embed(ctx, texts)
-	if err != nil {
-		return nil, err
-	}
-	for i, vec := range vectors {
-		if len(vec) != e.dim {
-			return nil, fmt.Errorf("embedding %d dim %d != configured dim %d", i, len(vec), e.dim)
-		}
-	}
-	return vectors, nil
-}
-
 func boolFlag(args []string, name string) bool {
 	for _, arg := range args {
 		if arg == name {
@@ -280,4 +230,8 @@ func firstPositional(args []string, valueFlags map[string]bool) string {
 		return arg
 	}
 	return ""
+}
+
+func newCorpusEmbedder(lane corpus.LaneConfig) (corpus.Embedder, error) {
+	return corpus.NewConfiguredEmbedder(lane)
 }

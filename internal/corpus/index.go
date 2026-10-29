@@ -88,6 +88,9 @@ type preparedIndex struct {
 }
 
 func Index(ctx context.Context, homePath string, lane LaneConfig, embedder Embedder, opts IndexOptions) (IndexReport, error) {
+	if err := ctx.Err(); err != nil {
+		return IndexReport{}, err
+	}
 	lane, err := ValidateLaneConfig(lane)
 	if err != nil {
 		return IndexReport{}, err
@@ -96,7 +99,7 @@ func Index(ctx context.Context, homePath string, lane LaneConfig, embedder Embed
 		return IndexReport{}, err
 	}
 	dir := IndexDir(homePath, lane)
-	prepared, err := prepareIndex(homePath, lane)
+	prepared, err := prepareIndexContext(ctx, homePath, lane)
 	if err != nil {
 		return IndexReport{}, err
 	}
@@ -109,11 +112,14 @@ func Index(ctx context.Context, homePath string, lane LaneConfig, embedder Embed
 	reused := 0
 	if !opts.Rebuild && oldVectors.Vectors != nil {
 		oldHashes := manifestChunkHashes(oldManifest)
-		for _, chunk := range prepared.chunks {
-			if oldHashes[chunk.ID] != chunk.ChunkHash {
-				continue
+		vectorsByHash := map[string][]float32{}
+		for id, hash := range oldHashes {
+			if vec := oldVectors.Vectors[id]; len(vec) == lane.Embedder.Dims {
+				vectorsByHash[hash] = vec
 			}
-			vec := oldVectors.Vectors[chunk.ID]
+		}
+		for _, chunk := range prepared.chunks {
+			vec := vectorsByHash[chunk.ChunkHash]
 			if len(vec) != lane.Embedder.Dims {
 				continue
 			}
@@ -188,6 +194,9 @@ func Index(ctx context.Context, homePath string, lane LaneConfig, embedder Embed
 }
 
 func prepareIndex(homePath string, lane LaneConfig) (preparedIndex, error) {
+	return prepareIndexContext(context.Background(), homePath, lane)
+}
+func prepareIndexContext(ctx context.Context, homePath string, lane LaneConfig) (preparedIndex, error) {
 	manifest, err := sourceobs.LoadSourceManifest(homePath, lane.SourceFamily)
 	if err != nil {
 		return preparedIndex{}, err
@@ -208,6 +217,9 @@ func prepareIndex(homePath string, lane LaneConfig) (preparedIndex, error) {
 	}
 	var chunks []Chunk
 	for _, item := range manifest.Items {
+		if err := ctx.Err(); err != nil {
+			return preparedIndex{}, err
+		}
 		if lane.Generation != "" && strings.TrimSpace(item.CorpusGeneration) != lane.Generation {
 			continue
 		}
@@ -221,7 +233,7 @@ func prepareIndex(homePath string, lane LaneConfig) (preparedIndex, error) {
 		if err != nil {
 			return preparedIndex{}, err
 		}
-		itemChunks, err := ChunkItem(item, body, lane.Chunk)
+		itemChunks, err := chunkItemContext(ctx, item, body, lane.Chunk)
 		if err != nil {
 			return preparedIndex{}, err
 		}

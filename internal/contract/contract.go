@@ -1106,6 +1106,7 @@ func projectRuntimePack(pack envelope.ContextPack, in Input, snapshot runtimeSna
 			}
 		}
 	}
+	pack.SummaryMD += " For an explicit request to recall approved past conversations or project history, use compound memory search \"the question\" --json. Private source text requires --include-private-text within the operator-authorized scope. Cite the returned evidence and coverage; source statements are not adjudicated current facts. An empty result does not prove there was no prior discussion."
 	pack = appendProductEssence(pack, snapshot.productEssence, snapshot.hasProductEssence)
 	if topic := strings.TrimSpace(in.Topic); topic != "" {
 		pack.SummaryMD += fmt.Sprintf(" Ambient recall narrowed to topic %q (subtree-scoped); empty topic leaves recall unchanged.", topic)

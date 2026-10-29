@@ -14,7 +14,7 @@ import (
 // builder/CLI are synthetic, allowing failures after publication without a new
 // full repository build per case. The CLI package also tests real clean installs.
 func TestSourceInstallerRestoresEnabledArtifactSet(t *testing.T) {
-	for _, fail := range []string{"breadth_build", "breadth_probe", "helper_validation", "home_doctor", "refresh_preflight", "home_init", "runtime_doctor", "refresh", "rename:compound-breadth-engine", "rename:os", "rename:heartbeat-promote-stage.sh", "rename:compound-autonomy-heartbeat.sh", "rename:attention-letter.py", "term"} {
+	for _, fail := range []string{"breadth_build", "breadth_probe", "helper_validation", "home_doctor", "refresh_preflight", "home_init", "runtime_doctor", "refresh", "rename:compound-breadth-engine", "rename:compound-memory-service", "rename:os", "rename:heartbeat-promote-stage.sh", "rename:compound-autonomy-heartbeat.sh", "rename:attention-letter.py", "term"} {
 		for _, prior := range []bool{false, true} {
 			t.Run(fail+map[bool]string{false: "/fresh", true: "/upgrade"}[prior], func(t *testing.T) {
 				f := sourceInstallFixture(t)
@@ -250,6 +250,7 @@ func sourceInstallFixture(t *testing.T) sourceInstallerFixture {
 		t.Fatal(err)
 	}
 	files := map[string]string{
+		"scripts/memory-service.py":               "#!/usr/bin/env python3\nprint(\"fixture\")\n",
 		"scripts/sync-ceremony-overlays.sh":       "#!/bin/sh\nexit 0\n",
 		"scripts/compound-autonomy-heartbeat.sh":  "#!/bin/sh\n. \"$(dirname \"$0\")/_lib/heartbeat-promote-stage.sh\"\n",
 		"scripts/_lib/heartbeat-promote-stage.sh": "promote_driver_stage_decide() { :; }\n",
@@ -315,7 +316,7 @@ exec '` + realMV + `' "$@"
 	if err := os.WriteFile(filepath.Join(f.fakeBin, "mv"), []byte(mvShim), 0700); err != nil {
 		t.Fatal(err)
 	}
-	f.targets = []string{filepath.Join(f.bin, "compound"), filepath.Join(f.bin, "compound-breadth-engine"), filepath.Join(f.bin, "os"), filepath.Join(f.bin, "_lib", "heartbeat-promote-stage.sh"), filepath.Join(f.bin, "compound-autonomy-heartbeat.sh"), filepath.Join(f.home, "scripts", "attention-letter.py")}
+	f.targets = []string{filepath.Join(f.bin, "compound-memory-service"), filepath.Join(f.bin, "compound"), filepath.Join(f.bin, "compound-breadth-engine"), filepath.Join(f.bin, "os"), filepath.Join(f.bin, "_lib", "heartbeat-promote-stage.sh"), filepath.Join(f.bin, "compound-autonomy-heartbeat.sh"), filepath.Join(f.home, "scripts", "attention-letter.py")}
 	return f
 }
 

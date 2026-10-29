@@ -175,9 +175,13 @@ type sidecarScript struct {
 	DestDir func() string
 }
 
-// installedSidecarScripts mirrors the copies install.sh makes when
-// COMPOUND_INSTALL_AUTONOMY_LAB=1. Keyed by installed file name.
+// installedSidecarScripts mirrors shipped helpers and optional autonomy scripts
+// copied by install.sh. Keyed by installed file name.
 var installedSidecarScripts = map[string]sidecarScript{
+	"compound-memory-service": {
+		RepoRel: "scripts/memory-service.py",
+		DestDir: installedBinDir,
+	},
 	"compound-autonomy-heartbeat.sh": {
 		RepoRel: "scripts/compound-autonomy-heartbeat.sh",
 		DestDir: installedBinDir,

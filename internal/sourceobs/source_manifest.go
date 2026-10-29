@@ -376,7 +376,7 @@ func mergeSourceManifest(existing, incoming SourceManifest) SourceManifest {
 		normalizeSourceManifestItem(&next, incoming.SourceFamily)
 		matched := -1
 		for i := range merged.Items {
-			if merged.Items[i].ID == next.ID || (merged.Items[i].SourceKey == next.SourceKey && merged.Items[i].FileHash == next.FileHash) {
+			if merged.Items[i].ID == next.ID || (merged.Items[i].VersionState != "superseded" && merged.Items[i].SourceKey == next.SourceKey && merged.Items[i].FileHash == next.FileHash) {
 				matched = i
 				break
 			}

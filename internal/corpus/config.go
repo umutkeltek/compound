@@ -30,6 +30,7 @@ const (
 var ErrEmbedderMismatch = errors.New("corpus embedder identity mismatch")
 
 type LaneConfig struct {
+	Source       *SourceConfig  `json:"source,omitempty" yaml:"source,omitempty"`
 	Lane         string         `json:"lane" yaml:"lane"`
 	SourceFamily string         `json:"source_family" yaml:"source_family"`
 	Generation   string         `json:"generation,omitempty" yaml:"generation,omitempty"`
@@ -111,6 +112,11 @@ func (c ChunkConfig) withDefaults() (ChunkConfig, error) {
 }
 
 func ValidateLaneConfig(lane LaneConfig) (LaneConfig, error) {
+	if lane.Source != nil {
+		if err := lane.Source.validate(); err != nil {
+			return LaneConfig{}, err
+		}
+	}
 	lane.Lane = strings.TrimSpace(lane.Lane)
 	lane.SourceFamily = strings.TrimSpace(lane.SourceFamily)
 	lane.Generation = strings.TrimSpace(lane.Generation)

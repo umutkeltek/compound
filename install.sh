@@ -118,13 +118,14 @@ for entry in "$install_dir"/.compound-source-stage.*; do
   if [ -e "$entry" ] || [ -L "$entry" ]; then fail "interrupted source installation retained at $entry; inspect before retrying"; fi
 done
 
-artifacts="compound breadth"
+artifacts="compound breadth memory_service"
 if [ "$install_autonomy_lab" = 1 ]; then artifacts="$artifacts heartbeat_lib heartbeat attention"; fi
 if [ "$install_os_alias" = 1 ]; then artifacts="$artifacts alias"; fi
 artifact_target() {
   case "$1" in
     compound) target=$install_dir/compound ;;
     breadth) target=$install_dir/compound-breadth-engine ;;
+    memory_service) target=$install_dir/compound-memory-service ;;
     heartbeat_lib) target=$install_dir/_lib/heartbeat-promote-stage.sh ;;
     heartbeat) target=$install_dir/compound-autonomy-heartbeat.sh ;;
     attention) target=$compound_home/scripts/attention-letter.py ;;
@@ -200,6 +201,10 @@ if [ "$install_autonomy_lab" = 1 ]; then
   chmod 0755 "$stage/new/attention"
   python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$stage/new/attention"
 fi
+
+cp "$repo_root/scripts/memory-service.py" "$stage/new/memory_service"
+chmod 0755 "$stage/new/memory_service"
+python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$stage/new/memory_service"
 
 # Existing-home health remains a refusal gate, not a cleanup mechanism.
 if [ -d "$compound_home/config" ]; then
