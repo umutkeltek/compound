@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -469,4 +471,83 @@ func orientSourceRevision(revisions []envelope.SourceRev, source string) string 
 		}
 	}
 	return ""
+}
+
+// An access failure opening the memory lock is not evidence of another holder.
+// Exercise the shared orient path without changing machine permissions.
+func TestOrientInitializationAccessDiagnostics(t *testing.T) {
+	for _, stage := range []string{"runtime", "bodies"} {
+		for _, tc := range []struct {
+			name   string
+			cause  error
+			denied bool
+		}{
+			{"operation not permitted", syscall.EPERM, true},
+			{"permission denied", syscall.EACCES, true},
+			{"would block", syscall.EWOULDBLOCK, false},
+			{"malformed data", errors.New("invalid input record"), false},
+		} {
+			t.Run(stage+"/"+tc.name, func(t *testing.T) {
+				homePath := t.TempDir()
+				t.Setenv("COMPOUND_HOME", homePath)
+				t.Setenv("COMPOUND_MEM_ENGINE_BIN", "")
+				t.Setenv("COMPOUND_MEMORY_CLI_PROFILE", "")
+				if err := home.Init(homePath, "test", cliTestNow); err != nil {
+					t.Fatal(err)
+				}
+				in := contract.Input{Harness: "codex", Cwd: t.TempDir(), Task: "startup diagnosis", RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute"}
+				produced := contract.RuntimeMaterialization{EffectiveContract: contract.Compile(in, contract.OrientationPolicy{}, cliTestNow), ContextPack: contract.Pack(in, contract.OrientationPolicy{}, cliTestNow)}
+				pathErr := &os.PathError{Op: "open", Path: filepath.Join(homePath, "lock", "mem.lock"), Err: tc.cause}
+				original := fmt.Errorf("read context: %w", pathErr)
+				priorRuntime, priorBodies := materializeRuntimeForOrient, materializeBodiesForOrient
+				runtimeCalls, bodyCalls := 0, 0
+				materializeRuntimeForOrient = func(contract.Input, contract.OrientationPolicy, string, time.Time) (contract.RuntimeMaterialization, error) {
+					runtimeCalls++
+					if stage == "runtime" {
+						return produced, original
+					}
+					return produced, nil
+				}
+				materializeBodiesForOrient = func(string, envelope.ContextPack, string, string, int) (envelope.ContextPack, error) {
+					bodyCalls++
+					return envelope.ContextPack{}, original
+				}
+				t.Cleanup(func() { materializeRuntimeForOrient, materializeBodiesForOrient = priorRuntime, priorBodies })
+				pack, err := materializeOrientContextPack(homePath, in, 1, cliTestNow)
+				if err == nil {
+					t.Fatal("access/input failure was hidden")
+				}
+				if !errors.Is(err, tc.cause) {
+					t.Fatalf("error identity lost: %v", err)
+				}
+				var gotPath *os.PathError
+				if !errors.As(err, &gotPath) || gotPath != pathErr {
+					t.Fatalf("operation/path identity lost: %v", err)
+				}
+				if tc.denied {
+					wantStage := "materialize runtime context"
+					if stage == "bodies" {
+						wantStage = "materialize context bodies"
+					}
+					want := "orientation " + wantStage + ": filesystem access denied: "
+					if !strings.HasPrefix(err.Error(), want) {
+						t.Fatalf("missing actionable access diagnosis: got %q, want prefix %q", err, want)
+					}
+				} else if err != original {
+					t.Fatalf("non-permission failure reclassified: %v", err)
+				}
+				wantBodies := 0
+				if stage == "bodies" {
+					wantBodies = 1
+				}
+				if runtimeCalls != 1 || bodyCalls != wantBodies {
+					t.Fatalf("retried or continued after failure: runtime=%d bodies=%d", runtimeCalls, bodyCalls)
+				}
+				if pack.ID != "" {
+					t.Fatalf("failed orientation returned a usable pack: %s", pack.ID)
+				}
+				assertOrientPairAbsent(t, homePath, produced)
+			})
+		}
+	}
 }
