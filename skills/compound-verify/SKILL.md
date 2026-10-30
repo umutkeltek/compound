@@ -87,9 +87,12 @@ or termination assertions to accommodate setup latency.
    `presubmit-execution:artifact:sha256:...` is an execution-only artifact, never a
    `proof-check:pfrs_*` verification or adoption input. Interrupted native owners use
    `--presubmit-recover-execution RATT_ID --work WORK --actor ACTOR --reason TEXT`
-   only for pre-child loss or durably closed groups with an exact quiescent barrier.
-   Unregistered/unclosed groups, mid-gate SIGKILL and observed containment uncertainty
-   need separate exact external/manual recovery; a clear barrier alone is insufficient.
+   for pre-child loss or durably closed groups with an exact quiescent barrier. A
+   mid-gate kill (started group, no closure) recovers only after the exact holder
+   lease expired, the heartbeat is older than its TTL, and a kernel membership query
+   finds the recorded group empty. Unregistered launches, live or reused groups and
+   observed containment uncertainty need separate exact external/manual recovery;
+   a clear barrier alone is insufficient.
    Ordinary admission refuses expired predecessors. Recovery records failure and never
    substitutes for canonical completion. Darwin uses the pinned unreaped group; Linux
    requires the group-pidfd capability introduced in kernel 6.9, with no numeric fallback.

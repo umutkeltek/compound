@@ -646,13 +646,20 @@ unchanged Work close validators still require an actual succeeded execution.
 The fixed `--presubmit-recover-execution RATT_ID --work WORK --actor ACTOR --reason TEXT`
 door validates the original native journal, request binding, attempt and intent/policy,
 then requires exact-holder barrier quiescence under fresh policy. Durable command
-sequences record `group_started` and `group_closed`. Recovery is limited to pre-child
-loss or groups with native closed observations. A prepared/committed launch without
-registered group evidence, an unclosed group, or observed containment uncertainty refuses
-even after the file barrier clears. Mid-gate SIGKILL therefore needs separate exact
+sequences record `group_started` and `group_closed`. Recovery covers pre-child loss,
+groups with native closed observations, and a producer killed mid-gate: a started group
+without closure. The killed case needs three facts. The exact holder still owns the
+lease. That lease has expired, and the producer's last heartbeat is older than its TTL.
+An exact kernel membership query (Darwin `kern.proc.pgrp`, Linux `/proc` group fields)
+finds no member of each recorded group. Any member refuses, because it may be the run
+or an unrelated group that reused the number. A prepared/committed launch without
+registered group evidence, an unregistered or ambiguous command, or observed containment
+uncertainty still refuses even after the file barrier clears and needs separate exact
 external/manual recovery; a reason string never substitutes for missing evidence.
 The door can rearm and release only its exact eligible native holder and records failed
-execution-only evidence. It never signals a stored PID or accepts canonical proof.
+execution-only evidence, including `recovered_empty_groups`. Membership is read, not
+probed by signal: the door never signals a stored PID or recorded group, and never
+accepts canonical proof.
 Presubmit artifacts attach to Work artifacts, never verification IDs; canonical report
 validation, completion and adoption remain unchanged.
 

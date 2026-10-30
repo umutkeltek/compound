@@ -14,6 +14,10 @@ func observePresubmitOwnedGroup(int) (bool, error) {
 	return false, presubmitGroupContainmentSupported()
 }
 
+func presubmitRecordedGroupMembers(int) (int, error) {
+	return 0, presubmitGroupContainmentSupported()
+}
+
 func newPresubmitOwnedProcessGroup(int) (presubmitOwnedProcessGroup, error) {
 	return nil, presubmitGroupContainmentSupported()
 }

@@ -133,6 +133,9 @@ type Store struct {
 	experimentalDelegateMutations atomic.Bool
 	sweepStaleFault               func(stage string) error
 	resourceMigrationFault        func(stage string) error
+	// presubmitRecoveryClock is a test clock for lease expiry and heartbeat
+	// staleness in presubmit recovery; nil samples real time.
+	presubmitRecoveryClock func() time.Time
 }
 
 // HomePath returns the COMPOUND_HOME root the store reads from and writes
