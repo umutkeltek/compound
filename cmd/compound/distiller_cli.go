@@ -511,6 +511,14 @@ func cmdDistiller(args []string) {
 			os.Exit(1)
 		}
 		if info.IsDir() {
+			if recordBefore {
+				// A before proof pins ONE case, and a corpus report has no
+				// single case: its proof ref names the corpus, not a case id.
+				// Silently ignoring the flag here would leave a reviewer
+				// believing a before proof was captured when none was.
+				fmt.Fprintln(os.Stderr, "distiller eval: --record-before requires a single eval case file; a corpus directory has no pinned case")
+				os.Exit(2)
+			}
 			report, err := distiller.EvaluateCorpusDirInRoot(targetPath, homePath, time.Now())
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "distiller eval:", err)

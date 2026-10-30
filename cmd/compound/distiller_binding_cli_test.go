@@ -111,6 +111,26 @@ func TestDistillerImprovementReviewCLIRefusesUnboundRegressionFix(t *testing.T) 
 	}
 }
 
+// A before proof pins ONE case. The corpus path has no pinned case, so
+// --record-before there must refuse loudly rather than silently no-op and
+// leave the reviewer believing a before proof was captured.
+func TestDistillerEvalRecordBeforeRefusesCorpusDirectory(t *testing.T) {
+	binary := compoundTestBinary(t)
+	homePath := initializedTestHome(t)
+	t.Setenv("COMPOUND_HOME", homePath)
+
+	cmd := exec.Command(binary, "distiller", "eval",
+		filepath.Join(testRepoRoot, "fixtures", "distiller"), "--record-before")
+	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("--record-before on a corpus directory must refuse:\n%s", out)
+	}
+	if !strings.Contains(strings.ToLower(string(out)), "single eval case") {
+		t.Fatalf("refusal must name the single-case requirement:\n%s", out)
+	}
+}
+
 // writeCLIBindingCandidate writes a method_upgrade candidate into the home's
 // candidate inbox so the CLI improvement-plan path has something to plan.
 func writeCLIBindingCandidate(t *testing.T, homePath, candidateID string) {
