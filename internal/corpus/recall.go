@@ -94,7 +94,7 @@ func Search(ctx context.Context, homePath string, lanes []LaneConfig, factory Em
 		if e != nil {
 			c.Status = "embedder_unavailable"
 		} else {
-			local, qe := QueryWithOptions(ctx, homePath, lane, embedder, query, k*3, opts)
+			local, qe := queryWithOptions(ctx, homePath, lane, embedder, query, k*3, opts, false)
 			if qe != nil {
 				switch {
 				case errors.Is(qe, context.Canceled), errors.Is(qe, context.DeadlineExceeded):
@@ -129,9 +129,6 @@ func Search(ctx context.Context, homePath string, lanes []LaneConfig, factory Em
 						items[item.ID] = item
 					}
 					for _, hit := range local.Hits {
-						if hit.TextStatus != string(ChunkTextOK) && hit.TextStatus != string(ChunkTextSuppressedPrivate) {
-							c.Status = hit.TextStatus
-						}
 						item, ok := items[hit.ItemID]
 						if !ok {
 							c.Status = "stale_index"
@@ -199,6 +196,7 @@ func Search(ctx context.Context, homePath string, lanes []LaneConfig, factory Em
 			break
 		}
 	}
+	hydrateRecallEvidence(ctx, homePath, lanes, opts, &r)
 	boundRecallContext(&r, terms)
 	if len(lanes) == 0 {
 		r.Status = "not_configured"
