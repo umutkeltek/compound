@@ -395,6 +395,12 @@ one embedding identity; different identities are interleaved by rank. One best
 chunk per distinct body plus bounded adjacent context prevents duplicate exports
 from taking the whole budget. `--history` includes superseded source versions.
 A source's latest snapshot is not an adjudication of the statements inside it.
+Cross-source search ranks and deduplicates candidates before reading their bodies.
+Only selected evidence receives source text and adjacent chunks. Before those reads,
+the consumer rechecks the current source manifest and privacy classification;
+a changed classification cannot disclose private text or private file-derived titles.
+The existing query deadline and body integrity checks remain in force.
+
 Claim excerpts and retrieved source text share a 16,000-rune context budget.
 Truncation and omitted adjacent context are explicit; use the cited claim/source
 or the lane-specific query to inspect the full evidence.

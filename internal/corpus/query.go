@@ -88,6 +88,12 @@ func Query(ctx context.Context, homePath string, lane LaneConfig, embedder Embed
 }
 
 func QueryWithOptions(ctx context.Context, homePath string, lane LaneConfig, embedder Embedder, text string, k int, opts QueryOptions) (QueryReport, error) {
+	return queryWithOptions(ctx, homePath, lane, embedder, text, k, opts, true)
+}
+
+// Rank-only queries retain the privacy preflight and defer body reads until
+// the cross-source caller selects the evidence it will return.
+func queryWithOptions(ctx context.Context, homePath string, lane LaneConfig, embedder Embedder, text string, k int, opts QueryOptions, resolveText bool) (QueryReport, error) {
 	if err := ctx.Err(); err != nil {
 		return QueryReport{}, err
 	}
@@ -138,29 +144,43 @@ func QueryWithOptions(ctx context.Context, homePath string, lane LaneConfig, emb
 	}
 	for _, hit := range hits {
 		info := meta[hit.ClaimID]
-		resolved, err := ResolveChunkText(homePath, manifest, hit.ClaimID, opts.IncludeText, lane)
-		if err != nil {
-			return QueryReport{}, fmt.Errorf("resolve chunk text for %s: %w", hit.ClaimID, err)
-		}
 		qh := QueryHit{
 			ItemID:     info.itemID,
 			ChunkID:    hit.ClaimID,
 			SourceKind: info.sourceKind,
 			Title:      info.title,
 			Score:      hit.Score,
-			Text:       resolved.Text,
-			TextStatus: string(resolved.Status),
 		}
-		if opts.NeighborRadius > 0 {
-			neighbors, err := expandNeighbors(homePath, manifest, lane, opts.IncludeText, hit.ClaimID, opts.NeighborRadius)
+		if resolveText {
+			qh, err = resolveQueryHitText(ctx, homePath, manifest, lane, opts, qh)
 			if err != nil {
-				return QueryReport{}, fmt.Errorf("resolve neighbors for %s: %w", hit.ClaimID, err)
+				return QueryReport{}, err
 			}
-			qh.Neighbors = neighbors
 		}
 		report.Hits = append(report.Hits, qh)
 	}
 	return report, nil
+}
+
+func resolveQueryHitText(ctx context.Context, homePath string, manifest Manifest, lane LaneConfig, opts QueryOptions, hit QueryHit) (QueryHit, error) {
+	if err := ctx.Err(); err != nil {
+		return QueryHit{}, err
+	}
+	resolved, err := ResolveChunkText(homePath, manifest, hit.ChunkID, opts.IncludeText, lane)
+	if err != nil {
+		return QueryHit{}, fmt.Errorf("resolve chunk text for %s: %w", hit.ChunkID, err)
+	}
+	hit.Text, hit.TextStatus = resolved.Text, string(resolved.Status)
+	if opts.NeighborRadius > 0 {
+		hit.Neighbors, err = expandNeighbors(homePath, manifest, lane, opts.IncludeText, hit.ChunkID, opts.NeighborRadius)
+		if err != nil {
+			return QueryHit{}, fmt.Errorf("resolve neighbors for %s: %w", hit.ChunkID, err)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return QueryHit{}, err
+	}
+	return hit, nil
 }
 
 // expandNeighbors returns the chunks adjacent to anchorChunkID within its
