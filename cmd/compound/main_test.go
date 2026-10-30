@@ -10746,6 +10746,23 @@ func TestDistillerImportConversationMiningRecordsSourceNoPromote(t *testing.T) {
 		t.Fatalf("distiller eval --record did not print proof_ref:\n%s", evalOut)
 	}
 	review.EvalProofRefs = []string{proofRef}
+	// The accept decision is BOUND to the change: the pinned replay case,
+	// plus a before proof on the SAME case that failed the intended semantic
+	// assertion before the change. The before fixture is the same case
+	// captured at the pre-change revision.
+	beforeOut := captureStdout(t, func() {
+		cmdDistiller([]string{"eval", filepath.Join("..", "..", "fixtures", "distiller", "llm-offline-eval-before.json"), "--record-before"})
+	})
+	beforeRef := outputValue(beforeOut, "- proof_ref:")
+	if beforeRef == "" {
+		t.Fatalf("distiller eval --record-before did not print a before proof_ref:\n%s", beforeOut)
+	}
+	review.BeforeEvalProofRefs = []string{beforeRef}
+	review.ReplayCases = []distiller.ReplayCaseBinding{{
+		CaseID:        "eval_llm_response_adapter_without_authority",
+		Assertion:     "decisions",
+		RegressionFix: true,
+	}}
 	reviewData, err := yaml.Marshal(review)
 	if err != nil {
 		t.Fatal(err)

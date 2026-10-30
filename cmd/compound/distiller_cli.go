@@ -487,15 +487,16 @@ func cmdDistiller(args []string) {
 	}
 	if len(args) >= 1 && args[0] == "eval" {
 		record := hasFlag(args[1:], "--record")
+		recordBefore := hasFlag(args[1:], "--record-before")
 		var paths []string
 		for _, arg := range args[1:] {
-			if arg == "--record" {
+			if arg == "--record" || arg == "--record-before" {
 				continue
 			}
 			paths = append(paths, arg)
 		}
 		if len(paths) != 1 {
-			fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> [--record]")
+			fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> [--record|--record-before]")
 			os.Exit(2)
 		}
 		homePath, err := home.Resolve("")
@@ -536,6 +537,23 @@ func cmdDistiller(args []string) {
 			os.Exit(1)
 		}
 		printDistillerEval(report)
+		// --record-before captures the BEFORE state of a pinned replay case:
+		// the same case, at the pre-change revision, FAILING the intended
+		// semantic assertion. A regression-fix claim needs that failing proof
+		// alongside the passing after one, so the recording must not be
+		// refused just because the report failed -- otherwise the negative
+		// control can never be captured. The command succeeds when the before
+		// state was captured; the report status itself is printed above.
+		if recordBefore {
+			proof, err := distiller.RecordEvalReport(homePath, report)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "distiller eval record-before:", err)
+				os.Exit(1)
+			}
+			fmt.Printf("- proof_ref: %s\n", proof.ProofRef)
+			fmt.Printf("- proof: %s\n", proof.Path)
+			return
+		}
 		if report.Status != "pass" {
 			os.Exit(1)
 		}

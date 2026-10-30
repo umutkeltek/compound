@@ -20,12 +20,16 @@ const EvalCaseSchemaVersion = "compound.distiller.eval_case.v0.1"
 const EvalCorpusSchemaVersion = "compound.distiller.eval_corpus.v0.1"
 
 type EvalCase struct {
-	SchemaVersion string             `json:"schema_version"`
-	ID            string             `json:"id"`
-	SeedTraces    []string           `json:"seed_traces,omitempty"`
-	Request       EvalRequestSources `json:"request"`
-	Response      string             `json:"response"`
-	Expect        EvalExpectations   `json:"expect"`
+	SchemaVersion string `json:"schema_version"`
+	ID            string `json:"id"`
+	// CaseID is the PINNED replay case this file exercises. It is normally
+	// the case id itself, but it is separate so the SAME case can be captured
+	// at two revisions (before and after a change) as two distinct proofs.
+	CaseID     string             `json:"case_id,omitempty"`
+	SeedTraces []string           `json:"seed_traces,omitempty"`
+	Request    EvalRequestSources `json:"request"`
+	Response   string             `json:"response"`
+	Expect     EvalExpectations   `json:"expect"`
 }
 
 type EvalRequestSources struct {
@@ -369,7 +373,10 @@ func EvaluateCase(base string, ec EvalCase, now time.Time) (EvalReport, error) {
 }
 
 func EvaluateCaseInRoot(base string, ec EvalCase, evalRoot string, now time.Time) (EvalReport, error) {
-	report := EvalReport{SchemaVersion: EvalCaseSchemaVersion, ID: ec.ID, TraceRef: ec.Request.TraceRef}
+	report := EvalReport{SchemaVersion: EvalCaseSchemaVersion, ID: ec.ID, CaseID: ec.CaseID, TraceRef: ec.Request.TraceRef}
+	if report.CaseID == "" {
+		report.CaseID = ec.ID
+	}
 	evalHome, err := newEvalHome(evalRoot)
 	if err != nil {
 		return report, err
