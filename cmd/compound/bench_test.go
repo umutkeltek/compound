@@ -3,16 +3,19 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"compound/internal/bench"
 	"compound/internal/capgraph"
+	"compound/internal/home"
 	"compound/internal/work"
 )
 
@@ -695,5 +698,174 @@ func TestWriteBenchReportNeverReplacesEarlierEvidence(t *testing.T) {
 	}
 	if entries, err := os.ReadDir(filepath.Join(homePath, "reviews", "bench")); err != nil || len(entries) != len(reports) {
 		t.Fatalf("reviews/bench holds %d entries (err=%v), want %d", len(entries), err, len(reports))
+	}
+}
+
+func TestWriteBenchReportPreservesPersistenceErrors(t *testing.T) {
+	t.Parallel()
+	homePath := t.TempDir()
+	report := bench.Report{Schema: bench.SchemaVersion, Suite: "synthetic-durability"}
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	var written string
+	write := func(root, path, kind string, data []byte, mode os.FileMode) error {
+		if err := home.WriteRootedNewFileDurable(root, path, kind, data, mode); err != nil {
+			return err
+		}
+		written = path
+		return fmt.Errorf("final directory sync: %w", syscall.EIO)
+	}
+	path, err := writeBenchReportWithWriter(homePath, report, now, write)
+	if written == "" {
+		t.Fatal("fault was not reached after writing the report")
+	}
+	data, readErr := os.ReadFile(written)
+	if readErr != nil || len(data) == 0 {
+		t.Fatalf("readable leftover = %q, %v", data, readErr)
+	}
+	if path != "" || !errors.Is(err, syscall.EIO) {
+		t.Fatalf("visible bytes masked persistence failure: path=%q error=%v", path, err)
+	}
+}
+
+func TestWriteBenchReportRejectsSymlinkRetries(t *testing.T) {
+	t.Parallel()
+	for _, ancestor := range []bool{false, true} {
+		t.Run(fmt.Sprintf("ancestor=%v", ancestor), func(t *testing.T) {
+			homePath := t.TempDir()
+			report := bench.Report{Schema: bench.SchemaVersion, Suite: "synthetic-custody"}
+			now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+			path, err := writeBenchReport(homePath, report, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(t.TempDir(), "preserved")
+			source := path
+			if ancestor {
+				source = filepath.Dir(path)
+			}
+			if err := os.Rename(source, target); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, source); err != nil {
+				t.Fatal(err)
+			}
+			got, err := writeBenchReport(homePath, report, now)
+			if got != "" || err == nil {
+				t.Errorf("matching bytes bypassed custody: path=%q error=%v", got, err)
+			}
+			if ancestor {
+				target = filepath.Join(target, filepath.Base(path))
+			}
+			after, err := os.Stat(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			actual, err := os.ReadFile(target)
+			if err != nil || !bytes.Equal(actual, data) || !os.SameFile(before, after) {
+				t.Fatalf("original evidence changed: error=%v", err)
+			}
+		})
+	}
+}
+
+func TestWriteBenchReportConflictingEvidenceAndConcurrentRetries(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	report := bench.Report{Schema: bench.SchemaVersion, Suite: "synthetic-retries"}
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	path, err := writeBenchReport(root, report, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got, err := writeBenchReport(root, report, now)
+			if err != nil || got != path {
+				t.Errorf("identical concurrent retry = %q, %v", got, err)
+			}
+		}()
+	}
+	wg.Wait()
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("concurrent retries replaced original inode")
+	}
+	different := []byte("synthetic conflicting evidence\n")
+	if err := os.WriteFile(path, different, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := writeBenchReport(root, report, now)
+	if got != "" || err == nil {
+		t.Fatalf("conflicting evidence accepted: %q, %v", got, err)
+	}
+	actual, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(actual, different) {
+		t.Fatalf("conflicting original was overwritten: %q, %v", actual, err)
+	}
+}
+
+func TestRunBenchPersistenceFailureDoesNotPrintSuccess(t *testing.T) {
+	t.Parallel()
+	for _, jsonOutput := range []bool{false, true} {
+		t.Run(fmt.Sprintf("json=%v", jsonOutput), func(t *testing.T) {
+			root := t.TempDir()
+			seedBenchGraph(t, root)
+			args := []string{"run", "--suite", filepath.Join("..", "..", "fixtures", "bench", "capability-suite.json"), "--home", root, "--no-actionable"}
+			if jsonOutput {
+				args = append(args, "--json")
+			}
+			var out, errs bytes.Buffer
+			if code := runBench(args, &out, &errs); code != 0 || out.Len() == 0 {
+				t.Fatalf("valid control exit=%d out=%s err=%s", code, &out, &errs)
+			}
+			parent := filepath.Join(root, "reviews", "bench")
+			saved := filepath.Join(t.TempDir(), "preserved-reports")
+			if err := os.Rename(parent, saved); err != nil {
+				t.Fatal(err)
+			}
+			entries, err := os.ReadDir(saved)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 1 {
+				t.Fatalf("valid control produced %d reports", len(entries))
+			}
+			originalPath := filepath.Join(saved, entries[0].Name())
+			original, err := os.ReadFile(originalPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(saved, parent); err != nil {
+				t.Fatal(err)
+			}
+			out.Reset()
+			errs.Reset()
+			if code := runBench(args, &out, &errs); code == 0 || out.Len() != 0 || !strings.Contains(errs.String(), "symlink") {
+				t.Fatalf("persistence refusal exit=%d out=%s err=%s", code, &out, &errs)
+			}
+			entries, err = os.ReadDir(saved)
+			actual, readErr := os.ReadFile(originalPath)
+			if err != nil || readErr != nil || len(entries) != 1 || !bytes.Equal(actual, original) {
+				t.Fatalf("original reports changed: %v %v", err, readErr)
+			}
+		})
 	}
 }

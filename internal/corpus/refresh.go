@@ -18,6 +18,7 @@ type SourceConfig struct {
 }
 type EmbedderFactory func(LaneConfig) (Embedder, error)
 type Coverage struct {
+	RefusedSymlinks    int    `json:"refused_symlinks,omitempty"`
 	IndexPendingChunks int    `json:"index_pending_chunks,omitempty"`
 	InventoryKnown     bool   `json:"inventory_known"`
 	MissingFiles       int    `json:"missing_files,omitempty"`
@@ -57,10 +58,11 @@ func Refresh(ctx context.Context, homePath string, lanes []LaneConfig, factory E
 			if err != nil {
 				c.Status = "invalid_config"
 			} else {
-				captured, err := sourceobs.CaptureApprovedDirectoryBatch(ctx, homePath, valid.SourceFamily, valid.Source.Root, valid.Source.Format, now)
+				captured, err := sourceobs.CaptureApprovedDirectoryBatchWithOptions(ctx, homePath, valid.SourceFamily, valid.Source.Root, valid.Source.Format, now, sourceobs.CaptureOptions{ContinueAfterRefusedSymlink: true})
 				if err != nil {
 					c.Status = "capture_failed"
 				} else {
+					c.RefusedSymlinks = captured.RefusedSymlinks
 					c.MissingFiles = captured.Missing
 					c.OversizedFiles = captured.Oversized
 					c.DeferredFiles = captured.Deferred
@@ -95,6 +97,9 @@ func Refresh(ctx context.Context, homePath string, lanes []LaneConfig, factory E
 			}
 		}
 		if c.MissingFiles > 0 || c.OversizedFiles > 0 || c.DeferredFiles > 0 {
+			c.Status = "capture_incomplete"
+		}
+		if c.RefusedSymlinks > 0 && (c.Status == "ok" || c.Status == "empty" || c.Status == "backfilling") {
 			c.Status = "capture_incomplete"
 		}
 		path := refreshPath(homePath, lane)

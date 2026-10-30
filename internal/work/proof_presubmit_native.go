@@ -44,6 +44,7 @@ type PresubmitExecutionResult struct {
 	Report                   *ProofCheckReport                    `json:"report,omitempty"`
 	RecoveryActionIntentID   string                               `json:"recovery_action_intent_id,omitempty"`
 	RecoveryPolicyDecisionID string                               `json:"recovery_policy_decision_id,omitempty"`
+	RecoveredEmptyGroups     []int                                `json:"recovered_empty_groups,omitempty"`
 	Holder                   string                               `json:"holder,omitempty"`
 	ProofCoordination        *landlease.ProofCoordinationIdentity `json:"proof_coordination,omitempty"`
 	LeasePrepared            bool                                 `json:"lease_prepared"`
