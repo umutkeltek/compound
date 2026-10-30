@@ -42,6 +42,7 @@ func RunComparison(args []string, homePath string, stdout, stderr io.Writer) int
 		fmt.Fprintln(stderr, "route comparison:", err)
 		return 1
 	}
+	input = routeevidence.ResolveRouteComparisonInput(homePath, input)
 	comparison := routeevidence.BuildRouteComparison(input)
 	if *record {
 		path, err := routeevidence.RecordRouteComparison(homePath, comparison)
@@ -63,6 +64,7 @@ func writeComparison(stdout io.Writer, comparison routeevidence.RouteComparison)
 	fmt.Fprintf(stdout, "- incumbent_route: %s/%s (%s)\n", comparison.IncumbentRoute.Provider, comparison.IncumbentRoute.Model, comparison.IncumbentRoute.Protocol)
 	fmt.Fprintf(stdout, "- candidate_route: %s/%s (%s)\n", comparison.CandidateRoute.Provider, comparison.CandidateRoute.Model, comparison.CandidateRoute.Protocol)
 	fmt.Fprintf(stdout, "- assessment_class: %s\n", assessment.Class)
+	fmt.Fprintf(stdout, "- evidence_status: %s\n", assessment.EvidenceStatus)
 	fmt.Fprintf(stdout, "- recommend_replacement: %t\n", assessment.RecommendReplacement)
 	fmt.Fprintf(stdout, "- matched_cases: %d\n", assessment.MatchedCases)
 	fmt.Fprintf(stdout, "- incumbent_cases: %d\n", assessment.IncumbentCases)

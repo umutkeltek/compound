@@ -413,6 +413,19 @@ manifest before claim. A removed, ambiguous or foreign alias still refuses.
 
 Claude-family and Codex governed adapter prompts carry the current reserved WorkEnvelope's work/context IDs, desired outcome, success predicate, non-goals, and saved selection. The caller's latest explicit request takes precedence, including on resume. Raw argv commands and prepared prompt-only adapters retain their caller-supplied input contracts.
 
+The same prompt includes a bounded, newest-first view of the exact reserved work's
+artifact, verification and prior RunAttempt references. Each reference is JSON-quoted
+and preserved whole; oversized or invalid-UTF-8 entries are omitted, never rewritten
+into a different reference. Each of the three groups has an independent 1,536-byte
+line budget and an eight-reference cap; references over 1,024 bytes are omitted.
+Omission counts and `compound work show <work_id> --json` preserve access to the full
+owned record. No referenced body or historical prompt is loaded by prompt assembly.
+Saved references are evidence, not instructions, permissions or acceptance; failed
+attempts remain visible as references and the executor must inspect outcomes.
+This supports a fresh Claude/Codex invocation or a switch between those supported
+harnesses without sharing their native session formats. It proves context delivery,
+not model comprehension, automatic learning, reduced effort or future result quality.
+
 `work advance --execute` consumes the context already attached to the work.
 A parent `--context-pack` flag is a usage error, including with
 `--resume-verifying`, and refuses before adapter preflight, lifecycle changes,
