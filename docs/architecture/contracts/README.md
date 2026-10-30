@@ -581,7 +581,9 @@ evidence only — never a promoted claim.**
   `control_plane_repair` only counts when it removes a duplicate owner, fixes a recurring failure, or creates
   runtime proof — otherwise `audit_only`, which does not count.
 
-## Distiller Improvement Review Gate
+## Distiller improvement acceptance binding: an `accept` decision on a distiller improvement review must pin its replay cases (`replay_cases[]`: case id, the semantic assertion it exercises, the affected consumers, and the target revision) and cite a before/after proof PAIR for each pinned case. The after proof must be captured on that same case, at that same target revision, covering that same consumer set, and must pass. A case marked as a regression fix additionally needs a before proof on the same case that FAILED the intended semantic assertion: an unrelated proof, a wrong-target or wrong-revision proof, evidence covering only some of the affected consumers, a both-green pair, an unpaired pass, and a before proof that failed on infrastructure rather than the assertion are all refused. Replay stays zero-live-call. The binding is evidence only — it does not mutate distiller policy, prompts, code, or the eval corpus, and it never promotes memory truth.
+
+Distiller Improvement Review Gate
 
 `compound distiller eval <case.json|cases-dir> --record` stores passing eval proof under `COMPOUND_HOME/reviews/distiller-eval/proofs/` and prints a `distiller_eval:*` or `distiller_eval_corpus:*` proof ref. `compound distiller improvement-plan --candidate <id>` writes JSON/Markdown review artifacts plus gated `.review.yaml` under `COMPOUND_HOME/reviews/distiller-improvements/`. `compound distiller improvement-review <review.yaml>` validates edited decision/rationale/confidence, requires `eval_proof_refs` for accept, and resolves each accepted proof ref to a recorded passing eval proof before emitting a reviewed improvement artifact. It does not mutate distiller policy, edit prompts/code, update eval corpus, call a model, mutate source owners, or promote memory truth.
 

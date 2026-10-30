@@ -267,6 +267,23 @@ separately governed owner change → receipt identifying the applied revision an
 transition. Consumers remain the improvement review and owner writeback
 (`internal/distiller/improvement_plan.go`; `internal/distiller/eval.go`).
 
+Fixed in this change: the accept path checked only that each cited eval proof was RECORDED and
+PASSING, so an unrelated proof satisfied any review, a wrong-target or wrong-revision proof
+satisfied it, evidence covering only some of the affected consumers satisfied it, and an
+improvement that fixed nothing looked identical to one that fixed a real regression. The review now
+pins its replay cases (case id, the semantic assertion it exercises, the affected consumers, and
+the target revision) and requires a before/after proof PAIR on each pinned case: the after proof
+must be captured on that case, at that revision, covering those consumers, and must pass; a case
+claimed as a regression fix needs a before proof that failed the intended semantic assertion. An
+unrelated proof, a both-green pair, an unpaired pass, and a before proof that failed on
+infrastructure rather than the assertion are all refused. Proven by
+`TestImprovementReviewRejectsUnrelatedProof`,
+`TestImprovementReviewRejectsWrongTargetAndIncompleteConsumers`,
+`TestImprovementReviewRequiresBeforeAndAfterPair`,
+`TestImprovementReviewRejectsCrossConsumerRegression`, and
+`TestImprovementReviewRejectsLiveCallProof`, which fail against the pre-change code and pass
+after it.
+
 **Baseline and acceptance.** First reproduce whether unrelated proof can satisfy that review. Reject
 wrong-target, wrong-revision, and incomplete-consumer-set evidence, and reject cross-consumer
 regressions. A regression-fix claim requires the same case to fail the intended semantic assertion

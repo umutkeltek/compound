@@ -208,10 +208,14 @@ func TestImprovementReviewRequiresEditedDecisionAndProofWithoutMutatingTruth(t *
 		t.Fatalf("unrecorded proof should fail at record time, err=%v", err)
 	}
 
-	proof, err := RecordEvalReport(home, EvalReport{
+	// The accept decision must be BOUND to the change: the pinned replay
+	// case, plus the before/after pair on that same case.
+	afterProof, err := RecordEvalReport(home, EvalReport{
 		SchemaVersion: EvalCaseSchemaVersion,
-		ID:            "conversation-mining-review-replay",
+		ID:            "conversation-mining-review-replay-after",
+		CaseID:        "conversation-mining-review-replay",
 		Status:        "pass",
+		Checks:        []EvalCheck{{Name: "conversation_mining_grounded", Status: "pass"}},
 		Run: EvalRunReport{
 			LiveModelCalls: 0,
 		},
@@ -219,7 +223,26 @@ func TestImprovementReviewRequiresEditedDecisionAndProofWithoutMutatingTruth(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	review.EvalProofRefs = []string{proof.ProofRef}
+	beforeProof, err := RecordEvalReport(home, EvalReport{
+		SchemaVersion: EvalCaseSchemaVersion,
+		ID:            "conversation-mining-review-replay-before",
+		CaseID:        "conversation-mining-review-replay",
+		Status:        "fail",
+		Checks:        []EvalCheck{{Name: "conversation_mining_grounded", Status: "fail", Detail: "assertion did not hold before the change"}},
+		Run: EvalRunReport{
+			LiveModelCalls: 0,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review.EvalProofRefs = []string{afterProof.ProofRef}
+	review.BeforeEvalProofRefs = []string{beforeProof.ProofRef}
+	review.ReplayCases = []ReplayCaseBinding{{
+		CaseID:        "conversation-mining-review-replay",
+		Assertion:     "conversation_mining_grounded",
+		RegressionFix: true,
+	}}
 	data, err = yaml.Marshal(review)
 	if err != nil {
 		t.Fatal(err)

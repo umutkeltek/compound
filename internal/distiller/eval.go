@@ -63,6 +63,16 @@ type EvalReport struct {
 	Checks        []EvalCheck   `json:"checks"`
 	Request       EvalReqReport `json:"request"`
 	Run           EvalRunReport `json:"run"`
+	// CaseID is the PINNED replay case this proof exercises. It is normally
+	// the eval case id, but it is separate from ID so the SAME case can be
+	// captured at two revisions (before and after a change) as two distinct
+	// proofs.
+	CaseID string `json:"case_id,omitempty"`
+	// TargetDigest is the revision of the improvement target this proof was
+	// captured against. It binds an acceptance proof to the change it is
+	// offered for: a proof captured against a different revision is a
+	// wrong-revision proof.
+	TargetDigest string `json:"target_digest,omitempty"`
 }
 
 type EvalCorpusReport struct {
@@ -77,6 +87,9 @@ type EvalCorpusReport struct {
 	CurrentClaims  int          `json:"current_claims"`
 	LiveModelCalls int          `json:"live_model_calls"`
 	Reports        []EvalReport `json:"reports"`
+	// TargetDigest is the revision of the improvement target this corpus
+	// proof was captured against. See EvalReport.TargetDigest.
+	TargetDigest string `json:"target_digest,omitempty"`
 }
 
 type EvalReqReport struct {
@@ -179,6 +192,9 @@ func RecordEvalReport(homePath string, report EvalReport) (EvalProofRecord, erro
 	}
 	if strings.TrimSpace(report.ID) == "" {
 		return EvalProofRecord{}, fmt.Errorf("eval report id required")
+	}
+	if strings.TrimSpace(report.CaseID) == "" {
+		report.CaseID = report.ID
 	}
 	ref := "distiller_eval:" + report.ID
 	path, err := recordEvalProofJSON(homePath, ref, report)

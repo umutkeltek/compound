@@ -24,28 +24,54 @@ const (
 	ImprovementReviewDecisionKeepReviewing = "keep_reviewing"
 )
 
+// ReplayCaseBinding is ONE pinned replay case that an improvement review must
+// be proven against.
+//
+// It names the case, the semantic assertion it exercises, the consumers it
+// covers, and the target revision it was captured against. The binding is what
+// makes the acceptance evidence about THIS change: an eval proof is only
+// admissible for a binding when the proof was captured on the same case, at
+// the same target revision, covering the same consumer set.
+type ReplayCaseBinding struct {
+	CaseID    string   `json:"case_id" yaml:"case_id"`
+	Assertion string   `json:"assertion" yaml:"assertion"`
+	Consumers []string `json:"consumers,omitempty" yaml:"consumers,omitempty"`
+	// TargetDigest is the revision of the changed target the pinned proofs were
+	// captured against. It binds the evidence to the change: a proof captured
+	// against a different revision is a wrong-revision proof.
+	TargetDigest string `json:"target_digest,omitempty" yaml:"target_digest,omitempty"`
+	// RegressionFix marks a case that MUST fail before the change and pass
+	// after it. A fix claim without a failing before proof establishes
+	// nothing.
+	RegressionFix bool `json:"regression_fix,omitempty" yaml:"regression_fix,omitempty"`
+}
+
 // ImprovementPlan is a reviewed proposal from method_upgrade or policy_patch
 // candidates. It makes distiller self-improvement explicit without silently
 // editing prompts, policy, code, eval corpus, or memory truth.
 type ImprovementPlan struct {
-	SchemaVersion    string           `json:"schema_version"`
-	ID               string           `json:"id"`
-	CreatedAt        string           `json:"created_at"`
-	Status           string           `json:"status"`
-	CandidateID      string           `json:"candidate_id"`
-	CandidateKind    string           `json:"candidate_kind"`
-	CandidateVerdict string           `json:"candidate_verdict,omitempty"`
-	ImprovementKey   string           `json:"improvement_key"`
-	Subject          string           `json:"subject"`
-	Statement        string           `json:"statement"`
-	Detail           string           `json:"detail,omitempty"`
-	Confidence       float64          `json:"confidence,omitempty"`
-	EvidenceRefs     []string         `json:"evidence_refs"`
-	TargetPath       string           `json:"target_path,omitempty"`
-	TargetExists     bool             `json:"target_exists"`
-	TargetHash       string           `json:"target_hash,omitempty"`
-	Draft            ImprovementDraft `json:"draft"`
-	Warnings         []string         `json:"warnings,omitempty"`
+	SchemaVersion    string   `json:"schema_version"`
+	ID               string   `json:"id"`
+	CreatedAt        string   `json:"created_at"`
+	Status           string   `json:"status"`
+	CandidateID      string   `json:"candidate_id"`
+	CandidateKind    string   `json:"candidate_kind"`
+	CandidateVerdict string   `json:"candidate_verdict,omitempty"`
+	ImprovementKey   string   `json:"improvement_key"`
+	Subject          string   `json:"subject"`
+	Statement        string   `json:"statement"`
+	Detail           string   `json:"detail,omitempty"`
+	Confidence       float64  `json:"confidence,omitempty"`
+	EvidenceRefs     []string `json:"evidence_refs"`
+	TargetPath       string   `json:"target_path,omitempty"`
+	TargetExists     bool     `json:"target_exists"`
+	TargetHash       string   `json:"target_hash,omitempty"`
+	// ReplayCases pins the cases this improvement must be proven against. It is
+	// empty on legacy plans; an accept review with no pinned case cannot claim
+	// a regression fix.
+	ReplayCases []ReplayCaseBinding `json:"replay_cases,omitempty" yaml:"replay_cases,omitempty"`
+	Draft       ImprovementDraft    `json:"draft"`
+	Warnings    []string            `json:"warnings,omitempty"`
 }
 
 type ImprovementDraft struct {
@@ -67,43 +93,52 @@ type ImprovementPlanPaths struct {
 }
 
 type ImprovementReview struct {
-	SchemaVersion string           `json:"schema_version" yaml:"schema_version"`
-	ReviewID      string           `json:"review_id" yaml:"review_id"`
-	PlanID        string           `json:"plan_id" yaml:"plan_id"`
-	CandidateID   string           `json:"candidate_id" yaml:"candidate_id"`
-	CandidateKind string           `json:"candidate_kind" yaml:"candidate_kind"`
-	ImprovementID string           `json:"improvement_id" yaml:"improvement_id"`
-	Area          string           `json:"area" yaml:"area"`
-	Decision      string           `json:"decision" yaml:"decision"`
-	Rationale     string           `json:"rationale" yaml:"rationale"`
-	Confidence    float64          `json:"confidence" yaml:"confidence"`
-	EvidenceRefs  []string         `json:"evidence_refs" yaml:"evidence_refs"`
-	EvalProofRefs []string         `json:"eval_proof_refs" yaml:"eval_proof_refs"`
-	TargetPath    string           `json:"target_path,omitempty" yaml:"target_path,omitempty"`
-	TargetHash    string           `json:"target_hash,omitempty" yaml:"target_hash,omitempty"`
-	Draft         ImprovementDraft `json:"draft" yaml:"draft"`
+	SchemaVersion string   `json:"schema_version" yaml:"schema_version"`
+	ReviewID      string   `json:"review_id" yaml:"review_id"`
+	PlanID        string   `json:"plan_id" yaml:"plan_id"`
+	CandidateID   string   `json:"candidate_id" yaml:"candidate_id"`
+	CandidateKind string   `json:"candidate_kind" yaml:"candidate_kind"`
+	ImprovementID string   `json:"improvement_id" yaml:"improvement_id"`
+	Area          string   `json:"area" yaml:"area"`
+	Decision      string   `json:"decision" yaml:"decision"`
+	Rationale     string   `json:"rationale" yaml:"rationale"`
+	Confidence    float64  `json:"confidence" yaml:"confidence"`
+	EvidenceRefs  []string `json:"evidence_refs" yaml:"evidence_refs"`
+	EvalProofRefs []string `json:"eval_proof_refs" yaml:"eval_proof_refs"`
+	// BeforeEvalProofRefs are the BEFORE proofs: the same pinned cases,
+	// captured before the change, failing the intended semantic assertion.
+	// A regression-fix claim needs them; a lone passing proof proves nothing
+	// was fixed.
+	BeforeEvalProofRefs []string `json:"before_eval_proof_refs,omitempty" yaml:"before_eval_proof_refs"`
+	// ReplayCases pins the cases this review is bound to.
+	ReplayCases []ReplayCaseBinding `json:"replay_cases,omitempty" yaml:"replay_cases,omitempty"`
+	TargetPath  string              `json:"target_path,omitempty" yaml:"target_path,omitempty"`
+	TargetHash  string              `json:"target_hash,omitempty" yaml:"target_hash,omitempty"`
+	Draft       ImprovementDraft    `json:"draft" yaml:"draft"`
 }
 
 type ReviewedImprovement struct {
-	SchemaVersion string           `json:"schema_version"`
-	ID            string           `json:"id"`
-	CreatedAt     string           `json:"created_at"`
-	Status        string           `json:"status"`
-	ReviewID      string           `json:"review_id"`
-	PlanID        string           `json:"plan_id"`
-	CandidateID   string           `json:"candidate_id"`
-	CandidateKind string           `json:"candidate_kind"`
-	ImprovementID string           `json:"improvement_id"`
-	Area          string           `json:"area"`
-	Decision      string           `json:"decision"`
-	Rationale     string           `json:"rationale"`
-	Confidence    float64          `json:"confidence"`
-	EvidenceRefs  []string         `json:"evidence_refs"`
-	EvalProofRefs []string         `json:"eval_proof_refs,omitempty"`
-	TargetPath    string           `json:"target_path,omitempty"`
-	TargetHash    string           `json:"target_hash,omitempty"`
-	Draft         ImprovementDraft `json:"draft"`
-	Warnings      []string         `json:"warnings,omitempty"`
+	SchemaVersion       string              `json:"schema_version"`
+	ID                  string              `json:"id"`
+	CreatedAt           string              `json:"created_at"`
+	Status              string              `json:"status"`
+	ReviewID            string              `json:"review_id"`
+	PlanID              string              `json:"plan_id"`
+	CandidateID         string              `json:"candidate_id"`
+	CandidateKind       string              `json:"candidate_kind"`
+	ImprovementID       string              `json:"improvement_id"`
+	Area                string              `json:"area"`
+	Decision            string              `json:"decision"`
+	Rationale           string              `json:"rationale"`
+	Confidence          float64             `json:"confidence"`
+	EvidenceRefs        []string            `json:"evidence_refs"`
+	EvalProofRefs       []string            `json:"eval_proof_refs,omitempty"`
+	BeforeEvalProofRefs []string            `json:"before_eval_proof_refs,omitempty"`
+	ReplayCases         []ReplayCaseBinding `json:"replay_cases,omitempty"`
+	TargetPath          string              `json:"target_path,omitempty"`
+	TargetHash          string              `json:"target_hash,omitempty"`
+	Draft               ImprovementDraft    `json:"draft"`
+	Warnings            []string            `json:"warnings,omitempty"`
 }
 
 type ImprovementReviewReport struct {
@@ -171,9 +206,9 @@ func BuildImprovementPlan(homePath, candidateID, targetPath string, now time.Tim
 			Title:            reviewartifact.FirstNonEmpty(c.Subject, statement),
 			ProposedChange:   statement,
 			Guardrail:        "Do not apply this improvement until a reviewed eval case or replay proof shows better extraction/adjudication without increasing false promotion.",
-			EvalRequirement:  "Add or cite at least one distiller eval case or replay trace that fails before the change and passes after review.",
+			EvalRequirement:  "Pin the replay case in replay_cases and cite its before/after proofs: the same case must fail the intended semantic assertion before the change and pass after it. An unrelated, both-green, or unpaired proof establishes no fix.",
 			RollbackPlan:     "Revert the reviewed target change and keep this plan as parked evidence if follow-up evals regress.",
-			RequiredEvidence: []string{"source trace that produced the improvement candidate", "current policy or method behavior being changed", "expected before/after eval or replay result", "rollback condition and owner target"},
+			RequiredEvidence: []string{"source trace that produced the improvement candidate", "current policy or method behavior being changed", "the pinned replay case with its before/after proofs", "rollback condition and owner target"},
 			ReviewNote:       "This distiller improvement draft is candidate evidence. Reviewers must decide whether to apply it to distiller policy, prompts, code, or eval corpus through an explicit owner write, not from candidate output alone.",
 		},
 		Warnings: []string{
@@ -250,9 +285,16 @@ func RenderImprovementReviewYAMLDraft(plan ImprovementPlan) string {
 		Confidence:    0,
 		EvidenceRefs:  append([]string(nil), plan.EvidenceRefs...),
 		EvalProofRefs: []string{},
-		TargetPath:    plan.TargetPath,
-		TargetHash:    plan.TargetHash,
-		Draft:         plan.Draft,
+		// The reviewer fills these to bind the acceptance evidence to the
+		// change: the pinned replay cases, and the BEFORE proofs that failed
+		// the intended semantic assertion before the change. They are emitted
+		// as empty lists (not omitted) so the draft always shows the reviewer
+		// what to fill in.
+		BeforeEvalProofRefs: []string{},
+		ReplayCases:         plan.ReplayCases,
+		TargetPath:          plan.TargetPath,
+		TargetHash:          plan.TargetHash,
+		Draft:               plan.Draft,
 	}
 	data, err := yaml.Marshal(review)
 	if err != nil {
@@ -335,26 +377,34 @@ func RecordImprovementReview(homePath string, review ImprovementReview, now time
 		if err := ValidateRecordedEvalProofRefs(homePath, review.EvalProofRefs); err != nil {
 			return ImprovementReviewReport{}, err
 		}
+		// The cited proofs must be ABOUT this change: same pinned case, same
+		// target revision, same consumer set, and a failing before proof for
+		// every claimed regression fix.
+		if err := validateImprovementAcceptance(homePath, review); err != nil {
+			return ImprovementReviewReport{}, err
+		}
 	}
 	reviewed := ReviewedImprovement{
-		SchemaVersion: ReviewedImprovementSchemaVersion,
-		ID:            "reviewed_" + review.ReviewID,
-		CreatedAt:     rfc3339(now),
-		Status:        improvementReviewStatus(review.Decision),
-		ReviewID:      review.ReviewID,
-		PlanID:        review.PlanID,
-		CandidateID:   review.CandidateID,
-		CandidateKind: review.CandidateKind,
-		ImprovementID: review.ImprovementID,
-		Area:          review.Area,
-		Decision:      review.Decision,
-		Rationale:     review.Rationale,
-		Confidence:    review.Confidence,
-		EvidenceRefs:  reviewartifact.Unique(review.EvidenceRefs),
-		EvalProofRefs: reviewartifact.Unique(review.EvalProofRefs),
-		TargetPath:    review.TargetPath,
-		TargetHash:    review.TargetHash,
-		Draft:         review.Draft,
+		SchemaVersion:       ReviewedImprovementSchemaVersion,
+		ID:                  "reviewed_" + review.ReviewID,
+		CreatedAt:           rfc3339(now),
+		Status:              improvementReviewStatus(review.Decision),
+		ReviewID:            review.ReviewID,
+		PlanID:              review.PlanID,
+		CandidateID:         review.CandidateID,
+		CandidateKind:       review.CandidateKind,
+		ImprovementID:       review.ImprovementID,
+		Area:                review.Area,
+		Decision:            review.Decision,
+		Rationale:           review.Rationale,
+		Confidence:          review.Confidence,
+		EvidenceRefs:        reviewartifact.Unique(review.EvidenceRefs),
+		EvalProofRefs:       reviewartifact.Unique(review.EvalProofRefs),
+		BeforeEvalProofRefs: reviewartifact.Unique(review.BeforeEvalProofRefs),
+		ReplayCases:         review.ReplayCases,
+		TargetPath:          review.TargetPath,
+		TargetHash:          review.TargetHash,
+		Draft:               review.Draft,
 		Warnings: []string{
 			"does not mutate distiller policy",
 			"does not edit prompts or code",
