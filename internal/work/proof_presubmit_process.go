@@ -67,7 +67,7 @@ type presubmitRuntime struct {
 	cancel           context.CancelCauseFunc
 }
 
-func (s *Store) preparePresubmitRuntime(ctx context.Context, out *PresubmitExecutionResult, cancel context.CancelCauseFunc) (*presubmitRuntime, error) {
+func (s *Store) acquirePresubmitRuntime(ctx context.Context, out *PresubmitExecutionResult, cancel context.CancelCauseFunc) (*presubmitRuntime, error) {
 	rt := &presubmitRuntime{store: s, out: out, cancel: cancel, stage: "preparation", checkpointRecord: s.checkpointPresubmitExecution}
 	out.Holder = "proof:presubmit:" + out.RunAttemptID + ":" + out.WorkID + ":" + out.Actor
 	generation, err := landlease.ProofCoordinationGeneration(s.home)
@@ -91,18 +91,24 @@ func (s *Store) preparePresubmitRuntime(ctx context.Context, out *PresubmitExecu
 		return nil
 	}
 	if generation == "" {
+		if out.Request.Wait > 0 {
+			return rt, fmt.Errorf("presubmit --wait requires a coordinated FIFO proof domain")
+		}
 		err = acquire(landlease.ProofResource(s.home))
 	} else {
 		identity, identityErr := landlease.NewProofCoordinationIdentity(generation, landlease.ProofCapacitySystemFull, out.RepositoryFingerprint)
 		if identityErr != nil {
 			return rt, identityErr
 		}
-		admission, admissionErr := landlease.BeginProofAdmission(s.home, identity, time.Now().Add(out.Request.Budget))
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			return rt, fmt.Errorf("presubmit admission requires a bounded deadline")
+		}
+		admission, admissionErr := landlease.BeginProofAdmission(s.home, identity, deadline)
 		if admissionErr != nil {
 			return rt, admissionErr
 		}
-		defer admission.Cancel()
-		err = admission.WithTurn(ctx, false, acquire)
+		err = withPresubmitAdmission(admission, func() error { return rt.admit(ctx, admission, acquire) })
 	}
 	if err != nil {
 		return rt, err
@@ -110,32 +116,40 @@ func (s *Store) preparePresubmitRuntime(ctx context.Context, out *PresubmitExecu
 	if err = rt.check(ctx); err != nil {
 		return rt, err
 	}
-	if err = validatePresubmitOutput(out.Request.OutPath, s.home); err != nil {
-		return rt, err
+	return rt, nil
+}
+
+func (rt *presubmitRuntime) prepareOutput(ctx context.Context) error {
+	s, out := rt.store, rt.out
+	if err := rt.check(ctx); err != nil {
+		return err
+	}
+	if err := validatePresubmitOutput(out.Request.OutPath, s.home); err != nil {
+		return err
 	}
 	root, err := os.OpenRoot(filepath.Dir(out.Request.OutPath))
 	if err != nil {
-		return rt, fmt.Errorf("presubmit output root: %w", err)
+		return fmt.Errorf("presubmit output root: %w", err)
 	}
 	rt.parentRoot = root
 	rt.parentInfo, err = root.Stat(".")
 	if err != nil {
-		return rt, err
+		return err
 	}
 	rt.outputDir = filepath.Base(out.Request.OutPath) + ".presubmit-" + out.RunAttemptID
 	if err = root.Mkdir(rt.outputDir, 0o700); err != nil {
-		return rt, fmt.Errorf("presubmit output directory: %w", err)
+		return fmt.Errorf("presubmit output directory: %w", err)
 	}
 	rt.root, err = root.OpenRoot(rt.outputDir)
 	if err != nil {
-		return rt, err
+		return err
 	}
 	rt.outputInfo, err = rt.root.Stat(".")
 	if err != nil {
-		return rt, err
+		return err
 	}
 	if err = rt.syncOutputDirectory(); err != nil {
-		return rt, err
+		return err
 	}
 	rt.heartbeatDone = make(chan struct{})
 	hbCtx, stop := context.WithCancel(ctx)
@@ -153,9 +167,9 @@ func (s *Store) preparePresubmitRuntime(ctx context.Context, out *PresubmitExecu
 				_, e = rt.resource.Refresh(out.Holder, presubmitLeaseTTL, time.Now())
 			}
 			return e
-		}, cancel)
+		}, rt.cancel)
 	}()
-	return rt, nil
+	return nil
 }
 
 func runPresubmitHeartbeat(ctx, stopCtx context.Context, ticks <-chan time.Time, refresh func(context.Context) error, cancel context.CancelCauseFunc) {

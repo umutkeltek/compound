@@ -87,7 +87,7 @@ func (s *Store) RunPresubmitProducer(ctx context.Context, request PresubmitExecu
 	if ctx == nil || produce == nil {
 		return out, fmt.Errorf("presubmit requires context and producer")
 	}
-	if request.Budget <= 0 || request.Budget > MaxPresubmitExecutionBudget || !presubmitFullSHA.MatchString(request.BaseRef) || request.Actor == "" || request.OutPath == "" {
+	if request.Wait < 0 || request.Budget <= 0 || request.Budget > MaxPresubmitExecutionBudget || !presubmitFullSHA.MatchString(request.BaseRef) || request.Actor == "" || request.OutPath == "" {
 		return out, fmt.Errorf("presubmit requires exact Work, actor, full base, output and positive bounded active budget")
 	}
 	if supportErr := presubmitGroupContainmentSupported(); supportErr != nil {
@@ -112,16 +112,21 @@ func (s *Store) RunPresubmitProducer(ctx context.Context, request PresubmitExecu
 	}
 	digest := sha256.Sum256(body)
 	out = PresubmitExecutionResult{Kind: presubmitExecutionKind, WorkID: request.WorkID, Actor: request.Actor, Request: request, ExecutableSHA256: hex.EncodeToString(digest[:]), Status: "running", StartedAt: time.Now().UTC()}
-	ctx, stopDeadline := context.WithTimeout(ctx, request.Budget)
-	defer stopDeadline()
-	ctx, stopRuntime := context.WithCancelCause(ctx)
-	defer stopRuntime(nil)
+	parent, stopRuntime := context.WithCancelCause(ctx)
+	budget := NewProofExecutionBudget(request.Budget)
+	preparationStarted := time.Now()
+	ctx, stopPhase := budget.PreparationContext(parent)
+	defer func() { stopPhase(); stopRuntime(nil) }()
 	var runtime *presubmitRuntime
 	producerReturned := false
 	// Install terminalization before admission: every post-mint return, including
 	// the first metadata write, reaches the same failure/result finalizer.
 	defer func() {
 		panicValue := recover()
+		var budgetFailure *ProofExecutionBudgetError
+		if ProofExecutionBudgetCause(ctx) != nil || errors.As(err, &budgetFailure) {
+			err = errors.Join(err, context.DeadlineExceeded)
+		}
 
 		if panicValue != nil {
 			err = errors.Join(err, fmt.Errorf("presubmit producer panic: %v", panicValue))
@@ -144,6 +149,9 @@ func (s *Store) RunPresubmitProducer(ctx context.Context, request PresubmitExecu
 			err = errors.Join(err, runtime.finish())
 		}
 		err = errors.Join(err, context.Cause(ctx))
+		if errors.As(err, &budgetFailure) && !errors.Is(err, context.DeadlineExceeded) {
+			err = errors.Join(err, context.DeadlineExceeded)
+		}
 		out.CompletedAt = time.Now().UTC()
 		out.Status = "succeeded"
 		if err != nil {
@@ -265,8 +273,36 @@ func (s *Store) RunPresubmitProducer(ctx context.Context, request PresubmitExecu
 	if _, err = s.runAttempts().SetCommand(out.RunAttemptID, request.command()); err != nil {
 		return out, err
 	}
-	runtime, err = s.preparePresubmitRuntime(ctx, &out, stopRuntime)
+	if request.Wait > 0 {
+		if err = context.Cause(ctx); err != nil {
+			return out, err
+		}
+		budget.Charge(time.Since(preparationStarted))
+		if budget.Remaining() == 0 {
+			return out, budget.ExpiredError(ProofBudgetPhasePreparation)
+		}
+		stopPreparation := stopPhase
+		ctx, stopPhase = context.WithTimeoutCause(parent, request.Wait, fmt.Errorf("presubmit admission wait expired after %s: %w", request.Wait, context.DeadlineExceeded))
+		stopPreparation()
+	}
+	runtime, err = s.acquirePresubmitRuntime(ctx, &out, stopRuntime)
 	if err != nil {
+		return out, err
+	}
+	if err = context.Cause(ctx); err != nil {
+		return out, err
+	}
+	if request.Wait == 0 {
+		budget.Charge(time.Since(preparationStarted))
+	}
+	active, stopActive, budgetErr := budget.RunContext(parent)
+	if budgetErr != nil {
+		return out, budgetErr
+	}
+	stopAdmission := stopPhase
+	ctx, stopPhase = active, stopActive
+	stopAdmission()
+	if err = runtime.prepareOutput(ctx); err != nil {
 		return out, err
 	}
 	ctx = context.WithValue(ctx, presubmitExecutionContextKey{}, &out)

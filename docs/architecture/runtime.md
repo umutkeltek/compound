@@ -593,6 +593,16 @@ existing `system_full` capacity and the existing inherited execution barrier bec
 build/vet/test phases share the same constrained host. It adds no queue, daemon, transport
 enrollment or canonical reservation kind.
 
+Optional --wait DURATION retains one existing FIFO ticket through ordinary live
+capacity contention, bounded independently of the active budget. Preparation uses
+that active allowance; the admitted run receives its remainder, excluding queue
+waiting. Omission stays fail-fast. Explicit waiting requires a coordinated domain.
+The waiter checks current Work authority and heartbeats its single RunAttempt;
+recovery/integrity refusals and acquisition-callback failures remain terminal.
+Cancellation removes only its ticket and preserves foreign resources. Existing
+native lock calls retain their blocking behavior; cancellation is observed between
+calls, without abandoning a lock-owning goroutine.
+
 Existing Git preparation, scope derivation, Go-list preparation and gate subprocesses
 consume one context-scoped command-runner callback. Ordinary callers keep their existing
 execution path. The first real child start records content-free committed launch evidence;

@@ -19,6 +19,7 @@ type PresubmitExecutionRequest struct {
 	BaseRef string        `json:"base_ref"`
 	OutPath string        `json:"out_path"`
 	Budget  time.Duration `json:"active_budget_ns"`
+	Wait    time.Duration `json:"admission_wait_ns,omitempty"`
 	Args    []string      `json:"args"`
 }
 
@@ -48,7 +49,7 @@ func ParsePresubmitExecutionRequest(args []string) (PresubmitExecutionRequest, e
 		seen[flag] = true
 		switch flag {
 		case "--presubmit", "--json":
-		case "--repo", "--base", "--out", "--work", "--actor", "--execution-timeout":
+		case "--repo", "--base", "--out", "--work", "--actor", "--execution-timeout", "--wait":
 			if i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" || strings.HasPrefix(args[i+1], "--") {
 				return r, fmt.Errorf("%s requires a non-empty separate value", flag)
 			}
@@ -65,6 +66,13 @@ func ParsePresubmitExecutionRequest(args []string) (PresubmitExecutionRequest, e
 	if err != nil || budget <= 0 || budget > MaxPresubmitExecutionBudget {
 		return r, fmt.Errorf("governed presubmit execution timeout must be positive and no greater than %s", MaxPresubmitExecutionBudget)
 	}
+	var wait time.Duration
+	if seen["--wait"] {
+		wait, err = time.ParseDuration(values["--wait"])
+		if err != nil || wait <= 0 {
+			return r, fmt.Errorf("governed presubmit --wait requires a positive bounded duration")
+		}
+	}
 	repo, err := filepath.Abs(values["--repo"])
 	if err != nil {
 		return r, fmt.Errorf("resolve presubmit repository: %w", err)
@@ -73,7 +81,7 @@ func ParsePresubmitExecutionRequest(args []string) (PresubmitExecutionRequest, e
 	if err != nil {
 		return r, fmt.Errorf("resolve presubmit output: %w", err)
 	}
-	r = PresubmitExecutionRequest{WorkID: values["--work"], Actor: values["--actor"], Repo: repo, BaseRef: values["--base"], OutPath: out, Budget: budget, Args: append([]string(nil), args...)}
+	r = PresubmitExecutionRequest{WorkID: values["--work"], Actor: values["--actor"], Repo: repo, BaseRef: values["--base"], OutPath: out, Budget: budget, Wait: wait, Args: append([]string(nil), args...)}
 	return r, nil
 }
 

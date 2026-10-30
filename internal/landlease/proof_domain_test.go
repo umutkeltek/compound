@@ -504,3 +504,33 @@ func TestProofDomainWaitingSnapshotIsForeignAwareAndDoesNotBlockFinalizer(t *tes
 		t.Fatal("waiting snapshot accepted stale generation")
 	}
 }
+
+func TestProofAdmissionWaitabilityDistinguishesRecovery(t *testing.T) {
+	repo := strings.Repeat("a", 64)
+	admission := &ProofAdmission{identity: ProofCoordinationIdentity{Class: ProofCapacitySystemFull, RepositoryFingerprint: repo}}
+	held := func(repository string) StatusResult {
+		return StatusResult{Holder: "reused-holder", Held: true, ProofCoordination: &ProofCoordinationIdentity{RepositoryFingerprint: repository}}
+	}
+	for _, tc := range []struct {
+		name       string
+		own, other []StatusResult
+		waitable   bool
+	}{
+		{"same-repository-live", []StatusResult{held(repo), {}}, nil, true},
+		{"capacity-live", []StatusResult{held("b"), held("c")}, nil, true},
+		{"cross-class-same-holder", []StatusResult{held(repo), {}}, []StatusResult{held(repo)}, false},
+		{"multiple-slots-same-holder", []StatusResult{held(repo), held(repo)}, nil, false},
+		{"expired-other-class", []StatusResult{{}, {}}, []StatusResult{{Holder: "reused-holder", ProofCoordination: &ProofCoordinationIdentity{RepositoryFingerprint: repo}}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := admission.chooseProofSlot(map[ProofCapacityClass][]StatusResult{ProofCapacitySystemFull: tc.own, ProofCapacityNativeConsumer: tc.other}, 2, false, nil)
+			var busy *ProofAdmissionBusyError
+			if !errors.As(err, &busy) || busy.CanWait() != tc.waitable {
+				t.Fatalf("waitable=%v err=%v", tc.waitable, err)
+			}
+		})
+	}
+	if (&ProofAdmissionBusyError{Holder: "reused-holder", Reason: "same repository proof running"}).CanWait() {
+		t.Fatal("reason/holder text fabricated retry authority")
+	}
+}

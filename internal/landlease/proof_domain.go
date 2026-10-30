@@ -264,7 +264,14 @@ func (r *Resource) binding(root string, acquisition bool) *leaseBinding {
 	return b
 }
 
-type ProofAdmissionBusyError struct{ Holder, Reason string }
+type ProofAdmissionBusyError struct {
+	Holder, Reason string
+	contention     bool
+}
+
+// CanWait identifies ordinary live capacity contention. Recovery and integrity
+// refusals deliberately default to false, even when holder names are reused.
+func (e *ProofAdmissionBusyError) CanWait() bool { return e != nil && e.contention }
 
 func (e *ProofAdmissionBusyError) Error() string {
 	return fmt.Sprintf("proof admission waits for %s: %s", e.Holder, e.Reason)
@@ -434,7 +441,7 @@ func (a *ProofAdmission) chooseProofSlot(slots map[ProofCapacityClass][]StatusRe
 	}
 	if pinned >= 0 {
 		if own[pinned].Held && !steal {
-			return 0, &ProofAdmissionBusyError{Holder: own[pinned].Holder, Reason: "same repository proof running"}
+			return 0, &ProofAdmissionBusyError{Holder: own[pinned].Holder, Reason: "same repository proof running", contention: true}
 		}
 		return pinned, nil
 	}
@@ -458,7 +465,7 @@ func (a *ProofAdmission) chooseProofSlot(slots map[ProofCapacityClass][]StatusRe
 	if steal {
 		return 0, nil
 	}
-	return 0, &ProofAdmissionBusyError{Holder: own[0].Holder, Reason: fmt.Sprintf("capacity occupied (%d/%d)", capacity, capacity)}
+	return 0, &ProofAdmissionBusyError{Holder: own[0].Holder, Reason: fmt.Sprintf("capacity occupied (%d/%d)", capacity, capacity), contention: true}
 }
 
 func (a *ProofAdmission) WithTurn(ctx context.Context, steal bool, fn func(*Resource) error) error {

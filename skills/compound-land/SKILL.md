@@ -72,6 +72,13 @@ adoption capability itself through a direct source proof before using it in a li
 
 ## 1 · Presubmit before the land; canonical proof after it
 
+For native noncertifying presubmit, use optional --wait DURATION to retain one
+FIFO ticket while existing proof capacity is occupied. Keep the same invocation;
+do not repeatedly cancel and requeue behind newer work. This bounded admission
+wait is separate from --execution-timeout and grants no larger active test budget.
+Omitting --wait retains fail-fast behavior. Recovery refusals still require the
+existing exact-owner recovery path; waiting never overrides them.
+
 The ceremony has five gates, in force order: **scope-claim** (§0 — land-lease + worklog claim) ·
 **presubmit** (§1 — governed scoped build/vet/doctor/affected tests) ·
 **fresh-SHA guard** (§3 — `MAIN_SHA` read this turn) · **redact** (§5 — unpiped, its own command) ·
