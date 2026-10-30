@@ -25,8 +25,19 @@ func TestMemoryRecallFreshSetupAutomaticCaptureAcrossHarnesses(t *testing.T) {
 		t.Skip("native subprocess lifecycle proof")
 	}
 	binary := compoundTestBinary(t)
+	// The integration needs the real companion engine even in a fresh CI home.
+	// Build it with this source and put it ahead of any ambient installation.
+	engineDir := t.TempDir()
+	engine := filepath.Join(engineDir, "compound-breadth-engine")
+	build := exec.Command("go", "build", "-buildvcs=false", "-o", engine, "./cmd/compound-breadth-engine")
+	build.Dir = testRepoRoot
+	build.Env = append(os.Environ(), "GOTOOLCHAIN=local")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build companion engine: %v\n%s", err, out)
+	}
 	hp, root := t.TempDir(), t.TempDir()
-	env := append(os.Environ(), "COMPOUND_HOME="+hp)
+	env := append(os.Environ(), "COMPOUND_HOME="+hp,
+		"PATH="+engineDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	run := func(input []byte, args ...string) []byte {
 		t.Helper()
 		cmd := exec.Command(binary, args...)
