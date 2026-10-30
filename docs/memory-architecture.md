@@ -434,8 +434,14 @@ injection path.
 Each capture pass selects recent changes, up to 128 files and normally 128 MiB;
 one file may exceed the batch byte budget but cannot exceed 1 GiB. Oversized,
 missing, changing and incomplete files are reported, not called complete.
-Unfinished JSONL records never enter the owned version chain. Subsequent passes
-resume historical backfill. Unchanged-file detection uses size and nanosecond
+Unfinished JSONL records never enter the owned version chain.
+Automatic refresh explicitly opts into partial capture: it refuses symlinked source
+files individually, records their count as `refused_symlinks`, and captures eligible
+regular files. After successful indexing, coverage stays `capture_incomplete` while
+refusals exist; indexing failures keep their own status. It never
+follows links, including outside the approved root; the strict directory and default
+batch APIs still refuse the whole batch. A linked root itself remains invalid.
+Subsequent passes resume historical backfill. Unchanged-file detection uses size and nanosecond
 mtime and reports that basis; it is not a full disk-integrity audit.
 Owned snapshots survive source removal. A return to earlier bytes creates a new
 observed occurrence rather than reviving a superseded version.
