@@ -117,8 +117,8 @@ SIGINT and SIGTERM cancel exact owned groups, including Go descendants that drop
 descriptors. Darwin keeps the leader unreaped until its exact group drains. Linux requires
 the group-pidfd capability introduced in kernel 6.9, holds that handle across any early
 leader reap, and never signals a recycled numeric group. Unsupported capability refuses.
-Use the fixed native recovery door only for authentic pre-child loss or durably closed
-groups:
+Use the fixed native recovery door for authentic pre-child loss, durably closed groups,
+or a producer killed mid-gate whose recorded group is now empty:
 
 ```bash
 "$PRESUBMIT_EXE" proof-check --presubmit-recover-execution "$PRESUBMIT_RUN" \
@@ -126,11 +126,14 @@ groups:
 ```
 
 Recovery records failed execution evidence and releases only its exact eligible holder.
-It refuses an unregistered or unclosed started group even if the file barrier has cleared.
-Mid-gate SIGKILL and observed containment uncertainty need separate exact external/manual
-recovery; the reason string is not cleanup evidence. Ordinary admission refuses expired
-predecessors too. The door never signals stored PIDs, certifies source, or substitutes
-for a new presubmit or canonical proof. Escaped groups/sessions and persistence
+A started group without durable closure (mid-gate SIGKILL) is recovered only after the
+exact holder lease has expired, the producer heartbeat is older than its TTL, and a
+kernel membership query finds no member of that group. Any member, including a reused
+group number, refuses. An unregistered or ambiguous launch and observed containment
+uncertainty still need separate exact external/manual recovery; the reason string is
+not cleanup evidence. Ordinary admission refuses expired predecessors too. The door
+never signals stored PIDs or recorded groups, certifies source, or substitutes for a
+new presubmit or canonical proof. Escaped groups/sessions and persistence
 impossibility remain explicit limits; retain uncertainty rather than claiming cleanup.
 
 One command, one final `presubmit: ok|FAILED non_certifying=true scope=... passed=... failed=...`

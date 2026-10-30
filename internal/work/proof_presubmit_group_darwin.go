@@ -48,6 +48,26 @@ func observePresubmitOwnedGroup(leaderPID int) (bool, error) {
 	return true, nil
 }
 
+// presubmitRecordedGroupMembers counts kernel members of a journaled group
+// whose owner is gone. It reads kern.proc.pgrp and delivers no signal. Every
+// member counts, including zombies and an unrelated group that reused the
+// number, so recovery refuses rather than guessing ownership.
+func presubmitRecordedGroupMembers(pgid int) (int, error) {
+	if pgid <= 1 {
+		return 0, fmt.Errorf("invalid recorded process group %d", pgid)
+	}
+	members, err := unix.SysctlKinfoProcSlice("kern.proc.pgrp", pgid)
+	if err != nil {
+		return 0, fmt.Errorf("query recorded process group %d: %w", pgid, err)
+	}
+	for _, member := range members {
+		if int(member.Eproc.Pgid) != pgid {
+			return 0, fmt.Errorf("recorded group query returned a foreign member")
+		}
+	}
+	return len(members), nil
+}
+
 type darwinPresubmitGroup struct{ pid int }
 
 func newPresubmitOwnedProcessGroup(pid int) (presubmitOwnedProcessGroup, error) {

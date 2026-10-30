@@ -3,9 +3,13 @@
 package work
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"strconv"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -25,6 +29,48 @@ func presubmitGroupContainmentSupported() error {
 		return nil
 	}
 	return fmt.Errorf("native presubmit requires Linux PIDFD_SIGNAL_PROCESS_GROUP (kernel 6.9+); no numeric fallback: %w", err)
+}
+
+// presubmitRecordedGroupMembers counts processes whose /proc stat names the
+// journaled group. A recorded number has no pidfd, so it is never signalled.
+// Every member counts, including zombies and an unrelated group that reused
+// the number. Only a process that exits during the scan is skipped.
+func presubmitRecordedGroupMembers(pgid int) (int, error) {
+	if pgid <= 1 {
+		return 0, fmt.Errorf("invalid recorded process group %d", pgid)
+	}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return 0, fmt.Errorf("list kernel process table: %w", err)
+	}
+	count := 0
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || pid <= 0 {
+			continue
+		}
+		stat, err := os.ReadFile("/proc/" + entry.Name() + "/stat")
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, unix.ESRCH) {
+			continue
+		}
+		if err != nil {
+			return 0, fmt.Errorf("read process %d stat: %w", pid, err)
+		}
+		// Fields after the command name: state, ppid, pgrp.
+		end := bytes.LastIndexByte(stat, ')')
+		fields := strings.Fields(string(stat[end+1:]))
+		if end < 0 || len(fields) < 3 {
+			return 0, fmt.Errorf("malformed process %d stat", pid)
+		}
+		group, err := strconv.Atoi(fields[2])
+		if err != nil {
+			return 0, fmt.Errorf("malformed process %d group: %w", pid, err)
+		}
+		if group == pgid {
+			count++
+		}
+	}
+	return count, nil
 }
 
 type linuxPresubmitGroup struct{ fd int }
