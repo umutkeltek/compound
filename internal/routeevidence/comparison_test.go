@@ -62,7 +62,7 @@ func comparisonCase(t *testing.T, id, targetModel, requestID string, outcome str
 
 // A matched population with complete cost/usage and enough repetitions, where
 // the candidate is no worse on any critical case, CAN recommend replacement.
-func TestRouteComparisonRecommendsWhenMatchedAndMeasured(t *testing.T) {
+func TestRouteComparisonInlineMatchedMeasurementsStayUnverified(t *testing.T) {
 	incumbent := []RouteOutcomeReview{
 		comparisonCase(t, "inc_a", "model-a", "req_a", "completed", true, 1000, 500, 120),
 		comparisonCase(t, "inc_b", "model-a", "req_b", "completed", true, 1200, 600, 140),
@@ -83,14 +83,14 @@ func TestRouteComparisonRecommendsWhenMatchedAndMeasured(t *testing.T) {
 		MinRepetitions: 1,
 	})
 
-	if !comparison.Assessment.RecommendReplacement {
-		t.Fatalf("matched, measured comparison must recommend replacement: %+v", comparison.Assessment)
+	if comparison.Assessment.RecommendReplacement || comparison.Assessment.EvidenceStatus != "unverified" {
+		t.Fatalf("inline evidence must remain unverified: %+v", comparison.Assessment)
 	}
 	if comparison.Assessment.MatchedCases != 2 {
 		t.Fatalf("matched cases = %d, want 2", comparison.Assessment.MatchedCases)
 	}
-	if comparison.Assessment.BlockingReasons != nil {
-		t.Fatalf("matched comparison must have no blocking reasons: %v", comparison.Assessment.BlockingReasons)
+	if !containsAnyString(comparison.Assessment.BlockingReasons, "unverified") {
+		t.Fatal("inline evidence must name missing verification")
 	}
 	// The recommendation must name the incumbent it would displace and the
 	// candidate it would install -- a comparison without routes is not a decision.
@@ -462,7 +462,7 @@ func TestRouteComparisonIsValidEnvelope(t *testing.T) {
 // implementation that derived the case from the request id would find no
 // matched population at all, and one that paired rows by position would
 // compare different cases and call it a match.
-func TestRouteComparisonCaseIdentityIsOperatorPinned(t *testing.T) {
+func TestRouteComparisonCaseLabelsDoNotAuthenticateDifferentRequests(t *testing.T) {
 	// Two runs of the SAME case carry DIFFERENT request ids, exactly as the
 	// live ledger does.
 	incumbent := []RouteOutcomeReview{
@@ -479,8 +479,8 @@ func TestRouteComparisonCaseIdentityIsOperatorPinned(t *testing.T) {
 		CriticalCases:  []string{"case_pinned_by_operator"},
 		MinRepetitions: 1,
 	})
-	if !comparison.Assessment.RecommendReplacement {
-		t.Fatalf("operator-pinned case with different request ids must still match: %+v", comparison.Assessment)
+	if comparison.Assessment.RecommendReplacement || comparison.Assessment.EvidenceStatus != "unverified" {
+		t.Fatalf("case labels do not authenticate executions: %+v", comparison.Assessment)
 	}
 	if comparison.Assessment.MatchedCases != 1 {
 		t.Fatalf("matched cases = %d, want 1", comparison.Assessment.MatchedCases)
@@ -698,10 +698,7 @@ func TestRecordRouteComparisonReplaysIdenticalRevisionAndKeepsLegacyRecord(t *te
 	if after, err := os.ReadFile(legacyPath); err != nil || !bytes.Equal(after, legacy) {
 		t.Fatalf("recording revisions changed the legacy record at %s (read err=%v)", legacyPath, err)
 	}
-	latest, err := os.ReadFile(RouteComparisonLatestPath(homePath, first.ID))
-	if err != nil || !bytes.Equal(latest, firstBytes) {
-		t.Fatalf("latest view must copy the revision recorded last (read err=%v)", err)
-	}
+
 }
 
 // Only an existing revision with identical bytes is a replay. Different bytes

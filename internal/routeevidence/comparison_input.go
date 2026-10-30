@@ -1,11 +1,9 @@
 package routeevidence
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,13 +19,14 @@ import (
 // It is an input, not an authority record. The comparison it feeds is
 // evidence-only and never changes routing policy.
 type RouteComparisonFile struct {
-	SchemaVersion  string                    `json:"schema_version"`
-	DecisionID     string                    `json:"decision_id"`
-	IncumbentRoute Target                    `json:"incumbent_route"`
-	CandidateRoute Target                    `json:"candidate_route"`
-	Cases          []RouteComparisonCaseFile `json:"cases"`
-	CriticalCases  []string                  `json:"critical_cases,omitempty"`
-	MinRepetitions int                       `json:"min_repetitions,omitempty"`
+	EvaluationContractRef string                    `json:"evaluation_contract_ref,omitempty"`
+	SchemaVersion         string                    `json:"schema_version"`
+	DecisionID            string                    `json:"decision_id"`
+	IncumbentRoute        Target                    `json:"incumbent_route"`
+	CandidateRoute        Target                    `json:"candidate_route"`
+	Cases                 []RouteComparisonCaseFile `json:"cases"`
+	CriticalCases         []string                  `json:"critical_cases,omitempty"`
+	MinRepetitions        int                       `json:"min_repetitions,omitempty"`
 }
 
 // RouteComparisonCaseFile is one PINNED case. The case id is declared by the
@@ -59,7 +58,7 @@ func LoadRouteComparisonInput(path string) (RouteComparisonInput, error) {
 		return RouteComparisonInput{}, fmt.Errorf("read route comparison input: %w", err)
 	}
 	var file RouteComparisonFile
-	if err := json.Unmarshal(raw, &file); err != nil {
+	if err := strictComparisonJSON(raw, &file); err != nil {
 		return RouteComparisonInput{}, fmt.Errorf("parse route comparison input: %w", err)
 	}
 	if strings.TrimSpace(file.SchemaVersion) != RouteComparisonInputSchemaVersion {
@@ -85,13 +84,14 @@ func LoadRouteComparisonInput(path string) (RouteComparisonInput, error) {
 		})
 	}
 	return RouteComparisonInput{
-		DecisionID:     file.DecisionID,
-		IncumbentRoute: file.IncumbentRoute,
-		CandidateRoute: file.CandidateRoute,
-		Cases:          cases,
-		CriticalCases:  file.CriticalCases,
-		MinRepetitions: file.MinRepetitions,
-		CreatedAt:      "",
+		DecisionID:            file.DecisionID,
+		EvaluationContractRef: file.EvaluationContractRef,
+		IncumbentRoute:        file.IncumbentRoute,
+		CandidateRoute:        file.CandidateRoute,
+		Cases:                 cases,
+		CriticalCases:         file.CriticalCases,
+		MinRepetitions:        file.MinRepetitions,
+		CreatedAt:             "",
 	}, nil
 }
 
@@ -103,15 +103,8 @@ func RouteComparisonRevisionPath(homePath, comparisonID, digest string) string {
 	return filepath.Join(homePath, "reviews", "route-comparisons", comparisonID, "revisions", "sha256-"+digest+".json")
 }
 
-// RouteComparisonLatestPath is a rebuildable view: a byte copy of the revision
-// recorded most recently, so its SHA-256 names that revision. The revisions are
-// the evidence; this view may be rewritten.
-func RouteComparisonLatestPath(homePath, comparisonID string) string {
-	return filepath.Join(homePath, "reviews", "route-comparisons", comparisonID, "latest.json")
-}
-
 // RecordRouteComparison records the comparison as an immutable revision under
-// the compound home, then refreshes the latest view, and returns the revision
+// the compound home, and returns the revision
 // path. It records EVIDENCE: the comparison and the reasons it reached its
 // verdict. It never touches routing policy, a gateway, a provider, or a
 // model-router config.
@@ -120,6 +113,10 @@ func RouteComparisonLatestPath(homePath, comparisonID string) string {
 // bytes equal the new revision. Every other write, sync or path error is a
 // failure, even when identical bytes are readable at the path.
 func RecordRouteComparison(homePath string, comparison RouteComparison) (string, error) {
+	return recordRouteComparisonWithWriter(homePath, comparison, homepkg.WriteRootedImmutableFileDurable)
+}
+
+func recordRouteComparisonWithWriter(homePath string, comparison RouteComparison, write func(string, string, string, []byte, os.FileMode) error) (string, error) {
 	if strings.TrimSpace(homePath) == "" {
 		return "", fmt.Errorf("COMPOUND_HOME required")
 	}
@@ -134,22 +131,8 @@ func RecordRouteComparison(homePath string, comparison RouteComparison) (string,
 	path := RouteComparisonRevisionPath(homePath, comparison.ID, hex.EncodeToString(digest[:]))
 	const kind = "route comparison revision"
 
-	existing, err := homepkg.ReadRootedRegularFile(homePath, path, kind)
-	switch {
-	case err == nil:
-		if !bytes.Equal(existing, body) {
-			return "", fmt.Errorf("route comparison revision %s exists with different content", path)
-		}
-	case errors.Is(err, os.ErrNotExist):
-		if err := homepkg.WriteRootedNewFileDurable(homePath, path, kind, body, 0o644); err != nil {
-			return "", fmt.Errorf("write route comparison revision: %w", err)
-		}
-	default:
-		return "", fmt.Errorf("read route comparison revision: %w", err)
-	}
-
-	if err := homepkg.WriteFileAtomic(RouteComparisonLatestPath(homePath, comparison.ID), body, 0o644); err != nil {
-		return "", fmt.Errorf("route comparison revision %s recorded; write latest view: %w", path, err)
+	if err := write(homePath, path, kind, body, 0o644); err != nil {
+		return "", fmt.Errorf("write route comparison revision: %w", err)
 	}
 	return path, nil
 }
