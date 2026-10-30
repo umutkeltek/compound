@@ -120,6 +120,17 @@ func rootedDirectoryExists(root *os.Root, relativePath, displayPath, kind string
 // WriteRootedNewFileDurable creates and syncs a new owned file without
 // traversing symbolic links beneath home.
 func WriteRootedNewFileDurable(homePath, path, kind string, data []byte, perm os.FileMode) error {
+	return writeRootedNewFileDurable(homePath, path, kind, data, perm, false)
+}
+
+// WriteRootedImmutableFileDurable creates a durable owned file, or verifies and
+// re-syncs an identical existing file without replacing it. Visibility alone is
+// not durability: a failed sync remains an error even when the bytes are readable.
+func WriteRootedImmutableFileDurable(homePath, path, kind string, data []byte, perm os.FileMode) error {
+	return writeRootedNewFileDurable(homePath, path, kind, data, perm, true)
+}
+
+func writeRootedNewFileDurable(homePath, path, kind string, data []byte, perm os.FileMode, acceptIdentical bool) error {
 	root, relativePath, displayPath, err := openRootedPath(homePath, path, kind)
 	if err != nil {
 		return err
@@ -135,6 +146,9 @@ func WriteRootedNewFileDurable(homePath, path, kind string, data []byte, perm os
 		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 			return fmt.Errorf("%s file must be a regular file: %s", kind, displayPath)
 		}
+		if acceptIdentical {
+			return syncRootedIdenticalFile(root, relativePath, displayPath, kind, data, beforeParents)
+		}
 		return fmt.Errorf("%s file already exists: %s", kind, displayPath)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -142,6 +156,9 @@ func WriteRootedNewFileDurable(homePath, path, kind string, data []byte, perm os
 
 	file, err := root.OpenFile(relativePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm)
 	if err != nil {
+		if acceptIdentical && errors.Is(err, os.ErrExist) {
+			return syncRootedIdenticalFile(root, relativePath, displayPath, kind, data, beforeParents)
+		}
 		return err
 	}
 	cleanup := func(cause error) error {
@@ -181,6 +198,58 @@ func WriteRootedNewFileDurable(homePath, path, kind string, data []byte, perm os
 		return err
 	}
 	return syncRootedDirectory(root, parentPath, displayPath, kind)
+}
+
+// syncRootedIdenticalFile never cleans up or mutates an existing file. Its
+// descriptor and full path must still identify the same file after both syncs.
+func syncRootedIdenticalFile(root *os.Root, relativePath, displayPath, kind string, data []byte, parents []os.FileInfo) (err error) {
+	before, err := lstatRootedRegularPath(root, relativePath, displayPath, kind)
+	if err != nil {
+		return err
+	}
+	file, err := root.Open(relativePath)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, file.Close()) }()
+	opened, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	check := func() error {
+		currentParents, err := lstatRootedDirectoryPath(root, filepath.Dir(relativePath), displayPath, kind, false)
+		if err != nil {
+			return err
+		}
+		after, err := lstatRootedRegularPath(root, relativePath, displayPath, kind)
+		if err != nil {
+			return err
+		}
+		if !sameRootedPath(parents, currentParents) || !sameRootedPath(before, after) || !opened.Mode().IsRegular() || !os.SameFile(before[len(before)-1], opened) {
+			return fmt.Errorf("%s file must be a stable regular file beneath compound home: %s", kind, displayPath)
+		}
+		return nil
+	}
+	if err := check(); err != nil {
+		return err
+	}
+	existing, err := io.ReadAll(io.LimitReader(file, int64(len(data))+1))
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(existing, data) {
+		return fmt.Errorf("%s file already exists with different content: %s", kind, displayPath)
+	}
+	if err := check(); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if err := syncRootedDirectory(root, filepath.Dir(relativePath), displayPath, kind); err != nil {
+		return err
+	}
+	return check()
 }
 
 // RemoveRootedRegularFileDurable removes and directory-syncs an owned regular
