@@ -282,7 +282,7 @@ func (s *Store) RunPresubmitProducer(ctx context.Context, request PresubmitExecu
 			return out, budget.ExpiredError(ProofBudgetPhasePreparation)
 		}
 		stopPreparation := stopPhase
-		ctx, stopPhase = context.WithTimeoutCause(parent, request.Wait, fmt.Errorf("presubmit admission wait expired after %s: %w", request.Wait, context.DeadlineExceeded))
+		ctx, stopPhase = presubmitAdmissionContext(parent, request.Wait)
 		stopPreparation()
 	}
 	runtime, err = s.acquirePresubmitRuntime(ctx, &out, stopRuntime)

@@ -3,6 +3,7 @@ package work
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"compound/internal/landlease"
@@ -63,4 +64,11 @@ func presubmitContention(err error) bool {
 func withPresubmitAdmission(admission *landlease.ProofAdmission, run func() error) (err error) {
 	defer func() { err = errors.Join(err, admission.Cancel()) }()
 	return run()
+}
+
+// The caller owns the returned cancellation function, just as for the shared
+// active-budget contexts. Keeping that ownership explicit also lets go vet
+// distinguish phase replacement from a leaked context.
+func presubmitAdmissionContext(parent context.Context, wait time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeoutCause(parent, wait, fmt.Errorf("presubmit admission wait expired after %s: %w", wait, context.DeadlineExceeded))
 }
