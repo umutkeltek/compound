@@ -1,6 +1,9 @@
 package routeevidence
 
 import (
+	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -490,6 +493,282 @@ func TestRouteComparisonCaseIdentityIsOperatorPinned(t *testing.T) {
 	if comparison.Cases[0].IncumbentRuns[0].RouteEvidenceID != "ev_inc_a" {
 		t.Fatalf("case run lost its route evidence binding: %+v", comparison.Cases[0].IncumbentRuns[0])
 	}
+}
+
+// Negative control A: a copied review is ONE execution, not several
+// repetitions. Repetitions must be distinct executions, told apart by their
+// review, route evidence or receipt identity.
+func TestRouteComparisonDuplicateReviewIsNotARepetition(t *testing.T) {
+	r1 := comparisonCase(t, "inc_r1", "model-a", "req_a", "completed", true, 1000, 500, 120)
+	r2 := comparisonCase(t, "cand_r2", "model-b", "req_a", "completed", true, 900, 450, 100)
+	// The same receipt under fresh review ids is still the same execution.
+	sameReceipt := func(review RouteOutcomeReview, id string) RouteOutcomeReview {
+		review.ID = id
+		review.RouteEvidenceID = "ev_" + id
+		return review
+	}
+	for _, tc := range []struct {
+		name      string
+		incumbent []RouteOutcomeReview
+		candidate []RouteOutcomeReview
+	}{
+		{name: "identical review copied", incumbent: []RouteOutcomeReview{r1, r1, r1}, candidate: []RouteOutcomeReview{r2, r2, r2}},
+		{
+			name:      "one receipt under three review ids",
+			incumbent: []RouteOutcomeReview{r1, sameReceipt(r1, "inc_r1_copy1"), sameReceipt(r1, "inc_r1_copy2")},
+			candidate: []RouteOutcomeReview{r2, sameReceipt(r2, "cand_r2_copy1"), sameReceipt(r2, "cand_r2_copy2")},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			comparison := BuildRouteComparison(RouteComparisonInput{
+				DecisionID:     "decision_route_change_fixture",
+				IncumbentRoute: Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
+				CandidateRoute: Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
+				Cases:          []RouteComparisonCaseInput{{CaseID: "case_a", Incumbent: tc.incumbent, Candidate: tc.candidate}},
+				CriticalCases:  []string{"case_a"},
+				MinRepetitions: 3,
+			})
+			if comparison.Assessment.RecommendReplacement {
+				t.Fatalf("one execution copied three times must not satisfy min_repetitions=3: %+v", comparison.Assessment)
+			}
+			if !containsAnyString(comparison.Assessment.BlockingReasons, "distinct") {
+				t.Fatalf("blocking reasons %v must name the missing distinct executions", comparison.Assessment.BlockingReasons)
+			}
+		})
+	}
+}
+
+// Negative control B: a review that ran on one side's route cannot support
+// the other side. Each review's selected target must be the route of the side
+// it is filed under.
+func TestRouteComparisonRejectsReviewFromTheOtherRoute(t *testing.T) {
+	incumbentRoute := Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"}
+	candidateRoute := Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"}
+	for _, tc := range []struct {
+		name      string
+		incumbent RouteOutcomeReview
+		candidate RouteOutcomeReview
+	}{
+		{
+			name:      "incumbent-route review filed as candidate",
+			incumbent: comparisonCase(t, "inc_a", "model-a", "req_a", "completed", true, 1000, 500, 120),
+			candidate: comparisonCase(t, "cand_a", "model-a", "req_a", "completed", true, 900, 450, 100),
+		},
+		{
+			name:      "candidate-route review filed as incumbent",
+			incumbent: comparisonCase(t, "inc_a", "model-b", "req_a", "completed", true, 1000, 500, 120),
+			candidate: comparisonCase(t, "cand_a", "model-b", "req_a", "completed", true, 900, 450, 100),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			comparison := BuildRouteComparison(RouteComparisonInput{
+				DecisionID:     "decision_route_change_fixture",
+				IncumbentRoute: incumbentRoute,
+				CandidateRoute: candidateRoute,
+				Cases:          []RouteComparisonCaseInput{{CaseID: "case_a", Incumbent: []RouteOutcomeReview{tc.incumbent}, Candidate: []RouteOutcomeReview{tc.candidate}}},
+				CriticalCases:  []string{"case_a"},
+				MinRepetitions: 1,
+			})
+			if comparison.Assessment.RecommendReplacement {
+				t.Fatalf("a review from the other route must not support this side: %+v", comparison.Assessment)
+			}
+			if !containsAnyString(comparison.Assessment.BlockingReasons, "selected route") {
+				t.Fatalf("blocking reasons %v must name the wrong selected route", comparison.Assessment.BlockingReasons)
+			}
+		})
+	}
+}
+
+// Negative control C: every declared critical case must be present and
+// evaluated. A critical case with no runs at all cannot be judged, so it
+// blocks the recommendation.
+func TestRouteComparisonBlocksOnMissingCriticalCase(t *testing.T) {
+	comparison := BuildRouteComparison(RouteComparisonInput{
+		DecisionID:     "decision_route_change_fixture",
+		IncumbentRoute: Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
+		CandidateRoute: Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
+		Cases: []RouteComparisonCaseInput{{
+			CaseID:    "case_a",
+			Incumbent: []RouteOutcomeReview{comparisonCase(t, "inc_a", "model-a", "req_a", "completed", true, 1000, 500, 120)},
+			Candidate: []RouteOutcomeReview{comparisonCase(t, "cand_a", "model-b", "req_a", "completed", true, 900, 450, 100)},
+		}},
+		CriticalCases:  []string{"case_a", "case_critical_missing"},
+		MinRepetitions: 1,
+	})
+	if comparison.Assessment.RecommendReplacement {
+		t.Fatalf("a declared critical case with no runs must block the recommendation: %+v", comparison.Assessment)
+	}
+	if !containsAnyString(comparison.Assessment.BlockingReasons, "case_critical_missing") {
+		t.Fatalf("blocking reasons %v must name the missing critical case", comparison.Assessment.BlockingReasons)
+	}
+}
+
+// routeComparisonRevision builds one comparison for the fixture decision. The
+// candidate outcome varies, so two calls give two revisions of ONE decision.
+func routeComparisonRevision(t *testing.T, candidateOutcome string, candidateStateChanged bool) RouteComparison {
+	t.Helper()
+	return BuildRouteComparison(RouteComparisonInput{
+		DecisionID:     "decision_route_change_fixture",
+		IncumbentRoute: Target{Provider: "fixture-provider", Model: "model-a", Protocol: "mcp"},
+		CandidateRoute: Target{Provider: "fixture-provider", Model: "model-b", Protocol: "mcp"},
+		Cases: []RouteComparisonCaseInput{{
+			CaseID:    "case_a",
+			Incumbent: []RouteOutcomeReview{comparisonCase(t, "inc_a", "model-a", "req_a", "completed", true, 1000, 500, 120)},
+			Candidate: []RouteOutcomeReview{comparisonCase(t, "cand_a", "model-b", "req_a", candidateOutcome, candidateStateChanged, 900, 450, 100)},
+		}},
+		CriticalCases:  []string{"case_a"},
+		MinRepetitions: 1,
+	})
+}
+
+// Negative control D: the comparison id stays the stable identity of the
+// decision and its two routes, but revised evidence for that decision must
+// never erase the bytes of an earlier recorded revision.
+func TestRecordRouteComparisonKeepsEarlierRevisionBytes(t *testing.T) {
+	homePath := t.TempDir()
+	first := routeComparisonRevision(t, "failed", false)
+	second := routeComparisonRevision(t, "completed", true)
+	if first.ID != second.ID {
+		t.Fatalf("precondition: revisions of one decision share the stable id, got %s and %s", first.ID, second.ID)
+	}
+
+	firstPath, err := RecordRouteComparison(homePath, first)
+	if err != nil {
+		t.Fatalf("record first revision: %v", err)
+	}
+	firstBytes, err := os.ReadFile(firstPath)
+	if err != nil {
+		t.Fatalf("read first revision: %v", err)
+	}
+	secondPath, err := RecordRouteComparison(homePath, second)
+	if err != nil {
+		t.Fatalf("record second revision: %v", err)
+	}
+
+	after, err := os.ReadFile(firstPath)
+	if err != nil || !bytes.Equal(after, firstBytes) {
+		t.Fatalf("recording a second revision of %s erased the first revision's bytes at %s (read err=%v)", first.ID, firstPath, err)
+	}
+	secondBytes, err := os.ReadFile(secondPath)
+	if err != nil {
+		t.Fatalf("read second revision: %v", err)
+	}
+	if bytes.Equal(secondBytes, firstBytes) {
+		t.Fatalf("second revision at %s carries the first revision's bytes", secondPath)
+	}
+}
+
+// Recording the same revision again is a replay of the existing file, not a
+// new write. A record made before revisions existed stays untouched, and the
+// latest view is a byte copy of the revision recorded last.
+func TestRecordRouteComparisonReplaysIdenticalRevisionAndKeepsLegacyRecord(t *testing.T) {
+	homePath := t.TempDir()
+	first := routeComparisonRevision(t, "failed", false)
+	second := routeComparisonRevision(t, "completed", true)
+	legacyPath := filepath.Join(homePath, "reviews", "route-comparisons", first.ID+".json")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatalf("mkdir legacy record dir: %v", err)
+	}
+	legacy := []byte(`{"legacy":"record"}`)
+	if err := os.WriteFile(legacyPath, legacy, 0o644); err != nil {
+		t.Fatalf("write legacy record: %v", err)
+	}
+
+	firstPath, err := RecordRouteComparison(homePath, first)
+	if err != nil {
+		t.Fatalf("record first revision: %v", err)
+	}
+	firstBytes, err := os.ReadFile(firstPath)
+	if err != nil {
+		t.Fatalf("read first revision: %v", err)
+	}
+	if _, err := RecordRouteComparison(homePath, second); err != nil {
+		t.Fatalf("record second revision: %v", err)
+	}
+	replayPath, err := RecordRouteComparison(homePath, first)
+	if err != nil {
+		t.Fatalf("replay first revision: %v", err)
+	}
+	if replayPath != firstPath {
+		t.Fatalf("replay path = %s, want the existing revision %s", replayPath, firstPath)
+	}
+	if after, err := os.ReadFile(firstPath); err != nil || !bytes.Equal(after, firstBytes) {
+		t.Fatalf("replay changed the first revision's bytes (read err=%v)", err)
+	}
+	if after, err := os.ReadFile(legacyPath); err != nil || !bytes.Equal(after, legacy) {
+		t.Fatalf("recording revisions changed the legacy record at %s (read err=%v)", legacyPath, err)
+	}
+	latest, err := os.ReadFile(RouteComparisonLatestPath(homePath, first.ID))
+	if err != nil || !bytes.Equal(latest, firstBytes) {
+		t.Fatalf("latest view must copy the revision recorded last (read err=%v)", err)
+	}
+}
+
+// Only an existing revision with identical bytes is a replay. Different bytes
+// at the revision path, or a symlinked path that shows identical bytes, are
+// failures: readable bytes never stand in for a durable rooted write.
+func TestRecordRouteComparisonFailsWhenTheRevisionPathIsNotTrusted(t *testing.T) {
+	comparison := routeComparisonRevision(t, "completed", true)
+	probeHome := t.TempDir()
+	probePath, err := RecordRouteComparison(probeHome, comparison)
+	if err != nil {
+		t.Fatalf("record probe revision: %v", err)
+	}
+	body, err := os.ReadFile(probePath)
+	if err != nil {
+		t.Fatalf("read probe revision: %v", err)
+	}
+	relative, err := filepath.Rel(probeHome, probePath)
+	if err != nil {
+		t.Fatalf("relative revision path: %v", err)
+	}
+
+	t.Run("different bytes at the revision path", func(t *testing.T) {
+		homePath := t.TempDir()
+		path := filepath.Join(homePath, relative)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir revision dir: %v", err)
+		}
+		tampered := []byte(`{"tampered":true}`)
+		if err := os.WriteFile(path, tampered, 0o644); err != nil {
+			t.Fatalf("write tampered revision: %v", err)
+		}
+		if _, err := RecordRouteComparison(homePath, comparison); err == nil {
+			t.Fatal("a revision path holding different bytes must fail, not replay")
+		}
+		if after, err := os.ReadFile(path); err != nil || !bytes.Equal(after, tampered) {
+			t.Fatalf("a failed record must not replace the existing file (read err=%v)", err)
+		}
+	})
+
+	t.Run("symlinked comparison directory with identical bytes", func(t *testing.T) {
+		homePath := t.TempDir()
+		outside := t.TempDir()
+		comparisonDir := filepath.Join(homePath, "reviews", "route-comparisons", comparison.ID)
+		insideComparison, err := filepath.Rel(comparisonDir, filepath.Join(homePath, relative))
+		if err != nil {
+			t.Fatalf("relative path inside comparison dir: %v", err)
+		}
+		outsidePath := filepath.Join(outside, insideComparison)
+		if err := os.MkdirAll(filepath.Dir(outsidePath), 0o755); err != nil {
+			t.Fatalf("mkdir outside revision dir: %v", err)
+		}
+		if err := os.WriteFile(outsidePath, body, 0o644); err != nil {
+			t.Fatalf("write outside revision: %v", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(comparisonDir), 0o755); err != nil {
+			t.Fatalf("mkdir comparisons dir: %v", err)
+		}
+		if err := os.Symlink(outside, comparisonDir); err != nil {
+			t.Fatalf("symlink comparison dir: %v", err)
+		}
+		if _, err := RecordRouteComparison(homePath, comparison); err == nil {
+			t.Fatal("a symlinked revision path must fail even when identical bytes are readable through it")
+		}
+		if _, err := os.Stat(filepath.Join(outside, "latest.json")); !os.IsNotExist(err) {
+			t.Fatalf("a failed record must not write the latest view through the symlink, stat err=%v", err)
+		}
+	})
 }
 
 func containsAnyString(values []string, want string) bool {
