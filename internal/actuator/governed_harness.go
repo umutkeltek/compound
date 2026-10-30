@@ -318,6 +318,7 @@ func governedGoalPrompt(w envelope.WorkEnvelope, request string) string {
 			fmt.Fprintf(&b, "- %s\n", nonGoal)
 		}
 	}
+	writeGovernedContinuation(&b, w)
 	fmt.Fprintln(&b, "\n## Execution instruction")
 	fmt.Fprintln(&b, "Use this current work goal and context to execute the request; report evidence against the success predicate. The latest explicit request below takes precedence over older task prose.")
 	if strings.TrimSpace(request) != "" {
