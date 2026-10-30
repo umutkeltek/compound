@@ -111,7 +111,7 @@ type ImprovementReview struct {
 	// was fixed.
 	BeforeEvalProofRefs []string `json:"before_eval_proof_refs,omitempty" yaml:"before_eval_proof_refs"`
 	// ReplayCases pins the cases this review is bound to.
-	ReplayCases []ReplayCaseBinding `json:"replay_cases,omitempty" yaml:"replay_cases,omitempty"`
+	ReplayCases []ReplayCaseBinding `json:"replay_cases,omitempty" yaml:"replay_cases"`
 	TargetPath  string              `json:"target_path,omitempty" yaml:"target_path,omitempty"`
 	TargetHash  string              `json:"target_hash,omitempty" yaml:"target_hash,omitempty"`
 	Draft       ImprovementDraft    `json:"draft" yaml:"draft"`

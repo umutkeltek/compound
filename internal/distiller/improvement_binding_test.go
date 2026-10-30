@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"gopkg.in/yaml.v3"
 )
 
 // S4 -- Bind improvement acceptance to the change and its negative control.
@@ -358,9 +359,17 @@ func TestImprovementReviewYAMLDraftExposesBindingFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read review draft: %v", err)
 	}
+	// The draft must expose these as YAML KEYS the reviewer can fill in, not
+	// merely mention them in prose: a substring check passes on the
+	// eval_requirement sentence alone, which leaves the reviewer with no
+	// key to fill and the accept path unreachable.
+	var draft map[string]any
+	if err := yaml.Unmarshal(data, &draft); err != nil {
+		t.Fatalf("parse review draft yaml: %v", err)
+	}
 	for _, want := range []string{"replay_cases", "before_eval_proof_refs", "eval_proof_refs"} {
-		if !strings.Contains(string(data), want) {
-			t.Fatalf("review YAML draft must expose %q:\n%s", want, data)
+		if _, present := draft[want]; !present {
+			t.Fatalf("review YAML draft must expose the key %q:\n%s", want, data)
 		}
 	}
 }
