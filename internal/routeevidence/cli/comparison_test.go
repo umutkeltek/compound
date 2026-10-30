@@ -2,11 +2,15 @@ package routeevidencecli
 
 import (
 	"bytes"
+	"compound/internal/envelope"
+	"compound/internal/eventstore"
+	"compound/internal/home"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/routeevidence"
 )
@@ -35,7 +39,7 @@ func routeComparisonReview(id, model, requestID, outcome string, stateChanged bo
 
 // The CLI must reach the assessment and print the verdict. A matched,
 // measured comparison with no critical regression recommends the replacement.
-func TestRouteComparisonCLIRecommendsMatchedComparison(t *testing.T) {
+func TestRouteComparisonCLIInlineMeasurementsStayUnverified(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "comparison.json")
 	body, err := json.Marshal(map[string]any{
@@ -66,8 +70,9 @@ func TestRouteComparisonCLIRecommendsMatchedComparison(t *testing.T) {
 	for _, want := range []string{
 		"# route comparison rcmp_",
 		"- decision: decision_route_change_fixture",
-		"- assessment_class: comparison_supports_replacement",
-		"- recommend_replacement: true",
+		"- assessment_class: comparison_blocked",
+		"- recommend_replacement: false",
+		"- evidence_status: unverified",
 		"- matched_cases: 1",
 		"- incumbent_route: fixture-provider/model-a (mcp)",
 		"- candidate_route: fixture-provider/model-b (mcp)",
@@ -210,4 +215,81 @@ func captureComparisonStdoutIn(t *testing.T, homePath, input string, record bool
 		t.Fatalf("comparison exit code = %d, stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 	return stdout.String()
+}
+
+func TestRouteComparisonCLIOwnedBoundPositive(t *testing.T) {
+	homePath := t.TempDir()
+	c := routeevidence.RouteComparisonContractCase{CaseID: "case_owned", InputDigest: strings.Repeat("a", 64), AcceptanceDigest: strings.Repeat("b", 64), Critical: true}
+	contract := routeevidence.RouteComparisonContract{SchemaVersion: routeevidence.RouteComparisonContractSchemaVersion, MinRepetitions: 1, Cases: []routeevidence.RouteComparisonContractCase{c}}
+	artifacts, err := home.NewArtifactStore(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.Marshal(contract)
+	ref, err := artifacts.Put(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviews := []routeevidence.RouteOutcomeReview{}
+	for _, side := range []string{"a", "b"} {
+		at := time.Date(2026, 10, 27, 10, 0, 0, 0, time.UTC)
+		ev, err := routeevidence.Build(routeevidence.BuildInput{CreatedAt: at, RequestID: "request_" + side, WorkID: "work_" + side, ClientProfile: "fixture",
+			Protocol: "mcp", Provider: "fixture-provider", Model: "model-" + side, Status: "completed",
+			Usage: routeevidence.Usage{TotalTokens: 100, PromptTokens: 100}, CostMicros: 50, LatencyMS: 10, EvidenceRefs: []string{ref, routeevidence.RouteComparisonCaseRef(c)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := envelope.Receipt{
+			Header: envelope.Header{SchemaVersion: envelope.SVReceipt, ID: "rec_" + side, CreatedAt: at.Format(time.RFC3339),
+				Producer: envelope.Producer{Kind: "fixture", Name: "compound"}, IDs: envelope.IDs{WorkID: ev.WorkID},
+				Scope: envelope.Scope{EntityID: "system:fixture", Surface: "route"}, Authority: envelope.Authority{SourceClass: "runtime", Status: "current"},
+				Privacy: "private", Risk: "tier1", Uncertainty: envelope.Uncertainty{Level: "known"}},
+			Outcome: "completed", MoveType: "outward_delta", StateDelta: envelope.StateDelta{Changed: true, Summary: "accepted fixture"},
+			ProofRefs: []string{ev.ID, ref, routeevidence.RouteComparisonCaseRef(c)},
+		}
+		if err := rec.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		if err := routeevidence.RecordEvidence(homePath, ev); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := events.PutJSONExclusive(rec.ID, rec, "  "); err != nil {
+			t.Fatal(err)
+		}
+		review, err := routeevidence.BuildRouteOutcomeReview(ev, rec, "", at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reviews = append(reviews, review)
+	}
+	file := routeevidence.RouteComparisonFile{SchemaVersion: routeevidence.RouteComparisonInputSchemaVersion, DecisionID: "decision_fixture",
+		EvaluationContractRef: ref, IncumbentRoute: reviews[0].SelectedTarget, CandidateRoute: reviews[1].SelectedTarget,
+		Cases:         []routeevidence.RouteComparisonCaseFile{{CaseID: c.CaseID, Incumbent: reviews[:1], Candidate: reviews[1:]}},
+		CriticalCases: []string{c.CaseID}, MinRepetitions: 1,
+	}
+	path := filepath.Join(t.TempDir(), "input.json")
+	data, _ = json.Marshal(file)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := captureComparisonStdoutIn(t, homePath, path, false)
+	for _, want := range []string{"- evidence_status: owned_records_bound", "- recommend_replacement: true"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in public consumer: %s", want, out)
+		}
+	}
+	// Owned evidence remains authoritative when an inline field is changed.
+	file.Cases[0].Candidate[0].ReceiptOutcome = "failed"
+	data, _ = json.Marshal(file)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out = captureComparisonStdoutIn(t, homePath, path, false)
+	if !strings.Contains(out, "- recommend_replacement: false") || !strings.Contains(out, "disagrees with owned") {
+		t.Fatalf("public consumer trusted inline edit: %s", out)
+	}
 }

@@ -30,21 +30,22 @@ const RouteComparisonSchemaVersion = "compound.route_comparison.v0.1"
 // It is EVIDENCE. It does not change routing policy, does not mutate a
 // gateway, does not spend, and does not claim task success.
 type RouteComparison struct {
-	SchemaVersion  string                    `json:"schema_version"`
-	ID             string                    `json:"id"`
-	CreatedAt      string                    `json:"created_at"`
-	DecisionID     string                    `json:"decision_id"`
-	IncumbentRoute Target                    `json:"incumbent_route"`
-	CandidateRoute Target                    `json:"candidate_route"`
-	Cases          []RouteComparisonCase     `json:"cases"`
-	Assessment     RouteComparisonAssessment `json:"assessment"`
-	EvidenceRefs   []string                  `json:"evidence_refs"`
-	Warnings       []string                  `json:"warnings"`
+	EvaluationContractRef string                    `json:"evaluation_contract_ref,omitempty"`
+	SchemaVersion         string                    `json:"schema_version"`
+	ID                    string                    `json:"id"`
+	CreatedAt             string                    `json:"created_at"`
+	DecisionID            string                    `json:"decision_id"`
+	IncumbentRoute        Target                    `json:"incumbent_route"`
+	CandidateRoute        Target                    `json:"candidate_route"`
+	Cases                 []RouteComparisonCase     `json:"cases"`
+	Assessment            RouteComparisonAssessment `json:"assessment"`
+	EvidenceRefs          []string                  `json:"evidence_refs"`
+	Warnings              []string                  `json:"warnings"`
 }
 
 // RouteComparisonCase is one PINNED case, with the runs each side produced on
-// it. A case is keyed by the request id -- the same request must have been run
-// on both sides for the comparison to be matched.
+// it. The pinned contract supplies case identity; each execution has its own
+// request id and must carry that case binding on both owned records.
 type RouteComparisonCase struct {
 	CaseID        string               `json:"case_id"`
 	Critical      bool                 `json:"critical"`
@@ -57,6 +58,7 @@ type RouteComparisonRun struct {
 	RouteOutcomeReviewID string `json:"route_outcome_review_id"`
 	RouteEvidenceID      string `json:"route_evidence_id"`
 	ReceiptID            string `json:"receipt_id"`
+	RouteStatus          string `json:"route_status"`
 	// SelectedTarget is the route the reviewed call actually ran on. It must
 	// equal the route of the side the run is filed under.
 	SelectedTarget      Target `json:"selected_target"`
@@ -72,6 +74,7 @@ type RouteComparisonRun struct {
 
 // RouteComparisonAssessment is the verdict plus the reasons it is what it is.
 type RouteComparisonAssessment struct {
+	EvidenceStatus       string   `json:"evidence_status"`
 	RecommendReplacement bool     `json:"recommend_replacement"`
 	Class                string   `json:"class"`
 	QualityBasis         string   `json:"quality_basis"`
@@ -101,13 +104,15 @@ type RouteComparisonAssessment struct {
 // request id and an inferred population would silently compare different
 // cases.
 type RouteComparisonInput struct {
-	DecisionID     string
-	IncumbentRoute Target
-	CandidateRoute Target
-	Cases          []RouteComparisonCaseInput
-	CriticalCases  []string
-	MinRepetitions int
-	CreatedAt      string
+	EvaluationContractRef string
+	verification          *comparisonVerification
+	DecisionID            string
+	IncumbentRoute        Target
+	CandidateRoute        Target
+	Cases                 []RouteComparisonCaseInput
+	CriticalCases         []string
+	MinRepetitions        int
+	CreatedAt             string
 }
 
 // RouteComparisonCaseInput is one pinned case, with the runs each side
@@ -163,10 +168,11 @@ func validRouteComparisonReceiptOutcome(outcome string) bool {
 // sees exactly which evidence is missing, not a bare refusal.
 func BuildRouteComparison(input RouteComparisonInput) RouteComparison {
 	comparison := RouteComparison{
-		SchemaVersion:  RouteComparisonSchemaVersion,
-		DecisionID:     strings.TrimSpace(input.DecisionID),
-		IncumbentRoute: input.IncumbentRoute,
-		CandidateRoute: input.CandidateRoute,
+		SchemaVersion:         RouteComparisonSchemaVersion,
+		DecisionID:            strings.TrimSpace(input.DecisionID),
+		EvaluationContractRef: input.EvaluationContractRef,
+		IncumbentRoute:        input.IncumbentRoute,
+		CandidateRoute:        input.CandidateRoute,
 		Warnings: []string{
 			"does not change routing policy",
 			"does not mutate gateway provider or model-router config",
@@ -194,7 +200,25 @@ func BuildRouteComparison(input RouteComparisonInput) RouteComparison {
 		MinRepetitions: minRepetitions,
 	}
 
-	blocking := make([]string, 0, 8)
+	verificationReasons := comparisonVerificationReasons(input)
+	assessment.EvidenceStatus = "unverified"
+	assessment.QualityBasis = "caller_supplied_unverified"
+	if len(verificationReasons) == 0 {
+		assessment.EvidenceStatus = "owned_records_bound"
+		assessment.QualityBasis = "owned_receipts_bound_to_pinned_evaluation_contract"
+	}
+	blocking := append([]string{}, verificationReasons...)
+	if strings.TrimSpace(input.DecisionID) == "" {
+		blocking = append(blocking, "comparison decision identity is required")
+	}
+	if input.IncumbentRoute == input.CandidateRoute {
+		blocking = append(blocking, "incumbent and candidate routes must differ")
+	}
+	for _, route := range []Target{input.IncumbentRoute, input.CandidateRoute} {
+		if route.Provider == "" || route.Model == "" || route.Protocol == "" {
+			blocking = append(blocking, "complete provider, model and protocol route identity required")
+		}
+	}
 	matched := 0
 	present := make(map[string]bool, len(input.Cases))
 	seenExecutions := make(map[string]bool)
@@ -256,6 +280,9 @@ func BuildRouteComparison(input RouteComparisonInput) RouteComparison {
 		}
 
 		for _, run := range append(append([]RouteComparisonRun{}, incumbentRuns...), candidateRuns...) {
+			if !routeStatusOK(run.RouteStatus) {
+				blocking = append(blocking, "case "+caseID+" has a run whose route did not complete successfully")
+			}
 			if run.ReceiptID == "" {
 				blocking = append(blocking, "case "+caseID+" has a run with no receipt binding; route metadata alone is not evidence")
 			}
@@ -329,13 +356,16 @@ func BuildRouteComparison(input RouteComparisonInput) RouteComparison {
 	comparison.Assessment = assessment
 	comparison.ID = routeComparisonID(input)
 	comparison.EvidenceRefs = routeComparisonEvidenceRefs(comparison)
+	if input.EvaluationContractRef != "" {
+		comparison.EvidenceRefs = append(comparison.EvidenceRefs, input.EvaluationContractRef)
+	}
 	comparison.CreatedAt = strings.TrimSpace(input.CreatedAt)
 	return comparison
 }
 
 // comparisonRunsFromReviews converts the pinned case's reviews into runs.
 //
-// The CASE identity comes from the caller, not from the review: the review's
+// Case identity is verified against the pinned contract, not inferred from the review: its
 // request id identifies ONE gateway call, and the live ledger gives every
 // row a distinct one, so deriving the case from it would compare different
 // cases and call it a match.
@@ -346,13 +376,14 @@ func comparisonRunsFromReviews(reviews []RouteOutcomeReview) []RouteComparisonRu
 			RouteOutcomeReviewID: review.ID,
 			RouteEvidenceID:      review.RouteEvidenceID,
 			ReceiptID:            review.ReceiptID,
+			RouteStatus:          review.RouteStatus,
 			SelectedTarget:       review.SelectedTarget,
 			ReceiptOutcome:       review.ReceiptOutcome,
 			ReceiptStateChanged:  review.ReceiptStateChanged,
 			TotalTokens:          review.Usage.TotalTokens,
 			CostMicros:           review.CostMicros,
 			LatencyMS:            review.LatencyMS,
-			Succeeded:            review.ReceiptOutcome == "completed" && review.ReceiptStateChanged,
+			Succeeded:            review.ReceiptOutcome == "completed" && review.ReceiptStateChanged && routeStatusOK(review.RouteStatus),
 		})
 	}
 	return runs
