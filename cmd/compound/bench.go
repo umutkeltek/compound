@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -280,8 +279,12 @@ func runBenchCompare(args []string, stdout, stderr io.Writer) int {
 // writeBenchReport persists the report to $COMPOUND_HOME/reviews/bench/<ts>-<suite>-<digest>.json —
 // generated evidence under COMPOUND_HOME, never the repo tree. The nanosecond stamp keeps lexical
 // order chronological; the content digest and exclusive create keep two runs in one instant, or two
-// suites that slug alike, from replacing each other. Identical bytes return the existing file.
+// suites that slug alike, from replacing each other. Identical retries verify custody and sync the existing file before success.
 func writeBenchReport(homePath string, report bench.Report, now time.Time) (string, error) {
+	return writeBenchReportWithWriter(homePath, report, now, home.WriteRootedImmutableFileDurable)
+}
+
+func writeBenchReportWithWriter(homePath string, report bench.Report, now time.Time, write func(string, string, string, []byte, os.FileMode) error) (string, error) {
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return "", err
@@ -290,10 +293,8 @@ func writeBenchReport(homePath string, report bench.Report, now time.Time) (stri
 	sum := sha256.Sum256(data)
 	name := now.UTC().Format("20060102T150405.000000000Z") + "-" + slugifyBench(report.Suite) + "-" + hex.EncodeToString(sum[:6]) + ".json"
 	path := filepath.Join(homePath, "reviews", "bench", name)
-	if err := home.WriteRootedNewFileDurable(homePath, path, "bench report", data, 0o644); err != nil {
-		if existing, readErr := os.ReadFile(path); readErr != nil || !bytes.Equal(existing, data) {
-			return "", err
-		}
+	if err := write(homePath, path, "bench report", data, 0o644); err != nil {
+		return "", err
 	}
 	return path, nil
 }
