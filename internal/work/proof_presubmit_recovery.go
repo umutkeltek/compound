@@ -55,12 +55,16 @@ func (s *Store) readPresubmitExecution(attemptID string) (PresubmitExecutionResu
 
 // RecoverPresubmitProducer never kills stored PIDs or accepts canonical proof.
 // The existing barrier is the only release authority for a lost native owner.
+// A started group without durable closure (a producer killed mid-gate) is
+// admitted only after its exact holder lease expired with no renewal and a
+// kernel query finds no member of that group; the group is never signalled.
 func (s *Store) RecoverPresubmitProducer(workID, actor, attemptID, reason string) (out PresubmitExecutionResult, err error) {
 	if !runattempt.Valid(attemptID) || strings.TrimSpace(reason) == "" {
 		return out, fmt.Errorf("exact native attempt and recovery reason required")
 	}
 	var resource *landlease.Resource
 	var status landlease.StatusResult
+	var killedGroups []int
 	admitted := false
 	err = s.withLifecycleMutation(func() error {
 		w, e := s.Get(workID)
@@ -87,7 +91,7 @@ func (s *Store) RecoverPresubmitProducer(workID, actor, attemptID, reason string
 		if out.ContainmentUncertain {
 			return fmt.Errorf("native containment uncertainty requires exact external recovery; barrier alone is insufficient")
 		}
-		if e = validatePresubmitRecoveryGroups(attempt, out); e != nil {
+		if killedGroups, e = validatePresubmitRecoveryGroups(attempt, out); e != nil {
 			return e
 		}
 		if out.Holder != "proof:presubmit:"+attemptID+":"+workID+":"+actor || !out.LeasePrepared || out.Released || !slices.Contains(w.ActionIntentIDs, out.ActionIntentID) {
@@ -109,12 +113,15 @@ func (s *Store) RecoverPresubmitProducer(workID, actor, attemptID, reason string
 			return fmt.Errorf("presubmit recovery original intent/policy/binding invalid")
 		}
 		resource = landlease.ProofResourceForIdentity(s.home, out.ProofCoordination)
-		status, e = resource.Status(time.Now())
+		status, e = resource.Status(s.presubmitRecoveryNow())
 		if e != nil {
 			return e
 		}
 		if status.Holder != out.Holder {
 			return fmt.Errorf("presubmit exact holder changed; refusing recovery")
+		}
+		if e = presubmitKilledGroupsGone(attempt, status, killedGroups, s.presubmitRecoveryNow()); e != nil {
+			return e
 		}
 		pending, e := resource.ExecutionPending(out.Holder)
 		if e != nil {
@@ -137,6 +144,7 @@ func (s *Store) RecoverPresubmitProducer(workID, actor, attemptID, reason string
 			return e
 		}
 		out.RecoveryActionIntentID, out.RecoveryPolicyDecisionID = action.ID, fresh.ID
+		out.RecoveredEmptyGroups = killedGroups
 		admitted = true
 		return nil
 	})
@@ -145,6 +153,9 @@ func (s *Store) RecoverPresubmitProducer(workID, actor, attemptID, reason string
 	}
 	out.Status = "failed"
 	out.FailureReason = "native producer was lost; " + reason + "; canonical proof remains required"
+	if len(out.RecoveredEmptyGroups) > 0 {
+		out.FailureReason += fmt.Sprintf("; started groups %v had no kernel members after holder lease expiry", out.RecoveredEmptyGroups)
+	}
 	out.CompletedAt = time.Now().UTC()
 	if out.Report != nil {
 		out.Report.Status = "failed"
@@ -171,15 +182,22 @@ func (s *Store) RecoverPresubmitProducer(workID, actor, attemptID, reason string
 	}
 	out.Quiescent = true
 	if status.IsExpired {
-		if _, err = resource.RearmExpiredExact(status, time.Now()); err != nil {
+		if _, err = resource.RearmExpiredExact(status, s.presubmitRecoveryNow()); err != nil {
 			return out, err
 		}
 	}
-	_, err = resource.ReleaseAfter(out.Holder, time.Now(), func() error { return s.persistPresubmitRecovery(&out) })
+	_, err = resource.ReleaseAfter(out.Holder, s.presubmitRecoveryNow(), func() error { return s.persistPresubmitRecovery(&out) })
 	if err == nil {
 		out.Released = true
 	}
 	return out, err
+}
+
+func (s *Store) presubmitRecoveryNow() time.Time {
+	if s.presubmitRecoveryClock != nil {
+		return s.presubmitRecoveryClock()
+	}
+	return time.Now()
 }
 
 func (s *Store) persistPresubmitRecovery(out *PresubmitExecutionResult) error {
@@ -278,7 +296,11 @@ func RunPresubmitRecoveryCLI(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func validatePresubmitRecoveryGroups(attempt runattempt.RunAttempt, out PresubmitExecutionResult) error {
+// validatePresubmitRecoveryGroups checks the durable group journal and returns
+// the started groups that lack durable closure. Those stay refused until
+// presubmitKilledGroupsGone proves them empty. An unregistered or ambiguous
+// launch has no group number to inspect, so it still refuses here.
+func validatePresubmitRecoveryGroups(attempt runattempt.RunAttempt, out PresubmitExecutionResult) ([]int, error) {
 	latest := map[int]PresubmitCheckpoint{}
 	registered := false
 	for _, checkpoint := range out.Checkpoints {
@@ -286,31 +308,70 @@ func validatePresubmitRecoveryGroups(attempt runattempt.RunAttempt, out Presubmi
 			continue
 		}
 		if checkpoint.GroupStarted && checkpoint.ProcessGroupID <= 0 {
-			return fmt.Errorf("native group journal has an invalid started identity")
+			return nil, fmt.Errorf("native group journal has an invalid started identity")
 		}
 		prior, exists := latest[checkpoint.CommandSequence]
 		if exists && prior.GroupStarted && checkpoint.GroupStarted && prior.ProcessGroupID != checkpoint.ProcessGroupID {
-			return fmt.Errorf("native group journal changed command identity")
+			return nil, fmt.Errorf("native group journal changed command identity")
 		}
 		if exists && prior.GroupClosed && !checkpoint.GroupClosed {
-			return fmt.Errorf("native group journal reopened a closed command")
+			return nil, fmt.Errorf("native group journal reopened a closed command")
 		}
 		latest[checkpoint.CommandSequence] = checkpoint
 	}
 	launch := attempt.Launch
 	exactStartError := launch != nil && launch.PreparedAt != nil && launch.StartErrorAt != nil && launch.CommittedAt == nil && launch.PreparedAt.Equal(*launch.StartErrorAt)
 	mayHaveLaunched := launch != nil && (launch.PreparedAt != nil || launch.CommittedAt != nil) && !exactStartError
+	var unclosed []int
 	for _, checkpoint := range latest {
 		registered = registered || checkpoint.GroupStarted
-		if !checkpoint.GroupClosed {
-			if !checkpoint.GroupStarted && !mayHaveLaunched && len(latest) == 1 {
-				continue
-			}
-			return fmt.Errorf("native started or ambiguous process group lacks durable closed evidence; mid-gate SIGKILL requires exact external/manual recovery, barrier alone is insufficient")
+		if checkpoint.GroupClosed {
+			continue
 		}
+		if checkpoint.GroupStarted {
+			unclosed = append(unclosed, checkpoint.ProcessGroupID)
+			continue
+		}
+		if !mayHaveLaunched && len(latest) == 1 {
+			continue
+		}
+		return nil, fmt.Errorf("native unregistered or ambiguous command launch lacks group evidence; exact external/manual recovery required, barrier alone is insufficient")
 	}
 	if mayHaveLaunched && !registered {
-		return fmt.Errorf("native prepared/committed launch lacks registered group evidence; exact external/manual recovery required")
+		return nil, fmt.Errorf("native prepared/committed launch lacks registered group evidence; exact external/manual recovery required")
+	}
+	slices.Sort(unclosed)
+	return slices.Compact(unclosed), nil
+}
+
+// presubmitKilledGroupsGone admits started groups without durable closure only
+// when the exact holder lease expired with no renewal and the producer's last
+// activity is older than that lease TTL, and a kernel membership query (never
+// a signal) finds no member. Any member refuses: it may be the run itself or
+// an unrelated group that reused the number.
+func presubmitKilledGroupsGone(attempt runattempt.RunAttempt, status landlease.StatusResult, groups []int, now time.Time) error {
+	if len(groups) == 0 {
+		return nil
+	}
+	ttl := time.Duration(status.TTLSeconds) * time.Second
+	if status.Held || !status.IsExpired || ttl <= 0 {
+		return fmt.Errorf("native started groups %v lack durable closed evidence and the exact holder lease has not expired", groups)
+	}
+	lastActivity := attempt.CreatedAt
+	if attempt.LastHeartbeatAt != nil && attempt.LastHeartbeatAt.After(lastActivity) {
+		lastActivity = *attempt.LastHeartbeatAt
+	}
+	if lastActivity.IsZero() || now.Sub(lastActivity) <= ttl {
+		return fmt.Errorf("native started groups %v lack durable closed evidence and the producer heartbeat is newer than its lease TTL", groups)
+	}
+	for _, pgid := range groups {
+		members, err := presubmitRecordedGroupMembers(pgid)
+		if err != nil {
+			return fmt.Errorf("native started group %d lacks durable closed evidence and its kernel membership query failed: %w", pgid, err)
+		}
+		if members != 0 {
+			return fmt.Errorf("native started group %d still has %d live member(s); it may be the run or a reused group number, so recovery refuses", pgid, members)
+		}
 	}
 	return nil
 }
