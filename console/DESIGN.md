@@ -483,3 +483,8 @@ become the first screen. Search and state filters stay in the table. Flow answer
 position by executor, Space answers harness ownership and current stage, and both open the same
 deep-linked trace. Space keeps its selected-work inspector visible while the lifecycle plane
 scrolls. Pipeline, Board, and Offered packets remain advanced lenses over the same projection.
+
+Table, Flow, and Space use the WorkEnvelope state for lifecycle filters, priority, color, status
+badges, and accessible work labels. Run status appears separately as execution evidence:
+a successful attempt does not complete work awaiting verification, and a running attempt does
+not override a held work item.

@@ -18,7 +18,7 @@ const PAGE_SIZE = 18;
 
 function workPriority(item: WorkLensItem): number {
   if (["blocked", "held"].includes(item.state)) return 0;
-  const state = item.runStatus || item.state;
+  const state = item.state;
   if (state === "running") return 1;
   if (state === "verifying") return 2;
   if (item.state === "claimed") return 3;
@@ -28,7 +28,7 @@ function workPriority(item: WorkLensItem): number {
 
 function rowAccent(item: WorkLensItem): string {
   if (["blocked", "held"].includes(item.state)) return "var(--seam-fg)";
-  const state = item.runStatus || item.state;
+  const state = item.state;
   if (state === "running") return "var(--work-fg)";
   if (state === "verifying") return "var(--memory-fg)";
   if (state === "failed") return "var(--crit-fg)";
@@ -42,14 +42,14 @@ export function WorkTableLens({ items, onOpenTrace }: { items: WorkLensItem[]; o
   const rows = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return items.filter((item) => {
-      const state = item.runStatus || item.state;
+      const state = item.state;
       const filterMatch =
         filter === "all" ||
         (filter === "focus"
           ? ["running", "verifying"].includes(state) || ["blocked", "held"].includes(item.state)
           : filter === "blocked"
             ? ["blocked", "held"].includes(item.state)
-            : state === filter || item.state === filter);
+            : state === filter);
       const queryMatch = !needle || `${item.title} ${item.workId} ${item.owner} ${item.laneLabel} ${item.harness}`.toLowerCase().includes(needle);
       return filterMatch && queryMatch;
     }).sort((a, b) => workPriority(a) - workPriority(b));
@@ -95,8 +95,8 @@ export function WorkTableLens({ items, onOpenTrace }: { items: WorkLensItem[]; o
                   onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpenTrace(item.workId); } }}
                 >
                   <td className="max-w-md px-3 py-3"><div className="line-clamp-2 text-sm font-semibold leading-snug text-ink">{item.title}</div><div className="mt-1"><IdRef id={item.workId} kind="work" plain truncate /></div></td>
-                  <td className="px-3 py-3"><div className="text-xs font-semibold text-ink">{item.laneLabel}</div><div className="mt-0.5 text-2xs text-faint" title={item.harness ? `Recorded harness: ${item.harness}` : undefined}>{item.harnessLabel}</div></td>
-                  <td className="px-3 py-3"><StateBadge state={item.runStatus || item.state} /><div className="mt-1 text-2xs tabular-nums text-faint">{item.ageLabel}</div></td>
+                  <td className="px-3 py-3"><div className="text-xs font-semibold text-ink">{item.laneLabel}</div><div className="mt-0.5 text-2xs text-faint" title={item.harness ? `Recorded harness: ${item.harness}` : undefined}>{item.harnessLabel}</div>{item.runStatus ? <div className="mt-1 text-2xs text-faint">Run status: {item.runStatus.replace(/_/g, " ")}</div> : null}</td>
+                  <td className="px-3 py-3"><StateBadge state={item.state} /><div className="mt-1 text-2xs tabular-nums text-faint">{item.ageLabel}</div></td>
                   <td className="max-w-44 px-3 py-3"><div className="truncate text-xs text-muted" title={item.owner}>{item.owner}</div>{item.actor ? <div className="mono mt-0.5 truncate text-2xs text-faint">run by {item.actor}</div> : null}</td>
                   <td className="max-w-xs px-3 py-3"><p className="line-clamp-2 text-xs leading-relaxed text-muted">{item.nextAction || "No next action projected."}</p></td>
                 </tr>
