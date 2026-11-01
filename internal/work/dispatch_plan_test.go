@@ -193,6 +193,66 @@ func TestDispatchClaimClaimsSelectedReadyWork(t *testing.T) {
 	}
 }
 
+// A capability that is not a skill must reach the dispatched worker.
+//
+// The dispatch prompt used to keep only `skill` offers, so a tool, procedure
+// or lens node that matched the task at the SAME score as a skill never
+// reached the lane. The CapabilityGraph already ranks every kind together;
+// the prompt's kind filter threw that ranking away. The contract docs say the
+// block is built from the graph's offers for that task, so the code must
+// carry every kind it ranked.
+func TestDispatchClaimCarriesNonSkillCapabilityOffersIntoWorkerPrompt(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	graph, err := capgraph.Open(s.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matching := []capgraph.Node{
+		{ID: "skill:web-design-guidelines", Kind: "skill", Name: "web-design-guidelines", Triggers: []string{"frontend", "ui", "web"}},
+		{ID: "tool:headroom", Kind: "tool", Name: "headroom", Triggers: []string{"frontend", "ui", "web"}},
+		{ID: "procedure:web-check", Kind: "procedure", Name: "web-check", Triggers: []string{"frontend", "ui", "web"}},
+		{ID: "lens:paywall-risk", Kind: "lens", Name: "paywall-risk", Triggers: []string{"frontend", "ui", "web"}},
+	}
+	for _, node := range matching {
+		if err := graph.Add(node); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Create(CreateInput{
+		Owner:            "compound-core",
+		SuccessPredicate: "frontend ui page has visual screenshot proof",
+		DesiredOutcome:   "build web ui",
+	}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.DispatchClaim(fixedNow, DispatchPlanOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	offered := map[string]string{}
+	for _, offer := range result.CapabilitiesOffered {
+		offered[offer.Ref] = offer.Kind
+	}
+	for _, node := range matching {
+		kind, present := offered["capability://"+node.ID]
+		if !present {
+			t.Fatalf("dispatch plan dropped the %s offer %q: %+v", node.Kind, node.ID, result.CapabilitiesOffered)
+		}
+		if kind != node.Kind {
+			t.Fatalf("dispatch plan offer %q kind = %q, want %q", node.ID, kind, node.Kind)
+		}
+		if !strings.Contains(result.WorkerPromptMD, "capability://"+node.ID) {
+			t.Fatalf("worker prompt missing the %s offer %q:\n%s", node.Kind, node.ID, result.WorkerPromptMD)
+		}
+		// The lane must be able to TELL the kinds apart: a tool is not
+		// something it loads the way it loads a skill.
+		if !strings.Contains(result.WorkerPromptMD, "kind="+node.Kind) {
+			t.Fatalf("worker prompt does not name the kind of %q:\n%s", node.ID, result.WorkerPromptMD)
+		}
+	}
+}
+
 func TestDispatchClaimInjectsTaskScopedSkillOffersIntoWorkerPrompt(t *testing.T) {
 	t.Parallel()
 	s := newStore(t)
@@ -219,9 +279,6 @@ func TestDispatchClaimInjectsTaskScopedSkillOffersIntoWorkerPrompt(t *testing.T)
 	}
 	if result.ContextPackID == "" || len(result.CapabilitiesOffered) == 0 {
 		t.Fatalf("dispatch claim missing context/capability offers: %+v", result)
-	}
-	if !strings.Contains(result.WorkerPromptMD, "LOAD THESE SKILLS") {
-		t.Fatalf("worker prompt missing skill block:\n%s", result.WorkerPromptMD)
 	}
 	if !strings.Contains(result.WorkerPromptMD, "capability://skill:web-design-guidelines") {
 		t.Fatalf("worker prompt missing web skill:\n%s", result.WorkerPromptMD)

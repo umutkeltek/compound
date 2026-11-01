@@ -51,6 +51,7 @@ graph entry, not an installed, triggered, or consumed capability.
 | S3 | Compare replacement routes using matched, receipt-backed outcomes | P1 | `internal/routeevidence/outcome.go`, `internal/latenttax/latenttax.go` | Your Model Is Already Obsolete; Eval Many Models; Bash vs. MCP |
 | S4 | Bind improvement acceptance to the change and its negative control | P2 | `internal/distiller/eval.go` → `internal/distiller/improvement_plan.go` | Prompt Optimizer; SOTA Coding Agent Benchmarks |
 | S5 | Make benchmark certification input-bound and lane-aware | P2 | `internal/bench/bench.go` | No Vibes March; Performance Engineering |
+| S6 | Carry every capability kind to the dispatched worker | P2 | `internal/work/dispatch_prompt.go` | MCP with 10,000 tools (selection shape only — its registry is NO-BUILD #3) |
 
 S2 combines two separate P1 candidates; S3 preserves the third. No other candidate is promoted to P1.
 
@@ -338,6 +339,42 @@ logic fails. Retire name-only eligibility and aggregate-only acceptance for appl
 coding benchmark.
 
 The benchmark report now carries the complete declared evaluation inventory: case identity, kind, lane, split, expected outcomes and canonical input hashes. Certification checks scored coverage against that inventory, validates counts and metrics, and requires the same input identity across reports. Empty, legacy, shortened and unmatched evidence cannot produce an acceptance proof. Build, graph and method revisions may differ. Input identity establishes comparability; report authenticity still depends on the surrounding evidence custody.
+
+### S6 — Carry every capability kind to the dispatched worker
+
+**Priority:** P2.
+
+**Upstream evidence.** The "10,000 tools" selector narrows a large catalog by RELEVANCE and then
+builds a union of the surviving types, so the chosen tool stays identifiable (`2025-05-27-mcp-with-10000-tools/tools.py`).
+The audit refuses that project's separate registry (NO-BUILD #3 — its selector considers only the first
+100 parsed tools, so catalog scale is not selection proof), but the selection SHAPE — bound the set,
+keep every kind in play, keep the discriminator unambiguous — is the part Compound's own capability
+graph already implements.
+
+**Owner and flow.** CapabilityGraph surfaces task-scoped nodes → dispatch context pack carries every
+surfaced offer → dispatch worker prompt projects the pack's offers → the dispatched lane reads them.
+The owner is `internal/work/dispatch_prompt.go`; the graph is `internal/capgraph`, and the projection
+is the same one the hook injection path already uses.
+
+**Baseline and acceptance.** The dispatch prompt kept only `skill` offers. A tool, procedure, lens,
+doctrine or mcp node that matched the task at the SAME score as a skill never reached the lane,
+because the kind filter discarded the ranking the graph had already computed. Reproduced on the
+dispatch path: with a skill, a tool, a procedure and a lens all matching the task at score 3.0, the
+worker prompt carried exactly one offer — the skill. The contract doc and the runtime doc both
+described the block as built from the graph's offers for that task, so the code contradicted its own
+contract. The block now carries the graph's ranking across every kind, names each offer's kind, and
+bounds the NUMBER of offers rather than their kind.
+
+**Cost / risk.** Small. The blast radius is the dispatch plan's offered list, the worker prompt
+Markdown, and the two contract paragraphs that describe it.
+
+**Rollback / retirement.** Retire the skill-only filter and the `LOAD THESE SKILLS` heading in
+favour of the kind-neutral block. The receipt's `skills.capabilities_offered` is a separate field
+fed by the close input, so it is unchanged.
+
+**Why this, not the nearest alternative.** The hook injection path already renders every capability
+kind; the dispatch path was the outlier, and the fix is in the existing projection rather than a new
+selector.
 
 ## 4. Cluster map
 

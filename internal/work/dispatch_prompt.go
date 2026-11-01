@@ -227,20 +227,17 @@ func dispatchSurfaceReason(hit capgraph.Surfaced) string {
 	return reason
 }
 
+// dispatchPromptOffers returns the task-scoped capability offers the worker
+// prompt carries.
+//
+// The pack's offers arrive in the CapabilityGraph's own rank order (score
+// descending, then node id), already mixed across kinds. This used to keep
+// only `skill` offers, so a tool, procedure, lens, doctrine or mcp node that
+// matched the task at the SAME score never reached the dispatched worker --
+// the kind filter discarded the ranking the graph had already computed. The
+// bound stays; the kind bias does not.
 func dispatchPromptOffers(pack envelope.ContextPack) []DispatchCapabilityOffer {
-	out := []DispatchCapabilityOffer{}
-	for _, offer := range pack.CapabilityOffers {
-		if offer.Kind != "skill" {
-			continue
-		}
-		out = append(out, dispatchCapabilityOffer(offer))
-		if len(out) >= maxDispatchPromptOffers {
-			return out
-		}
-	}
-	if len(out) > 0 {
-		return out
-	}
+	out := make([]DispatchCapabilityOffer, 0, min(len(pack.CapabilityOffers), maxDispatchPromptOffers))
 	for _, offer := range pack.CapabilityOffers {
 		out = append(out, dispatchCapabilityOffer(offer))
 		if len(out) >= maxDispatchPromptOffers {
@@ -290,13 +287,13 @@ func renderDispatchPrompt(w envelope.WorkEnvelope, task envelope.TaskContract, w
 		}
 		fmt.Fprintln(&b)
 	}
-	fmt.Fprintln(&b, "## LOAD THESE SKILLS")
+	fmt.Fprintln(&b, "## LOAD THESE CAPABILITIES")
 	fmt.Fprintln(&b)
 	if len(offers) == 0 {
 		fmt.Fprintln(&b, "- none surfaced")
 	} else {
 		for _, offer := range offers {
-			fmt.Fprintf(&b, "- %s (%s): %s\n", offer.Ref, offer.Name, firstNonEmpty(offer.Why, "surfaced by capability graph"))
+			fmt.Fprintf(&b, "- %s (%s, kind=%s): %s\n", offer.Ref, offer.Name, offer.Kind, firstNonEmpty(offer.Why, "surfaced by capability graph"))
 		}
 	}
 	if w.GitDelivery != nil {
