@@ -118,6 +118,11 @@ Modes:
 - temporal evolution through positions and supersession edges;
 - conservative ambient injection from operational/world-visible promoted memory.
 
+Operational repository snapshots, including `current_branch`, HEAD and dirty/ahead counts,
+never enter ambient ContextPacks or generated harness memory digests. Explicit
+historical recall still returns these claims; decisions about current Git state
+require a fresh source-control snapshot.
+
 Raw evidence and private evidence quotes are not ambient by default. This is a
 statement about evidence bodies, not about claim visibility: a promoted claim
 with `visibility: private` still passes the orient ambient gate by design

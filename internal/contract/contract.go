@@ -3287,7 +3287,7 @@ func volatileOperationalRepoStateClaim(claim mem.Claim) bool {
 	}
 	predicate := memoryKey(claim.Predicate)
 	switch predicate {
-	case "head", "aheadcount", "behindcount", "stagedcount", "unstagedcount", "untrackedcount", "changedpathcount", "sourcecontrolstatus":
+	case "currentbranch", "head", "aheadcount", "behindcount", "stagedcount", "unstagedcount", "untrackedcount", "changedpathcount", "sourcecontrolstatus":
 		return true
 	default:
 		return false
