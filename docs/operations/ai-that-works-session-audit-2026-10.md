@@ -458,6 +458,7 @@ Thresholds below are proposed acceptance rules, not measured outcomes.
 | S3 | Latent-tax plus receipt-linked assessment: critical-case preservation, complete cost accounting, declared repetitions and budgets (`internal/latenttax/latenttax.go`; `internal/routeevidence/outcome.go`) | Review at the trial budget or on material provider change; stop on critical regression, incomparable evidence, or missing accounting |
 | S4 | Distiller eval: exact binding, targeted semantic fail/pass pair, unaffected-consumer non-regression, zero live replay calls (`internal/distiller/eval.go`) | Review before target changes; stop acceptance on stale proof or incomplete coverage |
 | S5 | Bench: changed-input and masked-lane fixtures refuse certification; valid identical-input controls pass (`internal/bench/bench.go`) | Review on suite or comparator changes; stop certification on missing identity or incomparable lanes |
+| S6 | Dispatch prompt: every capability kind the graph ranked reaches the lane, each named by kind (`internal/work/dispatch_prompt.go`) | Review when the capability graph gains a kind or the dispatch bound changes; stop surfacing when a kind filter would drop a ranked offer |
 
 ## 8. Risks and limits
 
