@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const wantOperatorModelHeader = "## Operator model (private, from config/operator-model.md)"
@@ -137,4 +138,26 @@ func tail(s string, n int) string {
 		return s
 	}
 	return s[len(s)-n:]
+}
+
+func TestServeSessionStartCarriesOperatorModelAfterDoorMap(t *testing.T) {
+	home := t.TempDir()
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	without := ServeSessionStart(home, now, DefaultDoorMapTTL)
+	if without != ServeDoorMap(home, now, DefaultDoorMapTTL) {
+		t.Fatalf("without a model the payload must be the door map byte for byte")
+	}
+	if err := os.MkdirAll(filepath.Join(home, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, filepath.FromSlash(OperatorModelPath)), []byte("- lead with the decision\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	with := ServeSessionStart(home, now, DefaultDoorMapTTL)
+	if !strings.HasPrefix(with, without+"\n\n"+operatorModelHeader) {
+		t.Fatalf("model must follow the door map one blank line apart:\n%s", with)
+	}
+	if !strings.HasSuffix(with, "- lead with the decision") {
+		t.Fatalf("model body missing:\n%s", with)
+	}
 }

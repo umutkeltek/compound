@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Operator model: the operator's standing preferences and decisions, written
@@ -81,4 +82,16 @@ func renderOperatorModel(raw string, unread int64) string {
 	omitted := int64(len(content)-len(kept)) + unread
 	return operatorModelHeader + "\n" + kept + "\n(truncated: " + strconv.FormatInt(omitted, 10) +
 		" bytes omitted; full text in " + OperatorModelPath + ")"
+}
+
+// ServeSessionStart is the one session-start payload every harness receives:
+// the door map, then the operator model one blank line apart when a model
+// exists. The hook and `compound doors serve` both call it, so a lane that
+// only gets `doors serve` (no session hook) still receives the operator model.
+func ServeSessionStart(home string, now time.Time, ttl time.Duration) string {
+	doorMap := ServeDoorMap(home, now, ttl)
+	if model := ServeOperatorModel(home); model != "" {
+		return doorMap + "\n\n" + model
+	}
+	return doorMap
 }

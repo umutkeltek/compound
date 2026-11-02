@@ -651,11 +651,7 @@ func sessionStartDoorMap(fx Fixture, deps Deps, now time.Time) string {
 	if !fx.Live || strings.TrimSpace(deps.HomePath) == "" {
 		return ""
 	}
-	doorMap := tooltopology.ServeDoorMap(deps.HomePath, now, tooltopology.DefaultDoorMapTTL)
-	if model := tooltopology.ServeOperatorModel(deps.HomePath); model != "" {
-		return doorMap + "\n\n" + model
-	}
-	return doorMap
+	return tooltopology.ServeSessionStart(deps.HomePath, now, tooltopology.DefaultDoorMapTTL)
 }
 
 func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {

@@ -187,7 +187,8 @@ one-line pointer to `compound doors serve` in their compiled instruction block.
 - Operator model: when `COMPOUND_HOME/config/operator-model.md` exists, the live `session-start`
   payload appends it after the door map, one blank line apart, under a header that names the file.
   It is private runtime state under `COMPOUND_HOME`, never tracked in a repository, and reaches every
-  harness that receives the door map. Content is capped at 3072 bytes, cut at the last newline that
+  harness that receives the door map, including lanes served only by `compound doors serve` (the hook
+  and that command compose the same session-start payload). Content is capped at 3072 bytes, cut at the last newline that
   fits, with one line stating how many bytes were left out; a missing or unreadable file serves nothing.
 
 ## The execution handshake
