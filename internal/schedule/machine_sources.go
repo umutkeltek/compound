@@ -333,9 +333,11 @@ func collectHermesJobs() ([]ScheduleEntry, error) {
 }
 
 func collectLoginItems() ([]ScheduleEntry, error) {
-	out, err := runBounded(60*time.Second, "/usr/bin/sfltool", "dumpbtm")
+	// macOS shows an admin password dialog for this read, and the read waits for an answer.
+	// Callers reach it only on an explicit request; allow time to answer, then give up.
+	out, err := runBounded(2*time.Minute, "/usr/bin/sfltool", "dumpbtm")
 	if err != nil {
-		return nil, fmt.Errorf("sfltool dumpbtm: %w", err)
+		return nil, fmt.Errorf("sfltool dumpbtm, which needs the macOS admin password dialog answered: %w", err)
 	}
 	return loginItemEntriesFromBTM(string(out), os.Getuid(), func(p string) bool {
 		_, statErr := os.Stat(p)
@@ -436,7 +438,7 @@ func entryIsRunningNow(e ScheduleEntry) bool {
 func rosterKey(source, label string) string { return source + "\x00" + label }
 
 // rosterFindings compares what is on the machine with what the roster says should be.
-func rosterFindings(entries []ScheduleEntry, roster *backgroundRoster) []scheduleDoctorFinding {
+func rosterFindings(entries []ScheduleEntry, roster *backgroundRoster, unread map[string]bool) []scheduleDoctorFinding {
 	if roster == nil {
 		return nil
 	}
@@ -460,7 +462,8 @@ func rosterFindings(entries []ScheduleEntry, roster *backgroundRoster) []schedul
 		}
 	}
 	for _, it := range roster.Items {
-		if it.Expected == "on" && !seen[rosterKey(it.Source, it.Label)] {
+		// A source not read this run cannot show that an item is gone.
+		if it.Expected == "on" && !unread[it.Source] && !seen[rosterKey(it.Source, it.Label)] {
 			findings = append(findings, scheduleDoctorFinding{Label: it.Label, Source: scheduleSource(it.Source), Code: issueMissing, Detail: fmt.Sprintf("roster expects it on, owner %s, but it is not active", it.Owner)})
 		}
 	}

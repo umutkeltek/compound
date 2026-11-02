@@ -3,6 +3,8 @@
 package schedule
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -178,7 +180,7 @@ func TestRosterFindings(t *testing.T) {
 		{Source: scheduleSourceDocker, Label: "dev-db-stopped", Disabled: true},
 	}
 	codes := map[string]string{}
-	for _, f := range rosterFindings(entries, roster) {
+	for _, f := range rosterFindings(entries, roster, nil) {
 		codes[f.Label] = f.Code
 	}
 	want := map[string]string{"gone": issueMissing, "rare-running": issueUnexpectedActive, "stranger": issueUnknown, "retired": issueUnexpectedActive}
@@ -190,8 +192,46 @@ func TestRosterFindings(t *testing.T) {
 			t.Errorf("%s: got %q, want %q", k, codes[k], v)
 		}
 	}
-	if got := rosterFindings(entries, nil); got != nil {
+	if got := rosterFindings(entries, nil, nil); got != nil {
 		t.Errorf("no roster must mean no roster findings: %+v", got)
+	}
+	for _, f := range rosterFindings(entries, roster, map[string]bool{"user": true}) {
+		if f.Code == issueMissing {
+			t.Errorf("a source not read cannot report missing: %+v", f)
+		}
+	}
+}
+
+func TestPlainAllNeverAsksForTheAdminPassword(t *testing.T) {
+	for _, filter := range []string{"all", ""} {
+		if scheduleSourceWanted(filter, scheduleSourceLoginItem) {
+			t.Errorf("filter %q reads login items, which shows a password dialog", filter)
+		}
+		for _, s := range []scheduleSource{scheduleSourceUser, scheduleSourceSystem, scheduleSourceCrontab, scheduleSourceHermes, scheduleSourceDocker} {
+			if !scheduleSourceWanted(filter, s) {
+				t.Errorf("filter %q dropped source %q", filter, s)
+			}
+		}
+	}
+	if !scheduleSourceWanted("login-item", scheduleSourceLoginItem) || !scheduleSourceWanted(scheduleSourcesWithLoginItems, scheduleSourceLoginItem) {
+		t.Error("an explicit request must read login items")
+	}
+	if err := validateScheduleSource(scheduleSourcesWithLoginItems); err == nil {
+		t.Error("the doctor's internal filter must not be accepted by --source")
+	}
+}
+
+func TestUnreadSources(t *testing.T) {
+	failed := fmt.Errorf("wrapped: %w", sourceReadError{scheduleSourceHermes, errors.New("broken file")})
+	got := unreadSources([]error{failed, errors.New("no source named")}, true)
+	if !got["hermes"] || len(got) != 1 {
+		t.Errorf("read failure: %v", got)
+	}
+	if got := unreadSources(nil, false); !got["login-item"] || len(got) != 1 {
+		t.Errorf("login items not asked for: %v", got)
+	}
+	if got := unreadSources(nil, true); len(got) != 0 {
+		t.Errorf("login items asked for and read: %v", got)
 	}
 }
 

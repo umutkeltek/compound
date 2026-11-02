@@ -91,14 +91,16 @@ type scheduleDoctorFinding struct {
 }
 
 type scheduleDoctorReport struct {
-	Schema    string                  `json:"schema"` // compound/schedule-doctor.v0.1
-	Source    string                  `json:"source"`
-	Generated string                  `json:"generated_at"`
-	StaleDays int                     `json:"stale_days"`
-	Roster    string                  `json:"roster"` // path, or "absent"
-	Problems  int                     `json:"problems"`
-	Codes     map[string]int          `json:"codes"`
-	Findings  []scheduleDoctorFinding `json:"findings"`
+	Schema    string `json:"schema"` // compound/schedule-doctor.v0.1
+	Source    string `json:"source"`
+	Generated string `json:"generated_at"`
+	StaleDays int    `json:"stale_days"`
+	Roster    string `json:"roster"` // path, or "absent"
+	// LoginItems is "read" or "not-read"; see scheduleSourcesWithLoginItems.
+	LoginItems string                  `json:"login_items"`
+	Problems   int                     `json:"problems"`
+	Codes      map[string]int          `json:"codes"`
+	Findings   []scheduleDoctorFinding `json:"findings"`
 }
 
 const scheduleDoctorSchema = "compound/schedule-doctor.v0.1"
@@ -146,6 +148,9 @@ func cmdScheduleList(args []string) {
 
 	entries, errs := collectSchedule(source)
 	entries = prepareScheduleEntries(entries, nsFilter, includeEnv)
+	if source == "all" {
+		fmt.Fprintln(os.Stderr, loginItemsNotReadNote)
+	}
 	if jsonOut {
 		out := struct {
 			Schema    string          `json:"schema"`
@@ -204,7 +209,7 @@ func cmdScheduleShow(args []string) {
 		}
 	}
 	if hit == nil {
-		fmt.Fprintf(os.Stderr, "schedule show: no entry matching %q\n", target)
+		fmt.Fprintf(os.Stderr, "schedule show: no entry matching %q\n%s\n", target, loginItemsNotReadNote)
 		os.Exit(1)
 	}
 	if jsonOut {
@@ -240,14 +245,20 @@ func cmdScheduleDoctor(args []string) {
 		}
 		staleDays = n
 	}
-	entries, errs := collectSchedule("all")
+	loginItems := hasFlag(args, "--login-items")
+	filter, loginItemState := "all", "not-read"
+	if loginItems {
+		filter, loginItemState = scheduleSourcesWithLoginItems, "read"
+	}
+	entries, errs := collectSchedule(filter)
 	now := time.Now()
 	report := scheduleDoctorReport{
-		Schema:    scheduleDoctorSchema,
-		Source:    "all",
-		Generated: now.UTC().Format(time.RFC3339Nano),
-		StaleDays: staleDays,
-		Codes:     map[string]int{},
+		Schema:     scheduleDoctorSchema,
+		Source:     "all",
+		Generated:  now.UTC().Format(time.RFC3339Nano),
+		StaleDays:  staleDays,
+		LoginItems: loginItemState,
+		Codes:      map[string]int{},
 	}
 	seen := map[string]int{}
 	for _, e := range entries {
@@ -341,7 +352,7 @@ func cmdScheduleDoctor(args []string) {
 		report.Findings = append(report.Findings, scheduleDoctorFinding{Source: scheduleSourceSystem, Code: "source-read-error", Detail: err.Error()})
 	} else if roster != nil {
 		report.Roster = rosterPath
-		report.Findings = append(report.Findings, rosterFindings(entries, roster)...)
+		report.Findings = append(report.Findings, rosterFindings(entries, roster, unreadSources(errs, loginItems))...)
 	}
 	for _, f := range report.Findings {
 		report.Codes[f.Code]++
@@ -355,6 +366,9 @@ func cmdScheduleDoctor(args []string) {
 	}
 	fmt.Printf("# schedule doctor (%s)\n", scheduleDoctorSchema)
 	fmt.Printf("# generated: %s  problems: %d  findings: %d  roster: %s\n", report.Generated, report.Problems, len(report.Findings), report.Roster)
+	if !loginItems {
+		fmt.Println("# login items: not read; macOS asks for an admin password, so add --login-items to include them")
+	}
 	if len(report.Findings) == 0 {
 		fmt.Println("- none")
 		return
@@ -390,30 +404,11 @@ func cmdScheduleDoctor(args []string) {
 func collectSchedule(sourceFilter string) ([]ScheduleEntry, []error) {
 	var entries []ScheduleEntry
 	var errs []error
-	wants := func(s scheduleSource) bool {
-		switch sourceFilter {
-		case "all", "":
-			return true
-		case "user":
-			return s == scheduleSourceUser
-		case "system":
-			return s == scheduleSourceSystem
-		case "crontab":
-			return s == scheduleSourceCrontab
-		case "hermes":
-			return s == scheduleSourceHermes
-		case "login-item":
-			return s == scheduleSourceLoginItem
-		case "docker":
-			return s == scheduleSourceDocker
-		default:
-			return false
-		}
-	}
+	wants := func(s scheduleSource) bool { return scheduleSourceWanted(sourceFilter, s) }
 	if wants(scheduleSourceUser) {
 		es, err := collectLaunchAgents(filepath.Join(homeUserHome(), "Library", "LaunchAgents"))
 		if err != nil {
-			errs = append(errs, fmt.Errorf("user launchd: %w", err))
+			errs = append(errs, sourceReadError{scheduleSourceUser, fmt.Errorf("user launchd: %w", err)})
 		}
 		projectLaunchdRuntime(es)
 		for i := range es {
@@ -442,7 +437,7 @@ func collectSchedule(sourceFilter string) ([]ScheduleEntry, []error) {
 	if wants(scheduleSourceCrontab) {
 		cs, err := collectCrontab()
 		if err != nil {
-			errs = append(errs, fmt.Errorf("crontab: %w", err))
+			errs = append(errs, sourceReadError{scheduleSourceCrontab, fmt.Errorf("crontab: %w", err)})
 		}
 		entries = append(entries, cs...)
 	}
@@ -459,7 +454,7 @@ func collectSchedule(sourceFilter string) ([]ScheduleEntry, []error) {
 		}
 		es, err := source.collect()
 		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", source.kind, err))
+			errs = append(errs, sourceReadError{source.kind, fmt.Errorf("%s: %w", source.kind, err)})
 		}
 		entries = append(entries, es...)
 	}
@@ -478,6 +473,60 @@ func collectSchedule(sourceFilter string) ([]ScheduleEntry, []error) {
 		return entries[i].Label < entries[j].Label
 	})
 	return entries, errs
+}
+
+// scheduleSourcesWithLoginItems asks for every source. Plain "all" leaves login items out,
+// because reading them makes macOS show an admin password dialog, which must appear only
+// when the operator asked for it. Not accepted by --source; login items are named exactly.
+const scheduleSourcesWithLoginItems = "all-with-login-items"
+
+const loginItemsNotReadNote = "# login items not read: macOS asks for an admin password; use: compound schedule list --source login-item"
+
+func scheduleSourceWanted(filter string, s scheduleSource) bool {
+	switch filter {
+	case scheduleSourcesWithLoginItems:
+		return true
+	case "all", "":
+		return s != scheduleSourceLoginItem
+	case "user":
+		return s == scheduleSourceUser
+	case "system":
+		return s == scheduleSourceSystem
+	case "crontab":
+		return s == scheduleSourceCrontab
+	case "hermes":
+		return s == scheduleSourceHermes
+	case "login-item":
+		return s == scheduleSourceLoginItem
+	case "docker":
+		return s == scheduleSourceDocker
+	default:
+		return false
+	}
+}
+
+// sourceReadError names the source a read failed for, so the doctor does not take
+// that source's silence as proof its items are gone.
+type sourceReadError struct {
+	source scheduleSource
+	err    error
+}
+
+func (e sourceReadError) Error() string { return e.err.Error() }
+func (e sourceReadError) Unwrap() error { return e.err }
+
+func unreadSources(errs []error, loginItems bool) map[string]bool {
+	unread := map[string]bool{}
+	if !loginItems {
+		unread[string(scheduleSourceLoginItem)] = true
+	}
+	for _, e := range errs {
+		var failed sourceReadError
+		if errors.As(e, &failed) {
+			unread[string(failed.source)] = true
+		}
+	}
+	return unread
 }
 
 var errNotExist = errors.New("path not present")
