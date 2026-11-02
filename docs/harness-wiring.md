@@ -588,12 +588,17 @@ STOP files, local attempt logs, and task receipts do not belong in the
 scheduler. A terminal delegated experiment still closes through the same
 WorkEnvelope Receipt + Transition chain as an interactive run.
 
-## Agent-agnosticism proof
+<a id="agent-agnosticism-proof"></a>
+## Cross-harness continuation and its limits
 
-Compound proves agent-agnosticism by **checkpoint replacement**: Claude starts
-a task → checkpoint → Codex resumes → verification succeeds from spine context
-alone. The ContextPack carries everything the next agent needs, regardless of
-which harness runs it.
+Compound preserves work lineage and evidence across supported harnesses; each
+executor still needs its own [configured route](#first-model-route). The
+[installed acceptance drill](../scripts/installed-release-acceptance.mjs)
+exercises interruption and resume with a synthetic Codex-compatible worker,
+as described in [Getting Started](getting-started.md#1-install). It does not
+establish Claude-to-Codex model handoff or guarantee that every task's ContextPack
+contains all necessary context. Verify the receiving executor's actual
+continuation outcome.
 
 ## Troubleshooting
 
