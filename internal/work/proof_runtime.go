@@ -153,6 +153,29 @@ func ProofGoCache(repo string) (string, bool) {
 	return dir, true
 }
 
+// proofGoCacheBase keeps proof caches beside the operator's Go cache, so one
+// setting (`go env -w GOCACHE=...`) places both and survives any shell, launchd
+// job or cache cleaner. It reads the file that command writes rather than running
+// go: proof runs and their fixtures control PATH and GOCACHE, and following a
+// proof's own GOCACHE variable would nest caches inside caches. With nothing
+// configured the caches stay in the user cache dir, which is also Go's default.
+func proofGoCacheBase() (string, error) {
+	path := strings.TrimSpace(os.Getenv("GOENV"))
+	if path == "" {
+		if config, err := os.UserConfigDir(); err == nil {
+			path = filepath.Join(config, "go", "env")
+		}
+	}
+	if raw, err := os.ReadFile(path); err == nil {
+		for _, line := range strings.Split(string(raw), "\n") {
+			if value, ok := strings.CutPrefix(strings.TrimSpace(line), "GOCACHE="); ok && filepath.IsAbs(value) {
+				return filepath.Dir(value), nil
+			}
+		}
+	}
+	return os.UserCacheDir()
+}
+
 // proofGoCacheDir names repo's per-worktree cache without creating it.
 func proofGoCacheDir(repo string) (dir string, owner string, ok bool) {
 	if strings.TrimSpace(os.Getenv("COMPOUND_PROOF_SHARED_GOCACHE")) != "" || strings.TrimSpace(repo) == "" {
@@ -162,7 +185,7 @@ func proofGoCacheDir(repo string) (dir string, owner string, ok bool) {
 	if err != nil {
 		return "", "", false
 	}
-	base, err := os.UserCacheDir()
+	base, err := proofGoCacheBase()
 	if err != nil {
 		return "", "", false
 	}

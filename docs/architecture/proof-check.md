@@ -25,8 +25,9 @@ calls cannot race an unrelated host cache cleanup or pollute public redact.
 The `internal/work` proof-runtime module owns both custody decisions; the CLI
 only resolves the current candidate and dispatches the canonical gate plan.
 
-The cache lives per worktree under `compound-proof-gocache` in the user cache
-dir, stamped with `owner-path` and `last-used`. Each non-dry-run proof-check
+The cache lives per worktree under `compound-proof-gocache`, beside the operator's
+configured Go cache (the parent of the `GOCACHE` set by `go env -w`, else the user
+cache dir; the `GOCACHE` variable is ignored because proof runs set it), stamped with `owner-path` and `last-used`. Each non-dry-run proof-check
 prunes that root once before its gates. It keeps the current cache and any
 cache used in the last 6 hours, removes caches whose owner worktree is gone or
 idle for 3 days, then removes the least recently used until 16 remain. A

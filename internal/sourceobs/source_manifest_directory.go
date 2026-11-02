@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"compound/internal/home"
 )
 
 type sourceManifestFileSnapshot struct {
@@ -386,12 +388,9 @@ func spoolSourceManifestSnapshotContext(ctx context.Context, file *os.File, sour
 		return sourceManifestFileSnapshot{}, fmt.Errorf("secure source snapshot %s: %w", sourcePath, err)
 	}
 	hasher := sha256.New()
-	written, err := io.Copy(io.MultiWriter(spool, hasher), sourceContextReader{ctx: ctx, r: file})
+	written, err := fillSourceSpool(ctx, file, spool, spoolDir, hasher)
 	if err != nil {
 		return sourceManifestFileSnapshot{}, fmt.Errorf("read source %s: %w", sourcePath, err)
-	}
-	if err := spool.Close(); err != nil {
-		return sourceManifestFileSnapshot{}, fmt.Errorf("spool source %s: %w", sourcePath, err)
 	}
 	after, err := file.Stat()
 	if err != nil {
@@ -409,6 +408,40 @@ func spoolSourceManifestSnapshotContext(ctx context.Context, file *os.File, sour
 		modTime:   after.ModTime(),
 		mode:      after.Mode(),
 	}, nil
+}
+
+// fillSourceSpool pins the source's bytes in spool. A clone is atomic and shares
+// the source's blocks; hashing then reads the pinned clone. The stream copy is the
+// fallback for another volume or platform.
+func fillSourceSpool(ctx context.Context, file, spool *os.File, spoolDir string, hasher io.Writer) (int64, error) {
+	spoolPath := spool.Name()
+	if err := spool.Close(); err != nil {
+		return 0, err
+	}
+	if err := os.Remove(spoolPath); err != nil {
+		return 0, err
+	}
+	if err := home.CloneFileInto(file, spoolDir, filepath.Base(spoolPath)); err == nil {
+		if err := os.Chmod(spoolPath, 0o600); err != nil {
+			return 0, err
+		}
+		pinned, err := os.Open(spoolPath)
+		if err != nil {
+			return 0, err
+		}
+		defer pinned.Close()
+		return io.Copy(hasher, sourceContextReader{ctx: ctx, r: pinned})
+	}
+	copied, err := os.OpenFile(spoolPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return 0, err
+	}
+	defer copied.Close()
+	written, err := io.Copy(io.MultiWriter(copied, hasher), sourceContextReader{ctx: ctx, r: file})
+	if err != nil {
+		return 0, err
+	}
+	return written, copied.Close()
 }
 
 func readSourceManifestSnapshotBody(snapshot sourceManifestFileSnapshot) ([]byte, error) {

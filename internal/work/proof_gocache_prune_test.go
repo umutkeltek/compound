@@ -274,6 +274,29 @@ func TestPruneProofGoCachesRefusesUnsafePolicy(t *testing.T) {
 	requireProofGoCacheExists(t, cache, true)
 }
 
+// One setting places proof caches: the operator's Go cache location. A proof run's
+// own GOCACHE variable must not count, or caches would nest inside caches.
+func TestProofGoCacheFollowsConfiguredGoCacheNotTheVariable(t *testing.T) {
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "")
+	external := filepath.Join(t.TempDir(), "external")
+	goEnv := filepath.Join(userHome, "go-env")
+	if err := os.WriteFile(goEnv, []byte("GOCACHE="+filepath.Join(external, "go")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOENV", goEnv)
+	t.Setenv("GOCACHE", filepath.Join(t.TempDir(), "a-running-proof-cache"))
+
+	dir, ok := ProofGoCache(t.TempDir())
+	if !ok {
+		t.Fatal("no proof cache")
+	}
+	if got, want := filepath.Dir(dir), filepath.Join(external, "compound-proof-gocache"); got != want {
+		t.Fatalf("proof cache root = %q, want %q", got, want)
+	}
+}
+
 func TestProofGoCacheWritesOwnerAndRefreshesLastUsed(t *testing.T) {
 	userHome := t.TempDir()
 	t.Setenv("HOME", userHome)

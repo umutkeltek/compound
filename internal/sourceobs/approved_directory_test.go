@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -100,5 +101,56 @@ func TestApprovedDirectoryIncompleteTranscriptDoesNotPoisonHistory(t *testing.T)
 	r, err = CaptureApprovedDirectoryBatch(context.Background(), hp, "partial", root, "codex", time.Now())
 	if err != nil || r.Captured != 1 || r.Deferred != 0 {
 		t.Fatalf("recovery %+v %v", r, err)
+	}
+}
+
+// A live transcript must not store a whole new version on every turn, and holding
+// it back must never block a correction or lose the last owned version.
+func TestApprovedDirectoryLargeLiveFileEarnsVersionsByGrowthOrQuiet(t *testing.T) {
+	hp, root := t.TempDir(), t.TempDir()
+	path := filepath.Join(root, "session.md")
+	line := strings.Repeat("Synthetic transcript turn.\n", 40)
+	write := func(size int) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(strings.Repeat(line, size/len(line))), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	capture := func(now time.Time) CaptureBatchReport {
+		t.Helper()
+		report, err := CaptureApprovedDirectoryBatch(context.Background(), hp, "synthetic", root, "markdown", now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return report
+	}
+	versions := func() int {
+		t.Helper()
+		manifest, err := LoadSourceManifest(hp, "synthetic")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(manifest.Items)
+	}
+
+	start := 4 << 20
+	write(start)
+	if got := capture(time.Now()); got.Captured != 1 || versions() != 1 {
+		t.Fatalf("first capture %+v versions %d", got, versions())
+	}
+	write(start + start/10) // a live session's next turns
+	if got := capture(time.Now()); got.Captured != 0 || got.Pending != 1 || versions() != 1 {
+		t.Fatalf("small growth earned a version: %+v versions %d", got, versions())
+	}
+	if got := capture(time.Now().Add(2 * time.Hour)); got.Captured != 1 || versions() != 2 {
+		t.Fatalf("quiet file not captured: %+v versions %d", got, versions())
+	}
+	write(start * 2) // grew by more than a quarter while still live
+	if got := capture(time.Now()); got.Captured != 1 || versions() != 3 {
+		t.Fatalf("large growth not captured: %+v versions %d", got, versions())
+	}
+	write(start) // a rewrite that shrinks is a correction, not growth
+	if got := capture(time.Now()); got.Captured != 1 || versions() != 4 {
+		t.Fatalf("shrinking rewrite held back: %+v versions %d", got, versions())
 	}
 }

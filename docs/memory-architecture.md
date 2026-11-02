@@ -441,6 +441,12 @@ Each capture pass selects recent changes, up to 128 files and normally 128 MiB;
 one file may exceed the batch byte budget but cannot exceed 1 GiB. Oversized,
 missing, changing and incomplete files are reported, not called complete.
 Unfinished JSONL records never enter the owned version chain.
+A changed file of 1 MiB or more earns a new owned version only after it has grown
+by a quarter or stayed quiet for an hour, and is reported as pending until then;
+its last owned version stays readable. Each version is a whole exact body, so on
+APFS capture clones it: versions of an append-only transcript share their blocks
+with each other and with the source. Size tools count every clone in full, so read
+free space, not `du`, to see what a version costs.
 Automatic refresh explicitly opts into partial capture: it refuses symlinked source
 files individually, records their count as `refused_symlinks`, and captures eligible
 regular files. After successful indexing, coverage stays `capture_incomplete` while

@@ -269,15 +269,31 @@ func buildSourceManifestSnapshots(sourceFamily string, snapshots []sourceManifes
 	return manifest, nil
 }
 
+// putSnapshotBody stores a pinned snapshot from its file, not through memory: the
+// store can then clone it, so owned versions of a growing file share their blocks.
+// An injected putter takes the bytes, as it always did.
+func putSnapshotBody(store *home.ArtifactStore, snapshot sourceManifestFileSnapshot, expectedRef string, putter sourceManifestArtifactPutter) (string, error) {
+	if putter != nil {
+		body, err := readSourceManifestSnapshotBody(snapshot)
+		if err != nil {
+			return "", err
+		}
+		return putter(store, body)
+	}
+	ref, written, err := store.PutFileExpected(snapshot.spoolPath, expectedRef)
+	if err != nil {
+		return "", err
+	}
+	if written != snapshot.bodyBytes {
+		return "", fmt.Errorf("snapshot of %s stored %d bytes, expected %d", snapshot.path, written, snapshot.bodyBytes)
+	}
+	return ref, nil
+}
+
 func captureOwnedSourceManifest(homePath string, manifest SourceManifest, snapshots []sourceManifestFileSnapshot, putter sourceManifestArtifactPutter) (SourceManifest, error) {
 	store, err := home.NewArtifactStore(homePath)
 	if err != nil {
 		return SourceManifest{}, err
-	}
-	if putter == nil {
-		putter = func(store *home.ArtifactStore, body []byte) (string, error) {
-			return store.Put(body)
-		}
 	}
 	byPath := make(map[string]sourceManifestFileSnapshot, len(snapshots))
 	for _, snapshot := range snapshots {
@@ -289,12 +305,8 @@ func captureOwnedSourceManifest(homePath string, manifest SourceManifest, snapsh
 		if !ok {
 			return SourceManifest{}, fmt.Errorf("capture source %s: snapshot missing", item.SourceRef)
 		}
-		body, err := readSourceManifestSnapshotBody(snapshot)
-		if err != nil {
-			return SourceManifest{}, err
-		}
 		expectedRef := home.ArtifactRefPrefix + strings.TrimPrefix(item.FileHash, "sha256:")
-		ref, err := putter(store, body)
+		ref, err := putSnapshotBody(store, snapshot, expectedRef, putter)
 		if err != nil {
 			return SourceManifest{}, fmt.Errorf("capture source %s: %w", item.SourceRef, err)
 		}

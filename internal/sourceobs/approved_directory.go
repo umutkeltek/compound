@@ -71,6 +71,10 @@ func CaptureApprovedDirectoryBatchWithOptions(ctx context.Context, homePath, fam
 			result.Unchanged++
 			return false
 		}
+		if old, ok := current[key]; ok && old.BodyPolicy == "owned_snapshot" && !ownedVersionDue(old, info, now) {
+			result.Pending++
+			return false
+		}
 		if selected >= 128 || (selected > 0 && selectedBytes+info.Size() > 128<<20) {
 			result.Pending++
 			return false
@@ -179,6 +183,28 @@ func CaptureApprovedDirectoryBatchWithOptions(ctx context.Context, homePath, fam
 	result.SourceManifestReport = report
 	result.Captured = len(batch.files)
 	return result, err
+}
+
+const (
+	ownedVersionSmallBytes = int64(1 << 20)
+	ownedVersionQuietAfter = time.Hour
+)
+
+// ownedVersionDue decides whether a changed file earns a new owned version now.
+// Each version is a whole body, and a live transcript changes on every turn: one
+// session stored 122 versions, 4 GiB for a 46 MB file. So a large file waits until
+// it has grown by a quarter or gone quiet for an hour. Its last owned version stays
+// readable meanwhile and the pass reports the file as pending. Small files and
+// rewrites that shrink are always due: nothing here can hold back a correction.
+func ownedVersionDue(old SourceManifestItem, info os.FileInfo, now time.Time) bool {
+	size := info.Size()
+	if size < ownedVersionSmallBytes || size < old.BodyBytes {
+		return true
+	}
+	if size-old.BodyBytes >= old.BodyBytes/4 {
+		return true
+	}
+	return now.Sub(info.ModTime()) >= ownedVersionQuietAfter
 }
 
 // A live harness can stop between writes of one JSONL record. Keep the last

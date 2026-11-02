@@ -279,22 +279,10 @@ func (s *ArtifactStore) PutFileExpected(sourcePath, expectedRef string) (string,
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
-	if err := tmp.Chmod(0o644); err != nil {
-		tmp.Close()
-		return "", 0, err
-	}
 	hash := sha256.New()
-	written, copyErr := io.Copy(io.MultiWriter(tmp, hash), source)
+	written, copyErr := fillArtifactTemp(source, tmp, s.dir, hash)
 	if copyErr != nil {
-		tmp.Close()
 		return "", 0, copyErr
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return "", 0, err
-	}
-	if err := tmp.Close(); err != nil {
-		return "", 0, err
 	}
 	gotDigest := hex.EncodeToString(hash.Sum(nil))
 	if gotDigest != hexDigest {
@@ -318,6 +306,50 @@ func (s *ArtifactStore) PutFileExpected(sourcePath, expectedRef string) (string,
 		return "", 0, fmt.Errorf("sync artifact directory: %w", err)
 	}
 	return expectedRef, written, nil
+}
+
+// fillArtifactTemp puts source's bytes in tmp, durably, and closes it. It clones
+// when it can, so whole versions of a growing file do not each take whole-file
+// disk space. The digest always reads what was stored, not what was offered.
+func fillArtifactTemp(source, tmp *os.File, dir string, hash io.Writer) (int64, error) {
+	tmpPath := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		return 0, err
+	}
+	if err := os.Remove(tmpPath); err != nil {
+		return 0, err
+	}
+	if err := CloneFileInto(source, dir, filepath.Base(tmpPath)); err == nil {
+		stored, err := os.OpenFile(tmpPath, os.O_RDWR, 0)
+		if err != nil {
+			return 0, err
+		}
+		defer stored.Close()
+		if err := stored.Chmod(0o644); err != nil {
+			return 0, err
+		}
+		written, err := io.Copy(hash, stored)
+		if err != nil {
+			return 0, err
+		}
+		if err := stored.Sync(); err != nil {
+			return 0, err
+		}
+		return written, stored.Close()
+	}
+	stored, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return 0, err
+	}
+	defer stored.Close()
+	written, err := io.Copy(io.MultiWriter(stored, hash), source)
+	if err != nil {
+		return 0, err
+	}
+	if err := stored.Sync(); err != nil {
+		return 0, err
+	}
+	return written, stored.Close()
 }
 
 func syncDirectory(path string) error {
