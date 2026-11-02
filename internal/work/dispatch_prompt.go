@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 
 const (
 	maxDispatchPromptOffers          = 5
+	maxDispatchReadPointersPerOffer  = 3
+	maxDispatchReadPointerBytes      = 512
 	dispatchWorkerPromptContractRef  = "contract://dispatch-worker-prompt"
 	dispatchWorkerPromptContractNote = "dispatch worker prompt is derived from an already-admitted WorkEnvelope plus task-scoped CapabilityGraph offers; no new EffectiveContract is compiled for this capability-only prompt"
 )
@@ -150,12 +153,22 @@ func (s *Store) dispatchContextPack(w envelope.WorkEnvelope, actor string, now t
 			Confidence:  1,
 			Status:      "current",
 		})
+		required := []envelope.CapabilityOfferConstraint{}
+		for _, constraint := range hit.Constraints.Required {
+			if constraint.Kind == "read" {
+				required = append(required, envelope.CapabilityOfferConstraint{
+					Kind: constraint.Kind, Ref: constraint.Ref,
+					Detail: constraint.Detail, Confidence: constraint.Confidence,
+				})
+			}
+		}
 		pack.CapabilityOffers = append(pack.CapabilityOffers, envelope.CapabilityOffer{
-			Ref:   ref,
-			Kind:  hit.Node.Kind,
-			Name:  hit.Node.Name,
-			Score: hit.Score,
-			Why:   reason,
+			Ref:      ref,
+			Kind:     hit.Node.Kind,
+			Name:     hit.Node.Name,
+			Score:    hit.Score,
+			Why:      reason,
+			Required: required,
 		})
 	}
 	if len(surfaced) > 0 {
@@ -248,12 +261,19 @@ func dispatchPromptOffers(pack envelope.ContextPack) []DispatchCapabilityOffer {
 }
 
 func dispatchCapabilityOffer(offer envelope.CapabilityOffer) DispatchCapabilityOffer {
+	required := []envelope.CapabilityOfferConstraint{}
+	for _, constraint := range offer.Required {
+		if constraint.Kind == "read" {
+			required = append(required, constraint)
+		}
+	}
 	return DispatchCapabilityOffer{
-		Ref:   offer.Ref,
-		Kind:  offer.Kind,
-		Name:  offer.Name,
-		Score: offer.Score,
-		Why:   offer.Why,
+		Ref:      offer.Ref,
+		Kind:     offer.Kind,
+		Name:     offer.Name,
+		Score:    offer.Score,
+		Why:      offer.Why,
+		Required: required,
 	}
 }
 
@@ -294,6 +314,21 @@ func renderDispatchPrompt(w envelope.WorkEnvelope, task envelope.TaskContract, w
 	} else {
 		for _, offer := range offers {
 			fmt.Fprintf(&b, "- %s (%s, kind=%s): %s\n", offer.Ref, offer.Name, offer.Kind, firstNonEmpty(offer.Why, "surfaced by capability graph"))
+			rendered, omitted := 0, 0
+			for _, constraint := range offer.Required {
+				if constraint.Kind != "read" {
+					continue
+				}
+				if rendered >= maxDispatchReadPointersPerOffer || !safeDispatchReadPointer(constraint.Ref) {
+					omitted++
+					continue
+				}
+				fmt.Fprintf(&b, "  - required_read_ref: %s\n", strconv.Quote(constraint.Ref))
+				rendered++
+			}
+			if omitted > 0 {
+				fmt.Fprintf(&b, "  - required_reads_omitted: %d (empty, unsafe, oversized, or per-offer limit; exact refs remain in ContextPack)\n", omitted)
+			}
 		}
 	}
 	if w.GitDelivery != nil {
@@ -335,4 +370,21 @@ func renderDispatchPrompt(w envelope.WorkEnvelope, task envelope.TaskContract, w
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// safeDispatchReadPointer permits bounded literal pointers without Markdown or
+// control syntax. Invalid references remain exact in the pack; never repair,
+// truncate, resolve or hydrate them into a different authorized target.
+func safeDispatchReadPointer(ref string) bool {
+	if len(ref) == 0 || len(ref) > maxDispatchReadPointerBytes {
+		return false
+	}
+	for _, ch := range ref {
+		if ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' ||
+			strings.ContainsRune("/:._-~%+@#?=&", ch) {
+			continue
+		}
+		return false
+	}
+	return true
 }

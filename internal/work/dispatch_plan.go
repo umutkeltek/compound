@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/envelope"
 	"compound/internal/laneselect"
 )
 
@@ -177,11 +178,12 @@ type DispatchPlanItem struct {
 }
 
 type DispatchCapabilityOffer struct {
-	Ref   string  `json:"ref"`
-	Kind  string  `json:"kind"`
-	Name  string  `json:"name"`
-	Score float64 `json:"score"`
-	Why   string  `json:"why"`
+	Required []envelope.CapabilityOfferConstraint `json:"required,omitempty"`
+	Ref      string                               `json:"ref"`
+	Kind     string                               `json:"kind"`
+	Name     string                               `json:"name"`
+	Score    float64                              `json:"score"`
+	Why      string                               `json:"why"`
 }
 
 type DispatchClaimResult struct {
