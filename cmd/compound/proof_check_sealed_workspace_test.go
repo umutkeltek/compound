@@ -322,6 +322,95 @@ func TestPrepareProofCheckSealedWorkspaceCopiesOnlyCeremonyInputsAndCleansUp(t *
 	}
 }
 
+// A lane may keep a read-only snapshot under a private ceremony input. The copy
+// keeps those modes, so cleanup must still remove it: the failure it prevents is a
+// finished battery reporting a cleanup error and writing no report.
+func TestPrepareProofCheckSealedWorkspaceRemovesReadOnlyCeremonyInput(t *testing.T) {
+	t.Parallel()
+
+	repo := initCompoundCommandGitRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("docs_private/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runCommandGit(t, repo, "add", ".gitignore")
+	runCommandGit(t, repo, "commit", "-m", "ignore ceremony inputs")
+
+	readOnly := filepath.Join(repo, "docs_private", "plan", "snapshot", "bin")
+	if err := os.MkdirAll(readOnly, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(readOnly, "tool"), []byte("original\n"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(readOnly, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(readOnly, 0o755) })
+
+	source, err := gitrepository.CaptureCleanSnapshot(repo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealedRepo, cleanup, err := prepareProofCheckSealedWorkspace(t.Context(), repo, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealedBin := filepath.Join(sealedRepo, "docs_private", "plan", "snapshot", "bin")
+	info, err := os.Stat(sealedBin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o200 != 0 {
+		t.Fatalf("fixture must copy a read-only folder, got mode %o", info.Mode().Perm())
+	}
+	if err := cleanup(); err != nil {
+		t.Fatalf("cleanup refused a read-only ceremony input: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(sealedRepo)); !os.IsNotExist(err) {
+		t.Fatalf("sealed workspace survived cleanup: %v", err)
+	}
+	if body, err := os.ReadFile(filepath.Join(readOnly, "tool")); err != nil || string(body) != "original\n" {
+		t.Fatalf("cleanup changed the source input: body=%q err=%v", body, err)
+	}
+	if after, err := os.Stat(readOnly); err != nil || after.Mode().Perm() != 0o555 {
+		t.Fatalf("cleanup changed the source folder mode: %v %v", after, err)
+	}
+}
+
+// Symlinks stay untouched: a link out of the workspace must not lend its target
+// a new mode while cleanup makes folders writable.
+func TestRemoveProofCheckSealedWorkspaceDoesNotFollowSymlinks(t *testing.T) {
+	t.Parallel()
+
+	outside := t.TempDir()
+	if err := os.Chmod(outside, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(outside, 0o755) })
+
+	root := filepath.Join(t.TempDir(), "workspace")
+	readOnly := filepath.Join(root, "repo", "snapshot")
+	if err := os.MkdirAll(readOnly, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(readOnly, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(readOnly, 0o555); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := removeProofCheckSealedWorkspace(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(root); !os.IsNotExist(err) {
+		t.Fatalf("workspace survived: %v", err)
+	}
+	if info, err := os.Stat(outside); err != nil || info.Mode().Perm() != 0o555 {
+		t.Fatalf("cleanup changed a folder outside the workspace: %v %v", info, err)
+	}
+}
+
 func TestPrepareProofCheckSealedWorkspacePreservesSourceLeakOverlayForDoctor(t *testing.T) {
 	t.Parallel()
 

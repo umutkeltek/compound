@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,7 +59,7 @@ func prepareProofCheckSealedWorkspace(
 		return "", nil, fmt.Errorf("create sealed proof workspace: %w", err)
 	}
 	cleanup := func() error {
-		return os.RemoveAll(tmpRoot)
+		return removeProofCheckSealedWorkspace(tmpRoot)
 	}
 	sealedRepo := filepath.Join(tmpRoot, "repo")
 	if output, cloneErr := proofCheckCommandContext(
@@ -109,4 +110,29 @@ func prepareProofCheckSealedWorkspace(
 		return "", nil, errors.Join(err, cleanupErr)
 	}
 	return sealedRepo, cleanup, nil
+}
+
+// removeProofCheckSealedWorkspace removes a workspace that may hold read-only
+// folders. Copied ceremony inputs keep their source modes, and a folder its owner
+// cannot write refuses every unlink inside it, so one read-only private folder
+// would otherwise turn a finished battery into a cleanup error with no report.
+// The walk does not follow symlinks, so it only changes modes inside the workspace.
+func removeProofCheckSealedWorkspace(root string) error {
+	err := os.RemoveAll(root)
+	if err == nil || !errors.Is(err, fs.ErrPermission) {
+		return err
+	}
+	walkErr := filepath.WalkDir(root, func(path string, entry fs.DirEntry, entryErr error) error {
+		if entryErr != nil {
+			return entryErr
+		}
+		if !entry.IsDir() {
+			return nil
+		}
+		return os.Chmod(path, 0o700)
+	})
+	if walkErr != nil {
+		return errors.Join(err, walkErr)
+	}
+	return os.RemoveAll(root)
 }
