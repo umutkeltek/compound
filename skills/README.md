@@ -24,6 +24,8 @@ existing native SkillManifest for governed import; no private skill overlay is r
 [Source credits and license scopes](product-pipeline/SOURCES.md) identify conceptual
 influences and optional upstream complements, none silently installed.
 
+Any other skills directory can refresh its graph nodes through the generic [skill manifest generator](../scripts/skillmanifest/README.md), which emits the same native SkillManifest for governed import.
+
 ## Tracked bodies vs. harness overlay
 
 - These bodies are **tracked in-repo** and are the source of truth for a public clone — no gitignored
