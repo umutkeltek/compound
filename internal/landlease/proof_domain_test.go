@@ -399,8 +399,12 @@ func TestProofDomainIndependentClassAdmissionDuringFinalizer(t *testing.T) {
 	go func() { busyResult <- withLeaseBindingLock(root, b, func() error { return nil }) }()
 	select {
 	case err := <-busyResult:
-		if _, ok := err.(*ProofAdmissionBusyError); !ok {
+		busy, ok := err.(*ProofAdmissionBusyError)
+		if !ok {
 			t.Fatalf("busy class lock should promptly defer: %v", err)
+		}
+		if !busy.CanWait() || !busy.ClassLockBusy() {
+			t.Fatalf("a busy class lock is live contention a waiter must survive: %+v", busy)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("class acquisition blocked instead of returning to queue")

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -77,6 +78,25 @@ func presubmitTestTick(t *testing.T, ticks chan<- time.Time) {
 		t.Fatal("wait loop did not reach bounded tick")
 	}
 }
+
+// presubmitTestTickUntilDone ticks until the loop returns. A release can race the
+// iteration the previous tick already started. That iteration may admit without
+// another tick, so an unconditional tick here would wait on a finished loop.
+func presubmitTestTickUntilDone(t *testing.T, ticks chan<- time.Time, done <-chan error) error {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case err := <-done:
+			return err
+		case ticks <- time.Now():
+		case <-deadline:
+			t.Fatal("wait loop did not return")
+			return nil
+		}
+	}
+}
+
 func presubmitTestResult(t *testing.T, done <-chan error) error {
 	t.Helper()
 	select {
@@ -99,23 +119,41 @@ func TestPresubmitAdmissionRetainsFIFOAgainstNewerWaiter(t *testing.T) {
 	ticksA, ticksB := make(chan time.Time), make(chan time.Time)
 	doneA, doneB := make(chan error, 1), make(chan error, 1)
 	enteredA, enteredB := make(chan presubmitTestHolder, 1), make(chan presubmitTestHolder, 1)
-	checksA, checksB := make(chan struct{}, 8), make(chan struct{}, 8)
-	check := func(events chan<- struct{}) func(context.Context) error {
-		return func(c context.Context) error { events <- struct{}{}; return context.Cause(c) }
+	check := func(c context.Context) error { return context.Cause(c) }
+	// A parks in its second check, before its next turn. No iteration of A can then
+	// be in flight across the release, so the free slot is still free when B tries
+	// it, and only FIFO order can stop B.
+	var callsA atomic.Int32
+	parkedA, resumeA := make(chan struct{}), make(chan struct{})
+	checkA := func(c context.Context) error {
+		if callsA.Add(1) == 2 {
+			close(parkedA)
+			select {
+			case <-resumeA:
+			case <-c.Done():
+			}
+		}
+		return context.Cause(c)
 	}
 	go func() {
 		doneA <- withPresubmitAdmission(a, func() error {
-			return waitPresubmitAdmission(ctx, a, true, ticksA, check(checksA), presubmitTestAcquire("waiter-a", enteredA))
+			return waitPresubmitAdmission(ctx, a, true, ticksA, checkA, presubmitTestAcquire("waiter-a", enteredA))
 		})
 	}()
 	go func() {
 		doneB <- withPresubmitAdmission(b, func() error {
-			return waitPresubmitAdmission(ctx, b, true, ticksB, check(checksB), presubmitTestAcquire("waiter-b", enteredB))
+			return waitPresubmitAdmission(ctx, b, true, ticksB, check, presubmitTestAcquire("waiter-b", enteredB))
 		})
 	}()
 	// Sending ticks proves each loop already encountered contention; no sleep or
 	// assumption about which goroutine was scheduled first establishes ordering.
 	presubmitTestTick(t, ticksA)
+	select {
+	case <-parkedA:
+	case <-time.After(5 * time.Second):
+		t.Fatal("head waiter did not reach its next check")
+	}
+	presubmitTestTick(t, ticksB)
 	presubmitTestTick(t, ticksB)
 	if len(enteredA)+len(enteredB) != 0 {
 		t.Fatal("producer entered while both slots held")
@@ -124,21 +162,23 @@ func TestPresubmitAdmissionRetainsFIFOAgainstNewerWaiter(t *testing.T) {
 	// The newer contender must still refuse even though a slot just became free.
 	presubmitTestTick(t, ticksB)
 	presubmitTestTick(t, ticksB)
-	if len(enteredB) != 0 {
+	if len(enteredA)+len(enteredB) != 0 {
 		t.Fatal("new waiter overtook retained FIFO position")
 	}
-	presubmitTestTick(t, ticksA)
-	if err := presubmitTestResult(t, doneA); err != nil {
+	close(resumeA)
+	if err := presubmitTestTickUntilDone(t, ticksA, doneA); err != nil {
 		t.Fatal(err)
 	}
 	admittedA := <-enteredA
+	// The second send proves the iteration the first one started already refused
+	// while A held the capacity. Only then does the check below prove anything.
+	presubmitTestTick(t, ticksB)
 	presubmitTestTick(t, ticksB)
 	if len(enteredB) != 0 {
 		t.Fatal("second waiter double-booked capacity")
 	}
 	admittedA.release(t)
-	presubmitTestTick(t, ticksB)
-	if err := presubmitTestResult(t, doneB); err != nil {
+	if err := presubmitTestTickUntilDone(t, ticksB, doneB); err != nil {
 		t.Fatal(err)
 	}
 	(<-enteredB).release(t)
@@ -225,6 +265,45 @@ func TestPresubmitAdmissionRefusalAndCallbackErrorsDoNotRetry(t *testing.T) {
 		if presubmitContention(err) {
 			t.Fatalf("recovery/integrity classified as contention: %v", err)
 		}
+	}
+}
+
+// A neighbour's short snapshot can hold the slot's class lock at the moment the
+// head waiter acquires it. That must not end the waiter and hand its place away.
+func TestPresubmitAdmissionSurvivesClassLockBusyAfterEntry(t *testing.T) {
+	s := coordinatedStoreFixture(t)
+	ticket := presubmitTestTicket(t, s, "a")
+	entered := make(chan presubmitTestHolder, 1)
+	acquire := presubmitTestAcquire("waiter", entered)
+	ticks := make(chan time.Time, 1)
+	ticks <- time.Now()
+	calls := 0
+	err := withPresubmitAdmission(ticket, func() error {
+		return waitPresubmitAdmission(context.Background(), ticket, true, ticks, func(context.Context) error { return nil }, func(r *landlease.Resource) error {
+			calls++
+			if calls == 1 {
+				return landlease.NewProofClassLockBusyError()
+			}
+			return acquire(r)
+		})
+	})
+	if err != nil || calls != 2 {
+		t.Fatalf("a busy class lock must retry: calls=%d err=%v", calls, err)
+	}
+	(<-entered).release(t)
+
+	// Fail-fast callers still see the refusal at once.
+	next := presubmitTestTicket(t, s, "b")
+	calls = 0
+	err = withPresubmitAdmission(next, func() error {
+		return waitPresubmitAdmission(context.Background(), next, false, nil, func(context.Context) error { return nil }, func(*landlease.Resource) error {
+			calls++
+			return landlease.NewProofClassLockBusyError()
+		})
+	})
+	var busy *landlease.ProofAdmissionBusyError
+	if !errors.As(err, &busy) || calls != 1 {
+		t.Fatalf("no-wait must not retry: calls=%d err=%v", calls, err)
 	}
 }
 

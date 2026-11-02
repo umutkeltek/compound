@@ -42,7 +42,7 @@ func waitPresubmitAdmission(ctx context.Context, admission *landlease.ProofAdmis
 		if cause := context.Cause(ctx); cause != nil {
 			return errors.Join(err, cause)
 		}
-		if err == nil || !wait || entered || !presubmitContention(err) {
+		if err == nil || !wait || !presubmitMayRetry(entered, err) {
 			return err
 		}
 		select {
@@ -51,6 +51,17 @@ func waitPresubmitAdmission(ctx context.Context, admission *landlease.ProofAdmis
 		case <-ticks:
 		}
 	}
+}
+
+// A started callback may have changed state, so its errors are final. The class
+// lock refusal is the one exception: it fires before the callback's work begins.
+// Without it, a neighbour's brief snapshot could end a waiter's FIFO place.
+func presubmitMayRetry(entered bool, err error) bool {
+	if !entered {
+		return presubmitContention(err)
+	}
+	var busy *landlease.ProofAdmissionBusyError
+	return errors.As(err, &busy) && busy.ClassLockBusy()
 }
 
 func presubmitContention(err error) bool {

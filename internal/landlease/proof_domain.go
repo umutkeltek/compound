@@ -267,11 +267,23 @@ func (r *Resource) binding(root string, acquisition bool) *leaseBinding {
 type ProofAdmissionBusyError struct {
 	Holder, Reason string
 	contention     bool
+	classLockBusy  bool
+}
+
+// NewProofClassLockBusyError reports that a neighbour holds this slot's class
+// lock for one short acquire, release or snapshot. The nonblocking lock refuses
+// before its callback runs, so nothing has changed and the turn may retry.
+func NewProofClassLockBusyError() *ProofAdmissionBusyError {
+	return &ProofAdmissionBusyError{Reason: "class mutation in progress", contention: true, classLockBusy: true}
 }
 
 // CanWait identifies ordinary live capacity contention. Recovery and integrity
 // refusals deliberately default to false, even when holder names are reused.
 func (e *ProofAdmissionBusyError) CanWait() bool { return e != nil && e.contention }
+
+// ClassLockBusy identifies the one refusal that is safe to retry even after an
+// admission callback started: it fires before the callback changes anything.
+func (e *ProofAdmissionBusyError) ClassLockBusy() bool { return e != nil && e.classLockBusy }
 
 func (e *ProofAdmissionBusyError) Error() string {
 	return fmt.Sprintf("proof admission waits for %s: %s", e.Holder, e.Reason)

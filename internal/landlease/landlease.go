@@ -988,7 +988,7 @@ func withLockMode(home string, nonblocking bool, fn func() error) error {
 	}
 	if err := syscall.Flock(int(file.Fd()), flags); err != nil {
 		if nonblocking && (errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN)) {
-			return &ProofAdmissionBusyError{Reason: "class mutation in progress"}
+			return NewProofClassLockBusyError()
 		}
 		return err
 	}
