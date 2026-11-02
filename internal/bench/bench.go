@@ -595,7 +595,7 @@ type CompareReport struct {
 	Regressed      bool         `json:"regressed"`           // any split or lane regressed => reject
 	RegressedSplit []string     `json:"regressed_splits"`    // which splits regressed
 	Accept         bool         `json:"accept"`              // complete comparable inputs, same suite, no split/lane regression
-	ProofRef       string       `json:"proof_ref,omitempty"` // bench_compare_accept:<suite> on accept — the token a harness-edit close cites to harden
+	ProofRef       string       `json:"proof_ref,omitempty"` // set only after bench compare --work records this comparison; Compare alone proves nothing a close can cite
 	SuiteMismatch  bool         `json:"suite_mismatch"`      // before/after are different suites — comparison is apples-to-oranges; never Accept
 }
 
@@ -637,9 +637,6 @@ func Compare(before, after Report) CompareReport {
 		}
 	}
 	cr.Accept = len(cr.InputErrors) == 0 && !cr.InputMismatch && !cr.Regressed && !cr.SuiteMismatch
-	if cr.Accept {
-		cr.ProofRef = "bench_compare_accept:" + after.Suite
-	}
 	return cr
 }
 

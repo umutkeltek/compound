@@ -151,6 +151,18 @@ envelope):
 `runtime.md` and `contracts/README.md` reference this canonical shape. `source_trace_id` identifies
 an originating raw trace when one exists.
 
+`second_order.should_harden` is true only on a completed close of a work with a `target_surface`,
+when every `bench_compare_accept:` ref on its receipt resolves to an immutable record that
+`compound bench compare --work <work_id>` wrote under `work/bench-compare/`. That record must have
+accepted, and must name this work and surface. It must measure a real edit: its two sides cannot be the
+same build and graph. For source-delivered work, its before side must be the delivery base and its after
+side the current candidate build, so the bench must run on a build of that candidate.
+
+A close that cites such a ref refuses if any of them fails, and leaves the work open. The close plan shows
+that refusal first, so dispatch passes over the work. A close that cites none completes unhardened past a
+bad attached ref. A record that cannot be read refuses either way. The record proves integrity and binding,
+not authorship. Work with no source delivery has no base to bind, so its closer still chooses the baseline.
+
 It forces three questions on every run: **What changed? Across which spaces? What future
 behavior should this affect?**
 

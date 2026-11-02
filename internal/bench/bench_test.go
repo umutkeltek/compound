@@ -349,13 +349,14 @@ func TestCompareRejectsSuiteMismatch(t *testing.T) {
 		t.Fatalf("a non-accept (mismatch) must emit no proof token, got %q", cmp.ProofRef)
 	}
 
-	// Control: same suite, equal metrics accepts and emits the canonical proof token.
+	// Control: same suite, equal metrics accepts. Compare alone emits nothing a close can
+	// cite: only a recorded comparison gets a proof ref.
 	same := Compare(before, before)
 	if same.SuiteMismatch || !same.Accept {
 		t.Fatalf("matching suite with equal metrics must accept: mismatch=%v accept=%v", same.SuiteMismatch, same.Accept)
 	}
-	if want := "bench_compare_accept:" + before.Suite; same.ProofRef != want {
-		t.Fatalf("accept proof token = %q, want %q", same.ProofRef, want)
+	if same.ProofRef != "" {
+		t.Fatalf("an unrecorded comparison must emit no proof ref, got %q", same.ProofRef)
 	}
 }
 

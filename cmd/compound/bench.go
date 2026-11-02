@@ -13,6 +13,7 @@ import (
 
 	"compound/internal/bench"
 	"compound/internal/home"
+	"compound/internal/work"
 )
 
 // cmdBench is the evaluator organ front door. It delegates to runBench, which returns an exit
@@ -45,7 +46,7 @@ func runBench(args []string, stdout, stderr io.Writer) int {
 func benchUsage() string {
 	return "usage:\n" +
 		"  compound bench run --suite <file> [--home <dir>] [--json] [--allow-absent] [--suite-kind <kind>] [--no-actionable]\n" +
-		"  compound bench compare --before <report.json> --after <report.json> [--json] [--allow-suite-mismatch]\n" +
+		"  compound bench compare --before <report.json> --after <report.json> [--work <work_id> [--home <dir>]] [--json] [--allow-suite-mismatch]\n" +
 		"  compound bench convert acceptance --in <acceptance.json> --out <suite.json> [--name <suite>] [--id-map v2|v1|none]\n" +
 		"  compound bench convert golden --in <recall-golden.yaml> --out <suite.json> [--name <suite>]\n" +
 		"    deterministic: same input bytes -> byte-identical suite.\n" +
@@ -230,20 +231,36 @@ func runBenchCompare(args []string, stdout, stderr io.Writer) int {
 	beforePath := flagValue(args, "--before")
 	afterPath := flagValue(args, "--after")
 	if strings.TrimSpace(beforePath) == "" || strings.TrimSpace(afterPath) == "" {
-		fmt.Fprintln(stderr, "usage: compound bench compare --before <report.json> --after <report.json> [--json] [--allow-suite-mismatch]")
+		fmt.Fprintln(stderr, "usage: compound bench compare --before <report.json> --after <report.json> [--work <work_id> [--home <dir>]] [--json] [--allow-suite-mismatch]")
 		return 2
 	}
-	before, err := loadBenchReport(beforePath)
+	before, beforeDigest, err := loadBenchReportWithDigest(beforePath)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	after, err := loadBenchReport(afterPath)
+	after, afterDigest, err := loadBenchReportWithDigest(afterPath)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
 	cmp := bench.Compare(before, after)
+	// Only two comparable reports produce a verdict worth recording.
+	if workID := strings.TrimSpace(flagValue(args, "--work")); workID != "" && len(cmp.InputErrors) == 0 && !cmp.InputMismatch && !cmp.SuiteMismatch {
+		homePath, err := home.Resolve(flagValue(args, "--home"))
+		if err == nil {
+			cmp.ProofRef, err = work.RecordBenchCompareInHome(homePath, workID, work.BenchCompareProof{
+				Suite: after.Suite, InputDigest: after.InputDigest, Accept: cmp.Accept,
+				BeforeReportSHA256: beforeDigest, AfterReportSHA256: afterDigest,
+				BeforeBuildSHA: before.BuildSHA, AfterBuildSHA: after.BuildSHA,
+				BeforeGraphHash: before.GraphHash, AfterGraphHash: after.GraphHash,
+			})
+		}
+		if err != nil {
+			fmt.Fprintln(stderr, "error:", err)
+			return 1
+		}
+	}
 	if hasFlag(args, "--json") {
 		if err := encodeJSON(stdout, cmp); err != nil {
 			fmt.Fprintln(stderr, "error:", err)
@@ -299,16 +316,18 @@ func writeBenchReportWithWriter(homePath string, report bench.Report, now time.T
 	return path, nil
 }
 
-func loadBenchReport(path string) (bench.Report, error) {
+// loadBenchReportWithDigest binds the parsed report to the exact bytes it read.
+func loadBenchReportWithDigest(path string) (bench.Report, string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return bench.Report{}, err
+		return bench.Report{}, "", err
 	}
 	var r bench.Report
 	if err := json.Unmarshal(data, &r); err != nil {
-		return bench.Report{}, fmt.Errorf("parse report %s: %w", path, err)
+		return bench.Report{}, "", fmt.Errorf("parse report %s: %w", path, err)
 	}
-	return r, nil
+	sum := sha256.Sum256(data)
+	return r, hex.EncodeToString(sum[:]), nil
 }
 
 func encodeJSON(w io.Writer, v any) error {

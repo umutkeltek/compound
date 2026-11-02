@@ -185,6 +185,14 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 	if _, err := s.gitDeliveryProofForClose(w, outcome, moveType, proofRefs, now); err != nil {
 		deliveryNoAction = err.Error()
 	}
+	// The plan's close command cites every ref, so preview that close. Dispatch then
+	// passes over this work instead of failing on it and blocking what is behind it.
+	hardenNoAction := ""
+	if w.State != outcome {
+		if _, err := s.hardenOnClose(w, outcome, proofRefs, proofRefs); err != nil {
+			hardenNoAction = err.Error() + "; repair the comparison, or run work close without citing one to close unhardened"
+		}
+	}
 	// leaseHolderStatusFor is read-only, so computing it before the plan literal lets every
 	// returned plan (including the action-plan early return below) carry the full
 	// precondition enumeration, not just the first refusal NoAction names.
@@ -264,6 +272,8 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 		plan.NoAction = fmt.Sprintf("invalid move_type %q", moveType)
 	case deliveryNoAction != "":
 		plan.NoAction = deliveryNoAction
+	case hardenNoAction != "":
+		plan.NoAction = hardenNoAction
 	case heldReleaseErr != nil:
 		plan.NoAction = heldReleaseErr.Error()
 	case leaseStatus.Blocked:

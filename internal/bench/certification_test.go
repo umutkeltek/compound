@@ -52,7 +52,7 @@ func cloneCertificationReport(t *testing.T, r Report) Report {
 
 func TestCertificationRejectsEmptyAndIncompleteReports(t *testing.T) {
 	valid := certificationRun(t, certificationSuite(), true, true)
-	if c := Compare(valid, valid); !c.Accept || c.ProofRef == "" {
+	if c := Compare(valid, valid); !c.Accept {
 		t.Fatalf("valid control rejected: %+v", c)
 	}
 	tests := map[string]func(*Report){
@@ -139,7 +139,7 @@ func TestCertificationAcceptsEquivalentInputsAndImprovement(t *testing.T) {
 	if before.GraphHash == after.GraphHash {
 		t.Fatal("control must change graph revision")
 	}
-	if c := Compare(before, after); !c.Accept || c.ProofRef == "" {
+	if c := Compare(before, after); !c.Accept {
 		t.Fatalf("valid improvement rejected: %+v", c)
 	}
 	reordered := certificationSuite()

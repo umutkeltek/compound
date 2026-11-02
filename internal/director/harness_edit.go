@@ -291,7 +291,7 @@ func newHarnessEditCandidate(in harnessEditInput) (candidate, bool) {
 			"a before/after bench run on the affected suite",
 		},
 		ExpectedValidation: []string{
-			"`compound bench compare` accepts the edit with no regression in either split (held_in and held_out)",
+			"`compound bench compare --work <work_id>` accepts the edit with no regression in either split (held_in and held_out); cite its proof_ref in the close",
 			"the operator admits the proposal only after the target surface is actively whitelisted in editable-surfaces",
 		},
 		StopConditions: []string{
@@ -305,7 +305,7 @@ func newHarnessEditCandidate(in harnessEditInput) (candidate, bool) {
 }
 
 func harnessEditSuccessPredicate(surface string) string {
-	return "Edit the " + surface + " surface exactly as proposed, only after: run `compound bench run` on the affected suite before and after; `compound bench compare` accepts with no regression in either split; and the operator approves admission with the surface actively whitelisted. Do not apply the edit autonomously."
+	return "Edit the " + surface + " surface exactly as proposed, only after: run `compound bench run` on the affected suite before and after; `compound bench compare --work <work_id>` accepts with no regression in either split; and the operator approves admission with the surface actively whitelisted. Do not apply the edit autonomously."
 }
 
 // harnessEditSurfaceForCapabilityRef maps a capability ref to the editable surface

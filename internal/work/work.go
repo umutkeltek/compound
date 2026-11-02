@@ -3398,6 +3398,10 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	}
 	var landingProof *LandCheckReport
 	deliveryProofRefs := mergeUnique(w.ArtifactIDs, w.VerificationIDs, in.ProofRefs, landCheckEvidenceRefs(w.EvidenceRefs))
+	shouldHarden, err := s.hardenOnClose(w, in.Outcome, in.ProofRefs, deliveryProofRefs)
+	if err != nil {
+		return res, fmt.Errorf("cannot close %s: %w", workID, err)
+	}
 	landingProof, err = s.gitDeliveryProofForClose(w, in.Outcome, in.MoveType, deliveryProofRefs, now)
 	if err != nil {
 		return res, err
@@ -3585,7 +3589,7 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 			// changed, or every branchless close ranks as changed and the
 			// coverage rule ranks nothing.
 			FutureBehaviorChanged: in.MoveType != "audit_only" && rec.StateDelta.Changed,
-			ShouldHarden:          shouldHardenOnClose(w.TargetSurface, in.Outcome, in.ProofRefs),
+			ShouldHarden:          shouldHarden,
 		},
 		OpensBranches: in.OpensBranches,
 	}
@@ -4771,7 +4775,7 @@ func orEmpty(s []string) []string {
 }
 
 // surpriseOnClose diffs a staked WorkPrediction (envelope.WorkEnvelope.Prediction) against the
-// actual close, mirroring shouldHardenOnClose as a small pure close-time helper. Nil when the
+// actual close, as a small pure close-time helper. Nil when the
 // work staked no prediction. When staked, it ALWAYS returns a signal -- Diverged=false (a
 // confirmed prediction) is signal too, not merely the absence of a divergence flag. A prediction
 // dimension left unstaked (empty MoveType) is not compared and can never itself cause
@@ -4792,37 +4796,6 @@ func surpriseOnClose(w envelope.WorkEnvelope, in CloseInput) *envelope.SurpriseS
 		ActualMoveType:    in.MoveType,
 		Diverged:          diverged,
 	}
-}
-
-// shouldHardenOnClose reports whether a close should stamp
-// SecondOrder.ShouldHarden=true. It is true only on an ACCEPTED close (outcome
-// "completed") of an explicit harness-edit envelope — one that declared a
-// TargetSurface (EVOLVE-BLOCK) — AND that close carries a bench-compare ACCEPT
-// proof ref, so "completed" cannot self-certify a harness edit. A rejected/failed/
-// cancelled close of the same envelope stamps false but still emits its Receipt +
-// Transition, so "rejections are logged without changing the active harness." An
-// ordinary work (no TargetSurface) never hardens on close. Derived, not a new
-// CloseInput flag: the close outcome already carries whether the harness edit was
-// accepted; the proof ref carries whether the gate actually accepted it.
-func shouldHardenOnClose(targetSurface, outcome string, proofRefs []string) bool {
-	return strings.TrimSpace(targetSurface) != "" &&
-		outcome == "completed" &&
-		hasBenchCompareAcceptProof(proofRefs)
-}
-
-// hasBenchCompareAcceptProof reports whether the close's proof refs contain a
-// bench-compare accept record. Accepted spellings include bench_compare_accept:<id>
-// and bench_compare:accept:<id>; matched case-insensitively on a ref that contains
-// both "bench_compare" and "accept". A plain bench_report:... ref does not qualify —
-// the harness edit must prove the gate accepted, not merely that a report exists.
-func hasBenchCompareAcceptProof(refs []string) bool {
-	for _, r := range refs {
-		r = strings.ToLower(strings.TrimSpace(r))
-		if strings.Contains(r, "bench_compare") && strings.Contains(r, "accept") {
-			return true
-		}
-	}
-	return false
 }
 
 // failureCause builds the optional causal-failure annotation; nil when both

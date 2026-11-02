@@ -305,5 +305,7 @@ func WriteCompareSummary(w io.Writer, cmp CompareReport) {
 	fmt.Fprintf(w, "  %-9s hit@1 %+.3f  hit@5 %+.3f  mrr %+.3f\n", "overall", cmp.Overall.Hit1Delta, cmp.Overall.Hit5Delta, cmp.Overall.MRRDelta)
 	if cmp.ProofRef != "" {
 		fmt.Fprintf(w, "proof: %s  (cite this in the harness-edit close ProofRefs to stamp should_harden)\n", cmp.ProofRef)
+	} else if cmp.Accept {
+		fmt.Fprintln(w, "proof: none  (not recorded; rerun with --work <work_id> before citing it in a harness-edit close)")
 	}
 }

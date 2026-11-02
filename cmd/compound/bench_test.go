@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -268,106 +269,172 @@ func readSingleBenchArtifact(t *testing.T, home string) bench.Report {
 }
 
 // TestBenchCompareProofTokenFlowsToHarnessEditClose is the end-to-end loop proof: a real
-// `bench compare` ACCEPT emits a proof_ref token, and that EXACT token — fed verbatim into a
-// harness-edit work close — is what stamps SecondOrder.ShouldHarden=true. A rejected compare emits
-// no token, so its close cannot harden. This is the handoff that wires the bench gate to the
-// harness-edit hardening rule, end to end through the real CLI and the real work store.
+// `bench compare --work` ACCEPT records immutable evidence and emits a proof_ref, and that EXACT
+// ref, fed verbatim into the harness-edit close, is what stamps SecondOrder.ShouldHarden=true.
+// A rejected compare emits no ref. A label, or a comparison of something else, refuses the close.
 func TestBenchCompareProofTokenFlowsToHarnessEditClose(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	homePath := t.TempDir()
 	base := benchCompareFixture(t, true)
+	edited := base
+	edited.BuildSHA = "build-after-edit"
 	regressed := benchCompareFixture(t, false)
+	otherSuite := base
+	otherSuite.Suite = "another-suite"
 	beforePath := filepath.Join(dir, "before.json")
-	afterOK := filepath.Join(dir, "ok.json")   // == before (accept)
-	afterBad := filepath.Join(dir, "bad.json") // regressed (reject)
-	for path, r := range map[string]bench.Report{beforePath: base, afterOK: base, afterBad: regressed} {
+	afterOK := filepath.Join(dir, "ok.json")
+	afterBad := filepath.Join(dir, "bad.json")
+	afterOtherSuite := filepath.Join(dir, "other.json")
+	for path, r := range map[string]bench.Report{beforePath: base, afterOK: edited, afterBad: regressed, afterOtherSuite: otherSuite} {
 		data, _ := json.MarshalIndent(r, "", "  ")
 		if err := os.WriteFile(path, data, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-
-	// ACCEPT: compare exits 0 and emits a non-empty proof_ref token.
-	var out, errBuf bytes.Buffer
-	if code := runBench([]string{"compare", "--before", beforePath, "--after", afterOK, "--json"}, &out, &errBuf); code != 0 {
-		t.Fatalf("accept compare exit=%d stderr=%s", code, errBuf.String())
-	}
-	var acc bench.CompareReport
-	if err := json.Unmarshal(out.Bytes(), &acc); err != nil {
-		t.Fatalf("decode accept compare: %v", err)
-	}
-	if !acc.Accept || acc.ProofRef == "" {
-		t.Fatalf("accept must emit proof_ref, got accept=%v proof_ref=%q", acc.Accept, acc.ProofRef)
-	}
-
-	// REJECT: compare exits nonzero and emits NO proof_ref token — so a reject can never harden.
-	out.Reset()
-	errBuf.Reset()
-	if code := runBench([]string{"compare", "--before", beforePath, "--after", afterBad, "--json"}, &out, &errBuf); code == 0 {
-		t.Fatalf("regressed compare must exit nonzero")
-	}
-	var rej bench.CompareReport
-	if err := json.Unmarshal(out.Bytes(), &rej); err != nil {
-		t.Fatalf("decode reject compare: %v", err)
-	}
-	if rej.ProofRef != "" {
-		t.Fatalf("rejected compare must NOT emit proof_ref, got %q", rej.ProofRef)
-	}
-
-	// The ACCEPT token, fed verbatim into a harness-edit close, hardens the harness.
 	now := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
-	store, err := work.Open(t.TempDir())
+	store, err := work.Open(homePath)
 	if err != nil {
 		t.Fatalf("open work store: %v", err)
 	}
-	w, err := store.Create(work.CreateInput{Owner: "director", SuccessPredicate: "apply accepted harness edit", TargetSurface: "capability_edges"}, now)
-	if err != nil {
-		t.Fatalf("create: %v", err)
+	startEdit := func(predicate string) string {
+		t.Helper()
+		w, err := store.Create(work.CreateInput{Owner: "director", SuccessPredicate: predicate, TargetSurface: "capability_edges"}, now)
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if _, err := store.Claim(w.ID, "codex", now); err != nil {
+			t.Fatalf("claim: %v", err)
+		}
+		if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running"}, now); err != nil {
+			t.Fatalf("advance: %v", err)
+		}
+		return w.ID
 	}
-	if _, err := store.Claim(w.ID, "codex", now); err != nil {
-		t.Fatalf("claim: %v", err)
+	compare := func(wantOK bool, args ...string) bench.CompareReport {
+		t.Helper()
+		var out, errBuf bytes.Buffer
+		code := runBench(append([]string{"compare", "--before", beforePath, "--json"}, args...), &out, &errBuf)
+		if (code == 0) != wantOK {
+			t.Fatalf("compare %v exit=%d stderr=%s", args, code, errBuf.String())
+		}
+		var report bench.CompareReport
+		if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+			t.Fatalf("decode compare: %v", err)
+		}
+		return report
 	}
-	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running"}, now); err != nil {
-		t.Fatalf("advance: %v", err)
+	closeEdit := func(id string, refs ...string) (work.CloseResult, error) {
+		t.Helper()
+		return store.Close(id, work.CloseInput{
+			Outcome:   "completed",
+			MoveType:  "control_plane_repair",
+			Summary:   "harness edit applied",
+			Changed:   true,
+			ProofRefs: append([]string{"gate:harness-edit-accepted"}, refs...),
+		}, now)
 	}
-	res, err := store.Close(w.ID, work.CloseInput{
-		Outcome:   "completed",
-		MoveType:  "control_plane_repair",
-		Summary:   "harness edit applied after bench compare accepted",
-		Changed:   true,
-		ProofRefs: []string{"gate:harness-edit-accepted", acc.ProofRef},
-	}, now)
-	if err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	if !res.Transition.SecondOrder.ShouldHarden {
-		t.Fatalf("the verbatim compare accept proof token must stamp should_harden=true")
+	records := func() int {
+		t.Helper()
+		entries, err := os.ReadDir(filepath.Join(homePath, "work", "bench-compare"))
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		return len(entries)
 	}
 
-	// A completed harness-edit close with NO bench_compare token must NOT harden — the loop refuses
-	// to self-certify even with an otherwise-valid gate ref.
-	w2, err := store.Create(work.CreateInput{Owner: "director", SuccessPredicate: "apply harness edit", TargetSurface: "capability_edges"}, now)
+	// ACCEPT with --work: exits 0, records evidence, emits the ref. The ref hardens this work.
+	accepted := startEdit("apply accepted harness edit")
+	acc := compare(true, "--after", afterOK, "--work", accepted, "--home", homePath)
+	if !acc.Accept || acc.ProofRef == "" {
+		t.Fatalf("accept must emit proof_ref, got accept=%v proof_ref=%q", acc.Accept, acc.ProofRef)
+	}
+	if got := records(); got != 1 {
+		t.Fatalf("an accepted comparison must leave one record, got %d", got)
+	}
+	res, err := closeEdit(accepted, acc.ProofRef)
 	if err != nil {
-		t.Fatalf("create 2: %v", err)
+		t.Fatalf("close citing the recorded ref: %v", err)
 	}
-	if _, err := store.Claim(w2.ID, "codex", now); err != nil {
-		t.Fatalf("claim 2: %v", err)
+	if !res.Transition.SecondOrder.ShouldHarden {
+		t.Fatal("the verbatim recorded proof ref must stamp should_harden=true")
 	}
-	if _, err := store.Advance(w2.ID, work.AdvanceInput{To: "running"}, now); err != nil {
-		t.Fatalf("advance 2: %v", err)
+
+	// REJECT with --work: exits nonzero, keeps the evidence, emits nothing to cite.
+	rejected := startEdit("apply regressed harness edit")
+	if rej := compare(false, "--after", afterBad, "--work", rejected, "--home", homePath); rej.ProofRef != "" {
+		t.Fatalf("rejected compare must NOT emit proof_ref, got %q", rej.ProofRef)
 	}
-	res2, err := store.Close(w2.ID, work.CloseInput{
-		Outcome:   "completed",
-		MoveType:  "control_plane_repair",
-		Summary:   "edit applied",
-		Changed:   true,
-		ProofRefs: []string{"gate:harness-edit-accepted"},
-	}, now)
+	if got := records(); got != 2 {
+		t.Fatalf("a rejected comparison must also leave a record, got %d", got)
+	}
+
+	// A candidate cannot certify itself after being rejected: both sides are the same report.
+	if self := compare(false, "--before", afterBad, "--after", afterBad, "--work", rejected, "--home", homePath); self.ProofRef != "" {
+		t.Fatalf("a self-comparison must NOT emit proof_ref, got %q", self.ProofRef)
+	}
+
+	// Incomparable reports carry no verdict worth recording, even with --work.
+	if mismatch := compare(false, "--after", afterOtherSuite, "--work", rejected, "--home", homePath); mismatch.ProofRef != "" {
+		t.Fatalf("a suite mismatch must NOT emit proof_ref, got %q", mismatch.ProofRef)
+	}
+	if got := records(); got != 2 {
+		t.Fatalf("refused and incomparable comparisons must leave no record, got %d", got)
+	}
+
+	// ACCEPT without --work: still a verdict, but nothing a close can cite.
+	if advisory := compare(true, "--after", afterOK); !advisory.Accept || advisory.ProofRef != "" {
+		t.Fatalf("an unrecorded accept must emit no proof_ref, got accept=%v proof_ref=%q", advisory.Accept, advisory.ProofRef)
+	}
+
+	// The old suite label contains the right words and names no evidence. The close refuses it.
+	if _, err := closeEdit(rejected, "bench_compare_accept:"+base.Suite); err == nil {
+		t.Fatal("a suite label must refuse the close")
+	}
+
+	// A ref recorded for one work does not prove another.
+	unrelated := startEdit("apply a different harness edit")
+	if _, err := closeEdit(unrelated, acc.ProofRef); err == nil {
+		t.Fatal("a comparison of another work must refuse the close")
+	}
+
+	// A completed close with NO comparison ref completes, unhardened.
+	uncited := startEdit("apply harness edit")
+	if res, err := closeEdit(uncited); err != nil || res.Transition.SecondOrder.ShouldHarden {
+		t.Fatalf("a close without a comparison must complete unhardened: %v", err)
+	}
+
+	// A work with no target surface has nothing a comparison can prove.
+	ordinary, err := store.Create(work.CreateInput{Owner: "director", SuccessPredicate: "ordinary work"}, now)
 	if err != nil {
-		t.Fatalf("close 2: %v", err)
+		t.Fatal(err)
 	}
-	if res2.Transition.SecondOrder.ShouldHarden {
-		t.Fatalf("a close without the bench_compare accept token must NOT harden")
+	if code := runBench([]string{"compare", "--before", beforePath, "--after", afterOK, "--work", ordinary.ID, "--home", homePath, "--json"}, io.Discard, io.Discard); code == 0 {
+		t.Fatal("compare --work on ordinary work must refuse")
+	}
+}
+
+// A comparison of an unknown work must fail without creating a home for it.
+func TestBenchCompareWorkOnMissingWorkLeavesNothingBehind(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	base := benchCompareFixture(t, true)
+	edited := base
+	edited.BuildSHA = "build-after-edit"
+	beforePath := filepath.Join(dir, "before.json")
+	afterPath := filepath.Join(dir, "after.json")
+	for path, r := range map[string]bench.Report{beforePath: base, afterPath: edited} {
+		data, _ := json.MarshalIndent(r, "", "  ")
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	missingHome := filepath.Join(dir, "no-such-home")
+	if code := runBench([]string{"compare", "--before", beforePath, "--after", afterPath, "--work", "work_missing", "--home", missingHome, "--json"}, io.Discard, io.Discard); code == 0 {
+		t.Fatal("compare --work on a missing work must fail")
+	}
+	if _, err := os.Stat(missingHome); !os.IsNotExist(err) {
+		t.Fatalf("a failed comparison must not create a home: %v", err)
 	}
 }
 
