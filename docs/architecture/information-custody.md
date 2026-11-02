@@ -91,8 +91,9 @@ a warm clone only when its exact path, device, inode, size, mode, modification
 time and change time still match. Changed/new bodies are cloned again and deleted
 entries are omitted. Selection is sealed before admission is released; replay,
 hashing, serialization, verification and cleanup run outside admission. The
-existing 30-second cooperative admission deadline is unchanged. A blocked
-filesystem syscall cannot be interrupted by that deadline; there is no unlimited
+cooperative admission deadline is 120 seconds; 30 seconds failed on a loaded
+machine once the home passed a million entries. Each backup logs how much of it
+was used. A blocked filesystem syscall cannot be interrupted by that deadline; there is no unlimited
 locked fallback.
 
 Archive headers retain numeric UID/GID and file metadata without resolving host

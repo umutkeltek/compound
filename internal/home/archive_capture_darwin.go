@@ -36,7 +36,11 @@ var archiveCaptureReconciled = func(*capturedArchive, error) {}
 
 // Cooperative deadline: checked between entries and after each clone. A single
 // blocked filesystem syscall cannot be preempted; no unlimited fallback exists.
-const archiveCaptureReconcileBudget = 30 * time.Second
+// archiveCaptureReconcileBudget caps how long a backup's final check may hold
+// admission. The check walks every included entry, and on a loaded machine with over
+// a million entries 30 seconds was not enough: backups failed after an hour of warm
+// work. Cooperating writers can wait up to this long, once per backup, at worst.
+const archiveCaptureReconcileBudget = 120 * time.Second
 
 const archiveCaptureRecordBytes = 128 << 10
 
@@ -137,6 +141,11 @@ func backupCapturedStreamedArchive(homePath, targetPath string, now time.Time, s
 		return captured.reconcile(homePath)
 	})
 	archiveCaptureReconciled(captured, reconcileErr)
+	// One line per real backup, so the distance to the budget is visible before it runs out.
+	// Under a second is far from any budget; printing it would only fill test output.
+	if captured.admissionDuration >= time.Second {
+		fmt.Fprintf(os.Stderr, "home backup: final check held admission %s of %s\n", captured.admissionDuration.Round(100*time.Millisecond), archiveCaptureReconcileBudget)
+	}
 	if reconcileErr != nil {
 		return ArchiveReport{}, reconcileErr
 	}
