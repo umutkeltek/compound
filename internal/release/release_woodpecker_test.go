@@ -87,7 +87,7 @@ func TestWoodpeckerReleaseBuildAndDrillContract(t *testing.T) {
 		`setpriv --reuid=1000 --regid=1000 --clear-groups`,
 		`test "$CI_COMMIT_SHA" = "$main_sha"`,
 		`test "$(git rev-parse HEAD)" = "$CI_COMMIT_SHA"`,
-		`git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"`,
+		`git fetch --no-tags --unshallow origin "+refs/heads/main:refs/remotes/origin/main"`,
 		`go mod verify`, `release export-public --repo "$CI_WORKSPACE"`,
 		`tar -tzf`, `cyclonedx-gomod/cmd/cyclonedx-gomod@v1.10.0`,
 		`for build in a b; do`, `VERSION="$RELEASE_VERSION" SOURCE_ROOT="$CI_WORKSPACE" DIST="$root/$build"`,
@@ -106,11 +106,42 @@ func TestWoodpeckerReleaseBuildAndDrillContract(t *testing.T) {
 	if strings.Contains(build, "--is-ancestor") || strings.Contains(build, "0.0.0-prior") {
 		t.Fatal("build permits stale main or invents an unsupported prior version")
 	}
+	// Each step runs in a fresh container and export-public refuses without a
+	// home, so the step must create its own disposable home first.
+	homeInit := strings.Index(build, `COMPOUND_HOME="$release_home" .ci/bin/compound home init`)
+	export := strings.Index(build, `COMPOUND_HOME="$release_home" .ci/bin/compound release export-public --repo "$CI_WORKSPACE"`)
+	if !strings.Contains(build, `release_home="$(mktemp -d /tmp/`) || homeInit < 0 || export < homeInit {
+		t.Fatal("release-build must initialize a disposable home outside the checkout before export-public")
+	}
 	drill := strings.Join(steps["release-linux-drill"].Commands, "\n")
+	// home doctor refuses a home inside a Git checkout, so acceptance must run
+	// outside the workspace; only its report comes back as workspace evidence.
+	if !strings.Contains(drill, `acceptance="$(mktemp -d /tmp/compound-release-acceptance.XXXXXX)/run"`) ||
+		strings.Contains(drill, `"$root/linux-acceptance" "$root/prior"`) ||
+		!strings.Contains(drill, `cp "$acceptance/installed-acceptance.json" "$root/linux-acceptance.json"`) {
+		t.Fatal("Linux drill must run acceptance outside the checkout and keep its report")
+	}
 	for _, want := range []string{`COMPOUND_RELEASE_TARBALL=`, `COMPOUND_HOME=`, `GOBIN=`, `compound $RELEASE_VERSION (build $CI_COMMIT_SHA)`, `compound-breadth-engine`, `node scripts/installed-release-acceptance.mjs`, `"$root/prior" "$(cat "$root/PRIOR_COMMIT")"`} {
 		if !strings.Contains(drill, want) {
 			t.Errorf("Linux drill lacks %q", want)
 		}
+	}
+}
+
+func TestLocalPublisherPinsTheCompilerThatBuiltTheStagedBytes(t *testing.T) {
+	body, err := os.ReadFile("../../scripts/release-publish-local.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(body)
+	pin := strings.Index(script, "export GOTOOLCHAIN=go1.27.2\n")
+	firstGo := strings.Index(script, "go install ")
+	if pin < 0 || firstGo < 0 || pin > firstGo {
+		t.Fatal("publisher must pin the Go toolchain before its first build: another compiler changes the bytes and the rebuild refuses")
+	}
+	image := woodpeckerReleaseSteps(t)["release-build"].Image
+	if image != "docker.io/library/golang:1.27.2-bookworm" {
+		t.Fatalf("release-build image %s no longer matches the publisher's pinned toolchain", image)
 	}
 }
 

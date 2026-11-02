@@ -89,8 +89,11 @@ identity, or label the candidate itself as the prior generation.
 This exercises upgrade failure and recovery before a first published release.
 It is not evidence of compatibility with every previously published release.
 Missing parent history, a parent that cannot build, or any acceptance failure
-stops the release. Fetch full history before triggering the pipeline. The prior
-bundle and acceptance reports are CI workspace evidence, not release assets.
+stops the release. The CI clone is shallow, so `release-build` fetches full history
+from origin itself. The step configures no credentials for that fetch, and an
+anonymous read of a private repository is refused, so it needs an origin readable
+without them: while the repository is private, expect the step to stop there. The
+prior bundle and acceptance reports are CI workspace evidence, not release assets.
 
 ## Rebuild and create a draft on the Mac
 
@@ -99,8 +102,8 @@ bundle and acceptance reports are CI workspace evidence, not release assets.
    The publisher never creates or pushes tags. If main has advanced, stage a new
    candidate; ancestry alone is insufficient. The local and remote tag objects
    and peeled commits must agree.
-2. On Darwin/arm64, install Go 1.27.2, Node 20+, Git, GitHub CLI, OpenSSH with
-   `ssh-keygen -Y`, and the usual macOS shell tools. Authenticate `gh` for the
+2. On Darwin/arm64, install Go (the script pins the 1.27.2 toolchain), Node 20+, Git,
+   GitHub CLI, OpenSSH with `ssh-keygen -Y`, and the usual macOS shell tools. Authenticate `gh` for the
    origin repository. Set `COMPOUND_RELEASE_STAGE` to the privately configured
    staging location and run:
 

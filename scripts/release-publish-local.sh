@@ -10,6 +10,8 @@ version_re='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 : "${COMPOUND_RELEASE_STAGE:?set COMPOUND_RELEASE_STAGE to user@host:/absolute/path}"
 [[ "$COMPOUND_RELEASE_STAGE" =~ ^[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+:/[a-zA-Z0-9/._-]+$ ]] || fail 'invalid COMPOUND_RELEASE_STAGE; require user@host:/absolute/path without shell metacharacters'
 [[ "$(uname -s)/$(uname -m)" == Darwin/arm64 ]] || fail 'run natively on Darwin/arm64'
+# The staged Linux bytes come from Go 1.27.2; another compiler changes them and the rebuild refuses.
+export GOTOOLCHAIN=go1.27.2
 for tool in git scp go make node ssh-keygen gh shasum; do
   command -v "$tool" >/dev/null || fail "missing required tool: $tool"
 done

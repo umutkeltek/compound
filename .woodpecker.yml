@@ -139,7 +139,8 @@ steps:
             test -n "$RELEASE_VERSION"
             version_re="^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
             [[ "$RELEASE_VERSION" =~ $version_re ]] || { echo "RELEASE_VERSION must be strict stable SemVer" >&2; exit 1; }
-            git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
+            # The CI clone is --depth=1, and the prior generation needs the real parent commit.
+            git fetch --no-tags --unshallow origin "+refs/heads/main:refs/remotes/origin/main"
             main_sha=$(git rev-parse refs/remotes/origin/main)
             test "$CI_COMMIT_SHA" = "$main_sha" || { echo "candidate must equal the exact origin/main tip" >&2; exit 1; }
             test "$(git rev-parse HEAD)" = "$CI_COMMIT_SHA"
@@ -148,7 +149,10 @@ steps:
             root="$CI_WORKSPACE/.ci/release"
             mkdir "$root"
             go mod verify
-            .ci/bin/compound release export-public --repo "$CI_WORKSPACE" --target "$root/compound-public-source.tar.gz" --prefix compound-source --json
+            # Each step is a fresh container and export-public needs a home; keep it outside the checkout.
+            release_home="$(mktemp -d /tmp/compound-release-home.XXXXXX)"
+            COMPOUND_HOME="$release_home" .ci/bin/compound home init
+            COMPOUND_HOME="$release_home" .ci/bin/compound release export-public --repo "$CI_WORKSPACE" --target "$root/compound-public-source.tar.gz" --prefix compound-source --json
             test -s "$root/compound-public-source.tar.gz"
             tar -tzf "$root/compound-public-source.tar.gz" >/dev/null
             mkdir "$root/tools"
@@ -202,8 +206,13 @@ steps:
           COMPOUND_HOME="$install_root/home" GOBIN="$install_root/bin" sh "$root/a/install-release.sh"
         test "$("$install_root/bin/compound" version)" = "compound $RELEASE_VERSION (build $CI_COMMIT_SHA)"
         test -x "$install_root/bin/compound-breadth-engine"
+        # home doctor refuses a home inside a Git checkout, so run outside the workspace and keep the report.
+        acceptance="$(mktemp -d /tmp/compound-release-acceptance.XXXXXX)/run"
+        acceptance_status=0
         node scripts/installed-release-acceptance.mjs "$root/a" "$CI_COMMIT_SHA" \
-          "$root/linux-acceptance" "$root/prior" "$(cat "$root/PRIOR_COMMIT")"
+          "$acceptance" "$root/prior" "$(cat "$root/PRIOR_COMMIT")" || acceptance_status=$?
+        cp "$acceptance/installed-acceptance.json" "$root/linux-acceptance.json" || true
+        exit "$acceptance_status"
 
   release-stage:
     image: docker.io/library/node:22-bookworm
