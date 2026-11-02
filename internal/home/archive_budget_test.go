@@ -13,7 +13,7 @@ import (
 )
 
 func TestArchiveBudgetDefaultsRemainUnchanged(t *testing.T) {
-	want := archiveReadLimits{MaxManifestBytes: 64 << 20, MaxSourceBytes: 64 << 30, MaxEntries: 250_000, MaxPathBytes: 4 << 10, MaxPathDepth: 64, MaxEntryBytes: 8 << 30, MaxExpandedBytes: 64 << 30, MaxDecodedBytes: 72 << 30}
+	want := archiveReadLimits{MaxManifestBytes: 64 << 20, MaxSourceBytes: 64 << 30, MaxEntries: 250_000, MaxPathBytes: 4 << 10, MaxPathDepth: 64, MaxEntryBytes: 8 << 30, MaxExpandedBytes: 128 << 30, MaxDecodedBytes: 136 << 30}
 	if defaultArchiveReadLimits != want {
 		t.Fatalf("resource envelope changed: %+v", defaultArchiveReadLimits)
 	}

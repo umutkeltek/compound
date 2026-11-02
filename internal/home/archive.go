@@ -40,8 +40,8 @@ const (
 	archiveMaxPathBytes           = 4 << 10
 	archiveMaxPathDepth           = 64
 	archiveMaxEntryBytes    int64 = 8 << 30
-	archiveMaxExpandedBytes int64 = 64 << 30
-	archiveMaxDecodedBytes  int64 = 72 << 30
+	archiveMaxExpandedBytes int64 = 128 << 30
+	archiveMaxDecodedBytes  int64 = 136 << 30
 )
 
 type archiveReadLimits struct {

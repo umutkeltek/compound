@@ -111,9 +111,9 @@ retain their existing behavior.
 The disk index is fixed at 128 MiB. Each of the warm and selection journals keeps
 its existing 1 GiB limit, giving an aggregate temporary metadata ceiling of
 2 GiB plus 128 MiB. Both cache sizes are checked before hashing. Warm and final
-inventories each retain their existing 1.5-million-entry and 64 GiB logical-body
+inventories each retain their existing 1.5-million-entry and 128 GiB logical-body
 limits; a completely changed selection can temporarily retain two inventories
-(up to 128 GiB of logical clone data). Physical clone allocation depends on
+(up to 256 GiB of logical clone data). Physical clone allocation depends on
 filesystem sharing and subsequent writes. Body storage uses 256 lazy shards,
 up to 512 retained shard descriptors, plus four depth-bounded traversal chains.
 Descriptor exhaustion fails closed. These temporary resources are removed by
