@@ -360,6 +360,12 @@ and check each pinned member base with the same committed ancestry reader.
   New reports are private; ordinary existing modes are preserved. Symlink, non-regular,
   or raced targets are refused, publication is atomic within the captured parent, and
   timing warnings are sealed before report file, installed artifact, and JSON agree.
+- **Never derive the verdict from a JSON walk over the report either** (lived 2026-10-22: a helper read
+  a key the report does not have, printed `failed []` for a 52/53 red battery, and the lease → ff → push
+  went ahead on it). A filter that finds nothing looks identical to a filter that found no failures. The
+  report's array is `steps[]` with `status`; the gate is the `battery:` / `presubmit:` stdout line and the
+  process exit code, read for the exact tip about to be merged. Parse the report only to name the failed
+  step (`steps[].status != "ok"`, then its `output_tail`), never to decide green.
 - **A pre-commit battery CANNOT clear the doc-leak gate for NEW files** (lived 2026-07-19, inventory
   door). The gate enumerates TRACKED text files only, so files still untracked (`??`) at battery
   time are invisible to it — the battery goes green, the commit makes them tracked, and the NEXT
