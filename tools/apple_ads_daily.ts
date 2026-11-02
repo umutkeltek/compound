@@ -8,20 +8,27 @@ import { join } from "node:path";
  * Apple Search Ads → ads ledger bridge.
  *
  * Compound never calls Apple Ads itself. This tool takes a campaign report the
- * `asc` CLI already produced (or runs the command you hand it), maps every
+ * `asc` CLI already produced (or runs the commands you hand it), maps every
  * campaign's app (adamId) to a Compound product through the SAME private
  * config the ASC daily signals use (`asc_app_id`), writes one canonical CSV
  * per product, and — only with --apply — invokes the existing
  * `compound product ads import` door. No fetcher, no second store.
  *
  * Report shapes understood:
+ *  - Apple Ads Platform API v1 `POST v1/reports/apps/campaigns/query`
+ *    (`asc ads reports apps campaigns --file report.json --ad-account <id>`):
+ *    result.rows[].{metadata{id},granularMetrics[]{date,impressions,taps,
+ *    totalInstalls,localSpend{amount,currency}}}
  *  - Campaign Management API v5 `POST v5/reports/campaigns`
- *    (`asc ads v5 reports campaigns --file payload.json --org <org>`):
+ *    (`asc ads v5 reports campaigns --file payload.json --org <org>`), removed
+ *    in asc 6.0.0:
  *    data.reportingDataResponse.row[].{metadata{campaignId,campaignName,app.adamId},
  *    granularity[]{date,impressions,taps,totalInstalls,localSpend{amount,currency}}}
- *  - Apple Ads Platform API v1 `POST v1/reports/apps/campaigns/query`
- *    (`asc ads reports apps campaigns --file report.json --ad-account <id>`)
- *    when it returns the same row/granularity grammar.
+ *
+ * The v1 campaign report carries the campaign id but NEITHER the campaign name
+ * NOR its app, so the campaign list (`asc ads campaigns find`) supplies both. A
+ * v1 report without that list cannot be mapped to a product, and the tool
+ * refuses instead of writing an empty CSV.
  */
 
 type AppConfig = { product_id: string; asc_app_id?: string };
@@ -46,6 +53,9 @@ export type BridgeRows = {
   dateEnd: string;
 };
 
+/** What the campaign list says about one campaign: its name and the app it promotes. */
+export type CampaignIdentity = { name: string; adamId: string };
+
 export const CANONICAL_HEADERS = ["date", "campaign_id", "campaign_name", "spend", "impressions", "clicks", "conversions", "currency"] as const;
 
 export function parseConfig(path: string): Config {
@@ -59,40 +69,87 @@ function num(v: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-function reportRows(report: unknown): Record<string, unknown>[] {
-  const r = report as Record<string, unknown>;
-  const data = (r?.data ?? r) as Record<string, unknown>;
-  const resp = (data?.reportingDataResponse ?? data) as Record<string, unknown>;
-  const rows = resp?.row ?? (r as Record<string, unknown>)?.row ?? (r as Record<string, unknown>)?.rows;
-  return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
+function pickRows(...candidates: unknown[]): Record<string, unknown>[] {
+  for (const c of candidates) if (Array.isArray(c)) return c as Record<string, unknown>[];
+  return [];
+}
+
+/** The v1 campaign list: campaign id → campaign name and the app it promotes. */
+export function campaignIdentities(campaigns: unknown): Map<string, CampaignIdentity> {
+  const out = new Map<string, CampaignIdentity>();
+  const payload = (campaigns ?? {}) as Record<string, unknown>;
+  const result = (payload.result ?? payload) as Record<string, unknown>;
+  const rows = pickRows(result.rows, result.row, Array.isArray(result) ? result : undefined);
+  for (const row of rows) {
+    const r = row as Record<string, unknown>;
+    const id = String(r.id ?? r.campaignId ?? "");
+    if (!id) continue;
+    const type = r.promotedObjectType ? String(r.promotedObjectType) : "APPSTORE_APP";
+    out.set(id, {
+      name: String(r.name ?? r.campaignName ?? id),
+      adamId: type === "APPSTORE_APP" ? String(r.promotedObjectId ?? r.adamId ?? "") : "",
+    });
+  }
+  return out;
+}
+
+export type ReportRow = {
+  campaignId: string;
+  adamId: string;
+  campaignName: string;
+  days: Record<string, unknown>[];
+};
+
+/** Every report row, in the v5 shape or the v1 shape. */
+export function reportRows(report: unknown): ReportRow[] {
+  const r = (report ?? {}) as Record<string, unknown>;
+  const data = (r.data ?? {}) as Record<string, unknown>;
+  const reporting = (data.reportingDataResponse ?? {}) as Record<string, unknown>;
+  const result = (r.result ?? {}) as Record<string, unknown>;
+  const rows = pickRows(reporting.row, reporting.rows, data.row, data.rows, r.row, r.rows, result.rows, result.row);
+  return rows.map((row) => {
+    const md = (row.metadata ?? {}) as Record<string, unknown>;
+    const app = (md.app ?? {}) as Record<string, unknown>;
+    const days = Array.isArray(row.granularity) ? row.granularity : Array.isArray(row.granularMetrics) ? row.granularMetrics : [];
+    return {
+      campaignId: String(md.campaignId ?? md.id ?? ""),
+      adamId: String(app.adamId ?? md.adamId ?? md.appId ?? ""),
+      campaignName: String(md.campaignName ?? ""),
+      days: days as Record<string, unknown>[],
+    };
+  });
+}
+
+/** True when the report carries campaign ids but no app ids: the v1 shape. */
+export function needsCampaignList(report: unknown): boolean {
+  const rows = reportRows(report);
+  return rows.length > 0 && rows.every((row) => !row.adamId);
 }
 
 /** Pure: report JSON + product config → canonical rows per product. */
-export function rowsForReport(config: Config, report: unknown): BridgeRows {
+export function rowsForReport(config: Config, report: unknown, campaigns?: unknown): BridgeRows {
   const app2product = new Map<string, string>();
   for (const app of config.apps) if (app.asc_app_id) app2product.set(String(app.asc_app_id), app.product_id);
+  const identities = campaigns === undefined ? new Map<string, CampaignIdentity>() : campaignIdentities(campaigns);
 
   const out: BridgeRows = { byProduct: {}, unmapped: [], campaigns: 0, dateStart: "", dateEnd: "" };
   for (const row of reportRows(report)) {
-    const md = (row.metadata ?? {}) as Record<string, unknown>;
-    const app = (md.app ?? {}) as Record<string, unknown>;
-    const adamId = String(app.adamId ?? md.adamId ?? md.appId ?? "");
-    const campaignId = String(md.campaignId ?? "");
-    const campaignName = String(md.campaignName ?? campaignId);
+    const identity = identities.get(row.campaignId);
+    const adamId = row.adamId || identity?.adamId || "";
+    const campaignName = row.campaignName || identity?.name || row.campaignId;
     const product = app2product.get(adamId);
     out.campaigns++;
     if (!product) {
       out.unmapped.push({ adamId, campaignName });
       continue;
     }
-    const days = Array.isArray(row.granularity) ? (row.granularity as Record<string, unknown>[]) : [];
-    for (const d of days) {
+    for (const d of row.days) {
       const date = String(d.date ?? "").slice(0, 10);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
       const spend = (d.localSpend ?? d.spend ?? {}) as Record<string, unknown>;
       const rec: CanonicalAdRow = {
         date,
-        campaign_id: campaignId,
+        campaign_id: row.campaignId,
         campaign_name: campaignName,
         spend: String(spend.amount ?? "0"),
         impressions: num(d.impressions),
@@ -129,8 +186,10 @@ export function writeCsvs(rows: BridgeRows, outDir: string): Record<string, stri
 type Args = {
   config: string;
   reportJson?: string;
+  /** The v1 campaign list, when the report does not carry names and app ids. */
+  campaignsJson?: string;
   ascCommand?: string;
-  /** --org + --days: the tool builds the v5 report request itself and runs `asc`. */
+  /** --org + --days: the tool builds the v1 report request itself and runs `asc`. */
   org?: string;
   days?: number;
   account?: string;
@@ -141,30 +200,35 @@ type Args = {
 };
 
 export const USAGE =
-  "usage: bun tools/apple_ads_daily.ts --config <asc-products.json> (--report-json <report.json>|--asc-command <cmd>|--org <org-id> --days <N>) [--account <ad-account-id>] [--out-dir <dir>] [--compound-bin compound] [--apply] [--json]";
+  "usage: bun tools/apple_ads_daily.ts --config <asc-products.json> (--report-json <report.json> [--campaigns-json <campaigns.json>]|--asc-command <cmd>|--org <ad-account-id> --days <N>) [--account <ad-account-id>] [--out-dir <dir>] [--compound-bin compound] [--apply] [--json]";
 
-/** The v5 campaign report request for the last `days` days ending today (UTC). */
+/** The v1 app campaign report request for the last `days` days ending today (UTC). */
 export function reportPayload(days: number, now: Date = new Date()): Record<string, unknown> {
   if (!Number.isInteger(days) || days < 1 || days > 366) throw new UsageError("--days must be an integer between 1 and 366");
   const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   const start = new Date(end.getTime() - (days - 1) * 86_400_000);
   const day = (d: Date) => d.toISOString().slice(0, 10);
   return {
-    startTime: day(start),
-    endTime: day(end),
-    granularity: "DAILY",
-    timeZone: "UTC",
-    returnRowTotals: false,
-    returnRecordsWithNoMetrics: true,
-    selector: { orderBy: [{ field: "campaignId", sortOrder: "ASCENDING" }], pagination: { offset: 0, limit: 1000 } },
+    timeRange: { start: day(start), end: day(end), timeZone: "UTC", granularity: "DAILY" },
+    fields: ["impressions", "taps", "tapInstalls", "viewInstalls", "totalInstalls", "localSpend"],
+    pagination: { offset: 0, pageSize: 1000 },
   };
 }
 
+/** The v1 campaign list request. */
+export function campaignsPayload(): Record<string, unknown> {
+  return { pagination: { offset: 0, pageSize: 200 } };
+}
+
 /** Proxy variables are dropped: the Apple Ads endpoint is reached directly, and an
- *  inherited loopback proxy has made the CLI fail silently before. */
+ *  inherited loopback proxy has made the CLI fail silently before. The Ads
+ *  credentials live in a file, so the keychain branch is skipped: a scheduled
+ *  run must never put a prompt on the operator's screen. */
 export function ascEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base };
   for (const k of Object.keys(env)) if (/^(https?_proxy|all_proxy)$/i.test(k)) delete env[k];
+  env.ASC_ADS_BYPASS_KEYCHAIN = "1";
+  env.ASC_ADS_STRICT_AUTH = "1";
   return env;
 }
 
@@ -191,6 +255,9 @@ export function parseArgs(argv: string[]): Args {
         break;
       case "--report-json":
         args.reportJson = value;
+        break;
+      case "--campaigns-json":
+        args.campaignsJson = value;
         break;
       case "--asc-command":
         args.ascCommand = value;
@@ -221,36 +288,51 @@ export function parseArgs(argv: string[]): Args {
   return args;
 }
 
-function loadReport(args: Args): unknown {
-  if (args.reportJson) return JSON.parse(readFileSync(args.reportJson, "utf8"));
+/** One read-only `asc ads` call with a v1 payload. */
+function runAsc(argv: string[], payload: Record<string, unknown>): unknown {
+  const dir = mkdtempSync(join(tmpdir(), "apple-ads-daily-"));
+  const payloadPath = join(dir, "payload.json");
+  writeFileSync(payloadPath, JSON.stringify(payload));
+  const result = spawnSync("asc", [...argv, "--file", payloadPath, "--output", "json"], {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+    env: ascEnv(),
+  });
+  if (result.status !== 0) throw new Error(`asc ${argv.join(" ")} failed (${result.status}): ${(result.stderr || "").trim().slice(0, 400)}`);
+  return JSON.parse(result.stdout.slice(result.stdout.indexOf("{")));
+}
+
+function loadReport(args: Args): { report: unknown; campaigns: unknown } {
+  const campaignsFromFile = () => (args.campaignsJson ? JSON.parse(readFileSync(args.campaignsJson, "utf8")) : undefined);
+  if (args.reportJson) return { report: JSON.parse(readFileSync(args.reportJson, "utf8")), campaigns: campaignsFromFile() };
   if (args.org) {
-    // Self-built request: the only asc invocation this tool knows by itself.
-    const payload = reportPayload(args.days!);
-    const dir = mkdtempSync(join(tmpdir(), "apple-ads-daily-"));
-    const payloadPath = join(dir, "payload.json");
-    writeFileSync(payloadPath, JSON.stringify(payload));
-    const result = spawnSync("asc", ["ads", "v5", "reports", "campaigns", "--file", payloadPath, "--org", args.org, "--output", "json"], {
-      encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024,
-      env: ascEnv(),
-    });
-    if (result.status !== 0) throw new Error(`asc ads report failed (${result.status}): ${(result.stderr || "").trim().slice(0, 400)}`);
-    return JSON.parse(result.stdout.slice(result.stdout.indexOf("{")));
+    // The campaign list supplies each campaign's name and app; the v1 report
+    // carries neither. Both calls are read-only.
+    const campaigns = runAsc(["ads", "campaigns", "find", "--ad-account", args.org], campaignsPayload());
+    const report = runAsc(["ads", "reports", "apps", "campaigns", "--ad-account", args.org], reportPayload(args.days!));
+    return { report, campaigns };
   }
   // The command is the operator's; this tool only runs what it was handed.
   const result = spawnSync("/bin/zsh", ["-lc", args.ascCommand!], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: ascEnv() });
   if (result.status !== 0) throw new Error(`asc command failed (${result.status}): ${(result.stderr || "").trim().slice(0, 400)}`);
   const text = result.stdout;
-  return JSON.parse(text.slice(text.indexOf("{")));
+  return { report: JSON.parse(text.slice(text.indexOf("{"))), campaigns: campaignsFromFile() };
 }
 
 export function main(argv: string[]): number {
   const args = parseArgs(argv);
   const config = parseConfig(args.config);
-  const rows = rowsForReport(config, loadReport(args));
+  const { report, campaigns } = loadReport(args);
+  if (needsCampaignList(report) && campaigns === undefined) {
+    throw new Error(
+      "this report carries campaign ids but no app ids: pass the v1 campaign list with --campaigns-json, " +
+        "or let the tool read it with --org <ad-account-id> --days <N>",
+    );
+  }
+  const rows = rowsForReport(config, report, campaigns);
   const outDir = args.outDir ?? `${process.env.COMPOUND_HOME ?? `${process.env.HOME}/.compound`}/state/apple-ads-daily`;
   const csvs = writeCsvs(rows, outDir);
-  const report: Record<string, unknown> = {
+  const reportSummary: Record<string, unknown> = {
     schema_version: "compound.tools.apple_ads_daily.v0.1",
     platform: "apple_search_ads",
     campaigns: rows.campaigns,
@@ -273,19 +355,19 @@ export function main(argv: string[]): number {
         summary = null;
       }
       applied.push({ product, status: result.status, import: summary, stderr: (result.stderr || "").trim().slice(0, 300) });
-      if (result.status !== 0) report.status = "failed";
+      if (result.status !== 0) reportSummary.status = "failed";
     }
-    report.apply_results = applied;
+    reportSummary.apply_results = applied;
   }
-  report.status ??= rows.unmapped.length > 0 ? "partial" : "ok";
-  if (args.json) console.log(JSON.stringify(report, null, 2));
+  reportSummary.status ??= rows.unmapped.length > 0 ? "partial" : "ok";
+  if (args.json) console.log(JSON.stringify(reportSummary, null, 2));
   else {
     console.log(`# apple ads daily (${rows.dateStart}..${rows.dateEnd})`);
     console.log(`- campaigns: ${rows.campaigns} · unmapped: ${rows.unmapped.length} · applied: ${args.apply}`);
     for (const [p, csv] of Object.entries(csvs)) console.log(`- ${p}: ${rows.byProduct[p].length} rows → ${csv}`);
     for (const u of rows.unmapped) console.log(`- unmapped adamId ${u.adamId} (${u.campaignName}): add it to the private asc-products config`);
   }
-  return report.status === "failed" ? 1 : 0;
+  return reportSummary.status === "failed" ? 1 : 0;
 }
 
 if (import.meta.main) {

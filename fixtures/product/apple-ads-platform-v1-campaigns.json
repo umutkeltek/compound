@@ -1,0 +1,29 @@
+{
+  "result": [
+    {
+      "id": 900000001,
+      "name": "Focus Notes US — Search Results",
+      "promotedObjectId": 123456789,
+      "promotedObjectType": "APPSTORE_APP",
+      "status": "ENABLED",
+      "adAccountId": 100000001
+    },
+    {
+      "id": 900000002,
+      "name": "Focus Notes DE — Search Results",
+      "promotedObjectId": 123456789,
+      "promotedObjectType": "APPSTORE_APP",
+      "status": "ENABLED",
+      "adAccountId": 100000001
+    },
+    {
+      "id": 900000003,
+      "name": "Unmapped App Try",
+      "promotedObjectId": 999999999,
+      "promotedObjectType": "APPSTORE_APP",
+      "status": "PAUSED",
+      "adAccountId": 100000001
+    }
+  ],
+  "pagination": { "offset": 0, "pageSize": 3 }
+}
