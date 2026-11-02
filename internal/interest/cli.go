@@ -6,9 +6,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"compound/internal/home"
@@ -113,8 +115,18 @@ func Headline(p Projection) string {
 	if prev == "" {
 		prev = "none"
 	}
-	return fmt.Sprintf("interest: %d failed results in %s; %.1f%% assimilated; %d learnable signatures; progress since %s: +%d assimilated (%d results absorbed)",
+	line := fmt.Sprintf("interest: %d failed results in %s; %.1f%% assimilated; %d learnable signatures; progress since %s: +%d assimilated (%d results absorbed)",
 		p.Totals.FailedResults, windowLabel(p.Window), p.Totals.AssimilatedShare*100, learnable, prev, len(p.Progress.NewlyAssimilated), absorbed)
+	// Orphans ride on the line every reader already sees: a rule that stops
+	// counting an explanation must say so where the share drops.
+	if o := p.OrphanedExplanations; o.Count > 0 {
+		reasons := []string{}
+		for _, r := range slices.Sorted(maps.Keys(o.ByReason)) {
+			reasons = append(reasons, fmt.Sprintf("%d %s", o.ByReason[r], r))
+		}
+		line += fmt.Sprintf("; %d orphaned explanations (%s)", o.Count, strings.Join(reasons, ", "))
+	}
+	return line
 }
 
 func windowLabel(w Window) string {
