@@ -1,6 +1,7 @@
 package work
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -78,7 +79,12 @@ type landingGitFacts struct {
 	commitExistsCache  map[string]landingFact[bool]
 	ancestryCache      map[string]landingFact[bool]
 	identityCache      map[string]landingFact[gitrepository.Identity]
-	ownedDirtyCache    map[string]landingFact[landingOwnedDirtyFact]
+	// identitySession amortizes the ref-INDEPENDENT half of an identity read
+	// (the repository's object format and canonical origin) across every
+	// (root, base) pair this session evaluates. The lineage roots stay keyed by
+	// base, because a different base can name a different lineage.
+	identitySession *gitrepository.IdentitySession
+	ownedDirtyCache map[string]landingFact[landingOwnedDirtyFact]
 
 	// reads counts, per fact kind, the real reads this session performed
 	// (cache hits are free). Projection evidence only; never a gate.
@@ -97,6 +103,7 @@ func newLandingGitFacts() *landingGitFacts {
 		commitExistsCache:  map[string]landingFact[bool]{},
 		ancestryCache:      map[string]landingFact[bool]{},
 		identityCache:      map[string]landingFact[gitrepository.Identity]{},
+		identitySession:    gitrepository.NewIdentitySession(),
 		ownedDirtyCache:    map[string]landingFact[landingOwnedDirtyFact]{},
 		reads:              map[string]int{},
 	}
@@ -286,7 +293,7 @@ func (f *landingGitFacts) repositoryIdentity(root, expectedBase string) (gitrepo
 	if fact, ok := f.identityCache[key]; ok {
 		return fact.value, fact.err
 	}
-	value, err := gitrepository.ReadIdentity(root, expectedBase)
+	value, err := f.identitySession.ReadIdentityContext(context.Background(), root, expectedBase)
 	f.recordRead(landingReadIdentity)
 	f.identityCache[key] = landingFact[gitrepository.Identity]{value: value, err: err}
 	return value, err
