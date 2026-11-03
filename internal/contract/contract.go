@@ -1596,7 +1596,7 @@ func Pack(in Input, pol OrientationPolicy, now time.Time) envelope.ContextPack {
 	}
 	if includedRefPresent(incl, universalPrinciplesRef) {
 		if laws := universalPrinciplesLawLine(in.Cwd); laws != "" {
-			summary += " Tier-0 constitution: " + laws
+			summary += " " + tierZeroLawPrefix + laws
 		}
 	}
 	hdr := header(envelope.SVContextPack, packIDForInput(in), now, in)

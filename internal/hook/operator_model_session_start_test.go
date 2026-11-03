@@ -23,6 +23,7 @@ func writeHookOperatorModel(t *testing.T, home, body string) {
 }
 
 func TestLiveSessionStartServesOperatorModelAfterDoorMap(t *testing.T) {
+	t.Setenv(SessionPackEnv, "full") // exact full-start payload; session_pack_test pins the minimal one
 	home := doorMapHome(t)
 	writeHookOperatorModel(t, home, syntheticOperatorModel)
 	deps := baseDeps()
@@ -39,6 +40,7 @@ func TestLiveSessionStartServesOperatorModelAfterDoorMap(t *testing.T) {
 }
 
 func TestLiveSessionStartWithoutOperatorModelServesDoorMapOnly(t *testing.T) {
+	t.Setenv(SessionPackEnv, "full") // exact full-start payload; session_pack_test pins the minimal one
 	home := doorMapHome(t)
 	deps := baseDeps()
 	deps.HomePath = home
@@ -72,6 +74,7 @@ func TestFixtureReplaySessionStartIgnoresOperatorModel(t *testing.T) {
 // session-start payload: a full door-map block plus an operator model past its
 // cap. Each block keeps its own cap; the log line records the totals.
 func TestLiveSessionStartOversizeOperatorModelStaysBounded(t *testing.T) {
+	t.Setenv(SessionPackEnv, "full") // exact full-start payload; session_pack_test pins the minimal one
 	home := doorMapHome(t)
 	writeHookOperatorModel(t, home, strings.Repeat("- a standing preference line that repeats\n", 200))
 	deps := baseDeps()

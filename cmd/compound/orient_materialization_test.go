@@ -338,6 +338,7 @@ func TestContractCompilePersistsBoundInstalledEntrypointPair(t *testing.T) {
 func TestHookLiveSessionStartPersistsBoundInstalledEntrypointPair(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
+	t.Setenv("COMPOUND_SESSION_PACK", "full") // only the full start persists the pair
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
 	}

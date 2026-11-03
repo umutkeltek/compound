@@ -78,3 +78,18 @@ func withServedPackID(summary, packID string) string {
 	}
 	return summary + servedPackIDPrefix + packID + "."
 }
+
+// tierZeroLawPrefix leads the Tier-0 constitution line in a full pack summary and in
+// the minimal session start, so both surfaces print the same line.
+const tierZeroLawPrefix = "Tier-0 constitution: "
+
+// TierZeroLawLine is the one-line Tier-0 constitution summary for cwd, or "" when no
+// constitution is found above cwd. The minimal session start serves it without
+// building a ContextPack: it is one file read, not a retrieval.
+func TierZeroLawLine(cwd string) string {
+	laws := universalPrinciplesLawLine(cwd)
+	if laws == "" {
+		return ""
+	}
+	return tierZeroLawPrefix + laws
+}

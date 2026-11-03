@@ -588,6 +588,9 @@ type contextBuildResult struct {
 }
 
 func sessionStart(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {
+	if sessionPackMode(fx) == hookplan.SessionPackMinimal {
+		return sessionStartOnDemand(name, fx, deps, now)
+	}
 	mode := hookRequestedMode(name, fx)
 	built, breaker, err := buildContextWithBreaker(name, fx, deps, mode, now)
 	if breaker != nil {
@@ -1831,6 +1834,9 @@ type sessionOrientationRecord struct {
 	SessionKey    string `json:"session_key"`
 	HookID        string `json:"hook_id"`
 	ServedAt      string `json:"served_at"`
+	// Pack is "on_demand" when the session start served no ContextPack (minimal
+	// mode); empty means the full orientation was served.
+	Pack string `json:"pack,omitempty"`
 }
 
 const sessionOrientationSchemaVersion = "compound.hook_session_orientation.v0.1"
@@ -1845,6 +1851,12 @@ func sessionOrientationPath(homePath, sessionID string) string {
 // orientation was served must never block serving it. A missing marker degrades the
 // pointer to its "cannot tell" wording, which is the honest fallback.
 func recordSessionOrientationServed(homePath, sessionID, hookID string, now time.Time) error {
+	return recordSessionOrientation(homePath, sessionID, hookID, "", now)
+}
+
+// recordSessionOrientation writes the marker; pack names what the start served
+// ("" for the full orientation, sessionOrientationOnDemand for the minimal start).
+func recordSessionOrientation(homePath, sessionID, hookID, pack string, now time.Time) error {
 	if strings.TrimSpace(homePath) == "" || strings.TrimSpace(sessionID) == "" {
 		return nil
 	}
@@ -1857,6 +1869,7 @@ func recordSessionOrientationServed(homePath, sessionID, hookID string, now time
 		SessionKey:    hashStr(strings.TrimSpace(sessionID)),
 		HookID:        strings.TrimSpace(hookID),
 		ServedAt:      now.UTC().Format(time.RFC3339),
+		Pack:          strings.TrimSpace(pack),
 	}, "", "  ")
 	if err != nil {
 		return err
@@ -1892,6 +1905,9 @@ func orientationNoteForSession(homePath, sessionID, harnessName string) string {
 	var record sessionOrientationRecord
 	if json.Unmarshal(body, &record) != nil || strings.TrimSpace(record.HookID) == "" {
 		return "- Orientation (scope, sources, hooks, constitution) is served on SessionStart; re-serve with " + command
+	}
+	if record.Pack == sessionOrientationOnDemand {
+		return "- Orientation is on demand this session (session start served only the law line and the door map): run " + command
 	}
 	return fmt.Sprintf("- Orientation served this session at `%s`; re-serve with %s", safeMD(record.HookID), command)
 }

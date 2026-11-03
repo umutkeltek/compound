@@ -153,6 +153,27 @@ func InstalledHookCommandForEvent(binaryPath, harness, event string, blocking bo
 	return command, 0
 }
 
+// Session-start pack modes. Full builds and injects the ContextPack at session
+// start; minimal serves the Tier-0 law line, the door map and a pointer to
+// `compound orient`, and builds no pack.
+const (
+	SessionPackFull    = "full"
+	SessionPackMinimal = "minimal"
+)
+
+// DefaultSessionPack is the session-start pack mode a harness gets when the hook
+// process has no override. The interactive watch-only pair gets minimal: a blind
+// with-and-without run on 10 tasks did not earn an always-on pack (3 wins each,
+// 4 ties, against a pre-registered bar of 6 wins), and an operator is there to
+// ask for the pack. Every other lane keeps full, because an unattended executor
+// has no one to run `compound orient` for it.
+func DefaultSessionPack(harness string) string {
+	if isInteractiveWatchOnlyHarness(harness) {
+		return SessionPackMinimal
+	}
+	return SessionPackFull
+}
+
 // isInteractiveWatchOnlyHarness names the harnesses whose default PreToolUse
 // posture is observation, the same pair validateInstallableDefaultPosture
 // admits as interactive observational defaults.

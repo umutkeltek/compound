@@ -50,6 +50,7 @@ above for one kind of memory: the lesson.
 - **Automatic candidate producers are opt-in** (`COMPOUND_CANDIDATE_PRODUCERS=1`).
   Explicit writes (`compound capture`, `compound memory candidate`,
   `compound memory lesson`) always work.
+- **The session-start pack is on demand in interactive harnesses** (blind 10-task run, 3-3-4; `COMPOUND_SESSION_PACK=full` restores it; executor lanes keep it): docs/architecture/hook-redesign.md.
 
 Full rule set: docs/memory-architecture.md "Lessons and status".
 
