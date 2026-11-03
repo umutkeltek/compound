@@ -745,6 +745,17 @@ func (s *Store) surface(task, harness string, ctx SurfaceContext) ([]Surfaced, e
 		if n.Kind == "instruction_rule" && base == 0 {
 			base = 1
 		}
+		// Prose admits nothing on its own (same rule as validated_by below): an imported
+		// tool's triggers are its name plus its description, word for word, so a match on
+		// description words alone ("current", "vision", "analyze", "finding") is overlap
+		// with prose, not a claim that the tool fits. Measured on the live graph
+		// 2026-11-03: a browser image-listing tool ranked #1 on "reassess the current
+		// vision and plan: analyze the findings", 4.8 on four description words, with the
+		// semantic lane judging it unrelated. Description words still RANK a tool the
+		// task names; they never make one a candidate unless the semantic lane agrees.
+		if base > 0 && !semanticMatched && proseTriggerNode(n) && !matchesNodeName(n, matchedTokens) {
+			base, matchedTokens = 0, nil
+		}
 		if evidenceBonus[n.ID] > 0 {
 			matchedTokens = appendMatchedTokens(matchedTokens, "evidence")
 		}
@@ -1518,6 +1529,38 @@ func surfaceTriggerScore(taskTokens map[string]bool, n Node) (float64, []string)
 	}
 	sort.Strings(tokens)
 	return float64(len(tokens)), tokens
+}
+
+// proseTriggerMarker is the interface stamp the tool-topology import appends to an MCP
+// tool's triggers. Those triggers are the tool's name plus its description, tokenized
+// verbatim, not curated trigger words.
+const proseTriggerMarker = "mcp_tool"
+
+func proseTriggerNode(n Node) bool {
+	for _, trigger := range n.Triggers {
+		if strings.EqualFold(strings.TrimSpace(trigger), proseTriggerMarker) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesNodeName reports whether any matched trigger token is a word of the node's own
+// id or name (server and tool name for an imported tool).
+func matchesNodeName(n Node, matched []string) bool {
+	if len(matched) == 0 {
+		return false
+	}
+	name := map[string]bool{}
+	for _, tok := range tokenList(n.ID + " " + n.Name) {
+		name[tok] = true
+	}
+	for _, tok := range matched {
+		if taskTokenMatches(name, tok) {
+			return true
+		}
+	}
+	return false
 }
 
 func appendMatchedTokens(tokens []string, values ...string) []string {

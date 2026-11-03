@@ -583,11 +583,15 @@ func SealRuntimeMaterialization(runtime RuntimeMaterialization) (RuntimeMaterial
 	pack.IDs.ContractID = ec.ID
 	packBody := pack
 	packBody.ID = ""
+	packBody.SummaryMD = withoutServedPackID(pack.SummaryMD)
 	packDigest, err := json.Marshal(packBody)
 	if err != nil {
 		return RuntimeMaterialization{}, err
 	}
 	pack.ID = runtimeMaterializationID("ctx_", packDigest)
+	// The served summary names its own sealed pack, so a consumer that only reads the
+	// summary can cite the exact pack. The marker is outside the digest (stripped above).
+	pack.SummaryMD = withServedPackID(packBody.SummaryMD, pack.ID)
 
 	runtime.EffectiveContract = ec
 	runtime.ContextPack = pack
@@ -702,6 +706,7 @@ func CompileWithRuntime(in Input, pol OrientationPolicy, homePath string, now ti
 }
 
 func loadRuntimeSnapshot(in Input, pol OrientationPolicy, homePath string, trace *EngineDependencyTrace) (runtimeSnapshot, error) {
+	in = withoutHookEventPlaceholderTask(in)
 	var snapshot runtimeSnapshot
 	var err error
 	snapshot.hooks, snapshot.excludedHooks, snapshot.hookRoster, snapshot.hookRevisions, err = loadInstalledHooksForInput(homePath, in)
@@ -759,7 +764,7 @@ func loadRuntimeSnapshot(in Input, pol OrientationPolicy, homePath string, trace
 		if err != nil {
 			return snapshot, err
 		}
-		snapshot.positionRefs, snapshot.excludedPositionRefs, err = loadPositionRefsFromView(in, pol.Memory[in.RepoKind], semanticRanks, memoryResult.view, dependencies.TopicSet, dependencies.SelfEntities, dependencies.ProductFence)
+		snapshot.positionRefs, snapshot.excludedPositionRefs, err = loadPositionRefsFromView(in, pol.Memory[in.RepoKind], semanticRanks, memoryResult.view, dependencies.TopicSet, dependencies.SelfEntities, dependencies.ProductFence, dependencies.AmbientScope)
 		if err != nil {
 			return snapshot, err
 		}
@@ -869,6 +874,23 @@ type runtimeMemoryDependencies struct {
 	// snapshot and threaded through to selfModelClaim/personalMemoryClaim
 	// rather than re-resolved per claim.
 	SelfEntities map[string]bool
+	// AmbientScope is the cwd-repository and task anchor set ambient recall requires of
+	// every fact that has a place (see ambient_scope.go), resolved once per snapshot.
+	AmbientScope *ambientScope
+}
+
+// dependencyAmbientScope is the nil-safe accessor: a caller that skipped
+// captureRuntimeMemoryDependencies still gets a gate resolved from its Input, never an
+// open one.
+func dependencyAmbientScope(in Input, dependencies *runtimeMemoryDependencies) ambientScope {
+	if dependencies != nil && dependencies.AmbientScope != nil {
+		return *dependencies.AmbientScope
+	}
+	var fence productRecallFence
+	if dependencies != nil {
+		fence = dependencies.ProductFence
+	}
+	return resolveAmbientScope(in, fence)
 }
 
 // runtimeMemoryDependenciesCaptured is a test seam immediately after every
@@ -895,6 +917,8 @@ func captureRuntimeMemoryDependencies(homePath string, in Input, view *mem.Curre
 		RecallCandidate:     mem.ExpandedQuery{Original: in.Task, Text: in.Task},
 		ProductFence:        resolveProductRecallFence(in, view),
 	}
+	scope := resolveAmbientScope(in, dependencies.ProductFence)
+	dependencies.AmbientScope = &scope
 	if topic := strings.TrimSpace(in.Topic); topic != "" {
 		root := topic
 		resolved, captured := view.TopicResolution(topic)
@@ -1133,6 +1157,7 @@ func projectRuntimePack(pack envelope.ContextPack, in Input, snapshot runtimeSna
 		} else {
 			pack.SummaryMD += fmt.Sprintf(" %d capability offer(s) surfaced; offers are not execution.", len(snapshot.capabilityHits))
 		}
+		pack.SummaryMD += servedSummaryOffers(snapshot.capabilityHits)
 	}
 	return pack
 }
@@ -1144,26 +1169,29 @@ const (
 
 func appendServedRuntimeExclusions(dst []envelope.ExcludedRef, refs []envelope.ExcludedRef) []envelope.ExcludedRef {
 	productFenceOmitted := false
-	out := make([]envelope.ExcludedRef, 0, len(dst)+len(refs)+1)
-	for _, ref := range dst {
-		if ref.Ref == servedProductFenceExclusionRef {
-			productFenceOmitted = true
-			continue
+	scopeOmitted := false
+	out := make([]envelope.ExcludedRef, 0, len(dst)+len(refs)+2)
+	for _, list := range [][]envelope.ExcludedRef{dst, refs} {
+		for _, ref := range list {
+			switch ref.Ref {
+			case servedProductFenceExclusionRef:
+				productFenceOmitted = true
+				continue
+			case ambientScopeExclusionRef:
+				scopeOmitted = true
+				continue
+			}
+			out = append(out, ref)
 		}
-		out = append(out, ref)
-	}
-	for _, ref := range refs {
-		if ref.Ref == servedProductFenceExclusionRef {
-			productFenceOmitted = true
-			continue
-		}
-		out = append(out, ref)
 	}
 	if productFenceOmitted {
 		out = append(out, envelope.ExcludedRef{
 			Ref:    servedProductFenceExclusionRef,
 			Reason: servedProductFenceExclusionReason,
 		})
+	}
+	if scopeOmitted {
+		out = append(out, envelope.ExcludedRef{Ref: ambientScopeExclusionRef, Reason: ambientScopeExclusionReason})
 	}
 	return out
 }
@@ -2666,6 +2694,8 @@ func loadMemoryRefsFromView(in Input, rule MemoryRule, semanticRanks map[string]
 		temps = dependencies.Temperatures
 	}
 	selfEntities := dependencySelfEntities(dependencies)
+	scope := dependencyAmbientScope(in, dependencies)
+	scopeOmitted := false
 	out := make([]contextMemoryRef, 0, maxContextMemoryRefs)
 	excluded := make([]contextMemoryRef, 0, maxContextMemoryRefs)
 	for _, claim := range claims {
@@ -2714,6 +2744,16 @@ func loadMemoryRefsFromView(in Input, rule MemoryRule, semanticRanks map[string]
 		if reason := addressedWorkStatusExclusionReason(claim, entities, taskTokens, sem, topicSet != nil); reason != "" {
 			if relevanceRank > 0 {
 				excluded = append(excluded, contextMemoryRef{Ref: "claim://" + claim.ID, Reason: reason, Seq: claim.Seq, Rank: relevanceRank})
+			}
+			continue
+		}
+		if !scope.allows(claim, topicSet != nil) {
+			// Scope gate: a fact about another repository, or an operator-wide fact the task
+			// does not touch, never enters ambient recall however the ranker scored it. It runs
+			// after the itemized gates so their per-claim reasons stay observable; one
+			// aggregate exclusion records that this gate fired without itemizing the ledger.
+			if relevanceRank > 0 {
+				scopeOmitted = true
 			}
 			continue
 		}
@@ -2768,6 +2808,9 @@ func loadMemoryRefsFromView(in Input, rule MemoryRule, semanticRanks map[string]
 		// documented as never-silently-dropped: record a visible summary of what the cap
 		// left out instead of letting the 6th+ exclusion vanish without a trace (audit E11).
 		excludedRefs = append(excludedRefs, memoryExclusionOverflowRef(overflowExcluded))
+	}
+	if scopeOmitted {
+		excludedRefs = append(excludedRefs, envelope.ExcludedRef{Ref: ambientScopeExclusionRef, Reason: ambientScopeExclusionReason})
 	}
 	return out, excludedRefs, nil
 }
@@ -2917,7 +2960,7 @@ func positionMatchesTaskScope(position mem.Position, entities, taskTokens map[st
 	return false
 }
 
-func loadPositionRefsFromView(in Input, rule MemoryRule, semanticRanks map[string]float64, view *mem.CurrentView, topicSet map[string]bool, selfEntities map[string]bool, productFence productRecallFence) ([]contextPositionRef, []envelope.ExcludedRef, error) {
+func loadPositionRefsFromView(in Input, rule MemoryRule, semanticRanks map[string]float64, view *mem.CurrentView, topicSet map[string]bool, selfEntities map[string]bool, productFence productRecallFence, ambient *ambientScope) ([]contextPositionRef, []envelope.ExcludedRef, error) {
 	if len(rule.Ambient) == 0 {
 		return nil, nil, nil
 	}
@@ -2939,6 +2982,8 @@ func loadPositionRefsFromView(in Input, rule MemoryRule, semanticRanks map[strin
 	for _, claim := range claims {
 		claimByID[claim.ID] = claim
 	}
+	scope := dependencyAmbientScope(in, &runtimeMemoryDependencies{ProductFence: productFence, AmbientScope: ambient})
+	scopeOmitted := false
 	out := make([]contextPositionRef, 0, maxContextMemoryRefs)
 	excluded := make([]contextPositionRef, 0, maxContextMemoryRefs)
 	for _, position := range positions {
@@ -3012,6 +3057,12 @@ func loadPositionRefsFromView(in Input, rule MemoryRule, semanticRanks map[strin
 			}
 			continue
 		}
+		if !scope.allows(activeClaim, topicSet != nil) {
+			if relevanceRank > 0 {
+				scopeOmitted = true
+			}
+			continue
+		}
 		rank := ambientMemoryRank(activeClaim, rule, entities, taskTokens, sem, nil, selfEntities)
 		if rank <= 0 {
 			continue
@@ -3065,6 +3116,9 @@ func loadPositionRefsFromView(in Input, rule MemoryRule, semanticRanks map[strin
 		excludedRefs = append(excludedRefs, envelope.ExcludedRef{Ref: ref.Ref, Reason: ref.Reason})
 	}
 	sort.Slice(excludedRefs, func(i, j int) bool { return excludedRefs[i].Ref < excludedRefs[j].Ref })
+	if scopeOmitted {
+		excludedRefs = append(excludedRefs, envelope.ExcludedRef{Ref: ambientScopeExclusionRef, Reason: ambientScopeExclusionReason})
+	}
 	return out, excludedRefs, nil
 }
 
