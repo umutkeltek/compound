@@ -116,6 +116,9 @@ func TestProofCheckTimingHistoryRoundTripsRecordedDurations(t *testing.T) {
 	if got := store.Runs[0].StepsTotalMS; got != 605_800 {
 		t.Fatalf("steps_total_ms = %d, want 605800", got)
 	}
+	if host, _ := os.Hostname(); host == "" || store.Runs[0].Host != host {
+		t.Fatalf("host = %q, want os.Hostname() %q so the meter can tell laptop runs from verifier runs", store.Runs[0].Host, host)
+	}
 	if got := store.Runs[0].WallMS; got != (12 * time.Minute).Milliseconds() {
 		t.Fatalf("wall_ms = %d, want %d", got, (12 * time.Minute).Milliseconds())
 	}
