@@ -233,7 +233,10 @@ budget, or that the budget cuts before any test failure printed, is `deferred`: 
 counts deferred packages in its one `deferred=<count>` field and `--out` names them
 (`presubmit.plan.deferred`, `presubmit_budget_deferred`). A deferred gate is neither a pass nor a
 silent skip; the verifier verdict covers it after the land. A failure printed before the cut stays red.
-Build, vet, gofmt, diff-check, doctor and redact are never budgeted. Exit 0 needs every gate that
+Build, vet, gofmt, diff-check, doctor and redact are never budgeted. A full-scope plan (scope
+owner or governance-core path changed, `scope=full` on the verdict line) is never budgeted: it has
+no changed-package gates, so every go-test gate runs under the package deadline, as before.
+Exit 0 needs every gate that
 ran to be green and every changed package to have run.
 
 

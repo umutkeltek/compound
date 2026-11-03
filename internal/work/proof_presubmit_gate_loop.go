@@ -1,6 +1,7 @@
 package work
 
 import (
+	"compound/internal/proofscope"
 	"context"
 	"errors"
 	"fmt"
@@ -41,8 +42,13 @@ func RunNonCertifyingProofGates(ctx context.Context, report ProofCheckReport, st
 func runNonCertifyingProofGates(ctx context.Context, report ProofCheckReport, steps []ProofCheckStep, run func(context.Context, ProofCheckStep) ProofCheckStep, budget time.Duration) (ProofCheckReport, error) {
 	_, native := PresubmitExecutionFromContext(ctx)
 	// The budget is applied here; report.Presubmit is never written, because a
-	// native run requires it to equal the sealed plan.
-	budgeted := report.Presubmit != nil && budget > 0
+	// native run requires it to equal the sealed plan. A full-scope plan (a
+	// scope owner or governance-core path changed) has no changed-package
+	// gates to run first, so budgeting it would defer the changed packages
+	// themselves and let a green general gate read as ok; the operator's
+	// 2026-11-03 decision keeps the full battery for those diffs, so the
+	// budget applies only to affected-scope plans.
+	budgeted := report.Presubmit != nil && budget > 0 && report.Presubmit.Plan.Scope.Mode != proofscope.Full
 	var testSpent time.Duration
 	for _, step := range steps {
 		if native && ctx.Err() != nil {
