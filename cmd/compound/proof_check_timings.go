@@ -99,7 +99,9 @@ type proofCheckTimingRun struct {
 	// go-test at ~441ms, which must never sit in the same baseline as this repo's ~450s), and
 	// the common git dir does that while still folding a repo's worktrees together.
 	RepoIdentity string `json:"repo_identity,omitempty"`
-	Status       string `json:"status"`
+	// Host is os.Hostname(): the meter separates laptop battery hours from remote-verifier runs.
+	Host   string `json:"host,omitempty"`
+	Status string `json:"status"`
 	// WallMS is the real elapsed time of the whole battery. StepsTotalMS is the sum of the
 	// individual gate durations. They are equal only while gates run sequentially; once the
 	// non-go-test gates run concurrently the gap between them IS the concurrency win, which is
@@ -178,6 +180,7 @@ func recordProofCheckTimingHistory(homePath string, report proofCheckReport, wal
 		Status:       report.Status,
 		WallMS:       wall.Milliseconds(),
 	}
+	run.Host, _ = os.Hostname()
 	for _, step := range report.Steps {
 		// Only executed gates carry a timing signal. A skipped gate (bun absent) or a gate that
 		// never ran because an earlier one failed would otherwise enter the history as a 0ms
