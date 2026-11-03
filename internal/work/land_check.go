@@ -291,11 +291,27 @@ func (s *Store) evaluateLandCheckWithFacts(w envelope.WorkEnvelope, opts LandChe
 		report.NextAction = fmt.Sprintf("candidate %s does not match latest attached artifact commit:%s; use that verified tip, or attach commit:%s if the provided tip is the newer final work output", candidate, attachedTip, candidate)
 		return report, nil
 	}
-	acceptanceRef, proofResult, proofFound, err := s.latestLandingProofResolution(w)
-	if err != nil {
+	// The newest landing proof decides. An verifier verdict (verifier_verdict.go) certifies
+	// a tip by containment in a green verified target commit, so its head is the
+	// verified commit S, not the candidate; the rule itself runs once the
+	// candidate is contained in the target, below.
+	verifierRef, verifierProof := latestVerifierVerdictLandingRef(w)
+	var (
+		acceptanceRef string
+		proofResult   ProofResourceResult
+		proofFound    bool
+	)
+	if verifierProof {
+		_, verifierSHA, ok := ParseVerifierVerdictRef(verifierRef)
+		if !ok {
+			return report, fmt.Errorf("verifier verdict verification %q is not verifier-verdict:<run_id>:<40-hex sha>", verifierRef)
+		}
+		proofFound = true
+		report.ProofVerificationRef, report.ProofHeadSHA = verifierRef, verifierSHA
+	} else if acceptanceRef, proofResult, proofFound, err = s.latestLandingProofResolution(w); err != nil {
 		return report, err
 	}
-	if proofFound {
+	if proofFound && !verifierProof {
 		report.ProofVerificationRef = acceptanceRef
 		report.ProofHeadSHA = proofResult.SourceSnapshot.HeadSHA
 		if proofResult.SourceSnapshot.RepositoryFingerprint != contract.RepositoryFingerprint {
@@ -396,6 +412,11 @@ func (s *Store) evaluateLandCheckWithFacts(w envelope.WorkEnvelope, opts LandChe
 
 	if !proofFound {
 		proofAction := fmt.Sprintf("run fresh canonical certifying proof for attached candidate commit:%s, then rerun land-check", candidate)
+		if report.CandidateContainedInTarget {
+			// Post-land: the verifier verdict is the canonical proof; the laptop
+			// battery remains only for governance-core diffs.
+			proofAction = fmt.Sprintf("wait for a green verifier verdict covering commit:%s, attach it with compound work verifier-verdict %s --tip %s --attach --actor <actor>, then rerun land-check; a governance-core diff must instead %s", candidate, w.ID, candidate, proofAction)
+		}
 		if !report.CleanTarget {
 			proofAction += fmt.Sprintf(
 				"; preserve foreign or later uncommitted changes in %s worktree (%s)",
@@ -426,6 +447,29 @@ func (s *Store) evaluateLandCheckWithFacts(w envelope.WorkEnvelope, opts LandChe
 		// Immutable target/publication containment settles delivery, but does not
 		// make later worktree state disappear. Surface every dirty path as a
 		// preservation warning so default text clients do not hide foreign WIP.
+		if verifierProof {
+			ev, err := LoadVerifierVerdictEvidence(VerifierVerdictsDir(s.home))
+			if err != nil {
+				return report, fmt.Errorf("verifier verdict evidence: %w", err)
+			}
+			decision, err := ValidateVerifierVerdictRef(ev, verifierRef, candidate, targetSHA, func(a, b string) (bool, error) {
+				return facts.isAncestor(repoPath, a, b)
+			})
+			switch {
+			case decision.Status == VerifierVerdictRedCulprit:
+				report.Status, report.NextAction = "verifier_red_culprit", decision.Reason
+				return report, nil
+			case decision.Status == VerifierVerdictNotVerified:
+				report.Status, report.NextAction = "awaiting_verifier_verdict", decision.Reason
+				return report, nil
+			case err != nil && decision.Status == "":
+				return report, err
+			case err != nil:
+				report.Status = "verifier_verdict_mismatch"
+				report.NextAction = fmt.Sprintf("%v; attach the current covering verdict with compound work verifier-verdict %s --tip %s --attach --actor <actor>", err, w.ID, candidate)
+				return report, nil
+			}
+		}
 		if !report.CleanTarget {
 			report.NextAction = landingContainedDirtyDiagnostic(targetRef, dirtyStatusPaths(statusOutput), contract.PublicationMode)
 		}
@@ -772,6 +816,12 @@ func validateRecordedLandCheck(w envelope.WorkEnvelope, evidenceRef, id, proofPa
 		return fmt.Errorf("recorded land-check %s has proof head without verification identity", id)
 	case report.ProofVerificationRef != "" && !validRecordedLandCheckVerificationRef(report.ProofVerificationRef):
 		return fmt.Errorf("recorded land-check %s has invalid proof verification identity", id)
+	case strings.HasPrefix(report.ProofVerificationRef, VerifierVerdictVerificationPrefix):
+		// An verifier verdict certifies by containment: its head is the verified
+		// commit named in the ref, which contains the candidate.
+		if _, sha, _ := ParseVerifierVerdictRef(report.ProofVerificationRef); report.ProofHeadSHA != sha {
+			return fmt.Errorf("recorded land-check %s verifier proof head differs from its verdict ref", id)
+		}
 	case report.ProofVerificationRef != "" && report.ProofHeadSHA != report.CandidateTipSHA:
 		return fmt.Errorf("recorded land-check %s proof tip differs from candidate tip", id)
 	}
@@ -792,11 +842,23 @@ func validRecordedLandCheckVerificationRef(ref string) bool {
 	if strings.HasPrefix(ref, "proof-check:pfrs_") {
 		return true
 	}
+	if strings.HasPrefix(ref, VerifierVerdictVerificationPrefix) {
+		_, _, ok := ParseVerifierVerdictRef(ref)
+		return ok
+	}
 	_, _, ok := parseDifferentialProofVerificationRef(ref)
 	return ok
 }
 
 func (s *Store) validateRecordedLandCheckProofResult(w envelope.WorkEnvelope, report LandCheckReport) error {
+	if verifierRef, verifier := latestVerifierVerdictLandingRef(w); verifier {
+		// Identity only: the close path's live revalidation (revalidateLandedProof)
+		// re-reads the verifier evidence and re-applies the verifier rule.
+		if report.ProofVerificationRef != verifierRef {
+			return fmt.Errorf("recorded land-check %s cites proof verification %q, but the latest proof stored on work %s is verifier verdict %s; record a fresh land-check", report.ID, report.ProofVerificationRef, w.ID, verifierRef)
+		}
+		return nil
+	}
 	acceptanceRef, result, found, err := s.latestLandingProofResolution(w)
 	if err != nil {
 		return err

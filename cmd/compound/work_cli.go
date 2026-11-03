@@ -113,7 +113,7 @@ type workVerbHelp struct {
 	Example string
 }
 
-const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|reconcile-run-attempts|run-attempt-link|continue|dispatch-plan|dispatch-claim|dispatch-execute|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|delivery-capture|advance-plan|advance|delegate|steer|attach|collaborate|observe-run|land-check|proof-review|proof-manifest|proof-adopt|salvage-plan|private-source-publish|action-plan|act|close-plan|close|set-aside|sweep-stale|reseal> ..."
+const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|reconcile-run-attempts|run-attempt-link|continue|dispatch-plan|dispatch-claim|dispatch-execute|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|delivery-capture|advance-plan|advance|delegate|steer|attach|collaborate|observe-run|land-check|verifier-verdict|proof-review|proof-manifest|proof-adopt|salvage-plan|private-source-publish|action-plan|act|close-plan|close|set-aside|sweep-stale|reseal> ..."
 
 var workVerbHelpByName = map[string]workVerbHelp{
 	"proof-review":   {Usage: work.ProofAdoptionUsage, Example: "compound work proof-review work_example --actor executor --file review.md"},
@@ -247,6 +247,7 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Usage:   "usage: compound work land-check <work_id> --tip <full-sha> [--repo /bound/repo] [--target-ref refs/heads/main] [--actor A] [--steal --reason R] [--dry-run] [--json]",
 		Example: "compound work land-check work_abc123 --tip 0123456789012345678901234567890123456789 --json",
 	},
+	"verifier-verdict": {Usage: work.VerifierVerdictUsage, Example: "compound work verifier-verdict work_abc123 --tip 0123456789012345678901234567890123456789 --json"},
 	"salvage-plan": {
 		Usage:   "usage: compound work salvage-plan <work_id> --branch refs/heads/<branch> [--json]",
 		Example: "compound work salvage-plan work_abc123 --branch refs/heads/stale-executor-branch --json",
@@ -1769,6 +1770,8 @@ func cmdWork(args []string) {
 		if report.NextAction != "" {
 			fmt.Printf("next_action: %s\n", report.NextAction)
 		}
+	case "verifier-verdict":
+		os.Exit(work.RunVerifierVerdictCLI(store, rest, os.Stdout, os.Stderr))
 	case "salvage-plan":
 		usage := workUsage("salvage-plan")
 		salvagePlanValueFlags := map[string]bool{"--branch": true}

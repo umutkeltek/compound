@@ -1893,6 +1893,11 @@ func (s *Store) advanceLocked(workID string, in AdvanceInput, now time.Time) (en
 			return w, fmt.Errorf("differential proof verification: %w", err)
 		}
 	}
+	if ref := strings.TrimSpace(in.VerificationID); strings.HasPrefix(ref, VerifierVerdictVerificationPrefix) {
+		if err := s.validateVerifierVerdictAttachment(ref); err != nil {
+			return w, fmt.Errorf("verifier verdict verification: %w", err)
+		}
+	}
 	if ref := strings.TrimSpace(in.VerificationID); strings.HasPrefix(ref, ProofAdoptionVerificationPrefix) {
 		if !in.proofAdoptionAdmission {
 			return w, fmt.Errorf("exact proof admission requires work proof-adopt")
