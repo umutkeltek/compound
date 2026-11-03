@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"compound/internal/work"
 )
 
 func TestProofCheckConsolePrerequisitesBeforeRuntime(t *testing.T) {
@@ -46,7 +48,9 @@ func TestProofCheckConsolePrerequisitesBeforeRuntime(t *testing.T) {
 				return "", errors.New("runtime resolver reached before readiness")
 			}
 			defer func() { proofCheckRuntimeExecutable = previous }()
-			report, err := runProofCheckContext(context.Background(), repo, false, "", false, false, time.Now())
+			// Console gates are opt-in; the readiness check guards a run that asked for them.
+			ctx := work.ContextWithConsoleProofRequest(context.Background(), true)
+			report, err := runProofCheckContext(ctx, repo, false, "", false, false, time.Now())
 			if err == nil || !strings.Contains(err.Error(), tc.reason) {
 				t.Fatalf("want early %s refusal, got report=%+v err=%v", tc.reason, report, err)
 			}
@@ -57,15 +61,41 @@ func TestProofCheckConsolePrerequisitesBeforeRuntime(t *testing.T) {
 	}
 }
 
+// TestProofCheckDefaultPlanNeedsNoConsoleDependencies proves the opt-in is real
+// at execution time, not only in the printed plan: a host with no
+// console/node_modules passes readiness and reaches the runtime pin when the
+// console gates were not selected.
+func TestProofCheckDefaultPlanNeedsNoConsoleDependencies(t *testing.T) {
+	repo := initCompoundCommandGitRepo(t)
+	previous := proofCheckRuntimeExecutable
+	resolutions := 0
+	proofCheckRuntimeExecutable = func(string) (string, error) {
+		resolutions++
+		return "", errors.New("runtime resolver reached after readiness")
+	}
+	defer func() { proofCheckRuntimeExecutable = previous }()
+	report, err := runProofCheckContext(context.Background(), repo, false, "", false, false, time.Now())
+	if err == nil || strings.Contains(err.Error(), "console_") || !strings.Contains(err.Error(), "runtime resolver reached after readiness") {
+		t.Fatalf("default plan must not demand console dependencies: report=%+v err=%v", report, err)
+	}
+	if resolutions != 1 || len(report.Steps) != 0 {
+		t.Fatalf("default plan stopped before the runtime pin or ran a gate: resolutions=%d steps=%d", resolutions, len(report.Steps))
+	}
+}
+
 func TestProofCheckPrerequisitesDoNotChangeDryRunInventory(t *testing.T) {
 	repo := initCompoundCommandGitRepo(t)
 	report, err := runProofCheckContext(context.Background(), repo, true, "", false, false, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := proofCheckSteps("")
+	full, err := proofCheckSteps("")
 	if err != nil {
 		t.Fatal(err)
+	}
+	want := work.WithoutConsoleProofGates(full)
+	if len(want) == len(full) {
+		t.Fatalf("full inventory has no console gates to opt out of: %d", len(full))
 	}
 	if len(report.Steps) != len(want) {
 		t.Fatalf("dry run inventory = %d, want %d", len(report.Steps), len(want))

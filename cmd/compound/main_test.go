@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -433,19 +434,27 @@ func TestHomeInitHelpIsReadOnly(t *testing.T) {
 	}
 }
 
+// TestProofCheckDryRunListsDeterministicGates pins both faces of the console
+// opt-in: the default plan (no --base) carries zero console gates, and
+// --with-console brings back the full inventory in its original order.
 func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
-	out := captureStdout(t, func() {
-		cmdProofCheck([]string{"--dry-run", "--json", "--repo", "."})
-	})
-	var report proofCheckReport
-	if err := json.Unmarshal([]byte(out), &report); err != nil {
-		t.Fatalf("parse proof-check report: %v\n%s", err, out)
+	report := proofCheckDryRunReport(t, "--with-console")
+	defaultReport := proofCheckDryRunReport(t)
+	var wantDefault []string
+	for _, step := range report.Steps {
+		if !strings.HasPrefix(step.Name, "console-") {
+			wantDefault = append(wantDefault, step.ProofRef)
+		}
 	}
-	if report.SchemaVersion != proofCheckSchemaVersion ||
-		report.ProfileKind != work.ProofResourceProfileCanonicalFull ||
-		report.Status != "ok" ||
-		!report.DryRun {
-		t.Fatalf("bad proof-check report: %+v", report)
+	gotDefault := make([]string, 0, len(defaultReport.Steps))
+	for _, step := range defaultReport.Steps {
+		if work.IsConsoleProofGate(step) || strings.HasPrefix(step.Name, "console-") {
+			t.Fatalf("default dry-run plan carries console gate %s; console gates are opt-in", step.Name)
+		}
+		gotDefault = append(gotDefault, step.ProofRef)
+	}
+	if !slices.Equal(gotDefault, wantDefault) || !slices.Equal(defaultReport.ProofRefs, wantDefault) || len(wantDefault) != 14 {
+		t.Fatalf("default dry-run plan = %v (refs %v), want the 14 non-console gates %v", gotDefault, defaultReport.ProofRefs, wantDefault)
 	}
 	wantProofs := []string{
 		"go-test-count-1-general-release",
@@ -522,6 +531,24 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 			t.Fatalf("proof refs missing %q: %+v", want, report.ProofRefs)
 		}
 	}
+}
+
+func proofCheckDryRunReport(t *testing.T, extra ...string) proofCheckReport {
+	t.Helper()
+	out := captureStdout(t, func() {
+		cmdProofCheck(append([]string{"--dry-run", "--json", "--repo", "."}, extra...))
+	})
+	var report proofCheckReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse proof-check report: %v\n%s", err, out)
+	}
+	if report.SchemaVersion != proofCheckSchemaVersion ||
+		report.ProfileKind != work.ProofResourceProfileCanonicalFull ||
+		report.Status != "ok" ||
+		!report.DryRun {
+		t.Fatalf("bad proof-check report: %+v", report)
+	}
+	return report
 }
 
 func TestProofCheckCIFlagRunsOnlyPortableGates(t *testing.T) {

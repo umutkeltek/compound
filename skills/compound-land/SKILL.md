@@ -208,12 +208,12 @@ precondition.
 
 ### Canonical proof — after the land, before any governed close
 
-The canonical battery (every gate, uncached `-count=1` Go suite) runs ONCE per landed tip, on
-main, AFTER the fast-forward and push — detached, low priority, never blocking the next landing.
-Its `--out` report is authoritative; read it when it finishes. **A red post-land battery is fixed
-forward or reverted the same day by the lane that landed it.** The nightly main battery
-(`com.compound.nightly-main-battery`, 04:30) is the backstop, and its claims count only when its
-log shows a finished run. For a governed WorkEnvelope the stored canonical proof at the landed tip
+The canonical battery (uncached `-count=1` Go suite plus every non-console gate) runs ONCE per
+landed tip, on main, AFTER the fast-forward and push — detached, low priority, never blocking the
+next landing. Its `--out` report is authoritative; read it when it finishes. **A red post-land
+battery is fixed forward or reverted the same day by the lane that landed it.** The laptop nightly
+main battery is retired (2026-11-03); the operator's remote post-land verifier (private overlay)
+is the backstop. For a governed WorkEnvelope the stored canonical proof at the landed tip
 is what `land-check` and `work close` cite (§4); the commands below produce that proof, and the
 `compound-verify` skill drives the close.
 
@@ -245,8 +245,16 @@ git merge-base --is-ancestor "$PROOF_BASE_SHA" "$PRE_PROOF_TARGET_SHA" &&
 git merge-base --is-ancestor "$PRE_PROOF_TARGET_SHA" "$CANDIDATE_SHA" &&
 go run ./cmd/compound proof-check --json --base "$PROOF_BASE_SHA" \
   --work <work_id> --actor "<harness>:<lane>" \
-  --out <absolute-report.json>   # full canonical inventory
+  --out <absolute-report.json>   # canonical inventory; add --with-console to force console gates
 ```
+
+**Console gates are opt-in (operator decision 2026-11-03).** The `console-tsc` type check and the
+console smokes (every gate rooted in `console/`, 39 today) run only when `console/` changed in
+`PROOF_BASE_SHA...HEAD`, or when `--with-console` is passed. Otherwise the battery runs 14 gates;
+the `--out` report's `steps` show which ran, and a `--dry-run` with the same `--base` prints the
+plan plus a `console gates not selected` line on stderr. The selection is sealed into the reserved
+profile, so a console-touching range cannot be certified without them. `--ci-console` still runs
+exactly the console subset.
 
 Detached post-land form of the same command (same captured base, landed tip checked out on main).
 A full local battery is admitted only with `--work`, `--actor` and `--out` (it reserves proof
@@ -260,9 +268,8 @@ nohup nice -n 10 go run ./cmd/compound proof-check --json --base "$PROOF_BASE_SH
 ```
 
 A landing with no WorkEnvelope (a trivial docs/skill commit) has no canonical proof to produce;
-its post-land check is the full uncached Go suite on the landed tip — the operator's remote
-verifier when present (private overlay), else the scheduled nightly main battery — and the
-landing lane reads that result, not the schedule.
+its post-land check is the full uncached Go suite on the landed tip on the operator's remote
+verifier (private overlay), and the landing lane reads that result, not the schedule.
 
 Every capture and guard is joined to proof execution: a failed predicate cannot
 fall through to a new proof. Before this command, record the reviewed manifest
@@ -639,7 +646,7 @@ git -C <MAIN-worktree> merge --ff-only "$CANDIDATE_SHA"
   `git rev-parse main` equals a certified HEAD stored in a canonical `--out` report, main's tree is
   byte-identical to the tree that battery proved, so a rerun proves nothing new and costs ~50
   minutes of shared proof capacity. Record the equality instead: `land-check --tip "$TIP"` cites
-  the canonical proof at that same tip. The scheduled nightly battery is the backstop only when its
+  the canonical proof at that same tip. The remote post-land verifier is the backstop only when its
   actual runs and results are verified; a schedule or written claim alone is not evidence.
   If the planned base or candidate changes after a canonical proof, that proof is spent: select
   and validate the new `PROOF_BASE_SHA` separately from the current target tip, and the next
