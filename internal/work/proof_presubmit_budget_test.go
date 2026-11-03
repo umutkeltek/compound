@@ -78,7 +78,7 @@ func TestPresubmitBudgetExhaustedAfterChangedPackagesDefersOnlyDependents(t *tes
 		t.Fatalf("budget deferred = %v presubmit = %+v; want only dependents %v and the sealed plan untouched", report.PresubmitBudgetDeferred, report.Presubmit, want)
 	}
 	for _, step := range report.Steps[4:6] {
-		if step.Status != "deferred" || !strings.Contains(step.SkipReason, "verifier post-land verdict") || contains(report.ProofRefs, step.ProofRef) {
+		if step.Status != "deferred" || !strings.Contains(step.SkipReason, "post-land verifier verdict") || contains(report.ProofRefs, step.ProofRef) {
 			t.Fatalf("deferred gate = %+v refs=%v: must be deferred, explained, and never cited as proof", step, report.ProofRefs)
 		}
 	}

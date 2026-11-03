@@ -15,9 +15,9 @@ const VerifierVerdictUsage = "usage: compound work verifier-verdict <work_id> --
 
 // VerifierVerdictResult is the JSON body of `compound work verifier-verdict`.
 type VerifierVerdictResult struct {
-	WorkID   string             `json:"work_id"`
+	WorkID   string                  `json:"work_id"`
 	Decision VerifierVerdictDecision `json:"decision"`
-	Attached bool               `json:"attached"`
+	Attached bool                    `json:"attached"`
 }
 
 // RunVerifierVerdictCLI resolves (and optionally attaches) the verifier verdict for one

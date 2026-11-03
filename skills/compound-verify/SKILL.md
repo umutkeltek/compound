@@ -287,12 +287,12 @@ For source-controlled work, a committed stored successful proof is required:
 must match; close refuses a missing, mismatched, or rebased proof.
 
 
-**Verifier verdict (operator decision 2026-11-03).** For a non-core diff the stored proof is the verifier
+**Remote verifier verdict (operator decision 2026-11-03).** For a non-core diff the stored proof is the remote verifier
 post-land verdict, not a laptop battery: `compound work verifier-verdict WORK --tip LANDED_SHA --attach
 --actor ACTOR`, then `land-check`. It certifies by containment, not equality: the stored proof head
 is the verified commit S, and land-check requires the candidate tip T to be an ancestor of or equal
 to S and S to be on the target branch. A red culprit range containing T, or no green verdict
-covering T, refuses the close ("verifier has not verified this tip yet"); there is no laptop fallback.
+covering T, refuses the close ("the remote verifier has not verified this tip yet"); there is no laptop fallback.
 Governance-core diffs (`governance_core=<path>` on the presubmit verdict, from `presubmit.plan.scope.governance_core`)
 keep the full pre-land battery and the equality rule above. The laptop nightly battery is retired.
 

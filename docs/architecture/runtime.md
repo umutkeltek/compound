@@ -1095,7 +1095,7 @@ a divergent target refuses without discarding completed evidence. A target that
 already contains H follows the normal landed checks. A target advancing within
 H preserves the same B/H evidence and requires a fresh main-SHA guard.
 
-### Verifier post-land verdict is the canonical close proof
+### Remote-verifier post-land verdict is the canonical close proof
 
 Operator decision 2026-11-03: the post-land verifier verdict is the canonical proof for
 closing source-controlled work; the laptop keeps only a fast presubmit, and the
@@ -1111,7 +1111,7 @@ no green full-suite row. Land-check then applies one rule (`internal/work/verifi
   the change; the recorded proof head is S, not T.
 - A RED culprit range (lo, hi] that contains T refuses (`verifier_red_culprit`) unless
   a green verdict covering T finished after that red was named.
-- No covering green refuses (`awaiting_verifier_verdict`: "verifier has not verified this tip
+- No covering green refuses (`awaiting_verifier_verdict`: "the remote verifier has not verified this tip
   yet"). There is no fallback to a laptop battery.
 
 Close revalidates live, so a red verdict named after the land-check still refuses

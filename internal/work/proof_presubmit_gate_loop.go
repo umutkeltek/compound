@@ -83,7 +83,7 @@ func runNonCertifyingProofGates(ctx context.Context, report ProofCheckReport, st
 func runBudgetedPresubmitTestGate(ctx context.Context, report *ProofCheckReport, step ProofCheckStep, run func(context.Context, ProofCheckStep) ProofCheckStep, budget, spent time.Duration) (ProofCheckStep, time.Duration) {
 	remaining := budget - spent
 	if remaining <= 0 {
-		return deferPresubmitTestGate(report, step, fmt.Sprintf("presubmit test budget %s spent before this gate; the verifier post-land verdict covers it", budget)), spent
+		return deferPresubmitTestGate(report, step, fmt.Sprintf("presubmit test budget %s spent before this gate; the post-land verifier verdict covers it", budget)), spent
 	}
 	gateCtx, cancel := context.WithTimeoutCause(ctx, remaining, errPresubmitTestBudget)
 	started := time.Now()
@@ -92,7 +92,7 @@ func runBudgetedPresubmitTestGate(ctx context.Context, report *ProofCheckReport,
 	cancel()
 	spent += time.Since(started)
 	if cut && result.Status == "failed" && !presubmitGateShowsTestFailure(result) {
-		return deferPresubmitTestGate(report, result, fmt.Sprintf("presubmit test budget %s cut this gate before any test failed; the verifier post-land verdict covers it", budget)), spent
+		return deferPresubmitTestGate(report, result, fmt.Sprintf("presubmit test budget %s cut this gate before any test failed; the post-land verifier verdict covers it", budget)), spent
 	}
 	return result, spent
 }

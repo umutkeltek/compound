@@ -15,7 +15,7 @@ import (
 	"compound/internal/envelope"
 )
 
-// The post-land verifier ("verifier") verdict is the canonical proof that closes
+// The post-land verifier  verdict is the canonical proof that closes
 // source-controlled Compound work (operator decision 2026-11-03, D7; skills/compound-land §1).
 //
 // Rule. Let T be the landed candidate tip of a work and B the bound target branch.
@@ -29,7 +29,7 @@ import (
 //     green verdict covering T finished after that red was named. A later covering green means main
 //     with T is green again (the flake retried green, or a fix landed), so the culprit no longer
 //     describes main.
-//   - Refuse (not verified): no green verdict covers T yet. The message is "verifier has not verified
+//   - Refuse (not verified): no green verdict covers T yet. The message is "the remote verifier has not verified
 //     this tip yet". There is no fallback to the laptop battery: that fallback is the 45-minute
 //     queue this rule retires. Governance-core diffs keep the full pre-land battery through the
 //     existing proof-check path; this rule does not weaken it.
@@ -81,8 +81,8 @@ type VerifierCulpritRange struct {
 
 // VerifierRed is the verifier's open red record (red.json).
 type VerifierRed struct {
-	SHA    string            `json:"sha"`
-	Since  time.Time         `json:"since"`
+	SHA    string                 `json:"sha"`
+	Since  time.Time              `json:"since"`
 	Ranges []VerifierCulpritRange `json:"ranges"`
 }
 
@@ -95,17 +95,17 @@ type VerifierVerdictEvidence struct {
 
 // VerifierVerdictDecision is the rule's answer for one tip.
 type VerifierVerdictDecision struct {
-	Status      string           `json:"status"`
-	Tip         string           `json:"tip"`
-	TargetSHA   string           `json:"target_sha"`
-	Ref         string           `json:"ref,omitempty"`
-	RunID       string           `json:"run_id,omitempty"`
-	VerifiedSHA string           `json:"verified_sha,omitempty"`
-	FinishedAt  string           `json:"finished_at,omitempty"`
+	Status      string                `json:"status"`
+	Tip         string                `json:"tip"`
+	TargetSHA   string                `json:"target_sha"`
+	Ref         string                `json:"ref,omitempty"`
+	RunID       string                `json:"run_id,omitempty"`
+	VerifiedSHA string                `json:"verified_sha,omitempty"`
+	FinishedAt  string                `json:"finished_at,omitempty"`
 	Culprit     *VerifierCulpritRange `json:"culprit,omitempty"`
-	RedSince    string           `json:"red_since,omitempty"`
-	Reason      string           `json:"reason"`
-	VerdictsDir string           `json:"verdicts_dir"`
+	RedSince    string                `json:"red_since,omitempty"`
+	Reason      string                `json:"reason"`
+	VerdictsDir string                `json:"verdicts_dir"`
 }
 
 // VerifierAncestry answers "a is an ancestor of, or equal to, b" in the bound repository.
@@ -260,21 +260,21 @@ func DecideVerifierVerdict(ev VerifierVerdictEvidence, tip, targetSHA string, an
 			}
 			culprit := r
 			d.Status, d.Culprit, d.RedSince = VerifierVerdictRedCulprit, &culprit, ev.Red.Since.Format(time.RFC3339)
-			d.Reason = fmt.Sprintf("verifier names tip %s in the red culprit range of %s (%s..%s], open since %s, and no later green verdict covers it; fix or revert, then wait for a green verifier verdict",
+			d.Reason = fmt.Sprintf("the remote verifier names tip %s in the red culprit range of %s (%s..%s], open since %s, and no later green verdict covers it; fix or revert, then wait for a green verifier verdict",
 				verifierShort(tip), r.Package, verifierRangeEnd(r.LoExclusive), verifierShort(r.HiInclusive), d.RedSince)
 			return d, nil
 		}
 	}
 	if newest == nil {
 		d.Status = VerifierVerdictNotVerified
-		d.Reason = fmt.Sprintf("verifier has not verified this tip yet: no green full-suite verdict in %s covers %s on the target branch; wait for the post-land verifier (the laptop battery is not a fallback)", filepath.Join(ev.Dir, VerifierVerdictsFileName), verifierShort(tip))
+		d.Reason = fmt.Sprintf("the remote verifier has not verified this tip yet: no green full-suite verdict in %s covers %s on the target branch; wait for the post-land verifier (the laptop battery is not a fallback)", filepath.Join(ev.Dir, VerifierVerdictsFileName), verifierShort(tip))
 		return d, nil
 	}
 	d.Status = VerifierVerdictCovered
 	d.RunID, d.VerifiedSHA = newest.RunID, newest.SHA
 	d.FinishedAt = newest.FinishedAt.Format(time.RFC3339)
 	d.Ref = VerifierVerdictRef(newest.RunID, newest.SHA)
-	d.Reason = fmt.Sprintf("verifier run %s verified %s green at %s, which contains tip %s", newest.RunID, verifierShort(newest.SHA), d.FinishedAt, verifierShort(tip))
+	d.Reason = fmt.Sprintf("remote verifier run %s verified %s green at %s, which contains tip %s", newest.RunID, verifierShort(newest.SHA), d.FinishedAt, verifierShort(tip))
 	return d, nil
 }
 
@@ -356,7 +356,7 @@ func latestLandingVerificationRef(w envelope.WorkEnvelope) string {
 	return ""
 }
 
-// latestVerifierVerdictLandingRef returns the verifier ref when it is the newest landing proof.
+// latestVerifierVerdictLandingRef returns the remote verifier ref when it is the newest landing proof.
 func latestVerifierVerdictLandingRef(w envelope.WorkEnvelope) (string, bool) {
 	ref := latestLandingVerificationRef(w)
 	return ref, strings.HasPrefix(ref, VerifierVerdictVerificationPrefix)
