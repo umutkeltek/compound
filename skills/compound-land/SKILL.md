@@ -165,12 +165,19 @@ The selected Go tests use the same package phases as the canonical runner: gener
 
 **Affected packages** — `--presubmit` derives them from the diff with `internal/proofscope`, never
 from memory. The rule it applies:
-- Go files changed under dirs `D1..Dn` → those packages, every package that imports them (directly
-  or transitively) or whose tests import them, every package whose tests name a changed path, plus
-  `./internal/arch/`. The CLI package `./cmd/compound/` runs whole when a changed package reaches
-  it; it is the integration surface that imports nearly every `internal/` package, so it catches
-  cross-package breaks. A hub package (`internal/work`, `internal/policy`) costs ~10 min idle; that
-  is the honest price of touching it, not a reason to skip it.
+- Go files changed under dirs `D1..Dn` → those packages, every package whose tests name a changed
+  path (a test naming only a parent of its own package, such as a `".."` row in a traversal table,
+  does not count), plus `./internal/arch/` (operator ruling 2026-10-23: changed packages before the
+  land, the rest after it). The build and vet gates still compile every package, so a broken caller stops the
+  landing. Reverse dependents are listed in the report as `deferred`; the post-land verifier and the
+  canonical battery run them. `./cmd/compound/` runs whole when a file in it changed; otherwise only
+  its doctrine readers run.
+- A changed path in the governance core (`presubmit.plan.scope.governance_core` in the report; the
+  list is `governanceCorePaths` in `internal/proofscope`: proof, landing, close and publication
+  decisions, `internal/landlease`, `internal/policy`, `internal/authority`) keeps the wider plan:
+  those packages, every package that imports them (directly or transitively) or whose tests import
+  them, and the whole CLI when reached. A hub package costs ~10 min idle; that is the honest price of
+  touching the rules that decide landings.
 - Only docs, skills, contracts or `AGENTS.md` changed → `./internal/arch/` (every served-doctrine
   guard lives there) plus the CLI readers by name:
   `go test -short ./cmd/compound/ -run 'Ceremony|ContractCompile|Orient|ProofCheck|Doctor'`.
@@ -540,11 +547,9 @@ git -C <MAIN-worktree> merge --ff-only "$CANDIDATE_SHA"
 - **A green presubmit survives a clean rebase; do not go back to the end of the line.** Every
   landing makes each other queued candidate stale, so re-queuing multiplies the wait by the number of
   lanes. When your presubmit at H ended `presubmit: ok` and main has moved, rebase onto the fresh tip T
-  and keep that result when ALL of these hold: the scope was `affected`; no changed path decides
-  whether a proof, landing, close or publication is legitimate (`internal/landlease`, `internal/policy`,
-  `internal/authority`, `cmd/compound/proof_check*`, and the proof, land-check, close, landing-resource,
-  private-publish and standing-proof files of `internal/work`, plus `internal/work/work.go`); the rebase
-  finished without a conflict; and no Go package changed on both sides:
+  and keep that result when ALL of these hold: the scope was `affected`; the report names no
+  `presubmit.plan.scope.governance_core`; the rebase finished without a conflict; and no Go package
+  changed on both sides:
 
   ```bash
   go_packages() { git diff --name-only "$1" "$2" | grep '\.go$' | xargs -n1 dirname | sort -u; }

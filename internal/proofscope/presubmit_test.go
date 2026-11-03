@@ -33,6 +33,9 @@ func presubmitFixture() map[string]string {
 		"internal/solo/solo.go":                     "package solo\n",
 		"internal/solo/solo_test.go":                "package solo\nimport \"testing\"\nfunc TestSolo(t *testing.T) {}\n",
 		"internal/landlease/testdata/fixture.json":  "{}\n",
+		"internal/plain/plain.go":                   "package plain\n",
+		"internal/caller/caller.go":                 "package caller\nimport _ \"compound/internal/plain\"\n",
+		"cmd/compound/plain_user.go":                "package main\nimport _ \"compound/internal/caller\"\n",
 		"internal/policy/testdata/rules/rules.yaml": "rules: []\n",
 	}
 }
@@ -41,7 +44,7 @@ func TestPresubmitDerivesTheLandingRule(t *testing.T) {
 	files := presubmitFixture()
 	cli := PresubmitCLIPackage
 	inventory := InventoryPackages(snapshot(files, false).Paths)
-	if len(inventory) != 8 || inventory[0] != cli {
+	if len(inventory) != 10 || inventory[0] != cli {
 		t.Fatalf("inventory = %v; want the eight fixture packages", inventory)
 	}
 	readers := PresubmitRun{Packages: []string{cli}, Run: PresubmitCLIReaders}
@@ -63,11 +66,27 @@ func TestPresubmitDerivesTheLandingRule(t *testing.T) {
 			deferred: pkgs("rr"),
 		},
 		{
-			name:     "a landlease change runs landlease, its reverse dependents and the whole CLI",
+			name:     "a governance-core change keeps its reverse dependents and the whole CLI",
 			changed:  []string{"internal/landlease/lease.go"},
 			mode:     Affected,
 			reason:   "diff",
 			runs:     []PresubmitRun{{Packages: []string{cli, "compound/internal/arch", "compound/internal/landlease", "compound/internal/obs", "compound/internal/work"}}},
+			deferred: pkgs("rr"),
+		},
+		{
+			name:     "an ordinary change runs its own package and defers its reverse dependents",
+			changed:  []string{"internal/plain/plain.go"},
+			mode:     Affected,
+			reason:   "diff",
+			runs:     []PresubmitRun{{Packages: pkgs("arch", "plain")}, readers},
+			deferred: []string{cli, "compound/internal/caller", "compound/internal/rr"},
+		},
+		{
+			name:     "a change inside the CLI runs the whole CLI",
+			changed:  []string{"cmd/compound/main.go"},
+			mode:     Affected,
+			reason:   "diff",
+			runs:     []PresubmitRun{{Packages: []string{cli, "compound/internal/arch"}}},
 			deferred: pkgs("rr"),
 		},
 		{
@@ -171,5 +190,58 @@ func TestPresubmitNeverNarrowsTheCertifyingScope(t *testing.T) {
 	}
 	if !reflect.DeepEqual(scope.Reached, pkgs("solo")) {
 		t.Fatalf("reached = %v; want solo", scope.Reached)
+	}
+}
+
+// The governance core is an exact list: one file of a hub package stays
+// ordinary while a proof or close file of the same package keeps the wide plan.
+func TestGovernanceCoreMatchesTheDecisionOwnersOnly(t *testing.T) {
+	for p, want := range map[string]bool{
+		"internal/landlease/lease.go":         true,
+		"internal/policy/testdata/rules.yaml": true,
+		"internal/work/work.go":               true,
+		"internal/work/proof_presubmit.go":    true,
+		"internal/work/land_check.go":         true,
+		"cmd/compound/proof_check_dev.go":     true,
+		"internal/work/dispatch.go":           false,
+		"internal/work/sub/proof_helper.go":   false,
+		"internal/workbench/proof_view.go":    false,
+		"cmd/compound/main.go":                false,
+		"docs/architecture/runtime.md":        false,
+	} {
+		if got := firstGovernanceCorePath([]string{p}) != ""; got != want {
+			t.Errorf("%s in governance core = %v; want %v", p, got, want)
+		}
+	}
+}
+
+// A ".." row in a traversal-rejection table names the parent of the test's own
+// package. That once put the package in every plan under that parent. It stays
+// certifying and is reported as deferred, but it does not run before the land.
+func TestPresubmitDefersAParentDirectoryLiteral(t *testing.T) {
+	files := presubmitFixture()
+	files["internal/guard/guard.go"] = "package guard\n"
+	files["internal/guard/guard_test.go"] = "package guard\nimport \"testing\"\nfunc TestRejects(t *testing.T) { _ = map[string]string{\"directory\": \"..\"} }\n"
+	scope := derive(files, files, "internal/solo/solo.go")
+	if !reflect.DeepEqual(scope.AncestorReaders, pkgs("guard")) || len(scope.PathReaders) != 0 {
+		t.Fatalf("readers = ancestor %v path %v; want guard as the ancestor reader only", scope.AncestorReaders, scope.PathReaders)
+	}
+	if want := pkgs("arch", "guard", "rr", "solo"); !reflect.DeepEqual(scope.Packages, want) {
+		t.Fatalf("certifying packages = %v; want %v", scope.Packages, want)
+	}
+	plan := Presubmit(scope, nil)
+	want := []PresubmitRun{{Packages: pkgs("arch", "solo")}, {Packages: []string{PresubmitCLIPackage}, Run: PresubmitCLIReaders}}
+	if !reflect.DeepEqual(plan.Runs, want) {
+		t.Fatalf("runs = %+v; want %+v", plan.Runs, want)
+	}
+	if want := pkgs("guard", "rr"); !reflect.DeepEqual(plan.Deferred, want) {
+		t.Fatalf("deferred = %v; want %v", plan.Deferred, want)
+	}
+
+	// A test that climbs out of its package to a changed file is still a reader.
+	files["internal/guard/guard_test.go"] = "package guard\nimport (\n\t\"path/filepath\"\n\t\"testing\"\n)\nfunc TestReads(t *testing.T) { _ = filepath.Join(\"..\", \"solo\", \"solo.go\") }\n"
+	scope = derive(files, files, "internal/solo/solo.go")
+	if !reflect.DeepEqual(scope.PathReaders, pkgs("guard")) || len(scope.AncestorReaders) != 0 {
+		t.Fatalf("readers = ancestor %v path %v; want guard as a path reader", scope.AncestorReaders, scope.PathReaders)
 	}
 }
