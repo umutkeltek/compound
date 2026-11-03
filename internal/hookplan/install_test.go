@@ -1045,7 +1045,7 @@ func TestCodexInstallReplacesOnlyCompoundPreToolUseBindingWithObservation(t *tes
 		t.Fatalf("Codex reconciliation user=%t observation=%t: %+v", foundUser, foundCompoundObservation, pre)
 	}
 	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"} {
-		if !hasHookCommand(got, event, HookCommandForEvent("/bin/compound", "codex", event)) {
+		if want, _ := InstalledHookCommandForEvent("/bin/compound", "codex", event, false); !hasHookCommand(got, event, want) {
 			t.Fatalf("Codex reconciliation lost desired %s binding", event)
 		}
 	}
@@ -1095,7 +1095,7 @@ func TestCodexInstallPreservesForeignHooksCoLocatedWithCompoundHook(t *testing.T
 			command, _ := hookMap["command"].(string)
 			if strings.Contains(command, hookCommandMarker) {
 				compoundCommands++
-				if command != HookCommandForEvent("/bin/compound", "codex", "PreToolUse") {
+				if want, _ := InstalledHookCommandForEvent("/bin/compound", "codex", "PreToolUse", false); command != want {
 					t.Fatalf("installed Compound command = %q, want current observer", command)
 				}
 				continue
@@ -1170,7 +1170,7 @@ func TestCodexInstallCollapsesAllDuplicateLegacyPreToolUseHooks(t *testing.T) {
 			}
 		}
 	}
-	wantObserver := HookCommandForEvent("/bin/compound", "codex", "PreToolUse")
+	wantObserver, _ := InstalledHookCommandForEvent("/bin/compound", "codex", "PreToolUse", false)
 	if !slices.Equal(compoundCommands, []string{wantObserver}) {
 		t.Fatalf("Compound PreToolUse commands = %q, want one current observer", compoundCommands)
 	}
@@ -2035,7 +2035,7 @@ func TestReinstallPreservesHandSetTimeoutOnCompoundBinding(t *testing.T) {
 	inner, _ := entry["hooks"].([]any)
 	first, _ := inner[0].(map[string]any)
 	cmd, _ := first["command"].(string)
-	if cmd != HookCommandForEvent("/bin/compound", "claude-code", "PreToolUse") {
+	if want, _ := InstalledHookCommandForEvent("/bin/compound", "claude-code", "PreToolUse", false); cmd != want {
 		t.Fatalf("replaced Compound command = %q, want current binary", cmd)
 	}
 }

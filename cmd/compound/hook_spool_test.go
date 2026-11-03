@@ -8,12 +8,14 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"compound/internal/home"
 	"compound/internal/hook"
+	"compound/internal/hookplan"
 )
 
 const spoolTestLessons = `{"lessons":[
@@ -367,5 +369,70 @@ func TestHookLessonsIndexBuildsFromJSONAndSkillTriggers(t *testing.T) {
 	data, _ = os.ReadFile(hook.LessonIndexPath(homePath))
 	if !strings.Contains(string(data), `"id": "ok"`) || strings.Contains(string(data), `"id": "bad"`) {
 		t.Fatalf("index after partial build:\n%s", data)
+	}
+}
+
+func writeSpoolHookConfig(t *testing.T, configPath, harnessName, binaryPath string) {
+	t.Helper()
+	command, timeout := hookplan.InstalledHookCommandForEvent(binaryPath, harnessName, "PreToolUse", false)
+	if !strings.HasSuffix(command, " --spool") {
+		t.Fatalf("installer no longer renders the spool route for %s: %q", harnessName, command)
+	}
+	config := `{"hooks":{"PreToolUse":[{"matcher":"*","timeout":` + strconv.Itoa(timeout) +
+		`,"hooks":[{"type":"command","command":` + quoteJSON(command) + `}]}]}}`
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestHookDoctorProbesTheInstalledSpoolRouteThroughDrain proves the doctor
+// still checks the policy evidence for a spool install: the real binary
+// answers, its drain writes the records, and the probe reads them.
+func TestHookDoctorProbesTheInstalledSpoolRouteThroughDrain(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the compound binary: skipped in -short mode")
+	}
+	real := buildRealCompound(t)
+	dir := t.TempDir()
+	var hooks []doctorHook
+	for _, harnessName := range []string{"claude-code", "codex"} {
+		configPath := filepath.Join(dir, harnessName, "settings.json")
+		writeSpoolHookConfig(t, configPath, harnessName, real)
+		hooks = append(hooks, doctorHook{Harness: harnessName, ConfigPath: configPath})
+	}
+	rows, failing := buildHookEnforcementRows(hooks)
+	if failing != 0 || len(rows) != 2 {
+		t.Fatalf("spool routes must probe green through drain, got failing=%d rows=%+v", failing, rows)
+	}
+	for _, row := range rows {
+		if row.Posture != "observation_only" || row.Status != "observing" {
+			t.Fatalf("spool row = %+v, want observation_only/observing", row)
+		}
+	}
+}
+
+// TestHookDoctorFailsASpoolRouteThatNeverRecords is the falsifier: a binary
+// that answers the native shape and exits 0 for drain but writes nothing must
+// not pass as an observing hook.
+func TestHookDoctorFailsASpoolRouteThatNeverRecords(t *testing.T) {
+	dir := t.TempDir()
+	stub := writeExecutable(t, filepath.Join(dir, "compound"),
+		"#!/bin/sh\nprintf '%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\"}}'\nexit 0\n")
+	configPath := filepath.Join(dir, "settings.json")
+	writeSpoolHookConfig(t, configPath, "claude-code", stub)
+	rows, failing := buildHookEnforcementRows([]doctorHook{{Harness: "claude-code", ConfigPath: configPath}})
+	if failing != 1 || len(rows) != 1 || rows[0].Status != "fail_open" || !strings.Contains(rows[0].Detail, "persisted no") {
+		t.Fatalf("a spool route without records must fail the probe, got failing=%d rows=%+v", failing, rows)
+	}
+	// The spool flag never stands in for enforcement.
+	spoolArgs := []string{"hook", "pre-tool-use", "--live", "--harness", "claude_code", "--spool"}
+	if detail := hook.ValidateDoctorProbeArgs(spoolArgs, true, "claude_code"); detail == "" {
+		t.Fatal("a --spool route was accepted as an enforced posture")
+	}
+	if detail := hook.ValidateDoctorProbeArgs(spoolArgs, false, "claude_code"); detail != "" {
+		t.Fatalf("watch-only spool route refused: %s", detail)
 	}
 }

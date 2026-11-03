@@ -1,12 +1,14 @@
 package hook
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 
 	"compound/internal/envelope"
@@ -38,10 +40,12 @@ func ValidateDoctorProbeArgs(args []string, enforced bool, expectedHarness strin
 	if expectedHarness == "" || args[4] != expectedHarness {
 		return "installed live hook harness does not match the configured harness row"
 	}
-	if len(args) == 6 && args[5] != "--enforce" {
+	// The one optional trailing flag is the posture: --enforce for an enforced
+	// lane, --spool for a watch-only one (its records arrive through drain).
+	if len(args) == 6 && args[5] != "--enforce" && args[5] != "--spool" {
 		return "unsupported installed live hook arguments; probe refused before execution"
 	}
-	if (len(args) == 6) != enforced {
+	if (len(args) == 6 && args[5] == "--enforce") != enforced {
 		return "installed live hook enforcement posture does not match arguments"
 	}
 	return ""
@@ -90,6 +94,22 @@ func DoctorExpectedExit(posture, outcome string) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// InspectDoctorLiveRoute checks the installed route's native response and,
+// for a --spool route, runs the same binary's `hook drain --once` in the probe
+// home so the evidence check that follows sees the records the drain writes.
+// A spool route that answers but never records therefore still fails the probe.
+func InspectDoctorLiveRoute(ctx context.Context, out []byte, binaryPath string, args []string, dir string, env []string) string {
+	if detail := InspectDoctorLiveResponse(out); detail != "" || len(args) == 0 || args[len(args)-1] != "--spool" {
+		return detail
+	}
+	drain := exec.CommandContext(ctx, binaryPath, "hook", "drain", "--once")
+	drain.Dir, drain.Env = dir, env
+	if drained, err := drain.CombinedOutput(); err != nil {
+		return fmt.Sprintf("the spool route answered but `hook drain --once` failed: %v: %s", err, strings.TrimSpace(string(drained)))
+	}
+	return ""
 }
 
 // InspectDoctorLiveResponse verifies that the installed route returned a
