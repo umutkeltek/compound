@@ -205,6 +205,12 @@ compound **observes** executions; it does not become one. The rail is proven by 
    YOUR envelope — check `work show <id>` artifacts before assuming a wipe, and expect `land-check`
    `candidate_tip_mismatch` until you attach your newer landed tip and re-check.
 
+- **Parallel subagents in one session share ONE scratchpad.** Two lanes wrote `commit-msg.txt` and `gotest.sh` on
+  2026-11-03; one commit went in with the other lane's message and one test run executed in the other lane's
+  worktree. Prefix every scratch file with the lane id, write commit messages with `git commit -m` or a
+  lane-named file, and never run a scratch script you did not write this turn. In zsh a `$VAR` of package
+  paths is ONE argument: use `xargs` or `${=VAR}`, never bare `go vet $PKGS`.
+
 ## Audit-reconcile law (an audit is a snapshot that LAGS the lanes)
 External audits (ChatGPT zip rounds, critique lists, prior review docs) are point-in-time snapshots; the lanes
 move faster than they do. **Before executing any audit's fix-list, verify each finding against current source and
