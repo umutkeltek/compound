@@ -851,7 +851,7 @@ func validRecordedLandCheckVerificationRef(ref string) bool {
 }
 
 func (s *Store) validateRecordedLandCheckProofResult(w envelope.WorkEnvelope, report LandCheckReport) error {
-	if verifierRef, verifier := latestVerifierVerdictLandingRef(w); verifier {
+	if verifierRef, isVerifier := latestVerifierVerdictLandingRef(w); isVerifier {
 		// Identity only: the close path's live revalidation (revalidateLandedProof)
 		// re-reads the verifier evidence and re-applies the verifier rule.
 		if report.ProofVerificationRef != verifierRef {

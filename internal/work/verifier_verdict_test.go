@@ -58,7 +58,7 @@ func TestVerifierVerdictRule(t *testing.T) {
 			name:    "green only before the tip does not cover it",
 			ev:      VerifierVerdictEvidence{Rows: []VerifierVerdictRow{verifierRow(t0, c[1], runA, "green", "main")}},
 			status:  VerifierVerdictNotVerified,
-			message: "verifier has not verified this tip yet",
+			message: "the remote verifier has not verified this tip yet",
 		},
 		{
 			name: "green at the target tip covers it",
@@ -76,7 +76,7 @@ func TestVerifierVerdictRule(t *testing.T) {
 				verifierRow(t0, c[4], runC, "green", "retry"),
 			}},
 			status:  VerifierVerdictNotVerified,
-			message: "verifier has not verified this tip yet",
+			message: "the remote verifier has not verified this tip yet",
 		},
 		{
 			name: "red culprit range containing the tip refuses",
@@ -218,7 +218,7 @@ func TestVerifierVerdictIsTheCanonicalCloseProof(t *testing.T) {
 		}
 	}
 	closeWork := func(f fixture, evidence string, at time.Time) error {
-		_, err := f.store.Close(f.workID, CloseInput{Outcome: "completed", MoveType: "outward_delta", Actor: "codex", Summary: "verifier verified", ProofRefs: []string{evidence}}, at)
+		_, err := f.store.Close(f.workID, CloseInput{Outcome: "completed", MoveType: "outward_delta", Actor: "codex", Summary: "remote verifier verified", ProofRefs: []string{evidence}}, at)
 		return err
 	}
 	const greenRun, redRun = "20261103T120000Z-a1b2c3", "20261103T130000Z-d4e5f6"
@@ -265,13 +265,13 @@ func TestVerifierVerdictIsTheCanonicalCloseProof(t *testing.T) {
 
 	t.Run("no verdict covering the tip refuses the close", func(t *testing.T) {
 		f := setup(t)
-		// Before any verdict: land-check names the verifier path, not the laptop battery alone.
+		// Before any verdict: land-check names the remote verifier path, not the laptop battery alone.
 		before, err := f.store.LandCheck(f.workID, LandCheckOptions{CandidateTipSHA: f.candidate}, now.Add(4*time.Minute))
 		if err != nil || before.Status != "missing_source_bound_proof" || !strings.Contains(before.NextAction, "verifier verdict") {
 			t.Fatalf("pre-verdict land-check = %+v %v", before, err)
 		}
 		var out, errOut bytes.Buffer
-		if code := RunVerifierVerdictCLI(f.store, []string{f.workID, "--tip", f.candidate, "--attach", "--actor", "codex"}, &out, &errOut); code != 1 || !strings.Contains(out.String(), "verifier has not verified this tip yet") {
+		if code := RunVerifierVerdictCLI(f.store, []string{f.workID, "--tip", f.candidate, "--attach", "--actor", "codex"}, &out, &errOut); code != 1 || !strings.Contains(out.String(), "the remote verifier has not verified this tip yet") {
 			t.Fatalf("verifier-verdict without a verdict exit %d: %s %s", code, out.String(), errOut.String())
 		}
 		// A green verdict at the base (before the candidate) exists and attaches, but does not cover the tip.
@@ -282,7 +282,7 @@ func TestVerifierVerdictIsTheCanonicalCloseProof(t *testing.T) {
 			t.Fatal(err)
 		}
 		report, err := f.store.LandCheck(f.workID, LandCheckOptions{CandidateTipSHA: f.candidate, Record: true}, now.Add(6*time.Minute))
-		if err != nil || report.Status != "awaiting_verifier_verdict" || !strings.Contains(report.NextAction, "verifier has not verified this tip yet") {
+		if err != nil || report.Status != "awaiting_verifier_verdict" || !strings.Contains(report.NextAction, "the remote verifier has not verified this tip yet") {
 			t.Fatalf("uncovered land-check = %+v %v", report, err)
 		}
 		if err := closeWork(f, report.EvidenceRef, now.Add(7*time.Minute)); err == nil {
@@ -290,7 +290,7 @@ func TestVerifierVerdictIsTheCanonicalCloseProof(t *testing.T) {
 		}
 		// Attach refuses a ref that names no green run.
 		if _, err := f.store.Advance(f.workID, AdvanceInput{To: w.State, Actor: "codex", VerificationID: VerifierVerdictRef(redRun, f.s)}, now.Add(8*time.Minute)); err == nil {
-			t.Fatal("attaching an verifier ref with no green verdict row must refuse")
+			t.Fatal("attaching an remote verifier ref with no green verdict row must refuse")
 		}
 	})
 }
