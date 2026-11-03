@@ -251,10 +251,9 @@ go run ./cmd/compound proof-check --json --base "$PROOF_BASE_SHA" \
 **Console gates are opt-in (operator decision 2026-11-03).** The `console-tsc` type check and the
 console smokes (every gate rooted in `console/`, 39 today) run only when `console/` changed in
 `PROOF_BASE_SHA...HEAD`, or when `--with-console` is passed. Otherwise the battery runs 14 gates;
-the `--out` report's `steps` show which ran, and a `--dry-run` with the same `--base` prints the
-plan plus a `console gates not selected` line on stderr. The selection is sealed into the reserved
-profile, so a console-touching range cannot be certified without them. `--ci-console` still runs
-exactly the console subset.
+the `--out` report's `steps` show which ran, and `--dry-run --json` with the same `--base` shows the
+plan first. The selection is sealed into the reserved profile, so a console-touching range cannot
+be certified without them. `--ci-console` still runs exactly the console subset.
 
 Detached post-land form of the same command (same captured base, landed tip checked out on main).
 A full local battery is admitted only with `--work`, `--actor` and `--out` (it reserves proof

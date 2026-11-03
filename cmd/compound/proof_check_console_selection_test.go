@@ -32,7 +32,7 @@ func TestDefaultBatteryDropsExactlyTheConsoleSubset(t *testing.T) {
 		t.Fatalf("default battery drops %v, want the console subset %v", dropped, want)
 	}
 	kept := work.WithoutConsoleProofGates(full)
-	if len(kept)+len(dropped) != len(full) || work.HasConsoleProofGate(kept) {
+	if len(kept)+len(dropped) != len(full) || slices.ContainsFunc(kept, work.IsConsoleProofGate) {
 		t.Fatalf("selection lost or kept the wrong gates: full=%d kept=%d dropped=%d", len(full), len(kept), len(dropped))
 	}
 	for _, name := range []string{"go-test", "go-test-home", "go-vet", "go-build", "gofmt", "diff-check", "bun-tools-test", "architecture-doctor", "redact-public"} {
@@ -117,23 +117,21 @@ func TestConsoleSelectedPlanKeepsRuntimeArtifactPublication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	selection, err := work.ResolveConsoleProofSelection(context.Background(), repo, source.BaseSHA, source.HeadSHA, false)
-	if err != nil || selection.Include {
-		t.Fatalf("docs-only range selection = %+v err=%v, want console gates excluded", selection, err)
-	}
-	inventory := work.ConsoleSelectedProofInventory(proofCheckSteps, selection)
-	plan, err := work.ResolveCanonicalProofPlan(repo, source, inventory)
+	// Same shape as cmdProofCheck: one console-aware inventory seals the plan,
+	// a second one re-derives it for the publication decision.
+	ctx := context.Background()
+	plan, err := work.ResolveCanonicalProofPlanContext(ctx, repo, source, work.ConsoleAwareProofInventory(ctx, repo, false, proofCheckSteps))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if work.HasConsoleProofGate(plan.Steps) {
-		t.Fatal("sealed plan for a docs-only range carries console gates")
+	if len(plan.Steps) == 0 || slices.ContainsFunc(plan.Steps, work.IsConsoleProofGate) {
+		t.Fatalf("sealed plan for a docs-only range carries console gates or is empty: %d steps", len(plan.Steps))
 	}
 	profile, err := work.ProofResourceProfileForCanonicalPlan(plan)
 	if err != nil {
 		t.Fatal(err)
 	}
-	publishes, err := work.CanonicalProofProfilePublishesCompoundRuntimeArtifact(plan, profile, inventory)
+	publishes, err := work.CanonicalProofProfilePublishesCompoundRuntimeArtifact(plan, profile, work.ConsoleAwareProofInventory(ctx, repo, false, proofCheckSteps))
 	if err != nil || !publishes {
 		t.Fatalf("console-free admitted profile lost runtime artifact publication: publishes=%t err=%v", publishes, err)
 	}
