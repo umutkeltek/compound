@@ -84,9 +84,10 @@ or termination assertions to accommodate setup latency.
    ActionIntent, PolicyDecision and native RunAttempt precede all preparation effects.
    Do not nest this long producer in the generic 45-minute governed harness wrapper.
    Existing test selection and 30-minute test-phase deadlines remain unchanged.
-   The presubmit go-test gates share a 10-minute total budget; what does not fit is reported
-   as `deferred=<pkgs>` (verdict line) and `presubmit.budget_deferred` (`--out`), never silently
-   skipped, and the verifier verdict covers it after the land.
+   The changed packages' tests run first and to completion, never deferred; the other go-test
+   gates share a 10-minute budget, and what does not fit is counted as `deferred=<count>` on the
+   verdict line and named in `--out` (`presubmit_budget_deferred`), never silently skipped; the
+   verifier verdict covers it after the land.
    `presubmit-execution:artifact:sha256:...` is an execution-only artifact, never a
    `proof-check:pfrs_*` verification or adoption input. Interrupted native owners use
    `--presubmit-recover-execution RATT_ID --work WORK --actor ACTOR --reason TEXT`
@@ -292,7 +293,7 @@ post-land verdict, not a laptop battery: `compound work verifier-verdict WORK --
 is the verified commit S, and land-check requires the candidate tip T to be an ancestor of or equal
 to S and S to be on the target branch. A red culprit range containing T, or no green verdict
 covering T, refuses the close ("verifier has not verified this tip yet"); there is no laptop fallback.
-Governance-core diffs (`governance_core=... full_battery_required=true` on the presubmit verdict)
+Governance-core diffs (`governance_core=<path>` on the presubmit verdict, from `presubmit.plan.scope.governance_core`)
 keep the full pre-land battery and the equality rule above. The laptop nightly battery is retired.
 
 ## Verdict format (end every run with exactly one)

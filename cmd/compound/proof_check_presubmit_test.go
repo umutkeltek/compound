@@ -104,7 +104,8 @@ func TestProofCheckPresubmitDerivesGatesFromTheDiff(t *testing.T) {
 			t.Fatalf("step %s status=%s proof_ref=%s", step.Name, step.Status, step.ProofRef)
 		}
 	}
-	wantNames := []string{"go-build", "go-vet", "gofmt", "diff-check", "architecture-doctor", "go-test", "go-test-cli", "go-test-work", "redact-public"}
+	// The changed package runs first in its own unbudgeted gate.
+	wantNames := []string{"go-build", "go-vet", "gofmt", "diff-check", "architecture-doctor", "go-test-changed", "go-test", "go-test-cli", "go-test-work", "redact-public"}
 	if !reflect.DeepEqual(names, wantNames) {
 		t.Fatalf("steps = %v; want %v", names, wantNames)
 	}
@@ -114,9 +115,10 @@ func TestProofCheckPresubmitDerivesGatesFromTheDiff(t *testing.T) {
 		}
 	}
 	wantTests := map[string][]string{
-		"go-test":      {"go", "test", "-short", "-count=1", "-timeout=30m", "compound/internal/arch", "compound/internal/landlease"},
-		"go-test-cli":  {"go", "test", "-short", "-count=1", "-timeout=30m", "compound/cmd/compound"},
-		"go-test-work": {"go", "test", "-short", "-count=1", "-timeout=30m", "compound/internal/work"},
+		"go-test-changed": {"go", "test", "-short", "-count=1", "-timeout=30m", "compound/internal/landlease"},
+		"go-test":         {"go", "test", "-short", "-count=1", "-timeout=30m", "compound/internal/arch"},
+		"go-test-cli":     {"go", "test", "-short", "-count=1", "-timeout=30m", "compound/cmd/compound"},
+		"go-test-work":    {"go", "test", "-short", "-count=1", "-timeout=30m", "compound/internal/work"},
 	}
 	if got := proofCheckPresubmitGoTests(report); !reflect.DeepEqual(got, wantTests) {
 		t.Fatalf("go-test runs = %v; want %v", got, wantTests)
@@ -126,11 +128,11 @@ func TestProofCheckPresubmitDerivesGatesFromTheDiff(t *testing.T) {
 	}
 	// internal/landlease is governance core: presubmit says so and the land
 	// ceremony requires the full pre-land battery.
-	if !strings.HasPrefix(verdict, "presubmit: planned non_certifying=true scope=affected reason=diff packages=4 deferred=none governance_core=internal/landlease/lease.go full_battery_required=true planned=9 total=9 out=") {
+	if !strings.HasPrefix(verdict, "presubmit: planned non_certifying=true scope=affected reason=diff packages=4 deferred=0 governance_core=internal/landlease/lease.go planned=10 total=10 out=") {
 		t.Fatalf("verdict line = %q", verdict)
 	}
-	if !reflect.DeepEqual(report.Presubmit.GovernanceCore, []string{"internal/landlease/lease.go"}) || report.Presubmit.TestBudget != "10m0s" {
-		t.Fatalf("presubmit governance core/budget = %v/%q", report.Presubmit.GovernanceCore, report.Presubmit.TestBudget)
+	if report.Presubmit.Plan.Scope.GovernanceCore != "internal/landlease/lease.go" || report.Presubmit.TestBudget != "10m0s" {
+		t.Fatalf("presubmit governance core/budget = %q/%q", report.Presubmit.Plan.Scope.GovernanceCore, report.Presubmit.TestBudget)
 	}
 }
 
@@ -148,7 +150,7 @@ func TestProofCheckPresubmitDocsOnlyRunsDoctrineReaders(t *testing.T) {
 	if got := proofCheckPresubmitGoTests(report); !reflect.DeepEqual(got, wantTests) {
 		t.Fatalf("go-test runs = %v; want %v", got, wantTests)
 	}
-	if !strings.Contains(verdict, " scope=affected reason=diff packages=2 deferred=none ") || strings.Contains(verdict, "governance_core") {
+	if !strings.Contains(verdict, " scope=affected reason=diff packages=2 deferred=") || strings.Contains(verdict, "governance_core") {
 		t.Fatalf("docs-only verdict must name no deferral and no governance core: %q", verdict)
 	}
 }

@@ -10,14 +10,21 @@ import (
 	"time"
 )
 
-// ProofCheckPresubmitTestBudget is the presubmit's total wall-clock budget for
-// its go-test gates (operator decision 2026-11-03). Each package keeps its own
-// -timeout. A gate that cannot start inside the budget, or that the budget cuts
-// before any test failure printed, is reported as deferred: its packages are
-// named in the verdict line and the --out report and run on the post-land verifier
-// verifier. Nothing is silently skipped, and exit 0 still requires every gate
-// that ran to be green.
+// ProofCheckPresubmitTestBudget caps the presubmit go-test gates that do NOT
+// hold a changed package (operator decision 2026-11-03): reverse dependents,
+// path readers, internal/arch and the CLI doctrine readers. The changed
+// packages' own gates (presubmitChangedGate*) run first, to completion, under
+// the 30-minute package deadline, and are never deferred. A budgeted gate that
+// cannot start inside the remaining budget, or that the budget cuts before any
+// test failure printed, is deferred: the verdict line counts it (deferred=N),
+// the --out report names its packages (presubmit.budget_deferred), and the
+// post-land verifier verdict covers it. Build, vet, gofmt, diff-check, doctor and
+// redact are never budgeted. Exit 0 needs every gate that ran to be green and
+// every changed-package gate to be ok.
 const ProofCheckPresubmitTestBudget = 10 * time.Minute
+
+// presubmitChangedGate prefixes the gates that hold the changed packages.
+const presubmitChangedGate = "go-test-changed"
 
 var errPresubmitTestBudget = errors.New("presubmit test budget spent")
 
@@ -33,10 +40,9 @@ func RunNonCertifyingProofGates(ctx context.Context, report ProofCheckReport, st
 
 func runNonCertifyingProofGates(ctx context.Context, report ProofCheckReport, steps []ProofCheckStep, run func(context.Context, ProofCheckStep) ProofCheckStep, budget time.Duration) (ProofCheckReport, error) {
 	_, native := PresubmitExecutionFromContext(ctx)
+	// The budget is applied here; report.Presubmit is never written, because a
+	// native run requires it to equal the sealed plan.
 	budgeted := report.Presubmit != nil && budget > 0
-	if budgeted {
-		report.Presubmit.TestBudget = budget.String()
-	}
 	var testSpent time.Duration
 	for _, step := range steps {
 		if native && ctx.Err() != nil {
@@ -51,12 +57,13 @@ func runNonCertifyingProofGates(ctx context.Context, report ProofCheckReport, st
 		switch {
 		case report.DryRun:
 			result.Status = "planned"
-		case budgeted && strings.HasPrefix(step.Name, "go-test"):
+		case budgeted && strings.HasPrefix(step.Name, "go-test") && !strings.HasPrefix(step.Name, presubmitChangedGate):
 			result, testSpent = runBudgetedPresubmitTestGate(ctx, &report, step, run, budget, testSpent)
 		default:
 			result = run(ctx, step)
 		}
-		if result.Status == "failed" {
+		// A changed package that did not run green is red, whatever the reason.
+		if result.Status == "failed" || (!report.DryRun && strings.HasPrefix(result.Name, presubmitChangedGate) && result.Status != "ok") {
 			report.Status = "failed"
 		}
 		if result.Status == "ok" || result.Status == "planned" {
@@ -93,8 +100,8 @@ func runBudgetedPresubmitTestGate(ctx context.Context, report *ProofCheckReport,
 func deferPresubmitTestGate(report *ProofCheckReport, step ProofCheckStep, reason string) ProofCheckStep {
 	step.Status, step.SkipReason, step.ExitCode = "deferred", reason, 0
 	for _, arg := range step.Command {
-		if strings.HasPrefix(arg, modulePrefix) && !stringIn(report.Presubmit.BudgetDeferred, arg) {
-			report.Presubmit.BudgetDeferred = append(report.Presubmit.BudgetDeferred, arg)
+		if strings.HasPrefix(arg, modulePrefix) && !stringIn(report.PresubmitBudgetDeferred, arg) {
+			report.PresubmitBudgetDeferred = append(report.PresubmitBudgetDeferred, arg)
 		}
 	}
 	return step
