@@ -2158,10 +2158,12 @@ func TestProofCheckCommandCanonicalFailedBatteryReleasesAdmission(t *testing.T) 
 	if err := json.Unmarshal(reportBody, &report); err != nil {
 		t.Fatalf("failed canonical --out is not a full report: %v", err)
 	}
-	expectedSteps, err := proofCheckSteps("")
+	// --base HEAD proves an empty range, so the sealed plan carries no console gates.
+	fullSteps, err := proofCheckSteps("")
 	if err != nil {
 		t.Fatal(err)
 	}
+	expectedSteps := work.WithoutConsoleProofGates(fullSteps)
 	failedGates := 0
 	skippedGates := 0
 	for _, step := range report.Steps {
@@ -2932,7 +2934,8 @@ func injectedCanonicalProofCheckReport(repo, baseRef string, now time.Time) (pro
 	if out, headErr := headCmd.Output(); headErr == nil {
 		headRef = strings.TrimSpace(string(out))
 	}
-	steps, err := proofCheckSteps(baseRef, headRef)
+	// The same console selection the certifying path sealed into the profile.
+	steps, err := work.ConsoleAwareProofInventory(context.Background(), repo, false, proofCheckSteps)(baseRef, headRef)
 	if err != nil {
 		return proofCheckReport{}, err
 	}
