@@ -258,6 +258,10 @@ type ProofCheckReport struct {
 	Steps          []ProofCheckStep        `json:"steps"`
 	// Presubmit is set only on a non-certifying presubmit report.
 	Presubmit *ProofCheckPresubmit `json:"presubmit,omitempty"`
+	// PresubmitBudgetDeferred names the packages whose presubmit go-test gate the
+	// test budget deferred. It lives outside Presubmit, which must stay equal to
+	// the sealed plan.
+	PresubmitBudgetDeferred []string `json:"presubmit_budget_deferred,omitempty"`
 }
 
 func ProofCheckVerdictLine(report ProofCheckReport, path string) string {

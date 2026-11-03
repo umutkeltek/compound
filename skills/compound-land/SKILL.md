@@ -80,10 +80,10 @@ change is what was tested. A RED verdict whose culprit range contains T refuses 
 later green verdict covers T). No covering verdict refuses with "verifier has not verified this tip
 yet"; never fall back to a laptop battery. The laptop canonical battery and the laptop nightly
 battery are retired for non-core diffs. **Governance-core diffs keep the full pre-land battery:**
-when the presubmit verdict line carries `governance_core=<path> full_battery_required=true`
-(`proofscope.GovernanceCorePaths`: the land/close/proof code, `proof_check*`, policy, authority,
-landlease, envelope, hook, proofscope, testbattery), run the canonical local battery (below) on the
-candidate before the fast-forward, exactly as before.
+when the presubmit report carries `presubmit.plan.scope.governance_core` (the verdict line prints
+`governance_core=<path>`; the path list is `governanceCorePaths` in `internal/proofscope`: the
+land/close/proof code, `proof_check*`, policy, authority, landlease), run the canonical local
+battery (below) on the candidate before the fast-forward, exactly as before.
 
 Close a non-core work on the verifier verdict:
 
@@ -224,13 +224,17 @@ packages and host load; its explicit native ceiling prevents wrapper restarts an
 truthful partial progress. The canonical battery runs after the land, detached and nice'd
 or on the remote verifier.
 
-**Test budget: 10 minutes (2026-11-03).** The affected-package go-test gates share one 10-minute
-wall-clock budget; each package keeps its 30-minute deadline. A gate that cannot start inside the
-budget, or that the budget cuts before any test failure printed, is `deferred`: its packages appear
-as `deferred=<pkgs>` on the verdict line (`deferred=none` when everything fit) and under
-`presubmit.budget_deferred` in `--out`. A deferred gate is neither a pass nor a silent skip; the verifier
-verdict covers it after the land. A failure printed before the cut stays red. Exit 0 still needs
-every gate that ran to be green.
+**Test budget: 10 minutes (2026-11-03).** The changed packages' own tests run first, in their
+own `go-test-changed*` gates, to completion under the 30-minute package deadline; they are never
+budgeted or deferred, and a changed package that did not run green fails the presubmit. The
+remaining go-test gates (reverse dependents, path readers, `internal/arch`, the CLI doctrine
+readers) share one 10-minute wall-clock budget. A budgeted gate that cannot start inside the
+budget, or that the budget cuts before any test failure printed, is `deferred`: the verdict line
+counts deferred packages in its one `deferred=<count>` field and `--out` names them
+(`presubmit.plan.deferred`, `presubmit_budget_deferred`). A deferred gate is neither a pass nor a
+silent skip; the verifier verdict covers it after the land. A failure printed before the cut stays red.
+Build, vet, gofmt, diff-check, doctor and redact are never budgeted. Exit 0 needs every gate that
+ran to be green and every changed package to have run.
 
 
 Add, when they apply, before the presubmit (seconds each):

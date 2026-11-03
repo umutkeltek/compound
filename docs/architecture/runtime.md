@@ -1115,16 +1115,20 @@ no green full-suite row. Land-check then applies one rule (`internal/work/verifi
   yet"). There is no fallback to a laptop battery.
 
 Close revalidates live, so a red verdict named after the land-check still refuses
-the close. Diffs that touch `proofscope.GovernanceCorePaths` keep the full pre-land
-canonical battery and the exact-tip equality rule; the presubmit verdict line
-names them as `governance_core=<path> full_battery_required=true`.
+the close. Diffs whose presubmit report carries `presubmit.plan.scope.governance_core`
+(`governanceCorePaths` in `internal/proofscope`) keep the full pre-land canonical
+battery and the exact-tip equality rule; the presubmit verdict line names them as
+`governance_core=<path>`.
 
-The presubmit go-test gates share a 10-minute wall-clock budget (each package keeps
-its own deadline). A gate that cannot start in the budget, or that the budget cuts
-before any failure printed, is `deferred`: its packages appear as `deferred=<pkgs>`
-on the verdict line and under `presubmit.budget_deferred` in the report. A deferred
-gate is neither a pass nor a silent skip, and exit 0 still needs every gate that ran
-to be green.
+The changed packages' own tests run first, in `go-test-changed*` gates, to completion
+under the 30-minute package deadline; they are never budgeted or deferred, and a
+changed package that did not run green fails the presubmit. The remaining go-test
+gates share a 10-minute wall-clock budget. A budgeted gate that cannot start in the
+budget, or that the budget cuts before any failure printed, is `deferred`: the
+verdict line counts it in one `deferred=<count>` field and the report names its
+packages under `presubmit_budget_deferred`. A deferred gate is neither a pass nor a
+silent skip. Build, vet, gofmt, diff-check, doctor and redact are never budgeted, and
+exit 0 still needs every gate that ran to be green.
 
 ## 3. Hooks are clients, not brains
 

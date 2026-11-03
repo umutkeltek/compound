@@ -326,7 +326,13 @@ func TestProofCheckNonCertifyingFailedOutputSurvivesLaterInterruption(t *testing
 			if _, err := os.Stat(marker); err != nil {
 				t.Fatalf("later gate was not reached: %v", err)
 			}
-			body, err := os.ReadFile(outPath + ".gates/go-test.log")
+			// Presubmit runs the changed packages first, in their own gates:
+			// internal/work fails, then the internal/home gate interrupts.
+			failedGate := "go-test"
+			if mode == "--presubmit" {
+				failedGate = "go-test-changed-work"
+			}
+			body, err := os.ReadFile(outPath + ".gates/" + failedGate + ".log")
 			if err != nil {
 				t.Fatalf("completed failed gate output was lost before final report: %v", err)
 			}
