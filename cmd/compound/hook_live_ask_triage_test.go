@@ -199,6 +199,12 @@ func TestCanonicalClaudeFamilyExecutesEveryInstalledLiveHookEvent(t *testing.T) 
 			if strings.Contains(preCommand, " --enforce") != wantEnforce {
 				t.Fatalf("%s PreToolUse command=%q, enforce=%t want %t", harnessCase.installer, preCommand, strings.Contains(preCommand, " --enforce"), wantEnforce)
 			}
+			// Interactive claude_code is watch-only: its PreToolUse is the
+			// zero-wait spool route; enforced lanes keep the synchronous gate.
+			wantSpool := !wantEnforce
+			if strings.HasSuffix(preCommand, " --spool") != wantSpool {
+				t.Fatalf("%s PreToolUse command=%q, spool want %t", harnessCase.installer, preCommand, wantSpool)
+			}
 
 			sessionID := "sess_" + harnessCase.runtime
 			target := filepath.Join(workspace, "README.md")
@@ -260,6 +266,16 @@ func TestCanonicalClaudeFamilyExecutesEveryInstalledLiveHookEvent(t *testing.T) 
 				}
 				if event.name == "UserPromptSubmit" && (!strings.Contains(context, "# Compound Context Injection") || !strings.Contains(context, "Orientation served this session at `hook_")) {
 					t.Fatalf("UserPromptSubmit did not consume SessionStart orientation:\n%s", context)
+				}
+			}
+			if wantSpool {
+				// The spool route records later: the drain writes the same
+				// HookEvent the synchronous hook would have written. A spool
+				// that never records leaves the PreToolUse count at zero.
+				drain := exec.Command(testBinary, "hook", "drain", "--once")
+				drain.Dir = workspace
+				if out, err := drain.CombinedOutput(); err != nil {
+					t.Fatalf("hook drain --once: %v\n%s", err, out)
 				}
 			}
 
