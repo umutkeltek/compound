@@ -6,7 +6,10 @@
 // repository), learnable
 // (it recurs unexplained across work ids or days) or singleton. A note that only
 // mentions the failure is related evidence, not an explanation, and an
-// explanation is not a verified repair. Attention goes to learnable regularity,
+// explanation is not a verified repair. A finding that names a signature
+// exactly but fails the acceptance rules is reported as an orphaned
+// explanation with its reason, never dropped silently, so a tightened rule
+// shows what it un-explains. Attention goes to learnable regularity,
 // not to error volume or severity, and progress is the derivative: the
 // observations an explanation newly absorbed since the previous persisted
 // projection.
@@ -60,11 +63,17 @@ const (
 	ScopeUnscoped    = "unscoped"  // explanation or an observation lacks repository scope
 	ScopeUncovered   = "uncovered" // names repositories that miss one the signature was seen in
 
+	// Orphan reasons beside ScopeUnscoped and ScopeUncovered.
+	OrphanUnknownSignature   = "unknown_signature"   // names a signature id this window never observed
+	OrphanMissingDeclaration = "missing_declaration" // no explanation:declared ref
+	OrphanLifecycleUnknown   = "lifecycle_unknown"   // declared, but the finding lifecycle is unreadable
+
 	// SignatureEvidencePrefix ties a finding to one signature exactly:
 	// evidence_refs contains "signature:<psig id>". RepositoryEvidencePrefix
 	// scopes it: "repository:<fingerprint>", one ref per repository it covers.
 	SignatureEvidencePrefix  = "signature:"
 	RepositoryEvidencePrefix = "repository:"
+	signatureIDPrefix        = "psig_" // SignatureID's prefix; a topic shaped so names a signature
 	// RepositoryWildcard after RepositoryEvidencePrefix ("repository:*") is an
 	// explicit claim that the cause is repository-independent (a machine, tool
 	// or environment cause such as a redact false positive or a load timeout),
@@ -93,7 +102,32 @@ type Projection struct {
 	Totals        Totals      `json:"totals"`
 	Signatures    []Signature `json:"signatures"`
 	Progress      Progress    `json:"progress"`
-	Warnings      []Warning   `json:"warnings"`
+	// OrphanedExplanations: exact associations the acceptance rules refuse.
+	OrphanedExplanations Orphans   `json:"orphaned_explanations"`
+	Warnings             []Warning `json:"warnings"`
+}
+
+// Orphans lists every current finding that names a signature exactly (topic
+// or signature: ref) but does not explain it, one item per finding and
+// signature. A tightened acceptance rule must surface what it un-explains,
+// never drop it silently: an orphan is learning that stopped counting.
+// ByReason counts each item once, by its Reason; Count = len(Items).
+// Superseded findings are retractions, not orphans; a fuzzy mention never was
+// an explanation.
+type Orphans struct {
+	Count    int            `json:"count"`
+	ByReason map[string]int `json:"by_reason"`
+	Items    []Orphan       `json:"items"`
+}
+
+// Orphan: Reason is the first acceptance rule the association fails, in
+// acceptance order (declaration, scope, lifecycle); AlsoFails names the rest,
+// so fixing only the first is not mistaken for a full repair.
+type Orphan struct {
+	FindingID   string   `json:"finding_id"`
+	SignatureID string   `json:"signature_id"`
+	Reason      string   `json:"reason"`
+	AlsoFails   []string `json:"also_fails,omitempty"`
 }
 
 type Window struct {
@@ -187,6 +221,9 @@ type explainer struct {
 	exact, repos map[string]bool
 	text         string
 	status       string
+	findingID    string   // "" for a negatives record
+	declared     bool     // carries ExplanationDeclarationRef, whatever the lifecycle says
+	signatures   []string // signature ids it names exactly, sorted
 }
 
 type warnings []Warning
@@ -224,7 +261,7 @@ func Build(homePath string, opts BuildOptions) (Projection, error) {
 	if err != nil {
 		return Projection{}, err
 	}
-	proj.Signatures = classify(obs, readExplanations(homePath, now, &w))
+	proj.Signatures, proj.OrphanedExplanations = classify(obs, readExplanations(homePath, now, &w))
 	t := &proj.Totals
 	results := map[string]*int{StateAssimilated: &t.AssimilatedResults, StateLearnable: &t.LearnableResults, StateSingleton: &t.SingletonResults}
 	for _, s := range proj.Signatures {
@@ -509,14 +546,19 @@ func readExplanations(homePath string, now time.Time, w *warnings) []explainer {
 			w.add("finding", "not_a_finding", e.Name()+": unreadable, not JSON, or no finding id")
 			continue
 		}
-		exact, repos := map[string]bool{strings.TrimSpace(f.Topic): true}, map[string]bool{}
-		status := StatusUnknown
+		topic := strings.TrimSpace(f.Topic)
+		exact, repos, signatures := map[string]bool{topic: true}, map[string]bool{}, map[string]bool{}
+		if strings.HasPrefix(topic, signatureIDPrefix) {
+			signatures[topic] = true
+		}
+		status, declared := StatusUnknown, false
 		for _, ref := range f.EvidenceRefs {
 			ref = strings.TrimSpace(ref)
 			if ref == ExplanationDeclarationRef {
-				status = StatusDeclared
+				status, declared = StatusDeclared, true
 			} else if id, ok := strings.CutPrefix(ref, SignatureEvidencePrefix); ok {
 				exact[id] = true
+				add(signatures, id) // a malformed id stays visible as unknown_signature
 			} else if fp, ok := strings.CutPrefix(ref, RepositoryEvidencePrefix); ok {
 				add(repos, fp)
 			}
@@ -526,7 +568,8 @@ func readExplanations(homePath string, now time.Time, w *warnings) []explainer {
 		} else if superseded[f.ID] {
 			status = StatusSuperseded
 		}
-		out = append(out, explainer{ref: "finding:" + f.ID, exact: exact, repos: repos, text: f.Topic + "\n" + f.Body, status: status})
+		out = append(out, explainer{ref: "finding:" + f.ID, exact: exact, repos: repos, text: f.Topic + "\n" + f.Body, status: status,
+			findingID: f.ID, declared: declared, signatures: sorted(signatures, len(signatures))})
 	}
 	neg, _, err := negatives.ReadFresh(homePath, now)
 	if err != nil {
@@ -540,7 +583,8 @@ func readExplanations(homePath string, now time.Time, w *warnings) []explainer {
 
 // classify clusters observations, joins explanations, sets state and rank:
 // learnable, singleton, assimilated; then occurrences desc, last_seen desc, id asc.
-func classify(obs []observation, exps []explainer) []Signature {
+// It also returns the exact associations the acceptance rules refuse.
+func classify(obs []observation, exps []explainer) ([]Signature, Orphans) {
 	clusters := map[string]*cluster{}
 	for _, o := range obs {
 		id := SignatureID(o.step, o.signature)
@@ -594,6 +638,37 @@ func classify(obs []observation, exps []explainer) []Signature {
 	for i := range out {
 		out[i].AttentionRank = i + 1
 	}
+	return out, orphans(clusters, exps)
+}
+
+// orphans reports each current finding's exact association that does not
+// explain its signature, with the rules it fails (see Orphans).
+func orphans(clusters map[string]*cluster, exps []explainer) Orphans {
+	out := Orphans{ByReason: map[string]int{}, Items: []Orphan{}}
+	for _, e := range exps {
+		if e.findingID == "" || e.status == StatusSuperseded {
+			continue
+		}
+		for _, id := range e.signatures {
+			failed := []string{OrphanUnknownSignature}
+			if c := clusters[id]; c != nil {
+				_, failed = acceptance(e, c.repos, c.unknownRepository)
+			}
+			if len(failed) == 0 {
+				continue
+			}
+			o := Orphan{FindingID: e.findingID, SignatureID: id, Reason: failed[0]}
+			if len(failed) > 1 {
+				o.AlsoFails = failed[1:]
+			}
+			out.Items = append(out.Items, o)
+			out.ByReason[o.Reason]++
+		}
+	}
+	slices.SortFunc(out.Items, func(a, b Orphan) int {
+		return cmp.Or(strings.Compare(a.FindingID, b.FindingID), strings.Compare(a.SignatureID, b.SignatureID))
+	})
+	out.Count = len(out.Items)
 	return out
 }
 
@@ -640,9 +715,9 @@ func explain(s Signature, seen map[string]bool, unknownRepository bool, exps []e
 			status = StatusUnknown
 		}
 		if e.exact[s.ID] {
-			scope := uncoveredScope(e.repos, seen, unknownRepository)
+			scope, failed := acceptance(e, seen, unknownRepository)
 			match := Explanation{Ref: e.ref, Match: MatchExact, Scope: scope, Status: status}
-			if status == StatusDeclared && scope == "" {
+			if len(failed) == 0 {
 				explained = append(explained, match)
 			} else {
 				related = append(related, match)
@@ -653,6 +728,29 @@ func explain(s Signature, seen map[string]bool, unknownRepository bool, exps []e
 		}
 	}
 	return firstExplanations(explained), firstExplanations(related)
+}
+
+// acceptance is the one rule an exact association must pass to explain a
+// signature: a current explanation:declared declaration and a scope covering
+// every repository seen. It returns that scope and the rules failed in
+// acceptance order (declaration, scope, lifecycle); none failed explains it.
+// Superseded comes last and only explain sees it: orphans skips retractions.
+func acceptance(e explainer, seen map[string]bool, unknownRepository bool) (string, []string) {
+	scope := uncoveredScope(e.repos, seen, unknownRepository)
+	var failed []string
+	if !e.declared {
+		failed = append(failed, OrphanMissingDeclaration)
+	}
+	if scope != "" {
+		failed = append(failed, scope)
+	}
+	if e.declared && e.status != StatusDeclared && e.status != StatusSuperseded {
+		failed = append(failed, OrphanLifecycleUnknown)
+	}
+	if e.status == StatusSuperseded {
+		failed = append(failed, StatusSuperseded)
+	}
+	return scope, failed
 }
 
 // uncoveredScope is "" when the named repositories cover every one seen; a

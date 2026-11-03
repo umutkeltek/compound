@@ -826,3 +826,174 @@ func TestPreviousStatusSchemaRestartsProgress(t *testing.T) {
 		t.Fatalf("old status rules must not produce new progress: %+v warnings=%+v", proj.Progress, proj.Warnings)
 	}
 }
+
+// recordAlphaNote records a finding that names TestAlpha's signature through
+// refs; seedAlpha observed that signature twice, both in fp-alpha.
+func recordAlphaNote(t *testing.T, h, body string, at time.Time, supersedes string, refs ...string) finding.Finding {
+	t.Helper()
+	f, err := finding.Record(h, finding.Finding{Topic: "proof failure explanation", Body: body, Supersedes: supersedes, EvidenceRefs: refs}, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// A tightened acceptance rule must surface what it un-explains, never drop it
+// silently. A finding that names the signature and a repository:* scope but no
+// explanation:declared ref does not count, and the build says so: one orphan
+// with reason missing_declaration, while the signature stays learnable.
+func TestUndeclaredExplanationIsReportedOrphaned(t *testing.T) {
+	h := t.TempDir()
+	seedAlpha(t, h)
+	id := SignatureID("go-test", "fail:TestAlpha")
+	f := recordAlphaNote(t, h, "The fixture is absent on the runner; this explains the failure.", t0, "",
+		SignatureEvidencePrefix+id, RepositoryEvidencePrefix+RepositoryWildcard)
+	proj := mustBuild(t, h, t0)
+	if s := bySignature(t, proj, "fail:TestAlpha"); s.State != StateLearnable || len(s.ExplainedBy) != 0 {
+		t.Fatalf("an undeclared explanation must not assimilate: %+v", s)
+	}
+	want := Orphans{Count: 1, ByReason: map[string]int{OrphanMissingDeclaration: 1},
+		Items: []Orphan{{FindingID: f.ID, SignatureID: id, Reason: OrphanMissingDeclaration}}}
+	if !reflect.DeepEqual(proj.OrphanedExplanations, want) {
+		t.Fatalf("orphaned_explanations = %+v, want %+v", proj.OrphanedExplanations, want)
+	}
+	if line := Headline(proj); !strings.HasSuffix(line, "; 1 orphaned explanations (1 missing_declaration)") {
+		t.Fatalf("headline must show the orphan count and reason: %q", line)
+	}
+}
+
+// The positive control: the same finding with the declaration assimilates and
+// leaves nothing orphaned, and the headline carries no orphan segment.
+func TestDeclaredExplanationIsNotOrphaned(t *testing.T) {
+	h := t.TempDir()
+	seedAlpha(t, h)
+	id := SignatureID("go-test", "fail:TestAlpha")
+	recordAlphaNote(t, h, "The fixture is absent on the runner; this explains the failure.", t0, "",
+		ExplanationDeclarationRef, SignatureEvidencePrefix+id, RepositoryEvidencePrefix+RepositoryWildcard)
+	proj := mustBuild(t, h, t0)
+	if s := bySignature(t, proj, "fail:TestAlpha"); s.State != StateAssimilated {
+		t.Fatalf("declared scoped explanation must assimilate: %+v", s)
+	}
+	if want := (Orphans{ByReason: map[string]int{}, Items: []Orphan{}}); !reflect.DeepEqual(proj.OrphanedExplanations, want) {
+		t.Fatalf("orphaned_explanations = %+v, want %+v", proj.OrphanedExplanations, want)
+	}
+	if line := Headline(proj); strings.Contains(line, "orphaned") {
+		t.Fatalf("headline must not mention orphans at zero: %q", line)
+	}
+}
+
+// Every acceptance rule an exact association fails is named: the first in
+// acceptance order is the reason, the rest are also_fails, so re-declaring a
+// finding that also lacks scope is not mistaken for a full repair. A superseded
+// finding is a deliberate retraction, not an orphan, and a fuzzy mention never
+// was an explanation.
+func TestOrphanReasons(t *testing.T) {
+	id := SignatureID("go-test", "fail:TestAlpha")
+	const body = "The fixture is absent on the runner; this explains the failure."
+	for _, tc := range []struct {
+		name   string
+		record func(t *testing.T, h string) string // returns the orphan finding id, "" for none
+		reason string
+		also   []string
+	}{
+		{"declared without repository scope", func(t *testing.T, h string) string {
+			return recordAlphaNote(t, h, body, t0, "", ExplanationDeclarationRef, SignatureEvidencePrefix+id).ID
+		}, ScopeUnscoped, nil},
+		{"declared scope misses a seen repository", func(t *testing.T, h string) string {
+			return recordAlphaNote(t, h, body, t0, "", ExplanationDeclarationRef, SignatureEvidencePrefix+id, RepositoryEvidencePrefix+"fp-other").ID
+		}, ScopeUncovered, nil},
+		{"undeclared and unscoped names both rules", func(t *testing.T, h string) string {
+			return recordAlphaNote(t, h, body, t0, "", SignatureEvidencePrefix+id).ID
+		}, OrphanMissingDeclaration, []string{ScopeUnscoped}},
+		{"declared signature never observed", func(t *testing.T, h string) string {
+			return recordAlphaNote(t, h, body, t0, "", ExplanationDeclarationRef, SignatureEvidencePrefix+"psig_000000000000", RepositoryEvidencePrefix+RepositoryWildcard).ID
+		}, OrphanUnknownSignature, nil},
+		{"declared revision supersedes the orphan", func(t *testing.T, h string) string {
+			old := recordAlphaNote(t, h, body, t0, "", SignatureEvidencePrefix+id, RepositoryEvidencePrefix+RepositoryWildcard)
+			recordAlphaNote(t, h, body+"\n\nRe-declared.", t0.Add(time.Minute), old.ID,
+				ExplanationDeclarationRef, SignatureEvidencePrefix+id, RepositoryEvidencePrefix+RepositoryWildcard)
+			return ""
+		}, "", nil},
+		{"fuzzy mention is not an explanation", func(t *testing.T, h string) string {
+			recordAlphaNote(t, h, "TestAlpha still fails. The root cause is unknown.", t0, "", ExplanationDeclarationRef, RepositoryEvidencePrefix+RepositoryWildcard)
+			return ""
+		}, "", nil},
+		{"declared and scoped but lifecycle unreadable", func(t *testing.T, h string) string {
+			f := recordAlphaNote(t, h, body, t0, "", ExplanationDeclarationRef, SignatureEvidencePrefix+id, RepositoryEvidencePrefix+RepositoryWildcard)
+			if err := os.WriteFile(filepath.Join(h, finding.Subdir, "invalid-fixture.json"), []byte("{"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return f.ID
+		}, OrphanLifecycleUnknown, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := t.TempDir()
+			seedAlpha(t, h)
+			orphanID := tc.record(t, h)
+			proj := mustBuild(t, h, t0)
+			got := proj.OrphanedExplanations
+			if orphanID == "" {
+				if got.Count != 0 || len(got.Items) != 0 || len(got.ByReason) != 0 {
+					t.Fatalf("no orphan expected: %+v", got)
+				}
+				return
+			}
+			sig := id
+			if tc.reason == OrphanUnknownSignature {
+				sig = "psig_000000000000"
+			}
+			want := Orphans{Count: 1, ByReason: map[string]int{tc.reason: 1},
+				Items: []Orphan{{FindingID: orphanID, SignatureID: sig, Reason: tc.reason, AlsoFails: tc.also}}}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("orphaned_explanations = %+v, want %+v", got, want)
+			}
+			if s := bySignature(t, proj, "fail:TestAlpha"); s.State != StateLearnable {
+				t.Fatalf("an orphaned explanation must leave the signature learnable: %+v", s)
+			}
+		})
+	}
+}
+
+// build persists the orphans; list prints them on its summary line and its
+// JSON carries every orphan even when --top trims the signature rows.
+func TestRunCLIListShowsOrphans(t *testing.T) {
+	h := t.TempDir()
+	seedAlpha(t, h)
+	id := SignatureID("go-test", "fail:TestAlpha")
+	f := recordAlphaNote(t, h, "The fixture is absent on the runner; this explains the failure.", t0, "",
+		SignatureEvidencePrefix+id, RepositoryEvidencePrefix+RepositoryWildcard)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"build", "--home", h, "--since", "87600h"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("build: code=%d stderr=%q", code, stderr.String())
+	}
+	stdout.Reset()
+	if code := run([]string{"list", "--home", h, "--top", "1"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", code, stderr.String())
+	}
+	if first, _, _ := strings.Cut(stdout.String(), "\n"); !strings.HasSuffix(first, "; 1 orphaned explanations (1 missing_declaration)") {
+		t.Fatalf("list summary line = %q", first)
+	}
+	stdout.Reset()
+	if code := run([]string{"list", "--home", h, "--json", "--top", "1"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("list --json: code=%d stderr=%q", code, stderr.String())
+	}
+	var raw struct {
+		Orphans struct {
+			Count    int            `json:"count"`
+			ByReason map[string]int `json:"by_reason"`
+			Items    []struct {
+				FindingID   string `json:"finding_id"`
+				SignatureID string `json:"signature_id"`
+				Reason      string `json:"reason"`
+			} `json:"items"`
+		} `json:"orphaned_explanations"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	o := raw.Orphans
+	if o.Count != 1 || o.ByReason["missing_declaration"] != 1 || len(o.Items) != 1 ||
+		o.Items[0].FindingID != f.ID || o.Items[0].SignatureID != id || o.Items[0].Reason != "missing_declaration" {
+		t.Fatalf("list --json orphaned_explanations = %+v (%s)", o, stdout.String())
+	}
+}

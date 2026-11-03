@@ -10,9 +10,9 @@ import (
 	"strings"
 )
 
-const scheduleUsage = "usage: compound schedule list [--json] [--source user|system|crontab|all] [--namespace N] [--include-env-values]\n" +
+const scheduleUsage = "usage: compound schedule list [--json] [--source user|system|crontab|hermes|login-item|docker|all] [--namespace N] [--include-env-values]\n" +
 	"       compound schedule show <label|path> [--json]\n" +
-	"       compound schedule doctor [--json] [--stale-days N]\n" +
+	"       compound schedule doctor [--json] [--all] [--stale-days N] [--login-items]\n" +
 	"  Read-only list/show/doctor; repair plan|review|apply|rollback is exact and governed."
 
 // table-driven and one-source-of-truth so adding a new flag means one row
@@ -28,8 +28,10 @@ var scheduleFlagSets = map[string]map[string]bool{
 		"--json": true,
 	},
 	"doctor": {
-		"--json":       true,
-		"--stale-days": true,
+		"--json":        true,
+		"--all":         true,
+		"--stale-days":  true,
+		"--login-items": true,
 	},
 }
 

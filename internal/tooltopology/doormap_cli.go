@@ -67,7 +67,7 @@ func RunDoors(args []string) {
 		}
 		fmt.Print(FormatDoorMap(m, now))
 	case "serve":
-		fmt.Println(ServeDoorMap(homePath, now, DefaultDoorMapTTL))
+		fmt.Println(ServeSessionStart(homePath, now, DefaultDoorMapTTL))
 	default:
 		fmt.Fprintln(os.Stderr, doorsUsage)
 		os.Exit(2)

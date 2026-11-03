@@ -165,12 +165,19 @@ The selected Go tests use the same package phases as the canonical runner: gener
 
 **Affected packages** — `--presubmit` derives them from the diff with `internal/proofscope`, never
 from memory. The rule it applies:
-- Go files changed under dirs `D1..Dn` → those packages, every package that imports them (directly
-  or transitively) or whose tests import them, every package whose tests name a changed path, plus
-  `./internal/arch/`. The CLI package `./cmd/compound/` runs whole when a changed package reaches
-  it; it is the integration surface that imports nearly every `internal/` package, so it catches
-  cross-package breaks. A hub package (`internal/work`, `internal/policy`) costs ~10 min idle; that
-  is the honest price of touching it, not a reason to skip it.
+- Go files changed under dirs `D1..Dn` → those packages, every package whose tests name a changed
+  path (a test naming only a parent of its own package, such as a `".."` row in a traversal table,
+  does not count), plus `./internal/arch/` (operator ruling 2026-10-23: changed packages before the
+  land, the rest after it). The build and vet gates still compile every package, so a broken caller stops the
+  landing. Reverse dependents are listed in the report as `deferred`; the post-land verifier and the
+  canonical battery run them. `./cmd/compound/` runs whole when a file in it changed; otherwise only
+  its doctrine readers run.
+- A changed path in the governance core (`presubmit.plan.scope.governance_core` in the report; the
+  list is `governanceCorePaths` in `internal/proofscope`: proof, landing, close and publication
+  decisions, `internal/landlease`, `internal/policy`, `internal/authority`) keeps the wider plan:
+  those packages, every package that imports them (directly or transitively) or whose tests import
+  them, and the whole CLI when reached. A hub package costs ~10 min idle; that is the honest price of
+  touching the rules that decide landings.
 - Only docs, skills, contracts or `AGENTS.md` changed → `./internal/arch/` (every served-doctrine
   guard lives there) plus the CLI readers by name:
   `go test -short ./cmd/compound/ -run 'Ceremony|ContractCompile|Orient|ProofCheck|Doctor'`.
@@ -353,6 +360,12 @@ and check each pinned member base with the same committed ancestry reader.
   New reports are private; ordinary existing modes are preserved. Symlink, non-regular,
   or raced targets are refused, publication is atomic within the captured parent, and
   timing warnings are sealed before report file, installed artifact, and JSON agree.
+- **Never derive the verdict from a JSON walk over the report either** (lived 2026-10-22: a helper read
+  a key the report does not have, printed `failed []` for a 52/53 red battery, and the lease → ff → push
+  went ahead on it). A filter that finds nothing looks identical to a filter that found no failures. The
+  report's array is `steps[]` with `status`; the gate is the `battery:` / `presubmit:` stdout line and the
+  process exit code, read for the exact tip about to be merged. Parse the report only to name the failed
+  step (`steps[].status != "ok"`, then its `output_tail`), never to decide green.
 - **A pre-commit battery CANNOT clear the doc-leak gate for NEW files** (lived 2026-07-19, inventory
   door). The gate enumerates TRACKED text files only, so files still untracked (`??`) at battery
   time are invisible to it — the battery goes green, the commit makes them tracked, and the NEXT
@@ -537,12 +550,36 @@ git -C <MAIN-worktree> merge --ff-only "$CANDIDATE_SHA"
   (the holder's own release is the tool's sanctioned path), confirm the dead run self-terminalized
   (`compound run-attempt list --non-terminal` — proof-check terminalizes its own ratt on the
   admission error path), then rerun the plain exact command on the freed resource.
-- **Package disjointness never preserves proof after replay or a new merge.** If reconciling
-  main changes the candidate HEAD or proof base, attach the new H; the presubmit reruns on the new tip before landing, and the
+- **A green presubmit survives a clean rebase; do not go back to the end of the line.** Every
+  landing makes each other queued candidate stale, so re-queuing multiplies the wait by the number of
+  lanes. When your presubmit at H ended `presubmit: ok` and main has moved, rebase onto the fresh tip T
+  and keep that result when ALL of these hold: the scope was `affected`; the report names no
+  `presubmit.plan.scope.governance_core`; the rebase finished without a conflict; and no Go package
+  changed on both sides:
+
+  ```bash
+  go_packages() { git diff --name-only "$1" "$2" | grep '\.go$' | xargs -n1 dirname | sort -u; }
+  test -z "$(comm -12 <(go_packages "$B" "$T") <(go_packages "$T" HEAD))"
+  ```
+
+  Then run these on the new tip, without a proof ticket (seconds, not hours), read each exit, attach
+  the new tip with `work advance --artifact commit:<new-tip>`, and take the fresh-SHA guard:
+
+  ```bash
+  go run ./scripts/testbattery build --source-head "$(git rev-parse HEAD)"
+  go run ./scripts/testbattery vet --source-head "$(git rev-parse HEAD)"
+  "$PRESUBMIT_EXE" architecture doctor --strict
+  ```
+
+  Any other case, or any red, is a new presubmit at the new tip. A semantic conflict that compiles
+  reaches main; the post-land verifier and the canonical battery catch it, and the landing lane fixes
+  it forward or reverts the same day. This carries the noncertifying presubmit only.
+- **Package disjointness never preserves canonical proof after replay or a new merge.** If reconciling
+  main changes the candidate HEAD or proof base, attach the new H; the presubmit reruns or carries under the rule above, and the
   canonical proof is for that exact B/H on the landed tip (§1). If main merely advances to a target tip T' inside
   the unchanged certified H (`B <= T' <= H`), retain the original B/H proof and take a fresh
   main-SHA guard; do not relabel its base. Use the short landing lease and ordinary `--ff-only` landing.
-  Never land an untested tip — presubmit before the fast-forward, canonical proof on the
+  Never land an untested tip — presubmit (or its carry) before the fast-forward, canonical proof on the
   landed tip after it — and never use `git update-ref` or target-ref CAS to bypass a stale
   guard, changed-source proof, acceptance or publication checks.
   The separate hijacked-checkout exception in §1 still requires an already-certified descendant;

@@ -53,6 +53,15 @@ type Scope struct {
 	// reads them separately because it defers the always-run set.
 	Reached     []string `json:"reached,omitempty"`
 	PathReaders []string `json:"path_readers,omitempty"`
+	// AncestorReaders have a test that names a parent directory of its own
+	// package, usually a ".." row in a traversal-rejection table. They stay in
+	// the certifying Packages, but that text alone is no reason to run them
+	// before a landing.
+	AncestorReaders []string `json:"ancestor_readers,omitempty"`
+	// GovernanceCore is the first changed path that decides whether a proof,
+	// landing or close is legitimate. It keeps the presubmit's reverse
+	// dependents; the certifying Packages never read it.
+	GovernanceCore string `json:"governance_core,omitempty"`
 }
 
 // Snapshot is one commit's tree. Base needs Paths only.
@@ -137,6 +146,7 @@ type pkgFacts struct {
 	testImports map[string]bool // head package dirs imported or named by _test.go files
 	rootReader  bool
 	targets     map[string]bool // repo-relative paths its tests read
+	ancestors   map[string]bool // parent directories of the package its tests name
 }
 
 // Derive applies the rules in order; the first match wins.
@@ -182,7 +192,7 @@ func Derive(base, head Snapshot, changed []string) Scope {
 	known := pathPrefixes(head.Paths, base.Paths, changedPaths)
 	facts := make(map[string]*pkgFacts, len(headDirs))
 	for dir := range headDirs {
-		facts[dir] = &pkgFacts{prodImports: map[string]bool{}, testImports: map[string]bool{}, targets: map[string]bool{}}
+		facts[dir] = &pkgFacts{prodImports: map[string]bool{}, testImports: map[string]bool{}, targets: map[string]bool{}, ancestors: map[string]bool{}}
 	}
 	headPaths := append([]string(nil), head.Paths...)
 	sort.Strings(headPaths)
@@ -272,17 +282,31 @@ func Derive(base, head Snapshot, changed []string) Scope {
 			}
 		}
 	}
+	ancestorReaders := make(map[string]bool)
+	for dir, f := range facts {
+		for target := range f.ancestors {
+			if triggers(target, changedPaths) {
+				all[dir] = true
+				if !pathReaders[dir] {
+					ancestorReaders[dir] = true
+				}
+				break
+			}
+		}
+	}
 	if len(all) == len(headDirs) {
 		return full("affected-all")
 	}
 	return Scope{
-		Mode:        Affected,
-		Reason:      "diff",
-		Packages:    importPaths(all),
-		Changed:     importPaths(seeds),
-		RootReaders: importPaths(rootReaders),
-		Reached:     importPaths(tested),
-		PathReaders: importPaths(pathReaders),
+		Mode:            Affected,
+		Reason:          "diff",
+		Packages:        importPaths(all),
+		Changed:         importPaths(seeds),
+		GovernanceCore:  firstGovernanceCorePath(changedPaths),
+		RootReaders:     importPaths(rootReaders),
+		Reached:         importPaths(tested),
+		PathReaders:     importPaths(pathReaders),
+		AncestorReaders: importPaths(ancestorReaders),
 	}
 }
 
@@ -355,6 +379,10 @@ func scanFile(name string, src []byte, f *pkgFacts, headPkgByImport map[string]s
 			return
 		}
 		if known[target] {
+			if strings.HasPrefix(dir+"/", target+"/") {
+				f.ancestors[target] = true
+				return
+			}
 			f.targets[target] = true
 		}
 	}

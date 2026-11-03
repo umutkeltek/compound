@@ -632,7 +632,8 @@ func sessionStart(name string, fx Fixture, deps Deps, now time.Time) (Result, er
 		// The door map rides the live session-start payload: it is the one seam every
 		// served harness (claude_code and its minimax/zai launchers, codex, opencode)
 		// already runs. It is a cached observation, served as a visible notice when
-		// missing or stale, never as silence.
+		// missing or stale, never as silence. The operator model, when one exists,
+		// follows it on the same seam.
 		ContextOutput: sessionStartDoorMap(fx, deps, now),
 		Context: &ContextObservation{
 			Input:            built.Input,
@@ -644,11 +645,13 @@ func sessionStart(name string, fx Fixture, deps Deps, now time.Time) (Result, er
 
 // sessionStartDoorMap serves the cached door map on live session starts only; fixture
 // replays stay byte-identical so recorded fixtures do not depend on machine state.
+// The operator model, if the home has one, follows after one blank line; when the
+// home has none the payload is the door map byte for byte.
 func sessionStartDoorMap(fx Fixture, deps Deps, now time.Time) string {
 	if !fx.Live || strings.TrimSpace(deps.HomePath) == "" {
 		return ""
 	}
-	return tooltopology.ServeDoorMap(deps.HomePath, now, tooltopology.DefaultDoorMapTTL)
+	return tooltopology.ServeSessionStart(deps.HomePath, now, tooltopology.DefaultDoorMapTTL)
 }
 
 func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {

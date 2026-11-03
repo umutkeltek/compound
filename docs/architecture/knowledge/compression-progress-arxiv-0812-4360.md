@@ -196,6 +196,8 @@ repository are `related` evidence, listed on the signature but never counted as 
 mention is not an explanation, and an explanation is not a verified repair. Missing scope on a finding or any observation remains related even in a single-repository cluster. Exact association and scope without `explanation:declared` remain related with `status: unknown`. This marker is the author's declaration that the body supplies a diagnosis, not independent acceptance or verified repair. The existing finding lifecycle owner identifies superseded declarations; those remain related with `status: superseded` and cannot earn learning credit. A retracted diagnosis returns recurring failures to `learnable`. An unreadable lifecycle leaves status unknown. Findings are append-only: record a revised body with `Supersedes` rather than trying to add refs to an unchanged finding. Schema v0.4 restarts progress from earlier projections rather than comparing classifications made under the former scope or status rules. `learnable` is a
 crude prior, not a learned model.
 
+**Orphan rule.** A tightened acceptance rule must surface what it un-explains, never drop it silently: every current finding that names a signature exactly but fails a rule is listed in `orphaned_explanations` (finding id, signature id, the first failed rule as `reason`, the rest as `also_fails`; reasons `missing_declaration`, `unscoped`, `uncovered`, `unknown_signature`, `lifecycle_unknown`), and the headline adds `N orphaned explanations (…)` whenever N is above zero.
+
 ## Slices, smallest first
 
 Each slice names the executor whose next branch changes and the consumer that proves it is
