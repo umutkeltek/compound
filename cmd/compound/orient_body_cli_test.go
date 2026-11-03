@@ -170,6 +170,13 @@ func TestCmdOrientBodyBudgetIsAdditive(t *testing.T) {
 			delete(ids, "contract_id")
 			delete(ids, "context_pack_id")
 		}
+		// The summary names its own sealed pack id (" Context pack: ctx_….") so a
+		// summary-only reader can cite the pack; that id is as volatile as "id" above.
+		if summary, ok := m["summary_md"].(string); ok {
+			if i := strings.LastIndex(summary, " Context pack: ctx_"); i >= 0 {
+				m["summary_md"] = summary[:i]
+			}
+		}
 	}
 	if len(p1) != len(p2) {
 		t.Fatalf("additive: pack field count differs no-budget=%d with-budget=%d", len(p1), len(p2))
