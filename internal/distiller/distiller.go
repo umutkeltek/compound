@@ -407,6 +407,11 @@ type RunResult struct {
 // Every candidate yields an AdjudicationDecision (appended to the ledger), so nothing is silent.
 func Run(homePath string, store *mem.Store, raw []byte, policy Policy, ext Extractor, now time.Time) (RunResult, error) {
 	res := RunResult{Policy: policy.Stamp()}
+	if !candidates.AutomaticProducersEnabled() {
+		// The fan-out files a candidate per extracted item: an automatic
+		// producer, off unless switched on (operator ruling 2026-11-03, Q3a).
+		return res, fmt.Errorf("distiller: %s", candidates.ProducerDisabledNote)
+	}
 	prior, err := LoadPriorStateFromHome(homePath, store, policy)
 	if err != nil {
 		return res, err

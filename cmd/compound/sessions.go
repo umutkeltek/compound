@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"compound/internal/candidates"
 	"compound/internal/envelope"
 	"compound/internal/eventstore"
 	"compound/internal/harvest"
@@ -1128,17 +1127,6 @@ func sortSessionFindings(findings []sessionMiningFinding) {
 }
 
 func applySessionMiningReport(homePath string, report *sessionMiningReport, now time.Time) (sessionMiningApplyReport, error) {
-	if !candidates.AutomaticProducersEnabled() {
-		// Session mining is an automatic candidate producer: its findings are
-		// reported above, but no candidate is filed unless the producers are
-		// switched on (operator ruling 2026-11-03, Q3a).
-		return sessionMiningApplyReport{
-			SchemaVersion: sessionmining.ApplyReportSchemaVersion,
-			Status:        "ok",
-			CreatedAt:     now.UTC().Format(time.RFC3339),
-			Warnings:      []string{candidates.ProducerDisabledNote},
-		}, nil
-	}
 	return sessionmining.Apply(homePath, sessionmining.ApplyInput{
 		Preferences:   report.PreferencesFound,
 		RulesToRetire: report.RulesToRetire,

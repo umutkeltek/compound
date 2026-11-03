@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"compound/internal/candidates"
 )
 
 // TestMain lets the test binary re-exec itself AS the reference engine, so the held-coprocess
@@ -14,6 +16,11 @@ func TestMain(m *testing.M) {
 	if os.Getenv("COMPOUND_MOCK_ENGINE") != "" {
 		_ = RunReferenceEngine(os.Stdin, os.Stdout, os.Getenv("MOCK_EMBEDDER"))
 		os.Exit(0)
+	}
+	// Automatic candidate producers are opt-in since 2026-11-03; fixtures that
+	// predate the gate assert their writes. TestWorkSurpriseProducerOffByDefault pins it.
+	if _, set := os.LookupEnv(candidates.ProducersEnv); !set {
+		_ = os.Setenv(candidates.ProducersEnv, "1")
 	}
 	os.Exit(m.Run())
 }

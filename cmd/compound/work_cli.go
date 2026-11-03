@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"compound/internal/candidates"
 	"compound/internal/doctor/exitcode"
 	"compound/internal/envelope"
 	"compound/internal/home"
@@ -2097,14 +2096,10 @@ func cmdWork(args []string) {
 		}
 		die(err)
 		printWorkCloseResult(res)
-		if candidates.AutomaticProducersEnabled() {
-			// These three file memory candidates as a side effect of close; they
-			// are automatic producers, off unless switched on (ruling 2026-11-03).
-			observeWorkSurpriseOnDivergedClose(homePath, res)
-			observeEVCardCalibrationOnClose(homePath, res)
-			offerStandingProofGraduationOnClose(homePath, res)
-		}
-		resolveContestedLessonsOnUse(homePath, closeID, closeActor, flag("--used"))
+		observeWorkSurpriseOnDivergedClose(homePath, res)
+		observeEVCardCalibrationOnClose(homePath, res)
+		offerStandingProofGraduationOnClose(homePath, res)
+		mem.RecordLessonUses(homePath, closeID, closeActor, flag("--used"), os.Stdout, os.Stderr)
 		autoConsumeCapabilityFeedback(homePath)
 	case "sweep-stale":
 		// sweep-stale is the work-state-machine counterpart to

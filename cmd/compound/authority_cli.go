@@ -772,19 +772,7 @@ func cmdAuthority(args []string) {
 			fmt.Fprintln(os.Stderr, "authority entity:", err)
 			os.Exit(1)
 		}
-		// Status never promotes (operator ruling 2026-11-03): head, counts and
-		// dirty state are machine status, not lessons. They stay in the
-		// snapshot report below and are neither captured nor promoted.
-		statusNotPromoted := 0
-		kept := facts[:0]
-		for _, fact := range facts {
-			if mem.StatusNeverPromotes(fact.Entity+"."+fact.Predicate, fact.ClaimType) != nil {
-				statusNotPromoted++
-				continue
-			}
-			kept = append(kept, fact)
-		}
-		facts = kept
+		facts, statusNotPromoted := mem.WithoutStatusRows(facts) // status never promotes (ruling 2026-11-03)
 		captured, err := store.Capture(facts, time.Now())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "authority capture:", err)
@@ -803,25 +791,23 @@ func cmdAuthority(args []string) {
 		}
 		if jsonOut {
 			out := struct {
-				SchemaVersion   string `json:"schema_version"`
-				Status          string `json:"status"`
-				AuthorityRef    string `json:"authority_ref"`
-				EntityRef       string `json:"entity_ref"`
-				GitRoot         string `json:"git_root"`
-				Branch          string `json:"branch,omitempty"`
-				Head            string `json:"head,omitempty"`
-				Remote          string `json:"remote,omitempty"`
-				Upstream        string `json:"upstream,omitempty"`
-				Ahead           int    `json:"ahead"`
-				Behind          int    `json:"behind"`
-				Staged          int    `json:"staged"`
-				Unstaged        int    `json:"unstaged"`
-				Untracked       int    `json:"untracked"`
-				ChangedPaths    int    `json:"changed_paths"`
-				CandidateCount  int    `json:"candidate_count"`
-				AuthorityClaims int    `json:"authority_claims"`
-				// StatusNotPromoted counts snapshot rows refused because status
-				// never promotes; the values are still in this report.
+				SchemaVersion     string `json:"schema_version"`
+				Status            string `json:"status"`
+				AuthorityRef      string `json:"authority_ref"`
+				EntityRef         string `json:"entity_ref"`
+				GitRoot           string `json:"git_root"`
+				Branch            string `json:"branch,omitempty"`
+				Head              string `json:"head,omitempty"`
+				Remote            string `json:"remote,omitempty"`
+				Upstream          string `json:"upstream,omitempty"`
+				Ahead             int    `json:"ahead"`
+				Behind            int    `json:"behind"`
+				Staged            int    `json:"staged"`
+				Unstaged          int    `json:"unstaged"`
+				Untracked         int    `json:"untracked"`
+				ChangedPaths      int    `json:"changed_paths"`
+				CandidateCount    int    `json:"candidate_count"`
+				AuthorityClaims   int    `json:"authority_claims"`
 				StatusNotPromoted int    `json:"status_not_promoted"`
 				EvidenceRef       string `json:"evidence_ref"`
 			}{
@@ -866,7 +852,6 @@ func cmdAuthority(args []string) {
 		fmt.Printf("- untracked: %d\n", report.Untracked)
 		fmt.Printf("- changed_paths: %d\n", report.ChangedPaths)
 		fmt.Printf("- authority_claims: %d\n", promoted)
-		fmt.Printf("- status_not_promoted: %d (status never promotes)\n", statusNotPromoted)
 		return
 	}
 	if args[0] == "dirty-plan" {

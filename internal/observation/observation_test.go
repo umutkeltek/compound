@@ -313,7 +313,6 @@ func TestApplySourceObservationsWritesSourceobsNoPromoteMaterial(t *testing.T) {
 }
 
 func TestApplyKnowledgeRecordsEvidenceCandidatesAndExtraction(t *testing.T) {
-	t.Setenv(candidates.ProducersEnv, "1") // knowledge-import candidates are opt-in (ruling 2026-11-03)
 	home := t.TempDir()
 	store, err := mem.Open(home)
 	if err != nil {

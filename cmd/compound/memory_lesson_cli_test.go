@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"compound/internal/mem"
+	"compound/internal/promotedriver"
 )
 
 func writeSkillFixture(t *testing.T, root, name, body string) string {
@@ -30,7 +31,7 @@ func writeSkillFixture(t *testing.T, root, name, body string) string {
 func TestMemoryLessonPromotesAndAppendsSkillLine(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
-	t.Setenv(skillsDirsEnv, "")
+	t.Setenv(promotedriver.SkillsDirsEnv, "")
 	skills := t.TempDir()
 	path := writeSkillFixture(t, skills, "verify-x", "---\nname: verify-x\n---\n# Verify\n\n## Lessons\n\n- 2026-10-01: older lesson.\n\n## Other\n\nbody\n")
 
@@ -43,7 +44,7 @@ func TestMemoryLessonPromotesAndAppendsSkillLine(t *testing.T) {
 		Claim         mem.Claim `json:"claim"`
 		PositionID    string    `json:"position_id"`
 		SkillFile     string    `json:"skill_file"`
-		SkillLine     string    `json:"skill_line"`
+		SkillLines    []string  `json:"skill_lines"`
 		SkillAppended bool      `json:"skill_appended"`
 	}
 	if err := json.Unmarshal([]byte(out), &receipt); err != nil {
@@ -60,6 +61,9 @@ func TestMemoryLessonPromotesAndAppendsSkillLine(t *testing.T) {
 	lessons := text[strings.Index(text, "## Lessons"):strings.Index(text, "## Other")]
 	if !strings.Contains(lessons, receipt.Claim.ID) || !strings.Contains(lessons, "How: Read the stdout verdict line.") || !strings.Contains(lessons, "- 2026-10-01: older lesson.") {
 		t.Fatalf("lesson line must land inside the existing Lessons section, after older lines:\n%s", text)
+	}
+	if !strings.Contains(lessons, `trigger: {"id":"`+receipt.Claim.ID+`","tool":"Bash","pattern":"proof-check.*\\|.*jq","how_to_apply":"Read the stdout verdict line.","source":"lesson:`+receipt.Claim.ID+`"}`) {
+		t.Fatalf("hook-index trigger line missing:\n%s", text)
 	}
 	if strings.Count(text, "## Lessons") != 1 || !strings.HasSuffix(text, "## Other\n\nbody\n") {
 		t.Fatalf("append must not duplicate the section or disturb later sections:\n%s", text)
@@ -81,29 +85,6 @@ func TestMemoryLessonPromotesAndAppendsSkillLine(t *testing.T) {
 	data2, _ := os.ReadFile(path)
 	if string(data2) != text {
 		t.Fatalf("duplicate lesson must not change the skill file:\n%s", data2)
-	}
-}
-
-func TestAppendLessonToSkillCreatesSectionWhenAbsent(t *testing.T) {
-	path := writeSkillFixture(t, t.TempDir(), "s", "# S\n\nbody\n")
-	if ok, err := appendLessonToSkill(path, "- 2026-11-03: why. How: how. (lesson claim_abc)", "claim_abc"); err != nil || !ok {
-		t.Fatalf("append: ok=%v err=%v", ok, err)
-	}
-	data, _ := os.ReadFile(path)
-	if string(data) != "# S\n\nbody\n\n## Lessons\n\n- 2026-11-03: why. How: how. (lesson claim_abc)\n" {
-		t.Fatalf("unexpected file:\n%q", data)
-	}
-	if ok, err := appendLessonToSkill(path, "- dup", "claim_abc"); err != nil || ok {
-		t.Fatalf("second append of same claim must be a no-op: ok=%v err=%v", ok, err)
-	}
-}
-
-func TestResolveLessonSkillFileFailsClosedOnUnknownSkill(t *testing.T) {
-	if _, err := resolveLessonSkillFile("no-such-skill", []string{t.TempDir()}); err == nil {
-		t.Fatal("an unresolved --skill must refuse before any ledger write")
-	}
-	if _, err := resolveLessonSkillFile("../escape", []string{t.TempDir()}); err == nil {
-		t.Fatal("a path-shaped skill name must be refused")
 	}
 }
 
