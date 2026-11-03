@@ -141,7 +141,12 @@ Evidence that would justify building it, measured from drained records over at l
 
 ## Install
 
-When the spool and injection paths prove fast on the target machine, the operator replaces the
-interactive PreToolUse entry with the `--spool` form, runs a drainer (`compound hook drain --follow`),
-and builds the lesson index from the lesson store. Enforced lanes keep their synchronous `--enforce`
-entries unchanged.
+`compound hook install` renders the interactive Claude Code and Codex PreToolUse entry in the
+`--spool` form with a 5-second timeout. A timeout already set on the existing Compound entry wins
+over that default. Enforced lanes keep their synchronous `--enforce` entries, and the other events
+keep their synchronous commands. The operator also runs a drainer (`compound hook drain --follow`, or
+`--once` on a schedule) and builds the lesson index from the lesson store.
+
+`compound doctor` probes a `--spool` route by running it, then running the same binary's
+`hook drain --once` in the probe home, then checking the same policy evidence it checks for the
+synchronous route. A spool route that answers but never records fails the probe.

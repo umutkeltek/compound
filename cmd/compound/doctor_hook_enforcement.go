@@ -198,7 +198,7 @@ func probeHookPosture(binaryPath string, installedArgs []string, posture, expect
 		}
 		exitCode = exitErr.ExitCode()
 	}
-	if detail := hook.InspectDoctorLiveResponse(out); detail != "" {
+	if detail := hook.InspectDoctorLiveRoute(ctx, out, binaryPath, args, sandbox, cmd.Env); detail != "" {
 		return fmt.Sprintf("%s probe: %s", hookPostureLabel(posture), detail)
 	}
 	outcome, detail := hook.InspectDoctorLiveEvidence(homePath, targetPath)

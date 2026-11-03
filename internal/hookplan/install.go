@@ -130,6 +130,40 @@ func HookCommand(binaryPath, harness string) string {
 	return HookCommandForEvent(binaryPath, harness, "PreToolUse")
 }
 
+// WatchOnlySpoolTimeoutSeconds bounds the interactive watch-only PreToolUse
+// hook. The spool path answers in tens of milliseconds; the bound only caps a
+// wedged process, and a timed-out PreToolUse hook does not block the tool call.
+const WatchOnlySpoolTimeoutSeconds = 5
+
+// InstalledHookCommandForEvent is the exact command (and timeout in seconds,
+// zero for the harness default) the installer writes for one event. A blocking
+// binding adds --enforce and keeps the synchronous policy gate. A watch-only
+// PreToolUse in an interactive harness (Claude Code, Codex) adds --spool: the
+// hook appends the call to the spool and answers at once, and
+// `compound hook drain` writes the records later, so the agent no longer waits
+// on classification that is never enforced.
+func InstalledHookCommandForEvent(binaryPath, harness, event string, blocking bool) (string, int) {
+	command := HookCommandForEvent(binaryPath, harness, event)
+	if blocking {
+		return command + " --enforce", 0
+	}
+	if event == "PreToolUse" && isInteractiveWatchOnlyHarness(harness) {
+		return command + " --spool", WatchOnlySpoolTimeoutSeconds
+	}
+	return command, 0
+}
+
+// isInteractiveWatchOnlyHarness names the harnesses whose default PreToolUse
+// posture is observation, the same pair validateInstallableDefaultPosture
+// admits as interactive observational defaults.
+func isInteractiveWatchOnlyHarness(harness string) bool {
+	switch runtimeHarnessName(strings.TrimSpace(harness)) {
+	case "claude_code", "codex":
+		return true
+	}
+	return false
+}
+
 // HookCommandForEvent is the exact command a harness runs for one Compound live-hook event.
 func HookCommandForEvent(binaryPath, harness, event string) string {
 	if event == "SessionEnd" {
@@ -458,15 +492,13 @@ func compiledManagedHookBindings(
 	}
 	bindings := make([]desiredHookBinding, 0, len(compiled.HookPlan.Bindings))
 	for _, binding := range selectBindings(compiled.HookPlan.Bindings, allowedEvents) {
-		command := HookCommandForEvent(binaryPath, harnessName, binding.Event)
-		if binding.Blocking {
-			command += " --enforce"
-		}
+		command, timeout := InstalledHookCommandForEvent(binaryPath, harnessName, binding.Event, binding.Blocking)
 		bindings = append(bindings, desiredHookBinding{
 			Event:    binding.Event,
 			Matcher:  binding.Matcher,
 			Command:  command,
 			Blocking: binding.Blocking,
+			Timeout:  timeout,
 		})
 	}
 	return bindings, compiled, nil
@@ -1114,14 +1146,15 @@ func reconcileHookEventGroups(
 	if strings.TrimSpace(desired.Matcher) != "" {
 		desiredEntry["matcher"] = desired.Matcher
 	}
-	// Per-binding timeout round-trip: when the desired binding did not pin
-	// a timeout but the prior Compound entry had one, carry it forward so a
-	// hand-set timeout is not silently dropped on reinstall. A desired-side
-	// timeout (e.g. from the compiled posture) wins, matching the rest of
-	// the desiredEntry semantics.
-	timeout := desired.Timeout
-	if timeout == 0 && adoptedTimeout > 0 {
-		timeout = adoptedTimeout
+	// Per-binding timeout round-trip: a timeout already set on the prior
+	// Compound entry (hand-set by an operator, or written by an earlier
+	// install) is carried forward so it is never silently dropped on
+	// reinstall. The desired timeout (the watch-only spool default) applies
+	// only when no prior entry set one: an operator's explicit choice wins
+	// over a default.
+	timeout := adoptedTimeout
+	if timeout == 0 {
+		timeout = desired.Timeout
 	}
 	if timeout > 0 {
 		desiredEntry["timeout"] = timeout
