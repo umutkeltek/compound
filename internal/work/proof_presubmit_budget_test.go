@@ -191,3 +191,36 @@ func TestPresubmitGatesRunChangedPackagesFirst(t *testing.T) {
 		t.Fatalf("gate packages = %v", got)
 	}
 }
+
+// TestPresubmitFullScopePlanIsNeverBudgeted: a full-scope plan has no
+// changed-package gates, so the budget must not apply at all; every go-test
+// gate runs and none is deferred, even when the budget is already exhausted.
+func TestPresubmitFullScopePlanIsNeverBudgeted(t *testing.T) {
+	report := presubmitBudgetReport()
+	report.Presubmit.Plan.Scope = proofscope.Scope{Mode: proofscope.Full}
+	steps := presubmitBudgetSteps()
+	ran := map[string]bool{}
+	run := func(ctx context.Context, step ProofCheckStep) ProofCheckStep {
+		ran[step.Name] = true
+		step.Status = "ok"
+		return step
+	}
+	out, err := runNonCertifyingProofGates(context.Background(), report, steps, run, time.Nanosecond)
+	if err != nil {
+		t.Fatalf("full-scope run: %v", err)
+	}
+	for _, step := range out.Steps {
+		if step.Status == "deferred" {
+			t.Fatalf("full-scope plan deferred %s: %s", step.Name, step.SkipReason)
+		}
+		if strings.HasPrefix(step.Name, "go-test") && !ran[step.Name] {
+			t.Fatalf("full-scope plan did not run %s", step.Name)
+		}
+	}
+	if len(out.PresubmitBudgetDeferred) != 0 {
+		t.Fatalf("full-scope plan recorded budget deferrals: %v", out.PresubmitBudgetDeferred)
+	}
+	if out.Status != "ok" {
+		t.Fatalf("full-scope plan status %q", out.Status)
+	}
+}

@@ -107,7 +107,7 @@ func compoundTestBinary(t *testing.T) string {
 		// -buildvcs=false: default VCS stamping runs `git status` during the
 		// build, which fails with exit 128 in checkouts the test binary's
 		// build does not own (CI runners, mounted containers — CI run
-		// 35306043169). The stamp plays no role in these functional tests.
+		// a CI run id). The stamp plays no role in these functional tests.
 		cmd := exec.Command("go", "build", "-buildvcs=false", "-o", exe, "./cmd/compound")
 		cmd.Dir = testRepoRoot
 		cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local")
