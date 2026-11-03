@@ -119,6 +119,7 @@ var governanceCorePaths = []string{
 	"internal/authority/",
 	"internal/landlease/",
 	"internal/policy/",
+	"internal/envelope/",
 	"internal/work/canonical_*",
 	"internal/work/close_*",
 	"internal/work/differential_proof*",
@@ -131,6 +132,7 @@ var governanceCorePaths = []string{
 	"internal/work/proof_*",
 	"internal/work/standing_proof*",
 	"internal/work/terminal_close_proof*",
+	"internal/work/verifier_verdict*",
 	"internal/work/work.go",
 	"internal/work/worktree_retirement_source*",
 }
