@@ -6,7 +6,50 @@ import (
 	"testing"
 
 	"compound/internal/capgraph"
+	"compound/internal/envelope"
+	"compound/internal/mem"
 )
+
+// A live session start has no prompt, so the hook passes its event name as the task. The
+// event name must not rank facts or offers: before this rule, every session start served
+// facts and offers whose text merely says "SessionStart" or "session".
+func TestHookEventNameIsNotTaskText(t *testing.T) {
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "")
+	t.Setenv("COMPOUND_MEM_ENGINE_TIMEOUT", "")
+	home := t.TempDir()
+	promoteAmbientScopeClaims(t, home, []mem.Candidate{
+		{Entity: "HookPipeline", Predicate: "authority_status", Object: "active hooks are SessionStart and UserPromptSubmit", ClaimType: "architecture", Visibility: "contextual"},
+	})
+	graph, err := capgraph.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.Add(capgraph.Node{ID: "tool:fixture.session-notebook", Kind: "tool", Name: "fixture session notebook", Triggers: []string{"sessionstart", "session"}, Weight: 1}); err != nil {
+		t.Fatal(err)
+	}
+	in := Input{Harness: "codex", Cwd: ambientScopeRepo(t, "alpha-repo"), RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute"}
+	for _, event := range envelope.HookNames {
+		in.Task = event
+		pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(pack.SummaryMD, "HookPipeline") || len(pack.ActiveMemory) != 0 {
+			t.Errorf("task %q ranked a fact on the event name: memory=%v", event, pack.ActiveMemory)
+		}
+		if strings.Contains(pack.SummaryMD, "fixture session notebook") {
+			t.Errorf("task %q ranked an offer on the event name:\n%s", event, pack.SummaryMD)
+		}
+	}
+	in.Task = "which hooks are active at SessionStart"
+	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(pack.SummaryMD, "HookPipeline.authority_status") {
+		t.Fatalf("a real task that names the event must still recall the fact:\n%s", pack.SummaryMD)
+	}
+}
 
 // The summary is what a session-start harness reads. It must name the top five offers
 // (name and ref) and the sealed pack id, or the model never sees an offer and hit-rate
