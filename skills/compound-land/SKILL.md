@@ -72,6 +72,33 @@ adoption capability itself through a direct source proof before using it in a li
 
 ## 1 · Presubmit before the land; canonical proof after it
 
+**The verifier verdict is the canonical proof (operator decision 2026-11-03).** The post-land verifier
+verifier runs the full uncached Go suite on the target branch after each landing, on its own idle
+host. A GREEN verifier verdict at commit S is the canonical proof for closing every work whose landed tip
+T is contained in S (T equals S, or T is an ancestor of S, and S is on main): main including the
+change is what was tested. A RED verdict whose culprit range contains T refuses the close (unless a
+later green verdict covers T). No covering verdict refuses with "verifier has not verified this tip
+yet"; never fall back to a laptop battery. The laptop canonical battery and the laptop nightly
+battery are retired for non-core diffs. **Governance-core diffs keep the full pre-land battery:**
+when the presubmit verdict line carries `governance_core=<path> full_battery_required=true`
+(`proofscope.GovernanceCorePaths`: the land/close/proof code, `proof_check*`, policy, authority,
+landlease, envelope, hook, proofscope, testbattery), run the canonical local battery (below) on the
+candidate before the fast-forward, exactly as before.
+
+Close a non-core work on the verifier verdict:
+
+```bash
+compound work verifier-verdict "$WORK" --tip "$LANDED_SHA"                 # exit 0 covered, 1 refused
+compound work verifier-verdict "$WORK" --tip "$LANDED_SHA" --attach --actor "$ACTOR"
+compound work land-check "$WORK" --tip "$LANDED_SHA" --json          # landed; proof verifier-verdict:<run_id>:<sha>
+```
+
+Then `work close ... --proof <land-check evidence ref>`. Land-check statuses on this path:
+`awaiting_verifier_verdict` (wait for the verifier), `verifier_red_culprit` (fix forward or revert the same
+day), `verifier_verdict_mismatch` (attach the current covering verdict). Compound reads the evidence from
+`$COMPOUND_HOME/state/verify/` (`verdicts.tsv`, `red.json`); the verify loop mirrors its files there.
+Close re-reads them, so a red named after the land-check still refuses the close.
+
 For native noncertifying presubmit, use optional --wait DURATION to retain one
 FIFO ticket while existing proof capacity is occupied. Keep the same invocation;
 do not repeatedly cancel and requeue behind newer work. This bounded admission
@@ -197,6 +224,15 @@ packages and host load; its explicit native ceiling prevents wrapper restarts an
 truthful partial progress. The canonical battery runs after the land, detached and nice'd
 or on the remote verifier.
 
+**Test budget: 10 minutes (2026-11-03).** The affected-package go-test gates share one 10-minute
+wall-clock budget; each package keeps its 30-minute deadline. A gate that cannot start inside the
+budget, or that the budget cuts before any test failure printed, is `deferred`: its packages appear
+as `deferred=<pkgs>` on the verdict line (`deferred=none` when everything fit) and under
+`presubmit.budget_deferred` in `--out`. A deferred gate is neither a pass nor a silent skip; the verifier
+verdict covers it after the land. A failure printed before the cut stays red. Exit 0 still needs
+every gate that ran to be green.
+
+
 Add, when they apply, before the presubmit (seconds each):
 - new tracked text files → `git add` them first; the leak gate sees tracked files only (ordering hazard below);
 - CLI or `internal/` structure changes → the arch quick tests named under the ordering hazards below.
@@ -216,6 +252,11 @@ main battery is retired (2026-11-03); the operator's remote post-land verifier (
 is the backstop. For a governed WorkEnvelope the stored canonical proof at the landed tip
 is what `land-check` and `work close` cite (§4); the commands below produce that proof, and the
 `compound-verify` skill drives the close.
+
+**For non-core diffs the verifier verdict replaces this battery (§1, 2026-11-03).** The laptop nightly
+main battery is unloaded; do not wait for it and do not cite it. The procedure below remains the
+pre-land proof for governance-core diffs and the explicit operator-requested full run.
+
 
 Run the `compound-verify` skill. Select two distinct full commit IDs before proof:
 
@@ -268,7 +309,8 @@ nohup nice -n 10 go run ./cmd/compound proof-check --json --base "$PROOF_BASE_SH
 
 A landing with no WorkEnvelope (a trivial docs/skill commit) has no canonical proof to produce;
 its post-land check is the full uncached Go suite on the landed tip on the operator's remote
-verifier (private overlay), and the landing lane reads that result, not the schedule.
+verifier (private overlay), and the landing lane reads that verdict, not a schedule. The laptop
+nightly battery is retired.
 
 Every capture and guard is joined to proof execution: a failed predicate cannot
 fall through to a new proof. Before this command, record the reviewed manifest
