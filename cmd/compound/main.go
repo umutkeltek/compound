@@ -1623,6 +1623,12 @@ func cmdHook(args []string) {
 		cmdHookInstall(args[1:])
 		return
 	}
+	if len(args) > 0 && args[0] == "drain" {
+		os.Exit(hook.RunDrainCommand(args[1:], os.Stdout, os.Stderr, newHookSpoolReplay))
+	}
+	if len(args) > 0 && args[0] == "lessons-index" {
+		os.Exit(hook.RunLessonsIndexCommand(args[1:], os.Stdout, os.Stderr))
+	}
 	if len(args) > 0 && args[0] == "session-end-adapter" {
 		adapterArgs := args[1:]
 		if hasFlag(adapterArgs, "--live") {
@@ -1767,6 +1773,9 @@ func runHookCommand(args []string) int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
+	}
+	if parsed.Spool { // zero wait: no policy, no event-store write; `hook drain` records later
+		return runHookSpool(parsed, os.Stdin, os.Stdout, os.Stderr, time.Now())
 	}
 	now := time.Now()
 	// Arm the wall-clock budget BEFORE any work: the harness kills a slow
@@ -1957,6 +1966,10 @@ func parseHookArgs(args []string) (hookCommandArgs, error) {
 			parsed.Live = true
 			continue
 		}
+		if arg == "--spool" {
+			parsed.Spool = true
+			continue
+		}
 		if arg == "--harness" {
 			if i+1 >= len(args) {
 				return parsed, fmt.Errorf(hookUsage)
@@ -1977,6 +1990,10 @@ func parseHookArgs(args []string) (hookCommandArgs, error) {
 			return parsed, fmt.Errorf(hookUsage)
 		}
 		parsed.FixturePath = arg
+	}
+	// --spool is watch-only: an enforced lane keeps the synchronous policy gate.
+	if parsed.Spool && (!parsed.Live || parsed.Enforce || parsed.HookName != "pre-tool-use" || parsed.ParityLogDir != "") {
+		return parsed, fmt.Errorf("%s\n--spool needs --live pre-tool-use and cannot be combined with --enforce or --parity-log", hookUsage)
 	}
 	if parsed.Live {
 		if strings.TrimSpace(parsed.Harness) == "" || parsed.FixturePath != "" {
