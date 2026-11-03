@@ -255,14 +255,14 @@ func TestProofCheckPresubmitArgsAreStrict(t *testing.T) {
 		{"--presubmit=true", "--base", sha},
 		{"--presubmit", "--presubmit", "--base", sha},
 	} {
-		if err := validateProofCheckDevelopmentArgs(args); err == nil {
+		if err := work.ValidateProofCheckNonCertifyingArgs(args); err == nil {
 			t.Fatalf("presubmit args %v accepted", args)
 		}
 	}
-	if err := validateProofCheckDevelopmentArgs([]string{"--presubmit", "--base", sha, "--out", "r.json", "--json", "--dry-run"}); err != nil {
+	if err := work.ValidateProofCheckNonCertifyingArgs([]string{"--presubmit", "--base", sha, "--out", "r.json", "--json", "--dry-run"}); err != nil {
 		t.Fatalf("valid presubmit args rejected: %v", err)
 	}
-	if !proofCheckDevelopmentRequested([]string{"--presubmit=true"}) || !work.ProofCheckLightweightMode([]string{"--presubmit"}) {
+	if !(work.ProofCheckNonCertifyingMode([]string{"--presubmit=true"}) != "") || !work.ProofCheckLightweightMode([]string{"--presubmit"}) {
 		t.Fatal("assignment-form or lightweight detection would let --presubmit reach the certifying path")
 	}
 	if _, err := work.ParseProofCheckRouteOptions([]string{"--presubmit", "--redact-review", "act_example"}); err == nil {

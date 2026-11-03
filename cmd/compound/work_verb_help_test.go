@@ -29,7 +29,7 @@ func TestEveryWorkVerbHelpIncludesUsageAndExecutableExample(t *testing.T) {
 		"show", "list", "leases", "active-packet-proof", "proof-chain-doctor", "reconcile-run-attempts", "continue",
 		"dispatch-plan", "dispatch-claim", "dispatch-execute", "dispatch-advance", "dispatch-close-plan",
 		"dispatch-close", "dispatch-step", "claim-plan", "claim", "advance-plan", "advance",
-		"delegate", "steer", "attach", "observe-run", "land-check", "salvage-plan",
+		"delegate", "steer", "attach", "observe-run", "land-check", "verifier-verdict", "salvage-plan",
 		"action-plan", "act", "close-plan", "close",
 		"set-aside", "sweep-stale",
 	}
