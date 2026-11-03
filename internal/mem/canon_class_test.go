@@ -99,7 +99,9 @@ func TestCanonClassSurvivesPromotion(t *testing.T) {
 	s := newStore(t)
 	got, err := s.Capture([]Candidate{{
 		Entity: "project:compound", Predicate: "bench_metric", Object: "hit@1",
-		Confidence: 0.95, Derivation: "deterministic", ClaimType: "status",
+		// architecture maps to "decision"; the explicit research_fact must win.
+		// (Not status: status never promotes since the 2026-11-03 ruling.)
+		Confidence: 0.95, Derivation: "deterministic", ClaimType: "architecture",
 		CanonClass: "research_fact", SourceTraceRef: "trace:t1", SnippetHash: "h1",
 		Visibility: "operational", PromotionBasis: candidates.BasisExplicitConfirmation,
 	}}, t0)

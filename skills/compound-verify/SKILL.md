@@ -295,3 +295,7 @@ the consumer's output is the same class of error as declaring `ALIVE` from a gre
 the next lane through a full re-verification round to find out which one it was.
 
 Report the verdict with its evidence verbatim — never soften `LANDED-NOT-LIVE` into "done".
+
+## Lessons
+
+- 2026-11-03: A JSON filter on the wrong key (gates; the report array is steps) printed 'failed []' for a battery that had FAILED 52/53, and the red run was pushed (2026-10-22). How: Take the battery verdict only from the 'battery: ok|FAILED' stdout line and the exit code; if you parse the report, use steps[].status != ok, and treat an empty filter result as unknown, never as green (lesson claim_cd744856cfd8, trigger `Bash:proof-check.*\|.*jq`)

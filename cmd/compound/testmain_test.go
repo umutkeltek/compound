@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"compound/internal/candidates"
 )
 
 // testRepoRoot is resolved exactly once, before any test in this package runs. This
@@ -26,6 +28,12 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	testRepoRoot = filepath.Join(wd, "..", "..")
+	// The automatic candidate producers are opt-in since 2026-11-03. Fixtures
+	// written before the gate assert their fan-out, so the suite runs with the
+	// producers ON; gate tests switch it off with t.Setenv.
+	if _, set := os.LookupEnv(candidates.ProducersEnv); !set {
+		_ = os.Setenv(candidates.ProducersEnv, "1")
+	}
 
 	dir, err := os.MkdirTemp("", "compound-test-bin-")
 	if err != nil {

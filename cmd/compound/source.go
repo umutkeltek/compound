@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/candidates"
 	"compound/internal/capgraph"
 	"compound/internal/home"
 	"compound/internal/mem"
@@ -189,6 +190,11 @@ func cmdSourceObserveBatch(args []string) {
 			fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 			os.Exit(1)
 		}
+	}
+	if reviewCandidates && !candidates.AutomaticProducersEnabled() {
+		// Capability-observation review candidates are an automatic producer.
+		fmt.Fprintln(os.Stderr, "observation review candidates skipped:", candidates.ProducerDisabledNote)
+		reviewCandidates = false
 	}
 	report, err := observation.ObserveBatch(homePath, store, batch, paths[0], observation.Options{ApplyProductSignals: applyProductSignals, ReviewCandidates: reviewCandidates, ApplySourceObservations: applySourceObservations, ApplyKnowledge: applyKnowledge, ApplyRouteEvidence: applyRouteEvidence, ApplyEvents: applyEvents}, time.Now())
 	if err != nil {

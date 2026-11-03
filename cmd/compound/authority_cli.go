@@ -772,6 +772,19 @@ func cmdAuthority(args []string) {
 			fmt.Fprintln(os.Stderr, "authority entity:", err)
 			os.Exit(1)
 		}
+		// Status never promotes (operator ruling 2026-11-03): head, counts and
+		// dirty state are machine status, not lessons. They stay in the
+		// snapshot report below and are neither captured nor promoted.
+		statusNotPromoted := 0
+		kept := facts[:0]
+		for _, fact := range facts {
+			if mem.StatusNeverPromotes(fact.Entity+"."+fact.Predicate, fact.ClaimType) != nil {
+				statusNotPromoted++
+				continue
+			}
+			kept = append(kept, fact)
+		}
+		facts = kept
 		captured, err := store.Capture(facts, time.Now())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "authority capture:", err)
@@ -807,26 +820,30 @@ func cmdAuthority(args []string) {
 				ChangedPaths    int    `json:"changed_paths"`
 				CandidateCount  int    `json:"candidate_count"`
 				AuthorityClaims int    `json:"authority_claims"`
-				EvidenceRef     string `json:"evidence_ref"`
+				// StatusNotPromoted counts snapshot rows refused because status
+				// never promotes; the values are still in this report.
+				StatusNotPromoted int    `json:"status_not_promoted"`
+				EvidenceRef       string `json:"evidence_ref"`
 			}{
-				SchemaVersion:   authority.SourceControlSchemaVersion,
-				Status:          report.Status,
-				AuthorityRef:    "compound://ledger/source-control",
-				EntityRef:       report.EntityRef,
-				GitRoot:         report.GitRoot,
-				Branch:          report.Branch,
-				Head:            report.Head,
-				Remote:          report.Remote,
-				Upstream:        report.Upstream,
-				Ahead:           report.Ahead,
-				Behind:          report.Behind,
-				Staged:          report.Staged,
-				Unstaged:        report.Unstaged,
-				Untracked:       report.Untracked,
-				ChangedPaths:    report.ChangedPaths,
-				CandidateCount:  report.CandidateCount,
-				AuthorityClaims: promoted,
-				EvidenceRef:     report.EvidenceRef,
+				SchemaVersion:     authority.SourceControlSchemaVersion,
+				Status:            report.Status,
+				AuthorityRef:      "compound://ledger/source-control",
+				EntityRef:         report.EntityRef,
+				GitRoot:           report.GitRoot,
+				Branch:            report.Branch,
+				Head:              report.Head,
+				Remote:            report.Remote,
+				Upstream:          report.Upstream,
+				Ahead:             report.Ahead,
+				Behind:            report.Behind,
+				Staged:            report.Staged,
+				Unstaged:          report.Unstaged,
+				Untracked:         report.Untracked,
+				ChangedPaths:      report.ChangedPaths,
+				CandidateCount:    report.CandidateCount,
+				AuthorityClaims:   promoted,
+				StatusNotPromoted: statusNotPromoted,
+				EvidenceRef:       report.EvidenceRef,
 			}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", " ")
@@ -849,6 +866,7 @@ func cmdAuthority(args []string) {
 		fmt.Printf("- untracked: %d\n", report.Untracked)
 		fmt.Printf("- changed_paths: %d\n", report.ChangedPaths)
 		fmt.Printf("- authority_claims: %d\n", promoted)
+		fmt.Printf("- status_not_promoted: %d (status never promotes)\n", statusNotPromoted)
 		return
 	}
 	if args[0] == "dirty-plan" {

@@ -176,6 +176,7 @@ func compoundCommandRegistry() map[string]compoundCommand {
 			withSubcommandAdmission("generate", policy.FirstPartyCommandGoverned),
 		"memory": heldCommand(cmdMemory).
 			withSubcommandAdmission("search", policy.FirstPartyCommandRead).
+			withSubcommandAdmission("lesson", policy.FirstPartyCommandGoverned).
 			withSubcommandAdmission("promote-driver", policy.FirstPartyCommandRead).
 			withSubcommandFlagAdmission("promote-driver", "--confirm", policy.FirstPartyCommandGoverned),
 		"corpus":    heldCommand(cmdCorpus),

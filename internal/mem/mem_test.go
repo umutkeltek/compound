@@ -671,7 +671,10 @@ func TestDecayCannotOverwriteConcurrentConfirmation(t *testing.T) {
 	s := newStore(t)
 	seed := cand("project:api", "status", "prefer concise updates", "")
 	seed.PromotionBasis = ""
-	seed.ClaimType = "status"
+	// Low-risk (decayable) tier without the status type: status never
+	// promotes since the 2026-11-03 ruling, and this race needs a promotion.
+	seed.ClaimType = ""
+	seed.CanonClass = "research_fact"
 	seed.ExpiresAt = t0.Add(-time.Hour).Format(time.RFC3339)
 	captured, err := s.Capture([]Candidate{seed}, t0)
 	if err != nil || len(captured) != 1 {
