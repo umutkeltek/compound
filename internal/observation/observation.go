@@ -221,6 +221,11 @@ func ObserveBatch(homePath string, store *mem.Store, batch Batch, sourcePath str
 		report.IntakeRecordPath = record.Path
 		report.IntakeProjectionCommand = []string{"compound", "source", "intake", "--json"}
 	}()
+	if opts.ReviewCandidates && !candidates.AutomaticProducersEnabled() {
+		// Review candidates are an automatic producer (ruling 2026-11-03, Q3a).
+		report.SkippedReview = append(report.SkippedReview, "review_candidates:"+candidates.ProducerDisabledNote)
+		opts.ReviewCandidates = false
+	}
 	if opts.ReviewCandidates {
 		if strings.TrimSpace(homePath) == "" {
 			return report, fmt.Errorf("COMPOUND_HOME required recording observation candidate reviews")

@@ -88,6 +88,9 @@ func (s *Store) OfferStandingProofGraduation(workID, receiptID, command string, 
 		CreatedAt:      rfc3339(now),
 		EvidenceRefs:   []string{"work:" + workID, "receipt:" + receiptID},
 	}
+	if !candidates.AutomaticProducersEnabled() {
+		return cid, "", nil // automatic candidate producer off (ruling 2026-11-03); the blob is kept
+	}
 	if err = candidates.WriteCandidate(s.home, candidates.Memory, candidateID, &c); err != nil {
 		return "", "", err
 	}

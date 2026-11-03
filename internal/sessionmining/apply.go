@@ -62,6 +62,14 @@ func Apply(homePath string, input ApplyInput, now time.Time) (ApplyReport, error
 		Status:        "review_required",
 		CreatedAt:     now.UTC().Format(time.RFC3339),
 	}
+	if !candidates.AutomaticProducersEnabled() {
+		// Session mining is an automatic candidate producer: off unless
+		// switched on (operator ruling 2026-11-03, Q3a). Findings stay in the
+		// mining report; nothing is filed.
+		out.Status = "ok"
+		out.Warnings = append(out.Warnings, candidates.ProducerDisabledNote)
+		return out, nil
+	}
 	for _, finding := range input.Preferences {
 		candidateID, err := recordPreferenceCandidate(homePath, finding, now)
 		if err != nil {

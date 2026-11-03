@@ -35,7 +35,10 @@ above for one kind of memory: the lesson.
   one dated line to that skill's `## Lessons` section. No review queue.
 - **Inject at the moment of use.** A lesson with a trigger is pulled by the
   tool-call hook when a matching call happens (`Bash:proof-check.*\|.*jq`
-  fires when proof-check output is piped to jq). That is intent-shaped pull,
+  fires when proof-check output is piped to jq). The hook reads the
+  `trigger: {JSON}` line the lesson door writes under the skill's `## Lessons`.
+  Hook context arrives with the NEXT tool result, so trigger on the step
+  before the damage (the listing or dry-run call). That is intent-shaped pull,
   consistent with R-pull-only-by-default; lessons are `contextual`, never
   ambient.
 - **Status never promotes.** Status rows are state, not lessons; every learning

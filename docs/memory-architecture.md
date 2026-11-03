@@ -401,15 +401,20 @@ being paged per item.
      slot on purpose. Positions read `<entity>::lesson::slot-<hash>`.
    - **Skill line.** With `--skill`, the door resolves `<repo>/skills/<name>/SKILL.md`,
      then each `--skills-dir`, then each dir in `$COMPOUND_SKILLS_DIRS`, and
-     appends one dated line (why + how + claim id + trigger) to the file's
-     `## Lessons` section (created at the end when absent). Append-only and
-     idempotent by claim id. An unresolved skill refuses before any ledger write.
+     appends one dated line (why + how + claim id) to the file's `## Lessons`
+     section (created at the end when absent), and, when the lesson has a
+     trigger, a hook-index line
+     `trigger: {"id":"claim_…","tool":"Bash","pattern":"…","how_to_apply":"…","source":"lesson:claim_…"}`.
+     Append-only and idempotent per line (a re-run fills in only missing
+     lines). An unresolved skill refuses before any ledger write.
    - **Trigger format** (consumed by the tool-call hook): `<tool>:<regex>`.
      `<tool>` is the harness tool name (`Bash`, `Edit`, `Write`, `Read`, ...)
      or `*`; it may not contain `:`. `<regex>` is Go RE2, matched against the
      tool call's primary input (the command for `Bash`, the file path for
      file tools). Example: `Bash:proof-check.*\|.*jq`. `mem.LessonTrigger.Matches`
-     is the reference matcher.
+     is the reference matcher. A harness delivers hook context with the NEXT
+     tool result, so match the step before the damage (the listing, dry-run
+     or read call), not only the destructive one.
 2. **Status never promotes.** Machine status (`claim_type: status`: git heads
    and counts, deploy hosts, run output) is state, not a lesson. The operator
    adjudicate door, the explicit-confirmation door and the governed promote
