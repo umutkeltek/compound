@@ -68,6 +68,12 @@ type AdjudicationIntent struct {
 	OperationalDecision     bool
 	ExplicitConfirmationRef string
 	Actor                   string
+	// RefuseStatus marks a learning promotion door (operator adjudicate,
+	// explicit confirmation, governed promote driver). On these doors a
+	// status-typed candidate is refused: status rows never promote. The
+	// unstamped Adjudicate door used by legacy machine-state importers does
+	// not set it yet; see docs/memory-architecture.md "Lessons and status".
+	RefuseStatus bool
 }
 
 // validateAdjudicationIntent checks that an adjudication intent is
@@ -79,6 +85,11 @@ func validateAdjudicationIntent(c Candidate, intent AdjudicationIntent) error {
 	}
 	if c.State == "promoted" {
 		return fmt.Errorf("candidate %s already promoted", c.ID)
+	}
+	if intent.RefuseStatus && intent.Verdict == "promote" {
+		if err := StatusNeverPromotes(c.ID, c.ClaimType); err != nil {
+			return err
+		}
 	}
 	if c.Qualifiers != nil && strings.TrimSpace(c.Qualifiers[OperationalDecisionAuthorityQualifier]) != "" && !intent.OperationalDecision {
 		return fmt.Errorf("candidate %s uses reserved operational decision authority qualifier; import it through the policy decisions authority", c.ID)

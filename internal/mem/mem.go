@@ -1142,6 +1142,10 @@ func (s *Store) adjudicateWithFrozen(candID, verdict, workID string, now time.Ti
 		OperationalDecision:     operationalDecision,
 		ExplicitConfirmationRef: explicitConfirmationRef,
 		Actor:                   actor,
+		// Learning doors refuse status: the operator door always carries an
+		// actor, explicit confirmation carries its ref, and the governed
+		// promote driver always arrives frozen.
+		RefuseStatus: actor != "" || explicitConfirmationRef != "" || frozen != nil,
 	}
 	var c Candidate
 	if frozen == nil {

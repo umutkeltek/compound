@@ -345,6 +345,15 @@ func buildPassIntent(store *mem.Store, opts Options, now time.Time) (PassIntent,
 		}
 		intent.PromotePlan.Considered++
 		basis := strings.TrimSpace(entry.lite.PromotionBasis)
+		if refusal := mem.StatusNeverPromotes(entry.lite.ID, entry.lite.ClaimType); refusal != nil && candidates.ValidBasis(basis) {
+			// Status never promotes. The candidate is left exactly as it is
+			// (no drain, no reclassification); the walk moves past it.
+			intent.PromotePlan.StatusRefused = append(intent.PromotePlan.StatusRefused, entry.lite.ID)
+			if !blocked {
+				safeCursor = outcome.Cursor
+			}
+			continue
+		}
 		if candidates.ValidBasis(basis) && basis != candidates.BasisExplicitConfirmation {
 			if blocked || intent.PromotePlan.Promoted >= opts.PromoteLimit {
 				intent.PromotePlan.Deferred = append(intent.PromotePlan.Deferred, entry.lite.ID)
@@ -1988,6 +1997,13 @@ func runBasisAndDedupe(store *mem.Store, opts Options, now time.Time) (PromotePh
 		}
 		promote.Considered++
 		basis := strings.TrimSpace(entry.PromotionBasis)
+		if refusal := mem.StatusNeverPromotes(entry.ID, entry.ClaimType); refusal != nil && candidates.ValidBasis(basis) {
+			promote.StatusRefused = append(promote.StatusRefused, entry.ID)
+			if !blocked {
+				safeCursor = outcome.Cursor
+			}
+			continue
+		}
 		if candidates.ValidBasis(basis) && basis != candidates.BasisExplicitConfirmation {
 			if blocked || promote.Promoted >= opts.PromoteLimit {
 				promote.Deferred = append(promote.Deferred, entry.ID)

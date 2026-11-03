@@ -23,6 +23,33 @@ they are decision candidates for the operator to adjudicate. The KPI is **rules 
 adjudication AND get consumed at orient / design time** — never sessions-observed,
 never receipts-collected.
 
+## Ruling 2026-11-03: lessons promote on write
+
+This section supersedes the "not auto-promoted / operator adjudicates" line
+above for one kind of memory: the lesson.
+
+- **Write a lesson when you trip on something.** `compound memory lesson --why
+  "<what went wrong>" --how "<what to do instead>" --by <actor> --skill <skill
+  that does the job> [--trigger "<tool>:<regex>"] [--evidence <ref>]...`. It
+  promotes on write (claim_type `lesson`, dated, with provenance) and appends
+  one dated line to that skill's `## Lessons` section. No review queue.
+- **Inject at the moment of use.** A lesson with a trigger is pulled by the
+  tool-call hook when a matching call happens (`Bash:proof-check.*\|.*jq`
+  fires when proof-check output is piped to jq). That is intent-shaped pull,
+  consistent with R-pull-only-by-default; lessons are `contextual`, never
+  ambient.
+- **Status never promotes.** Status rows are state, not lessons; every learning
+  promotion door refuses them.
+- **Contradictions park.** A second lesson in the same slot with a different
+  how keeps both, marks each contested by the other, and serves the newest as
+  `contested`. The next consumer that records a use (`work close --used
+  <claim_id>`) supersedes the other.
+- **Automatic candidate producers are opt-in** (`COMPOUND_CANDIDATE_PRODUCERS=1`).
+  Explicit writes (`compound capture`, `compound memory candidate`,
+  `compound memory lesson`) always work.
+
+Full rule set: docs/memory-architecture.md "Lessons and status".
+
 ## Compile #1 evidence (work_7df249b46755, sha256-pinned preregistration)
 
 Frozen discriminator (from `compound memory observation`):

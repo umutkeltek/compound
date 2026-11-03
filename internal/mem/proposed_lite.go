@@ -17,6 +17,7 @@ type CandidateLite struct {
 	ID             string            `json:"id"`
 	State          string            `json:"state"`
 	PromotionBasis string            `json:"promotion_basis,omitempty"`
+	ClaimType      string            `json:"claim_type,omitempty"` // status never promotes: the driver must see it
 	Entity         string            `json:"entity"`
 	Predicate      string            `json:"predicate"`
 	Object         string            `json:"object"`

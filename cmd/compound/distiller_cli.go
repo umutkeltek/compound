@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/candidates"
 	"compound/internal/distiller"
 	"compound/internal/envelope"
 	"compound/internal/home"
@@ -635,6 +636,12 @@ func cmdDistiller(args []string) {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
+	}
+	if !candidates.AutomaticProducersEnabled() {
+		// The distiller fan-out files a candidate per extracted item; it is an
+		// automatic producer and is off unless switched on (ruling 2026-11-03).
+		fmt.Fprintln(os.Stderr, "distiller: skipped:", candidates.ProducerDisabledNote)
+		return
 	}
 	res, err := distiller.Run(homePath, store, data, distiller.DefaultPolicy(), extractor, time.Now())
 	if err != nil {

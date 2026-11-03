@@ -80,8 +80,10 @@ func memoryUsage(sub string) string {
 		return "usage: compound memory digest-doctor --path <file> [--json]"
 	case "promote-driver":
 		return promotedriver.Usage
+	case "lesson":
+		return memoryLessonUsage
 	default:
-		return "usage: compound memory <candidate <trace.json>|candidates --json|import-page <markdown>|import-topics <topics.json>|confirmation <candidate_id> --quote <text> --reviewed-by operator:<id>|adjudicate <id> --verdict V|recall [entity] [--as-of N] [--topic topic-slug] [--include-needs-review] [--include-evidence]|timeline <entity>|fold [--entity E] [--json]|position <entity> [--as-of N] [--topic topic-slug] [--json]|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|search <query> [--lane L]|show-output <cid>|canon [--json]|aliases <show|rebuild|expand Q>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|bakeoff <init|seed|run>|concur --claim C --content Q --lanes a,b [--threshold N] [--json]|parity-replay --fixture F --consumer orient|query [--resume-from checkpoint.json]|parity-freeze --from-journal --window-days N --control-report report.json|temperature [--rebuild]|observation [--json] [--record]|render-harness-digest --harness H --out FILE|digest-doctor --path FILE|promote-driver [--confirm] [--json]|doctor>"
+		return "usage: compound memory <candidate <trace.json>|candidates --json|import-page <markdown>|import-topics <topics.json>|confirmation <candidate_id> --quote <text> --reviewed-by operator:<id>|adjudicate <id> --verdict V|recall [entity] [--as-of N] [--topic topic-slug] [--include-needs-review] [--include-evidence]|timeline <entity>|fold [--entity E] [--json]|position <entity> [--as-of N] [--topic topic-slug] [--json]|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|search <query> [--lane L]|show-output <cid>|canon [--json]|aliases <show|rebuild|expand Q>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|bakeoff <init|seed|run>|concur --claim C --content Q --lanes a,b [--threshold N] [--json]|parity-replay --fixture F --consumer orient|query [--resume-from checkpoint.json]|parity-freeze --from-journal --window-days N --control-report report.json|temperature [--rebuild]|observation [--json] [--record]|render-harness-digest --harness H --out FILE|digest-doctor --path FILE|promote-driver [--confirm] [--json]|lesson --why W --how H --by A [--skill S] [--trigger TOOL:REGEX]|doctor>"
 	}
 }
 func cmdMemory(args []string) {
@@ -526,6 +528,8 @@ func cmdMemory(args []string) {
 		} else {
 			fmt.Printf("%s: %s%s\n", res.Candidate.ID, res.Verdict, dashNote(res.Note))
 		}
+	case "lesson":
+		cmdMemoryLesson(store, rest)
 	case "recall":
 		cmdMemoryRecall(homePath, store, rest)
 	case "bakeoff":

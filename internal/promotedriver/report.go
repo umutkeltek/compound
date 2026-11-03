@@ -131,19 +131,22 @@ type PendingFinalizationResult struct {
 // saturated inbox still gives every proposed candidate a promotion chance
 // within one full cycle.
 type PromotePhaseReport struct {
-	Limit       int                      `json:"limit"`
-	Walked      int                      `json:"walked"`
-	Decoded     int                      `json:"decoded"`
-	Corrupt     int                      `json:"corrupt"`
-	Scanned     int                      `json:"scanned"`
-	Considered  int                      `json:"considered"` // proposed candidates seen this walk
-	Promoted    int                      `json:"promoted"`
-	ResumedFrom candidates.EntryCursor   `json:"resumed_from,omitempty"`
-	NextCursor  candidates.EntryCursor   `json:"next_cursor,omitempty"`
-	Deferred    []string                 `json:"deferred,omitempty"` // basis-eligible, over the per-pass limit
-	Promotions  []PromotionReceipt       `json:"promotions,omitempty"`
-	Errors      []string                 `json:"errors,omitempty"`
-	CorruptIDs  []candidates.EntryCursor `json:"corrupt_ids,omitempty"`
+	Limit       int                    `json:"limit"`
+	Walked      int                    `json:"walked"`
+	Decoded     int                    `json:"decoded"`
+	Corrupt     int                    `json:"corrupt"`
+	Scanned     int                    `json:"scanned"`
+	Considered  int                    `json:"considered"` // proposed candidates seen this walk
+	Promoted    int                    `json:"promoted"`
+	ResumedFrom candidates.EntryCursor `json:"resumed_from,omitempty"`
+	NextCursor  candidates.EntryCursor `json:"next_cursor,omitempty"`
+	Deferred    []string               `json:"deferred,omitempty"` // basis-eligible, over the per-pass limit
+	// StatusRefused lists basis-eligible candidates the driver refused because
+	// status never promotes (operator ruling 2026-11-03). They stay untouched.
+	StatusRefused []string                 `json:"status_refused,omitempty"`
+	Promotions    []PromotionReceipt       `json:"promotions,omitempty"`
+	Errors        []string                 `json:"errors,omitempty"`
+	CorruptIDs    []candidates.EntryCursor `json:"corrupt_ids,omitempty"`
 }
 
 // PromotionReceipt is one per-id promotion the pass performed (or, in a

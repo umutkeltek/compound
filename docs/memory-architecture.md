@@ -376,6 +376,70 @@ The standing invariants are unchanged by this doctrine: the ledger gates and the
 adjudication is the only birthplace of a claim; privacy classes never cross silently; and a
 claim promoted by evidence reopens the moment evidence turns.
 
+## Lessons and status (operator ruling 2026-11-03)
+
+Eight collect -> propose -> review loops stopped at one review step that nobody
+staffed: tens of thousands of parked candidates, four adjudications ever. The
+learning that worked bypassed the machinery: the agent that tripped on a
+problem wrote a dated why/how note and edited the skill it tripped on. It works
+because the writer is the adjudicator and the consumer is known. The rules
+below make that the governed path. Humans gate by setting this envelope, not by
+being paged per item.
+
+1. **Lessons promote on write.** `compound memory lesson --why W --how H --by A
+   [--skill S] [--trigger TOOL:REGEX] [--evidence REF]... [--slot entity::predicate]`
+   appends one claim with `claim_type: lesson`, `valid_from` = now,
+   `promotion_basis: lesson_on_write`, and provenance qualifiers (`why`,
+   `written_by`, `written_on`, `harness`, `skill`, `trigger`). It emits the
+   usual `memory_delta` Transition. No candidate, no adjudication step. Why,
+   how and actor are required; each text is one line (detail goes behind
+   `--evidence`). `lesson` is not in the candidate `ClaimTypes`, and
+   `lesson_on_write` is not a candidate promotion basis, so no other path can
+   mint a lesson.
+   - **Slot.** Default slot is `skill:<name>` (or `lessons`) `::
+     lesson.<hash of the normalized why>`; pass `--slot` to target an existing
+     slot on purpose. Positions read `<entity>::lesson::slot-<hash>`.
+   - **Skill line.** With `--skill`, the door resolves `<repo>/skills/<name>/SKILL.md`,
+     then each `--skills-dir`, then each dir in `$COMPOUND_SKILLS_DIRS`, and
+     appends one dated line (why + how + claim id + trigger) to the file's
+     `## Lessons` section (created at the end when absent). Append-only and
+     idempotent by claim id. An unresolved skill refuses before any ledger write.
+   - **Trigger format** (consumed by the tool-call hook): `<tool>:<regex>`.
+     `<tool>` is the harness tool name (`Bash`, `Edit`, `Write`, `Read`, ...)
+     or `*`; it may not contain `:`. `<regex>` is Go RE2, matched against the
+     tool call's primary input (the command for `Bash`, the file path for
+     file tools). Example: `Bash:proof-check.*\|.*jq`. `mem.LessonTrigger.Matches`
+     is the reference matcher.
+2. **Status never promotes.** Machine status (`claim_type: status`: git heads
+   and counts, deploy hosts, run output) is state, not a lesson. The operator
+   adjudicate door, the explicit-confirmation door and the governed promote
+   driver refuse a status promotion with `ErrStatusNeverPromotes`; the driver
+   lists such rows under `status_refused` and leaves them untouched, and the
+   source-control import (`compound authority git`) reports status values but
+   no longer captures or promotes them. Existing status claims are history and
+   are not rewritten. Not yet covered: the unstamped `Adjudicate` door still
+   accepts status from the legacy machine-state importers (authority registry,
+   path authority, product signals, runtime-proof fixtures); moving those to a
+   state projection is a separate change.
+3. **Contradictions park.** A lesson whose slot already holds a current lesson
+   with a different `how` keeps both. Each gets a `needs_review` edge naming the
+   other (`contested_by:<id>`), the position fold serves the newest with status
+   `contested`, and default recall holds both until resolved
+   (`--include-needs-review` shows them). The same `how` again is a duplicate
+   and writes nothing.
+4. **The next consumer supersedes.** `compound work close --used <claim_id>`
+   (or `lesson:<claim_id>`) records a use; when the used lesson is contested,
+   the used lesson wins: a `supersedes` edge from it to each contesting lesson
+   in the slot, and `needs_review_cleared` edges on both sides.
+5. **Automatic producers are opt-in.** The automatic candidate writers run only
+   with `COMPOUND_CANDIDATE_PRODUCERS=1`: knowledge import metadata rows and
+   knowledge extraction (which then skips the model call), session-mining
+   apply, the distiller fan-out, observation review candidates, and the
+   work-close side effects (surprise, EV-card calibration, standing-proof
+   graduation). Explicit paths always work: `compound capture`,
+   `compound memory candidate`, `compound memory lesson`. A skipped write says
+   so (`producer_note` or a warning), never silently.
+
 ## Language And Runtime
 
 The core is Go: CLI, ledger, scope, recall planning, importers, and future local

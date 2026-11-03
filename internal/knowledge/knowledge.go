@@ -82,6 +82,9 @@ type ImportReport struct {
 	SourceObservationIDs []string `json:"source_observation_ids,omitempty"`
 	SourceCandidateIDs   []string `json:"source_candidate_ids,omitempty"`
 	NoPromoteIDs         []string `json:"no_promote_ids,omitempty"`
+	// ProducerNote says why no metadata candidates were filed, when the
+	// automatic candidate producers are off.
+	ProducerNote string `json:"producer_note,omitempty"`
 }
 
 type ExtractionRequest struct {
@@ -207,6 +210,9 @@ type ExtractReport struct {
 	Failed        int      `json:"failed"`
 	CandidateIDs  []string `json:"candidate_ids"`
 	ExtractionIDs []string `json:"extraction_ids"`
+	// ProducerNote is set when extraction did not run because the automatic
+	// candidate producers are off; pending requests stay pending.
+	ProducerNote string `json:"producer_note,omitempty"`
 }
 
 type DistributionEvent struct {
@@ -436,12 +442,18 @@ func Import(homePath string, store *mem.Store, export Export, exportDigest strin
 		}
 		addSourceObservationResult(&report, applied)
 
-		candidates := candidatesForItem(export, item, evidence.ID, now)
-		for _, candidate := range candidates {
-			if _, err := store.RecordStableCandidate(candidate); err != nil {
-				return report, err
+		// Metadata rows (reference_title, reference_url, ...) are an automatic
+		// candidate producer: off unless switched on (operator ruling
+		// 2026-11-03, Q3a). Evidence and the extraction request still land.
+		if candidates.AutomaticProducersEnabled() {
+			for _, candidate := range candidatesForItem(export, item, evidence.ID, now) {
+				if _, err := store.RecordStableCandidate(candidate); err != nil {
+					return report, err
+				}
+				report.CandidateIDs = append(report.CandidateIDs, candidate.ID)
 			}
-			report.CandidateIDs = append(report.CandidateIDs, candidate.ID)
+		} else {
+			report.ProducerNote = candidates.ProducerDisabledNote
 		}
 		extraction, err := writeExtractionRequest(homePath, export, item, evidence.ID, now)
 		if err != nil {
@@ -474,6 +486,11 @@ func Extract(homePath string, store *mem.Store, opts ExtractOptions, now time.Ti
 	}
 	if strings.TrimSpace(opts.FixturesDir) == "" && (strings.TrimSpace(opts.OpenAICompatibleURL) == "" || strings.TrimSpace(opts.Model) == "" || strings.TrimSpace(opts.EvalCorpusDir) == "") {
 		return ExtractReport{}, fmt.Errorf("use --fixtures or --openai-compatible-url with --model and --eval-corpus")
+	}
+	if !candidates.AutomaticProducersEnabled() {
+		// Extraction's only output is memory candidates, so with the automatic
+		// producers off it does not call the model at all (ruling 2026-11-03).
+		return ExtractReport{CandidateIDs: []string{}, ExtractionIDs: []string{}, ProducerNote: candidates.ProducerDisabledNote}, nil
 	}
 	requests, err := loadExtractionRequests(homePath)
 	if err != nil {
