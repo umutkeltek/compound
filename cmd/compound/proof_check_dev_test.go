@@ -195,12 +195,12 @@ func TestProofCheckDevelopmentRejectsCanonicalAndGovernanceFlags(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := validateProofCheckDevelopmentArgs(tc.args); err == nil {
+			if err := work.ValidateProofCheckNonCertifyingArgs(tc.args); err == nil {
 				t.Fatalf("development args %v accepted incompatible flag", tc.args)
 			}
 		})
 	}
-	if err := validateProofCheckDevelopmentArgs([]string{
+	if err := work.ValidateProofCheckNonCertifyingArgs([]string{
 		"--dev",
 		"--dry-run",
 		"--json",
@@ -209,7 +209,7 @@ func TestProofCheckDevelopmentRejectsCanonicalAndGovernanceFlags(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("valid development args rejected: %v", err)
 	}
-	if !proofCheckDevelopmentRequested([]string{"--dev=true"}) {
+	if !(work.ProofCheckNonCertifyingMode([]string{"--dev=true"}) != "") {
 		t.Fatal("assignment-form --dev would bypass strict development argument validation")
 	}
 }

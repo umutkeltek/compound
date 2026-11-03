@@ -91,7 +91,7 @@ func cmdProofCheck(args []string) {
 		fmt.Fprintf(os.Stderr, "proof-check: gates run without the inherited loopback proxy (%s)\n", strings.Join(dropped, ", "))
 	}
 	proofCheckPruneGoCaches(args)
-	if proofCheckDevelopmentRequested(args) {
+	if work.ProofCheckNonCertifyingMode(args) != "" {
 		cmdProofCheckDevelopment(args)
 		return
 	}
@@ -419,7 +419,7 @@ func proofCheckLegacyRecoveryModeError(args []string) error {
 		return nil
 	}
 	if hasFlag(args, "--timings") ||
-		proofCheckDevelopmentRequested(args) ||
+		work.ProofCheckNonCertifyingMode(args) != "" ||
 		hasFlag(args, "--dry-run") ||
 		hasFlag(args, "--ci") ||
 		hasFlag(args, "--ci-console") {

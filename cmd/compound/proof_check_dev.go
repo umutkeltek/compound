@@ -16,17 +16,8 @@ const (
 	proofCheckDevelopmentSchemaVersion = "compound.proof_check_development_report.v0.1"
 )
 
-// proofCheckDevelopmentRequested selects the non-certifying runner: --dev or --presubmit.
-func proofCheckDevelopmentRequested(args []string) bool {
-	return work.ProofCheckNonCertifyingMode(args) != ""
-}
-
-func validateProofCheckDevelopmentArgs(args []string) error {
-	return work.ValidateProofCheckNonCertifyingArgs(args)
-}
-
 func cmdProofCheckDevelopment(args []string) {
-	if err := validateProofCheckDevelopmentArgs(args); err != nil {
+	if err := work.ValidateProofCheckNonCertifyingArgs(args); err != nil {
 		fmt.Fprintln(os.Stderr, "proof-check:", err)
 		os.Exit(2)
 	}
