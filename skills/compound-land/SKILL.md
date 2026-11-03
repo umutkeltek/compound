@@ -72,12 +72,12 @@ adoption capability itself through a direct source proof before using it in a li
 
 ## 1 · Presubmit before the land; canonical proof after it
 
-**The verifier verdict is the canonical proof (operator decision 2026-11-03).** The post-land verifier
+**The remote-verifier verdict is the canonical proof (operator decision 2026-11-03).** The post-land remote verifier
 verifier runs the full uncached Go suite on the target branch after each landing, on its own idle
 host. A GREEN verifier verdict at commit S is the canonical proof for closing every work whose landed tip
 T is contained in S (T equals S, or T is an ancestor of S, and S is on main): main including the
 change is what was tested. A RED verdict whose culprit range contains T refuses the close (unless a
-later green verdict covers T). No covering verdict refuses with "verifier has not verified this tip
+later green verdict covers T). No covering verdict refuses with "the remote verifier has not verified this tip
 yet"; never fall back to a laptop battery. The laptop canonical battery and the laptop nightly
 battery are retired for non-core diffs. **Governance-core diffs keep the full pre-land battery:**
 when the presubmit report carries `presubmit.plan.scope.governance_core` (the verdict line prints
