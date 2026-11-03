@@ -537,12 +537,38 @@ git -C <MAIN-worktree> merge --ff-only "$CANDIDATE_SHA"
   (the holder's own release is the tool's sanctioned path), confirm the dead run self-terminalized
   (`compound run-attempt list --non-terminal` — proof-check terminalizes its own ratt on the
   admission error path), then rerun the plain exact command on the freed resource.
-- **Package disjointness never preserves proof after replay or a new merge.** If reconciling
-  main changes the candidate HEAD or proof base, attach the new H; the presubmit reruns on the new tip before landing, and the
+- **A green presubmit survives a clean rebase; do not go back to the end of the line.** Every
+  landing makes each other queued candidate stale, so re-queuing multiplies the wait by the number of
+  lanes. When your presubmit at H ended `presubmit: ok` and main has moved, rebase onto the fresh tip T
+  and keep that result when ALL of these hold: the scope was `affected`; no changed path decides
+  whether a proof, landing, close or publication is legitimate (`internal/landlease`, `internal/policy`,
+  `internal/authority`, `cmd/compound/proof_check*`, and the proof, land-check, close, landing-resource,
+  private-publish and standing-proof files of `internal/work`, plus `internal/work/work.go`); the rebase
+  finished without a conflict; and no Go package changed on both sides:
+
+  ```bash
+  go_packages() { git diff --name-only "$1" "$2" | grep '\.go$' | xargs -n1 dirname | sort -u; }
+  test -z "$(comm -12 <(go_packages "$B" "$T") <(go_packages "$T" HEAD))"
+  ```
+
+  Then run these on the new tip, without a proof ticket (seconds, not hours), read each exit, attach
+  the new tip with `work advance --artifact commit:<new-tip>`, and take the fresh-SHA guard:
+
+  ```bash
+  go run ./scripts/testbattery build --source-head "$(git rev-parse HEAD)"
+  go run ./scripts/testbattery vet --source-head "$(git rev-parse HEAD)"
+  "$PRESUBMIT_EXE" architecture doctor --strict
+  ```
+
+  Any other case, or any red, is a new presubmit at the new tip. A semantic conflict that compiles
+  reaches main; the post-land verifier and the canonical battery catch it, and the landing lane fixes
+  it forward or reverts the same day. This carries the noncertifying presubmit only.
+- **Package disjointness never preserves canonical proof after replay or a new merge.** If reconciling
+  main changes the candidate HEAD or proof base, attach the new H; the presubmit reruns or carries under the rule above, and the
   canonical proof is for that exact B/H on the landed tip (§1). If main merely advances to a target tip T' inside
   the unchanged certified H (`B <= T' <= H`), retain the original B/H proof and take a fresh
   main-SHA guard; do not relabel its base. Use the short landing lease and ordinary `--ff-only` landing.
-  Never land an untested tip — presubmit before the fast-forward, canonical proof on the
+  Never land an untested tip — presubmit (or its carry) before the fast-forward, canonical proof on the
   landed tip after it — and never use `git update-ref` or target-ref CAS to bypass a stale
   guard, changed-source proof, acceptance or publication checks.
   The separate hijacked-checkout exception in §1 still requires an already-certified descendant;
