@@ -52,7 +52,7 @@ Work smoothness note: direct mutating dispatch selector commands require an expl
 
 Work lease note: `work create` and `work create-plan` reject `--state running`; create at `ready`, then claim and advance so the lease and policy/action proof chain exists. Director apply-run receipts follow that same ready -> claim -> running -> close path.
 
-Proof-check console note: console gates (`console-tsc` and every console smoke: each gate rooted in `console/`) are opt-in since 2026-11-03. A canonical or dry-run `proof-check` runs them only when `console/` changed in `--base...HEAD` or `--with-console` is passed; otherwise it runs only the non-console gates (a dry run also says so on stderr; a certifying run keeps stderr clean and its report's steps show the selection). The selection is sealed into the reserved profile. `--ci-console` runs exactly the console subset; `--presubmit` and `--dev` run `console-tsc` only when `console/` changed. Bun-backed smokes skip explicitly when `bun` is missing.
+Proof-check console note: console gates (`console-tsc` and every console smoke: each gate rooted in `console/`) are opt-in since 2026-11-03. A canonical or dry-run `proof-check` runs them only when `console/` changed in `--base...HEAD` or `--with-console` is passed; otherwise it runs only the non-console gates, and the report's steps show the selection. The selection is sealed into the reserved profile. `--ci-console` runs exactly the console subset; `--presubmit` and `--dev` run `console-tsc` only when `console/` changed. Bun-backed smokes skip explicitly when `bun` is missing.
 
 ## Current Verdict
 

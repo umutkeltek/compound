@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -122,7 +123,7 @@ func TestConsoleSelectedProofInventoryDropsOnlyConsoleGates(t *testing.T) {
 	if got, want := consoleSelectionNames(excluded), []string{"go-test", "bun-tools-test", "redact-public"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("default inventory = %v, want %v (non-console gates kept in order)", got, want)
 	}
-	if HasConsoleProofGate(excluded) {
+	if slices.ContainsFunc(excluded, IsConsoleProofGate) {
 		t.Fatalf("default inventory still carries a console gate: %v", consoleSelectionNames(excluded))
 	}
 	included, err := ConsoleSelectedProofInventory(full, ConsoleProofSelection{Include: true, Reason: ConsoleProofReasonRequested})("base", "head")
@@ -130,7 +131,7 @@ func TestConsoleSelectedProofInventoryDropsOnlyConsoleGates(t *testing.T) {
 		t.Fatal(err)
 	}
 	all, _ := full("base", "head")
-	if !reflect.DeepEqual(included, all) || !HasConsoleProofGate(included) {
+	if !reflect.DeepEqual(included, all) || !slices.ContainsFunc(included, IsConsoleProofGate) {
 		t.Fatalf("selected inventory = %v, want the full inventory %v", consoleSelectionNames(included), consoleSelectionNames(all))
 	}
 }
@@ -165,8 +166,8 @@ func TestConsoleAwareProofInventoryIsStableForProfileRederivation(t *testing.T) 
 			t.Fatalf("range %s...%s: inventories disagree: %v / %v / %v", rng[0][:8], rng[1][:8],
 				consoleSelectionNames(first), consoleSelectionNames(second), consoleSelectionNames(sealed))
 		}
-		if HasConsoleProofGate(first) != selection.Include {
-			t.Fatalf("range %s...%s: console gates present=%t, selection %+v", rng[0][:8], rng[1][:8], HasConsoleProofGate(first), selection)
+		if slices.ContainsFunc(first, IsConsoleProofGate) != selection.Include {
+			t.Fatalf("range %s...%s: console gates present=%t, selection %+v", rng[0][:8], rng[1][:8], slices.ContainsFunc(first, IsConsoleProofGate), selection)
 		}
 	}
 }

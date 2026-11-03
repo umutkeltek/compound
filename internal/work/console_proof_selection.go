@@ -40,16 +40,6 @@ func IsConsoleProofGate(step ProofCheckStep) bool {
 	return step.Dir == "console"
 }
 
-// HasConsoleProofGate reports whether any step is a console gate.
-func HasConsoleProofGate(steps []ProofCheckStep) bool {
-	for _, step := range steps {
-		if IsConsoleProofGate(step) {
-			return true
-		}
-	}
-	return false
-}
-
 // WithoutConsoleProofGates keeps every non-console step in its original order.
 func WithoutConsoleProofGates(steps []ProofCheckStep) []ProofCheckStep {
 	out := make([]ProofCheckStep, 0, len(steps))

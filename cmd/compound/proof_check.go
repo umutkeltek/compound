@@ -53,8 +53,7 @@ func cmdProofCheck(args []string) {
 		fmt.Println("  --presubmit   non-certifying pre-landing gate; go-test scope derived from --base FULL_SHA...HEAD")
 		fmt.Println("  --redact-review ACT_ID exact native public-content review for the complete source snapshot (canonical full proof only)")
 		fmt.Println("  --ci          run only the fresh-clone-portable gate subset (bare Go gates; what CI runs on push/PR)")
-		fmt.Println("  --ci-console  run console/TypeScript gates (needs bun + console/node_modules; CI console job, not bare-clone --ci)")
-		fmt.Println("  --with-console add console gates; by default they run only when console/ changed in --base...HEAD")
+		fmt.Println("  --ci-console  run console/TypeScript gates (needs bun + console/node_modules; CI console job, not bare-clone --ci); otherwise they run only when console/ changed in --base...HEAD or with --with-console")
 		fmt.Println("  --out FILE    write full JSON and print final 'battery: ok|FAILED'; exit code stays truthful (0/1/2)")
 		fmt.Println("  --timings     report the recorded per-gate duration history instead of running the battery")
 		fmt.Println("                (--dev or --presubmit selects that lane, --window N the sample depth)")
@@ -101,13 +100,8 @@ func cmdProofCheck(args []string) {
 	ciOnly := hasFlag(args, "--ci")
 	ciConsole := hasFlag(args, "--ci-console")
 	recoverLegacy := hasFlag(args, "--recover-legacy-retained")
-	if ciOnly && ciConsole {
-		fmt.Fprintln(os.Stderr, "proof-check: --ci and --ci-console are mutually exclusive")
-		os.Exit(2)
-	}
-	withConsole := hasFlag(args, work.ProofCheckWithConsoleFlag)
-	if withConsole && ciOnly {
-		fmt.Fprintln(os.Stderr, "proof-check: --with-console cannot be combined with --ci (the portable subset has no console gates)")
+	if ciOnly && (ciConsole || hasFlag(args, work.ProofCheckWithConsoleFlag)) {
+		fmt.Fprintln(os.Stderr, "proof-check: --ci excludes --ci-console and --with-console (the portable subset has no console gates)")
 		os.Exit(2)
 	}
 	repoPath := flagValue(args, "--repo")
@@ -252,13 +246,7 @@ func cmdProofCheck(args []string) {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
 			os.Exit(2)
 		}
-		consoleSelection, err := work.ResolveConsoleProofSelection(profileContext, resolvedRepo, sourceSnapshot.BaseSHA, sourceSnapshot.HeadSHA, withConsole)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "proof-check:", err)
-			os.Exit(2)
-		}
-		inventory := work.ConsoleSelectedProofInventory(proofCheckSteps, consoleSelection)
-		plan, err := work.ResolveCanonicalProofPlanContext(profileContext, resolvedRepo, sourceSnapshot, inventory)
+		plan, err := work.ResolveCanonicalProofPlanContext(profileContext, resolvedRepo, sourceSnapshot, work.ConsoleAwareProofInventory(profileContext, resolvedRepo, hasFlag(args, work.ProofCheckWithConsoleFlag), proofCheckSteps))
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
 			os.Exit(2)
@@ -287,7 +275,7 @@ func cmdProofCheck(args []string) {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
 			os.Exit(2)
 		}
-		publishCompoundRuntimeArtifact, err := work.CanonicalProofProfilePublishesCompoundRuntimeArtifact(plan, profile, inventory)
+		publishCompoundRuntimeArtifact, err := work.CanonicalProofProfilePublishesCompoundRuntimeArtifact(plan, profile, work.ConsoleAwareProofInventory(profileContext, resolvedRepo, hasFlag(args, work.ProofCheckWithConsoleFlag), proofCheckSteps))
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
 			os.Exit(2)
@@ -372,15 +360,11 @@ func cmdProofCheck(args []string) {
 		}
 	} else {
 		var err error
-		runCtx := work.ContextWithGateOutputReportPath(context.Background(), outPath)
-		runCtx = work.ContextWithConsoleProofRequest(runCtx, withConsole)
+		runCtx := work.ContextWithConsoleProofRequest(work.ContextWithGateOutputReportPath(context.Background(), outPath), hasFlag(args, work.ProofCheckWithConsoleFlag))
 		report, err = runProofCheckContext(runCtx, repoPath, dryRun, baseRef, ciOnly, ciConsole, time.Now())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
 			os.Exit(2)
-		}
-		if !ciOnly && !ciConsole && !work.HasConsoleProofGate(report.Steps) {
-			fmt.Fprintln(os.Stderr, "proof-check: console gates not selected (no --base, or no console/ change in --base...HEAD); pass "+work.ProofCheckWithConsoleFlag+" to run them")
 		}
 		if !dryRun {
 			timingHomePath, timingHomeErr := home.Resolve("")
