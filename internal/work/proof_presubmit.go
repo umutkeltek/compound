@@ -34,6 +34,34 @@ type ProofCheckPresubmit struct {
 	// or test files (for example only `//go:build ignore` files); go test
 	// would refuse them, so presubmit drops them.
 	NoGoFiles []string `json:"no_go_files,omitempty"`
+	// TestBudget is the total go-test budget this run had (ProofCheckPresubmitTestBudget).
+	TestBudget string `json:"test_budget,omitempty"`
+	// BudgetDeferred names packages whose go-test gate did not fit the budget;
+	// the verifier post-land verdict covers them. Never silently skipped.
+	BudgetDeferred []string `json:"budget_deferred,omitempty"`
+	// GovernanceCore lists changed paths in proofscope.GovernanceCorePaths. When
+	// non-empty the land ceremony requires the full canonical battery pre-land.
+	GovernanceCore []string `json:"governance_core,omitempty"`
+}
+
+// Deferred is every package presubmit did not prove: plan-time root readers
+// plus gates the test budget deferred. Sorted, unique.
+func (p *ProofCheckPresubmit) Deferred() []string {
+	if p == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, list := range [][]string{p.Plan.Deferred, p.BudgetDeferred} {
+		for _, pkg := range list {
+			if !seen[pkg] {
+				seen[pkg] = true
+				out = append(out, pkg)
+			}
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // ProofCheckNonCertifyingMode returns "--dev" or "--presubmit" when argv
@@ -174,6 +202,7 @@ func ProofCheckPresubmitSteps(ctx context.Context, repo, base string) ([]ProofCh
 	if derivation.NoGoFiles, err = presubmitDropNoGoFiles(ctx, repo, &derivation.Plan); err != nil {
 		return nil, nil, err
 	}
+	derivation.GovernanceCore = proofscope.GovernanceCore(strings.Split(changed, "\x00"))
 	return ProofCheckPresubmitGates(base, head, compoundExe, derivation.Plan, strings.Split(changed, "\x00")), derivation, nil
 }
 
@@ -280,7 +309,7 @@ func ProofCheckPresubmitGates(base, head, compoundExe string, plan proofscope.Pr
 
 // ProofCheckPresubmitVerdictLine is the presubmit's single final stdout line.
 func ProofCheckPresubmitVerdictLine(report ProofCheckReport, path string) string {
-	passed, skipped, failed, planned := 0, 0, 0, 0
+	passed, skipped, failed, planned, deferredGates := 0, 0, 0, 0, 0
 	firstFailed := ""
 	var elapsedMS int64
 	for _, step := range report.Steps {
@@ -297,6 +326,8 @@ func ProofCheckPresubmitVerdictLine(report ProofCheckReport, path string) string
 			}
 		case "planned":
 			planned++
+		case "deferred":
+			deferredGates++
 		}
 	}
 	scope := "scope=unknown"
@@ -306,9 +337,17 @@ func ProofCheckPresubmitVerdictLine(report ProofCheckReport, path string) string
 		for _, run := range plan.Runs {
 			packages += len(run.Packages)
 		}
-		scope = fmt.Sprintf("scope=%s reason=%s packages=%d deferred=%d", plan.Scope.Mode, plan.Scope.Reason, packages, len(plan.Deferred))
+		deferred := strings.Join(report.Presubmit.Deferred(), ",")
+		if deferred == "" {
+			deferred = "none"
+		}
+		scope = fmt.Sprintf("scope=%s reason=%s packages=%d deferred=%s", plan.Scope.Mode, plan.Scope.Reason, packages, deferred)
 		if plan.Scope.Mode != proofscope.Affected {
-			scope = fmt.Sprintf("scope=%s reason=%s packages=all", plan.Scope.Mode, plan.Scope.Reason)
+			scope = fmt.Sprintf("scope=%s reason=%s packages=all deferred=%s", plan.Scope.Mode, plan.Scope.Reason, deferred)
+		}
+		// Governance core keeps the full pre-land battery (skills/compound-land §1).
+		if core := report.Presubmit.GovernanceCore; len(core) > 0 {
+			scope += fmt.Sprintf(" governance_core=%s full_battery_required=true", core[0])
 		}
 	}
 	out := ""
@@ -320,9 +359,9 @@ func ProofCheckPresubmitVerdictLine(report ProofCheckReport, path string) string
 	case report.DryRun:
 		return fmt.Sprintf("presubmit: planned non_certifying=true %s planned=%d total=%d%s", scope, planned, total, out)
 	case report.Status == "ok":
-		return fmt.Sprintf("presubmit: ok non_certifying=true %s passed=%d skipped=%d failed=%d total=%d elapsed_ms=%d%s", scope, passed, skipped, failed, total, elapsedMS, out)
+		return fmt.Sprintf("presubmit: ok non_certifying=true %s passed=%d skipped=%d deferred_gates=%d failed=%d total=%d elapsed_ms=%d%s", scope, passed, skipped, deferredGates, failed, total, elapsedMS, out)
 	}
-	return fmt.Sprintf("presubmit: FAILED non_certifying=true %s passed=%d skipped=%d failed=%d total=%d elapsed_ms=%d first_failed=%s%s", scope, passed, skipped, failed, total, elapsedMS, firstFailed, out)
+	return fmt.Sprintf("presubmit: FAILED non_certifying=true %s passed=%d skipped=%d deferred_gates=%d failed=%d total=%d elapsed_ms=%d first_failed=%s%s", scope, passed, skipped, deferredGates, failed, total, elapsedMS, firstFailed, out)
 }
 
 func presubmitGit(ctx context.Context, repo string, args ...string) (string, error) {
