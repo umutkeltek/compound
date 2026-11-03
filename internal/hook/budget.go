@@ -37,6 +37,9 @@ type BudgetCommand struct {
 	Live         bool
 	Harness      string
 	ParityLogDir string
+	// Spool selects the zero-wait recording path: append the native input to
+	// the hook spool and answer at once (watch-only pre-tool-use only).
+	Spool bool
 }
 
 type BudgetAnswer struct {

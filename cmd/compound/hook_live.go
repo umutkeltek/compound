@@ -24,7 +24,7 @@ import (
 	"compound/internal/work"
 )
 
-const hookUsage = "usage: compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> [--enforce] <fixture.json> OR compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> --live --harness <claude_code|claude_zai|claude_minimax|claude_qwen|codex|oh_my_pi|opencode> [--parity-log <dir>]"
+const hookUsage = "usage: compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> [--enforce] <fixture.json> OR compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> --live --harness <claude_code|claude_zai|claude_minimax|claude_qwen|codex|oh_my_pi|opencode> [--parity-log <dir>] OR compound hook pre-tool-use --live --harness <name> --spool OR compound hook drain [--once|--follow] OR compound hook lessons-index [--from lessons.json] [--skills DIR]"
 
 type hookCommandArgs = hook.BudgetCommand
 
@@ -1175,6 +1175,45 @@ func liveHookResponseWithEnforcement(
 		}
 	}
 	return claudeLiveHookResponse{HookSpecificOutput: out}
+}
+
+// runHookSpool answers watch-only PreToolUse in the same native shape as the
+// synchronous path, carrying only matched lesson lines.
+func runHookSpool(parsed hookCommandArgs, stdin io.Reader, stdout, stderr io.Writer, now time.Time) int {
+	return hook.RunSpoolCommand(parsed.Harness, parsed.HookName, stdin, stdout, stderr, now, func(lessons string) any {
+		return liveHookResponseWithEnforcement(harness.DefaultRegistry(), parsed.Harness, parsed.HookName, hook.Result{ContextOutput: lessons}, false, nil)
+	})
+}
+
+// newHookSpoolReplay rebuilds one spooled call the way runHookCommand would
+// have, at its call time, in observation mode. It never consumes coordination
+// deliveries: the agent already ran the call and no one would read them.
+func newHookSpoolReplay(homePath string) (hook.SpoolReplay, error) {
+	orientation, err := loadOrientationPolicy()
+	if err != nil {
+		return nil, err
+	}
+	policyCfg, err := loadRuntimePolicyConfig()
+	if err != nil {
+		return nil, err
+	}
+	deps := hook.Deps{Registry: harness.DefaultRegistry(), Orient: orientation, Policy: policyCfg, HomePath: homePath}
+	if store, err := work.Open(homePath); err == nil {
+		deps.Store = store
+	}
+	return func(line hook.SpoolLine) error {
+		at, err := time.Parse(time.RFC3339Nano, line.SpooledAt)
+		if err != nil || line.Hook != "pre-tool-use" || len(line.Input) == 0 {
+			return fmt.Errorf("spool line not replayable (hook %q, time %q, %d input bytes)", line.Hook, line.SpooledAt, len(line.Input))
+		}
+		fx, err := liveHookFixtureForHome(hookCommandArgs{HookName: line.Hook, Harness: line.Harness, Live: true}, line.Input, at, homePath)
+		if err != nil {
+			return err
+		}
+		fx.CoordinationDelivery, fx.Enforced = nil, false
+		_, err = hook.Run(fx, deps, at)
+		return err
+	}, nil
 }
 
 func livePromptAdditionalContext(res hook.Result) string {
