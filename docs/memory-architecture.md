@@ -444,6 +444,11 @@ being paged per item.
    graduation). Explicit paths always work: `compound capture`,
    `compound memory candidate`, `compound memory lesson`. A skipped write says
    so (`producer_note` or a warning), never silently.
+6. **Agents demote; operators promote.** On `compound memory adjudicate`, any
+   actor may issue `no_promote` or `park`; the candidate is stamped
+   `adjudicated_by`, `adjudication_provenance: agent` and the `--reason` text.
+   A demotion only makes a row less ambient and a later verdict reverses it.
+   `promote` and `reject` still require operator provenance (same refusal).
 
 ## Language And Runtime
 

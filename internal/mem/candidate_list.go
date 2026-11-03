@@ -95,6 +95,10 @@ type CandidateListItem struct {
 	Evidence       *CandidateListEvidence `json:"evidence,omitempty"`
 	BelievedBefore *CandidateListBelief   `json:"believed_before,omitempty"`
 	Annotations    []CandidateAnnotation  `json:"annotations,omitempty"`
+
+	// AdjudicationProvenance is "operator" or "agent" (see
+	// mem.Candidate.AdjudicationProvenance); agents may only demote.
+	AdjudicationProvenance string `json:"adjudication_provenance,omitempty"`
 }
 
 type CandidateListEvidence struct {
@@ -269,6 +273,7 @@ func (s *Store) candidateListItem(c Candidate, reviewState, rawKind, modifiedAt 
 		CreatedAt:       c.CreatedAt,
 		ModifiedAt:      modifiedAt,
 	}
+	item.AdjudicationProvenance = c.AdjudicationProvenance
 	if includeEvidence {
 		item.SourceTraceRef = c.SourceTraceRef
 		item.SnippetHash = c.SnippetHash

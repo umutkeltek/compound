@@ -18,6 +18,7 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/home"
+	"compound/internal/mem"
 )
 
 // memoryCliChildEnv is the sentinel that tells the child re-entry which
@@ -193,6 +194,73 @@ func TestMemoryAdjudicateUnknownIDNamesSearchedLocationAndDoor(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestMemoryAdjudicateAgentDemotesButCannotPromote pins the demotion
+// envelope at the CLI: an agent actor's promote exits 1 with the unchanged
+// operator-provenance refusal and leaves the candidate as it was, while its
+// no_promote is accepted and stores --reason (given before the id, so the
+// positional parser must skip its value) with provenance "agent".
+func TestMemoryAdjudicateAgentDemotesButCannotPromote(t *testing.T) {
+	t.Parallel()
+	homePath := filepath.Join(t.TempDir(), ".compound")
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("home init: %v", err)
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	captured, err := store.Capture([]mem.Candidate{{
+		Entity: "decision:cli-demotion", Predicate: "decided", Object: "agent demotion at the cli",
+		Confidence: 0.9, Derivation: "extracted", PromotionBasis: candidates.BasisRuntimeProof,
+		SourceTraceRef: "trace_x", SnippetHash: "deadbeef",
+	}}, cliTestNow)
+	if err != nil || len(captured) != 1 {
+		t.Fatalf("capture = %+v, err=%v", captured, err)
+	}
+	id := captured[0].ID
+	const agent = "claude_code:cli-test"
+
+	out, runErr := runMemoryCLIAsChild(t, homePath, "adjudicate", id, "--verdict", "promote", "--by", agent, "--reason", "agent tries promote")
+	var exitErr *exec.ExitError
+	if !errors.As(runErr, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("agent promote exit = %v, want 1; output:\n%s", runErr, out)
+	}
+	if want := `error: operator adjudication requires operator provenance, got "` + agent + `"`; !strings.Contains(string(out), want) {
+		t.Fatalf("agent promote output missing %q:\n%s", want, out)
+	}
+	// Admission files a runtime_proof row as no_promote; the refusal must
+	// leave it there, unstamped.
+	listed := func() mem.CandidateListItem {
+		t.Helper()
+		got, err := store.ListCandidates(cliTestNow, mem.CandidateListOptions{State: "no_promote"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, item := range got.Items {
+			if item.ID == id {
+				return item
+			}
+		}
+		t.Fatalf("candidate %s missing from no_promote listing", id)
+		return mem.CandidateListItem{}
+	}
+	if item := listed(); item.AdjudicatedBy != "" || item.AdjudicationProvenance != "" {
+		t.Fatalf("refused agent promote stamped the candidate: %+v", item)
+	}
+
+	const reason = "run output: tool statistic, not a claim"
+	out, runErr = runMemoryCLIAsChild(t, homePath, "adjudicate", "--reason", reason, id, "--verdict", "no_promote", "--by", agent)
+	if runErr != nil {
+		t.Fatalf("agent no_promote: %v\noutput:\n%s", runErr, out)
+	}
+	if !strings.Contains(string(out), id+": no_promote") {
+		t.Fatalf("agent no_promote output = %q", out)
+	}
+	if item := listed(); item.AdjudicatedBy != agent || item.AdjudicationProvenance != mem.AdjudicationProvenanceAgent || item.Reason != reason {
+		t.Fatalf("agent no_promote stamped by=%q provenance=%q reason=%q", item.AdjudicatedBy, item.AdjudicationProvenance, item.Reason)
 	}
 }
 

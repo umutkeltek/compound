@@ -1706,6 +1706,9 @@ func TestAdjudicateAsOperatorStampsProvenance(t *testing.T) {
 	if opGot.AdjudicatedAt != rfc3339(t0) {
 		t.Fatalf("adjudicated_at = %q, want %q", opGot.AdjudicatedAt, rfc3339(t0))
 	}
+	if opGot.AdjudicationProvenance != AdjudicationProvenanceOperator {
+		t.Fatalf("adjudication_provenance = %q, want %q", opGot.AdjudicationProvenance, AdjudicationProvenanceOperator)
+	}
 
 	// An explicit actor overrides the "operator" default.
 	namedSeed := cand("decision:named", "decided", "named-operator-parked candidate", "")
@@ -1742,28 +1745,130 @@ func TestAdjudicateAsOperatorStampsProvenance(t *testing.T) {
 	}
 }
 
-// TestAdjudicateAsOperatorRefusesNonOperatorActor is the falsifier for the
-// operator-door provenance check: the ratification door must refuse a rented
-// executor identity (e.g. --by codex) instead of stamping operator
-// provenance, and the refusal must leave the candidate untouched.
-func TestAdjudicateAsOperatorRefusesNonOperatorActor(t *testing.T) {
+// TestStampedDoorAgentsDemoteOperatorsPromote is the falsifier for the
+// demotion envelope on the stamped door (`compound memory adjudicate`): an
+// actor without operator provenance may issue no_promote and park (stamped
+// with provenance "agent" and its reason), while promote and reject still
+// refuse it with the unchanged error text and leave the candidate
+// byte-identical. An operator still promotes, and an agent demotion stays
+// reversible by a later operator verdict.
+func TestStampedDoorAgentsDemoteOperatorsPromote(t *testing.T) {
+	const agent = "claude_code:test-lane"
 	s := newStore(t)
-	captured, err := s.Capture([]Candidate{cand("decision:refused", "decided", "executor-forged ratification", "")}, t0)
-	if err != nil || len(captured) != 1 {
-		t.Fatalf("capture = %+v, err=%v", captured, err)
+	// capture lands a proposed candidate (the default fixture basis);
+	// promotable lands one an operator may promote through this door
+	// (admission files runtime_proof rows as no_promote on intake).
+	captureWith := func(object, basis, wantState string) Candidate {
+		t.Helper()
+		seed := cand("decision:demotion", "decided", object, "")
+		seed.PromotionBasis = basis
+		got, err := s.Capture([]Candidate{seed}, t0)
+		if err != nil || len(got) != 1 {
+			t.Fatalf("capture %q = %+v, err=%v", object, got, err)
+		}
+		if got[0].State != wantState {
+			t.Fatalf("captured %q state = %q, want %q", object, got[0].State, wantState)
+		}
+		return got[0]
 	}
-	if _, err := s.AdjudicateAsOperator(captured[0].ID, "park", "", "codex", t0); err == nil {
-		t.Fatal("operator ratification door must refuse a non-operator actor")
+	capture := func(object string) Candidate {
+		return captureWith(object, candidates.BasisExplicitConfirmation, "proposed")
 	}
-	got, err := s.getCandidate(captured[0].ID)
+	promotable := func(object string) Candidate {
+		return captureWith(object, candidates.BasisRuntimeProof, "no_promote")
+	}
+	load := func(id string) Candidate {
+		t.Helper()
+		got, err := s.getCandidate(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	// Demotions: accepted; actor, time, provenance and reason recorded.
+	const reason = "pointer row: bookmark metadata, not a claim"
+	demotedIDs := map[string]string{}
+	for _, tc := range []struct{ verdict, wantState string }{{"no_promote", "no_promote"}, {"park", "parked"}} {
+		c := capture("agent demotes with " + tc.verdict)
+		if _, err := s.AdjudicateStamped(c.ID, tc.verdict, "", agent, reason, t0); err != nil {
+			t.Fatalf("agent %s must be accepted: %v", tc.verdict, err)
+		}
+		got := load(c.ID)
+		if got.State != tc.wantState || got.AdjudicatedBy != agent || got.AdjudicatedAt != rfc3339(t0) ||
+			got.AdjudicationProvenance != AdjudicationProvenanceAgent || got.Reason != reason {
+			t.Fatalf("agent %s stamped state=%q by=%q at=%q provenance=%q reason=%q", tc.verdict,
+				got.State, got.AdjudicatedBy, got.AdjudicatedAt, got.AdjudicationProvenance, got.Reason)
+		}
+		demotedIDs[tc.verdict] = c.ID
+	}
+
+	// promote and reject: refused with the exact text; nothing written, even
+	// on a row an operator could promote.
+	want := `operator adjudication requires operator provenance, got "` + agent + `"`
+	for _, verdict := range []string{"promote", "reject"} {
+		c := promotable("agent tries " + verdict)
+		before, _ := json.Marshal(load(c.ID))
+		_, err := s.AdjudicateStamped(c.ID, verdict, "", agent, "agent tries "+verdict, t0)
+		if err == nil || err.Error() != want {
+			t.Fatalf("agent %s: err = %v, want %q", verdict, err, want)
+		}
+		if after, _ := json.Marshal(load(c.ID)); string(after) != string(before) {
+			t.Fatalf("refused agent %s changed the candidate:\nbefore %s\nafter  %s", verdict, before, after)
+		}
+	}
+	// The reason-less wrapper keeps the same rule.
+	if _, err := s.AdjudicateAsOperator(promotable("wrapper refuses promote").ID, "promote", "", "codex", t0); err == nil ||
+		err.Error() != `operator adjudication requires operator provenance, got "codex"` {
+		t.Fatalf("AdjudicateAsOperator agent promote: err = %v", err)
+	}
+	if claims, err := s.loadClaimsRaw(); err != nil || len(claims) != 0 {
+		t.Fatalf("agent verdicts wrote %d claim(s), err=%v", len(claims), err)
+	}
+
+	// An operator still promotes, stamped "operator" with its reason.
+	c := promotable("operator promotes")
+	res, err := s.AdjudicateStamped(c.ID, "promote", "", "operator:test", "operator ruling", t0)
+	if err != nil || res.Claim == nil {
+		t.Fatalf("operator promote must pass: res=%+v err=%v", res, err)
+	}
+	if got := load(c.ID); got.State != "promoted" || got.AdjudicationProvenance != AdjudicationProvenanceOperator || got.Reason != "operator ruling" {
+		t.Fatalf("operator promote stamped state=%q provenance=%q reason=%q", got.State, got.AdjudicationProvenance, got.Reason)
+	}
+
+	// Reversible: the operator can still promote what an agent demoted.
+	reversed := promotable("agent demotes, operator reverses")
+	if _, err := s.AdjudicateStamped(reversed.ID, "no_promote", "", agent, reason, t0); err != nil {
+		t.Fatalf("agent no_promote: %v", err)
+	}
+	if got := load(reversed.ID); got.AdjudicationProvenance != AdjudicationProvenanceAgent {
+		t.Fatalf("agent no_promote provenance = %q", got.AdjudicationProvenance)
+	}
+	res, err = s.AdjudicateStamped(reversed.ID, "promote", "", "operator:test", "", t0.Add(time.Minute))
+	if err != nil || res.Claim == nil {
+		t.Fatalf("operator promote after agent no_promote must pass: res=%+v err=%v", res, err)
+	}
+	if got := load(reversed.ID); got.State != "promoted" || got.AdjudicatedBy != "operator:test" || got.AdjudicationProvenance != AdjudicationProvenanceOperator {
+		t.Fatalf("re-ruled candidate state=%q by=%q provenance=%q", got.State, got.AdjudicatedBy, got.AdjudicationProvenance)
+	}
+
+	// Reason and provenance read back through the candidates-list projection.
+	report, err := s.ListCandidates(t0, CandidateListOptions{State: "parked"})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("ListCandidates: %v", err)
 	}
-	if got.State != "proposed" {
-		t.Fatalf("refused adjudication changed state to %q, want proposed", got.State)
+	var found bool
+	for _, item := range report.Items {
+		if item.ID != demotedIDs["park"] {
+			continue
+		}
+		found = true
+		if item.Reason != reason || item.AdjudicatedBy != agent || item.AdjudicationProvenance != AdjudicationProvenanceAgent {
+			t.Fatalf("projection reason=%q by=%q provenance=%q", item.Reason, item.AdjudicatedBy, item.AdjudicationProvenance)
+		}
 	}
-	if got.AdjudicatedBy != "" || got.AdjudicatedAt != "" {
-		t.Fatalf("refused adjudication stamped provenance: by=%q at=%q", got.AdjudicatedBy, got.AdjudicatedAt)
+	if !found {
+		t.Fatalf("agent-parked candidate %s missing from parked projection", demotedIDs["park"])
 	}
 }
 

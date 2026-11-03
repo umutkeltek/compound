@@ -43,6 +43,11 @@ above for one kind of memory: the lesson.
   ambient.
 - **Status never promotes.** Status rows are state, not lessons; every learning
   promotion door refuses them.
+- **Agents demote; operators promote.** An agent may file a candidate away
+  itself: `compound memory adjudicate <id> --verdict no_promote|park --by
+  <agent> --reason "<why>"` (stamped `adjudication_provenance: agent`;
+  reversible). `promote` and `reject` stay operator-only; an agent's learning
+  promotes through `compound memory lesson`.
 - **Contradictions park.** A second lesson in the same slot with a different
   how keeps both, marks each contested by the other, and serves the newest as
   `contested`. The next consumer that records a use (`work close --used

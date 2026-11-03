@@ -37,7 +37,7 @@ func memoryUsage(sub string) string {
 	case "candidates":
 		return "usage: compound memory candidates --json [--state proposed|parked|promoted|rejected|no_promote|needs_review] [--limit N] [--kind K] [--created-after <RFC3339>] [--include-evidence]"
 	case "adjudicate":
-		return "usage: compound memory adjudicate <id> --verdict reject|park|promote|no_promote [--work W] [--by ACTOR] [--confirmation-ref ev_ID]|adjudicate --pending [--limit N] [--scan-limit N] [--after <cursor-token-or-filename>] [--verdict reject|park|no_promote] [--work W] [--yes] [--dry-run] (batch drain; --yes required to mutate; --limit caps adjudications, --scan-limit caps entries read, --after resumes from a prior pass's next cursor)"
+		return "usage: compound memory adjudicate <id> --verdict reject|park|promote|no_promote [--work W] [--by ACTOR] [--reason TEXT] [--confirmation-ref ev_ID] (promote/reject need operator provenance; agents may no_promote/park)|adjudicate --pending [--limit N] [--scan-limit N] [--after <cursor-token-or-filename>] [--verdict reject|park|no_promote] [--work W] [--yes] [--dry-run] (batch drain; --yes required to mutate; --limit caps adjudications, --scan-limit caps entries read, --after resumes from a prior pass's next cursor)"
 	case "confirmation":
 		return "usage: compound memory confirmation <candidate_id> --quote <text> --reviewed-by operator:<id>"
 	case "graph":
@@ -450,7 +450,7 @@ func cmdMemory(args []string) {
 			}
 			return
 		}
-		candidateID := firstPos(map[string]bool{"--verdict": true, "--work": true, "--confirmation-ref": true, "--by": true})
+		candidateID := firstPos(map[string]bool{"--verdict": true, "--work": true, "--confirmation-ref": true, "--by": true, "--reason": true})
 		verdict := flag("--verdict")
 		confirmationRef := flag("--confirmation-ref")
 		if has("--confirmation-ref") && confirmationRef == "" {
@@ -470,12 +470,11 @@ func cmdMemory(args []string) {
 		if confirmationRef != "" {
 			res, err = store.AdjudicateExplicitConfirmation(candidateID, confirmationRef, flag("--work"), time.Now())
 		} else {
-			// The CLI verb is the operator ratification door: it always stamps
-			// AdjudicatedBy/AdjudicatedAt (actor defaults to "operator") so a
-			// candidate the operator has ruled on — including a re-park, "Keep
-			// aside" — leaves the needs-your-call queue while staying parked as
-			// evidence. See mem.Candidate.AdjudicatedBy.
-			res, err = store.AdjudicateAsOperator(candidateID, verdict, flag("--work"), flag("--by"), time.Now())
+			// The CLI verb is the stamped door: it always stamps who ruled
+			// (actor defaults to "operator"; agents may only demote) and the
+			// --reason, so a ruled-on candidate leaves the needs-your-call
+			// queue while staying as evidence. See mem.AdjudicateStamped.
+			res, err = store.AdjudicateStamped(candidateID, verdict, flag("--work"), flag("--by"), flag("--reason"), time.Now())
 		}
 		// Falsifier 2 (work_3c70f011f6ba): wrap "not found: <id>.json" with the searched location + door hint.
 		if err != nil {
