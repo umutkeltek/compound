@@ -84,6 +84,9 @@ or termination assertions to accommodate setup latency.
    ActionIntent, PolicyDecision and native RunAttempt precede all preparation effects.
    Do not nest this long producer in the generic 45-minute governed harness wrapper.
    Existing test selection and 30-minute test-phase deadlines remain unchanged.
+   The presubmit go-test gates share a 10-minute total budget; what does not fit is reported
+   as `deferred=<pkgs>` (verdict line) and `presubmit.budget_deferred` (`--out`), never silently
+   skipped, and the verifier verdict covers it after the land.
    `presubmit-execution:artifact:sha256:...` is an execution-only artifact, never a
    `proof-check:pfrs_*` verification or adoption input. Interrupted native owners use
    `--presubmit-recover-execution RATT_ID --work WORK --actor ACTOR --reason TEXT`
@@ -281,6 +284,16 @@ A rebase, replay, or new HEAD invalidates prior proof and requires a fresh batte
 For source-controlled work, a committed stored successful proof is required:
 `land-check` candidate tip, current attached commit candidate, and stored proof HEAD
 must match; close refuses a missing, mismatched, or rebased proof.
+
+
+**Verifier verdict (operator decision 2026-11-03).** For a non-core diff the stored proof is the verifier
+post-land verdict, not a laptop battery: `compound work verifier-verdict WORK --tip LANDED_SHA --attach
+--actor ACTOR`, then `land-check`. It certifies by containment, not equality: the stored proof head
+is the verified commit S, and land-check requires the candidate tip T to be an ancestor of or equal
+to S and S to be on the target branch. A red culprit range containing T, or no green verdict
+covering T, refuses the close ("verifier has not verified this tip yet"); there is no laptop fallback.
+Governance-core diffs (`governance_core=... full_battery_required=true` on the presubmit verdict)
+keep the full pre-land battery and the equality rule above. The laptop nightly battery is retired.
 
 ## Verdict format (end every run with exactly one)
 

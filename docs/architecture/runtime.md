@@ -1095,6 +1095,37 @@ a divergent target refuses without discarding completed evidence. A target that
 already contains H follows the normal landed checks. A target advancing within
 H preserves the same B/H evidence and requires a fresh main-SHA guard.
 
+### Verifier post-land verdict is the canonical close proof
+
+Operator decision 2026-11-03: the post-land verifier verdict is the canonical proof for
+closing source-controlled work; the laptop keeps only a fast presubmit, and the
+laptop canonical and nightly batteries are retired for non-core diffs.
+
+`work verifier-verdict WORK --tip T [--attach --actor A]` reads the verifier evidence in
+`$COMPOUND_HOME/state/verify/` (`verdicts.tsv`, `red.json`) and attaches
+`verifier-verdict:<run_id>:<sha>` as a verification ref. Attach refuses a ref that names
+no green full-suite row. Land-check then applies one rule (`internal/work/verifier_verdict.go`):
+
+- A GREEN full-suite verdict at S certifies landed tip T when T is an ancestor of
+  or equal to S and S is on the bound target. The run tested the target including
+  the change; the recorded proof head is S, not T.
+- A RED culprit range (lo, hi] that contains T refuses (`verifier_red_culprit`) unless
+  a green verdict covering T finished after that red was named.
+- No covering green refuses (`awaiting_verifier_verdict`: "verifier has not verified this tip
+  yet"). There is no fallback to a laptop battery.
+
+Close revalidates live, so a red verdict named after the land-check still refuses
+the close. Diffs that touch `proofscope.GovernanceCorePaths` keep the full pre-land
+canonical battery and the exact-tip equality rule; the presubmit verdict line
+names them as `governance_core=<path> full_battery_required=true`.
+
+The presubmit go-test gates share a 10-minute wall-clock budget (each package keeps
+its own deadline). A gate that cannot start in the budget, or that the budget cuts
+before any failure printed, is `deferred`: its packages appear as `deferred=<pkgs>`
+on the verdict line and under `presubmit.budget_deferred` in the report. A deferred
+gate is neither a pass nor a silent skip, and exit 0 still needs every gate that ran
+to be green.
+
 ## 3. Hooks are clients, not brains
 
 The OMP shim reads each boundary's native HookContext sessionManager identity and
