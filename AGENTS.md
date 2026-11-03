@@ -222,6 +222,9 @@ implies (a timeout knob) is then the wrong fix. Read the run-attempt records and
 reasons before building what the note implies.
 
 ## Build discipline
+- **Find the existing owner of a rule before adding a gate** (lived 2026-11-03, ambient scope gate): a first
+  version ignored `internal/contract/memory_work_scope.go`, which already owned work-scope recall, and broke 30
+  tests. Grep for the predicate or field you are about to gate; if a file already decides it, extend that file.
 - The topology is the **target**, not a license to build all of it. One vertical slice, proven with a command +
   fixtures, then retire the parallel handling. Never create a kernel service ahead of a slice that needs it.
 - Every move ends in one canonical `move_type`; `audit_only` (docs/dashboards) does not count as compounding.
