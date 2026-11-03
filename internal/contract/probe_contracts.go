@@ -520,6 +520,9 @@ func probeClaimCandidate(in Input, rule MemoryRule, semanticRanks map[string]flo
 	if !productRecallFenceAllowsClaim(dependencies.ProductFence, claim) {
 		return probeMemoryCandidate{}, false, true, envelope.ExcludedRef{}
 	}
+	if !dependencyAmbientScope(in, dependencies).allowsRepoScoped(claim, group.ExplicitScope || strings.TrimSpace(in.Topic) != "") {
+		return probeMemoryCandidate{}, false, false, envelope.ExcludedRef{Ref: ambientScopeExclusionRef, Reason: ambientScopeExclusionReason}
+	}
 	if reason := addressedWorkStatusExclusionReason(claim, entities, taskTokens, sem, group.ExplicitScope || strings.TrimSpace(in.Topic) != ""); reason != "" {
 		return probeMemoryCandidate{}, false, false, envelope.ExcludedRef{Ref: "claim://" + claim.ID, Reason: reason}
 	}
@@ -567,6 +570,9 @@ func probePositionCandidate(in Input, rule MemoryRule, semanticRanks map[string]
 	}
 	if !productRecallFenceAllowsClaim(dependencies.ProductFence, claim) {
 		return probeMemoryCandidate{}, false, true, envelope.ExcludedRef{}
+	}
+	if !dependencyAmbientScope(in, dependencies).allowsRepoScoped(claim, group.ExplicitScope || strings.TrimSpace(in.Topic) != "") {
+		return probeMemoryCandidate{}, false, false, envelope.ExcludedRef{Ref: ambientScopeExclusionRef, Reason: ambientScopeExclusionReason}
 	}
 	if reason := addressedWorkStatusExclusionReason(claim, entities, taskTokens, sem, group.ExplicitScope || strings.TrimSpace(in.Topic) != ""); reason != "" {
 		return probeMemoryCandidate{}, false, false, envelope.ExcludedRef{Ref: "claim://" + claim.ID, Reason: reason}

@@ -217,9 +217,18 @@ func TestAddressedWorkRecallRescuesExplicitScope(t *testing.T) {
 		})
 	}
 	t.Run("semantic", func(t *testing.T) {
+		// Semantic relevance is still a positive path through the addressed-work gate for
+		// a fact that has no place of its own...
 		pack, claims := addressedFixturePack(t, "repair work_fixture_target", "", "semantic",
-			addressedSeed("semantic", "product:fixture_alpha", "A relevant state with no shared lexical words", "status"))
+			addressedSeed("semantic", "fixture-ledger", "A relevant state with no shared lexical words", "status"))
 		assertAddressedRecall(t, pack, claims["semantic"], true)
+		// ...but it no longer anchors ANOTHER product's fact: the ambient scope gate
+		// requires the cwd, the task, a cited Work, or an explicit topic to name the
+		// product. Semantic-only admission is how unrelated repositories' facts reached
+		// every session start.
+		pack, claims = addressedFixturePack(t, "repair work_fixture_target", "", "semantic",
+			addressedSeed("semantic", "product:fixture_alpha", "A relevant state with no shared lexical words", "status"))
+		assertAddressedRecall(t, pack, claims["semantic"], false)
 	})
 }
 
@@ -257,7 +266,9 @@ func TestAddressedWorkRecallHonorsEffectiveClassAndOrdinaryQueries(t *testing.T)
 		{"explicit fact", "status", "research_fact", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			seed := addressedSeed("record", "product:fixture_alpha", "delivery review", tc.kind)
+			// A place-less entity isolates the addressed-work class rule from the ambient
+			// scope gate, which would refuse an unnamed product's fact either way.
+			seed := addressedSeed("record", "fixture-ledger", "delivery review", tc.kind)
 			seed.candidate.CanonClass = tc.canon
 			pack, claims := addressedFixturePack(t, "delivery review work_fixture_target", "", "", seed)
 			assertAddressedRecall(t, pack, claims["record"], tc.want)
@@ -265,6 +276,14 @@ func TestAddressedWorkRecallHonorsEffectiveClassAndOrdinaryQueries(t *testing.T)
 	}
 	t.Run("ordinary query", func(t *testing.T) {
 		pack, claims := addressedFixturePack(t, "private delivery review", "", "",
+			addressedSeed("record", "fixture-ledger", "private delivery review", "status"))
+		assertAddressedRecall(t, pack, claims["record"], true)
+	})
+	t.Run("ordinary query does not reach an unnamed product", func(t *testing.T) {
+		pack, claims := addressedFixturePack(t, "private delivery review", "", "",
+			addressedSeed("record", "product:fixture_alpha", "private delivery review", "status"))
+		assertAddressedRecall(t, pack, claims["record"], false)
+		pack, claims = addressedFixturePack(t, "private delivery review for fixture_alpha", "", "",
 			addressedSeed("record", "product:fixture_alpha", "private delivery review", "status"))
 		assertAddressedRecall(t, pack, claims["record"], true)
 	})
@@ -372,7 +391,9 @@ func TestAddressedWorkWithheldPositionsDoNotInventMissingTypeMetadata(t *testing
 func TestAddressedWorkRecallKeepsNonOperationalStatus(t *testing.T) {
 	for _, visibility := range []string{"contextual", "public"} {
 		t.Run(visibility, func(t *testing.T) {
-			seed := addressedSeed("record", "product:fixture_alpha", "review delivery", "status")
+			// Place-less entity: this test is about the addressed-work visibility rule, not
+			// the ambient scope gate (which refuses an unnamed product's fact either way).
+			seed := addressedSeed("record", "fixture-ledger", "review delivery", "status")
 			seed.candidate.Visibility = visibility
 			pack, claims := addressedFixturePack(t, "review delivery work_fixture_target", "", "", seed)
 			assertAddressedRecall(t, pack, claims["record"], true)
@@ -388,7 +409,6 @@ func TestAddressedWorkProbeRetainsEveryPositiveScopePath(t *testing.T) {
 		{"named", "repair product fixture_alpha work_fixture_target", "product:fixture_alpha", "Available release", "", ""},
 		{"meaning", "repair product work_fixture_target", "product:fixture_alpha", "Result of work_fixture_target", "", ""},
 		{"provenance", "repair product work_fixture_target", "product:fixture_alpha", "Available artifact", "trace:work_fixture_target", ""},
-		{"semantic", "repair product work_fixture_target", "product:fixture_alpha", "Available release", "", "record"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			seed := addressedSeed("record", tc.entity, tc.object, "status")
@@ -399,6 +419,14 @@ func TestAddressedWorkProbeRetainsEveryPositiveScopePath(t *testing.T) {
 			assertAddressedRecall(t, pack, claims["record"], true, true)
 		})
 	}
+	// Semantic relevance alone used to carry an unnamed product's fact into a built-in probe
+	// group. The ambient scope gate refuses it: a fact about another product rides in only
+	// when the cwd, the task, a cited Work, or an explicit topic names that product.
+	t.Run("semantic alone does not anchor another product", func(t *testing.T) {
+		seed := addressedSeed("record", "product:fixture_alpha", "Available release", "status")
+		pack, claims := addressedFixturePack(t, "repair product work_fixture_target", "builtin", "record", seed)
+		assertAddressedRecall(t, pack, claims["record"], false)
+	})
 	t.Run("named comparison", func(t *testing.T) {
 		pack, claims := addressedFixturePack(t, "compare product fixture_alpha and fixture_beta under work_fixture_target", "builtin", "",
 			addressedSeed("alpha", "product:fixture_alpha", "First release", "status"),
