@@ -32,6 +32,8 @@ func TestDesktopZipExcludesRuntimeTreesAndDocumentsTheSnapshotBoundary(t *testin
 		".ua/",
 		".hermes/",
 		"body/",
+		"--include-media",
+		"--include-binaries",
 	} {
 		if !strings.Contains(string(help), want) {
 			t.Fatalf("help does not document %q:\n%s", want, help)
@@ -51,6 +53,9 @@ func TestDesktopZipExcludesRuntimeTreesAndDocumentsTheSnapshotBoundary(t *testin
 		"body/index-v2.sqlite",
 		"body/backup/operation.lock",
 		"memory/compound/directory-only/.keep-dir",
+		"docs_private/release/qa/shot.png",
+		"docs_private/release/qa/report.md",
+		"console/public/logo.png",
 	} {
 		fullPath := filepath.Join(source, path)
 		if strings.HasSuffix(path, ".keep-dir") {
@@ -65,6 +70,12 @@ func TestDesktopZipExcludesRuntimeTreesAndDocumentsTheSnapshotBoundary(t *testin
 		if err := os.WriteFile(fullPath, []byte(path+"\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// A Mach-O header on a >1 MB file: the packet-evidence build shape, which
+	// has no extension for rsync to match.
+	machO := append([]byte{0xcf, 0xfa, 0xed, 0xfe}, make([]byte, 2*1024*1024)...)
+	if err := os.WriteFile(filepath.Join(source, "docs_private/release/qa/compound"), machO, 0o755); err != nil {
+		t.Fatal(err)
 	}
 	if out, err := exec.Command("git", "-C", source, "init", "-q").CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v\n%s", err, out)
@@ -91,6 +102,16 @@ func TestDesktopZipExcludesRuntimeTreesAndDocumentsTheSnapshotBoundary(t *testin
 			t.Fatalf("runtime tree %q was packaged: %v", excluded, err)
 		}
 	}
+	for _, kept := range []string{"docs_private/release/qa/report.md", "console/public/logo.png"} {
+		if _, err := os.Stat(filepath.Join(stage, kept)); err != nil {
+			t.Fatalf("%q must survive the media/binary rules: %v", kept, err)
+		}
+	}
+	for _, dropped := range []string{"docs_private/release/qa/shot.png", "docs_private/release/qa/compound"} {
+		if _, err := os.Stat(filepath.Join(stage, dropped)); !os.IsNotExist(err) {
+			t.Fatalf("upload-cap offender %q was packaged: %v", dropped, err)
+		}
+	}
 	notes, err := os.ReadFile(filepath.Join(stage, "AUDIT-NOTES.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -99,6 +120,34 @@ func TestDesktopZipExcludesRuntimeTreesAndDocumentsTheSnapshotBoundary(t *testin
 		if !strings.Contains(string(notes), excluded) {
 			t.Fatalf("AUDIT-NOTES.md omits always-excluded %q:\n%s", excluded, notes)
 		}
+	}
+	for _, rule := range []string{"Raster/video media under docs_private/", "Compiled executables"} {
+		if !strings.Contains(string(notes), rule) {
+			t.Fatalf("AUDIT-NOTES.md omits the %q rule:\n%s", rule, notes)
+		}
+	}
+
+	for _, tc := range []struct {
+		name    string
+		flags   []string
+		kept    string
+		dropped string
+	}{
+		{"media only", []string{"--include-media"}, "docs_private/release/qa/shot.png", "docs_private/release/qa/compound"},
+		{"binaries only", []string{"--include-binaries"}, "docs_private/release/qa/compound", "docs_private/release/qa/shot.png"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{scriptPath, "--repo", source, "--desktop", desktop, "--name", "snapshot", "--zip", "snapshot.zip", "--max-zip-mb", "10"}, tc.flags...)
+			if out, err := exec.Command("bash", args...).CombinedOutput(); err != nil {
+				t.Fatalf("package fixture: %v\n%s", err, out)
+			}
+			if _, err := os.Stat(filepath.Join(stage, tc.kept)); err != nil {
+				t.Fatalf("%q must be packaged: %v", tc.kept, err)
+			}
+			if _, err := os.Stat(filepath.Join(stage, tc.dropped)); !os.IsNotExist(err) {
+				t.Fatalf("%q must be excluded: %v", tc.dropped, err)
+			}
+		})
 	}
 }
 

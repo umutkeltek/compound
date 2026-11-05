@@ -26,6 +26,16 @@ Default mode is for a ChatGPT Pro source audit:
     Skipping these keeps rsync from walking ~10 GB of agent worktrees on
     every run.
   - excludes dependency/build artifacts: node_modules, .next
+  - excludes raster/video media under docs_private/ (png, jpg, jpeg, gif,
+    webp, heic, mp4, mov): product-loop visuals and release QA captures
+    are evidence bytes, not source, and do not compress — ~1 GB of
+    screenshots is what pushed the zip past the upload cap. Media
+    outside docs_private/ (console assets, fixtures) is kept. Use
+    --include-media to keep it.
+  - removes compiled executables (Mach-O/ELF over 1 MB) from the staged copy
+    outside .git: the gitignored root build and the ~45 MB compound builds
+    kept as packet evidence under docs_private/ are not reviewable source.
+    Use --include-binaries to keep them.
   - removes Finder/system junk: .DS_Store, __MACOSX
   - enforces a hard zip budget (--max-zip-mb, default 480): an oversized
     zip is deleted and the run fails with the largest staged files listed.
@@ -45,6 +55,15 @@ Options:
   --name NAME              Staged folder name. Default: compound.
   --zip NAME               Zip filename. Default: compound.zip.
   --upload-safe            Produce the smaller public-audit bundle.
+  --second-opinion         General ChatGPT review: all source and bounded current
+                           private context/recent text evidence; no Git objects,
+                           runtime homes, corpora, archives or duplicate worktrees.
+                           Adds REVIEW-START-HERE.md and REVIEW-MANIFEST.json.
+  --review-data-mb N        Private context/evidence budget for --second-opinion.
+                           Default: 32 MiB. Whole groups are omitted, never truncated.
+  --review-evidence PATH    Prioritize a repo-relative text file/directory in that
+                           budget (repeatable); fail if it cannot fit. Requires
+                           --second-opinion. Upload-safe/delta modes are separate.
   --delta                  Produce the small delta-review bundle: source tree
                            without .git, .compound-private/, memory/, and
                            docs_private/plan/packets/ bulk, so external
@@ -54,6 +73,8 @@ Options:
                            in the audit workflow); those carry the actual delta.
   --include-node-modules   Keep dependency/build artifacts in the local snapshot.
   --include-private        With --upload-safe, keep private docs; harness/runtime directories remain excluded.
+  --include-media          Keep raster/video media under docs_private/.
+  --include-binaries       Keep compiled executables in the staged copy.
   --keep-memory NAME       Keep top-level memory/NAME. Can be repeated.
                            Default keep list: compound.
   --no-default-memory      Clear the default keep-memory list.
@@ -102,13 +123,21 @@ desktop_path="${COMPOUND_DESKTOP:-$HOME/Desktop}"
 stage_name="${COMPOUND_STAGE_NAME:-compound}"
 zip_name="${COMPOUND_ZIP_NAME:-compound.zip}"
 upload_safe=0
+second_opinion=0
+review_data_mb=32
+review_evidence=()
 delta=0
 include_private=1
 include_node_modules=0
+include_media=0
+include_binaries=0
 dry_run=0
 max_zip_mb=480
 
 extra_excludes=()
+
+# Raster/video extensions dropped from docs_private/ unless --include-media.
+media_exts=(png jpg jpeg gif webp heic mp4 mov)
 
 keep_memory=()
 if [[ -n "${COMPOUND_KEEP_MEMORY_PROJECTS:-}" ]]; then
@@ -145,6 +174,20 @@ while [[ $# -gt 0 ]]; do
       include_private=0
       shift
       ;;
+    --second-opinion)
+      second_opinion=1
+      shift
+      ;;
+    --review-data-mb)
+      [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]*$ ]] || die "--review-data-mb requires a positive integer"
+      review_data_mb="$2"
+      shift 2
+      ;;
+    --review-evidence)
+      [[ $# -ge 2 ]] || die "--review-evidence requires a repository-relative path"
+      review_evidence+=("$2")
+      shift 2
+      ;;
     --delta)
       delta=1
       shift
@@ -155,6 +198,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --include-private)
       include_private=1
+      shift
+      ;;
+    --include-media)
+      include_media=1
+      shift
+      ;;
+    --include-binaries)
+      include_binaries=1
       shift
       ;;
     --keep-memory)
@@ -191,6 +242,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "$second_opinion" -eq 1 ]]; then
+  [[ "$upload_safe" -eq 0 && "$delta" -eq 0 ]] || die "--second-opinion cannot be combined with --upload-safe or --delta"
+  [[ "$include_node_modules" -eq 0 && "$include_media" -eq 0 && "$include_binaries" -eq 0 ]] || die "--second-opinion selects source and text evidence; inclusion overrides require another mode"
+  command -v python3 >/dev/null 2>&1 || die "python3 is required for --second-opinion"
+  upload_safe=1
+  include_private=1
+elif [[ "${#review_evidence[@]}" -gt 0 || "$review_data_mb" != 32 ]]; then
+  die "--review-evidence and --review-data-mb require --second-opinion"
+fi
+
 [[ "$stage_name" != "" ]] || die "--name cannot be empty"
 [[ "$zip_name" != "" ]] || die "--zip cannot be empty"
 [[ "$stage_name" != "." && "$stage_name" != ".." && "$stage_name" != */* ]] || die "--name must be a simple folder name"
@@ -224,9 +285,25 @@ run() {
 # git queries, never mutates the source repo.
 generate_audit_notes() {
   local snapshot_utc head_sha branch status_lines status_verdict
-  local upstream ahead behind ahead_behind_line
+  local upstream ahead behind ahead_behind_line media_line binaries_line
 
   snapshot_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  if [[ "$include_media" -eq 0 ]]; then
+    media_line="Raster/video media under docs_private/ (${media_exts[*]}) is excluded
+   to fit the upload cap. A markdown link or report that points at a missing
+   screenshot there is a packaging rule, not a broken reference."
+  else
+    media_line="Raster/video media under docs_private/ is included (--include-media)."
+  fi
+
+  if [[ "$include_binaries" -eq 0 ]]; then
+    binaries_line="Compiled executables (Mach-O/ELF over 1 MB) are removed outside .git,
+   including build evidence under docs_private/plan/packets/. A receipt that
+   names a missing binary is a packaging rule, not lost evidence."
+  else
+    binaries_line="Compiled executables are included (--include-binaries)."
+  fi
 
   if git -C "$repo_real" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     head_sha="$(git -C "$repo_real" rev-parse HEAD 2>/dev/null || printf unknown)"
@@ -283,6 +360,8 @@ $ahead_behind_line
    agent checkouts, or live body-store sidecar databases (body/ is the
    switchback body-store SQLite/WAL/lock state).
    Their absence is a packaging rule, not repo state.
+4. $media_line
+5. $binaries_line
 
 Cross-check findings against this note before flagging repo hygiene.
 NOTES
@@ -331,6 +410,12 @@ if [[ "$include_node_modules" -eq 0 ]]; then
   )
 fi
 
+if [[ "$include_media" -eq 0 ]]; then
+  for ext in ${media_exts+"${media_exts[@]}"}; do
+    rsync_args+=(--exclude "/docs_private/**.$ext")
+  done
+fi
+
 if [[ "$upload_safe" -eq 1 ]]; then
   rsync_args+=(
     --exclude ".git/"
@@ -352,9 +437,11 @@ printf '# compound Desktop snapshot zip\n'
 printf -- '- source: %s\n' "$repo_real"
 printf -- '- stage: %s\n' "$stage_path"
 printf -- '- zip: %s\n' "$zip_path"
-printf -- '- mode: %s\n' "$([[ "$delta" -eq 1 ]] && printf delta || { [[ "$upload_safe" -eq 1 ]] && printf upload-safe || printf full-local; })"
+printf -- '- mode: %s\n' "$([[ "$second_opinion" -eq 1 ]] && printf second-opinion || { [[ "$delta" -eq 1 ]] && printf delta || { [[ "$upload_safe" -eq 1 ]] && printf upload-safe || printf full-local; }; })"
 printf -- '- include_private: %s\n' "$include_private"
 printf -- '- include_node_modules: %s\n' "$include_node_modules"
+printf -- '- include_media: %s\n' "$include_media"
+printf -- '- include_binaries: %s\n' "$include_binaries"
 printf -- '- keep_memory: %s\n' "${keep_memory[*]:-(none)}"
 if [[ "${#extra_excludes[@]}" -gt 0 ]]; then
   printf -- '- extra_excludes:\n'
@@ -363,7 +450,41 @@ if [[ "${#extra_excludes[@]}" -gt 0 ]]; then
   done
 fi
 
+review_temp=""
+if [[ "$second_opinion" -eq 1 ]]; then
+  # Resolve selection before replacing any previous snapshot. A failed explicit
+  # evidence request leaves existing Desktop artifacts alone.
+  if [[ "$dry_run" -eq 0 ]]; then
+    review_temp="$(mktemp -d "${TMPDIR:-/tmp}/compound-zip-review.XXXXXX")"
+    trap 'rm -f -- "$review_temp/files.list" "$review_temp/selection.json"; rmdir -- "$review_temp"' EXIT
+  else
+    review_temp="(temporary-review-selection)"
+  fi
+  review_args=(select --repo "$repo_real" --out "$review_temp" --data-mb "$review_data_mb")
+  for evidence in ${review_evidence+"${review_evidence[@]}"}; do
+    review_args+=(--evidence "$evidence")
+  done
+  run python3 "$script_dir/desktop_zip_review.py" "${review_args[@]}"
+  rsync_args+=(--from0 --files-from "$review_temp/files.list")
+fi
+
 run rm -rf -- "$stage_path" "$zip_path"
+# Deletes compiled executables from the staged copy. rsync cannot match them:
+# the packet builds have no extension, so sniff the magic bytes instead.
+prune_binaries() {
+  local path magic count=0
+  while IFS= read -r -d '' path; do
+    magic="$(head -c 4 "$path" | od -An -tx1 | tr -d ' \n')"
+    case "$magic" in
+      cffaedfe|cefaedfe|cafebabe|7f454c46)
+        rm -f -- "$path"
+        count=$((count + 1))
+        ;;
+    esac
+  done < <(find "$stage_path" -path "$stage_path/.git" -prune -o -type f -size +1024k -print0)
+  printf -- '- pruned_binaries: %s\n' "$count"
+}
+
 run mkdir -p -- "$stage_path"
 run rsync "${rsync_args[@]}" "$repo_real/" "$stage_path/"
 
@@ -376,8 +497,47 @@ fi
 audit_notes_path="$stage_path/AUDIT-NOTES.md"
 run sh -c 'cat > "$1"' _ "$audit_notes_path" <<<"$(generate_audit_notes)"
 
+if [[ "$second_opinion" -eq 1 ]]; then
+  review_brief="$(cat <<'REVIEW'
+# General second opinion — start here
+
+Review this repository critically as a whole: architecture, implementation,
+complexity, useful outcomes, and whether its stated guarantees have evidence.
+Identify the highest-impact problems and simplifications. Cite file paths and
+lines, distinguish confirmed findings from hypotheses, and consider what an
+alternative design would improve. The repository's doctrine is itself reviewable.
+
+Start with AUDIT-NOTES.md for the exact source checkout's HEAD and dirty state,
+README.md, docs/ARCHITECTURE.md, docs/LAYERS.md, and docs/architecture/status.md.
+Then inspect production code, its callers, and tests. Current private design/work
+context and recent real text evidence supplement the source.
+
+REVIEW-MANIFEST.json explains selection, hashes the packaged files, and lists
+budget/filter omissions. Source includes tracked and nonignored local files.
+Private context has a separate bounded budget. Recent evidence is selected across
+workflows without filtering for success; it is a sample, not exhaustive history.
+Supporting images/binaries and references outside the snapshot may be absent.
+
+The real COMPOUND_HOME is not exported and no fresh runtime checks are performed.
+Historical reports, receipts and plans do not prove current deployed behavior.
+Missing evidence should be identified as a limit, not treated as an empty system.
+Git object history is omitted; RECENT-COMMITS.txt provides limited history.
+REVIEW
+)"
+  run sh -c 'cat > "$1"' _ "$stage_path/REVIEW-START-HERE.md" <<<"$review_brief"
+  if [[ "$dry_run" -eq 0 ]]; then
+    git -C "$repo_real" log -30 --format='%h %ad %s' --date=iso-strict > "$stage_path/RECENT-COMMITS.txt"
+  fi
+fi
+
 if [[ "$dry_run" -eq 0 ]]; then
   find "$stage_path" -name ".DS_Store" -delete
+  if [[ "$include_binaries" -eq 0 ]]; then
+    prune_binaries
+  fi
+  if [[ "$second_opinion" -eq 1 ]]; then
+    python3 "$script_dir/desktop_zip_review.py" manifest --stage "$stage_path" --selection "$review_temp/selection.json"
+  fi
   (
     cd "$desktop_real"
     COPYFILE_DISABLE=1 zip -qr "$zip_path" "$stage_name"
