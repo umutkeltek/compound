@@ -20,7 +20,7 @@ func TestLocalTargetPathSeparatesFilesystemAndURINamespaces(t *testing.T) {
 		{name: "localhost file URI", raw: "file://localhost/synthetic/project/src/file.go", path: "/synthetic/project/src/file.go", local: true},
 		{name: "remote file URI", raw: "file://files.example.invalid/synthetic/project/src/file.go"},
 		{name: "file URI query", raw: "file:///synthetic/project/src/file.go?version=1"},
-		{name: "ssh URI", raw: "ssh://example-apps.internal/srv/stacks/search"},
+		{name: "ssh URI", raw: "ssh://example.invalid/srv/stacks/search"},
 		{name: "https URI", raw: "https://example.invalid/file"},
 		{name: "unknown URI", raw: "future://authority/object"},
 	}
