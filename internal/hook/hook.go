@@ -1453,22 +1453,34 @@ func uniqueStrings(values []string) []string {
 }
 
 func normalizeActionTarget(fx Fixture, ai envelope.ActionIntent) envelope.ActionIntent {
-	if normalized := actionTargetPath(fx, ai); normalized != "" {
-		ai.Target.Path = normalized
+	raw := strings.TrimSpace(ai.Target.Path)
+	if raw == "" {
+		return ai
 	}
+	if normalized, local := LocalTargetPath(raw, fx.Cwd); local {
+		ai.Target.Path = normalized
+		return ai
+	}
+	if strings.TrimSpace(ai.Target.ID) == "" {
+		ai.Target.ID = raw
+	}
+	if strings.TrimSpace(ai.Destination) == "" {
+		ai.Destination = raw
+	}
+	ai.Target.Path = ""
+	if ai.SecurityFloorOutcome != "deny" {
+		ai.SecurityFloorOutcome = "hold"
+	}
+	ai.SecurityReasons = uniqueStrings(append(ai.SecurityReasons, NonLocalTargetSecurityReason))
 	return ai
 }
 
 func actionTargetPath(fx Fixture, ai envelope.ActionIntent) string {
-	targetPath := strings.TrimSpace(ai.Target.Path)
-	if targetPath == "" || filepath.IsAbs(targetPath) {
-		return targetPath
+	path, local := LocalTargetPath(ai.Target.Path, fx.Cwd)
+	if !local {
+		return ""
 	}
-	cwd := strings.TrimSpace(fx.Cwd)
-	if cwd == "" {
-		return targetPath
-	}
-	return filepath.Join(cwd, targetPath)
+	return path
 }
 
 func createHeldGateReview(store *work.Store, fx Fixture, ai envelope.ActionIntent, pd envelope.PolicyDecision, sc policy.SourceControlContext, now time.Time) (envelope.WorkEnvelope, error) {
