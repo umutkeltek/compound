@@ -7,7 +7,7 @@ import type { WorkLensGroup, WorkLensItem } from "@/lib/work-views";
 const MAX_VISIBLE_PER_LANE = 3;
 
 function workPriority(item: WorkLensItem): number {
-  const state = item.runStatus || item.state;
+  const state = item.state;
   if (state === "running") return 0;
   if (state === "verifying") return 1;
   if (["blocked", "held"].includes(item.state)) return 2;
@@ -42,7 +42,7 @@ export function WorkFlowLens({ stages, groups, onOpenTrace }: { stages: Pipeline
                 return <div key={stage.key} className="relative border-l border-hair px-2 py-3 before:absolute before:left-0 before:right-0 before:top-1/2 before:h-px before:bg-hair before:content-['']">
                   <div className="relative z-10 grid gap-2">
                     {items.map((item) => <button key={item.workId} type="button" onClick={() => onOpenTrace(item.workId)} className={`rounded-md border bg-panel px-2.5 py-2 text-left shadow-sm hover:border-work-line hover:shadow ${["blocked", "held"].includes(item.state) ? "border-seam-line" : "border-hair"}`}>
-                      <div className="line-clamp-2 text-xs font-semibold leading-snug text-ink">{item.title}</div><div className="mt-1 flex items-center justify-between gap-2"><StateBadge state={item.runStatus || item.state} /><span className="text-2xs text-faint">{item.ageLabel}</span></div><div className="mt-1"><IdRef id={item.workId} kind="work" plain truncate /></div>
+                      <div className="line-clamp-2 text-xs font-semibold leading-snug text-ink">{item.title}</div><div className="mt-1 flex items-center justify-between gap-2"><StateBadge state={item.state} /><span className="text-2xs text-faint">{item.ageLabel}</span></div>{item.runStatus ? <div className="mt-1 text-2xs text-faint">Run status: {item.runStatus.replace(/_/g, " ")}</div> : null}<div className="mt-1"><IdRef id={item.workId} kind="work" plain truncate /></div>
                     </button>)}
                   </div>
                 </div>;

@@ -9,7 +9,7 @@ import type { WorkLensGroup, WorkLensItem } from "@/lib/work-views";
 const MAX_VISIBLE_PER_LANE = 3;
 
 function workPriority(item: WorkLensItem): number {
-  const state = item.runStatus || item.state;
+  const state = item.state;
   if (state === "running") return 0;
   if (state === "verifying") return 1;
   if (["blocked", "held"].includes(item.state)) return 2;
@@ -84,7 +84,8 @@ export function WorkSpaceLens({ stages, groups, onOpenTrace }: { stages: Pipelin
               <div className="mt-3 grid gap-4">
                 <div>
                   <h3 className="line-clamp-5 text-base font-semibold leading-snug" title={selected.title}>{selected.title}</h3>
-                  <div className="mt-2 flex flex-wrap items-center gap-2"><StateBadge state={selected.runStatus || selected.state} /><span className="mono text-2xs text-[var(--canvas-muted)]">{selected.ageLabel}</span></div>
+                  <div className="mt-2 flex flex-wrap items-center gap-2"><StateBadge state={selected.state} /><span className="mono text-2xs text-[var(--canvas-muted)]">{selected.ageLabel}</span></div>
+                  {selected.runStatus ? <p className="mt-1 text-2xs text-[var(--canvas-muted)]">Run status: {selected.runStatus.replace(/_/g, " ")}</p> : null}
                 </div>
                 <div>
                   <div className="text-2xs font-bold uppercase tracking-wide text-[var(--canvas-muted)]">Harness ownership</div>
@@ -148,9 +149,9 @@ function HarnessRoom({ group, stages, selectedId, onSelect }: { group: WorkLensG
             data-selected={selectedId === item.workId}
             className={`live-node absolute z-30 flex h-7 items-center gap-1.5 rounded-md border px-2 text-left shadow-lg transition-transform hover:-translate-y-0.5 hover:border-work data-[selected=true]:border-work data-[selected=true]:ring-1 data-[selected=true]:ring-work/40 ${["blocked", "held"].includes(item.state) ? "!border-seam" : ""}`}
             style={{ left, width, top: `${14 + itemIndex * 34}px` }}
-            aria-label={`${item.title}, ${item.runStatus || item.state}, ${item.ageLabel}`}
+            aria-label={`${item.title}, ${item.state}, ${item.ageLabel}`}
           >
-            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${["blocked", "held"].includes(item.state) ? "bg-seam" : item.runStatus === "running" ? "bg-good" : "bg-work"}`} />
+            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${["blocked", "held"].includes(item.state) ? "bg-seam" : item.state === "running" ? "bg-good" : "bg-work"}`} />
             <span className="min-w-0 flex-1 truncate text-2xs font-semibold text-[var(--canvas-ink)]">{item.title}</span>
             <span className="mono shrink-0 text-[9px] text-[var(--canvas-muted)]">{item.ageLabel}</span>
           </button>
