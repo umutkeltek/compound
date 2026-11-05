@@ -473,7 +473,7 @@ func digestVolatileOperationalRepoStateClaim(claim Claim) bool {
 		return false
 	}
 	switch digestMemoryKey(claim.Predicate) {
-	case "head", "aheadcount", "behindcount", "stagedcount", "unstagedcount", "untrackedcount", "changedpathcount", "sourcecontrolstatus":
+	case "currentbranch", "head", "aheadcount", "behindcount", "stagedcount", "unstagedcount", "untrackedcount", "changedpathcount", "sourcecontrolstatus":
 		return true
 	default:
 		return false

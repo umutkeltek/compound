@@ -390,3 +390,42 @@ func TestVerifyHarnessDigestFileMissingFrontMatterErrors(t *testing.T) {
 		t.Fatal("expected an error for a file with no front matter")
 	}
 }
+
+func TestHarnessDigestExcludesOperationalBranchSnapshot(t *testing.T) {
+	store := newStore(t)
+	branch := Claim{
+		ID: "clm_branch_snapshot", Seq: 1, Entity: "repo:fixture-mixed",
+		Predicate: "current_branch", Object: "stale-feature-branch",
+		ClaimType: "status", Visibility: "operational", TopicRefs: []string{"standing-law"},
+		ValidFrom: rfc3339(t0),
+	}
+	digestFixtureClaim(t, store, branch)
+	digestFixtureClaim(t, store, Claim{
+		ID: "clm_branch_control", Seq: 2, Entity: "tool:branch-guidance",
+		Predicate: "rule", Object: "Read fresh repository facts before acting",
+		ClaimType: "constraint", Visibility: "operational", TopicRefs: []string{"standing-law"},
+		ValidFrom: rfc3339(t0),
+	})
+	report, body, err := store.RenderHarnessDigest(
+		HarnessDigestOptions{Harness: "codex"}, HarnessDigestMeta{}, t0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), branch.Entity) || strings.Contains(string(body), branch.Object) {
+		t.Error("historical operational branch snapshot entered the ambient harness digest")
+	}
+	if !strings.Contains(string(body), "tool:branch-guidance") {
+		t.Error("useful operational digest control was lost")
+	}
+	if report.PositionCount != 1 || report.ExcludedCount != 1 {
+		t.Errorf("digest counts = included %d, excluded %d; want 1/1", report.PositionCount, report.ExcludedCount)
+	}
+	recall, err := store.Recall(branch.Entity, RecallOpts{AsOfSeq: branch.Seq})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recall.Claims) != 1 || recall.Claims[0].ID != branch.ID || recall.Claims[0].Object != branch.Object {
+		t.Fatalf("explicit historical recall lost branch evidence: %+v", recall)
+	}
+}
