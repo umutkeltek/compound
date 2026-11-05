@@ -1,6 +1,7 @@
 package work
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -118,7 +119,7 @@ func (rt *presubmitRuntime) validateReport(report ProofCheckReport) error {
 	if report.SourceSnapshot == nil || *rt.out.SourceSnapshot != *report.SourceSnapshot {
 		return fmt.Errorf("native presubmit report lacks exact sealed source")
 	}
-	if len(report.Steps) != len(rt.out.GateInventory) || !reflect.DeepEqual(report.Presubmit, rt.out.PresubmitPlan) {
+	if len(report.Steps) != len(rt.out.GateInventory) || !sameSealedPresubmitPlan(report.Presubmit, rt.out.PresubmitPlan) {
 		return fmt.Errorf("native presubmit report differs from sealed inventory")
 	}
 	for i, step := range report.Steps {
@@ -134,6 +135,27 @@ func (rt *presubmitRuntime) validateReport(report ProofCheckReport) error {
 		return fmt.Errorf("native presubmit success requires actual committed child launch")
 	}
 	return nil
+}
+
+// sameSealedPresubmitPlan compares the report's plan in the form it was
+// sealed in. The sealed copy went through one JSON round trip, which turns an
+// empty omitempty slice (for example a plan that defers nothing) into nil, so
+// comparing raw values reads an unchanged plan as a different one. The
+// canonical bytes still differ for any change to the plan's content,
+// including a write into the plan after sealing.
+func sameSealedPresubmitPlan(report, sealed *ProofCheckPresubmit) bool {
+	if report == nil || sealed == nil {
+		return false
+	}
+	got, err := json.Marshal(report)
+	if err != nil {
+		return false
+	}
+	want, err := json.Marshal(sealed)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(got, want)
 }
 
 func samePresubmitStep(a, b ProofCheckStep) bool {
