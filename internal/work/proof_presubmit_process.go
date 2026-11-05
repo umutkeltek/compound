@@ -43,28 +43,29 @@ type PresubmitCheckpoint struct {
 }
 
 type presubmitRuntime struct {
-	store            *Store
-	out              *PresubmitExecutionResult
-	resource         *landlease.Resource
-	barrier          *landlease.ExecutionBarrier
-	leaseHeld        bool
-	root             *os.Root
-	parentRoot       *os.Root
-	parentInfo       os.FileInfo
-	outputInfo       os.FileInfo
-	outputDir        string
-	sequence         int
-	nextGate         int
-	completedGates   int
-	groupStarted     bool
-	groupClosed      bool
-	checkpointRecord func(*PresubmitExecutionResult) error
-	groupID          int
-	stage            string
-	outputPaths      []string
-	stopHeartbeat    context.CancelFunc
-	heartbeatDone    chan struct{}
-	cancel           context.CancelCauseFunc
+	store             *Store
+	out               *PresubmitExecutionResult
+	resource          *landlease.Resource
+	barrier           *landlease.ExecutionBarrier
+	leaseHeld         bool
+	root              *os.Root
+	parentRoot        *os.Root
+	parentInfo        os.FileInfo
+	outputInfo        os.FileInfo
+	outputDir         string
+	sequence          int
+	nextGate          int
+	completedGates    int
+	groupStarted      bool
+	groupClosed       bool
+	checkpointRecord  func(*PresubmitExecutionResult) error
+	groupID           int
+	stage             string
+	outputPaths       []string
+	stopHeartbeat     context.CancelFunc
+	heartbeatDone     chan struct{}
+	cancel            context.CancelCauseFunc
+	heartbeatInterval time.Duration
 }
 
 func (s *Store) acquirePresubmitRuntime(ctx context.Context, out *PresubmitExecutionResult, cancel context.CancelCauseFunc) (*presubmitRuntime, error) {
@@ -151,25 +152,57 @@ func (rt *presubmitRuntime) prepareOutput(ctx context.Context) error {
 	if err = rt.syncOutputDirectory(); err != nil {
 		return err
 	}
+	rt.startHeartbeat(ctx)
+	return nil
+}
+
+// startHeartbeat keeps the native execution alive and authorized while gates run.
+func (rt *presubmitRuntime) startHeartbeat(ctx context.Context) {
+	s, out := rt.store, rt.out
+	interval := rt.heartbeatInterval
+	if interval <= 0 {
+		interval = 15 * time.Second
+	}
 	rt.heartbeatDone = make(chan struct{})
 	hbCtx, stop := context.WithCancel(ctx)
 	rt.stopHeartbeat = stop
+	var loops sync.WaitGroup
+	loops.Add(2)
+	// Liveness never waits on the work-admission lock. The exclusive proof lease
+	// lives presubmitLeaseTTL (two minutes); other governed writers legitimately
+	// hold that lock longer than that under load (a work close, a memory refresh
+	// cycle), so a refresh queued behind it expired the lease underneath a healthy
+	// gate and the authority check then killed the run. The lease refresh takes
+	// only the lease binding lock; the RunAttempt heartbeat takes only its own
+	// work-admission inode.
 	go func() {
-		defer close(rt.heartbeatDone)
-		ticker := time.NewTicker(15 * time.Second)
+		defer loops.Done()
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
-		runPresubmitHeartbeat(ctx, hbCtx, ticker.C, func(checkCtx context.Context) error {
-			e := rt.check(checkCtx)
-			if e == nil {
-				_, e = s.runAttempts().Heartbeat(out.RunAttemptID, time.Now())
+		runPresubmitHeartbeat(ctx, hbCtx, ticker.C, func(liveCtx context.Context) error {
+			if err := liveCtx.Err(); err != nil {
+				return context.Cause(liveCtx)
 			}
-			if e == nil {
-				_, e = rt.resource.Refresh(out.Holder, presubmitLeaseTTL, time.Now())
+			if _, err := s.runAttempts().Heartbeat(out.RunAttemptID, time.Now()); err != nil {
+				return err
 			}
-			return e
+			_, err := rt.resource.Refresh(out.Holder, presubmitLeaseTTL, time.Now())
+			return err
 		}, rt.cancel)
 	}()
-	return nil
+	// Authority still cancels the gate when the Work generation, the proof lease
+	// owner, or the exclusive holder changes; it may wait behind the admission
+	// lock without the lease expiring while it waits.
+	go func() {
+		defer loops.Done()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		runPresubmitHeartbeat(ctx, hbCtx, ticker.C, rt.check, rt.cancel)
+	}()
+	go func() {
+		loops.Wait()
+		close(rt.heartbeatDone)
+	}()
 }
 
 func runPresubmitHeartbeat(ctx, stopCtx context.Context, ticks <-chan time.Time, refresh func(context.Context) error, cancel context.CancelCauseFunc) {
