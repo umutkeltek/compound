@@ -24,10 +24,9 @@ func readTestProcessSnapshots() ([]testProcessSnapshot, error) {
 			continue
 		}
 		body, err := os.ReadFile("/proc/" + entry.Name() + "/stat")
-		// A process can exit between the readdir and this read: linux then
-		// yields ENOENT (gone before open) or ESRCH (gone after open, read
-		// fails) — both mean the pid vanished mid-scan and must be skipped
-		// like ps does, not fail the whole snapshot (run 35376991764).
+		// A process can exit between listing /proc and reading its stat file.
+		// ENOENT and ESRCH both mean it vanished during the scan. Skip it
+		// as ps does, rather than failing the whole snapshot.
 		if os.IsNotExist(err) || errors.Is(err, syscall.ESRCH) {
 			continue
 		}
@@ -59,12 +58,10 @@ func parseLinuxTestProcessStat(pid int, body string) (testProcessSnapshot, error
 		return testProcessSnapshot{}, fmt.Errorf("read process %d stat: invalid process group %q", pid, fields[2])
 	}
 	if pgid <= 0 {
-		// Kernel threads (kthreadd, ksoftirqd/...) carry process group 0.
-		// A host VM's /proc lists them; a container's pid namespace does
-		// not — which is why this surfaced only on CI runners (run
-		// 35453308318): one kernel thread failed the whole scan and every
-		// snapshot-dependent supervisor test died instantly. They are not
-		// part of any test group; skip like any other scan noise.
+		// Kernel threads carry process group zero. A host VM exposes them
+		// through /proc, while a container pid namespace may not. They are
+		// not members of a test group; skip them rather than failing every
+		// snapshot-dependent supervisor check.
 		return testProcessSnapshot{}, nil
 	}
 	state := testProcessStateRunning
@@ -108,10 +105,8 @@ func TestParseLinuxTestProcessStat(t *testing.T) {
 			t.Fatalf("malformed stat %q was accepted", body)
 		}
 	}
-	// Kernel threads (kthreadd, ksoftirqd/...) carry process group 0. A
-	// host VM's /proc lists them; a container's pid namespace does not.
-	// They must yield an empty snapshot, never a scan-fatal error (run
-	// 35453308318: one kernel thread failed the whole snapshot read).
+	// Kernel threads have process group zero and may appear on host VMs.
+	// They must yield an empty snapshot rather than a scan-fatal error.
 	if got, err := parseLinuxTestProcessStat(2, stat("S", "0")); err != nil || got.pid != 0 {
 		t.Fatalf("kernel-thread stat: got (%+v, %v), want zero snapshot, nil error", got, err)
 	}

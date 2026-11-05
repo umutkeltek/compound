@@ -1,6 +1,9 @@
 package main
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,7 +64,7 @@ func TestCorpusLanesAreNotAmbientMemoryEngineProfiles(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
 		t.Fatalf("mkdir config: %v", err)
 	}
-	body := `schema_version: compound.memory_engine_config.v0.1
+	body := fmt.Sprintf(`schema_version: compound.memory_engine_config.v0.1
 corpus_lanes:
   - lane: corpus-chatgpt
     source_family: chatgpt_import
@@ -71,13 +74,13 @@ corpus_lanes:
       model: nomic-embed-text
       dims: 768
       bits: f32
-      base_url: http://127.0.0.1:11434/v1
+      base_url: %s
     chunk:
       unit: runes
       size: 4000
       overlap: 400
       boundary: structure
-`
+`, corpusConfigOnlyEmbedderURL(t))
 	if err := os.WriteFile(cfgPath, []byte(body), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -105,7 +108,7 @@ func TestCorpusLaneConfigIgnoresBreadthEmbedEnvFillIn(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
 		t.Fatalf("mkdir config: %v", err)
 	}
-	body := `schema_version: compound.memory_engine_config.v0.1
+	body := fmt.Sprintf(`schema_version: compound.memory_engine_config.v0.1
 corpus_lanes:
   - lane: corpus-chatgpt
     source_family: chatgpt_import
@@ -115,13 +118,13 @@ corpus_lanes:
       model: nomic-embed-text
       dims: 768
       bits: f32
-      base_url: http://127.0.0.1:11434/v1
+      base_url: %s
     chunk:
       unit: runes
       size: 4000
       overlap: 400
       boundary: structure
-`
+`, corpusConfigOnlyEmbedderURL(t))
 	if err := os.WriteFile(cfgPath, []byte(body), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -134,4 +137,16 @@ corpus_lanes:
 	if len(cfg.CorpusLanes) != 1 || cfg.CorpusLanes[0].Embedder.Provider != "ollama" {
 		t.Fatalf("corpus lane was filled from breadth env: %+v", cfg.CorpusLanes)
 	}
+}
+
+// corpusConfigOnlyEmbedderURL owns a local endpoint without depending on a
+// developer's embedder. These configuration tests must never issue requests.
+func corpusConfigOnlyEmbedderURL(t *testing.T) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("corpus configuration unexpectedly contacted embedder: %s %s", r.Method, r.URL.Path)
+		http.Error(w, "configuration tests must not contact embedder", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+	return server.URL + "/v1"
 }

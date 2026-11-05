@@ -118,7 +118,7 @@ func TestCredentialExecBrokeredRunsCustodianWrapper(t *testing.T) {
 	surface := ConnectionSurface{
 		NodeID: "tool:db",
 		CredentialHandle: CredentialHandle{
-			Ref:       "brokered://example-db.internal",
+			Ref:       "brokered://db.example",
 			Custodian: "infra-os",
 			EnvName:   "DB_PASSWORD",
 			Broker:    broker,
@@ -257,7 +257,7 @@ func TestSetConnectionSurfaceCredentialBindsInPlace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AddConnectionSurface(ConnectionSurface{NodeID: "tool:db", Endpoint: "postgres://example-db.internal"}); err != nil {
+	if _, err := store.AddConnectionSurface(ConnectionSurface{NodeID: "tool:db", Endpoint: "postgres://db.example"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -286,7 +286,7 @@ func TestSetConnectionSurfaceCredentialBindsInPlace(t *testing.T) {
 	if got.CredentialHandle != h {
 		t.Fatalf("bound handle = %+v, want %+v", got.CredentialHandle, h)
 	}
-	if got.Endpoint != "postgres://example-db.internal" {
+	if got.Endpoint != "postgres://db.example" {
 		t.Fatalf("bind clobbered the surface endpoint: %q", got.Endpoint)
 	}
 

@@ -15,7 +15,7 @@ source:
     path: /workspace/synthetic-product
     repo: https://example.invalid/synthetic-product.git
 runtime:
-  authority: example-apps.internal
+  authority: apps.example
   service_names:
     - synthetic-api
     - synthetic-worker
@@ -30,7 +30,7 @@ runtime:
     command: make deploy
     rollback: make rollback
 data:
-  authority: example-db.internal
+  authority: db.example
   classification: appdata
   nas_paths: []
   local_paths: []

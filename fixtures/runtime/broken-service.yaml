@@ -6,7 +6,7 @@ runtime_binding:
   data_bindings:
     - sqlite:synthetic.db
   health_check_refs:
-    - http://127.0.0.1:18080/health
+    - http://synthetic-api.example:18080/health
   risk_tier: tier1
   evidence_refs:
     - fixture:runtime-binding

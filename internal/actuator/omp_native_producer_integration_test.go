@@ -85,9 +85,8 @@ with urllib.request.urlopen(urllib.request.Request(endpoint+"/v1/chat/completion
 
 	wrapper := filepath.Join(root, "wrapper")
 	wrapperBody := fmt.Sprintf(`#!/bin/sh
-# POSIX sh, not zsh: linux runners and servers have no /bin/zsh, and exec of
-# a script whose shebang interpreter is missing fails with ENOENT (CI run
-# 35306043169: spawn <wrapper> ENOENT from the omp native verifier probe).
+# Use POSIX sh: Linux runners may not provide /bin/zsh.
+# A missing shebang interpreter causes ENOENT before the probe runs.
 export SB_LAUNCH_CREDENTIAL_ENV='OMP_TEST_KEY'
 [ "$#" -eq 6 ] && [ "$1" = -p ] && [ "$2" = --no-session ] && [ "$3" = --cwd ] && [ "$5" = --no-tools ] || exit 64
 run="$(mktemp -d "$TMPDIR/sb-omp-run.XXXXXXXX")" || exit 73

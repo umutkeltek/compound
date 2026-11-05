@@ -102,8 +102,8 @@ func TestEvent_UnmarshalJSON_AcceptsBothShapes(t *testing.T) {
 
 func TestBucket_DeviceIDAndBucketType(t *testing.T) {
 	b := Bucket{
-		ID:       "aw-watcher-window_macstudio.local",
-		Hostname: "macstudio.local",
+		ID:       "aw-watcher-window_studio-host.example",
+		Hostname: "studio-host.example",
 		Client:   "aw-watcher-window",
 		Metadata: map[string]interface{}{"device_id": "2e6424e0-e1d8-40b9-abf5-af5454502fb0"},
 	}
@@ -131,23 +131,23 @@ func TestBucket_DeviceIDAndBucketType(t *testing.T) {
 func TestClient_ListBucketsAndFetchEvents_AgainstFixture(t *testing.T) {
 	// Generic hostnames, generic paths — no personal data.
 	buckets := map[string]Bucket{
-		"aw-watcher-window_host-a.local": {
-			Hostname: "host-a.local",
+		"aw-watcher-window_host-a.example": {
+			Hostname: "host-a.example",
 			Client:   "aw-watcher-window",
 			Type:     "currentwindow",
 		},
-		"aw-watcher-afk_host-b.lan": {
-			Hostname: "host-b.lan",
+		"aw-watcher-afk_host-b.example": {
+			Hostname: "host-b.example",
 			Client:   "aw-watcher-afk",
 			Type:     "afkstatus",
 		},
 	}
 	ts := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 	events := map[string][]Event{
-		"aw-watcher-window_host-a.local": {
+		"aw-watcher-window_host-a.example": {
 			{Timestamp: ts.Format(time.RFC3339Nano), Duration: 30, Data: json.RawMessage(`{"app":"com.example.terminal","title":"x"}`)},
 		},
-		"aw-watcher-afk_host-b.lan": {
+		"aw-watcher-afk_host-b.example": {
 			{Timestamp: ts.Format(time.RFC3339Nano), Duration: 60, Data: json.RawMessage(`{"status":"afk"}`)},
 		},
 	}
@@ -165,7 +165,7 @@ func TestClient_ListBucketsAndFetchEvents_AgainstFixture(t *testing.T) {
 		t.Fatalf("ListBuckets: got %d, want 2", len(gotBuckets))
 	}
 
-	gotEvents, err := c.FetchEvents(ctx, "aw-watcher-afk_host-b.lan", time.Time{}, time.Time{}, 100)
+	gotEvents, err := c.FetchEvents(ctx, "aw-watcher-afk_host-b.example", time.Time{}, time.Time{}, 100)
 	if err != nil {
 		t.Fatalf("FetchEvents: %v", err)
 	}
@@ -181,11 +181,11 @@ func TestNormalize_JoinAcrossHostnamesByBucketType(t *testing.T) {
 	ts1 := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 	ts2 := ts1.Add(time.Minute)
 	raw := []RawEvent{
-		rawEvent(Bucket{ID: "aw-watcher-window_host-a.local", Hostname: "host-a.local", Client: "aw-watcher-window"},
+		rawEvent(Bucket{ID: "aw-watcher-window_host-a.example", Hostname: "host-a.example", Client: "aw-watcher-window"},
 			ts1, 30, map[string]any{"app": "com.example.terminal"}),
-		rawEvent(Bucket{ID: "aw-watcher-window_host-b.lan", Hostname: "host-b.lan", Client: "aw-watcher-window"},
+		rawEvent(Bucket{ID: "aw-watcher-window_host-b.example", Hostname: "host-b.example", Client: "aw-watcher-window"},
 			ts1, 30, map[string]any{"app": "com.example.terminal"}),
-		rawEvent(Bucket{ID: "aw-watcher-window_host-c.local", Hostname: "host-c.local", Client: "aw-watcher-window"},
+		rawEvent(Bucket{ID: "aw-watcher-window_host-c.example", Hostname: "host-c.example", Client: "aw-watcher-window"},
 			ts2, 60, map[string]any{"app": "com.example.browser"}),
 	}
 	events, hosts, logs := Normalize(raw)
@@ -199,7 +199,7 @@ func TestNormalize_JoinAcrossHostnamesByBucketType(t *testing.T) {
 	if events[0].TS != events[1].TS {
 		t.Fatalf("expected ts1 then ts1 then ts2, got %s, %s, %s", events[0].TS, events[1].TS, events[2].TS)
 	}
-	if hosts[0].Hostname != "host-a.local" || hosts[1].Hostname != "host-b.lan" || hosts[2].Hostname != "host-c.local" {
+	if hosts[0].Hostname != "host-a.example" || hosts[1].Hostname != "host-b.example" || hosts[2].Hostname != "host-c.example" {
 		t.Fatalf("hostnames out of order: %+v", hosts)
 	}
 	// All events are KindAppActivated with the expected bundles.
@@ -223,13 +223,13 @@ func TestNormalize_AcceptsEventsWithTitleURL_StripsFromMeta(t *testing.T) {
 	ts := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 	raw := []RawEvent{
 		// Window event with title (standard AW payload) — accepted.
-		rawEvent(Bucket{ID: "aw-watcher-window_host-a.local", Hostname: "host-a.local"},
+		rawEvent(Bucket{ID: "aw-watcher-window_host-a.example", Hostname: "host-a.example"},
 			ts, 30, map[string]any{"app": "com.example.terminal", "title": "secret window title"}),
 		// Web event with url + title (standard browser watcher payload) — accepted.
-		rawEvent(Bucket{ID: "aw-watcher-web-chrome_host-a.local", Hostname: "host-a.local"},
+		rawEvent(Bucket{ID: "aw-watcher-web-chrome_host-a.example", Hostname: "host-a.example"},
 			ts.Add(time.Second), 30, map[string]any{"app": "com.example.browser", "url": "https://secret.example/path", "title": "tab title"}),
 		// VSCode watcher with file — accepted, file NOT mirrored.
-		rawEvent(Bucket{ID: "aw-watcher-vscode_host-a.local", Hostname: "host-a.local"},
+		rawEvent(Bucket{ID: "aw-watcher-vscode_host-a.example", Hostname: "host-a.example"},
 			ts.Add(2*time.Second), 30, map[string]any{"app": "com.example.editor", "file": "/path/to/leaked/file.go", "project": "/path/to/project"}),
 	}
 	events, _, _ := Normalize(raw)
@@ -266,7 +266,7 @@ func TestNormalize_AcceptsEventsWithTitleURL_StripsFromMeta(t *testing.T) {
 func TestNormalize_RefusesEventWithOnlyTitle(t *testing.T) {
 	ts := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 	raw := []RawEvent{
-		rawEvent(Bucket{ID: "aw-watcher-window_host-a.local", Hostname: "host-a.local"},
+		rawEvent(Bucket{ID: "aw-watcher-window_host-a.example", Hostname: "host-a.example"},
 			ts, 30, map[string]any{"title": "no app, no bundle, just a title"}),
 	}
 	events, _, logs := Normalize(raw)
@@ -419,7 +419,7 @@ func TestNormalize_NoBannedFieldsInOutput(t *testing.T) {
 func TestNormalize_HostBindingsPropagate(t *testing.T) {
 	ts := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 	bucket := Bucket{
-		ID: "aw-watcher-window_macstudio.local", Hostname: "macstudio.local",
+		ID: "aw-watcher-window_studio-host.example", Hostname: "studio-host.example",
 		Client:   "aw-watcher-window",
 		Metadata: map[string]interface{}{"device_id": "stable-device-id-001"},
 	}
@@ -430,7 +430,7 @@ func TestNormalize_HostBindingsPropagate(t *testing.T) {
 	if len(hosts) != 1 {
 		t.Fatalf("expected 1 host bindings, got %d", len(hosts))
 	}
-	if hosts[0].Hostname != "macstudio.local" {
+	if hosts[0].Hostname != "studio-host.example" {
 		t.Fatalf("Hostname = %q", hosts[0].Hostname)
 	}
 	if hosts[0].HostID != "stable-device-id-001" {
@@ -446,13 +446,13 @@ func TestNormalize_HostBindingsPropagate(t *testing.T) {
 func TestNormalize_InputAlreadySorted(t *testing.T) {
 	ts := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 	raw := []RawEvent{
-		rawEvent(Bucket{ID: "aw-watcher-window_host-a.local", Hostname: "host-a.local"}, ts, 30, map[string]any{"app": "com.example.x"}),
-		rawEvent(Bucket{ID: "aw-watcher-window_host-b.lan", Hostname: "host-b.lan"}, ts, 30, map[string]any{"app": "com.example.x"}),
+		rawEvent(Bucket{ID: "aw-watcher-window_host-a.example", Hostname: "host-a.example"}, ts, 30, map[string]any{"app": "com.example.x"}),
+		rawEvent(Bucket{ID: "aw-watcher-window_host-b.example", Hostname: "host-b.example"}, ts, 30, map[string]any{"app": "com.example.x"}),
 	}
 	// Pre-sort and verify Normalize doesn't break it.
 	sort.SliceStable(raw, func(i, j int) bool { return raw[i].Bucket.Hostname < raw[j].Bucket.Hostname })
 	events, hosts, _ := Normalize(raw)
-	if len(events) != 2 || hosts[0].Hostname != "host-a.local" || hosts[1].Hostname != "host-b.lan" {
+	if len(events) != 2 || hosts[0].Hostname != "host-a.example" || hosts[1].Hostname != "host-b.example" {
 		t.Fatalf("sort drift: events=%d hosts=%+v", len(events), hosts)
 	}
 }

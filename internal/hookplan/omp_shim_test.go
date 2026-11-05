@@ -13,11 +13,10 @@ import (
 func TestOmpShimRuntimeValidatesPresentPermissionDecisions(t *testing.T) {
 	bun, err := exec.LookPath("bun")
 	if err != nil {
-		// The shipped OMP shim is a bun script. Skipping rather than
-		// failing keeps the fresh-clone --ci battery honest on machines
-		// without bun (CI runners; run 35306043169) — the same
-		// convention as the git and docker LookPath skips. The
-		// ci-console subset and host-bound runs cover bun-present paths.
+		// The shipped OMP shim requires Bun. On machines without it, follow
+		// the existing git/docker LookPath skip convention so the fresh-clone
+		// --ci battery stays honest. The host-bound run and ci-console subset
+		// cover the Bun-present paths.
 		t.Skip("bun is required to execute the shipped OMP shim")
 	}
 	home := t.TempDir()

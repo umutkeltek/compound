@@ -841,11 +841,9 @@ func (child *workAdmissionCrossProcessChild) waitForSignal(path string, timeout 
 		}
 		select {
 		case <-child.done:
-			// The child can write its final signal and exit inside the
-			// window between our last file poll and this wakeup — on
-			// Linux that ordering is the common one (CI run 35304076022
-			// phase 3). Re-validate the file after the exit before
-			// declaring the signal missing.
+			// The child can publish its final signal and exit between the last
+			// file poll and this wakeup. Linux commonly orders the events this
+			// way, so revalidate the file after exit before calling it missing.
 			if err := validateWorkAdmissionCrossProcessSignal(path); err == nil {
 				return nil
 			} else if !errors.Is(err, os.ErrNotExist) {
