@@ -16,6 +16,7 @@ import (
 	"compound/internal/envelope"
 	"compound/internal/harvest"
 	"compound/internal/home"
+	"compound/internal/hook"
 	"compound/internal/hookplan"
 	"compound/internal/mem"
 	"compound/internal/policy"
@@ -154,15 +155,23 @@ func TestCanonicalClaudeFamilyExecutesEveryInstalledLiveHookEvent(t *testing.T) 
 		}
 	})
 	for _, harnessCase := range []struct {
-		installer string
-		runtime   string
+		installer   string
+		runtime     string
+		sessionPack string
+		fullPack    bool
 	}{
-		{"claude-code", "claude_code"},
-		{"claude-zai", "claude_zai"},
-		{"claude-minimax", "claude_minimax"},
-		{"claude-qwen", "claude_qwen"},
+		{"claude-code", "claude_code", "", false},
+		{"claude-code", "claude_code", "full", true},
+		{"claude-zai", "claude_zai", "", true},
+		{"claude-minimax", "claude_minimax", "", true},
+		{"claude-qwen", "claude_qwen", "", true},
 	} {
-		t.Run(harnessCase.runtime, func(t *testing.T) {
+		mode := harnessCase.sessionPack
+		if mode == "" {
+			mode = "default"
+		}
+		t.Run(harnessCase.runtime+"/"+mode, func(t *testing.T) {
+			t.Setenv(hook.SessionPackEnv, harnessCase.sessionPack)
 			homePath := t.TempDir()
 			workspace := t.TempDir()
 			profileDir := filepath.Join(t.TempDir(), "profile")
@@ -176,7 +185,7 @@ func TestCanonicalClaudeFamilyExecutesEveryInstalledLiveHookEvent(t *testing.T) 
 			if err != nil {
 				t.Fatalf("install %s hooks: %v", harnessCase.installer, err)
 			}
-			// claude_code orients once at SessionStart and installs no per-turn
+			// claude_code serves its startup context once and installs no per-turn
 			// UserPromptSubmit binding, so it carries four bindings where the isolated
 			// lanes carry five.
 			perTurnContext := harnessCase.installer != "claude-code"
@@ -260,9 +269,20 @@ func TestCanonicalClaudeFamilyExecutesEveryInstalledLiveHookEvent(t *testing.T) 
 					t.Fatalf("%s response event=%q", event.name, response.HookSpecificOutput.HookEventName)
 				}
 				context := response.HookSpecificOutput.AdditionalContext
-				if event.name == "SessionStart" && (!strings.Contains(context, "Oriented as a **product** repo") ||
-					!strings.Contains(context, "`"+harnessCase.runtime+"`")) {
-					t.Fatalf("SessionStart returned no harness-specific orientation:\n%s", context)
+				if event.name == "SessionStart" {
+					if harnessCase.fullPack {
+						if !strings.Contains(context, "Oriented as a **product** repo") ||
+							!strings.Contains(context, "`"+harnessCase.runtime+"`") ||
+							strings.Contains(context, "Context pack is on demand") {
+							t.Fatalf("SessionStart returned no full harness-specific orientation:\n%s", context)
+						}
+					} else {
+						pointer := "compound orient --harness " + harnessCase.runtime + " --cwd " + workspace
+						if !strings.Contains(context, "Context pack is on demand") ||
+							!strings.Contains(context, pointer) || strings.Contains(context, "Context pack: ctx_") {
+							t.Fatalf("SessionStart returned no minimal harness-specific pointer:\n%s", context)
+						}
+					}
 				}
 				if event.name == "UserPromptSubmit" && (!strings.Contains(context, "# Compound Context Injection") || !strings.Contains(context, "Orientation served this session at `hook_")) {
 					t.Fatalf("UserPromptSubmit did not consume SessionStart orientation:\n%s", context)
@@ -297,6 +317,9 @@ func TestCanonicalClaudeFamilyExecutesEveryInstalledLiveHookEvent(t *testing.T) 
 				}
 				if event.Status != "ok" {
 					t.Fatalf("persisted %s status=%q, want ok", event.HookName, event.Status)
+				}
+				if event.HookName == "SessionStart" && (event.IDs.ContextPackID != "") != harnessCase.fullPack {
+					t.Fatalf("persisted SessionStart context_pack_id=%q, full pack wanted=%t", event.IDs.ContextPackID, harnessCase.fullPack)
 				}
 				seen[event.HookName]++
 			}
