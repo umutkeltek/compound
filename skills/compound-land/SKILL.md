@@ -1,6 +1,6 @@
 ---
 name: compound-land
-description: The landing ceremony for getting a change onto main in the compound repo — scope claim, scoped noncertifying presubmit, rehearsed merge, --ff-only with a fresh main-SHA guard, canonical battery after the land, post-land duties. Use when committing, merging, landing an executor/worker's diff or worktree, or when asked to "land"/"commit"/"merge" anything here.
+description: The landing ceremony for getting a change onto main in the compound repo — scope claim, scoped noncertifying presubmit, rehearsed merge, --ff-only with a fresh main-SHA guard, scope-based canonical proof, post-land duties. Use when committing, merging, landing an executor/worker's diff or worktree, or when asked to "land"/"commit"/"merge" anything here.
 ---
 
 # compound-land — how a change actually reaches main
@@ -245,25 +245,20 @@ Add, when they apply, before the presubmit (seconds each):
 - CLI or `internal/` structure changes → the arch quick tests named under the ordering hazards below.
 
 Presubmit red: fix it or do not land. Never weaken a gate to turn it green (AGENTS.md §Proof discipline).
-Every presubmit step is non-certifying by design — none writes a canonical installed-runtime proof
-artifact — and that is correct: certification is the post-land battery's job, not the landing's
-precondition.
+Every presubmit step is non-certifying by design: it does not produce canonical
+installed-runtime proof. Complete the scope-based canonical proof below before close.
 
-### Canonical proof — after the land, before any governed close
+### Canonical proof — select by changed scope
 
-The canonical battery (uncached `-count=1` Go suite plus every non-console gate) runs ONCE per
-landed tip, on main, AFTER the fast-forward and push — detached, low priority, never blocking the
-next landing. Its `--out` report is authoritative; read it when it finishes. **A red post-land
-battery is fixed forward or reverted the same day by the lane that landed it.** The laptop nightly
-main battery is retired (2026-11-03); the operator's remote post-land verifier (private overlay)
-is the backstop. For a governed WorkEnvelope the stored canonical proof at the landed tip
-is what `land-check` and `work close` cite (§4); the commands below produce that proof, and the
-`compound-verify` skill drives the close.
+For non-core diffs, the remote post-land verifier supplies the canonical proof described in §1.
+Read its actual result, attach the covering green verdict and run `land-check` before closing.
+Do not launch a duplicate laptop battery or wait for the retired laptop nightly job.
+A red verdict must be fixed forward or reverted the same day by the lane that landed it.
 
-**For non-core diffs the verifier verdict replaces this battery (§1, 2026-11-03).** The laptop nightly
-main battery is unloaded; do not wait for it and do not cite it. The procedure below remains the
-pre-land proof for governance-core diffs and the explicit operator-requested full run.
-
+For governance-core diffs, the full local battery runs on the exact candidate BEFORE the
+fast-forward. The local procedure below applies to that path and to explicit operator-requested
+full runs. Preserve its exact base/head binding; it does not replace the verifier path for
+ordinary changes.
 
 Run the `compound-verify` skill. Select two distinct full commit IDs before proof:
 
@@ -688,19 +683,15 @@ git -C <MAIN-worktree> merge --ff-only "$CANDIDATE_SHA"
   releasing with nothing held is an idempotent no-op — safe to run even if acquire never happened
   (e.g. a trivial single-commit land that skipped §3). `steal --reason` (§3) remains the escape
   hatch if a DIFFERENT lane needs to take over a lease this one abandoned without releasing.
-- **One canonical battery per landed tip, after the fast-forward** (operator ruling 2026-10-23,
-  Law 16). The presubmit (§1) is the pre-land gate; the canonical battery runs on main at the landed
-  tip, detached, and is never rerun for a pure fast-forward of a tip it already certified — when
-  `git rev-parse main` equals a certified HEAD stored in a canonical `--out` report, main's tree is
-  byte-identical to the tree that battery proved, so a rerun proves nothing new and costs ~50
-  minutes of shared proof capacity. Record the equality instead: `land-check --tip "$TIP"` cites
-  the canonical proof at that same tip. The remote post-land verifier is the backstop only when its
-  actual runs and results are verified; a schedule or written claim alone is not evidence.
-  If the planned base or candidate changes after a canonical proof, that proof is spent: select
-  and validate the new `PROOF_BASE_SHA` separately from the current target tip, and the next
-  canonical proof is for that exact base and candidate. Package disjointness does not exempt a
-  replay. Preserve the original proof report; never recapture landed `main^{commit}` as its
-  baseline, which would make `base...HEAD` empty.
+- **Use the proof path selected in §1 (operator decision 2026-11-03).** For a non-core
+  diff, attach the remote verifier's actual green verdict covering the landed tip and run
+  `land-check`. The verified commit may contain the candidate on the bound target branch;
+  do not require equality or launch a duplicate laptop battery. An applicable red verdict or
+  a missing covering verdict still prevents close.
+  For governance-core diffs, retain the full pre-land canonical proof and its exact base/head
+  binding. A pure fast-forward of that certified tip needs no rerun: record tree identity and
+  run `land-check`. A changed base or candidate needs new proof. Preserve the original report;
+  never recapture landed `main^{commit}` as its baseline and certify an empty range.
 - **If the land touched `cmd/compound` or `internal/{hook,harness,contract,mem,breadth}`: run
   `./install.sh`** — hooks and external consumers use the installed binary, which self-reports its
   build SHA since 9b5736b (`compound version`; arch doctor warns fresh/stale/missing). A stale
@@ -750,6 +741,9 @@ git -C <MAIN-worktree> merge --ff-only "$CANDIDATE_SHA"
 - Update `docs_private/plan/HANDOFF.md` (when present / operator lane) with what landed, its
   commit SHA, and any opened branch — the next session orients from it.
 - Run the `extract-approach` skill if the change solved a non-trivial problem.
+
+The following clauses apply only to governance-core local canonical proof; non-core work uses
+the verifier containment rule in §1.
 
 A rebase, replay, or new HEAD invalidates prior proof and requires a fresh battery.
 For source-controlled work, a committed stored successful proof is required:

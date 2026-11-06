@@ -245,48 +245,30 @@ reasons before building what the note implies.
 
 ## Proof discipline
 
-- **Presubmit before the land, canonical proof after it** (operator ruling 2026-10-23, Law 16).
-  The blocking gate before any fast-forward is the scoped presubmit in `compound-land` §1 — build,
-  vet, gofmt, diff-check, strict arch doctor, short tests of the affected packages, redact; minutes
-  on an idle laptop; one command, `compound proof-check --presubmit --base <full-sha> --out <file>`,
-  derives the affected packages from the diff. The canonical battery runs
-  once per landed tip on main, detached, and a red one is fixed forward or reverted the same day by
-  the lane that landed it. Never block a landing on the canonical battery; never leave main red.
-  Details and the measured why: `compound-land` §1.
-- Before the full battery after CLI changes, run `go test ./internal/arch -count=1 -run '^(TestCheckCmdCompoundBudgetPassesOnRealRepo|TestDoctorEmitsCmdCompoundBudgetFindings)$'`.
-  The general `TestDoctorGreenAgainstRealRepo` uses non-strict mode and can remain green on a CLI-budget warning.
-  This cheap structural preflight catches misplaced responsibilities before long tests; it never replaces canonical proof or permits raising the budget.
-- **`proof-check` owns its own output contract.** `--out FILE` writes the FULL report to FILE and prints one
-  truthful last line (`battery: ok|FAILED gates=N/M …`) with a truthful process exit (`0` ok / `1` a gate FAILED
-  / `2` usage). **Never pipe the battery or `redact` through `| tail`/`| head`** — zsh has no `pipefail`, so the
-  pipeline's exit becomes `tail`'s (always `0`) and a red gate reads green. Run unpiped; read the verdict.
-- **Never "fix" a red gate by weakening it** — deleting the test, raising a budget, disabling the check. That is
-  the one unforgivable move here. Write tests that would *fail* if the system's depth were wrong.
-- **A canonical battery is a 30–90 minute job; run it detached and give it room.** It reserves shared proof
-  capacity, and a shared box runs other lanes' batteries at the same time. A `bash` wrapper that caps the call at
-  its own timeout kills the battery mid-run and leaves an orphan attempt holding the capacity until its lease
-  expires. Launch it so it survives the call, then poll the report file. If the wrapper already killed it, sweep
-  the stale attempt (`run-attempt sweep --attempt <ratt_id>`) once the lease expires, and re-run.
-- **A red battery is not automatically a regression — read the failure shape.** `signal: killed` and
-  `panic: test timed out after 40m0s` are resource exhaustion on a contended box, not logic failures, and they
-  predate most changes. Re-run the failing package alone and compare wall time: minutes alone versus 40 minutes
-  inside the battery means the package was starved. Re-run the battery when the box is quiet.
-- **Main can advance while your battery runs.** A proof seals the HEAD it observed, so a concurrent landing
-  makes the proof's head differ from the candidate you attached. After the battery, re-read `git rev-parse main`:
-  if it moved, attach the new tip (`work advance --artifact commit:<new-tip>`) and re-run land-check — do not
-  re-run the battery for a tip it already certified.
-- **Do not compete with your OWN battery.** While a canonical battery runs, do NOT start an isolation
-  run of the package you suspect it timed out on. The battery and your isolation run then starve each
-  other on the same box, and the isolation run ALSO times out — so the re-run proves nothing and costs
-  the battery its window. Measured on 2026-10-28: four concurrent `go test ./internal/work` runs launched
-  as "isolation checks" pushed the battery's `internal/work` gate to its 40-minute timeout (51/53 gates
-  passed, 2 timed out, zero assertion failures) while the isolation runs failed the same way on the
-  UNCHANGED base tree. Kill the competing runs first, let the box go quiet, then re-run the battery ONCE.
-  When a battery gate times out, the cheapest discriminator is the failure SHAPE (timeout vs assertion),
-  not a concurrent re-run.
-- **"landed ≠ working."** A merged commit is not a live change. Prove wiring / data / cutover / proof: name the
-  live consumer and watch it consume in ITS output (grep-in-source is not consumption); no consumer ⇒ `audit_only`
-  ⇒ not done. The full battery + verdict format live in `compound-verify` — run it before any close.
+- **Select the existing proof path before running checks.** [compound-land §1](skills/compound-land/SKILL.md)
+  owns the choice. Every source landing runs the scoped, noncertifying presubmit before the fast-forward.
+  For non-core diffs, the remote post-land verifier supplies canonical proof; do not run or wait for a
+  duplicate laptop battery. Governance-core diffs, identified by
+  `presubmit.plan.scope.governance_core`, retain the full local pre-land battery.
+- **Use observed results.** For non-core work, attach a green verifier verdict covering the landed tip,
+  then run `work land-check`. A covering verdict may certify a descendant on the bound target branch.
+  A schedule is not a result; a missing verdict or an applicable red verdict prevents close. Follow
+  [compound-verify](skills/compound-verify/SKILL.md) for the exact commands and live-consumer checks.
+  Fix or revert a regression the same day; never weaken a failing check.
+- **When a full local battery is required**, follow the exact base/candidate, detached execution,
+  resource ownership and recovery procedure in the two ceremonies above. Do not compete with your own
+  battery or rerun an already-certified identical range. Read the failure shape before diagnosing a
+  timeout or killed process as a code regression.
+- After CLI changes, run the cheap structural preflight before a long proof:
+  `go test ./internal/arch -count=1 -run '^(TestCheckCmdCompoundBudgetPassesOnRealRepo|TestDoctorEmitsCmdCompoundBudgetFindings)$'`.
+  The general non-strict doctor can stay green on a CLI-budget warning; this preflight does not replace
+  the selected proof or permit raising the budget.
+- **`proof-check` owns its output contract.** Run it and `redact` unpiped; preserve their process exits
+  and read their final verdicts. `--out FILE` holds the full report. A `tail` or `head` pipeline can hide
+  a failed producer.
+- **Landed is not working.** Name the live consumer and observe the changed behavior in its output.
+  Source inspection or a commit alone does not prove consumption. Report any remaining wiring, data,
+  cutover or proof gap instead of claiming completion.
 
 ## Public / private boundary (this repo is destined to be public)
 - `docs_private/`, `*.private.md`, `.compound-private/` are gitignored — **never tracked, never shipped.** Never
