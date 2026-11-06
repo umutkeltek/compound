@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // Identity is stable for ordinary descendants of Ref while binding the
@@ -44,6 +45,52 @@ func ReadIdentity(repo, ref string) (Identity, error) {
 // ReadIdentityContext preserves caller cancellation and bounds each Git command
 // independently. The caller deadline still caps the complete identity read.
 func ReadIdentityContext(ctx context.Context, repo, ref string) (Identity, error) {
+	return NewIdentitySession().ReadIdentityContext(ctx, repo, ref)
+}
+
+// identityFact is one memoized repository-scoped read: its value, or the
+// error it produced. A failed read is memoized too, so a broken repository
+// costs one Git process per request instead of one per work item.
+type identityFact struct {
+	value string
+	err   error
+}
+
+// IdentitySession memoizes the ref-INDEPENDENT half of a repository identity
+// read for the lifetime of one request.
+//
+// The object format and the canonical origin are repository properties: they
+// do not change with the commit a read is anchored at. Reading them once per
+// repository instead of once per (repository, ref) is the difference between
+// one Git process and three for every work item a delivery projection
+// evaluates.
+//
+// The lineage roots are deliberately NOT shared. A different base can name a
+// different lineage, and the identity must fail closed on that, so the roots
+// stay keyed by the ref they were read at.
+type IdentitySession struct {
+	mu            sync.Mutex
+	objectFormats map[string]identityFact
+	remotes       map[string]identityFact
+	// lineageRoots is keyed by repository AND ref: the root lineage of one
+	// exact commit never changes, but two different refs of the same repository
+	// can name DIFFERENT lineages, so the key must carry both.
+	lineageMemo map[string][]string
+}
+
+// NewIdentitySession returns a session that starts with no memoized facts.
+func NewIdentitySession() *IdentitySession {
+	return &IdentitySession{
+		objectFormats: map[string]identityFact{},
+		remotes:       map[string]identityFact{},
+		lineageMemo:   map[string][]string{},
+	}
+}
+
+// ReadIdentityContext derives the repository identity at ref, reusing this
+// session's ref-independent repository facts. The result is identical to a
+// standalone read of the same repository and ref.
+func (s *IdentitySession) ReadIdentityContext(ctx context.Context, repo, ref string) (Identity, error) {
 	repo = strings.TrimSpace(repo)
 	ref = strings.TrimSpace(ref)
 	if repo == "" {
@@ -53,11 +100,118 @@ func ReadIdentityContext(ctx context.Context, repo, ref string) (Identity, error
 		return Identity{}, fmt.Errorf("repository identity ref required")
 	}
 
-	objectFormat, err := gitOutput(ctx, repo, "rev-parse", "--show-object-format")
+	objectFormat, err := s.objectFormat(ctx, repo)
 	if err != nil {
-		return Identity{}, fmt.Errorf("read Git object format: %w", err)
+		return Identity{}, err
 	}
-	return readIdentityWithObjectFormat(ctx, repo, ref, strings.TrimSpace(objectFormat))
+	if objectFormat != "sha1" && objectFormat != "sha256" {
+		return Identity{}, fmt.Errorf("unsupported Git object format %q", objectFormat)
+	}
+	roots, err := s.lineageRoots(ctx, repo, ref)
+	if err != nil {
+		return Identity{}, err
+	}
+	remote, err := s.remoteIdentity(ctx, repo)
+	if err != nil {
+		return Identity{}, err
+	}
+	return identityFromParts(objectFormat, roots, remote)
+}
+
+// objectFormat reads the repository's object format once per repository.
+func (s *IdentitySession) objectFormat(ctx context.Context, repo string) (string, error) {
+	if fact, ok := s.fact(s.objectFormats, repo); ok {
+		return fact.value, fact.err
+	}
+	out, err := gitOutput(ctx, repo, "rev-parse", "--show-object-format")
+	if err != nil {
+		err = fmt.Errorf("read Git object format: %w", err)
+		s.remember(s.objectFormats, repo, identityFact{err: err})
+		return "", err
+	}
+	value := strings.TrimSpace(out)
+	s.remember(s.objectFormats, repo, identityFact{value: value})
+	return value, nil
+}
+
+// remoteIdentity reads the repository's canonical origin once per repository.
+func (s *IdentitySession) remoteIdentity(ctx context.Context, repo string) (string, error) {
+	if fact, ok := s.fact(s.remotes, repo); ok {
+		return fact.value, fact.err
+	}
+	out, err := optionalGitOutput(ctx, repo, "config", "--get", "remote.origin.url")
+	if err != nil {
+		err = fmt.Errorf("read canonical Git origin: %w", err)
+		s.remember(s.remotes, repo, identityFact{err: err})
+		return "", err
+	}
+	value := strings.TrimSpace(out)
+	s.remember(s.remotes, repo, identityFact{value: value})
+	return value, nil
+}
+
+// lineageRoots returns the root lineage at one exact ref.
+func (s *IdentitySession) lineageRoots(ctx context.Context, repo, ref string) ([]string, error) {
+	key := repo + "\x00" + ref
+	if s != nil && s.lineageMemo != nil {
+		s.mu.Lock()
+		roots, ok := s.lineageMemo[key]
+		s.mu.Unlock()
+		if ok {
+			return append([]string{}, roots...), nil
+		}
+	}
+	roots, err := lineageRootsAt(ctx, repo, ref)
+	if err != nil {
+		return nil, err
+	}
+	if s != nil && s.lineageMemo != nil {
+		s.mu.Lock()
+		s.lineageMemo[key] = append([]string{}, roots...)
+		s.mu.Unlock()
+	}
+	return roots, nil
+}
+
+func (s *IdentitySession) fact(cache map[string]identityFact, repo string) (identityFact, bool) {
+	if s == nil || cache == nil {
+		return identityFact{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fact, ok := cache[repo]
+	return fact, ok
+}
+
+func (s *IdentitySession) remember(cache map[string]identityFact, repo string, fact identityFact) {
+	if s == nil || cache == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cache[repo] = fact
+}
+
+// lineageRoots reads the repository's root lineage at one exact ref, once per
+// (repository, ref). The root lineage of one exact commit never changes, so
+// the memo is safe; two different refs of the same repository can name
+// DIFFERENT lineages, so the key carries the ref.
+func lineageRootsAt(ctx context.Context, repo, ref string) ([]string, error) {
+	rootOutput, err := gitOutput(ctx, repo, "rev-list", "--max-parents=0", ref)
+	if err != nil {
+		return nil, fmt.Errorf("read repository lineage at %s: %w", ref, err)
+	}
+	roots := compactLines(rootOutput)
+	if len(roots) == 0 {
+		return nil, fmt.Errorf("repository lineage at %s has no root commit", ref)
+	}
+	for _, root := range roots {
+		if !validObjectID(root) {
+			return nil, fmt.Errorf("repository lineage contains invalid root object id %q", root)
+		}
+	}
+	sort.Strings(roots)
+	return roots, nil
 }
 
 // readIdentityWithObjectFormat consumes the format just observed by this same
@@ -67,25 +221,22 @@ func readIdentityWithObjectFormat(ctx context.Context, repo, ref, objectFormat s
 		return Identity{}, fmt.Errorf("unsupported Git object format %q", objectFormat)
 	}
 
-	rootOutput, err := gitOutput(ctx, repo, "rev-list", "--max-parents=0", ref)
+	roots, err := lineageRootsAt(ctx, repo, ref)
 	if err != nil {
-		return Identity{}, fmt.Errorf("read repository lineage at %s: %w", ref, err)
+		return Identity{}, err
 	}
-	roots := compactLines(rootOutput)
-	if len(roots) == 0 {
-		return Identity{}, fmt.Errorf("repository lineage at %s has no root commit", ref)
-	}
-	for _, root := range roots {
-		if !validObjectID(root) {
-			return Identity{}, fmt.Errorf("repository lineage contains invalid root object id %q", root)
-		}
-	}
-	sort.Strings(roots)
 
 	remote, err := optionalGitOutput(ctx, repo, "config", "--get", "remote.origin.url")
 	if err != nil {
 		return Identity{}, fmt.Errorf("read canonical Git origin: %w", err)
 	}
+	return identityFromParts(objectFormat, roots, remote)
+}
+
+// identityFromParts assembles the identity from its three inputs. Every path
+// that builds an identity uses this, so the fingerprint definition stays in one
+// place.
+func identityFromParts(objectFormat string, roots []string, remote string) (Identity, error) {
 	content := identityContent{
 		ObjectFormat:   objectFormat,
 		LineageRoots:   roots,
