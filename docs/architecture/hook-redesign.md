@@ -84,6 +84,14 @@ against the compact JSON input for every other tool. A lesson naming `Bash` also
 tool names other harnesses use. In a skill file, a trigger is one line: `trigger: {<lesson JSON>}`.
 The builder rejects invalid lessons, keeps the valid subset, and exits 1 so automation notices.
 
+Lesson-backed trigger entries resolve through one memory-owner snapshot during index compilation,
+including current instruction and trigger bytes. The index records that snapshot's ledger sequence
+and content revision, lists excluded non-current IDs, and excludes superseded or retired lessons.
+Unresolved contradictions render as conflict notices, never as two accepted instructions. Historical
+Markdown remains intact. Ordinary manually authored triggers still work without a memory lookup.
+An unreadable memory snapshot fails the build visibly and preserves the last complete index.
+The tool-call path continues to read only the bounded index; it never queries memory or rebuilds it.
+
 ## Acceptance numbers
 
 | Measure | Today | Target | How counted |

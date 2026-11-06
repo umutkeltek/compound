@@ -43,3 +43,6 @@ node_modules/
 # committed Git worktree") — so a missing ignore here silently blocks landing.
 __pycache__/
 *.py[cod]
+
+# Stable per-skill publication lock; lesson content remains in SKILL.md.
+.SKILL.md.lesson.lock

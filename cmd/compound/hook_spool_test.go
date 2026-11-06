@@ -16,6 +16,8 @@ import (
 	"compound/internal/home"
 	"compound/internal/hook"
 	"compound/internal/hookplan"
+	"compound/internal/mem"
+	"compound/internal/promotedriver"
 )
 
 const spoolTestLessons = `{"lessons":[
@@ -434,5 +436,120 @@ func TestHookDoctorFailsASpoolRouteThatNeverRecords(t *testing.T) {
 	}
 	if detail := hook.ValidateDoctorProbeArgs(spoolArgs, false, "claude_code"); detail != "" {
 		t.Fatalf("watch-only spool route refused: %s", detail)
+	}
+}
+
+func TestLessonCorrectionReachesRealSpoolHook(t *testing.T) {
+	homePath := initSpoolTestHome(t)
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	skills := t.TempDir()
+	skillDir := filepath.Join(skills, "example")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillPath := filepath.Join(skillDir, "SKILL.md")
+	if err := os.WriteFile(skillPath, []byte("# Example\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	write := func(how string) promotedriver.LessonReceipt {
+		t.Helper()
+		var out, errors bytes.Buffer
+		code := promotedriver.RunLessonCLI(store, []string{"--why", "synthetic correction", "--how", how, "--by", "agent:test",
+			"--skill", "example", "--skills-dir", skills, "--repo", skills, "--slot", "tool:example::lesson.output", "--trigger", "Bash:example-command", "--json"}, &out, &errors)
+		if code != 0 {
+			t.Fatalf("write lesson: %d %s %s", code, &out, &errors)
+		}
+		var result promotedriver.LessonReceipt
+		if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	build := func() []byte {
+		t.Helper()
+		var out, errors bytes.Buffer
+		if code := hook.RunLessonsIndexCommand([]string{"--skills", skills, "--json"}, &out, &errors); code != 0 {
+			t.Fatalf("build: %d %s %s", code, &out, &errors)
+		}
+		body, err := os.ReadFile(hook.LessonIndexPath(homePath))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	delivered := func() string {
+		t.Helper()
+		resp, code := runSpool(t, "claude_code", bashHookInput("correction", "/repo", "example-command"))
+		if code != 0 {
+			t.Fatalf("hook exit %d", code)
+		}
+		return resp.HookSpecificOutput.AdditionalContext
+	}
+	a := write("Use the original method.")
+	build()
+	if got := delivered(); !strings.Contains(got, a.Claim.Object) {
+		t.Fatalf("initial lesson absent: %s", got)
+	}
+	b := write("Use the corrected method.")
+	build()
+	if got := delivered(); strings.Contains(got, a.Claim.Object) || strings.Contains(got, b.Claim.Object) || !strings.Contains(strings.ToLower(got), "conflict") {
+		t.Fatalf("unresolved conflict delivered as instructions: %s", got)
+	}
+	if result, err := store.ResolveContestedLessonOnUse(b.Claim.ID, "agent:test", "work_example", time.Now()); err != nil || len(result.Superseded) != 1 {
+		t.Fatalf("resolve: %+v %v", result, err)
+	}
+	// Stale or edited Markdown must not override the current memory body.
+	historyBefore, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := strings.ReplaceAll(string(historyBefore), b.Claim.Object, "stale Markdown instruction")
+	stale = strings.ReplaceAll(stale, "Bash", "Read")
+	stale = strings.ReplaceAll(stale, "example-command", "stale-command")
+	if err := os.WriteFile(skillPath, []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	index := build()
+	if !strings.Contains(string(index), a.Claim.ID) {
+		t.Fatal("excluded historical ID not recorded")
+	}
+	var revision struct {
+		SourceMemoryRevision string `json:"source_memory_revision"`
+		SourceLedgerSeq      int64  `json:"source_ledger_seq"`
+	}
+	if err := json.Unmarshal(index, &revision); err != nil || revision.SourceMemoryRevision == "" || revision.SourceLedgerSeq == 0 {
+		t.Fatalf("index not revision-bound: %s (%v)", index, err)
+	}
+	got := delivered()
+	if strings.Contains(got, a.Claim.ID) || !strings.Contains(got, b.Claim.Object) || strings.Contains(strings.ToLower(got), "conflict") {
+		t.Fatalf("correction not delivered: %s", got)
+	}
+	history, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(history), a.Claim.ID) || !strings.Contains(string(history), b.Claim.ID) {
+		t.Fatal("historical text was removed")
+	}
+	// The actual tool-call consumer must rely only on the compiled snapshot.
+	if err := os.WriteFile(filepath.Join(homePath, "ledger", "claims.jsonl"), []byte("invalid ledger\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if current := delivered(); current != got {
+		t.Fatalf("hook read memory after compilation: %s", current)
+	}
+	var failedOut, failedErr bytes.Buffer
+	if code := hook.RunLessonsIndexCommand([]string{"--skills", skills, "--json"}, &failedOut, &failedErr); code != 1 {
+		t.Fatalf("corrupt memory build must fail visibly: %d %s %s", code, &failedOut, &failedErr)
+	}
+	retained, err := os.ReadFile(hook.LessonIndexPath(homePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(retained, index) {
+		t.Fatal("failed build replaced the last complete index")
 	}
 }

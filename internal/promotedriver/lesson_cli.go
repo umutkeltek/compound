@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"compound/internal/mem"
@@ -144,6 +145,27 @@ func ResolveLessonSkillFile(skill string, roots []string) (string, error) {
 // idempotent per line: a line already present anywhere in the file is skipped,
 // so re-running a lesson only fills in what is missing.
 func AppendLessonToSkill(path string, block []string) (bool, error) {
+	// Resolve aliases before locking; renaming the skill changes its inode, so
+	// lock a stable sibling for the whole read/merge/publish transaction.
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return false, err
+	}
+	path, err = filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return false, err
+	}
+	lock, err := os.OpenFile(filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".lesson.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return false, err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return false, err
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	// Keep the lock file: removing it would let concurrent writers lock
+	// different inodes and resurrect the lost-update race.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return false, err
@@ -202,12 +224,22 @@ func AppendLessonToSkill(path string, block []string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	tmp := path + ".lesson.tmp"
-	if err := os.WriteFile(tmp, []byte(strings.Join(lines, "\n")+"\n"), info.Mode().Perm()); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".lesson-*.tmp")
+	if err != nil {
 		return false, err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	defer os.Remove(tmp.Name())
+	defer tmp.Close()
+	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
+		return false, err
+	}
+	if _, err := tmp.WriteString(strings.Join(lines, "\n") + "\n"); err != nil {
+		return false, err
+	}
+	if err := tmp.Close(); err != nil {
+		return false, err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
 		return false, err
 	}
 	return true, nil

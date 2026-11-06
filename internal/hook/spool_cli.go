@@ -231,7 +231,15 @@ func RunLessonsIndexCommand(args []string, stdout, stderr io.Writer) int {
 		lessons = append(lessons, parsed...)
 		problems = append(problems, errs...)
 	}
-	index, buildProblems := BuildLessonIndex(lessons, time.Now())
+	projection, err := currentLessonInstructions(lessons)
+	if err != nil {
+		fmt.Fprintln(stderr, "error: resolve current lessons:", err)
+		return 1
+	}
+	index, buildProblems := BuildLessonIndex(projection.lessons, time.Now())
+	index.SourceMemoryRevision = projection.revision
+	index.SourceLedgerSeq = projection.generation
+	index.ExcludedLessonIDs = projection.excluded
 	problems = append(problems, buildProblems...)
 	if err := WriteLessonIndex(out, index); err != nil {
 		fmt.Fprintln(stderr, "error:", err)
@@ -243,9 +251,12 @@ func RunLessonsIndexCommand(args []string, stdout, stderr io.Writer) int {
 	}
 	if jsonOut {
 		encoded, _ := json.MarshalIndent(map[string]any{
-			"path":     out,
-			"lessons":  len(index.Lessons),
-			"problems": messages,
+			"path":                   out,
+			"lessons":                len(index.Lessons),
+			"problems":               messages,
+			"source_memory_revision": index.SourceMemoryRevision,
+			"source_ledger_seq":      index.SourceLedgerSeq,
+			"excluded_lesson_ids":    index.ExcludedLessonIDs,
 		}, "", "  ")
 		fmt.Fprintln(stdout, string(encoded))
 	} else {

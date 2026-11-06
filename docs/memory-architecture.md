@@ -437,6 +437,12 @@ being paged per item.
    `contested`, and default recall holds both until resolved
    (`--include-needs-review` shows them). The same `how` again is a duplicate
    and writes nothing.
+Skill publication serializes the entire read/merge/rename for the canonical file path,
+   using a stable sibling lock and a unique temporary file. The sibling lock is retained
+   so concurrent writers cannot acquire different lock inodes. Retries remain idempotent.
+   The offline hook-index compiler consumes current lesson state from a revision-bound
+   memory snapshot; superseded guidance stays historical, and unresolved conflicts surface
+   as uncertainty rather than active competing prescriptions.
 4. **The next consumer supersedes.** `compound work close --used <claim_id>`
    (or `lesson:<claim_id>`) records a use; when the used lesson is contested,
    the used lesson wins: a `supersedes` edge from it to each contesting lesson

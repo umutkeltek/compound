@@ -41,7 +41,8 @@ const (
 
 // Lesson is one trigger -> how-to-apply pair.
 type Lesson struct {
-	ID string `json:"id"`
+	ID     string `json:"id"`
+	Status string `json:"status,omitempty"`
 	// Tools lists native tool names the trigger applies to (case-insensitive).
 	// Empty means any tool. "Bash" also covers the shell tool names other
 	// harnesses use for the same capability.
@@ -57,15 +58,19 @@ type Lesson struct {
 
 // LessonIndex is the on-disk index document.
 type LessonIndex struct {
-	SchemaVersion string   `json:"schema_version"`
-	BuiltAt       string   `json:"built_at"`
-	Lessons       []Lesson `json:"lessons"`
+	SchemaVersion        string   `json:"schema_version"`
+	BuiltAt              string   `json:"built_at"`
+	Lessons              []Lesson `json:"lessons"`
+	SourceMemoryRevision string   `json:"source_memory_revision,omitempty"`
+	SourceLedgerSeq      int64    `json:"source_ledger_seq,omitempty"`
+	ExcludedLessonIDs    []string `json:"excluded_lesson_ids,omitempty"`
 }
 
 // LessonMatch is one lesson that fired for a tool call.
 type LessonMatch struct {
-	ID    string
-	Apply string
+	Status string
+	ID     string
+	Apply  string
 }
 
 // LessonIndexPath returns the index location inside a Compound home.
@@ -186,7 +191,7 @@ func MatchLessons(lessons []Lesson, tool, subject string) []LessonMatch {
 		if err != nil || !re.MatchString(subject) {
 			continue
 		}
-		matches = append(matches, LessonMatch{ID: lesson.ID, Apply: lesson.Apply})
+		matches = append(matches, LessonMatch{ID: lesson.ID, Apply: lesson.Apply, Status: lesson.Status})
 	}
 	return matches
 }
@@ -198,7 +203,11 @@ func LessonContext(matches []LessonMatch) string {
 	}
 	lines := make([]string, 0, len(matches))
 	for _, match := range matches {
-		lines = append(lines, "Compound lesson ("+match.ID+"): "+match.Apply)
+		prefix := "Compound lesson ("
+		if match.Status == "contested" {
+			prefix = "Compound unresolved lesson conflict ("
+		}
+		lines = append(lines, prefix+match.ID+"): "+match.Apply)
 	}
 	return strings.Join(lines, "\n")
 }

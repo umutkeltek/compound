@@ -20,6 +20,7 @@ type CurrentView struct {
 	owner      *Store
 	claims     []Claim
 	byID       map[string]Claim
+	lessons    map[string]Claim
 	edges      []Edge
 	positions  []Position
 	topicToken string
@@ -33,17 +34,23 @@ type CurrentView struct {
 // one edges read at one shared-lock generation. The ordinary prompt path never
 // opens the append-only entity registry.
 func (s *Store) CurrentView() (*CurrentView, error) {
-	return s.currentViewForTopic("")
+	return s.currentViewForTopic("", false)
 }
 
 // CurrentViewForTopic captures one token's entity resolution with the claims
 // and edges generation protected by the same shared memory lock. It stores only
 // the immutable token/result pair, never entity rows or a mutable resolver.
 func (s *Store) CurrentViewForTopic(token string) (*CurrentView, error) {
-	return s.currentViewForTopic(strings.TrimSpace(token))
+	return s.currentViewForTopic(strings.TrimSpace(token), false)
 }
 
-func (s *Store) currentViewForTopic(topicToken string) (*CurrentView, error) {
+// CurrentViewForLessons also retains contested lessons for the offline lesson
+// compiler. Ordinary prompt snapshots do not build this additional lookup.
+func (s *Store) CurrentViewForLessons() (*CurrentView, error) {
+	return s.currentViewForTopic("", true)
+}
+
+func (s *Store) currentViewForTopic(topicToken string, includeLessons bool) (*CurrentView, error) {
 	lockPath := filepath.Join(s.home, "lock", "mem.lock")
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		return nil, err
@@ -94,6 +101,15 @@ func (s *Store) currentViewForTopic(topicToken string) (*CurrentView, error) {
 	decorated, superseded := foldCurrentViewState(claims, edges, generation)
 	current := visibleCurrentViewClaims(decorated, superseded)
 	positions := foldPositionRows(decorated, superseded, generation, "", "", nil)
+	var lessons map[string]Claim
+	if includeLessons {
+		lessons = make(map[string]Claim)
+		for _, claim := range decorated {
+			if claim.ClaimType == ClaimTypeLesson && claim.Visibility != "retired" && !superseded[claim.ID] {
+				lessons[claim.ID] = claim
+			}
+		}
+	}
 	byID := make(map[string]Claim, len(current))
 	for _, claim := range current {
 		byID[claim.ID] = claim
@@ -108,6 +124,7 @@ func (s *Store) currentViewForTopic(topicToken string) (*CurrentView, error) {
 		owner:      s,
 		claims:     current,
 		byID:       byID,
+		lessons:    lessons,
 		edges:      edges,
 		positions:  positions,
 		topicToken: topicToken,
@@ -160,6 +177,20 @@ func (v *CurrentView) Claim(id string) (Claim, bool) {
 		return Claim{}, false
 	}
 	claim, ok := v.byID[id]
+	if !ok {
+		return Claim{}, false
+	}
+	return cloneCurrentViewClaim(claim), true
+}
+
+// Lesson resolves a non-retired, non-superseded lesson in this snapshot.
+// Unlike Claim it includes contested lessons so derived consumers can present
+// uncertainty without treating competing instructions as accepted guidance.
+func (v *CurrentView) Lesson(id string) (Claim, bool) {
+	if v == nil {
+		return Claim{}, false
+	}
+	claim, ok := v.lessons[id]
 	if !ok {
 		return Claim{}, false
 	}
