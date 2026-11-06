@@ -221,7 +221,7 @@ func TestWoodpeckerReleaseHistoryKeepsCredentialsInTrustedClone(t *testing.T) {
 	if len(step.Commands) != 0 || len(step.Entrypoint) != 0 || len(step.Environment) != 0 {
 		t.Fatal("custom commands, entrypoint or environment lose trusted-plugin credential injection")
 	}
-	want := map[string]any{"path": "$" + "{CI_WORKSPACE}/.ci/release-source", "ref": "refs/heads/main", "partial": false, "depth": 0, "tags": false, "recursive": false, "umask": 18, "home": "/root"}
+	want := map[string]any{"path": ".ci/release-source", "ref": "refs/heads/main", "partial": false, "depth": 0, "tags": false, "recursive": false, "umask": 18, "home": "/root"}
 	if !reflect.DeepEqual(step.Settings, want) {
 		t.Fatalf("release history settings = %#v, want %#v", step.Settings, want)
 	}

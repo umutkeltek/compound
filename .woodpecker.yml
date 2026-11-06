@@ -125,7 +125,7 @@ steps:
       - event: manual
         evaluate: 'RELEASE_VERSION != ""'
     settings:
-      path: ${CI_WORKSPACE}/.ci/release-source
+      path: .ci/release-source
       ref: refs/heads/main
       partial: false
       depth: 0
