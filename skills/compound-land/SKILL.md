@@ -711,9 +711,10 @@ git -C <MAIN-worktree> merge --ff-only "$CANDIDATE_SHA"
   (caught live 2026-07-15: a hand-expanded tip tail sent land-check hunting a phantom commit;
   the correct read SHA certified `landed` immediately). Attach the SAME captured variable as the
   `commit:` artifact.
-- The `land-check` candidate tip must equal both the stored successful proof HEAD and the
-  current attached commit candidate. A rebase, replay, or new candidate tip requires a fresh
-  battery first; a mismatched tip is non-certifying and close refuses it.
+- For governance-core local proofs, the `land-check` candidate tip must equal both the
+  stored successful proof HEAD and the current attached commit candidate. A rebase,
+  replay, or new candidate tip requires a fresh battery; mismatched proof refuses close.
+  For non-core work, use the covering remote verifier verdict described in §1.
 - Close the WorkEnvelope through the governed path (`work close-plan` → `work close`) with
   proof refs, so Receipt + Transition exist for the landed change.
 - After `work close`, run `compound act post --from-work <work_id> --transport buzz --confirm`; it holds silently unless the operator's standing grant is imported.
