@@ -32,7 +32,7 @@ func cmdCorpus(args []string) {
 		defer cancel()
 		report := corpus.Refresh(ctx, hp, cfg.CorpusLanes, corpus.NewConfiguredEmbedder, time.Now())
 		printJSON(report)
-		if report.Status != "ok" && report.Status != "backfilling" {
+		if report.Failed() {
 			os.Exit(1)
 		}
 	case "configure":
