@@ -110,10 +110,34 @@ steps:
       - console-gates
     commands:
       - gitleaks dir . --config .gitleaks.toml --no-banner --redact
+      - |
+        if [ "$CI_PIPELINE_EVENT" = manual ] && [ -n "${RELEASE_VERSION:-}" ]; then
+          source="$CI_WORKSPACE/.ci/release-source"
+          test ! -e "$source" && test ! -L "$source" || { echo "release source already exists; refusing reuse" >&2; exit 1; }
+        fi
+
+  # Woodpecker supplies checkout credentials only to trusted clone images.
+  # A fresh full clone keeps those credentials out of release-build and the workspace.
+  release-history:
+    image: docker.io/woodpeckerci/plugin-git:2.9.0@sha256:1e536c0da16f8cbb35e870fb3d75fde45c85c7239225fea2209cc6990ba330e4
+    depends_on: [secret-scan]
+    when:
+      - event: manual
+        evaluate: 'RELEASE_VERSION != ""'
+    settings:
+      path: ${CI_WORKSPACE}/.ci/release-source
+      ref: refs/heads/main
+      partial: false
+      depth: 0
+      tags: false
+      recursive: false
+      # Decimal 18 is octal 022. Credentials remain in the container's /root.
+      umask: 18
+      home: /root
 
   release-build:
     image: docker.io/library/golang:1.27.2-bookworm
-    depends_on: [secret-scan]
+    depends_on: [release-history]
     when:
       - event: manual
         evaluate: 'RELEASE_VERSION != ""'
@@ -139,26 +163,27 @@ steps:
             test -n "$RELEASE_VERSION"
             version_re="^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
             [[ "$RELEASE_VERSION" =~ $version_re ]] || { echo "RELEASE_VERSION must be strict stable SemVer" >&2; exit 1; }
-            # The CI clone is --depth=1, and the prior generation needs the real parent commit.
-            git fetch --no-tags --unshallow origin "+refs/heads/main:refs/remotes/origin/main"
+            source="$CI_WORKSPACE/.ci/release-source"
+            test -d "$source/.git" && test ! -L "$source"
+            cd "$source"
+            test "$(git rev-parse --is-shallow-repository)" = false
+            test "$(git remote get-url origin)" = "$CI_REPO_CLONE_URL" || { echo "release source origin mismatch" >&2; exit 1; }
             main_sha=$(git rev-parse refs/remotes/origin/main)
             test "$CI_COMMIT_SHA" = "$main_sha" || { echo "candidate must equal the exact origin/main tip" >&2; exit 1; }
             test "$(git rev-parse HEAD)" = "$CI_COMMIT_SHA"
-            # Only generated CI files are excluded; tracked changes still refuse the build.
-            printf "\n/.ci/\n" >> "$(git rev-parse --git-path info/exclude)"
             root="$CI_WORKSPACE/.ci/release"
             mkdir "$root"
             go mod verify
             # Each step is a fresh container and export-public needs a home; keep it outside the checkout.
             release_home="$(mktemp -d /tmp/compound-release-home.XXXXXX)"
-            COMPOUND_HOME="$release_home" .ci/bin/compound home init
-            COMPOUND_HOME="$release_home" .ci/bin/compound release export-public --repo "$CI_WORKSPACE" --target "$root/compound-public-source.tar.gz" --prefix compound-source --json
+            COMPOUND_HOME="$release_home" "$CI_WORKSPACE/.ci/bin/compound" home init
+            COMPOUND_HOME="$release_home" "$CI_WORKSPACE/.ci/bin/compound" release export-public --repo "$source" --target "$root/compound-public-source.tar.gz" --prefix compound-source --json
             test -s "$root/compound-public-source.tar.gz"
             tar -tzf "$root/compound-public-source.tar.gz" >/dev/null
             mkdir "$root/tools"
             GOBIN="$root/tools" go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.10.0
             for build in a b; do
-              VERSION="$RELEASE_VERSION" SOURCE_ROOT="$CI_WORKSPACE" DIST="$root/$build" SBOM_TOOL="$root/tools/cyclonedx-gomod" go run ./scripts/release-artifacts.go
+              VERSION="$RELEASE_VERSION" SOURCE_ROOT="$source" DIST="$root/$build" SBOM_TOOL="$root/tools/cyclonedx-gomod" go run ./scripts/release-artifacts.go
             done
             cmp "$root/a/SHA256SUMS" "$root/b/SHA256SUMS"
             names=(RELEASE SHA256SUMS install-release.sh)
@@ -176,7 +201,7 @@ steps:
             # A real parent generation exercises rollback even before a first publication.
             prior_commit=$(git rev-parse HEAD~1)
             printf "%s\n" "$prior_commit" > "$root/PRIOR_COMMIT"
-            git clone --shared --no-checkout "$CI_WORKSPACE" "$root/prior-source"
+            git clone --shared --no-checkout "$source" "$root/prior-source"
             git archive "$prior_commit" | tar -xf - -C "$root/prior-source"
             git -C "$root/prior-source" reset --mixed "$prior_commit"
             prior_version=$(cd "$root/prior-source" && go run ./cmd/compound version | cut -d " " -f 2)

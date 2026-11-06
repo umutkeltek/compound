@@ -89,10 +89,14 @@ identity, or label the candidate itself as the prior generation.
 This exercises upgrade failure and recovery before a first published release.
 It is not evidence of compatibility with every previously published release.
 Missing parent history, a parent that cannot build, or any acceptance failure
-stops the release. The CI clone is shallow, so `release-build` fetches full history
-from origin itself. The step configures no credentials for that fetch, and an
-anonymous read of a private repository is refused, so it needs an origin readable
-without them: while the repository is private, expect the step to stop there. The
+stops the release. The manual-only `release-history` step uses Woodpecker's trusted
+clone plugin to fetch a fresh, full `main` checkout into `.ci/release-source`.
+Its digest-pinned image receives the existing checkout credentials; its private
+`/root` and credentials are not shared with the workspace or later containers.
+The source destination must be absent. `release-build` refuses shallow history,
+a different origin URL, or `HEAD`/`origin/main` different from the pipeline candidate.
+Missing or expired checkout access stops the clone. No repository trust expansion
+or additional release secret is required. The
 prior bundle and acceptance reports are CI workspace evidence, not release assets.
 
 ## Rebuild and create a draft on the Mac

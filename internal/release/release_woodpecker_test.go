@@ -24,8 +24,11 @@ type woodpeckerReleaseStep struct {
 			User string `yaml:"user"`
 		} `yaml:"docker"`
 	} `yaml:"backend_options"`
-	Volumes  []string `yaml:"volumes"`
-	Commands []string `yaml:"commands"`
+	Volumes     []string       `yaml:"volumes"`
+	Commands    []string       `yaml:"commands"`
+	Settings    map[string]any `yaml:"settings"`
+	Environment map[string]any `yaml:"environment"`
+	Entrypoint  []string       `yaml:"entrypoint"`
 }
 
 func woodpeckerReleaseSteps(t *testing.T) map[string]woodpeckerReleaseStep {
@@ -45,8 +48,8 @@ func woodpeckerReleaseSteps(t *testing.T) map[string]woodpeckerReleaseStep {
 
 func TestWoodpeckerReleaseGatesAndDependencyChain(t *testing.T) {
 	steps := woodpeckerReleaseSteps(t)
-	if len(steps) != 7 {
-		t.Fatalf("got %d steps, want four proof steps plus three release steps", len(steps))
+	if len(steps) != 8 {
+		t.Fatalf("got %d steps, want four proof steps plus four release steps", len(steps))
 	}
 	for _, name := range []string{"prepare-bun", "proof-gates", "console-gates", "secret-scan"} {
 		if len(steps[name].When) != 0 {
@@ -54,7 +57,7 @@ func TestWoodpeckerReleaseGatesAndDependencyChain(t *testing.T) {
 		}
 	}
 	previous := "secret-scan"
-	for _, name := range []string{"release-build", "release-linux-drill", "release-stage"} {
+	for _, name := range []string{"release-history", "release-build", "release-linux-drill", "release-stage"} {
 		step := steps[name]
 		if !reflect.DeepEqual(step.DependsOn, []string{previous}) {
 			t.Errorf("%s dependencies = %v, want %s", name, step.DependsOn, previous)
@@ -87,10 +90,10 @@ func TestWoodpeckerReleaseBuildAndDrillContract(t *testing.T) {
 		`setpriv --reuid=1000 --regid=1000 --clear-groups`,
 		`test "$CI_COMMIT_SHA" = "$main_sha"`,
 		`test "$(git rev-parse HEAD)" = "$CI_COMMIT_SHA"`,
-		`git fetch --no-tags --unshallow origin "+refs/heads/main:refs/remotes/origin/main"`,
-		`go mod verify`, `release export-public --repo "$CI_WORKSPACE"`,
+		`test "$(git rev-parse --is-shallow-repository)" = false`,
+		`go mod verify`, `release export-public --repo "$source"`,
 		`tar -tzf`, `cyclonedx-gomod/cmd/cyclonedx-gomod@v1.10.0`,
-		`for build in a b; do`, `VERSION="$RELEASE_VERSION" SOURCE_ROOT="$CI_WORKSPACE" DIST="$root/$build"`,
+		`for build in a b; do`, `VERSION="$RELEASE_VERSION" SOURCE_ROOT="$source" DIST="$root/$build"`,
 		`cmp "$root/a/SHA256SUMS" "$root/b/SHA256SUMS"`,
 		`cmp "$root/a/$name" "$root/b/$name"`, `sha256sum --check SHA256SUMS`,
 		`-mindepth 1 -maxdepth 1 -print | wc -l)" -eq 9`, `test ! -L`,
@@ -108,8 +111,8 @@ func TestWoodpeckerReleaseBuildAndDrillContract(t *testing.T) {
 	}
 	// Each step runs in a fresh container and export-public refuses without a
 	// home, so the step must create its own disposable home first.
-	homeInit := strings.Index(build, `COMPOUND_HOME="$release_home" .ci/bin/compound home init`)
-	export := strings.Index(build, `COMPOUND_HOME="$release_home" .ci/bin/compound release export-public --repo "$CI_WORKSPACE"`)
+	homeInit := strings.Index(build, `COMPOUND_HOME="$release_home" "$CI_WORKSPACE/.ci/bin/compound" home init`)
+	export := strings.Index(build, `COMPOUND_HOME="$release_home" "$CI_WORKSPACE/.ci/bin/compound" release export-public --repo "$source"`)
 	if !strings.Contains(build, `release_home="$(mktemp -d /tmp/`) || homeInit < 0 || export < homeInit {
 		t.Fatal("release-build must initialize a disposable home outside the checkout before export-public")
 	}
@@ -204,6 +207,154 @@ func TestWoodpeckerReleaseStageRefusesExistingCandidate(t *testing.T) {
 			body, err := os.ReadFile(filepath.Join(destination, "CANDIDATE"))
 			if err != nil || !strings.HasPrefix(string(body), fmt.Sprintf("version 0.1.0\ncommit %s\npipeline 42\nsha256sums_sha256 ", releaseFixtureCommit)) {
 				t.Fatalf("candidate identity: %s, %v", body, err)
+			}
+		})
+	}
+}
+
+func TestWoodpeckerReleaseHistoryKeepsCredentialsInTrustedClone(t *testing.T) {
+	step := woodpeckerReleaseSteps(t)["release-history"]
+	if step.Image != "docker.io/woodpeckerci/plugin-git:2.9.0@sha256:1e536c0da16f8cbb35e870fb3d75fde45c85c7239225fea2209cc6990ba330e4" {
+		t.Fatal("release history must use the pinned existing trusted clone image")
+	}
+	// Woodpecker 3.14 grants clone credentials only when all three are absent.
+	if len(step.Commands) != 0 || len(step.Entrypoint) != 0 || len(step.Environment) != 0 {
+		t.Fatal("custom commands, entrypoint or environment lose trusted-plugin credential injection")
+	}
+	want := map[string]any{"path": "$" + "{CI_WORKSPACE}/.ci/release-source", "ref": "refs/heads/main", "partial": false, "depth": 0, "tags": false, "recursive": false, "umask": 18, "home": "/root"}
+	if !reflect.DeepEqual(step.Settings, want) {
+		t.Fatalf("release history settings = %#v, want %#v", step.Settings, want)
+	}
+	build := strings.Join(woodpeckerReleaseSteps(t)["release-build"].Commands, "\n")
+	if strings.Contains(build, "git fetch") || strings.Contains(build, "CI_NETRC_") || strings.Contains(build, ".netrc") {
+		t.Fatal("release build must consume full source without fetching or retaining clone credentials")
+	}
+}
+func releaseHistoryGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0")
+	body, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v %s", args, err, body)
+	}
+	return strings.TrimSpace(string(body))
+}
+func TestWoodpeckerReleaseHistorySourceIdentityRefusals(t *testing.T) {
+	origin := t.TempDir()
+	releaseHistoryGit(t, origin, "init", "-b", "main")
+	releaseHistoryGit(t, origin, "config", "user.name", "Release Fixture")
+	releaseHistoryGit(t, origin, "config", "user.email", "release@example.invalid")
+	for _, body := range []string{"prior", "candidate"} {
+		if err := os.WriteFile(filepath.Join(origin, "source"), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		releaseHistoryGit(t, origin, "add", "source")
+		releaseHistoryGit(t, origin, "commit", "-m", body)
+	}
+	candidate := releaseHistoryGit(t, origin, "rev-parse", "HEAD")
+	prior := releaseHistoryGit(t, origin, "rev-parse", "HEAD~1")
+	remote := "file://" + origin
+	build := strings.Join(woodpeckerReleaseSteps(t)["release-build"].Commands, "\n")
+	start, end := strings.Index(build, `source="$CI_WORKSPACE/.ci/release-source"`), strings.Index(build, `root="$CI_WORKSPACE/.ci/release"`)
+	if start < 0 || end <= start {
+		t.Fatal("missing source admission before build effects")
+	}
+	for _, test := range []string{"full", "shallow", "stale-candidate", "wrong-head", "wrong-origin", "missing", "symlink"} {
+		t.Run(test, func(t *testing.T) {
+			workspace := t.TempDir()
+			source := filepath.Join(workspace, ".ci", "release-source")
+			if err := os.MkdirAll(filepath.Dir(source), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if test != "missing" && test != "symlink" {
+				if test == "shallow" {
+					releaseHistoryGit(t, workspace, "clone", "--depth=1", remote, source)
+				} else {
+					if err := os.Mkdir(source, 0700); err != nil {
+						t.Fatal(err)
+					}
+					releaseHistoryGit(t, source, "init")
+					releaseHistoryGit(t, source, "remote", "add", "origin", remote)
+					// Exact fetch/checkout grammar of the pinned plugin, without credentials.
+					releaseHistoryGit(t, source, "fetch", "--no-tags", "origin", "+refs/heads/main:")
+					releaseHistoryGit(t, source, "checkout", "-f", "FETCH_HEAD")
+				}
+			}
+			commit, expectedRemote := candidate, remote
+			switch test {
+			case "stale-candidate":
+				commit = prior
+			case "wrong-head":
+				releaseHistoryGit(t, source, "checkout", "--detach", prior)
+			case "wrong-origin":
+				expectedRemote = "https://git.example.invalid/other/repo.git"
+			case "symlink":
+				if err := os.Symlink(origin, source); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd := exec.Command("bash", "-euc", build[start:end])
+			cmd.Env = append(os.Environ(), "CI_WORKSPACE="+workspace, "CI_COMMIT_SHA="+commit, "CI_REPO_CLONE_URL="+expectedRemote, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
+			output, err := cmd.CombinedOutput()
+			if test == "full" {
+				if err != nil {
+					t.Fatalf("full source refused: %v %s", err, output)
+				}
+				if got := releaseHistoryGit(t, source, "rev-parse", "HEAD~1"); got != prior {
+					t.Fatal("real prior unavailable")
+				}
+			} else if err == nil {
+				t.Fatalf("accepted %s source: %s", test, output)
+			}
+		})
+	}
+}
+func TestWoodpeckerReleaseHistoryRequiresFreshDestination(t *testing.T) {
+	commands := woodpeckerReleaseSteps(t)["secret-scan"].Commands
+	script := commands[len(commands)-1]
+	if !strings.Contains(script, "release source already exists") {
+		t.Fatal("missing pre-clone fresh destination guard")
+	}
+	for _, test := range []string{"absent", "directory", "file", "symlink", "dangling-symlink", "routine"} {
+		t.Run(test, func(t *testing.T) {
+			root := t.TempDir()
+			source := filepath.Join(root, ".ci", "release-source")
+			if err := os.MkdirAll(filepath.Dir(source), 0700); err != nil {
+				t.Fatal(err)
+			}
+			switch test {
+			case "directory", "routine":
+				if err := os.Mkdir(source, 0700); err != nil {
+					t.Fatal(err)
+				}
+			case "file":
+				if err := os.WriteFile(source, []byte("retain"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink":
+				if err := os.Symlink(root, source); err != nil {
+					t.Fatal(err)
+				}
+			case "dangling-symlink":
+				if err := os.Symlink(filepath.Join(root, "missing"), source); err != nil {
+					t.Fatal(err)
+				}
+			}
+			event := "manual"
+			if test == "routine" {
+				event = "push"
+			}
+			cmd := exec.Command("sh", "-eu", "-c", script)
+			cmd.Env = append(os.Environ(), "CI_WORKSPACE="+root, "CI_PIPELINE_EVENT="+event, "RELEASE_VERSION=0.1.0")
+			output, err := cmd.CombinedOutput()
+			if test == "absent" || test == "routine" {
+				if err != nil {
+					t.Fatalf("unexpected refusal: %v %s", err, output)
+				}
+			} else if err == nil || !strings.Contains(string(output), "release source already exists") {
+				t.Fatalf("accepted existing %s: %v %s", test, err, output)
 			}
 		})
 	}
