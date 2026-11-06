@@ -54,6 +54,9 @@ func TestAutomaticRefreshRefusesLinkedTranscriptWithoutBlockingRegularHistory(t 
 		}
 	}
 	checkRefusal(refreshed.Sources[0])
+	if refreshed.Failed() {
+		t.Fatalf("a refused symlink is a visible limit, not a failed refresh: %+v", refreshed)
+	}
 	found := Search(context.Background(), hp, []LaneConfig{lane}, factory, "Which archive did we choose?", 5, QueryOptions{IncludeText: true})
 	if len(found.Evidence) != 1 || !strings.Contains(found.Evidence[0].Text, "Cedar") ||
 		strings.Contains(found.Evidence[0].Text, "OUTSIDE_PRIVATE_TRANSCRIPT") {

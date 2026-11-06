@@ -41,6 +41,39 @@ type RefreshReport struct {
 	Sources []Coverage `json:"sources"`
 }
 
+// hardRefreshStatuses are lane outcomes where a refresh could not do its job:
+// the configuration is invalid, nothing could be captured, the captured bodies
+// could not be indexed, the status could not be written, or the run was cut
+// short. Every other non-ok lane status (capture_incomplete from refused
+// symlinks, sources deleted after capture, oversized or deferred files;
+// backfilling; empty) means the lane captured and indexed everything it is
+// allowed to, and the report carries that limit in the open.
+var hardRefreshStatuses = map[string]bool{
+	"invalid_config":       true,
+	"capture_failed":       true,
+	"embedder_unavailable": true,
+	"index_failed":         true,
+	"status_write_failed":  true,
+	"cancelled":            true,
+}
+
+// Failed reports whether a scheduled refresh must exit non-zero: a lane hit a
+// hard failure, or no lane is configured. A degraded report whose lanes are
+// only partial captures is a successful run with visible limits, not a failed
+// one; treating it as failed made every unattended cycle red in a home where a
+// source root holds a symlink or a transcript was deleted after capture.
+func (r RefreshReport) Failed() bool {
+	if r.Status == "not_configured" {
+		return true
+	}
+	for _, c := range r.Sources {
+		if hardRefreshStatuses[c.Status] {
+			return true
+		}
+	}
+	return false
+}
+
 func refreshPath(homePath string, lane LaneConfig) string {
 	return filepath.Join(filepath.Dir(IndexDir(homePath, lane)), "refresh.json")
 }
