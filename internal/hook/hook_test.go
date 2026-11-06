@@ -199,6 +199,7 @@ func requireHookJSONMatches(t *testing.T, path string, returned any, label strin
 }
 
 func TestContextObservationExcludesArtifactPersistenceLatency(t *testing.T) {
+	t.Setenv(SessionPackEnv, "full") // measures the pack build only the full start runs
 	deps := baseDeps()
 	deps.HomePath = t.TempDir()
 	clockCalls := 0
@@ -276,6 +277,7 @@ func TestWriteHookEventFreezesStreamAfterCompletion(t *testing.T) {
 }
 
 func TestLiveContextInjectionTimeoutTripsBreaker(t *testing.T) {
+	t.Setenv(SessionPackEnv, "full") // the breaker guards the pack build only the full start runs
 	homePath := t.TempDir()
 	deps := baseDeps()
 	deps.HomePath = homePath
@@ -306,6 +308,7 @@ func TestLiveContextInjectionTimeoutTripsBreaker(t *testing.T) {
 }
 
 func TestLiveContextInjectionBreakerNeverReturnsPartialPack(t *testing.T) {
+	t.Setenv(SessionPackEnv, "full") // the breaker guards the pack build only the full start runs
 	assertEmptyBreaker := func(t *testing.T, res Result) {
 		t.Helper()
 		if !res.BreakerTripped {

@@ -120,6 +120,59 @@ Every failure lands on "no injection" or "no record". None of them becomes a blo
 | Second drainer | exits 3; `--follow` keeps polling |
 | Replay fails for one line | the line goes to `rejected.ndjson`; the queue continues |
 
+## Session start is minimal; the pack is on demand
+
+Claude Code and Codex session starts no longer build or inject the ContextPack. They serve, in
+this order:
+
+1. the Tier-0 law line (one file read, the same line a full pack summary carries);
+2. the door map lines, unchanged;
+3. the operator model block, when the home has one (the same capped block the full start serves);
+4. one pointer: ``Context pack is on demand: run `compound orient --harness <H> --cwd <cwd> --task "<task>"` before a non-trivial task.``
+
+The session is still recorded: the SessionStart hook event (session id, harness, input hash) and the
+session's orientation marker. The marker now says the pack was on demand, so the per-prompt pointer
+tells the truth. No ContextRequest, EffectiveContract, or ContextPack is built or minted.
+
+**Why.** A pre-registered, blind with-and-without run on 10 tasks. Arm A ran with all hooks off;
+arm B had the session-start pack injected. A judge from a different model family graded both
+orders. The rule, fixed before the run: keep the always-on pack only if B wins at least 6 of 10
+outright. Result: B 3, A 3, ties 4; B used 28% fewer tokens. The pack did not earn its place.
+Measured use of the served pack over 76 sessions points the same way: of 1,437 served items, agents
+used 63 door lines, 14 memory lines, 4 positions, 0 capability offers, and 0 skills. The door map
+is the only part with real use, so it stays.
+
+**Cost.** In live sessions the full start measured 3.4 s median and injected about 5 KB. On the
+built binary, with a scratch home (ten doors and a short synthetic operator model) and a repository
+fixture (median of 10 runs, one warm-up):
+
+| Mode | Wall time | Injected `additionalContext` |
+|---|---|---|
+| minimal | 19 ms | 3,018 bytes (law line 1,221; door map 1,113; operator model 437; pointer 241; separators) |
+| full | 60 ms | 4,343 bytes (the same door map and operator model blocks) |
+
+The scratch home holds no memory, capability, or decision state, so its full start is far cheaper
+than the 3.4 s live median. The minimal start does not read that state, so its cost does not grow
+with the home. With `COMPOUND_SESSION_PACK=full` the output equals the previous binary's output except
+for the time-derived pack id, which also differs between any two runs of the previous binary.
+
+**Who gets which mode.**
+
+| Lane | Default |
+|---|---|
+| `claude_code`, `codex` (interactive, watch-only) | minimal |
+| `claude_zai`, `claude_minimax`, `claude_qwen`, `oh_my_pi`, `opencode`, and any hook run with `--enforce` | full |
+
+The default table is `hookplan.DefaultSessionPack`. `COMPOUND_SESSION_PACK=full` in the harness
+environment restores the full start byte for byte; `COMPOUND_SESSION_PACK=minimal` forces minimal on
+any lane. The hook process inherits the harness environment, so a re-test sets it per arm with no
+reinstall. Fixture replays (without `--live`) always build the full pack. Codex keeps its per-prompt
+context build; Claude Code has none by default, so for it `compound orient` is the only route to the
+pack.
+
+**Re-test.** Run the same protocol with arm B launched under `COMPOUND_SESSION_PACK=full`. If B wins
+at least 6 of 10 outright, change the default table, not the hook.
+
 ## Proposal (not built): the irreversible-class gate
 
 Some actions cannot be undone: force-push, history rewrite, delete outside the workspace, store

@@ -27,6 +27,7 @@ import (
 	"compound/internal/mem"
 	"compound/internal/policy"
 	"compound/internal/retrievalparity"
+	"compound/internal/tooltopology"
 	"compound/internal/work"
 )
 
@@ -53,6 +54,90 @@ func TestHookLiveSessionStartEmitsAdditionalContext(t *testing.T) {
 	got := resp.HookSpecificOutput
 	if got.HookEventName != "SessionStart" || strings.TrimSpace(got.AdditionalContext) == "" {
 		t.Fatalf("live session-start response = %+v", got)
+	}
+}
+
+// The installed claude_code session start is minimal by default: the pointer to
+// `compound orient` instead of the pack, and no pack minted in the home. The same
+// input with COMPOUND_SESSION_PACK=full serves and mints the pack.
+func TestHookLiveSessionStartIsMinimalByDefaultAndFullOnRequest(t *testing.T) {
+	countCtx := func(t *testing.T, root string) int {
+		t.Helper()
+		n := 0
+		if err := filepath.WalkDir(root, func(_ string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if !d.IsDir() && strings.HasPrefix(d.Name(), "ctx_") {
+				n++
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	serve := func(t *testing.T, mode string) (string, int) {
+		t.Helper()
+		homePath := t.TempDir()
+		t.Setenv("COMPOUND_HOME", homePath)
+		t.Setenv(hook.SessionPackEnv, mode)
+		if err := home.Init(homePath, "test", cliTestNow); err != nil {
+			t.Fatalf("init home: %v", err)
+		}
+		modelPath := filepath.Join(homePath, filepath.FromSlash(tooltopology.OperatorModelPath))
+		if err := os.MkdirAll(filepath.Dir(modelPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(modelPath, []byte("- Lead with the decision.\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		input := `{"hook_event_name":"SessionStart","session_id":"sess_pack_mode","cwd":"/repo/product","source":"startup"}`
+		var code int
+		out := captureStdout(t, func() {
+			withStdin(t, input, func() {
+				code = runHookCommand([]string{"session-start", "--live", "--harness", "claude-code"})
+			})
+		})
+		if code != 0 {
+			t.Fatalf("live session-start (%q) exit = %d\n%s", mode, code, out)
+		}
+		var resp claudeLiveHookResponse
+		if err := json.Unmarshal([]byte(out), &resp); err != nil {
+			t.Fatalf("parse live response: %v\n%s", err, out)
+		}
+		if resp.HookSpecificOutput.HookEventName != "SessionStart" {
+			t.Fatalf("hook event name = %q", resp.HookSpecificOutput.HookEventName)
+		}
+		stream, err := os.ReadFile(filepath.Join(homePath, "events", "hook-events.ndjson"))
+		if err != nil || !strings.Contains(string(stream), `"session_id":"sess_pack_mode"`) {
+			t.Fatalf("session start (%q) was not recorded: err=%v\n%s", mode, err, stream)
+		}
+		return resp.HookSpecificOutput.AdditionalContext, countCtx(t, homePath)
+	}
+
+	minimal, minted := serve(t, "")
+	if !strings.Contains(minimal, "Context pack is on demand: run `compound orient --harness claude_code --cwd /repo/product --task \"<task>\"`") ||
+		!strings.Contains(minimal, "Door map") ||
+		!strings.Contains(minimal, "## Operator model (private, from "+tooltopology.OperatorModelPath+")\n- Lead with the decision.") {
+		t.Fatalf("minimal session start lacks the pointer, the door map or the operator model:\n%s", minimal)
+	}
+	for _, forbidden := range []string{"Context pack: ctx_", "owned ledger", "capability offer", "Compound positions"} {
+		if strings.Contains(minimal, forbidden) {
+			t.Fatalf("minimal session start served %q:\n%s", forbidden, minimal)
+		}
+	}
+	if minted != 0 {
+		t.Fatalf("minimal session start minted %d ctx_ pack file(s)", minted)
+	}
+
+	full, minted := serve(t, "full")
+	if !strings.Contains(full, "Context pack: ctx_") || strings.Contains(full, "Context pack is on demand") ||
+		!strings.Contains(full, "## Operator model (private, from ") {
+		t.Fatalf("COMPOUND_SESSION_PACK=full did not restore the pack:\n%s", full)
+	}
+	if minted == 0 {
+		t.Fatal("COMPOUND_SESSION_PACK=full minted no ctx_ pack file")
 	}
 }
 
@@ -106,6 +191,7 @@ func TestHookLiveSessionStartOrientErrorTripsBreaker(t *testing.T) {
 		t.Fatalf("write malformed repo-kind registry: %v", err)
 	}
 
+	t.Setenv(hook.SessionPackEnv, "full") // the breaker guards the pack build only the full start runs
 	input := `{"hook_event_name":"SessionStart","session_id":"sess_breaker_error","cwd":"/repo/product","source":"startup"}`
 	var code int
 	out := captureStdout(t, func() {
@@ -317,6 +403,7 @@ func TestHookLiveSessionStartParityRecordsContextSpineRefs(t *testing.T) {
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("init home: %v", err)
 	}
+	t.Setenv(hook.SessionPackEnv, "full") // spine refs exist only when the start builds the pack
 	parityDir := t.TempDir()
 	input := `{"hook_event_name":"SessionStart","session_id":"sess_live_context","cwd":"/repo/control","prompt":"continue held-valve-adjacent Compound work"}`
 	var code int
@@ -466,6 +553,7 @@ func TestHookLiveContextRetrievalJournalsAfterSuccessfulBreakers(t *testing.T) {
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("init home: %v", err)
 	}
+	t.Setenv(hook.SessionPackEnv, "full") // a minimal start retrieves nothing, so journals nothing
 	inputs := []struct {
 		hook   string
 		event  string
