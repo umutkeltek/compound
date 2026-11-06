@@ -23,7 +23,7 @@ func TestDesktopZipExcludesRuntimeTreesAndDocumentsTheSnapshotBoundary(t *testin
 		t.Fatalf("script help: %v\n%s", err, help)
 	}
 	for _, want := range []string{
-		"default 480",
+		"450 decimal MB",
 		"harness/runtime directories remain excluded",
 		".codex/",
 		".agents/",
@@ -151,7 +151,7 @@ func TestDesktopZipExcludesRuntimeTreesAndDocumentsTheSnapshotBoundary(t *testin
 	}
 }
 
-func TestDesktopZipOversizeDiagnosticUsesPortableFind(t *testing.T) {
+func TestDesktopZipOversizePreservesExistingOutputs(t *testing.T) {
 	t.Parallel()
 	for _, command := range []string{"bash", "git", "rsync", "zip"} {
 		if _, err := exec.LookPath(command); err != nil {
@@ -173,6 +173,17 @@ func TestDesktopZipOversizeDiagnosticUsesPortableFind(t *testing.T) {
 	}
 
 	desktop := t.TempDir()
+	oldZip := filepath.Join(desktop, "oversized.zip")
+	if err := os.WriteFile(oldZip, []byte("previous archive"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldStage := filepath.Join(desktop, "oversized")
+	if err := os.MkdirAll(oldStage, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldStage, "keep.txt"), []byte("previous stage"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	cmd := exec.Command(
 		"bash", scriptPath,
 		"--repo", source,
@@ -185,7 +196,7 @@ func TestDesktopZipOversizeDiagnosticUsesPortableFind(t *testing.T) {
 	if err == nil {
 		t.Fatalf("oversized archive unexpectedly succeeded:\n%s", out)
 	}
-	for _, want := range []string{"Largest staged files:", "oversized zip deleted"} {
+	for _, want := range []string{"Largest retained files:", "existing outputs preserved"} {
 		if !strings.Contains(string(out), want) {
 			t.Fatalf("oversize diagnostic missing %q:\n%s", want, out)
 		}
@@ -193,7 +204,10 @@ func TestDesktopZipOversizeDiagnosticUsesPortableFind(t *testing.T) {
 	if strings.Contains(string(out), "illegal trailing character") {
 		t.Fatalf("oversize diagnostic used a non-portable find size suffix:\n%s", out)
 	}
-	if _, statErr := os.Stat(filepath.Join(desktop, "oversized.zip")); !os.IsNotExist(statErr) {
-		t.Fatalf("oversized archive was not deleted: %v", statErr)
+	if body, err := os.ReadFile(oldZip); err != nil || string(body) != "previous archive" {
+		t.Fatalf("previous archive changed: %v", err)
+	}
+	if body, err := os.ReadFile(filepath.Join(oldStage, "keep.txt")); err != nil || string(body) != "previous stage" {
+		t.Fatalf("previous stage changed: %v", err)
 	}
 }

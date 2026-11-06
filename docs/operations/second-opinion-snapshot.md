@@ -6,8 +6,7 @@ For a broad external review of the system, run from the repository root:
 bash scripts/desktop-compound-zip.sh --second-opinion
 ```
 
-The result is the Desktop `compound.zip`, with a 480 MiB hard limit (about
-503 MB). Existing Desktop `compound` and `compound.zip` are replaced; use
+The result is the Desktop `compound.zip`, with a 450 MB hard limit (450,000,000 bytes). Existing Desktop `compound` and `compound.zip` are replaced only after integrity and size checks; use
 `--name` and `--zip` to keep separate snapshots. Creating the archive does not
 upload it anywhere. This mode includes private context and is for the operator's
 chosen reviewer, not public source distribution.
@@ -42,7 +41,8 @@ eligible text. It is selected before automatic context, and an explicit group
 that cannot fit causes a refusal before replacing an existing snapshot.
 `--exclude` still applies; the final manifest records the files it removes.
 The final ZIP limit is independent of the private-data budget: an oversized
-archive is deleted and the command fails, rather than silently dropping source.
+candidate is discarded and the command fails while preserving the previous
+snapshot, rather than silently dropping source.
 
 Ask the reviewer to read `REVIEW-START-HERE.md`, cite source paths and lines, test
 the repository's assumptions, and distinguish findings from missing evidence.
