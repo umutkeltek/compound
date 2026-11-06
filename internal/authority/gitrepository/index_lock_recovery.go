@@ -11,6 +11,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -22,8 +25,9 @@ type IndexLockRecoveryResult struct {
 	Changed     bool   `json:"changed"`
 }
 
-// LSOFIndexLockLiveness treats warnings, unavailable probes and unfamiliar
-// output as unknown, not idle. It reports no process command lines.
+// LSOFIndexLockLiveness rejects unavailable probes and ambiguous output. Only
+// device-verified warnings about unrelated mounts are harmless for exact file
+// queries. It reports no process command lines.
 func LSOFIndexLockLiveness(ctx context.Context, paths ...string) error {
 	if len(paths) == 0 {
 		return fmt.Errorf("exact Git paths required")
@@ -43,10 +47,55 @@ func LSOFIndexLockLiveness(ctx context.Context, paths ...string) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 && out.Len() == 0 && stderr.Len() == 0 {
+	if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 && out.Len() == 0 &&
+		(stderr.Len() == 0 || lsofWarningsExcludeTargets(stderr.String(), paths)) {
 		return nil
 	}
 	return fmt.Errorf("Git file holder present or liveness probe inconclusive")
+}
+
+var lsofMountStatWarning = regexp.MustCompile(
+	"^lsof: WARNING: can't stat\\(\\) [^ \\r\\n]+ file system ([^\\r\\n]+)\\n[ \\t]+Output information may be incomplete\\.\\n[ \\t]+assuming \"dev=([0-9a-fA-F]+)\" from mount table\\n",
+)
+
+// A failed stat of an unrelated mounted filesystem does not make an exact
+// local-file query incomplete. Accept only lsof's complete device-bearing
+// warning form, and prove every affected mount excludes every queried file.
+// Generic warnings, target devices, nested paths and unreadable targets remain
+// inconclusive. Never suppress warnings in the lsof invocation itself.
+func lsofWarningsExcludeTargets(diagnostic string, paths []string) bool {
+	if diagnostic == "" || len(paths) == 0 {
+		return false
+	}
+	devices := make([]uint64, len(paths))
+	for i, path := range paths {
+		id, err := indexLockIdentity(path, false)
+		if err != nil {
+			return false
+		}
+		devices[i] = id.Device
+	}
+	for diagnostic != "" {
+		match := lsofMountStatWarning.FindStringSubmatch(diagnostic)
+		if match == nil {
+			return false
+		}
+		mount := match[1]
+		if !filepath.IsAbs(mount) || filepath.Clean(mount) != mount || mount == string(filepath.Separator) {
+			return false
+		}
+		device, err := strconv.ParseUint(match[2], 16, 64)
+		if err != nil || device == 0 {
+			return false
+		}
+		for i, path := range paths {
+			if devices[i] == device || path == mount || strings.HasPrefix(path, mount+string(filepath.Separator)) {
+				return false
+			}
+		}
+		diagnostic = diagnostic[len(match[0]):]
+	}
+	return true
 }
 
 // InspectRecoveredIndexLock proves absence of a replacement lock and exact

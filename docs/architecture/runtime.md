@@ -504,6 +504,12 @@ actual outcome; it never repeats the move. Completed replay reports historical
 receipt/transition identities, not a claim that no new lock exists now. Missing or
 unreadable evidence retains the work reservation for explicit reconciliation.
 There is no background lock sweeper and no runtime installation implicit in this command.
+Exact-file liveness may disregard only complete device-bearing mount-stat warnings
+whose devices differ from every queried regular file and whose mount paths contain
+none of those files. Holder output, target-filesystem warnings, unknown diagnostics,
+unreadable targets and failed probes still refuse. This never replaces the actual
+writer-pause requirement.
+
 
 ### Sandbox notification writes
 
