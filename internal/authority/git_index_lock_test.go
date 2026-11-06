@@ -44,7 +44,11 @@ func TestGitIndexLockArtifactInterruptedWriteNeverPoisonsFinalName(t *testing.T)
 	}
 }
 
-func newIndexRecoveryFixture(t *testing.T) (string, GitIndexLockPlan, time.Time) {
+func newIndexRecoveryFixture(t *testing.T, actors ...string) (string, GitIndexLockPlan, time.Time) {
+	actor := "operator:test"
+	if len(actors) > 0 {
+		actor = actors[0]
+	}
 	t.Helper()
 	now := time.Now().UTC()
 	home := t.TempDir()
@@ -55,14 +59,14 @@ func newIndexRecoveryFixture(t *testing.T) (string, GitIndexLockPlan, time.Time)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := s.Create(work.CreateInput{Owner: "operator:test", Actor: "operator:test", State: "ready", SuccessPredicate: "recover only exact reviewed stale index lock"}, now)
+	w, err := s.Create(work.CreateInput{Owner: actor, Actor: actor, State: "ready", SuccessPredicate: "recover only exact reviewed stale index lock"}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Claim(w.ID, "operator:test", now); err != nil {
+	if _, err := s.Claim(w.ID, actor, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Advance(w.ID, work.AdvanceInput{To: "running", Actor: "operator:test"}, now); err != nil {
+	if _, err := s.Advance(w.ID, work.AdvanceInput{To: "running", Actor: actor}, now); err != nil {
 		t.Fatal(err)
 	}
 	repo := t.TempDir()
@@ -93,7 +97,7 @@ func newIndexRecoveryFixture(t *testing.T) (string, GitIndexLockPlan, time.Time)
 	if err := os.Chtimes(lock, old, old); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := BuildGitIndexLockPlan(context.Background(), repo, w.ID, "operator:test", indexRecoveryIdle, now)
+	plan, err := BuildGitIndexLockPlan(context.Background(), repo, w.ID, actor, indexRecoveryIdle, now)
 	if err != nil {
 		t.Fatal(err)
 	}

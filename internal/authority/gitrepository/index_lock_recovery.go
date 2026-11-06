@@ -115,7 +115,8 @@ func InspectRecoveredIndexLock(ctx context.Context, expected IndexLockSnapshot, 
 // RecoverIndexLock is an effect primitive, not an authorization door. Its sole
 // production caller is the authority adapter, after reviewed exclusive-window
 // admission and a durable work reservation. There is no inode-CAS rename on
-// POSIX: unrelated writers MUST remain paused for the entire recovery window.
+// POSIX. Manual recovery requires the recorded writer pause; agent-managed
+// recovery accepts the bounded unmanaged-replacement race and never claims a pause.
 func RecoverIndexLock(ctx context.Context, state IndexLockState, idle IndexLockLiveness, authorize func() error) (IndexLockRecoveryResult, error) {
 	return recoverIndexLock(ctx, state, idle, authorize, nil)
 }
@@ -168,6 +169,12 @@ func recoverIndexLockOwned(ctx context.Context, state IndexLockState, idle Index
 			return result, fmt.Errorf("pinned Git directory identity changed")
 		}
 	}
+	// All native recoveries, including those using different Compound homes,
+	// serialize on this pinned repository directory without creating a new file.
+	if err := unix.Flock(int(gitDir.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		return result, fmt.Errorf("another recovery holds the repository: %w", err)
+	}
+	defer unix.Flock(int(gitDir.Fd()), unix.LOCK_UN)
 	const area = "compound-index-lock-recovery"
 	if err := unix.Mkdirat(int(gitDir.Fd()), area, 0700); err != nil && err != unix.EEXIST {
 		return result, err

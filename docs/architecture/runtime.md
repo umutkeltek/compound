@@ -480,36 +480,46 @@ tampered plan, inactive owner work, or legacy count-only review keeps the normal
 
 ---
 
-### Reviewed Git index-lock recovery
+### Git index-lock recovery
 
-`compound authority git-index-lock plan|review|apply` owns the narrow stale-lock
-recovery path. Raw `.git` mutations remain forbidden. A plan seals primary-checkout
-directory and file identities, HEAD, exact index, both binary WIP patches and raw
-tracked-byte hashes. Linked/bare checkouts, untracked files, hidden index flags,
-special entries, active Git operations, ambiguous liveness and nonempty/fresh locks
-are refused. Review binds the entire plan (including work and actor) to explicit
-operator provenance and evidence of an actual all-writer pause, expiring within
-five minutes. Recovery approval alone is not evidence that writers are paused.
+`compound authority git-index-lock recover --repo ROOT --work WORK --actor ACTOR`
+owns routine agent-managed recovery. It builds the exact plan, records a short
+machine-labelled observation window and applies through the existing governed owner.
+The window records `coordination=agent_managed`, the actual actor and snapshot
+evidence; it never claims operator provenance or an all-writer pause. A running
+owner WorkEnvelope and a fresh allowing PolicyDecision remain required.
 
-Apply first reserves the exact allowed action on running work. Private 0600
-preimages and a durable recovery locator precede the move; 0700 directories and
-descriptor-pinned, platform no-replace rename preserve recovery evidence. Synced
-move-started evidence precedes final liveness, policy/window/lease and identity
-checks. POSIX rename has no inode compare-and-swap: the reviewed writer-free window
-is required, not replaced by those checks. Post-move drift is a partial failure,
-never authority to overwrite a new lock or index. Concurrent apply is refused.
+Both coordination modes require an empty, current-user, single-link regular lock
+at least fifteen minutes old, conclusive exact-file liveness and no active Git
+operation. The plan seals primary-checkout directory/file identities, HEAD, exact
+index, both binary WIP patches and raw tracked-byte hashes. Linked/bare checkouts,
+untracked files, hidden index flags, special entries and uncertain state refuse.
+Raw `.git` mutations remain forbidden.
 
-An interrupted invocation reconciles retained evidence read-only and records its
-actual outcome; it never repeats the move. Completed replay reports historical
-receipt/transition identities, not a claim that no new lock exists now. Missing or
-unreadable evidence retains the work reservation for explicit reconciliation.
-There is no background lock sweeper and no runtime installation implicit in this command.
+The optional `plan|review|apply` path retains the manually coordinated mode:
+operator provenance plus evidence of an actual all-writer pause, expiring within
+five minutes. General recovery approval cannot be presented as a pause commitment.
+
+Apply reserves the exact allowed action on running work. Native recoveries serialize
+on the pinned primary Git directory, including across Compound homes. Private 0600
+preimages and a durable recovery locator precede the move; 0700 directories and a
+descriptor-pinned no-replace rename preserve recovery evidence. Synced move-started
+evidence precedes final liveness, policy/window/lease and identity checks. POSIX
+rename has no source-inode compare-and-swap: agent-managed mode accepts the bounded
+race with an unmanaged process replacing the lock in the final rename gap; it does
+not assert universal writer exclusion. Post-move drift remains a partial failure,
+never authority to overwrite a replacement lock or index.
+
+An interrupted apply reconciles retained evidence and records its actual outcome;
+it never repeats the move. Output includes exact plan and review IDs for that
+reconciliation. Completed replay reports historical receipt/transition identities
+and leaves any later lock untouched. There is no background lock sweeper or implicit
+runtime installation.
+
 Exact-file liveness may disregard only complete device-bearing mount-stat warnings
 whose devices differ from every queried regular file and whose mount paths contain
 none of those files. Holder output, target-filesystem warnings, unknown diagnostics,
-unreadable targets and failed probes still refuse. This never replaces the actual
-writer-pause requirement.
-
+unreadable targets and failed probes still refuse.
 
 ### Sandbox notification writes
 

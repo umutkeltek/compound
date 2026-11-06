@@ -635,21 +635,26 @@ git -C <MAIN-worktree> merge --ff-only "$CANDIDATE_SHA"
   The separate hijacked-checkout exception in §1 still requires an already-certified descendant;
   it does not authorize proof reuse for a changed base or candidate.
 
-- **An old index lock is a recovery candidate, not proof that Git is idle.**
-  Do not move or delete it by hand and do not relax the generic `.git` forbidden-path rule.
-  Use `compound authority git-index-lock plan --repo ROOT --work WORK --actor ACTOR`.
-  The typed adapter supports primary checkouts only: it requires an empty, current-user,
-  single-link regular lock at least fifteen minutes old, conclusive liveness, no active
-  Git operation, and exact index plus staged/unstaged binary-patch and raw tracked-byte
-  preservation. Untracked files, hidden index flags and special entries fail closed.
-  Scoped recovery approval need not be requested again, but is NOT a writer-pause
-  commitment. Record a separate actual all-writer pause with `git-index-lock review
-  --plan ID --operator operator:ID --evidence REF --writers-paused --expires RFC3339`
-  (maximum five minutes), then `git-index-lock apply --plan ID --review ID --actor ACTOR`.
-  Final checks are not inode compare-and-swap: all Git writers must remain paused.
-  Recovery uses a no-overwrite move and private synced preimages; it never restores
-  over a replacement. Interrupted apply reconciles evidence and receipts without
-  repeating the move. A failed or unknown policy/window/probe stops recovery.
+- **Recover stale index locks through the native owner.**
+  Use `compound authority git-index-lock recover --repo ROOT --work WORK --actor ACTOR`
+  with the current running owner work. This agent-managed path prepares and records
+  its own exact plan and observation window; it does not require the operator to
+  pause other agents or repair an unrelated mount. Do not move or delete the lock
+  by hand or relax generic `.git` path protection.
+  Recovery still requires an empty, current-user, single-link regular lock at least
+  fifteen minutes old, conclusive liveness, no active Git operation, and exact index,
+  staged/unstaged patches and tracked-byte preservation. Untracked files, hidden
+  index flags, special entries, live holders and unknown diagnostics refuse.
+  Native recoveries serialize at the pinned repository directory. Agent-managed
+  mode accepts the bounded final rename race with an unmanaged lock replacement;
+  it never fabricates an all-writer pause. Private synced preimages and a no-overwrite
+  move remain mandatory, and post-move drift never permits restoring over a new writer.
+  If an apply is interrupted, use the returned exact plan/review IDs with
+  `git-index-lock apply --plan ID --review ID --actor ACTOR` to reconcile retained
+  evidence without repeating the move.
+  The optional manual `plan|review|apply` path remains available when an actual
+  coordinated writer pause exists; its review still requires operator provenance,
+  `--writers-paused`, the real agreement evidence and a maximum five-minute expiry.
 - **A skill/doc under `.claude/` may be a SYMLINK into the tracked tree — check the target, not the link**
   (lived 2026-07-27). `.claude/` is gitignored wholesale (`.gitignore:12`), so
   `git ls-files .claude/skills/<s>/SKILL.md` reports untracked and `check-ignore` confirms it — but the
