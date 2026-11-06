@@ -72,7 +72,22 @@ cleanup. Prove delayed admission does not spend the unchanged readiness budget, 
 missing marker, early exit, or cancellation still fails. Never relax takeover exclusion
 or termination assertions to accommodate setup latency.
 
-## The battery (run in order; each step is checkable)
+## Select the source-proof path first
+
+**Remote verifier verdict (operator decision 2026-11-03).** For a non-core diff the stored proof is the remote verifier
+post-land verdict, not a laptop battery: `compound work verifier-verdict WORK --tip LANDED_SHA --attach
+--actor ACTOR`, then `land-check`. It certifies by containment, not equality: the stored proof head
+is the verified commit S, and land-check requires the candidate tip T to be an ancestor of or equal
+to S and S to be on the target branch. A red culprit range containing T, or no green verdict
+covering T, refuses the close ("the remote verifier has not verified this tip yet"); there is no laptop fallback.
+Governance-core diffs (`governance_core=<path>` on the presubmit verdict, from `presubmit.plan.scope.governance_core`)
+keep the full pre-land battery and the exact base/head equality rule. The laptop nightly battery is retired.
+
+Apply this choice before the steps below. Every source landing still needs the scoped presubmit.
+Step 2 is the full local battery for governance-core diffs; non-core diffs use the covering
+verifier verdict instead. Run the applicable behavior and consumption checks for the change.
+
+## Verification (use the selected proof path)
 
 1. **Never trust the checked-in binary.** `./compound` at repo root is a local build artifact and
    is routinely stale. Verify through `go run ./cmd/compound <verb>` or a fresh `make install`.
@@ -104,10 +119,16 @@ or termination assertions to accommodate setup latency.
    The legacy
    `go run ./cmd/compound proof-check --dev --base <full-sha> --out <file>` is its whole-module
    cached variant. Both are non-certifying: neither writes the canonical installed-runtime proof
-   artifact or satisfies the deterministic bundle below, which runs on the landed tip after the
-   land and before any governed close.
+   artifact or satisfies the selected canonical proof. Use the scope-based path above before
+   closing the work.
 
-2. **Deterministic bundle:**
+2. **Deterministic bundle (governance-core diffs):**
+   The following exact-binding clauses apply to this local canonical-proof path:
+   A rebase, replay, or new HEAD invalidates prior proof and requires a fresh battery.
+   For source-controlled work, a committed stored successful proof is required:
+   `land-check` candidate tip, current attached commit candidate, and stored proof HEAD
+   must match; close refuses a missing, mismatched, or rebased proof.
+
    ```bash
    # Use the coverage base already selected and validated in compound-land §1.
    test -n "${PROOF_BASE_SHA:-}" &&
@@ -277,28 +298,14 @@ or termination assertions to accommodate setup latency.
    `go run ./cmd/compound workbench --json` / `transition show <id>`. A `RouteDecision`, a plan
    artifact, or a written report is never task success — only the receipt's `state_delta` is.
 
-   For source-controlled work, the `land-check` candidate tip, current attached commit
-   candidate, and stored successful proof HEAD must be identical. A rebased or mismatched tip
-   is non-certifying and close refuses it until a fresh battery records the new HEAD.
-
-A rebase, replay, or new HEAD invalidates prior proof and requires a fresh battery.
-For source-controlled work, a committed stored successful proof is required:
-`land-check` candidate tip, current attached commit candidate, and stored proof HEAD
-must match; close refuses a missing, mismatched, or rebased proof.
-
-
-**Remote verifier verdict (operator decision 2026-11-03).** For a non-core diff the stored proof is the remote verifier
-post-land verdict, not a laptop battery: `compound work verifier-verdict WORK --tip LANDED_SHA --attach
---actor ACTOR`, then `land-check`. It certifies by containment, not equality: the stored proof head
-is the verified commit S, and land-check requires the candidate tip T to be an ancestor of or equal
-to S and S to be on the target branch. A red culprit range containing T, or no green verdict
-covering T, refuses the close ("the remote verifier has not verified this tip yet"); there is no laptop fallback.
-Governance-core diffs (`governance_core=<path>` on the presubmit verdict, from `presubmit.plan.scope.governance_core`)
-keep the full pre-land battery and the equality rule above. The laptop nightly battery is retired.
+   For source-controlled work, apply the selected proof binding: a non-core candidate must be
+   covered by the attached green verifier verdict on the target branch; a governance-core
+   candidate must match the stored canonical proof's exact base and head. Re-run `land-check`
+   for the current attached candidate. A changed candidate needs valid proof under that path.
 
 ## Verdict format (end every run with exactly one)
 
-- `ALIVE` — all four gaps closed; cite: proof-check result, consumer command + observed output,
+- `ALIVE` — all four gaps closed; cite: the selected proof result, consumer command + observed output,
   retired old path, failing-test name.
 - `LANDED-NOT-LIVE (<wiring|data|cutover|proof>)` — machinery merged, gap named, follow-up
   branch recorded (who closes it, where).
