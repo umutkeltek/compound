@@ -35,7 +35,7 @@ owned CI logs, with a copy at `.ci/reports/ci-console.json`.
    example `0.1.0`. A normal push, cron, or manual run without that variable runs
    routine proof steps only. No release step runs on a tag event.
 3. Wait for `prepare-bun`, `proof-gates`, `console-gates`, and `secret-scan`, then
-   all three release steps. `release-build` requires the candidate to equal the
+   all four release steps. `release-build` requires the candidate to equal the
    freshly fetched `origin/main` tip, verifies modules, exports public source,
    and builds the closed nine-file bundle twice with Go 1.27.2 and
    `cyclonedx-gomod` v1.10.0. Both checksum files and every bundle file must match.
