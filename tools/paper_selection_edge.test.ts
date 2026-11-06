@@ -177,7 +177,7 @@ test("cli export imports idempotently through generic Compound knowledge import"
   const first = spawnSync(COMPOUND_BIN, ["knowledge", "import", exportPath, "--json"], {
     cwd: process.cwd(),
     encoding: "utf8",
-    env: { ...process.env, COMPOUND_HOME: homePath },
+    env: { ...process.env, COMPOUND_HOME: homePath, COMPOUND_CANDIDATE_PRODUCERS: "1" },
   });
   expect(first.status).toBe(0);
   const firstReport = JSON.parse(first.stdout);
@@ -189,7 +189,7 @@ test("cli export imports idempotently through generic Compound knowledge import"
   const second = spawnSync(COMPOUND_BIN, ["knowledge", "import", exportPath, "--json"], {
     cwd: process.cwd(),
     encoding: "utf8",
-    env: { ...process.env, COMPOUND_HOME: homePath },
+    env: { ...process.env, COMPOUND_HOME: homePath, COMPOUND_CANDIDATE_PRODUCERS: "1" },
   });
   expect(second.status).toBe(0);
   const secondReport = JSON.parse(second.stdout);
@@ -198,4 +198,42 @@ test("cli export imports idempotently through generic Compound knowledge import"
   expect(secondReport.reused).toBe(4);
   expect(secondReport.extraction_ids).toHaveLength(0);
 });
+});
+
+// An enabled fan-out fixture must not conceal the production default.
+test("paper import keeps evidence pending when candidate producers are not enabled", () => {
+  const root = temporary.dir("compound-paper-selection-producers-off-");
+  const homePath = join(root, "compound-home");
+  const exportPath = join(root, "paper-selection-export.json");
+  const report = buildPaperSelectionExport(hfFixture, semanticFixture, {
+    topic: "agent memory", maxItems: 4, maxPerCategory: 1,
+    capturedAt: "2026-07-04T00:00:00Z",
+  });
+  writeFileSync(exportPath, JSON.stringify(report.export), "utf8");
+  initializeCompoundHome(COMPOUND_BIN, homePath);
+  const env: Record<string, string | undefined> = { ...process.env, COMPOUND_HOME: homePath };
+  delete env.COMPOUND_CANDIDATE_PRODUCERS;
+  const invoke = () => spawnSync(COMPOUND_BIN, ["knowledge", "import", exportPath, "--json"], {
+    cwd: process.cwd(), encoding: "utf8", env,
+  });
+  const first = invoke();
+  expect(first.status).toBe(0);
+  const imported = JSON.parse(first.stdout);
+  expect(imported.imported).toBe(4);
+  expect(imported.evidence_ids).toHaveLength(4);
+  expect(imported.extraction_ids).toHaveLength(4);
+  expect(imported.candidate_ids).toHaveLength(0);
+  expect(imported.producer_note).toContain("COMPOUND_CANDIDATE_PRODUCERS=1");
+  for (const id of imported.extraction_ids) {
+    const request = JSON.parse(readFileSync(join(homePath, "inbox", "knowledge-extractions", id + ".json"), "utf8"));
+    expect(request.state).toBe("pending");
+    expect(request.evidence_ref).toBeTruthy();
+  }
+  const second = invoke();
+  expect(second.status).toBe(0);
+  const replay = JSON.parse(second.stdout);
+  expect(replay.imported).toBe(0);
+  expect(replay.reused).toBe(4);
+  expect(replay.extraction_ids).toHaveLength(0);
+  expect(replay.candidate_ids).toHaveLength(0);
 });

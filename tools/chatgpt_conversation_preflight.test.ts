@@ -97,7 +97,7 @@ describe("chatgpt_conversation_preflight", () => {
         "--captured-at",
         "2026-07-04T00:00:00Z",
       ],
-      { cwd: process.cwd(), encoding: "utf8", env: { ...process.env, TMPDIR: `${root}/` } },
+      { cwd: process.cwd(), encoding: "utf8", env: { ...process.env, COMPOUND_CANDIDATE_PRODUCERS: "1", TMPDIR: `${root}/` } },
     );
     expect(result.status).toBe(0);
 
@@ -199,7 +199,7 @@ describe("chatgpt_conversation_preflight", () => {
         "--min-chars",
         "40",
       ],
-      { cwd: process.cwd(), encoding: "utf8", env: { ...process.env, TMPDIR: `${root}/` } },
+      { cwd: process.cwd(), encoding: "utf8", env: { ...process.env, COMPOUND_CANDIDATE_PRODUCERS: "1", TMPDIR: `${root}/` } },
     );
     expect(result.status).toBe(0);
     const report = JSON.parse(result.stdout);
@@ -207,3 +207,42 @@ describe("chatgpt_conversation_preflight", () => {
     expect(report.second_import.imported).toBe(0);
   }, 15000);
 });
+
+// Import fixtures opt in explicitly; a default run must preserve evidence and
+// pending extraction requests without manufacturing candidates or promotion.
+test("conversation preflight preserves the default-off candidate boundary", () => {
+  const root = temporary.dir("compound-chatgpt-preflight-producers-off-");
+  const inputPath = join(root, "conversations.json");
+  const compoundPath = join(root, "compound");
+  writeFileSync(inputPath, JSON.stringify(conversationFixture), "utf8");
+  const build = spawnSync("go", ["build", "-o", compoundPath, "./cmd/compound"], {
+    cwd: process.cwd(), encoding: "utf8",
+  });
+  expect(build.status).toBe(0);
+  const env: Record<string, string | undefined> = { ...process.env, TMPDIR: `${root}/` };
+  delete env.COMPOUND_CANDIDATE_PRODUCERS;
+  const result = spawnSync("bun", [
+    "tools/chatgpt_conversation_preflight.ts", inputPath,
+    "--compound-command", compoundPath, "--limit", "2", "--min-chars", "40",
+  ], { cwd: process.cwd(), encoding: "utf8", env });
+  expect(result.status).toBe(1);
+  const report = JSON.parse(result.stdout);
+  expect(report.status).toBe("fail");
+  expect(report.first_import.imported).toBe(2);
+  expect(report.first_import.evidence_ids).toHaveLength(2);
+  expect(report.first_import.extraction_ids).toHaveLength(2);
+  expect(report.first_import.candidate_ids).toHaveLength(0);
+  expect(report.first_import.producer_note).toContain("COMPOUND_CANDIDATE_PRODUCERS=1");
+  expect(report.import_safety.private_evidence_count).toBe(2);
+  expect(report.import_safety.candidate_count).toBe(0);
+  expect(report.import_safety.promoted_claim_count).toBe(0);
+  expect(report.second_import.imported).toBe(0);
+  expect(report.second_import.reused).toBe(2);
+  expect(report.checks.filter((check: { ok: boolean }) => !check.ok)
+    .map((check: { name: string }) => check.name)).toEqual(["imported_candidates_private"]);
+  for (const id of report.first_import.extraction_ids) {
+    const request = JSON.parse(readFileSync(join(report.temp_home, "inbox", "knowledge-extractions", id + ".json"), "utf8"));
+    expect(request.state).toBe("pending");
+    expect(request.evidence_ref).toBeTruthy();
+  }
+}, 15000);
