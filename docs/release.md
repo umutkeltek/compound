@@ -120,7 +120,9 @@ prior bundle and acceptance reports are CI workspace evidence, not release asset
    directory. The third build must match the staged `SHA256SUMS` and every file.
    A compiler mismatch can change bytes; it is a refusal, never a reason to skip
    comparison. The script then performs a native Darwin clean install and the
-   full installed acceptance drill against the real parent bundle.
+   full installed acceptance drill against the real parent bundle. The publisher
+   requires the exact runner's passed native report for this commit before signing;
+   temporary-directory aliases cannot silently skip the drill.
 3. The script signs only `SHA256SUMS`, using `COMPOUND_RELEASE_SIGNING_KEY` when
    set or the dedicated `~/.ssh/compound_release_ed25519` key. It verifies the
    signature against `release/allowed_signers` from the clean release tag before

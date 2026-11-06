@@ -89,6 +89,23 @@ test -x "$install_root/bin/compound-breadth-engine"
 node "$source/scripts/installed-release-acceptance.mjs" "$root/local" "$commit" \
   "$root/darwin-acceptance" "$root/prior" "$prior_commit"
 
+# A successful exit must also produce this candidate's passed native report.
+node --input-type=module - "$root/darwin-acceptance/installed-acceptance.json" "$commit" "$source/scripts/installed-release-acceptance.mjs" <<'NODE'
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+const report = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+assert.equal(report.schema_version, 'compound.release_installed_acceptance.v0.1');
+assert.equal(report.status, 'passed');
+assert.equal(report.candidate, process.argv[3]);
+assert.equal(report.native?.platform, 'darwin');
+assert.equal(report.native?.arch, 'arm64');
+assert.equal(report.test_runner_sha256, createHash('sha256').update(readFileSync(process.argv[4])).digest('hex'));
+assert.ok(Array.isArray(report.steps) && report.steps.length > 0);
+assert.ok(Array.isArray(report.checks) && report.checks.length > 0 && report.checks.every(check => check.passed === true));
+assert.deepEqual(report.external_effects, []);
+NODE
+
 allowed_signers="$source/release/allowed_signers"
 fingerprint=$(awk '{print $3, $4}' "$allowed_signers" | ssh-keygen -lf - | awk '{print $2}')
 [[ "$fingerprint" == SHA256:iAb0Eaq9vv9CrfNRy/YbitZVbaSpwqE0wY8uf5jftRE ]] || fail 'tracked release signing fingerprint changed; review the publisher and trust anchor together'

@@ -1,6 +1,9 @@
 package release
 
 import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,6 +96,85 @@ esac
 			}
 			if _, err := os.Stat(marker); !os.IsNotExist(err) {
 				t.Fatal("transferred candidate before tag checks passed")
+			}
+		})
+	}
+}
+
+func TestLocalPublisherRequiresPassedAcceptanceReportBeforeSigning(t *testing.T) {
+	body, err := os.ReadFile("../../scripts/release-publish-local.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(body)
+	marker := "node --input-type=module - \"$root/darwin-acceptance/installed-acceptance.json\" \"$commit\" \"$source/scripts/installed-release-acceptance.mjs\" <<'NODE'\n"
+	start := strings.Index(script, marker)
+	if start < 0 {
+		t.Fatal("publisher must consume its expected acceptance report before signing")
+	}
+	end := strings.Index(script[start+len(marker):], "\nNODE\n")
+	if end < 0 {
+		t.Fatal("missing report validation body")
+	}
+	validation := script[start+len(marker) : start+len(marker)+end]
+	if start >= strings.Index(script, "ssh-keygen -Y sign") {
+		t.Fatal("report validation must precede signing")
+	}
+	for _, name := range []string{"passed", "missing", "malformed", "failed", "wrong-candidate", "wrong-runner", "wrong-platform", "empty-checks", "rejected-check", "empty-steps", "external-effects"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			runner := filepath.Join(root, "runner.mjs")
+			runnerBody := []byte("// synthetic acceptance runner\n")
+			if err := os.WriteFile(runner, runnerBody, 0600); err != nil {
+				t.Fatal(err)
+			}
+			report := map[string]any{
+				"schema_version": "compound.release_installed_acceptance.v0.1", "status": "passed", "candidate": releaseFixtureCommit,
+				"test_runner_sha256": fmt.Sprintf("%x", sha256.Sum256(runnerBody)),
+				"native":             map[string]any{"platform": "darwin", "arch": "arm64"},
+				"steps":              []any{map[string]any{"name": "installed-version", "exit_code": 0}},
+				"checks":             []any{map[string]any{"gate": "installation_first_use", "passed": true}},
+				"external_effects":   []any{},
+			}
+			switch name {
+			case "failed":
+				report["status"] = "failed"
+			case "wrong-candidate":
+				report["candidate"] = strings.Repeat("a", 40)
+			case "wrong-runner":
+				report["test_runner_sha256"] = strings.Repeat("0", 64)
+			case "wrong-platform":
+				report["native"] = map[string]any{"platform": "linux", "arch": "amd64"}
+			case "empty-checks":
+				report["checks"] = []any{}
+			case "rejected-check":
+				report["checks"] = []any{map[string]any{"gate": "installation_first_use", "passed": false}}
+			case "empty-steps":
+				report["steps"] = []any{}
+			case "external-effects":
+				report["external_effects"] = []any{"unexpected"}
+			}
+			file := filepath.Join(root, "installed-acceptance.json")
+			if name != "missing" {
+				data, err := json.Marshal(report)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if name == "malformed" {
+					data = []byte("{")
+				}
+				if err := os.WriteFile(file, data, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd := exec.Command("node", "--input-type=module", "-", file, releaseFixtureCommit, runner)
+			cmd.Stdin = strings.NewReader(validation)
+			output, err := cmd.CombinedOutput()
+			if name == "passed" && err != nil {
+				t.Fatalf("passed report refused: %v %s", err, output)
+			}
+			if name != "passed" && err == nil {
+				t.Fatalf("accepted %s report", name)
 			}
 		})
 	}

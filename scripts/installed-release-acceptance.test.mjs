@@ -119,3 +119,27 @@ test('existing Proof workflow actually invokes native installed acceptance witho
   assert.match(native, /name: proof-installed-release-evidence/);
   assert.doesNotMatch(native, /contents: write|attestations: write|gh release|git tag/);
 });
+
+test('symlinked CLI paths execute argument validation instead of silently skipping acceptance', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'compound-acceptance-entry-'));
+  t.after(() => fs.rmSync(root, {recursive: true}));
+  const script = fs.realpathSync(new URL('./installed-release-acceptance.mjs', import.meta.url));
+  const fileAlias = path.join(root, 'acceptance.mjs');
+  const directoryAlias = path.join(root, 'source-alias');
+  fs.symlinkSync(script, fileAlias);
+  fs.symlinkSync(path.dirname(script), directoryAlias, 'dir');
+  for (const entry of [fileAlias, path.join(directoryAlias, path.basename(script))]) {
+    const result = spawnSync(process.execPath, [entry], {encoding: 'utf8'});
+    assert.equal(result.status, 2, 'aliased CLI must validate its arguments');
+    assert.match(result.stderr, /usage:/);
+  }
+});
+test('normal module imports do not execute acceptance or require an argv script path', () => {
+  const code = 'await import(' + JSON.stringify(new URL('./installed-release-acceptance.mjs', import.meta.url).href) + '); console.log("import-only");';
+  for (const args of [[], ['missing-entrypoint.example']]) {
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', code, ...args], {encoding: 'utf8'});
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, 'import-only\n');
+    assert.equal(result.stderr, '');
+  }
+});

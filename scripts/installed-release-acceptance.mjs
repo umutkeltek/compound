@@ -425,7 +425,7 @@ export async function acceptInstalled(bundle, commit, root, priorBundle, priorCo
   return report;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && fs.existsSync(process.argv[1]) && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url))) {
   if (process.argv.length !== 7) {
     console.error('usage: node scripts/installed-release-acceptance.mjs BUNDLE COMMIT ABSENT_EVIDENCE_ROOT PRIOR_BUNDLE PRIOR_COMMIT');
     process.exitCode = 2;
