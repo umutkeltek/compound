@@ -55,7 +55,7 @@ export type TrafficReport = {
 };
 
 /** Run-attempt statuses that are terminal (everything else is in flight). */
-const RUN_STATUS_TERMINAL = new Set(["succeeded", "failed", "cancelled", "canceled", "swept", "abandoned"]);
+const RUN_STATUS_TERMINAL = new Set(["succeeded", "failed", "cancelled", "canceled", "swept", "abandoned", "superseded"]);
 
 /** Pick the attempt that best represents HOW a work is executing: one that
  *  actually ran (has a harness/command), prefer still-running, else latest. */

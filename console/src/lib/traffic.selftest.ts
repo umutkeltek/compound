@@ -152,5 +152,22 @@ export function runTrafficSelfTest(): { ok: boolean; details: string[] } {
   const empty = buildTraffic(null, [claim, exec1]);
   push("null-projection-empty", empty.lanes.length === 0 && empty.inFlightCount === 0, `lanes=${empty.lanes.length}`);
 
+  // A superseded historical run is terminal; it must not hide a later
+  // successful execution while the Work remains verifying.
+  const verifyingProjection = mkProj([mkRow({
+    currentWork: [mkWork({ workId: "work_1", state: "verifying" })],
+  })]);
+  const superseded = mkRA({
+    id: "ratt_old", workId: "work_1", harness: "fake", status: "superseded",
+    createdAt: "2026-07-20T20:00:00Z",
+  });
+  const succeeded = mkRA({
+    id: "ratt_new", workId: "work_1", harness: "codex", status: "succeeded",
+    createdAt: "2026-07-20T22:00:00Z",
+  });
+  const verifiedWork = buildTraffic(verifyingProjection, [superseded, succeeded]).lanes[0].inFlight[0];
+  push("superseded-run-does-not-hide-latest-success",
+    verifiedWork.state === "verifying" && verifiedWork.runStatus === "succeeded" && verifiedWork.harness === "codex",
+    `state=${verifiedWork.state} run=${verifiedWork.runStatus} harness=${verifiedWork.harness}`);
   return finalize(checks);
 }
