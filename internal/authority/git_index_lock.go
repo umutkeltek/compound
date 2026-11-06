@@ -32,9 +32,10 @@ type GitIndexLockPlan struct {
 	State     gitrepository.IndexLockState `json:"state"`
 }
 
-// GitIndexLockWindow records an actual writer-pause commitment, NOT general
-// permission to recover stale locks. The caller must cite that distinct evidence.
+// GitIndexLockWindow distinguishes a manual writer-pause commitment from a
+// machine-labelled observation window. Neither mode grants policy authority.
 type GitIndexLockWindow struct {
+	Coordination  string    `json:"coordination,omitempty"`
 	ReviewedBy    string    `json:"reviewed_by"`
 	EvidenceRef   string    `json:"evidence_ref"`
 	WritersPaused bool      `json:"writers_paused"`
@@ -110,8 +111,17 @@ func validateGitIndexLockReview(plan GitIndexLockPlan, review GitIndexLockReview
 		return fmt.Errorf("review does not bind exact recovery plan")
 	}
 	w := review.Window
-	if !policy.HasOperatorProvenance(w.ReviewedBy) || strings.TrimSpace(w.EvidenceRef) == "" || !w.WritersPaused {
-		return fmt.Errorf("operator provenance and actual all-writer pause evidence required")
+	switch w.Coordination {
+	case "":
+		if !policy.HasOperatorProvenance(w.ReviewedBy) || strings.TrimSpace(w.EvidenceRef) == "" || !w.WritersPaused {
+			return fmt.Errorf("operator provenance and actual all-writer pause evidence required")
+		}
+	case GitIndexLockAgentManaged:
+		if w.ReviewedBy != plan.Actor || w.WritersPaused || w.EvidenceRef != agentIndexLockEvidence(plan) {
+			return fmt.Errorf("agent-managed recovery requires exact actor and snapshot evidence, never a writer-pause claim")
+		}
+	default:
+		return fmt.Errorf("unknown index-lock coordination mode")
 	}
 	if review.IssuedAt.IsZero() || review.IssuedAt.After(now) || !w.ExpiresAt.After(now) || w.ExpiresAt.Sub(review.IssuedAt) > 5*time.Minute {
 		return fmt.Errorf("exclusive recovery window must be current and at most five minutes")

@@ -56,7 +56,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const gitIndexLockUsage = "usage: compound authority git-index-lock <plan --repo ROOT --work WORK --actor ACTOR | review --plan ID --operator operator:ID --evidence REF --writers-paused --expires RFC3339 | apply --plan ID --review ID --actor ACTOR>"
+const gitIndexLockUsage = "usage: compound authority git-index-lock <recover --repo ROOT --work WORK --actor ACTOR | plan --repo ROOT --work WORK --actor ACTOR | review --plan ID --operator operator:ID --evidence REF --writers-paused --expires RFC3339 | apply --plan ID --review ID --actor ACTOR>"
 
 func runAuthorityGitIndexLock(home string, args []string, out, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -68,6 +68,13 @@ func runAuthorityGitIndexLock(home string, args []string, out, stderr io.Writer)
 	flags.Bool("json", false, "emit JSON (always enabled; private patches are never printed)")
 	var run func() (any, error)
 	switch args[0] {
+	case "recover":
+		repo := flags.String("repo", "", "primary checkout root")
+		work := flags.String("work", "", "running owner work")
+		actor := flags.String("actor", "", "current lease holder")
+		run = func() (any, error) {
+			return authority.RecoverStaleGitIndexLock(context.Background(), home, *repo, *work, *actor, nil, time.Now)
+		}
 	case "plan":
 		repo := flags.String("repo", "", "primary checkout root")
 		work := flags.String("work", "", "running owner work")
@@ -129,7 +136,7 @@ func runAuthorityGitIndexLock(home string, args []string, out, stderr io.Writer)
 
 func cmdAuthority(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | path-registry <os-path-authority.yaml> | git <repo-path> | dirty-plan <repo-path> [--work-id id] [--action-intent id ...] | worktree-retire <plan|review|apply> | git-index-lock <plan|review|apply> | import-os-absorption <matrix.json> | os-absorption [--json] | os-absorption-doctor [--json] | import-infra-database <database.yaml> | import-infra-services <services.yaml> | import-model-catalog <provider-registry.json> | model-catalog [--family F] [--model M] [--json] | model-catalog-doctor [--source P] [--json] | import-job-roster <cron-jobs.json> | import-job-token-governance <cron-token-usage.json> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> [--decision <enum>] [--rationale <text>] [--confidence <0..1>] [--next-action <text>] [--json] | harness-edit-review <card.json> --decision whitelist|reject --rationale <text> [--actor <id>] [--json] | resolve <token> | <entity>")
+		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | path-registry <os-path-authority.yaml> | git <repo-path> | dirty-plan <repo-path> [--work-id id] [--action-intent id ...] | worktree-retire <plan|review|apply> | git-index-lock <recover|plan|review|apply> | import-os-absorption <matrix.json> | os-absorption [--json] | os-absorption-doctor [--json] | import-infra-database <database.yaml> | import-infra-services <services.yaml> | import-model-catalog <provider-registry.json> | model-catalog [--family F] [--model M] [--json] | model-catalog-doctor [--source P] [--json] | import-job-roster <cron-jobs.json> | import-job-token-governance <cron-token-usage.json> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> [--decision <enum>] [--rationale <text>] [--confidence <0..1>] [--next-action <text>] [--json] | harness-edit-review <card.json> --decision whitelist|reject --rationale <text> [--actor <id>] [--json] | resolve <token> | <entity>")
 		os.Exit(2)
 	}
 	store, homePath := openMemStore()
