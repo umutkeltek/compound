@@ -11,7 +11,8 @@ that your later work got easier.
 ## First run (a minute or two)
 
 You need macOS or Linux, Git, Go 1.27.1 or newer, Python 3 and `make`. These lines build the
-tagged release from source:
+tagged release from source (prebuilt, signed files for macOS on Apple silicon and Linux
+x86-64 are attached to the release; see [Getting started, Option A](docs/getting-started.md)):
 
 ```sh
 git clone https://github.com/umutkeltek/compound.git

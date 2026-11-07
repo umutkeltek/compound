@@ -6,6 +6,11 @@ for tagged releases, subject to the public-alpha compatibility policy in
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-07
+
+Setup in one command, and the first release with prebuilt, signed binaries for
+macOS (Apple silicon) and Linux (x86-64).
+
 ### Added
 
 - `compound init`: the one setup command after `make install`. It creates the Compound home if it

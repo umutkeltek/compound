@@ -12,12 +12,12 @@ but must contain no vulnerability detail.
 |---|---|
 | Storage | File backend under one `COMPOUND_HOME` |
 | Trust model | One trusted OS account, one local disk |
-| Prebuilt artifacts | Planned for macOS arm64 and Linux amd64, built by the manual Woodpecker release pipeline. Tag `v0.1.0` is published, but no binaries are attached to it yet; build that tag from source |
+| Prebuilt artifacts | macOS arm64 and Linux amd64, built by the manual Woodpecker release pipeline and attached to the GitHub Release with an SSH-signed `SHA256SUMS`, from `v0.1.1` on. `v0.1.0` has none; build it from source |
 | Source build | Go version declared by `go.mod` |
 | Home authority | Explicit `--home`, `COMPOUND_HOME`, `--local`, or the global default |
 | Interactive hooks | Observation by default; enforcement only where `compound doctor` proves the exact installed posture |
 | Console | Loopback, projection-only default; the capability-gated mutation extension is unsupported, and direct private reads are unavailable |
-| Upgrades | Latest tagged public alpha (today `v0.1.0`), after a verified backup; `main` is a development surface |
+| Upgrades | Latest tagged public alpha (today `v0.1.1`), after a verified backup; `main` is a development surface |
 
 The authoritative boundary and current runtime caveats live in
 [`docs/security/supported-scope.md`](docs/security/supported-scope.md).

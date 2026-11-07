@@ -35,12 +35,12 @@ alpha.
 ## Supported versions
 
 Security fixes are made for the latest tagged public-alpha release only;
-today that is `v0.1.0`. The `main` branch and historical prerelease artifacts
-are development surfaces, not supported distributions. `v0.1.0` has no
-prebuilt artifacts yet, so build it from source at the tag. Once prebuilt
-artifacts are published, install only the immutable tag artifacts listed in
-the release's verified `RELEASE` manifest, and verify the matching
-`SHA256SUMS` before execution.
+today that is `v0.1.1`. The `main` branch and historical prerelease artifacts
+are development surfaces, not supported distributions. From `v0.1.1` on, each
+release carries prebuilt artifacts; install only the immutable tag artifacts
+listed in the release's verified `RELEASE` manifest, and verify the signed
+`SHA256SUMS` before execution. `v0.1.0` has no prebuilt artifacts; build it
+from source at the tag.
 
 ## Security-relevant data
 
