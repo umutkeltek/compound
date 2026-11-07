@@ -6,6 +6,10 @@ for tagged releases, subject to the public-alpha compatibility policy in
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-07
+
+First tagged public-alpha release: a file-backed, single-user developer preview.
+
 ### Added
 
 - Plain-language review cards for every needs_you item: a cardless core
@@ -19,8 +23,6 @@ for tagged releases, subject to the public-alpha compatibility policy in
   needs_you group's card and self-gates on the same ceiling, degrading a
   too-dense card to a plain count-and-reply line rather than shipping
   jargon.
-
-
 - A file-backed, single-user public-alpha support and security contract.
 - A fail-closed vulnerability-disclosure gate, compatibility policy, and
   recovery procedure. Private reporting remains a pre-tag operational gate
@@ -36,7 +38,6 @@ for tagged releases, subject to the public-alpha compatibility policy in
   malformed-fixture beat fallback names the queue instead of returning the
   generic line. Narrate acknowledgements dropped the "Recorded —" lead
   that pushed them above the readability ceiling.
-
 - The breadth vector cache is now constructed whenever a compound home
   exists, instead of only when the embedder's dimension was already known.
   OpenAI-compatible embedders learn their dimension lazily, so models
@@ -47,14 +48,10 @@ for tagged releases, subject to the public-alpha compatibility policy in
   manifest, so construction no longer depends on them; the dimension
   inference table also recognizes `qwen3-embedding`, `bge-m3`, and the
   `gemini-embedding` family.
-
-
 - Backup collision, retention, archive-identity, and restore publication gaps.
 - RunAttempt launch ambiguity gaps.
 - Invented harness and working-directory identities no longer produce a false
   successful orientation.
-
-No release has been published from this changelog entry yet.
 
 ### Changed
 
