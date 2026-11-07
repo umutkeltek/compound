@@ -767,6 +767,12 @@ new remote still requires explicit confirmation.
   tail's `0`, a MEDIUM-flagged scan read as green, and the push fired; findings were benign
   loopback URLs, but the gate did not gate). Same zsh-no-pipefail trap as the battery (§1).
   Run redact unpiped as its own command, READ the verdict, then push as a separate command.
+- **compound-publish: the public repository is a cleaned mirror, never a push target from here.**
+  This checkout's `origin` is the private working repository. The public repository is rebuilt
+  from it by the operator's publish tool (private overlay): it re-applies the private-name rules
+  to every commit, scans the result, and pushes only when every existing public commit is
+  unchanged. Never add the public repository as a remote here and never push this history to
+  it; land here, then run the publish tool.
 
 ## Coordination resource cutover
 
