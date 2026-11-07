@@ -255,6 +255,8 @@ final message — gates are decisions, not homework; everything else should alre
 - Normal pushes to the existing remote follow the standing grant. A clean `redact` scan is a
   separate required gate before public publication. Force-push, history rewrite, or a new remote
   still requires explicit confirmation; whitelist installs and destructive ops remain present-and-stop.
+  The leak gate (`scripts/leak-gate/leak-gate.py`, run by the repo's `pre-push` hook) refuses any push that
+  adds a private name or path; fix the commit, never `--no-verify`.
 
 ## Codex dispatch contract (learned 2026-07-11, burn-wave v1 — 3 dispatch-side failures)
 - **Never let Codex clone into /private/tmp.** The sandbox edit-guard rejects patches there ("writing outside of the project"), Bun is denied its temp dir, and fresh clones lack node_modules → jobs return BROKEN or zero-work. **The ORCHESTRATOR pre-creates a linked worktree under the repo's `.claude/worktrees/` (inside $HOME, where approval_policy + xhigh reasoning apply), pre-copies `console/node_modules` + `docs_private` (cp -Rc), and dispatches Codex INTO it** ("work in place, commit on this branch, report SHAs").

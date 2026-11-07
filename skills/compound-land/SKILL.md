@@ -108,7 +108,7 @@ existing exact-owner recovery path; waiting never overrides them.
 
 The ceremony has five gates, in force order: **scope-claim** (§0 — land-lease + worklog claim) ·
 **presubmit** (§1 — governed scoped build/vet/doctor/affected tests) ·
-**fresh-SHA guard** (§3 — `MAIN_SHA` read this turn) · **redact** (§5 — unpiped, its own command) ·
+**fresh-SHA guard** (§3 — `MAIN_SHA` read this turn) · **redact** and **leak gate** (§5 — unpiped, each its own command) ·
 **tree-identity** (§4 — containment proved before any removal). **A later gate cannot prove that an
 earlier gate passed: a green presubmit does not prove the scope claim, and a clean redact does not
 prove the presubmit ran.** Each is cleared only by reading ITS OWN verdict this turn — the `| tail`
@@ -241,7 +241,7 @@ ran to be green and every changed package to have run.
 
 
 Add, when they apply, before the presubmit (seconds each):
-- new tracked text files → `git add` them first; the leak gate sees tracked files only (ordering hazard below);
+- new tracked text files → `git add` them first; the doc-leak gate sees tracked files only (ordering hazard below);
 - CLI or `internal/` structure changes → the arch quick tests named under the ordering hazards below.
 
 Presubmit red: fix it or do not land. Never weaken a gate to turn it green (AGENTS.md §Proof discipline).
@@ -762,6 +762,13 @@ Normal `git push` of committed work to the existing remote is covered by the sta
 grant. A clean `redact` scan is a separate required gate before a public push; add
 `release export-public` sanity when the push is release-shaped. Force-push, history rewrite, or a
 new remote still requires explicit confirmation.
+- **Leak gate before every push (the push gate).** Run it as its own command and read its own verdict line:
+  `python3 -I scripts/leak-gate/leak-gate.py range origin/main..main` prints `leak-gate: ok: ...` (exit 0) or
+  `leak-gate: REFUSED ...` (exit 1; exit 2 means it failed closed, e.g. the private rule file is missing). It
+  scans only the commits the push would add: added lines, new binary files, paths, messages. The repo's
+  `pre-push` hook runs the same script on the real push, so a hook refusal is the same verdict: fix the named
+  commits, never `--no-verify`. `python3 -I scripts/leak-gate/leak-gate.py status` shows whether the hook is
+  installed and which rule file it reads; `... install` writes the hooks again.
 - **Never pipe `redact` through `| tail`/`| head`, and never chain the push after it in the same
   command** (real incident 2026-07-10: `redact | tail -1 && git push` — the pipeline's exit was
   tail's `0`, a MEDIUM-flagged scan read as green, and the push fired; findings were benign

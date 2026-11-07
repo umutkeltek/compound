@@ -51,8 +51,10 @@ Each names the failure it prevents; the rest of the contract is behind the point
   produce a similar-looking artifact by the ungoverned route.
 - **This repo is destined to be public.** Never write a personal path, credential, account, real-product, or
   private-tool name into a tracked file, including comments — `docs_private/` is gitignored and never shipped.
-  A clean `redact` scan is the push gate (standing grant — no per-push confirmation; force-push and history
-  rewrites still ask).
+  The push gate is the leak gate (`scripts/leak-gate/leak-gate.py`, run by this repo's `pre-push` hook and by
+  `compound-land` §5): it refuses any push whose new commits add a private-rule hit or a private path, and it
+  fails closed when its private rule file is missing. A clean `redact` scan stays a separate gate before a public
+  push. Standing grant — no per-push confirmation; force-push and history rewrites still ask; never `--no-verify`.
 
 ## Claude-specific
 - Prefer the smallest change that proves the slice. Verify by a command's real output or a passing test — never

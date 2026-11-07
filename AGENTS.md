@@ -278,7 +278,14 @@ reasons before building what the note implies.
 - Test fixtures use `.invalid`/`.example` hosts and synthetic names, never `localhost`/private URLs or real
   product names: the redact gate scans the FULL content of any changed file, so a pre-existing private fixture
   fails the gate the first time the file is touched. A pre-commit battery is blind to still-untracked NEW files;
-  `git add` them before the leak gate can see them (`compound-land` §1).
+  `git add` them before the doc-leak gate can see them (`compound-land` §1).
+- **The leak gate is the push gate.** `scripts/leak-gate/leak-gate.py` runs from the repo's `pre-push` hook
+  (installed once in the shared git dir, so every worktree has it) and as a named `compound-land` §5 step. It
+  scans only what a push adds (added lines, new binary files, paths, commit and tag messages, ref names)
+  against the operator's private rule file, refuses on any `verify` hit or any path under `docs_private/`,
+  `.compound-private/` or `.claude/`, and fails closed when the rule file is missing. The only override is
+  `LEAK_GATE_OVERRIDE="<reason>"`, recorded in the Compound state folder. `git push --no-verify` skips every
+  hook: never use it here.
 
 ## Commit & safety
 - Scoped, single-concern commits (source/contracts; tests/fixtures; docs). Never `git add -A` / "commit all";
@@ -287,5 +294,7 @@ reasons before building what the note implies.
 - **Push is pre-authorized** (standing operator grant): a normal `git push` of committed work to the
   existing remote — public included — needs no per-push confirmation. Two floors remain: a clean `redact` scan as a
   separate required gate before any public push; force-push, history rewrite, or a new remote still confirms.
+- Every push runs the leak gate first. A refusal names the category, commit and file: fix those commits
+  (they are not on the remote yet) and push again; never bypass the hook.
 - Stop and ask before deleting/archiving major surfaces, changing approval boundaries, spending, publishing, or
   any irreversible/external action. Prove the change by a state delta, not a report.
