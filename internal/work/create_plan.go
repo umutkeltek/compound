@@ -768,7 +768,7 @@ func (s *Store) validateBoundGitDeliveryWithFacts(w envelope.WorkEnvelope, facts
 		return fmt.Errorf("git_delivery.repository_fingerprint: %w", err)
 	}
 	if identity.Fingerprint != contract.RepositoryFingerprint {
-		return fmt.Errorf("git_delivery repository fingerprint %s no longer matches bound fingerprint %s", identity.Fingerprint, contract.RepositoryFingerprint)
+		return &repositoryFingerprintChangedError{work: w, current: identity}
 	}
 	if _, err := facts.refCommit(root, localRef); err != nil {
 		return fmt.Errorf("git_delivery.target_local_ref does not resolve: %w", err)

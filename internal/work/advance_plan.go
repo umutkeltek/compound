@@ -19,6 +19,8 @@ type AdvancePlanOptions struct {
 	Actor              string
 	To                 string
 	GitDelivery        *envelope.GitDeliveryContract
+	PreviousOrigin     string
+	originRename       *RepositoryOriginRename
 	Capability         string
 	Action             string
 	MutationClass      string
@@ -63,6 +65,7 @@ type AdvancePlan struct {
 	ToState           string                          `json:"to_state"`
 	WorkOwner         string                          `json:"work_owner,omitempty"`
 	GitDelivery       *envelope.GitDeliveryContract   `json:"git_delivery,omitempty"`
+	OriginRename      *RepositoryOriginRename         `json:"origin_rename,omitempty"`
 	PlanPath          string                          `json:"plan_path,omitempty"`
 	AdvanceCommand    []string                        `json:"advance_command,omitempty"`
 	Policy            AdvancePolicySummary            `json:"policy"`
@@ -93,12 +96,13 @@ func (s *Store) AdvancePlan(workID string, now time.Time, opts AdvancePlanOption
 	if actor == "" {
 		actor = "codex"
 	}
-	gitDelivery, err := s.preflightGitDeliveryBinding(w, actor, to, opts.GitDelivery)
+	gitDelivery, originRename, err := s.preflightGitDeliveryBinding(w, actor, to, opts.GitDelivery, opts.PreviousOrigin)
 	if err != nil {
 		return AdvancePlan{}, err
 	}
 	if gitDelivery != nil {
 		opts.GitDelivery = gitDelivery
+		opts.originRename = originRename
 		if opts.NonSourceDelivery != nil && opts.GitDelivery != nil {
 			return AdvancePlan{}, fmt.Errorf("cannot combine Git and non-source authority binding")
 		}
@@ -152,6 +156,7 @@ func (s *Store) AdvancePlan(workID string, now time.Time, opts AdvancePlanOption
 		ToState:           to,
 		WorkOwner:         w.Owner,
 		GitDelivery:       gitDelivery,
+		OriginRename:      originRename,
 		Policy:            summarizeAdvancePolicy(pd, source),
 		ActionIntent:      ai,
 		Decision:          pd,
@@ -199,6 +204,9 @@ func (s *Store) AdvancePlan(workID string, now time.Time, opts AdvancePlanOption
 			} else {
 				plan.AdvanceCommand = append(plan.AdvanceCommand, "--publication-ref", gitDelivery.PublicationRef)
 			}
+			if originRename != nil {
+				plan.AdvanceCommand = append(plan.AdvanceCommand, "--previous-origin", originRename.PreviousOrigin)
+			}
 		}
 		if leaseStatus.Stolen {
 			plan.AdvanceCommand = append(plan.AdvanceCommand, "--steal", "--reason", opts.StealReason)
@@ -227,41 +235,47 @@ func (s *Store) AdvancePlan(workID string, now time.Time, opts AdvancePlanOption
 	return plan, nil
 }
 
-func (s *Store) preflightGitDeliveryBinding(w envelope.WorkEnvelope, actor, to string, requested *envelope.GitDeliveryContract) (*envelope.GitDeliveryContract, error) {
+// preflightGitDeliveryBinding admits the three same-state git_delivery
+// mutations: a first binding and the pre-fingerprint backfill (operator only),
+// and the origin-rename migration (any actor; see git_delivery_origin_rename.go).
+func (s *Store) preflightGitDeliveryBinding(w envelope.WorkEnvelope, actor, to string, requested *envelope.GitDeliveryContract, previousOrigin string) (*envelope.GitDeliveryContract, *RepositoryOriginRename, error) {
+	if previousOrigin = strings.TrimSpace(previousOrigin); previousOrigin != "" {
+		return s.preflightOriginRename(w, to, requested, previousOrigin)
+	}
 	if requested == nil {
 		if gitDeliveryRequiresRepositoryIdentityMigration(w.GitDelivery) {
-			return nil, repositoryIdentityMigrationError(w)
+			return nil, nil, repositoryIdentityMigrationError(w)
 		}
-		return nil, nil
+		return nil, nil, nil
 	}
 	if !policy.HasOperatorProvenance(actor) {
-		return nil, fmt.Errorf("git_delivery binding requires explicit operator provenance; actor %q is an executor", actor)
+		return nil, nil, fmt.Errorf("git_delivery binding requires explicit operator provenance; actor %q is an executor", actor)
 	}
 	if terminalStates[w.State] {
-		return nil, fmt.Errorf("work is terminal in state %q; cannot bind git_delivery", w.State)
+		return nil, nil, fmt.Errorf("work is terminal in state %q; cannot bind git_delivery", w.State)
 	}
 	if to != w.State {
-		return nil, fmt.Errorf("git_delivery binding requires a same-state advance, got %s -> %s", w.State, to)
+		return nil, nil, fmt.Errorf("git_delivery binding requires a same-state advance, got %s -> %s", w.State, to)
 	}
 	backfillRepositoryIdentity := gitDeliveryRequiresRepositoryIdentityMigration(w.GitDelivery)
 	if w.GitDelivery != nil && !backfillRepositoryIdentity {
-		return nil, fmt.Errorf("work %s already has git_delivery authority; rebinding is not allowed", w.ID)
+		return nil, nil, fmt.Errorf("work %s already has git_delivery authority; rebinding is not allowed (after an origin rename, add --previous-origin <origin before the rename>)", w.ID)
 	}
 	candidate := w
 	contract := *requested
 	if legacyBase := strings.TrimSpace(candidate.ExpectedBaseSHA); legacyBase != "" && legacyBase != strings.TrimSpace(contract.ExpectedBaseSHA) {
-		return nil, fmt.Errorf("legacy expected_base_sha %s conflicts with git_delivery.expected_base_sha %s", legacyBase, strings.TrimSpace(contract.ExpectedBaseSHA))
+		return nil, nil, fmt.Errorf("legacy expected_base_sha %s conflicts with git_delivery.expected_base_sha %s", legacyBase, strings.TrimSpace(contract.ExpectedBaseSHA))
 	}
 	candidate.ExpectedBaseSHA = ""
 	candidate.GitDelivery = &contract
 	if err := s.normalizeGitDeliveryForPlan(&candidate); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	normalized := *candidate.GitDelivery
 	if backfillRepositoryIdentity && !sameGitDeliveryAuthorityExceptFingerprint(*w.GitDelivery, normalized) {
-		return nil, fmt.Errorf("work %s repository identity backfill must exactly match the existing git_delivery fields; rebinding is not allowed", w.ID)
+		return nil, nil, fmt.Errorf("work %s repository identity backfill must exactly match the existing git_delivery fields; rebinding is not allowed", w.ID)
 	}
-	return &normalized, nil
+	return &normalized, nil, nil
 }
 
 func (s *Store) RecordAdvancePlan(plan AdvancePlan) (string, error) {
@@ -320,7 +334,12 @@ func (s *Store) advanceActionIntent(w envelope.WorkEnvelope, actor, to string, n
 			contract.PublicationMode,
 			contract.PublicationRef,
 		)
-		if backfillRepositoryIdentity {
+		if rename := opts.originRename; rename != nil {
+			idParts = append(idParts, rename.PreviousFingerprint, rename.PreviousOrigin, rename.Origin)
+			preview = fmt.Sprintf("migrate Git repository identity on work %s at state %s; %s; object format and lineage roots at expected base %s unchanged; target %s ref %s publication mode %s publication ref %s actor %s",
+				w.ID, w.State, rename.note(), contract.ExpectedBaseSHA, contract.TargetWorktreeRoot, contract.TargetLocalRef, contract.PublicationMode, contract.PublicationRef, actor)
+			rollbackPlan = fmt.Sprintf("rename the origin back to %s and run this migration with --previous-origin %s to restore fingerprint %s", rename.PreviousOrigin, rename.Origin, rename.PreviousFingerprint)
+		} else if backfillRepositoryIdentity {
 			preview = fmt.Sprintf("backfill Git repository identity on work %s at state %s for existing target %s repository fingerprint %s ref %s expected base %s publication mode %s publication ref %s actor %s",
 				w.ID, w.State, contract.TargetWorktreeRoot, contract.RepositoryFingerprint, contract.TargetLocalRef, contract.ExpectedBaseSHA, contract.PublicationMode, contract.PublicationRef, actor)
 			rollbackPlan = "repository identity remains unbound unless this exact governed advance commits"

@@ -340,10 +340,11 @@ func TestWorkbenchProjectionRereadsMutableGitStatePerRequest(t *testing.T) {
 	}
 
 	// Canonical origin identity is a per-request fact: moving the origin
-	// remote must fail the bound fingerprint on the next projection.
+	// remote must fail the bound fingerprint on the next projection and name
+	// the origin-rename migration as the next action.
 	landingGit(t, repo, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "moved-origin.git"))
 	item, integrity := readIntegrity()
-	if item.LandingStatus != "delivery_check_error" || !integrityContains(integrity, w.ID+": Git delivery check failed:") {
+	if item.LandingStatus != "repository_fingerprint_changed" || !strings.Contains(item.NextAction, "--previous-origin") || !integrityContains(integrity, w.ID+": Git delivery check failed:") {
 		t.Fatalf("moved origin: landing status %q, integrity %v", item.LandingStatus, integrity)
 	}
 	landingGit(t, repo, "remote", "set-url", "origin", remote)

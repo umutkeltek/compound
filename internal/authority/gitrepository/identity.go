@@ -233,6 +233,15 @@ func readIdentityWithObjectFormat(ctx context.Context, repo, ref, objectFormat s
 	return identityFromParts(objectFormat, roots, remote)
 }
 
+// WithOrigin derives the identity this repository's object format and lineage
+// roots would carry under another canonical origin. The fingerprint is a
+// commitment to all three parts, so reproducing a bound fingerprint with the
+// format and roots read now and a claimed earlier origin proves that only the
+// origin changed; another lineage can never reproduce it.
+func (id Identity) WithOrigin(origin string) (Identity, error) {
+	return identityFromParts(id.ObjectFormat, id.LineageRoots, origin)
+}
+
 // identityFromParts assembles the identity from its three inputs. Every path
 // that builds an identity uses this, so the fingerprint definition stays in one
 // place.

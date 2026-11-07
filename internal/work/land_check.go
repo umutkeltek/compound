@@ -173,7 +173,13 @@ func (s *Store) validateBoundGitDeliveryForLandCheckWithFacts(w envelope.WorkEnv
 	contract.PublicationMode = "local_only"
 	contract.PublicationRef = ""
 	withoutPublication.GitDelivery = &contract
-	return s.validateBoundGitDeliveryWithFacts(withoutPublication, facts)
+	err := s.validateBoundGitDeliveryWithFacts(withoutPublication, facts)
+	// A named migration must restate the Work's real publication contract.
+	var changed *repositoryFingerprintChangedError
+	if errors.As(err, &changed) {
+		changed.work = w
+	}
+	return err
 }
 
 // evaluateLandCheck performs one Work's full landing evaluation with fresh Git

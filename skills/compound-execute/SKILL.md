@@ -45,7 +45,8 @@ surface.
   ```
 
   Ordinary executor actors, partial declarations, lifecycle-transition-plus-bind, and rebinding
-  are rejected. Use `--local-only` only when non-publication is an intentional task contract, not
+  are rejected. After an origin rename, any actor migrates the fingerprint by restating the exact
+  fields plus `--previous-origin <url>`; land-check and workbench print that command. Use `--local-only` only when non-publication is an intentional task contract, not
   as a shortcut around push proof. `--steal` authorizes this one binding mutation; it does not
   transfer the lease, so subsequent lifecycle commands continue under the recorded lease holder.
 - **Footgun (2026-07-09):** `compound work dispatch-claim` with NO ARGS claims the next ready item

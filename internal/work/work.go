@@ -317,6 +317,9 @@ type Event struct {
 	WorkSHA256                       string                            `json:"work_sha256,omitempty"`
 	ReceiptSHA256                    string                            `json:"receipt_sha256,omitempty"`
 	RunAttemptTerminalizationDigests []RunAttemptTerminalizationDigest `json:"run_attempt_terminalization_digests,omitempty"`
+	// OriginRename records the old and new repository identity of a governed
+	// origin-rename migration (git_delivery_origin_rename.go).
+	OriginRename *RepositoryOriginRename `json:"origin_rename,omitempty"`
 }
 
 // RunAttemptTerminalizationDigest binds the full immutable per-attempt intent
@@ -1740,6 +1743,11 @@ type AdvanceInput struct {
 	// id on the holder's lease, under the same holder-scoped rules as any advance mutation.
 	LaneRef     string
 	GitDelivery *envelope.GitDeliveryContract
+	// PreviousOrigin claims the canonical origin the bound repository
+	// fingerprint was derived under. With the exact existing git_delivery it
+	// requests the origin-rename migration; the claim is checked against the
+	// bound fingerprint, never trusted (git_delivery_origin_rename.go).
+	PreviousOrigin string
 	// RunAttemptIDs attaches one or more RunAttempt ids (ratt_*) to the work envelope. S1
 	// retires the pre-S1 `RunID` field, which silently appended non-`act_*` ids into
 	// ActionIntentIDs. RunAttempt ids land on the dedicated slot so the validator can reject
@@ -1867,8 +1875,8 @@ func (s *Store) advanceLocked(workID string, in AdvanceInput, now time.Time) (en
 	if err := directorProposedReleaseOperatorError(w, in.To, actor); err != nil {
 		return w, err
 	}
-	if in.GitDelivery != nil {
-		normalized, err := s.preflightGitDeliveryBinding(w, actor, in.To, in.GitDelivery)
+	if in.GitDelivery != nil || strings.TrimSpace(in.PreviousOrigin) != "" {
+		normalized, _, err := s.preflightGitDeliveryBinding(w, actor, in.To, in.GitDelivery, in.PreviousOrigin)
 		if err != nil {
 			return w, err
 		}
@@ -2051,7 +2059,7 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 	if in.proofAdoptionAdmission {
 		proofAttachmentRef = in.VerificationID
 	}
-	plan, err := s.AdvancePlan(workID, now, AdvancePlanOptions{Actor: in.Actor, To: in.To, GitDelivery: in.GitDelivery, NonSourceDelivery: in.NonSourceDelivery, proofAttachmentRef: proofAttachmentRef})
+	plan, err := s.AdvancePlan(workID, now, AdvancePlanOptions{Actor: in.Actor, To: in.To, GitDelivery: in.GitDelivery, PreviousOrigin: in.PreviousOrigin, NonSourceDelivery: in.NonSourceDelivery, proofAttachmentRef: proofAttachmentRef})
 	if err != nil {
 		return w, err
 	}
@@ -2150,6 +2158,9 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 		return w, err
 	}
 	note := strings.TrimSpace(in.Note)
+	if note == "" && plan.OriginRename != nil {
+		note = plan.OriginRename.note()
+	}
 	if note == "" {
 		note = "advanced (policy " + plan.Policy.Outcome + ")"
 	} else {
@@ -2165,6 +2176,7 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 		Attached:           attached,
 		PreviousWorkSHA256: previousWorkSHA256,
 		WorkSHA256:         workSHA256,
+		OriginRename:       plan.OriginRename,
 	}
 	err = s.withWorkEventLock(func() error {
 		before, err := s.readEventsStrictUnlocked(workID)

@@ -1631,10 +1631,13 @@ func dispatchCandidate(item WorkbenchItem, actor string) DispatchPlanItem {
 	if cmd, ok := CommandShapedPredicate(out.SuccessPredicate); ok {
 		out.PredicateCommand = cmd
 	}
-	if item.LandingStatus == "repository_identity_migration_required" {
+	if item.LandingStatus == "repository_identity_migration_required" || item.LandingStatus == "repository_fingerprint_changed" {
 		out.Action = "review"
 		out.Command = nil
 		out.Reason = "repository fingerprint migration requires exact operator review"
+		if item.LandingStatus == "repository_fingerprint_changed" {
+			out.Reason = "repository fingerprint changed; if only the origin was renamed, run the migration named in next_action"
+		}
 		return out
 	}
 	switch item.State {

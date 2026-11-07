@@ -143,3 +143,49 @@ func TestIdentitySessionKeepsLineagePerRef(t *testing.T) {
 		t.Fatal("two refs naming different lineage roots produced one identity")
 	}
 }
+
+// TestIdentityWithOriginReproducesOnlyTheSameLineage pins the commitment the
+// origin-rename migration relies on: re-deriving an identity under its own
+// origin reproduces it exactly, a different origin changes only the
+// fingerprint, and another lineage under the original origin never reproduces
+// the original fingerprint.
+func TestIdentityWithOriginReproducesOnlyTheSameLineage(t *testing.T) {
+	repo, base := identityTestRepo(t)
+	head := snapshotGitOutput(t, repo, "rev-parse", "HEAD")
+	original, err := ReadIdentity(repo, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	same, err := original.WithOrigin(original.RemoteIdentity)
+	if err != nil || same.Fingerprint != original.Fingerprint {
+		t.Fatalf("identity under its own origin = %+v, %v; want %s", same, err, original.Fingerprint)
+	}
+
+	snapshotRunGit(t, repo, "remote", "set-url", "origin", "https://example.invalid/compound/renamed-synthetic.git")
+	renamed, err := ReadIdentity(repo, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed.Fingerprint == original.Fingerprint {
+		t.Fatal("a renamed origin must change the fingerprint")
+	}
+	back, err := renamed.WithOrigin(original.RemoteIdentity)
+	if err != nil || back.Fingerprint != original.Fingerprint || back.RemoteIdentity != original.RemoteIdentity {
+		t.Fatalf("renamed identity under the previous origin = %+v, %v; want %s", back, err, original.Fingerprint)
+	}
+
+	emptyTree := snapshotGitOutput(t, repo, "hash-object", "-w", "-t", "tree", "/dev/null")
+	otherRoot := snapshotGitOutput(t, repo, "commit-tree", emptyTree, "-m", "unrelated lineage")
+	snapshotRunGit(t, repo, "replace", "--graft", base, otherRoot)
+	grafted, err := ReadIdentity(repo, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := grafted.WithOrigin(original.RemoteIdentity)
+	if err != nil || foreign.Fingerprint == original.Fingerprint || strings.Join(foreign.LineageRoots, ",") != otherRoot {
+		t.Fatalf("another lineage must not reproduce the original fingerprint: %+v, %v", foreign, err)
+	}
+	if _, err := ReadIdentity(repo, head); err != nil {
+		t.Fatal(err)
+	}
+}

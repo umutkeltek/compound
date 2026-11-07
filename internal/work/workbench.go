@@ -1015,9 +1015,15 @@ func (s *Store) applyWorkbenchGitDeliveryWithFacts(item *WorkbenchItem, w envelo
 	}
 
 	live, err := s.evaluateLandCheckWithFacts(w, LandCheckOptions{CandidateTipSHA: tip}, now, facts)
-	if err != nil {
+	var changed *repositoryFingerprintChangedError
+	if errors.As(err, &changed) {
+		item.LandingStatus = "repository_fingerprint_changed"
+		item.NextAction = "repository fingerprint changed; " + changed.nextAction()
+	} else if err != nil {
 		item.LandingStatus = "delivery_check_error"
 		item.NextAction = "repair the bound Git delivery target, then rerun compound work land-check " + w.ID + " --tip " + tip
+	}
+	if err != nil {
 		report.Integrity = append(report.Integrity, w.ID+": Git delivery check failed: "+err.Error())
 		return
 	}
@@ -1049,15 +1055,7 @@ func repositoryIdentityMigrationNextAction(w envelope.WorkEnvelope) string {
 	if w.GitDelivery == nil {
 		return ""
 	}
-	contract := w.GitDelivery
-	command := fmt.Sprintf("compound work advance %s --to %s --by operator:<id> --target-worktree-root %q --target-local-ref %s --expected-base-sha %s",
-		w.ID, w.State, contract.TargetWorktreeRoot, contract.TargetLocalRef, contract.ExpectedBaseSHA)
-	if contract.PublicationMode == "local_only" {
-		command += " --local-only"
-	} else {
-		command += " --publication-ref " + contract.PublicationRef
-	}
-	return "review the legacy repository identity, then run exact operator same-state migration: " + command
+	return "review the legacy repository identity, then run exact operator same-state migration: " + gitDeliveryAdvanceCommand(w, "operator:<id>")
 }
 
 type routeOutcomeIndex struct {

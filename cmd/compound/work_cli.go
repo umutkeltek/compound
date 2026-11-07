@@ -43,7 +43,7 @@ func parseWorkDeliveryRequest(args []string) (*work.ActionDeliveryRequest, error
 			return nil, fmt.Errorf("%s requires a nonempty value", flag)
 		}
 	}
-	for _, flag := range []string{"--execute", "--resume-verifying", "--keep-verifying-on-failure", "--lane", "--launch-profile", "--effort", "--expected-selection-revision", "--expected-execution-tuple", "--expected-work-revision", "--target-worktree-root", "--target-local-ref", "--expected-base-sha", "--publication-ref", "--local-only", "--run-attempt", "--artifact", "--verification", "--context-pack", "--harness", "--prompt", "--workspace", "--permission-mode", "--timeout", "--"} {
+	for _, flag := range []string{"--execute", "--resume-verifying", "--keep-verifying-on-failure", "--lane", "--launch-profile", "--effort", "--expected-selection-revision", "--expected-execution-tuple", "--expected-work-revision", "--target-worktree-root", "--target-local-ref", "--expected-base-sha", "--publication-ref", "--local-only", "--previous-origin", "--run-attempt", "--artifact", "--verification", "--context-pack", "--harness", "--prompt", "--workspace", "--permission-mode", "--timeout", "--"} {
 		if hasFlag(args, flag) {
 			return nil, fmt.Errorf("delivery binding cannot be combined with %s", flag)
 		}
@@ -217,11 +217,11 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work claim work_abc123 --by codex --lane auto/judge",
 	},
 	"advance-plan": {
-		Usage:   "usage: compound work advance-plan <work_id> --to <state> [--actor A] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run] [--delivery-action ACT --delivery-kind private_runtime|worktree_retirement|installed_package --delivery-evidence REF]",
+		Usage:   "usage: compound work advance-plan <work_id> --to <state> [--actor A] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only) [--previous-origin URL]] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run] [--delivery-action ACT --delivery-kind private_runtime|worktree_retirement|installed_package --delivery-evidence REF]",
 		Example: "compound work advance-plan work_abc123 --to running --actor codex --dry-run",
 	},
 	"advance": {
-		Usage:   "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--lane <agent-lane node id | short lane id>] [--run-attempt RATT_ID] (repeatable) [--artifact A] [--verification V] [--context-pack ctx] [--note N] [--acknowledge-abandoned ratt_X --reason R] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--launch-profile ID [--effort LEVEL] [--expected-selection-revision N]] [--expected-execution-tuple DIGEST] [--execute [--resume-verifying] --harness <name> [--permission-mode MODE] [--timeout DUR (default 5m, max 45m)] [--prompt <text> | -- <command> [args...]]] [--delivery-action ACT --delivery-kind private_runtime|worktree_retirement|installed_package --delivery-evidence REF] [--expected-work-state S --expected-policy-decision POL --expected-action-intent ACT]",
+		Usage:   "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--lane <agent-lane node id | short lane id>] [--run-attempt RATT_ID] (repeatable) [--artifact A] [--verification V] [--context-pack ctx] [--note N] [--acknowledge-abandoned ratt_X --reason R] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only) [--previous-origin URL]] [--launch-profile ID [--effort LEVEL] [--expected-selection-revision N]] [--expected-execution-tuple DIGEST] [--execute [--resume-verifying] --harness <name> [--permission-mode MODE] [--timeout DUR (default 5m, max 45m)] [--prompt <text> | -- <command> [args...]]] [--delivery-action ACT --delivery-kind private_runtime|worktree_retirement|installed_package --delivery-evidence REF] [--expected-work-state S --expected-policy-decision POL --expected-action-intent ACT]",
 		Example: "compound work advance work_abc123 --to running --by codex --lane auto/judge",
 	},
 	"delegate": {
@@ -1477,7 +1477,7 @@ func cmdWork(args []string) {
 		usage := workUsage("advance-plan")
 		advancePlanValueFlags := map[string]bool{
 			"--delivery-action": true, "--delivery-kind": true, "--delivery-evidence": true,
-			"--to": true, "--actor": true, "--reason": true, "--capability": true, "--action": true, "--mutation-class": true,
+			"--to": true, "--actor": true, "--reason": true, "--previous-origin": true, "--capability": true, "--action": true, "--mutation-class": true,
 			"--reversibility": true, "--blast-radius": true, "--target-kind": true, "--target-id": true, "--target-path": true,
 			"--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true,
 		}
@@ -1508,6 +1508,7 @@ func cmdWork(args []string) {
 			Actor:             flag("--actor"),
 			To:                flag("--to"),
 			GitDelivery:       gitDelivery,
+			PreviousOrigin:    flag("--previous-origin"),
 			Capability:        flag("--capability"),
 			Action:            flag("--action"),
 			MutationClass:     flag("--mutation-class"),
@@ -1542,6 +1543,7 @@ func cmdWork(args []string) {
 			fmt.Printf("plan: %s\n", plan.PlanPath)
 		}
 	case "advance":
+		// Flags end at `--`; everything after it is the child argv (kept in executeRest).
 		executeRest := rest
 		if idx := indexOf(rest, "--"); idx >= 0 {
 			rest = rest[:idx]
@@ -1553,41 +1555,33 @@ func cmdWork(args []string) {
 			"--delivery-action": true, "--delivery-kind": true, "--delivery-evidence": true,
 			"--expected-work-state": true, "--expected-policy-decision": true, "--expected-action-intent": true,
 			"--to": true, "--by": true, "--actor": true, "--lane": true, "--run-attempt": true, "--artifact": true, "--verification": true,
-			"--context-pack": true, "--note": true, "--reason": true,
+			"--context-pack": true, "--note": true, "--reason": true, "--previous-origin": true,
 			"--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true,
 			"--harness": true, "--prompt": true, "--workspace": true, "--permission-mode": true, "--timeout": true,
 			"--launch-profile": true, "--effort": true, "--expected-selection-revision": true, "--expected-execution-tuple": true, "--expected-work-revision": true,
 		}
-		// Validate only the pre-`--` portion of the args. The `--` is the
-		// standard POSIX positional separator; everything after is the
-		// subprocess argv and is not subject to flag validation. This is
-		// the same convention `compound harness run` uses.
-		validateSlice := rest
-		if idx := indexOf(rest, "--"); idx >= 0 {
-			validateSlice = rest[:idx]
-		}
-		if err := validateWorkArguments(validateSlice, advanceValueFlags, map[string]bool{"--steal": true, "--local-only": true, "--execute": true, "--resume-verifying": true, "--keep-verifying-on-failure": true}, 1); err != nil {
+		if err := validateWorkArguments(rest, advanceValueFlags, map[string]bool{"--steal": true, "--local-only": true, "--execute": true, "--resume-verifying": true, "--keep-verifying-on-failure": true}, 1); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
 		}
-		if valueFlag(validateSlice, "--expected-execution-tuple") != "" && !hasFlag(validateSlice, "--execute") {
+		if valueFlag(rest, "--expected-execution-tuple") != "" && !hasFlag(rest, "--execute") {
 			fmt.Fprintln(os.Stderr, "error: --expected-execution-tuple requires --execute")
 			os.Exit(2)
 		}
-		if valueFlag(validateSlice, "--expected-work-revision") != "" && !hasFlag(validateSlice, "--execute") {
+		if valueFlag(rest, "--expected-work-revision") != "" && !hasFlag(rest, "--execute") {
 			fmt.Fprintln(os.Stderr, "error: --expected-work-revision requires --execute")
 			os.Exit(2)
 		}
-		if hasFlag(validateSlice, "--timeout") && !hasFlag(validateSlice, "--execute") {
+		if hasFlag(rest, "--timeout") && !hasFlag(rest, "--execute") {
 			fmt.Fprintln(os.Stderr, "error: --timeout requires --execute")
 			os.Exit(2)
 		}
-		if hasFlag(validateSlice, "--keep-verifying-on-failure") && !hasFlag(validateSlice, "--execute") {
+		if hasFlag(rest, "--keep-verifying-on-failure") && !hasFlag(rest, "--execute") {
 			fmt.Fprintln(os.Stderr, "error: --keep-verifying-on-failure requires --execute")
 			os.Exit(2)
 		}
-		if hasFlag(validateSlice, "--resume-verifying") && (!hasFlag(validateSlice, "--execute") || hasFlag(validateSlice, "--steal")) {
+		if hasFlag(rest, "--resume-verifying") && (!hasFlag(rest, "--execute") || hasFlag(rest, "--steal")) {
 			fmt.Fprintln(os.Stderr, "error: --resume-verifying requires --execute and cannot transfer a lease with --steal")
 			os.Exit(2)
 		}
@@ -1639,6 +1633,7 @@ func cmdWork(args []string) {
 			Actor:                    firstNonEmpty(flag("--by"), flag("--actor")),
 			LaneRef:                  flag("--lane"),
 			GitDelivery:              gitDelivery,
+			PreviousOrigin:           flag("--previous-origin"),
 			RunAttemptIDs:            runAttempts,
 			ArtifactID:               flag("--artifact"),
 			VerificationID:           flag("--verification"),
