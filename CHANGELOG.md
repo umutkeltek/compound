@@ -6,10 +6,28 @@ for tagged releases, subject to the public-alpha compatibility policy in
 
 ## [Unreleased]
 
+### Added
+
+- `compound init`: the one setup command after `make install`. It creates the Compound home if it
+  is missing, looks for Claude Code and Codex on this machine, wires the hooks of each one it
+  finds, and prints one line per harness: wired, already wired, or not found. When `~/.local/bin`
+  is not on PATH it prints the exact line for your shell; it never edits shell profiles.
+  `compound init --check` only reports and changes nothing.
+- `compound hook uninstall`: the reverse of `hook install`. It removes only Compound's hook
+  entries, leaves every other setting and hook, and records the removal.
+- `compound receipt last`: the newest receipt, meaning what the last session (or closed work
+  item) did and where its transcript is.
+
 ### Changed
 
+- `compound hook install --scope project` now wires the current project (its own `.claude`
+  local settings file). Before, it wrote to the home folder unless `--base` was also given. `hook install` now refuses an unknown flag instead of ignoring it.
+- `compound doctor` lists only the harnesses this machine has. It no longer lists provider
+  profiles and private lanes that a fresh machine never had.
+- Session start no longer opens with "Door map: none produced yet" when no door map exists.
+- `make install` now names `compound init` as the next step, and the README first run uses it.
 - The README is now a short page for a first-time reader: a six-line first run
-  from the `v0.1.0` tag, how it works, day-to-day use and the supported scope.
+  from the release tag, how it works, day-to-day use and the supported scope.
   The maintainer detail it held moved unchanged to `docs/overview.md`.
   `SUPPORT.md` and `SECURITY.md` now name the published `v0.1.0` tag.
 

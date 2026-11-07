@@ -724,7 +724,11 @@ func prepareHookBindings(harnessName, configPath string, bindings []desiredHookB
 		prepared.after = append([]byte(nil), prepared.before...)
 		return prepared, installedTimeoutByEvent, nil
 	}
-	root["hooks"] = hooks
+	if len(hooks) == 0 {
+		delete(root, "hooks") // an uninstall leaves no empty "hooks" object behind
+	} else {
+		root["hooks"] = hooks
+	}
 	data, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
 		return preparedHookConfig{}, nil, err

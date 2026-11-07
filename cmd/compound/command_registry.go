@@ -73,6 +73,8 @@ func retiredCommand(name string) func([]string) {
 func compoundCommandRegistry() map[string]compoundCommand {
 	return map[string]compoundCommand{
 		"version":   readCommand(cmdVersion),
+		"init":      registeredCommand(policy.FirstPartyCommandInstall, cmdInit),
+		"receipt":   readCommand(cmdReceipt),
 		"--version": readCommand(cmdVersion),
 		"-v":        readCommand(cmdVersion),
 		"distill":   readCommand(retiredCommand("distill")),
@@ -156,7 +158,9 @@ func compoundCommandRegistry() map[string]compoundCommand {
 		"placement":          readCommand(cmdPlacement),
 		"hook": governedCommand(cmdHook).
 			withSubcommandAdmission("install", policy.FirstPartyCommandInstall).
-			withSubcommandFlagAdmission("install", "--check", policy.FirstPartyCommandRead),
+			withSubcommandFlagAdmission("install", "--check", policy.FirstPartyCommandRead).
+			withSubcommandAdmission("uninstall", policy.FirstPartyCommandInstall).
+			withSubcommandFlagAdmission("uninstall", "--check", policy.FirstPartyCommandRead),
 		"harness": governedCommand(cmdHarness).
 			withSubcommandAdmission("posture-plan", policy.FirstPartyCommandRead).
 			withSubcommandFlagAdmission("refresh-lane", "--preflight", policy.FirstPartyCommandRead),

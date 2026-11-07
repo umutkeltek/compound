@@ -96,8 +96,10 @@ Claude Code supports hooks in `.claude/settings.json` (project-level) or
 ### Option A: managed interactive posture (recommended)
 
 ```sh
-compound hook install --harness claude-code --scope global
+compound init    # or, by name: compound hook install --harness claude-code --scope global
 compound hook install --harness claude-code --scope global --check --json
+compound hook install --harness claude-code --scope project   # this project only (its .claude local settings)
+compound hook uninstall --harness claude-code                 # remove only Compound's entries
 ```
 
 The managed default includes this observation-only binding. Its equivalent

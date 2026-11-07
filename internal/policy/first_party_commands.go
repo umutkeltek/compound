@@ -185,11 +185,11 @@ func (c FirstPartyCommandCatalog) RequireHomeCompatibility(command string, args 
 			return nil
 		}
 	}
-	// cmdHome and cmdHookInstall check hasUsageFlag before resolving a home or
+	// cmdHome, hook install and hook uninstall answer help before resolving a home or
 	// dispatching any mutation. Bind these exemptions to those exact parsers
 	// instead of treating help as a global admission bypass for handlers that
 	// may ignore it.
-	if firstPartyUsageRequested(args) && (command == "home" || (command == "hook" && subcommand == "install")) {
+	if firstPartyUsageRequested(args) && (command == "home" || (command == "hook" && (subcommand == "install" || subcommand == "uninstall"))) {
 		return nil
 	}
 	admission, ok := c.LookupSubcommandWithFlags(command, subcommand, args)
@@ -200,6 +200,11 @@ func (c FirstPartyCommandCatalog) RequireHomeCompatibility(command string, args 
 		return nil
 	}
 	if command == "home" && (subcommand == "" || subcommand == "init" || subcommand == "restore") {
+		return nil
+	}
+	// cmdInit creates a missing home itself (as `home init` does) and checks an existing
+	// home's compatibility before it writes anything, so a fresh machine can run it first.
+	if command == "init" {
 		return nil
 	}
 	// Runtime hooks own a protocol-shaped fail-open/deny response. Letting a

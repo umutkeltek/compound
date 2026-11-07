@@ -36,7 +36,6 @@ import (
 	"compound/internal/harness"
 	"compound/internal/home"
 	"compound/internal/hook"
-	"compound/internal/hookplan"
 	"compound/internal/knowledge"
 	"compound/internal/lanes"
 	"compound/internal/mem"
@@ -324,6 +323,8 @@ func usage() {
 
 usage:
   compound version
+  compound init [--harness claude-code|codex] [--check]          set up this user: create the home, wire every supported harness found, check PATH
+  compound receipt last [--json]                                 the newest receipt: what the last session or closed work item did
 compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact|private-custody> [--home P] [--local] COMPOUND_HOME runtime body + archive/restore; private-custody repair is explicit permission repair; archive-history requires --kind work|lease|review|comparison|create-plan|memory-candidate to archive (or --dry-run to preview) and accepts --path <rel> and --max-files <N>
   compound envelope <validate <file>...|kinds>                  typed runtime envelopes
   compound schema <list|export|validate>                        JSON Schema export + contract-aware validation
@@ -365,6 +366,7 @@ compound proof-check [--json] [--dry-run] [--dev] [--repo P] [--out FILE] determ
   compound reviews binding-record --item ID --area AREA --expected-review-sha256 SHA --governed-work W [--source-work W] [--source-run-kind K --source-run ID] [--fallback-work W] [--json]
   compound reviews record-finding (--work-id W|--auto-work) --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--source-trace trace_id] [--evidence-ref REF...]
   compound policy <evaluate|import-placement-rules|placement-authority|import-standing-grants|standing-grants-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority|autonomy-halt> ActionIntent -> PolicyDecision; import policy authorities / mutate halt through its locked command
+  compound hook <install|uninstall> [--harness H] [--check]     wire or unwire Compound's hooks; every other setting stays
   compound hook <name> [--enforce] <fixture.json>               run lifecycle hook over fixture; --enforce exits nonzero on pre-tool holds
   compound harness <list|NAME|observe [registry.yaml|--os-entrypoints file]|posture-plan --harness H|drift|generate|permission-mode|instruction-pack>
   compound transition show <id>                                 inspect a Transition or envelope
@@ -1623,6 +1625,9 @@ func cmdHook(args []string) {
 		cmdHookInstall(args[1:])
 		return
 	}
+	if len(args) > 0 && args[0] == "uninstall" {
+		os.Exit(hook.RunUninstallCommand(args[1:], os.Stdout, os.Stderr))
+	}
 	if len(args) > 0 && args[0] == "drain" {
 		os.Exit(hook.RunDrainCommand(args[1:], os.Stdout, os.Stderr, newHookSpoolReplay))
 	}
@@ -1651,112 +1656,18 @@ func cmdHook(args []string) {
 	}
 }
 
-// cmdHookInstall reconciles each compiled default posture without clobbering unrelated settings.
-// Interactive Codex and Claude Code observe actions without publishing native permission
-// decisions; isolated Claude-family profiles retain explicit mutation enforcement.
-// `--lane-file` derives install harness + hook roster from a lane manifest; `--roster`
-// selects the roster explicitly or overrides the manifest's declaration.
+// cmdHookInstall is `compound hook install`. internal/hook owns flag validation, the
+// no-clobber write and the installed-hook authority publication (setup_cli.go).
 func cmdHookInstall(args []string) {
-	if hasUsageFlag(args) {
-		fmt.Println("usage: compound hook install [--lane-file lane.yaml | --harness claude-code|claude-zai|claude-minimax|claude-qwen|codex|oh-my-pi|all] [--roster minimal|full] [--scope global|project] [--config-dir DIR] [--base DIR] [--binary PATH] [--check] [--json]")
-		return
-	}
-	check := hasFlag(args, "--check")
-	jsonOut := hasFlag(args, "--json")
-
-	scope := strings.TrimSpace(valueFlag(args, "--scope"))
-	if scope == "" {
-		scope = "global"
-	}
-	if scope != "global" && scope != "project" {
-		fmt.Fprintln(os.Stderr, "error: --scope must be global or project")
-		os.Exit(2)
-	}
-
-	req, err := hookplan.ResolveInstallRequest(strings.TrimSpace(valueFlag(args, "--lane-file")), strings.TrimSpace(valueFlag(args, "--harness")), strings.TrimSpace(valueFlag(args, "--roster")), strings.TrimSpace(valueFlag(args, "--config-dir")))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(2)
-	}
-
-	base := strings.TrimSpace(valueFlag(args, "--base"))
-	if base == "" {
-		h, err := os.UserHomeDir()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
-		}
-		base = h
-	}
-	binary := strings.TrimSpace(valueFlag(args, "--binary"))
-	if binary == "" {
-		exe, err := os.Executable()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
-		}
-		binary = exe
-	}
-
-	homePath := ""
-	var publish func(hookplan.HookInstallReport) error
-	if !check {
-		resolvedHome, err := home.Resolve("")
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
-		}
-		homePath = resolvedHome
-		publish = func(report hookplan.HookInstallReport) error {
-			_, err := contract.ImportHookInstallReport(homePath, base, report, time.Now())
-			return err
-		}
-	}
-	var rep hookplan.HookInstallReport
-	install := func() error {
-		var err error
-		if len(req.Harnesses) == 1 && req.Harnesses[0] == "oh-my-pi" {
-			rep, err = hookplan.InstallOhMyPiShimWithConfigDir(base, req.ConfigDir, check)
-			return err
-		}
-		rep, err = hookplan.InstallHooksWithRoster(
-			base,
-			binary,
-			scope,
-			req.Harnesses,
-			req.ConfigDir,
-			req.AllowedEvents,
-			check,
-			publish,
-		)
-		return err
-	}
-	err = func() error {
-		if check {
-			return install()
-		}
-		return withInstalledHookAuthorityLock(homePath, install)
-	}()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
-	}
-	if jsonOut {
-		printJSON(rep)
-		return
-	}
-	head := "installed"
-	if check {
-		head = "check"
-	}
-	fmt.Printf("hook %s (scope=%s):\n", head, rep.Scope)
-	for _, e := range rep.Entries {
-		fmt.Printf("- %s: %s -> %s [%s]\n", e.Harness, e.Action, e.ConfigPath, e.Matcher)
-	}
-	if !check {
-		fmt.Println("\ninteractive Codex/Claude PreToolUse is observation-only; isolated executor profiles use explicit enforcement.")
+	if code := hook.RunInstallCommand(args, os.Stdout, os.Stderr); code != 0 {
+		os.Exit(code)
 	}
 }
+
+// cmdInit is `compound init`, the one setup command after `make install`; cmdReceipt is
+// `compound receipt last`. Both live in internal/hook (setup_cli.go).
+func cmdInit(args []string)    { os.Exit(hook.RunInitCommand(args, os.Stdout, os.Stderr)) }
+func cmdReceipt(args []string) { os.Exit(hook.RunReceiptCommand(args, os.Stdout, os.Stderr)) }
 
 // withInstalledHookAuthorityLock serializes Compound CLI writers that can replace the managed
 // native-hook roster or its installed-hooks authority. Native config preimage checks still defend

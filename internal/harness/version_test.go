@@ -136,10 +136,12 @@ func (e stringError) Error() string { return string(e) }
 // would render "unobserved" instead of "drift", and the operator would
 // trust it. The test is the seam that catches it.
 func TestObservedVersionDefaultsPrimeAgentToPrimeAgentBinary(t *testing.T) {
+	if _, probed := binaryForHarness["claude_zai"]; probed {
+		t.Fatal("claude_zai shares claude_code's binary; probing it repeats that row under a profile name")
+	}
 	for harnessName, wantBinary := range map[string]string{
 		"prime_agent": "prime-agent",
 		"claude_code": "claude",
-		"claude_zai":  "claude",
 		"codex":       "codex",
 	} {
 		got, ok := binaryForHarness[harnessName]

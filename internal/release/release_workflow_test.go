@@ -251,7 +251,7 @@ func TestGettingStartedSourceInstallIsBoundToSignedTagAndCommit(t *testing.T) {
 	}
 	text := string(body)
 	for _, required := range []string{
-		`VERSION=0.1.0`,
+		`VERSION=0.1.1`, // the first release with attached binaries
 		`VERSION must be strict stable SemVer`,
 		`TAG="v${VERSION}"`,
 		`REPOSITORY=${COMPOUND_RELEASE_REPOSITORY:?`,

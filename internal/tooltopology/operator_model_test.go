@@ -144,8 +144,8 @@ func TestServeSessionStartCarriesOperatorModelAfterDoorMap(t *testing.T) {
 	home := t.TempDir()
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	without := ServeSessionStart(home, now, DefaultDoorMapTTL)
-	if without != ServeDoorMap(home, now, DefaultDoorMapTTL) {
-		t.Fatalf("without a model the payload must be the door map byte for byte")
+	if without != ServeDoorMap(home, now, DefaultDoorMapTTL) || without != "" {
+		t.Fatalf("without a model or a door map the payload is empty, got %q", without)
 	}
 	if err := os.MkdirAll(filepath.Join(home, "config"), 0o755); err != nil {
 		t.Fatal(err)
@@ -154,8 +154,15 @@ func TestServeSessionStartCarriesOperatorModelAfterDoorMap(t *testing.T) {
 		t.Fatal(err)
 	}
 	with := ServeSessionStart(home, now, DefaultDoorMapTTL)
-	if !strings.HasPrefix(with, without+"\n\n"+operatorModelHeader) {
-		t.Fatalf("model must follow the door map one blank line apart:\n%s", with)
+	if !strings.HasPrefix(with, operatorModelHeader) {
+		t.Fatalf("with no door map the model leads, no blank lines before it:\n%s", with)
+	}
+	if _, err := Refresh(home, Inputs{DoorsJSON: []byte(`[{"door":"web","status":"PASS","detail":"ok"}]`), DoorsObservedAt: now}, now); err != nil {
+		t.Fatal(err)
+	}
+	doorMap := ServeDoorMap(home, now, DefaultDoorMapTTL)
+	if both := ServeSessionStart(home, now, DefaultDoorMapTTL); doorMap == "" || !strings.HasPrefix(both, doorMap+"\n\n"+operatorModelHeader) {
+		t.Fatalf("model must follow the door map one blank line apart:\n%s", both)
 	}
 	if !strings.HasSuffix(with, "- lead with the decision") {
 		t.Fatalf("model body missing:\n%s", with)

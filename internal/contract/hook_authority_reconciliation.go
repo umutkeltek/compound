@@ -98,6 +98,9 @@ func ImportHookInstallReport(
 			if event == "PreToolUse" && !binding.Blocking {
 				status = "non_blocking"
 			}
+			if entry.Action == "removed" { // `compound hook uninstall`: recorded, no longer desired
+				status = "removed"
+			}
 			manifest.Hooks = append(manifest.Hooks, InstalledHook{
 				Harness:            harnessName,
 				Name:               event,

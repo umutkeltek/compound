@@ -276,9 +276,8 @@ var PinnedSilentAcceptors = []string{
 	// "home init" no longer pinned: it validates its own args before the cmdHome loop pockets them.
 	"home verify",
 	"home where",
-	// cmdHookInstall scans only its known flags, then installs with defaults —
-	// a typo'd flag silently selects the default posture instead of stopping.
-	"hook install",
+	// "hook install" no longer pinned: internal/hook.RunInstallCommand refuses
+	// unknown flags (flag.FlagSet), as do "hook uninstall" and "init".
 	// cmdMCPTransport enters the stdio JSON-RPC loop without looking at argv.
 	"mcp-transport",
 	// route evidence-authority reports and swallows any unrecognized flag.

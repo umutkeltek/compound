@@ -259,6 +259,12 @@ if ! PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$install_dir/comp
 fi
 cat "$stage/refresh"
 completed=1
+# Point at the installed binary by its full path when its folder is not on PATH yet;
+# `compound init` then prints the PATH line for the user's shell.
+case ":$PATH:" in
+  *":$install_dir:"*) init_cmd="compound init" ;;
+  *) init_cmd="$install_dir/compound init" ;;
+esac
 cat <<EOF
 
 compound installed
@@ -273,8 +279,5 @@ compound installed
 - home: $compound_home
 
 next:
-  compound workbench
-  compound proof-check --json
-  cd console && bun install
-  compound console --operator
+  $init_cmd    wire Claude Code or Codex, and check PATH
 EOF

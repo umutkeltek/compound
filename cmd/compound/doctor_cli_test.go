@@ -15,6 +15,7 @@ import (
 	"compound/internal/envelope"
 	"compound/internal/eventstore"
 	"compound/internal/finding"
+	"compound/internal/harness"
 	"compound/internal/home"
 	"compound/internal/hookplan"
 	"compound/internal/policy"
@@ -390,16 +391,12 @@ func TestDoctorComposesOrganState(t *testing.T) {
 	if code != 0 && len(rep.Problems) == 0 {
 		t.Fatalf("doctor returned exit %d with no problems, stderr=%q", code, errOut.String())
 	}
-	if len(rep.Hooks) == 0 {
-		t.Fatal("doctor should report per-harness hook status")
+	// An empty base is a machine with no harness: doctor lists none and points at init.
+	if len(rep.Hooks) != 0 {
+		t.Fatalf("empty base => no harness rows, got %+v", rep.Hooks)
 	}
-	for _, h := range rep.Hooks {
-		if h.Status != "absent" {
-			t.Fatalf("empty base => hook %s should be absent, got %q", h.Harness, h.Status)
-		}
-	}
-	if rep.HookHint == "" {
-		t.Fatal("absent hooks should yield an install hint")
+	if !strings.Contains(rep.HookHint, "compound init") {
+		t.Fatalf("no harness should yield the init hint, got %q", rep.HookHint)
 	}
 	if rep.LeaseHeld {
 		t.Fatal("no lease should be held")
@@ -904,5 +901,39 @@ func TestDoctorInjectionReportsNoRateBecauseConsumptionProvenanceIsUnrecoverable
 		if !strings.Contains(text, want) {
 			t.Errorf("text missing %q — an unexplained count is the defect this replaces:\n%s", want, text)
 		}
+	}
+}
+
+// A stranger's doctor must describe the stranger's machine. The binary carries every lane the
+// project knows about (isolated provider profiles, private lanes); none of them may be listed
+// on a machine that does not have it, in the hook rows, the surfacing matrix, the warnings or
+// the version section. Names come from the registry, so this test holds no profile name.
+func TestDoctorListsOnlyHarnessesThisMachineHas(t *testing.T) {
+	bin := t.TempDir() // Claude Code is installed; no other harness command is
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte("#!/bin/sh\necho '2.1.0 (Claude Code)'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	home, base := t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(base, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := runDoctorText(t, home, base, "/opt/compound/compound")
+	if !strings.Contains(out, "claude-code") || !strings.Contains(out, "claude_code installed=2.1.0") {
+		t.Fatalf("the harness this machine has must be listed with its version:\n%s", out)
+	}
+	for _, name := range harness.DefaultRegistry().Names() {
+		switch name {
+		case "claude_code", "codex", "opencode", "generic":
+			continue
+		}
+		for _, spelling := range []string{name, strings.ReplaceAll(name, "_", "-")} {
+			if strings.Contains(out, spelling) {
+				t.Fatalf("doctor lists %q on a machine without it:\n%s", spelling, out)
+			}
+		}
+	}
+	if strings.Contains(out, filepath.Join(base, ".config")) {
+		t.Fatalf("doctor lists a provider profile path:\n%s", out)
 	}
 }

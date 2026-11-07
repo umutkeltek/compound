@@ -36,15 +36,17 @@ func TestLiveSessionStartServesDoorMapBlock(t *testing.T) {
 	}
 }
 
-func TestLiveSessionStartWithoutSnapshotSaysSo(t *testing.T) {
+// A fresh home has no door map; the agent's first context must not open with a request for
+// a door report the user does not have.
+func TestLiveSessionStartWithoutSnapshotOmitsTheDoorMap(t *testing.T) {
 	deps := baseDeps()
 	deps.HomePath = t.TempDir()
 	res, err := Run(Fixture{Hook: "session-start", Harness: "codex", Cwd: "/repo/productX", RepoKind: "product", Live: true}, deps, fixedNow)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(res.ContextOutput, "Door map: none produced yet") {
-		t.Fatalf("a missing snapshot must be visible, got %q", res.ContextOutput)
+	if strings.Contains(res.ContextOutput, "Door map") {
+		t.Fatalf("a missing snapshot must serve no door-map line, got %q", res.ContextOutput)
 	}
 }
 

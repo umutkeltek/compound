@@ -4,37 +4,43 @@ Coding agents forget. A new session does not know what you decided yesterday, re
 already happened, and asks you the same question again. Compound keeps your goals, decisions, work
 and evidence in local files, so the next session, in any supported harness, starts from what is known.
 
-**Status: public alpha, version 0.1.0.** One user, one machine, plain files. Claude Code and Codex
+**Status: public alpha, version 0.1.1.** One user, one machine, plain files. Claude Code and Codex
 get managed hooks; OpenCode is observed only. Setup needs a terminal, and Compound does not yet prove
 that your later work got easier.
 
 ## First run (a minute or two)
 
-You need macOS or Linux, Git, Go 1.27.1 or newer, Python 3 and `make`. There are no prebuilt
-downloads yet, so you build the tagged release from source:
+You need macOS or Linux, Git, Go 1.27.1 or newer, Python 3 and `make`. These lines build the
+tagged release from source:
 
 ```sh
 git clone https://github.com/umutkeltek/compound.git
 cd compound
-git checkout --quiet v0.1.0
+git checkout --quiet v0.1.1
 make install
 export PATH="$HOME/.local/bin:$PATH"
-compound hook install --harness claude-code
+compound init
 ```
 
 What these lines did:
 
 - `make install` built `compound` into `~/.local/bin`, created your Compound home in
   `~/.compound`, and checked that it is healthy.
-- `compound hook install` added Compound's hooks to `~/.claude/settings.json`. Your other
-  settings stay as they were. Using Codex? Run `compound hook install --harness codex` instead.
-- Add the `export PATH=...` line to your shell profile so `compound` is there in new terminals.
+- `compound init` looked for Claude Code and Codex on this machine and added Compound's hooks to
+  each one it found (`~/.claude/settings.json`, `~/.codex/hooks.json`). Your other settings stay
+  as they were. It prints one line per harness: wired, already wired, or not found.
+- The `export PATH=...` line works for this terminal only. If `~/.local/bin` is not in your shell
+  profile yet, `compound init` prints the exact line to add, so new terminals find `compound` too.
 
-Now start Claude Code in any project, the way you always do. Compound runs at session start and
-tells the agent how to get a briefing for its task. While the agent works, Compound records each
-tool call. When the session ends, Compound writes a receipt. All of it stays in `~/.compound`.
+Now start Claude Code or Codex in any project, the way you always do. Compound runs at session
+start and tells the agent how to get a briefing for its task. While the agent works, Compound
+records each tool call. When the session ends, Compound writes a receipt. All of it stays in
+`~/.compound`.
 
-To check the wiring later, run `compound hook install --harness claude-code --check`.
+- `compound receipt last` shows what the last session did.
+- `compound init --check` checks the setup again later. It changes nothing.
+- `compound hook uninstall --harness claude-code` takes Compound's hooks out and leaves the rest of
+  your settings alone.
 
 ## What it is not
 

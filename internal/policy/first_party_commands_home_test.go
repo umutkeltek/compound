@@ -201,3 +201,24 @@ func TestRequireHomeCompatibilityExemptsOnlySoleActiveRootHelp(t *testing.T) {
 		t.Fatalf("compatibility check created missing home parent: %v", err)
 	}
 }
+
+// `compound init` is the first command on a fresh machine: like `home init` it must reach its
+// own handler with no home yet (it creates one). `hook uninstall` keeps full admission.
+func TestRequireHomeCompatibilityLetsInitRunWithoutAHome(t *testing.T) {
+	t.Setenv("COMPOUND_HOME", filepath.Join(t.TempDir(), "absent"))
+	catalog := NewFirstPartyCommandCatalog(map[string]FirstPartyCommandAdmission{
+		"init": FirstPartyCommandInstall,
+		"hook": FirstPartyCommandGoverned,
+	}).WithSubcommands("hook", map[string]FirstPartyCommandAdmission{"uninstall": FirstPartyCommandInstall})
+	for _, args := range [][]string{nil, {"--check"}, {"--harness", "codex"}} {
+		if err := catalog.RequireHomeCompatibility("init", args); err != nil {
+			t.Fatalf("RequireHomeCompatibility(init, %v) = %v, want nil", args, err)
+		}
+	}
+	if err := catalog.RequireHomeCompatibility("hook", []string{"uninstall", "--help"}); err != nil {
+		t.Fatalf("hook uninstall --help must answer without a home: %v", err)
+	}
+	if err := catalog.RequireHomeCompatibility("hook", []string{"uninstall"}); err == nil || !strings.Contains(err.Error(), "home manifest is missing") {
+		t.Fatalf("hook uninstall without a home = %v, want missing-manifest refusal", err)
+	}
+}

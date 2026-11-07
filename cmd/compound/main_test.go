@@ -5460,7 +5460,7 @@ func TestInstallScriptBuildsInitializesAndDoctorsTempHome(t *testing.T) {
 		t.Fatalf("home manifest missing: %v\n%s", err, out)
 	}
 	text := string(out)
-	for _, want := range []string{"install verification ok", "verdict: ok", "status: ok", "compound installed", "compound workbench"} {
+	for _, want := range []string{"install verification ok", "verdict: ok", "status: ok", "compound installed", "compound init"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("install output missing %q:\n%s", want, text)
 		}

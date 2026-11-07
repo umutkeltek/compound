@@ -26,12 +26,15 @@ const versionProbeTimeout = 3 * time.Second
 // probe of a machine running exactly the pinned build: a permanent false
 // positive, which is how a doctor signal turns into background noise. Add the
 // row when the harness ships a plain X.Y.Z release, not before.
+//
+// Isolated Claude profiles (claude_zai and its siblings) are absent too: they run the
+// same `claude` binary as claude_code, so a row would repeat claude_code's version and
+// name a provider profile on every machine that has Claude Code.
 var binaryForHarness = map[string]string{
 	"prime_agent": "prime-agent",
 	"oh_my_pi":    "omp",
 	"qwen_code":   "qwen",
 	"claude_code": "claude",
-	"claude_zai":  "claude",
 	"codex":       "codex",
 }
 

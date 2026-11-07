@@ -10,17 +10,18 @@ import (
 )
 
 // ServeDoorMap returns the block a harness receives at session start. It never
-// fails and never blocks on anything but one bounded file read: a missing,
-// corrupt or stale snapshot becomes a short visible notice, because a silent
-// gap would read as "no doors exist" and a stale table would assert statuses
-// nobody re-checked.
+// fails and never blocks on anything but one bounded file read. A missing
+// snapshot serves nothing: a fresh install has no door report to build one from,
+// so a request for one would be the first, unusable thing the agent reads. A
+// corrupt or stale snapshot becomes a short visible notice, because a stale
+// table would assert statuses nobody re-checked.
 func ServeDoorMap(home string, now time.Time, ttl time.Duration) string {
 	if ttl <= 0 {
 		ttl = DefaultDoorMapTTL
 	}
 	m, err := LoadDoorMap(home)
 	if errors.Is(err, os.ErrNotExist) {
-		return fitBlock("## Door map: none produced yet. Observe the machine once with `" + servedRefreshHint + " --doctor-json <door-report>`; until then rediscover doors by hand.")
+		return ""
 	}
 	if err != nil {
 		return fitBlock("## Door map: snapshot unreadable (" + cleanField(err.Error(), 90) + "). Rebuild: `" + servedRefreshHint + "`.")

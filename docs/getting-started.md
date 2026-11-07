@@ -14,7 +14,7 @@ Durable history is not the same as automatic memory promotion or measured benefi
 
 | You want to… | Start here |
 |---|---|
-| Install a published release | Option A below; no Go required. **No stable release is published yet**, so this path fails on purpose today |
+| Install a published release | Option A below; no Go required (binaries from 0.1.1 on) |
 | Build an authenticated release from source | Option B below |
 | Try unreleased source | Reviewed contributor checkout below |
 | Connect your existing agent after installation | [First useful session](#first-useful-session) |
@@ -80,10 +80,9 @@ Pick one:
 ### Option A — prebuilt binary (no Go required)
 
 These are release-consumer instructions, not evidence that a release exists.
-Use only a stable version that is already listed on the repository's Releases
-page; the numeric value below is an example, not a claim that its assets have
-been published. If no stable release is listed, the release URLs intentionally
-fail—use the unreleased contributor-checkout path below instead.
+Prebuilt files are attached to releases from 0.1.1 on; 0.1.0 has none. The block
+below installs 0.1.1. Use only a stable version listed on the repository's
+Releases page; for a later one, change `VERSION`.
 
 Prebuilt public-alpha releases support exactly `darwin/arm64` on macOS 15 or newer
 and `linux/amd64`. On another platform, build from source.
@@ -97,7 +96,7 @@ binds downloads, the signing key, and the source remote below.
 ```sh
 set -eu
 
-VERSION=0.1.0
+VERSION=0.1.1
 REPOSITORY=${COMPOUND_RELEASE_REPOSITORY:?set the public owner/repository identity}
 if ! printf '%s\n' "$VERSION" | awk '
   $0 ~ /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/ { ok = 1 }
@@ -216,9 +215,9 @@ evidence. On the offline machine, run the same platform-selection block above,
 or point to the selected archive explicitly:
 
 ```sh
-COMPOUND_VERSION=0.1.0 \
-COMPOUND_RELEASE_TARBALL=/path/to/compound-release-0.1.0/compound_0.1.0_linux_amd64.tar.gz \
-  sh /path/to/compound-release-0.1.0/install-release.sh
+COMPOUND_VERSION=0.1.1 \
+COMPOUND_RELEASE_TARBALL=/path/to/compound-release-0.1.1/compound_0.1.1_linux_amd64.tar.gz \
+  sh /path/to/compound-release-0.1.1/install-release.sh
 ```
 
 ### Option B — build from source
@@ -230,7 +229,7 @@ it never builds the repository's mutable default branch.
 ```sh
 set -eu
 
-VERSION=0.1.0
+VERSION=0.1.1
 REPOSITORY=${COMPOUND_RELEASE_REPOSITORY:?set the public owner/repository identity}
 TAG="v${VERSION}"
 SOURCE_EVIDENCE="compound-${VERSION}-source-evidence"
@@ -318,9 +317,10 @@ channel before cutting the first tag; those external controls are pre-tag gates,
 not properties this source checkout can create.
 
 ```sh
-# Make sure it's on your PATH:
+# Make sure it's on your PATH, then wire your harness:
 export PATH="$HOME/.local/bin:$PATH"
 compound version
+compound init
 ```
 
 ### Unreleased contributor checkout
@@ -357,16 +357,22 @@ or upgrade; do not delete runtime data to clear a warning. The source-setup
 section can report missing Go on a binary-only installation: Go is required
 for building, not for using the prebuilt CLI.
 
-Choose **one** managed interactive adapter:
+Wire your harness. `compound init` finds Claude Code and Codex on this machine,
+adds Compound's hooks to each one found, and prints one line per harness: wired,
+already wired, or not found. It also prints the exact PATH line for your shell when
+`~/.local/bin` is not on PATH (it never edits shell profiles):
 
 ```sh
-# Claude Code
-compound hook install --harness claude-code --scope global
-compound hook install --harness claude-code --scope global --check --json
+compound init
+compound init --check    # later: reports only, changes nothing
+```
 
-# OR Codex
+To wire one harness by name, or a project instead of your user settings:
+
+```sh
 compound hook install --harness codex --scope global
-compound hook install --harness codex --scope global --check --json
+compound hook install --harness claude-code --scope project   # this project only
+compound hook uninstall --harness codex                      # takes Compound's hooks out again
 ```
 
 These commands change the chosen harness configuration. Keep its existing
@@ -573,8 +579,8 @@ Compound integrates with agent harnesses through **lifecycle hooks**. See
 version for Claude Code:
 
 ```sh
-compound hook install --harness claude-code --scope global
-compound hook install --harness claude-code --scope global --check --json
+compound init            # wires every supported harness found here
+compound init --check    # reports only; changes nothing
 ```
 
 The first command installs the managed interactive posture; the second checks

@@ -90,8 +90,10 @@ func renderOperatorModel(raw string, unread int64) string {
 // only gets `doors serve` (no session hook) still receives the operator model.
 func ServeSessionStart(home string, now time.Time, ttl time.Duration) string {
 	doorMap := ServeDoorMap(home, now, ttl)
-	if model := ServeOperatorModel(home); model != "" {
+	if model := ServeOperatorModel(home); model != "" && doorMap != "" {
 		return doorMap + "\n\n" + model
+	} else if model != "" {
+		return model
 	}
 	return doorMap
 }

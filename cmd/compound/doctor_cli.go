@@ -289,16 +289,24 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 			binary = exe
 		}
 	}
+	rep.HookHint = "no supported harness found; install Claude Code or Codex, then run `compound init`"
 	if base != "" && binary != "" {
-		if hookRep, herr := hookplan.InstallHooks(base, binary, "", nil, true); herr == nil {
-			for _, e := range hookRep.Entries {
-				rep.Hooks = append(rep.Hooks, doctorHook{Harness: e.Harness, Status: e.Action, ConfigPath: e.ConfigPath})
+		if hookRep, herr := hookplan.InstallHooks(base, binary, "", nil, true); herr != nil {
+			rep.HookHint = "could not read harness configs: " + herr.Error()
+		} else {
+			for _, e := range hookRep.Entries { // only harnesses this machine has (a profile folder or installed hooks)
+				if e.Action != "absent" || hookplan.HarnessConfigPresent(base, e.Harness, "") {
+					rep.Hooks = append(rep.Hooks, doctorHook{Harness: e.Harness, Status: e.Action, ConfigPath: e.ConfigPath})
+				}
 			}
 		}
 	}
+	if len(rep.Hooks) > 0 {
+		rep.HookHint = ""
+	}
 	for _, h := range rep.Hooks {
 		if h.Status == "absent" || h.Status == "drift" {
-			rep.HookHint = "run `compound hook install` to (re)wire the guard"
+			rep.HookHint = "run `compound init` to wire them"
 			break
 		}
 	}
@@ -583,7 +591,7 @@ func (r doctorReport) warningStrings() []string {
 	var w []string
 	for _, h := range r.Hooks {
 		if h.Status == "drift" || h.Status == "absent" {
-			w = append(w, fmt.Sprintf("harness %s %s — install guard via `compound hook install`", h.Harness, h.Status))
+			w = append(w, fmt.Sprintf("harness %s %s — wire it with `compound init`", h.Harness, h.Status))
 		}
 	}
 	if r.BinaryStaleness.Relation == doctor.RelationUnknown {
@@ -607,9 +615,6 @@ func printDoctor(stdout io.Writer, rep doctorReport) {
 	fmt.Fprintf(stdout, "home: %s\n", rep.Home)
 
 	fmt.Fprintln(stdout, "\n## hooks (PreToolUse guard)")
-	if len(rep.Hooks) == 0 {
-		fmt.Fprintln(stdout, "- (could not read harness configs)")
-	}
 	for _, h := range rep.Hooks {
 		fmt.Fprintf(stdout, "- %-12s %-9s %s\n", h.Harness, h.Status, h.ConfigPath)
 	}

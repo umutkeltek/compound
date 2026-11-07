@@ -1056,3 +1056,55 @@ func TestObserveHarnessHookInstallationResolvesSwitchbackPublishedPaths(t *testi
 		})
 	}
 }
+
+// An uninstall publishes the removed bindings with status "removed": the harness drops out of
+// the desired hook plan instead of the authority still claiming hooks no config carries.
+func TestImportHookInstallReportRecordsAnUninstallAsRemoved(t *testing.T) {
+	compoundHome := t.TempDir()
+	harnessHome := t.TempDir()
+	binaryPath := filepath.Join(harnessHome, ".local", "bin", "compound")
+	if err := os.MkdirAll(filepath.Dir(binaryPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binaryPath, []byte("synthetic compound binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 7, 10, 0, 0, 0, time.UTC)
+	publish := func(r hookplan.HookInstallReport) error {
+		_, err := ImportHookInstallReport(compoundHome, harnessHome, r, now)
+		return err
+	}
+	if _, err := hookplan.InstallHooksWithConfigDirAndPublish(harnessHome, binaryPath, "global", []string{"claude-code", "codex"}, "", false, publish); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hookplan.UninstallHooks(harnessHome, binaryPath, "global", []string{"codex"}, "", false, publish); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := LoadInstalledHooksManifest(compoundHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claudeCurrent, codexCurrent, codexRemoved int
+	for _, hook := range manifest.Hooks {
+		switch {
+		case hook.Harness == "claude_code" && installedHookCurrentStatus(hook.Status):
+			claudeCurrent++
+		case hook.Harness == "codex" && installedHookCurrentStatus(hook.Status):
+			codexCurrent++
+		case hook.Harness == "codex" && hook.Status == "removed":
+			codexRemoved++
+		}
+	}
+	if claudeCurrent == 0 || codexCurrent != 0 || codexRemoved == 0 {
+		t.Fatalf("after uninstalling codex: claude current=%d codex current=%d codex removed=%d", claudeCurrent, codexCurrent, codexRemoved)
+	}
+	plan, err := hookPlanFromInstalledManifest(manifest, harnessHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, binding := range plan.Bindings {
+		if binding.Harness == "codex" {
+			t.Fatalf("removed codex binding still desired: %+v", binding)
+		}
+	}
+}

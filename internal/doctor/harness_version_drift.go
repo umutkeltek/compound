@@ -126,23 +126,30 @@ func RenderHarnessVersionDrift(stdout io.Writer, rep HarnessVersionDriftReport) 
 		}
 		return
 	}
+	notHere := 0
 	for _, row := range rep.Rows {
+		if row.Observed == "" {
+			// Not on this machine. An unpinned row says nothing at all; a pinned one is
+			// counted below. Naming either would list lanes a fresh machine never had.
+			if row.Status == "unobserved" {
+				notHere++
+			}
+			continue
+		}
 		switch row.Status {
 		case "match":
 			fmt.Fprintf(stdout, "- match: %s=%s\n", row.Harness, row.Expected)
 		case "drift":
 			fmt.Fprintf(stdout, "- DRIFT: %s installed=%s expected=%s\n", row.Harness, row.Observed, row.Expected)
 		case "unpinned":
-			fmt.Fprintf(stdout, "- unpinned: %s (no expected version)\n", row.Harness)
-		case "unobserved":
-			fmt.Fprintf(stdout, "- unobserved: %s expected=%s — binary missing or --version unparseable\n", row.Harness, row.Expected)
+			fmt.Fprintf(stdout, "- unpinned: %s installed=%s (no expected version)\n", row.Harness, row.Observed)
 		default:
 			fmt.Fprintf(stdout, "- unknown: %s\n", row.Harness)
 		}
 	}
 	if rep.DriftCount > 0 {
 		fmt.Fprintf(stdout, "- %d harness(es) drifted from expected\n", rep.DriftCount)
-	} else if rep.UnobservedCount > 0 {
-		fmt.Fprintf(stdout, "- %d harness(es) pinned but unobserved\n", rep.UnobservedCount)
+	} else if notHere > 0 {
+		fmt.Fprintf(stdout, "- %d pinned harness(es) not installed on this machine (`compound doctor --json` names them)\n", notHere)
 	}
 }

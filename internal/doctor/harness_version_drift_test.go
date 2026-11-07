@@ -161,7 +161,9 @@ func TestRenderHarnessVersionDriftMatchAndUnpinned(t *testing.T) {
 	rep := HarnessVersionDriftReport{
 		Rows: []HarnessVersionDrift{
 			{Harness: "prime_agent", Expected: "0.7.4", Observed: "0.7.4", Status: "match"},
-			{Harness: "codex", Expected: "", Status: "unpinned"},
+			{Harness: "codex", Expected: "", Observed: "0.9.0", Status: "unpinned"},
+			{Harness: "lane_not_here", Expected: "", Status: "unpinned"},
+			{Harness: "pinned_not_here", Expected: "1.0.0", Status: "unobserved"},
 		},
 	}
 	var buf bytes.Buffer
@@ -170,8 +172,16 @@ func TestRenderHarnessVersionDriftMatchAndUnpinned(t *testing.T) {
 	if !strings.Contains(out, "match: prime_agent=0.7.4") {
 		t.Fatalf("render missing match row: %q", out)
 	}
-	if !strings.Contains(out, "unpinned: codex") {
+	if !strings.Contains(out, "unpinned: codex installed=0.9.0") {
 		t.Fatalf("render missing unpinned row: %q", out)
+	}
+	// A harness this machine does not have is never named in the text: an unpinned one
+	// says nothing, a pinned one is counted (the JSON keeps every row).
+	if strings.Contains(out, "lane_not_here") || strings.Contains(out, "pinned_not_here") {
+		t.Fatalf("render names a harness that is not installed: %q", out)
+	}
+	if !strings.Contains(out, "1 pinned harness(es) not installed on this machine") {
+		t.Fatalf("render must count pinned harnesses that are not installed: %q", out)
 	}
 	if strings.Contains(out, "DRIFT") {
 		t.Fatalf("render mistakenly contains DRIFT marker: %q", out)

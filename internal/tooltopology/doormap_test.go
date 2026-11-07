@@ -221,10 +221,12 @@ func TestRefreshWithoutDoorReportCarriesDoorsWithOriginalObservationTime(t *test
 	}
 }
 
-func TestServeDoorMapMissingIsAVisibleNotice(t *testing.T) {
-	got := ServeDoorMap(t.TempDir(), doorNow, DefaultDoorMapTTL)
-	if !strings.Contains(got, "Door map") || !strings.Contains(got, "none produced yet") {
-		t.Fatalf("missing snapshot must be announced, got %q", got)
+// A fresh install has no door map, and a first-time user has no door report to build one
+// from, so the session-start block says nothing rather than asking for one. Corrupt and stale
+// snapshots stay visible notices (below): those are maps someone made that went bad.
+func TestServeDoorMapMissingServesNothing(t *testing.T) {
+	if got := ServeDoorMap(t.TempDir(), doorNow, DefaultDoorMapTTL); got != "" {
+		t.Fatalf("missing snapshot must serve nothing, got %q", got)
 	}
 }
 
