@@ -6,6 +6,13 @@ for tagged releases, subject to the public-alpha compatibility policy in
 
 ## [Unreleased]
 
+### Changed
+
+- The README is now a short page for a first-time reader: a six-line first run
+  from the `v0.1.0` tag, how it works, day-to-day use and the supported scope.
+  The maintainer detail it held moved unchanged to `docs/overview.md`.
+  `SUPPORT.md` and `SECURITY.md` now name the published `v0.1.0` tag.
+
 ## [0.1.0] - 2026-11-07
 
 First tagged public-alpha release: a file-backed, single-user developer preview.

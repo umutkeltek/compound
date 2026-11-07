@@ -6,22 +6,17 @@ system user. The supported trust boundary is defined in
 homes, remote or proxied console access, server deployment, multi-tenancy, and
 Postgres-backed durable state are outside that boundary.
 
-## Private reporting is a pre-release gate
+## Private reporting
 
-The intended private reporting route is GitHub private vulnerability reporting
-through this repository's **Security → Advisories → Report a vulnerability**
-surface.
+Report a vulnerability privately through this repository's
+**Security → Advisories → Report a vulnerability** surface. Private
+vulnerability reporting is enabled on the repository. A test report from a
+separate reporter account has not been recorded yet.
 
-This route has not yet been verified from an authenticated reporter account.
-No public-alpha tag is supported until the maintainer enables private
-vulnerability reporting and records a successful reporter-side probe of that
-surface. A missing report action or a 404 is not a private disclosure channel.
-
-Until that gate is closed, do not put exploit details, credentials, private
-home contents, or sensitive logs in a public issue. Open only a minimal public
-issue asking the maintainer to establish a private channel, with no
-vulnerability detail. The absence of a verified private route is a release
-blocker, not permission to disclose sensitive material publicly.
+A missing report action or a 404 is not a private disclosure channel. In that
+case, do not put exploit details, credentials, private home contents, or
+sensitive logs in a public issue. Open only a minimal public issue asking the
+maintainer to establish a private channel, with no vulnerability detail.
 
 Please include:
 
@@ -31,7 +26,7 @@ Please include:
 - expected and observed behavior, impact, and any known workaround;
 - whether the issue is already being exploited or publicly discussed.
 
-After the private route is verified, the maintainer will acknowledge the
+The maintainer will acknowledge the
 report, reproduce it, agree on disclosure timing with the reporter when
 practical, and publish remediation and upgrade instructions with the fix.
 There is no paid bug-bounty program or response-time SLA during the public
@@ -39,10 +34,12 @@ alpha.
 
 ## Supported versions
 
-Security fixes are made for the latest tagged public-alpha release only. No tag has been published yet, so until the first one there is no supported version. The
-`main` branch and historical prerelease artifacts are development surfaces,
-not supported distributions. Install only the immutable tag artifacts listed
-in the release's verified `RELEASE` manifest, and verify the matching
+Security fixes are made for the latest tagged public-alpha release only;
+today that is `v0.1.0`. The `main` branch and historical prerelease artifacts
+are development surfaces, not supported distributions. `v0.1.0` has no
+prebuilt artifacts yet, so build it from source at the tag. Once prebuilt
+artifacts are published, install only the immutable tag artifacts listed in
+the release's verified `RELEASE` manifest, and verify the matching
 `SHA256SUMS` before execution.
 
 ## Security-relevant data
