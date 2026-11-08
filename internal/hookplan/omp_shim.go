@@ -3,7 +3,6 @@ package hookplan
 import (
 	_ "embed"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 )
@@ -23,103 +22,48 @@ const OmpShimMarker = "// compound-owned: oh-my-pi-hook-shim@2"
 // a shell matcher whose filename binds a tool).
 const OmpShimRelPath = ".omp/agent/hooks/pre/compound.ts"
 
-// InstallOhMyPiShim materializes the compound ↔ oh-my-pi hook shim into
-// baseDir (the operator home). Idempotent: identical bytes are a no-op;
-// compound-owned content is refreshed wholesale; a foreign file at the path
-// fails closed rather than being clobbered. check=true performs the
-// comparison without writing. The shim is deliberately NOT published into the
+// ompShimFile is the whole-file installer for oh-my-pi (see ownedFile for the
+// no-clobber contract). The shim is deliberately NOT published into the
 // installed-hooks authority: that authority reconciles settings-style hook
 // entries, and omp's TS-module mechanism has no settings surface to reconcile.
-// InstallOhMyPiShimWithConfigDir is the per-profile variant: when
+func ompShimFile() ownedFile {
+	return ownedFile{
+		harness: "oh-my-pi",
+		marker:  OmpShimMarker,
+		source:  ompHookShimSource,
+		bindings: []HookInstallBinding{
+			{Event: "SessionStart", Matcher: "*", Command: "omp hook shim: session_start → compound hook session-start", Blocking: false},
+			{Event: "UserPromptSubmit", Matcher: "*", Command: "omp hook shim: before_agent_start → compound hook user-prompt-submit", Blocking: false},
+			{Event: "PreToolUse", Matcher: "*", Command: "omp hook shim: tool_call → compound hook pre-tool-use", Blocking: true},
+			{Event: "PostToolUse", Matcher: "*", Command: "omp hook shim: tool_result → compound hook post-tool-use", Blocking: false},
+			{Event: "SessionEnd", Matcher: "*", Command: "omp hook shim: session_shutdown → compound hook session-end", Blocking: false},
+		},
+	}
+}
+
+// InstallOhMyPiShimWithConfigDir is the per-profile variant of InstallOhMyPiShim: when
 // configDir is non-empty the shim is installed under
-// <baseDir>/<configDir>/.omp/agent/hooks/pre/compound.ts instead of the
-// default operator-home location. This lets  wire each isolated
-// profile (e.g. an isolated lane profile) to its own shim copy.
+// <baseDir>/<configDir>/.omp/agent/hooks/pre/compound.ts instead of the default
+// operator-home location, so each isolated lane profile gets its own shim copy.
 func InstallOhMyPiShimWithConfigDir(baseDir, configDir string, check bool) (HookInstallReport, error) {
 	if strings.TrimSpace(configDir) == "" {
 		return InstallOhMyPiShim(baseDir, check)
 	}
-	report := HookInstallReport{Check: check, Scope: "global"}
 	if strings.TrimSpace(baseDir) == "" {
-		return report, fmt.Errorf("base dir required")
+		return HookInstallReport{Check: check, Scope: "global"}, fmt.Errorf("base dir required")
 	}
-	if !strings.HasPrefix(ompHookShimSource, OmpShimMarker) {
-		return report, fmt.Errorf("embedded shim lost its ownership marker")
-	}
-	target := filepath.Join(baseDir, configDir, ".omp", "agent", "hooks", "pre", "compound.ts")
-	existing, readErr := os.ReadFile(target)
-	switch {
-	case readErr == nil && !strings.Contains(string(existing), OmpShimMarker):
-		return report, fmt.Errorf("%s exists and is not compound-owned; refusing to clobber it", target)
-	case readErr != nil && !os.IsNotExist(readErr):
-		return report, fmt.Errorf("read %s: %w", target, readErr)
-	}
-	changed := string(existing) != ompHookShimSource
-	bindings := []HookInstallBinding{
-		{Event: "SessionStart", Matcher: "*", Command: "omp hook shim: session_start -> compound hook session-start", Blocking: false},
-		{Event: "UserPromptSubmit", Matcher: "*", Command: "omp hook shim: before_agent_start -> compound hook user-prompt-submit", Blocking: false},
-		{Event: "PreToolUse", Matcher: "*", Command: "omp hook shim: tool_call -> compound hook pre-tool-use", Blocking: true},
-		{Event: "PostToolUse", Matcher: "*", Command: "omp hook shim: tool_result -> compound hook post-tool-use", Blocking: false},
-		{Event: "SessionEnd", Matcher: "*", Command: "omp hook shim: session_shutdown -> compound hook session-end", Blocking: false},
-	}
-	report.Entries = append(report.Entries, HookInstallEntry{
-		Harness:    "oh-my-pi",
-		ConfigPath: target,
-		Action:     shimAction(changed, check, readErr == nil),
-		Bindings:   bindings,
-	})
-	if check || !changed {
-		return report, nil
-	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return report, fmt.Errorf("create shim dir: %w", err)
-	}
-	if err := os.WriteFile(target, []byte(ompHookShimSource), 0o644); err != nil {
-		return report, fmt.Errorf("write shim: %w", err)
-	}
-	return report, nil
+	return ompShimFile().install(filepath.Join(baseDir, configDir, ".omp", "agent", "hooks", "pre", "compound.ts"), check)
 }
 
+// InstallOhMyPiShim materializes the compound ↔ oh-my-pi hook shim into baseDir (the
+// operator home). Idempotent: identical bytes are a no-op; compound-owned content is
+// refreshed wholesale; a foreign file at the path fails closed rather than being
+// clobbered. check=true performs the comparison without writing.
 func InstallOhMyPiShim(baseDir string, check bool) (HookInstallReport, error) {
-	report := HookInstallReport{Check: check, Scope: "global"}
 	if strings.TrimSpace(baseDir) == "" {
-		return report, fmt.Errorf("base dir required")
+		return HookInstallReport{Check: check, Scope: "global"}, fmt.Errorf("base dir required")
 	}
-	if !strings.HasPrefix(ompHookShimSource, OmpShimMarker) {
-		return report, fmt.Errorf("embedded shim lost its ownership marker")
-	}
-	target := filepath.Join(baseDir, OmpShimRelPath)
-	existing, readErr := os.ReadFile(target)
-	switch {
-	case readErr == nil && !strings.Contains(string(existing), OmpShimMarker):
-		return report, fmt.Errorf("%s exists and is not compound-owned; refusing to clobber it", target)
-	case readErr != nil && !os.IsNotExist(readErr):
-		return report, fmt.Errorf("read %s: %w", target, readErr)
-	}
-	changed := string(existing) != ompHookShimSource
-	bindings := []HookInstallBinding{
-		{Event: "SessionStart", Matcher: "*", Command: "omp hook shim: session_start → compound hook session-start", Blocking: false},
-		{Event: "UserPromptSubmit", Matcher: "*", Command: "omp hook shim: before_agent_start → compound hook user-prompt-submit", Blocking: false},
-		{Event: "PreToolUse", Matcher: "*", Command: "omp hook shim: tool_call → compound hook pre-tool-use", Blocking: true},
-		{Event: "PostToolUse", Matcher: "*", Command: "omp hook shim: tool_result → compound hook post-tool-use", Blocking: false},
-		{Event: "SessionEnd", Matcher: "*", Command: "omp hook shim: session_shutdown → compound hook session-end", Blocking: false},
-	}
-	report.Entries = append(report.Entries, HookInstallEntry{
-		Harness:    "oh-my-pi",
-		ConfigPath: target,
-		Action:     shimAction(changed, check, readErr == nil),
-		Bindings:   bindings,
-	})
-	if check || !changed {
-		return report, nil
-	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return report, fmt.Errorf("create shim dir: %w", err)
-	}
-	if err := os.WriteFile(target, []byte(ompHookShimSource), 0o644); err != nil {
-		return report, fmt.Errorf("write shim: %w", err)
-	}
-	return report, nil
+	return ompShimFile().install(filepath.Join(baseDir, OmpShimRelPath), check)
 }
 
 func shimAction(changed, check, existed bool) string {

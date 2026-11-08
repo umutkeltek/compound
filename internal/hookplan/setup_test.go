@@ -37,8 +37,19 @@ func TestDetectSetupHarnessesFindsFoldersAndCommands(t *testing.T) {
 	if h := byName["codex"]; !h.Present || h.Evidence != "/synthetic/bin/codex" {
 		t.Fatalf("codex from its command: %+v", h)
 	}
-	if h := byName["opencode"]; h.Present || h.Wireable {
-		t.Fatalf("opencode absent and never wired by init: %+v", h)
+	if h := byName["opencode"]; h.Present || !h.Wireable {
+		t.Fatalf("opencode absent here, and wireable by init when present: %+v", h)
+	}
+	if h := byName["oh-my-pi"]; h.Present || !h.Wireable {
+		t.Fatalf("oh-my-pi absent here, and wireable by init when present: %+v", h)
+	}
+	if err := os.MkdirAll(filepath.Join(base, ".omp"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range DetectSetupHarnesses(base, noCommands) {
+		if h.Name == "oh-my-pi" && (!h.Present || h.Evidence != filepath.Join(base, ".omp")) {
+			t.Fatalf("oh-my-pi from its folder: %+v", h)
+		}
 	}
 	for _, h := range got {
 		if strings.Contains(h.Name, "zai") || strings.Contains(h.Name, "minimax") || strings.Contains(h.Name, "qwen") {

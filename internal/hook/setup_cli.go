@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -28,13 +29,13 @@ import (
 // has always used.
 
 const (
-	HookInstallUsage = "usage: compound hook install [--lane-file lane.yaml | --harness claude-code|claude-zai|claude-minimax|claude-qwen|codex|oh-my-pi|all] [--roster minimal|full] [--scope global|project] [--config-dir DIR] [--base DIR] [--binary PATH] [--check] [--json]\n" +
+	HookInstallUsage = "usage: compound hook install [--lane-file lane.yaml | --harness claude-code|claude-zai|claude-minimax|claude-qwen|codex|opencode|oh-my-pi|all] [--roster minimal|full] [--scope global|project] [--config-dir DIR] [--base DIR] [--binary PATH] [--check] [--json]\n" +
 		"  --scope project wires the current project (its .claude local settings file) unless --base names another folder."
-	HookUninstallUsage = "usage: compound hook uninstall [--harness claude-code|claude-zai|claude-minimax|claude-qwen|codex|all] [--scope global|project] [--config-dir DIR] [--base DIR] [--check] [--json]\n" +
-		"  removes only Compound's hook entries; every other setting and hook stays as it was."
-	InitUsage = "usage: compound init [--harness claude-code|codex] [--check] [--base DIR] [--binary PATH]\n" +
+	HookUninstallUsage = "usage: compound hook uninstall [--harness claude-code|claude-zai|claude-minimax|claude-qwen|codex|opencode|oh-my-pi|all] [--scope global|project] [--config-dir DIR] [--base DIR] [--check] [--json]\n" +
+		"  removes only Compound's hook entries (or, for OpenCode and oh-my-pi, Compound's own hook file); every other setting and hook stays as it was."
+	InitUsage = "usage: compound init [--harness claude-code|codex|opencode|oh-my-pi] [--check] [--base DIR] [--binary PATH]\n" +
 		"  sets Compound up for this user: creates the Compound home if it is missing, wires the hooks of every\n" +
-		"  supported harness found here (Claude Code, Codex), and checks that `compound` is on PATH.\n" +
+		"  supported harness found here (Claude Code, Codex, OpenCode, oh-my-pi), and checks that `compound` is on PATH.\n" +
 		"  --check only reports; it changes nothing and exits 1 when something still needs `compound init`."
 	ReceiptUsage = "usage: compound receipt last [--json] [--home PATH]\n" +
 		"  shows the newest receipt: what the last session (or closed work item) did, and where its transcript is."
@@ -120,6 +121,9 @@ func installHooks(o *setupOptions, req hookplan.InstallRequest) (hookplan.HookIn
 		if len(req.Harnesses) == 1 && req.Harnesses[0] == "oh-my-pi" {
 			return hookplan.InstallOhMyPiShimWithConfigDir(o.base, req.ConfigDir, o.check)
 		}
+		if len(req.Harnesses) == 1 && req.Harnesses[0] == "opencode" {
+			return hookplan.InstallOpenCodePlugin(o.base, o.check)
+		}
 		return hookplan.InstallHooksWithRoster(o.base, o.binary, o.scope, req.Harnesses, req.ConfigDir, req.AllowedEvents, o.check, publish)
 	})
 }
@@ -175,10 +179,10 @@ func RunUninstallCommand(args []string, stdout, stderr io.Writer) int {
 	var harnesses []string
 	switch h := strings.TrimSpace(*harnessFlag); h {
 	case "", "all":
-	case "claude-code", "claude-zai", "claude-minimax", "claude-qwen", "codex":
+	case "claude-code", "claude-zai", "claude-minimax", "claude-qwen", "codex", "opencode", "oh-my-pi":
 		harnesses = []string{h}
 	default:
-		fmt.Fprintf(stderr, "error: --harness must be claude-code, claude-zai, claude-minimax, claude-qwen, codex, or all\n%s\n", HookUninstallUsage)
+		fmt.Fprintf(stderr, "error: --harness must be claude-code, claude-zai, claude-minimax, claude-qwen, codex, opencode, oh-my-pi, or all\n%s\n", HookUninstallUsage)
 		return 2
 	}
 	report, err := withHookAuthority(o, func(publish func(hookplan.HookInstallReport) error) (hookplan.HookInstallReport, error) {
@@ -215,8 +219,8 @@ func RunInitCommand(args []string, stdout, stderr io.Writer) int {
 	if code, stop := parseSetupArgs(flags, args, stdout, stderr, InitUsage); stop {
 		return code
 	}
-	if *only != "" && *only != "claude-code" && *only != "codex" {
-		fmt.Fprintf(stderr, "error: --harness must be claude-code or codex\n%s\n", InitUsage)
+	if *only != "" && !slices.Contains(hookplan.SetupHarnessNames(), *only) {
+		fmt.Fprintf(stderr, "error: --harness must be one of %s\n%s\n", strings.Join(hookplan.SetupHarnessNames(), ", "), InitUsage)
 		return 2
 	}
 	if err := o.resolve(); err != nil {
@@ -263,7 +267,9 @@ func RunInitCommand(args []string, stdout, stderr io.Writer) int {
 	}
 	entries := map[string]hookplan.HookInstallEntry{}
 	if len(wire) > 0 {
-		report, err := installHooks(o, hookplan.InstallRequest{Harnesses: wire})
+		report, err := withHookAuthority(o, func(publish func(hookplan.HookInstallReport) error) (hookplan.HookInstallReport, error) {
+			return hookplan.InstallSetupHarnesses(o.base, o.binary, wire, o.check, publish)
+		})
 		if err != nil {
 			fmt.Fprintln(stderr, "error: wire hooks:", err)
 			return 1
@@ -293,18 +299,39 @@ func RunInitCommand(args []string, stdout, stderr io.Writer) int {
 
 	switch {
 	case len(wire) == 0:
-		fmt.Fprintln(stdout, "\nNo supported harness found. Install Claude Code or Codex, open it once, then run `compound init` again.")
+		fmt.Fprintln(stdout, "\nNo supported harness found. Install Claude Code, Codex, OpenCode or oh-my-pi, open it once, then run `compound init` again.")
 	case o.check && needsInit:
 		fmt.Fprintln(stdout, "\nRun `compound init` to finish.")
 	case !o.check:
-		fmt.Fprintf(stdout, "\nNext: start %s in any project. Compound gives it context when the session starts\n", hookplan.SetupHarnessLabel(wire[0]))
-		fmt.Fprintln(stdout, "and writes a receipt when it ends.")
-		fmt.Fprintf(stdout, "Check: compound init --check   Last session: compound receipt last   Undo: compound hook uninstall --harness %s\n", wire[0])
+		next := wire[0] // the harness this run wired, else the first one already wired
+		for _, name := range wire {
+			if a := entries[name].Action; a == "installed" || a == "updated" {
+				next = name
+				break
+			}
+		}
+		fmt.Fprintf(stdout, "\nNext: start %s in any project. Compound gives it context when the session starts\n", hookplan.SetupHarnessLabel(next))
+		if bindsEvent(entries[next], "SessionEnd") {
+			fmt.Fprintln(stdout, "and writes a receipt when it ends.")
+		} else {
+			fmt.Fprintln(stdout, "and records its tool calls; it has no session-end event, so it writes no session receipt.")
+		}
+		fmt.Fprintf(stdout, "Check: compound init --check   Last session: compound receipt last   Undo: compound hook uninstall --harness %s\n", next)
 	}
 	if needsInit {
 		return 1
 	}
 	return 0
+}
+
+// bindsEvent reports whether an install entry wired the named native event.
+func bindsEvent(entry hookplan.HookInstallEntry, event string) bool {
+	for _, b := range entry.Bindings {
+		if b.Event == event {
+			return true
+		}
+	}
+	return false
 }
 
 // pathAdvice tells the user how to put dir on PATH for their shell. It never edits a profile.

@@ -1,8 +1,9 @@
 # Harness Wiring — connect Compound to your agent
 
 > Compound is **agent-agnostic**: it works with Claude Code, Codex, OpenCode,
-> or any harness that can call a CLI at lifecycle boundaries. This guide shows
-> how to wire the hooks so your agent sessions compound instead of evaporating.
+> oh-my-pi, or any harness that can call a CLI at lifecycle boundaries. `compound init`
+> wires every one of the four it finds on your machine; this guide shows what each
+> wiring does, how to do it by name, and what each harness can and cannot promise.
 
 ## How it works
 
@@ -262,28 +263,60 @@ guarded. Require exact behavioral readiness before governed mutation.
 
 ## OpenCode
 
-OpenCode is a context-injection and outcome-observation lane. Its current
-before-tool callback cannot deny a tool call, so it is **not** a mutation-control
-harness. Do not wire `pre-tool-use --enforce` for OpenCode and do not use it for
-mutation-gated execution. Use an explicitly enforced isolated Claude-family
-executor profile when Compound must block an action before it runs.
-
-Install the repo-owned adapter from the Compound checkout:
+`compound init` wires OpenCode when it finds `~/.config/opencode` or the `opencode`
+command. It writes one plugin file, `~/.config/opencode/plugins/compound.ts`, which
+OpenCode loads on its own from that folder; no OpenCode config file changes. The
+plugin asks Compound for the session briefing when a session is created, adds it to
+the first message, refreshes context on each prompt, and reports each tool call after
+it ran. By name:
 
 ```sh
-bun adapters/opencode/install.ts
-compound harness posture-plan --harness opencode
+compound hook install --harness opencode            # same file, one harness only
+compound hook install --harness opencode --check    # reports: ok, drift or absent
+compound hook uninstall --harness opencode          # removes Compound's file, nothing else
+compound harness posture-plan --harness opencode    # the compiled posture
 ```
 
-The installer registers only the native lifecycle it can honestly provide:
+The file starts with a `// compound-owned:` line. A file at that path without the
+line is yours; Compound refuses to overwrite or remove it. The copy that the earlier
+`bun adapters/opencode/install.ts` installer wrote is recognized and refreshed in place.
+That installer still works and is the development path for the plugin itself.
+
+OpenCode is a context-injection and outcome-observation lane. Its before-tool callback
+cannot deny a tool call, so it is **not** a mutation-control harness, and it has no
+session-end callback, so OpenCode sessions write no session receipt. Do not wire
+`pre-tool-use --enforce` for OpenCode and do not use it for mutation-gated execution.
+Use an explicitly enforced isolated Claude-family executor profile when Compound must
+block an action before it runs. The plugin registers only the native lifecycle it can
+honestly provide:
 
 ```text
-chat.message        → context injection
-tool.execute.after  → outcome observation
+session.created     → session-start (the briefing, held for the first message)
+chat.message        → user-prompt-submit (context injection)
+tool.execute.after  → post-tool-use (outcome observation)
 guard_mutation      → unsupported
+record_receipt      → unsupported
 ```
 
-It validates that posture before changing `opencode.jsonc` or the plugin.
+## oh-my-pi
+
+`compound init` wires oh-my-pi when it finds `~/.omp` or the `omp` command. It writes
+one hook module, `~/.omp/agent/hooks/pre/compound.ts`, which oh-my-pi loads on its own.
+The module maps `session_start`, `before_agent_start`, `tool_call`, `tool_result` and
+`session_shutdown` to Compound's session-start, user-prompt-submit, pre-tool-use,
+post-tool-use and session-end hooks, so an oh-my-pi session gets the briefing, has its
+tool calls recorded, and writes a receipt when it ends. The tool boundary is the one
+place this module fails closed: a policy deny blocks the tool with Compound's reason.
+By name, and for an isolated profile:
+
+```sh
+compound hook install --harness oh-my-pi
+compound hook install --harness oh-my-pi --config-dir "${OMP_PROFILE_DIR}"
+compound hook uninstall --harness oh-my-pi
+```
+
+The same ownership line protects this file: a module Compound did not write is never
+overwritten or removed.
 
 ## Other CLI harnesses
 

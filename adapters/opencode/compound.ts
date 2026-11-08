@@ -1,3 +1,4 @@
+// compound-owned: opencode-plugin@1
 import type { Plugin } from "@opencode-ai/plugin"
 import type { Part } from "@opencode-ai/sdk"
 

@@ -66,6 +66,7 @@ type doctorPermissionPosture struct {
 type doctorReport struct {
 	Home                   string                       `json:"home"`
 	Hooks                  []doctorHook                 `json:"hooks"`
+	HookFiles              []doctorHook                 `json:"hook_files,omitempty"` // whole-file harnesses (OpenCode, oh-my-pi) whose config folder exists
 	HookHint               string                       `json:"hook_hint,omitempty"`
 	LeaseHeld              bool                         `json:"lease_held"`
 	LeaseHolder            string                       `json:"lease_holder,omitempty"`
@@ -289,7 +290,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 			binary = exe
 		}
 	}
-	rep.HookHint = "no supported harness found; install Claude Code or Codex, then run `compound init`"
+	rep.HookHint = "no supported harness found; install Claude Code, Codex, OpenCode or oh-my-pi, then run `compound init`"
 	if base != "" && binary != "" {
 		if hookRep, herr := hookplan.InstallHooks(base, binary, "", nil, true); herr != nil {
 			rep.HookHint = "could not read harness configs: " + herr.Error()
@@ -300,13 +301,26 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 				}
 			}
 		}
+		// Whole-file harnesses by their config folder only (nil lookPath), the same rule as above,
+		// so the doctor never reports another machine's PATH.
+		if rows, rerr := hookplan.OwnedFileHarnessRows(base, nil); rerr != nil {
+			rep.HookHint = "could not read harness hook files: " + rerr.Error()
+		} else {
+			for _, e := range rows {
+				rep.HookFiles = append(rep.HookFiles, doctorHook{Harness: e.Harness, Status: e.Action, ConfigPath: e.ConfigPath})
+			}
+		}
 	}
-	if len(rep.Hooks) > 0 {
+	if len(rep.Hooks)+len(rep.HookFiles) > 0 {
 		rep.HookHint = ""
 	}
-	for _, h := range rep.Hooks {
+	for _, h := range append(append([]doctorHook(nil), rep.Hooks...), rep.HookFiles...) {
 		if h.Status == "absent" || h.Status == "drift" {
 			rep.HookHint = "run `compound init` to wire them"
+			break
+		}
+		if h.Status == "foreign" {
+			rep.HookHint = "a file Compound did not write sits at a hook path; move it aside, then run `compound init`"
 			break
 		}
 	}
@@ -589,9 +603,12 @@ func (r doctorReport) problemStrings() []string {
 // `warnings:` heading per the shared contract.
 func (r doctorReport) warningStrings() []string {
 	var w []string
-	for _, h := range r.Hooks {
-		if h.Status == "drift" || h.Status == "absent" {
+	for _, h := range append(append([]doctorHook(nil), r.Hooks...), r.HookFiles...) {
+		switch h.Status {
+		case "drift", "absent":
 			w = append(w, fmt.Sprintf("harness %s %s — wire it with `compound init`", h.Harness, h.Status))
+		case "foreign":
+			w = append(w, fmt.Sprintf("harness %s has a hook file Compound did not write at %s — move it aside, then run `compound init`", h.Harness, h.ConfigPath))
 		}
 	}
 	if r.BinaryStaleness.Relation == doctor.RelationUnknown {
@@ -615,7 +632,7 @@ func printDoctor(stdout io.Writer, rep doctorReport) {
 	fmt.Fprintf(stdout, "home: %s\n", rep.Home)
 
 	fmt.Fprintln(stdout, "\n## hooks (PreToolUse guard)")
-	for _, h := range rep.Hooks {
+	for _, h := range append(append([]doctorHook(nil), rep.Hooks...), rep.HookFiles...) {
 		fmt.Fprintf(stdout, "- %-12s %-9s %s\n", h.Harness, h.Status, h.ConfigPath)
 	}
 	if rep.HookHint != "" {

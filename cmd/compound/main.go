@@ -323,7 +323,7 @@ func usage() {
 
 usage:
   compound version
-  compound init [--harness claude-code|codex] [--check]          set up this user: create the home, wire every supported harness found, check PATH
+  compound init [--harness claude-code|codex|opencode|oh-my-pi] [--check]  set up this user: create the home, wire every supported harness found, check PATH
   compound receipt last [--json]                                 the newest receipt: what the last session or closed work item did
 compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact|private-custody> [--home P] [--local] COMPOUND_HOME runtime body + archive/restore; private-custody repair is explicit permission repair; archive-history requires --kind work|lease|review|comparison|create-plan|memory-candidate to archive (or --dry-run to preview) and accepts --path <rel> and --max-files <N>
   compound envelope <validate <file>...|kinds>                  typed runtime envelopes
