@@ -365,6 +365,9 @@ func acquireWithProofIdentityPrepared(
 		}
 		outcome.Lease = newLease(holder, ttlSecs, now)
 		outcome.Lease.ProofCoordination = coordination
+		if exists && current.Holder == holder && current.live(now) {
+			carryTerminationRequest(&outcome.Lease, current)
+		}
 		if prepare != nil {
 			if err := prepare(outcome); err != nil {
 				return err
@@ -414,6 +417,7 @@ func refreshBound(home, holder string, ttl time.Duration, now time.Time, binding
 		}
 		refreshed = newLease(holder, ttlSecs, now)
 		refreshed.ProofCoordination = cloneProofCoordination(current.ProofCoordination)
+		carryTerminationRequest(&refreshed, current)
 		return writeLeaseAtomic(statePath, refreshed)
 	})
 	if err != nil {
@@ -945,6 +949,19 @@ func statusBound(home string, now time.Time, binding *leaseBinding) (StatusResul
 		return StatusResult{}, err
 	}
 	return result, nil
+}
+
+// carryTerminationRequest keeps a pending termination request when the same
+// holder renews its lease. The request is addressed to that holder's running
+// execution: its proof supervisor polls for it and cancels. A refresh that
+// rebuilt the record without it erased the request within one heartbeat, before
+// the poll could read it, so the holder never stopped. Only a live renewal
+// carries it: a different holder taking the lease (Steal, or Acquire after
+// expiry) and a re-acquire of an expired lease start a clean record.
+func carryTerminationRequest(dst *Lease, current *Lease) {
+	dst.TerminationRequestedBy = current.TerminationRequestedBy
+	dst.TerminationRequestReason = current.TerminationRequestReason
+	dst.TerminationRequestedAt = current.TerminationRequestedAt
 }
 
 // newLease builds a CLEAN lease record (no steal fields) for holder, timed from now. UTC
