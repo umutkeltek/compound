@@ -192,6 +192,8 @@ func TestOriginRenameMigrationRefusesEverythingButARename(t *testing.T) {
 		f := newOriginRenameFixture(t, now)
 		other := filepath.Join(t.TempDir(), "other")
 		landingGit(t, filepath.Dir(other), "clone", "--no-local", f.repo, other)
+		landingGit(t, other, "config", "user.email", "test@example.invalid")
+		landingGit(t, other, "config", "user.name", "Compound Test")
 		emptyTree := landingGitOutput(t, other, "hash-object", "-w", "-t", "tree", "/dev/null")
 		otherRoot := landingGitOutput(t, other, "commit-tree", emptyTree, "-m", "unrelated lineage")
 		landingGit(t, other, "replace", "--graft", f.base, otherRoot)
