@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -41,6 +42,18 @@ var terminalStatuses = map[string]bool{
 // packages must use this instead of re-listing the words.
 func TerminalStatus(status string) bool {
 	return terminalStatuses[strings.TrimSpace(status)]
+}
+
+// TerminalStatuses returns the terminal status words, sorted. It serves a copy
+// that cannot import this package (internal/home imports nothing above it), so
+// that copy's test can fail when the two sets differ.
+func TerminalStatuses() []string {
+	out := make([]string, 0, len(terminalStatuses))
+	for status := range terminalStatuses {
+		out = append(out, status)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // OwnerResult is an owner-written `<stem>.result.json` sibling of a core

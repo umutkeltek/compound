@@ -1767,7 +1767,7 @@ func candidateStateActionable(state string) bool {
 	switch strings.TrimSpace(state) {
 	case "", "unspecified", "proposed", "pending", "needs_review", "review_required", "blocked":
 		return true
-	case "promote", "promoted", "reject", "rejected", "park", "parked", "operationalize", "retire", "done", "recorded", "resolved", "accepted", "applied", "ok", "no_promote":
+	case "promote", "promoted", "reject", "rejected", "park", "parked", "operationalize", "retire", "done", "recorded", "resolved", "accepted", "applied", "ok", "no_promote", "merge_existing":
 		return false
 	default:
 		return true
@@ -1775,7 +1775,7 @@ func candidateStateActionable(state string) bool {
 }
 
 func reviewQueueAgedItem(item reviewartifact.QueueItem, now time.Time) *orientAgedItem {
-	if item.Status == "ok" || item.Status == "applied" || item.Status == "resolved" || item.Status == "accepted" || item.Status == "recorded" {
+	if reviewartifact.TerminalStatus(item.Status) {
 		return nil
 	}
 	var at time.Time
