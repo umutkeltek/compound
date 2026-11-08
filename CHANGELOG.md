@@ -6,6 +6,42 @@ for tagged releases, subject to the public-alpha compatibility policy in
 
 ## [Unreleased]
 
+### Added
+
+- `compound init` wires OpenCode and oh-my-pi as well as Claude Code and Codex. OpenCode gets one
+  Compound-owned plugin file at `~/.config/opencode/plugins/compound.ts`, which OpenCode loads on
+  its own; oh-my-pi gets its hook file at `~/.omp/agent/hooks/pre/compound.ts`. Both are refreshed
+  in place when Compound owns them and never overwritten when someone else wrote them.
+  `compound hook install|uninstall --harness opencode|oh-my-pi` work by name, and `init --check`
+  reports all four harnesses. The `init` footer names the harness it just wired and says when a
+  harness writes no session receipt (OpenCode has no session-end callback).
+- `compound doctor` lists OpenCode and oh-my-pi in its hooks section when their config folder
+  exists, and warns when an installed harness is not wired.
+
+### Documentation
+
+- `docs/getting-started.md` is now a setup guide, not release engineering. It covers
+  prerequisites, install, first run, wiring all four harnesses, a first session, the step-by-step
+  lifecycle demonstration and daily use. The release drill, installer journal internals, source
+  install locks and pre-tag gates were cut; [`docs/release.md`](docs/release.md) covers how
+  releases are built.
+- The prebuilt and source install blocks now run in their own `sh`, so a failed check no longer
+  closes your terminal. The source block also works from zsh: zsh had read `$TAG:r` in
+  `refs/tags/$TAG:refs/tags/$TAG` as a modifier and fetched a tag that does not exist. The prebuilt
+  block downloads only the files the installer reads.
+- The prerequisites say where to get Go 1.27.1 or newer (go.dev/dl), since the Go that Debian 13
+  packages (1.24) is older.
+- The lifecycle demonstration saves each ID in a shell variable (`CTX`, `WORK`, `TRANSITION`) with
+  a one-line `python3` reader. It names the field to copy (`.id`), offers a throwaway home, and marks
+  every placeholder.
+- The README, `SUPPORT.md`, `docs/overview.md` and the getting-started guide now say that
+  `compound init` wires Claude Code, Codex, OpenCode and oh-my-pi. Each page names the file `init`
+  writes for each harness, notes that OpenCode writes no session receipt, and gives the message
+  `init` prints when it finds no harness. The stale line "OpenCode is observed only" is gone.
+- `SECURITY.md`, `SUPPORT.md` and `CONTRIBUTING.md` are shorter and use plain words. CI and release
+  details moved behind a pointer to `docs/release.md`. `docs/overview.md` no longer says prebuilt
+  binaries are missing.
+
 ## [0.1.1] - 2026-11-07
 
 Setup in one command, and the first release with prebuilt, signed binaries for

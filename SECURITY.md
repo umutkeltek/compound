@@ -1,73 +1,64 @@
 # Security policy
 
-Compound's public alpha is a local, file-backed tool for one trusted operating
-system user. The supported trust boundary is defined in
-[`docs/security/supported-scope.md`](docs/security/supported-scope.md). Shared
-homes, remote or proxied console access, server deployment, multi-tenancy, and
-Postgres-backed durable state are outside that boundary.
+Compound's public alpha is a local, file-backed tool for one trusted operating-system user. The
+supported trust boundary is in
+[`docs/security/supported-scope.md`](docs/security/supported-scope.md). Shared homes, remote or
+proxied dashboard access, server deployment, multi-tenant use and Postgres-backed state are outside
+that boundary.
 
-## Private reporting
+## Report a vulnerability privately
 
-Report a vulnerability privately through this repository's
-**Security → Advisories → Report a vulnerability** surface. Private
-vulnerability reporting is enabled on the repository. A test report from a
-separate reporter account has not been recorded yet.
+Use this repository's **Security → Advisories → Report a vulnerability** page. Private
+vulnerability reporting is enabled. It has not yet been tested from a separate reporter account.
 
-A missing report action or a 404 is not a private disclosure channel. In that
-case, do not put exploit details, credentials, private home contents, or
-sensitive logs in a public issue. Open only a minimal public issue asking the
-maintainer to establish a private channel, with no vulnerability detail.
+If that button is missing or the page returns 404, you do not have a private channel. Do not put
+exploit details, credentials, private home contents or sensitive logs in a public issue. Open a
+short public issue that asks the maintainer for a private channel, with no vulnerability detail.
 
-Please include:
+Include:
 
-- the affected tagged version and `compound version --json` output;
-- the supported or unsupported deployment shape in which it occurred;
-- a minimal reproduction using synthetic data;
-- expected and observed behavior, impact, and any known workaround;
-- whether the issue is already being exploited or publicly discussed.
+- the affected tagged version and the output of `compound version --json`;
+- whether the setup is inside or outside the supported scope;
+- a minimal reproduction with made-up data;
+- expected and observed behavior, impact, and any workaround you know;
+- whether the problem is already exploited or public.
 
-The maintainer will acknowledge the
-report, reproduce it, agree on disclosure timing with the reporter when
-practical, and publish remediation and upgrade instructions with the fix.
-There is no paid bug-bounty program or response-time SLA during the public
-alpha.
+The maintainer will acknowledge the report and reproduce it. When practical, the maintainer agrees
+on disclosure timing with you, then publishes the fix with upgrade instructions. There is no paid
+bug bounty and no response-time promise during the public alpha.
 
 ## Supported versions
 
-Security fixes are made for the latest tagged public-alpha release only;
-today that is `v0.1.1`. The `main` branch and historical prerelease artifacts
-are development surfaces, not supported distributions. From `v0.1.1` on, each
-release carries prebuilt artifacts; install only the immutable tag artifacts
-listed in the release's verified `RELEASE` manifest, and verify the signed
-`SHA256SUMS` before execution. `v0.1.0` has no prebuilt artifacts; build it
-from source at the tag.
+Security fixes go to the latest tagged public-alpha release only; today that is `v0.1.1`. The
+`main` branch and older prerelease artifacts are development surfaces, not supported
+distributions. From `v0.1.1` on, each release carries prebuilt artifacts. Install only the files
+listed in the release's verified `RELEASE` manifest, and verify the signed `SHA256SUMS` before you
+run anything. `v0.1.0` has no prebuilt artifacts; build it from source at the tag.
 
-## Security-relevant data
+## Treat your Compound home as sensitive
 
-Treat `COMPOUND_HOME` as sensitive. It can contain task context, tool output,
-receipts, memory evidence, repository paths, and operational history. Keep it
-on a local disk owned by the intended user, do not place it in a shared or
-network directory, and do not attach it wholesale to an issue. Use synthetic
-fixtures or the smallest redacted excerpt needed to reproduce a report.
+`COMPOUND_HOME` (by default `~/.compound`) can hold task context, tool output, receipts, memory
+evidence, repository paths and operational history. Keep it on a local disk owned by you. Do not
+put it in a shared or network folder, and do not attach it to an issue. Use made-up data or the
+smallest redacted excerpt that reproduces the problem.
 
 ## Release floor
 
-A release candidate is not supported until its repository proof battery,
-clean-room install, backup/verify/restore drill, and supported-scope live flow
-have passed for the exact tagged commit. The recovery procedure is documented
-in [`docs/operations/recovery.md`](docs/operations/recovery.md).
+A release candidate is not supported until its repository proof battery, a clean install, a
+backup, verify and restore drill, and the supported-scope flow have passed on the exact tagged
+commit. How a release is built and drilled is in the [release procedure](docs/release.md). The
+recovery steps are in [`docs/operations/recovery.md`](docs/operations/recovery.md).
 
 ## Release signing
 
-The dedicated release SSH key fingerprint is
-`SHA256:iAb0Eaq9vv9CrfNRy/YbitZVbaSpwqE0wY8uf5jftRE`.
-The trust anchor is [`release/allowed_signers`](release/allowed_signers); rotation
-requires replacing it in a reviewed commit and updating the fingerprint and
-publisher together. The private key remains on the maintainer's machine.
+The release SSH key fingerprint is `SHA256:iAb0Eaq9vv9CrfNRy/YbitZVbaSpwqE0wY8uf5jftRE`.
 
-Before executing release bytes, compare the tag-bound key fingerprint above,
-verify `SHA256SUMS.sig` with `ssh-keygen -Y verify` using identity and namespace
-`compound-release`, then check the signed `SHA256SUMS` against the downloads.
-This proves signing by the key the repository publishes; it does not independently
-establish who controls that key beyond the repository. See
-[Getting Started](docs/getting-started.md) for exact commands.
+The trust anchor is [`release/allowed_signers`](release/allowed_signers). Rotating the key means
+replacing that file in a reviewed commit and updating the fingerprint and the publisher together.
+The private key stays on the maintainer's machine.
+
+Before you run release files, check three things. The key in the tag's `allowed_signers` must have
+the fingerprint above. `SHA256SUMS.sig` must verify with `ssh-keygen` under identity and namespace
+`compound-release`. The downloads must match the signed `SHA256SUMS`. This proves the files were
+signed by the key the repository publishes. It does not prove who controls that key.
+[Getting started](docs/getting-started.md#option-a-prebuilt-binary) has the exact commands.

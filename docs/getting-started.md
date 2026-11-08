@@ -1,333 +1,203 @@
-# Getting Started
+# Getting started
 
-Start with one useful outcome in a project you already know. Install Compound,
-connect one supported harness, then ask that harness to pursue the goal within
-your boundaries. Keep advanced memory setup and unattended operation for later.
+This guide installs Compound and wires it into your coding agent. Then it walks one job through
+by hand, so you can see each record Compound keeps.
 
-**This is a developer preview, not yet a no-terminal installer.** The steps below
-are explicit so an agent or technical helper can assist without guessing. There
-is no accepted setup-time promise or evidence yet from a nontechnical-user trial.
+Compound is a developer preview. Setup needs a terminal. Every step below is a command you can
+read before you run it.
 
-Your first checkpoint is simple: the installed version is identifiable, home
-health is known, your harness receives context, and you can inspect what ran.
-Durable history is not the same as automatic memory promotion or measured benefit.
-
-| You want to… | Start here |
+| You want to | Go to |
 |---|---|
-| Install a published release | Option A below; no Go required (binaries from 0.1.1 on) |
-| Build an authenticated release from source | Option B below |
-| Try unreleased source | Reviewed contributor checkout below |
-| Connect your existing agent after installation | [First useful session](#first-useful-session) |
-| See progress and health | [Console setup](console.md); requires a source checkout |
-| Learn the internal lifecycle | [Explicit demonstration](#2-orient-on-your-repo) |
+| Install a release without Go | [Option A](#option-a-prebuilt-binary) |
+| Build a release from source | [Option B](#option-b-build-from-source) |
+| Wire Claude Code, Codex, OpenCode or oh-my-pi | [3. Wire your harness](#3-wire-your-harness) |
+| See what Compound records, one step at a time | [5. Walk one job through by hand](#5-walk-one-job-through-by-hand) |
 
 ## Prerequisites
 
-- **Git** (Compound uses git for delivery proof).
-- **Go 1.27.1+** (the version in `go.mod`) — only required if you build from source (the prebuilt binary
-  path needs no Go).
-- For a prebuilt release: `curl`, `gh`, `sha256sum` or `shasum`, `gzip`, and
-  `tar`. The installer also requires FD-mode `lockf -s -t 0 9` on macOS 15 or
-  newer, or BusyBox-compatible `flock -n 9` on Linux. Authenticate `gh` before
-  using the provenance check below. Compound itself needs no cloud account,
-  API key, or external service at runtime.
+- macOS or Linux, and Git.
+- **Option A (prebuilt):** `curl`, `ssh-keygen`, `sha256sum` or `shasum`, `gzip` and `tar`. The
+  installer also takes a lock with `lockf -s -t 0 9` on macOS 15 or newer, or with
+  BusyBox-compatible `flock -n 9` on Linux. macOS ships all of these. On Linux, install
+  `openssh-client` if `ssh-keygen` is missing.
+- **Option B (source):** Go 1.27.1 or newer, Python 3 and `make`.
+- **Optional:** Bun and Node 20 or newer for the [dashboard](console.md). A local Ollama server
+  for [semantic memory](memory-quickstart.md).
 
-Compound's public alpha is a strictly scoped, file-backed, single-user
-system: file backend only, one trusted OS user on local disk, and explicit
-home authority. The full support and security boundary — including the
-current hardening gaps the docs name rather than paper over:
-[`security/supported-scope.md`](./security/supported-scope.md).
+Compound needs no account, API key or cloud service. Your coding agent keeps its own login.
 
-Actor and operator labels record provenance; they do not independently
-authenticate a person. Autonomous grant creation is outside this supported
-journey. Interactive profiles remain observation-only unless their exact native
-launch profile has accepted behavioral enforcement proof.
+### Get a current Go
 
-Optional (for the console): **Bun** and **Node 20+**.
-Optional (for semantic memory): a local **Ollama** server — see
-[`memory-quickstart.md`](./memory-quickstart.md).
+Run `go version`. If it prints nothing, or anything older than 1.27.1 (Debian 13 packages Go 1.24),
+install the official build from [go.dev/dl](https://go.dev/dl/). On Linux x86-64:
+
+```sh
+GO_VERSION=1.27.3   # or any newer version listed on go.dev/dl
+curl --fail --location --remote-name "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+sudo rm -rf /usr/local/go
+sudo tar -C /usr/local -xzf "go${GO_VERSION}.linux-amd64.tar.gz"
+export PATH="/usr/local/go/bin:$PATH"
+go version
+```
+
+On an ARM machine, use `linux-arm64` in both file names. Add the `export` line to your shell
+profile so new terminals find Go. On macOS, use the `.pkg` installer from the same page, or
+`brew install go`.
+
+### Supported scope
+
+The public alpha supports one setup: file backend only, one trusted OS user, one local disk. The
+full boundary, with its known gaps, is in [Supported scope](security/supported-scope.md).
 
 ## 1. Install
 
-Release acceptance uses the shipped nine-file bundle, absolute installed binary
-paths and explicit disposable homes. The owned Woodpecker release pipeline runs
-the native Linux/amd64 drill; the Mac publisher runs it natively on Darwin/arm64
-before creating a draft. It covers initialized first use, goal continuity, owned-process
-interruption and fresh resume, rejected result acceptance, installer rollback,
-and a restored-home product/decision consumer with the original home unavailable.
-The report is candidate-bound evidence, not authorization to publish:
+Pick one option. Both install `compound` into `~/.local/bin` and create your Compound home,
+`~/.compound`: the folder where Compound keeps everything it records. To use other folders, set
+`GOBIN` or `COMPOUND_HOME` before you install.
 
-```sh
-node scripts/installed-release-acceptance.mjs \
-  /absolute/candidate-bundle FULL_CANDIDATE_COMMIT \
-  /absolute/absent-evidence-root /absolute/prior-bundle FULL_PRIOR_COMMIT
-```
-
-The runner requires Node 20+ and a source checkout for synthetic fixtures; it
-executes only installed Compound binaries. It never connects providers or real
-accounts, starts schedulers, mints authority, tags, or publishes a release.
-
-Saved continuity uses a synthetic local Codex-compatible worker, not model
-inference. The drill verifies the selected executable, model and provider tuple,
-interruption, and exact resume. A separate unsupported-adapter control must refuse
-before launch without changing the work envelope or minting an attempt.
-
-The historical `scripts/release-smoke.sh` entrypoint is retired and exits without
-effects. It is not an installer or a substitute for governed `proof-check`.
-
-Pick one:
-
-### Option A — prebuilt binary (no Go required)
+### Option A: prebuilt binary
 
 These are release-consumer instructions, not evidence that a release exists.
-Prebuilt files are attached to releases from 0.1.1 on; 0.1.0 has none. The block
-below installs 0.1.1. Use only a stable version listed on the repository's
-Releases page; for a later one, change `VERSION`.
+Prebuilt files are attached to releases from 0.1.1 on; 0.1.0 has none. The block below installs
+0.1.1. For a later version, change `VERSION` to one listed on the repository's Releases page.
 
-Prebuilt public-alpha releases support exactly `darwin/arm64` on macOS 15 or newer
-and `linux/amd64`. On another platform, build from source.
+Prebuilt files exist for exactly two platforms: `darwin/arm64` on macOS 15 or newer (Apple
+silicon), and `linux/amd64`. On any other machine, use Option B.
 
-Choose an explicit stable release version and download its exact nine-file
-inventory into a fresh directory. Do not pipe an installer from the mutable
-`main` branch into a shell. Set `COMPOUND_RELEASE_REPOSITORY` to the exact
-`owner/repository` identity shown on the public release page; the same value
-binds downloads, the signing key, and the source remote below.
+First, name the repository that publishes the release, as `owner/name`. For the main repository:
 
 ```sh
+export COMPOUND_RELEASE_REPOSITORY=umutkeltek/compound
+```
+
+Then go to an empty folder, such as `~/Downloads`, and paste the whole block, from `sh <<'EOF'`
+to `EOF`. It runs in its own shell, stops at the first check that fails, and installs nothing
+unless every check passes.
+
+```sh
+sh <<'EOF'
 set -eu
-
 VERSION=0.1.1
-REPOSITORY=${COMPOUND_RELEASE_REPOSITORY:?set the public owner/repository identity}
-if ! printf '%s\n' "$VERSION" | awk '
-  $0 ~ /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/ { ok = 1 }
-  END { if (!ok) exit 1 }
-'; then
-  echo "VERSION must be strict stable SemVer" >&2
-  exit 1
+if ! printf '%s\n' "$VERSION" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+  echo "VERSION must be strict stable SemVer" >&2; exit 1
 fi
+REPOSITORY=${COMPOUND_RELEASE_REPOSITORY:?set the public owner/repository identity}
 TAG="v${VERSION}"
-RELEASE_DIR="compound-release-${VERSION}"
 BASE_URL="https://github.com/${REPOSITORY}/releases/download/${TAG}"
-
-mkdir "$RELEASE_DIR"
-ASSETS="
-RELEASE
-SHA256SUMS
-install-release.sh
-compound_${VERSION}_darwin_arm64.tar.gz
-compound_${VERSION}_darwin_arm64.cdx.json
-compound_${VERSION}_darwin_arm64_compound-breadth-engine.cdx.json
-compound_${VERSION}_linux_amd64.tar.gz
-compound_${VERSION}_linux_amd64.cdx.json
-compound_${VERSION}_linux_amd64_compound-breadth-engine.cdx.json
-"
-for ASSET in $ASSETS; do
-  curl --fail --location \
-    --output "$RELEASE_DIR/$ASSET" \
-    "$BASE_URL/$ASSET"
-done
-```
-
-`SHA256SUMS` detects corruption and proves that the manifest, installer, and
-archives are internally consistent with one release set. Because the checksum
-file comes from the same release location as those files, checksums alone do
-**not** authenticate who published them.
-
-Before executing the installer, download the detached SSH signature and the trust
-anchor from the same release tag. Compare its fingerprint with `SECURITY.md`:
-`SHA256:iAb0Eaq9vv9CrfNRy/YbitZVbaSpwqE0wY8uf5jftRE`.
-
-```sh
-curl --fail --location --output "$RELEASE_DIR/SHA256SUMS.sig" "$BASE_URL/SHA256SUMS.sig"
-curl --fail --location --output "$RELEASE_DIR/allowed_signers" \
-  "https://raw.githubusercontent.com/${REPOSITORY}/${TAG}/release/allowed_signers"
-FINGERPRINT=$(awk '{print $3, $4}' "$RELEASE_DIR/allowed_signers" | ssh-keygen -lf - | awk '{print $2}')
-test "$FINGERPRINT" = 'SHA256:iAb0Eaq9vv9CrfNRy/YbitZVbaSpwqE0wY8uf5jftRE'
-ssh-keygen -Y verify -f "$RELEASE_DIR/allowed_signers" -I compound-release \
-  -n compound-release -s "$RELEASE_DIR/SHA256SUMS.sig" < "$RELEASE_DIR/SHA256SUMS"
-(cd "$RELEASE_DIR" && if command -v sha256sum >/dev/null 2>&1; then
-  sha256sum --check SHA256SUMS
-else
-  shasum -a 256 --check SHA256SUMS
-fi)
-```
-
-This proves that the checksum bytes were signed by the key the repository
-publishes, and that the downloaded bytes match those checksums. It does not
-independently establish who controls that key beyond the repository. The
-installer does not enforce this SSH signature check. Neither the signature nor
-checksums make a Git tag or GitHub release immutable.
-
-Select the archive for the current supported platform and run the verified
-installer from its regular file. Defaults install to `~/.local/bin` and
-initialize `~/.compound`; override those locations with `GOBIN` and
-`COMPOUND_HOME`.
-
-```sh
 case "$(uname -s)/$(uname -m)" in
   Darwin/arm64) PLATFORM=darwin_arm64 ;;
   Linux/x86_64|Linux/amd64) PLATFORM=linux_amd64 ;;
-  *) echo "unsupported prebuilt platform" >&2; exit 1 ;;
+  *) echo "No prebuilt binary for this machine. Use Option B." >&2; exit 1 ;;
 esac
+ARCHIVE="compound_${VERSION}_${PLATFORM}.tar.gz"
+mkdir "compound-release-${VERSION}"
+cd "compound-release-${VERSION}"
 
-COMPOUND_VERSION="$VERSION" \
-COMPOUND_RELEASE_TARBALL="$RELEASE_DIR/compound_${VERSION}_${PLATFORM}.tar.gz" \
-  sh "$RELEASE_DIR/install-release.sh"
+# 1. Download the installer, the archive for this machine and the signed checksums.
+for FILE in RELEASE SHA256SUMS SHA256SUMS.sig install-release.sh "$ARCHIVE"; do
+  curl --fail --location --output "$FILE" "$BASE_URL/$FILE"
+done
+curl --fail --location --output allowed_signers \
+  "https://raw.githubusercontent.com/${REPOSITORY}/${TAG}/release/allowed_signers"
+
+# 2. Check the signing key, the signature, and the checksums of the files the install uses.
+FINGERPRINT=$(awk '{print $3, $4}' allowed_signers | ssh-keygen -lf - | awk '{print $2}')
+test "$FINGERPRINT" = 'SHA256:iAb0Eaq9vv9CrfNRy/YbitZVbaSpwqE0wY8uf5jftRE' ||
+  { echo "Signing key does not match SECURITY.md. Stop." >&2; exit 1; }
+ssh-keygen -Y verify -f allowed_signers -I compound-release -n compound-release \
+  -s SHA256SUMS.sig < SHA256SUMS
+awk -v a="$ARCHIVE" '$2 == "RELEASE" || $2 == "install-release.sh" || $2 == a { print; n++ }
+  END { if (n != 3) exit 1 }' SHA256SUMS > SHA256SUMS.used
+if command -v sha256sum >/dev/null 2>&1; then sha256sum --check SHA256SUMS.used
+else shasum -a 256 --check SHA256SUMS.used; fi
+
+# 3. Install into ~/.local/bin and create ~/.compound.
+COMPOUND_VERSION="$VERSION" COMPOUND_RELEASE_TARBALL="$PWD/$ARCHIVE" sh install-release.sh
+EOF
 ```
 
-The installer first verifies its own bytes against the colocated
-`SHA256SUMS`, then validates `RELEASE`, the selected archive's checksum and
-closed member layout, both binary identities, and the `compound` version/full
-commit identity. It publishes both binaries under one install lock, restores
-the previous pair on failure when possible, preserves recovery state if a
-restore fails, and runs `compound home init` plus `home doctor`. If the
-installer process is interrupted after preparing publication, the next
-invocation acquires the persistent kernel lock, validates the rooted private
-owner record, exact journal, retained old/new bytes, and both target hashes,
-then either restores the pre-commit pair or finishes cleanup for an exact pair
-already marked committed. Unexpected or mismatched recovery state is preserved
-and future installs fail closed pending manual inspection; it is never guessed
-away. Exact private `journal.next`, `.publish`, and `.restore` files are
-unpublished scratch, not authority: only a validated prepared generation may
-discard them, sync that cleanup, reparse the owner and main journal, and re-enter
-strict inventory validation before recovery continues.
+`mkdir` stops the block if `compound-release-0.1.1` already exists, so old files never mix with
+new ones. The fingerprint in the block is the one published in [SECURITY.md](../SECURITY.md).
 
-Target publication uses two sequential renames, not an atomic pair switch. A
-crash can therefore leave a durable partial pair visible until the next installer
-invocation acquires the lock and deterministically restores or reconciles the
-journaled generation. Consumers that cannot tolerate that bounded interval must
-stop invoking either binary until recovery completes.
+**What the checks prove.** The checksums catch a damaged or mixed-up download. The signature shows
+that the checksums were signed by the key this repository publishes in `release/allowed_signers`.
+Neither proves who controls that key, and neither makes a Git tag or a GitHub release immutable.
+The installer does not check the signature itself, so run the whole block, not the installer alone.
 
-For an offline or air-gapped installation, verify the SSH signature and checksums
-on a connected machine before transfer, then carry the unchanged nine-file bundle
-plus `SHA256SUMS.sig` and the tag-bound `allowed_signers` verification evidence.
-Keep all names unchanged and all files colocated. The
-offline installer reads these four files directly:
+**What the installer does.** It checks its own bytes, `RELEASE` and the archive against
+`SHA256SUMS` again. Then it replaces both binaries and runs `compound home init` and
+`compound home doctor`. If the install fails, it restores the previous binaries. Target
+publication uses two sequential renames, not an atomic pair switch. After a crash between the two
+renames, the old and new binaries can be mixed until the next installer invocation acquires the
+lock and deterministically restores or reconciles the pair. Do not run `compound` while an install
+is in progress. If the installer finds recovery state it cannot explain, it keeps that state and
+refuses to run until you inspect it.
 
-- `install-release.sh`
-- `SHA256SUMS`
-- `RELEASE`
-- `compound_<version>_<supported-platform>.tar.gz`
+**Offline machine.** Download and check on a connected machine, then copy the folder over
+unchanged. The installer reads only `install-release.sh`, `SHA256SUMS`, `RELEASE` and the archive,
+and all four must sit in one folder. On the offline machine, run the last line of the block from
+inside that folder.
 
-The remaining four SBOM files and the other supported platform archive stay in
-the exact release directory as the release's provenance and inventory
-evidence. On the offline machine, run the same platform-selection block above,
-or point to the selected archive explicitly:
+### Option B: build from source
+
+This path builds the signed release tag, never the moving `main` branch. It downloads the signed
+`RELEASE` file and checks it. It reads the release's full commit ID from that file. Then it fetches
+only the tag and refuses to build if the tag points anywhere else.
+
+Set `COMPOUND_RELEASE_REPOSITORY` as in Option A. Go to the folder where you want the source, and
+paste the whole block. It creates two folders there: `compound-0.1.1-source-evidence` for the
+checked files and `compound` for the source.
 
 ```sh
-COMPOUND_VERSION=0.1.1 \
-COMPOUND_RELEASE_TARBALL=/path/to/compound-release-0.1.1/compound_0.1.1_linux_amd64.tar.gz \
-  sh /path/to/compound-release-0.1.1/install-release.sh
-```
-
-### Option B — build from source
-
-Select the same stable tag and authenticate its `RELEASE` manifest before
-trusting the full commit recorded inside it. This path fetches only that tag;
-it never builds the repository's mutable default branch.
-
-```sh
+sh <<'EOF'
 set -eu
-
 VERSION=0.1.1
 REPOSITORY=${COMPOUND_RELEASE_REPOSITORY:?set the public owner/repository identity}
 TAG="v${VERSION}"
-SOURCE_EVIDENCE="compound-${VERSION}-source-evidence"
-mkdir "$SOURCE_EVIDENCE"
 BASE_URL="https://github.com/${REPOSITORY}/releases/download/${TAG}"
-for ASSET in RELEASE SHA256SUMS SHA256SUMS.sig; do
-  curl --fail --location --output "$SOURCE_EVIDENCE/$ASSET" "$BASE_URL/$ASSET"
-done
-curl --fail --location --output "$SOURCE_EVIDENCE/allowed_signers" \
-  "https://raw.githubusercontent.com/${REPOSITORY}/${TAG}/release/allowed_signers"
-# Compare this fingerprint with SECURITY.md before accepting the signature.
-FINGERPRINT=$(awk '{print $3, $4}' "$SOURCE_EVIDENCE/allowed_signers" | ssh-keygen -lf - | awk '{print $2}')
-test "$FINGERPRINT" = 'SHA256:iAb0Eaq9vv9CrfNRy/YbitZVbaSpwqE0wY8uf5jftRE'
-ssh-keygen -Y verify -f "$SOURCE_EVIDENCE/allowed_signers" -I compound-release \
-  -n compound-release -s "$SOURCE_EVIDENCE/SHA256SUMS.sig" < "$SOURCE_EVIDENCE/SHA256SUMS"
-# Only RELEASE is needed for a source build; verify its one signed checksum.
-awk '$2 == "RELEASE" { print; n++ } END { if (n != 1) exit 1 }' \
-  "$SOURCE_EVIDENCE/SHA256SUMS" > "$SOURCE_EVIDENCE/RELEASE.sha256"
-(cd "$SOURCE_EVIDENCE" && if command -v sha256sum >/dev/null 2>&1; then
-  sha256sum --check RELEASE.sha256
-else
-  shasum -a 256 --check RELEASE.sha256
-fi)
-COMMIT=$(awk '
-  NR == 1 { if (NF != 2 || $1 != "schema" || $2 != "compound.release.v0.2") exit 1; next }
-  NR == 2 { if (NF != 2 || $1 != "version" || $2 != version) exit 1; next }
-  NR == 3 { if (NF != 2 || $1 != "commit" || length($2) != 40 || $2 ~ /[^0-9a-f]/) exit 1; print $2; next }
-  NR == 4 { if (NF != 2 || $1 != "installer" || $2 != "install-release.sh") exit 1; next }
-  NR == 5 { if (NF != 6 || $1 != "artifact" || $2 != "darwin" || $3 != "arm64") exit 1; next }
-  NR == 6 { if (NF != 6 || $1 != "artifact" || $2 != "linux" || $3 != "amd64") exit 1; next }
-  { exit 1 }
-  END { if (NR != 6) exit 1 }
-' version="$VERSION" "$SOURCE_EVIDENCE/RELEASE")
+mkdir "compound-${VERSION}-source-evidence" compound
+cd "compound-${VERSION}-source-evidence"
 
-mkdir compound
+# 1. Download the signed release manifest.
+for ASSET in RELEASE SHA256SUMS SHA256SUMS.sig; do
+  curl --fail --location --output "$ASSET" "$BASE_URL/$ASSET"
+done
+curl --fail --location --output allowed_signers \
+  "https://raw.githubusercontent.com/${REPOSITORY}/${TAG}/release/allowed_signers"
+
+# 2. Check the signing key, the signature and the checksum of RELEASE.
+FINGERPRINT=$(awk '{print $3, $4}' allowed_signers | ssh-keygen -lf - | awk '{print $2}')
+test "$FINGERPRINT" = 'SHA256:iAb0Eaq9vv9CrfNRy/YbitZVbaSpwqE0wY8uf5jftRE' ||
+  { echo "Signing key does not match SECURITY.md. Stop." >&2; exit 1; }
+ssh-keygen -Y verify -f allowed_signers -I compound-release -n compound-release \
+  -s SHA256SUMS.sig < SHA256SUMS
+awk '$2 == "RELEASE" { print; n++ } END { if (n != 1) exit 1 }' SHA256SUMS > RELEASE.sha256
+if command -v sha256sum >/dev/null 2>&1; then sha256sum --check RELEASE.sha256
+else shasum -a 256 --check RELEASE.sha256; fi
+
+# 3. Read the release commit, fetch only that tag, check it, and build it.
+COMMIT=$(awk 'NR == 3 && $1 == "commit" { print $2 }' RELEASE)
+test "${#COMMIT}" -eq 40
+cd ..
 git init compound
 cd compound
 git remote add origin "https://github.com/${REPOSITORY}.git"
 git fetch --no-tags --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG"
 test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$COMMIT"
 git checkout --detach "$COMMIT"
-test "$(git rev-parse HEAD)" = "$COMMIT"
 make install
+EOF
 ```
 
-This stages and checks both `compound` and `compound-breadth-engine`, plus any
-explicitly enabled alias and autonomy helpers, before replacing installed files.
-It initializes `COMPOUND_HOME` at `~/.compound` and runs home/runtime doctors and
-the required installed-lane binding refresh. Publication and activation are
-reported separately; a failed refresh fails installation.
+`make install` builds both binaries, `compound` and `compound-breadth-engine`, and checks them
+before it replaces anything. Then it creates `~/.compound` and runs the health checks. If it fails,
+it restores the previous files. Stop any running `compound` process while it works. It also prints a `# runtime doctor` block about a `synthetic` service: that is a built-in self-test on fixture data, not a real service.
 
-Before initializing the home or publishing artifacts, the staged CLI runs
-`compound harness refresh-lane --preflight`. This read-only check validates every
-required native hook writer before any profile is refreshed. It prints nothing
-and exits 0 when every writer is available; a nonzero exit carries the reason.
-It does not certify activation or provider acceptance.
-An absent home needs no initialization for this check; an existing home must
-have a compatible manifest. Ordinary refresh retains mutation admission.
-OpenCode registration belongs to `adapters/opencode/install.ts`; oh-my-pi shim
-installation belongs to `compound hook install --harness oh-my-pi` and does not
-publish settings-style hook authority. Entries for either adapter are reported
-as `external` with their owner's command named, and do not stop source
-installation: neither records an `invocation_revision`, and each reaches the
-binary through a stable path rather than a pinned identity, so publication can
-leave neither half-activated. Refreshing them stays that owner's job — run the
-named command to pick up a new contract. A harness with no known owner at all is
-still a hard refusal, and removing manifest entries is never a repair.
-
-Source installation shares the release installer's kernel lock. Stop consumers
-of the installed binaries/helpers during installation: the set is published by
-sequential renames. On ordinary failure or a handled signal, the source installer
-restores previous artifact bytes, modes, symlinks and absent files. Home or profile
-changes made during activation are not undone; inspect binding state before
-retrying. If restoration fails, retained old/new files remain in the named
-`.compound-source-stage.*` directory and another source install refuses to run.
-SIGKILL, power loss and filesystem durability are not covered by this trap-based
-rollback. An interrupted source installation requires inspection of its retained
-files; it has no automatic crash replay. Immutable tagged releases retain the
-journaled recovery protocol described above. Source installation refuses pending
-release recovery state and never repairs or deletes that owner's journal.
-The release workflow proves the tag commit is contained in remote `main` before
-building and publishing. Repository administrators must still activate tag
-immutability, protected-branch rules, and the private vulnerability-reporting
-channel before cutting the first tag; those external controls are pre-tag gates,
-not properties this source checkout can create.
-
-```sh
-# Make sure it's on your PATH, then wire your harness:
-export PATH="$HOME/.local/bin:$PATH"
-compound version
-compound init
-```
+How releases are built, signed and published is in the [release procedure](release.md).
 
 ### Unreleased contributor checkout
 
-Before the first stable tag—or when testing a change that has not been
-released—work only from a source checkout already pinned to a commit you have
-reviewed:
+To test a change that is not released, work in a checkout pinned to a commit you have reviewed:
 
 ```sh
 test -z "$(git status --short)"
@@ -335,304 +205,277 @@ git rev-parse HEAD
 make install
 ```
 
-This produces an unreleased development build, not a release artifact. Record
-the printed commit before testing, and do not present that installation as a
-published Compound version.
+This makes an unreleased development build, not a release. Write down the printed commit. Do not
+present the install as a published Compound version.
 
-## First useful session
-
-After installation, keep the same explicit runtime home across terminals.
-Run these checks before starting work:
+## 2. First run
 
 ```sh
+export PATH="$HOME/.local/bin:$PATH"
 compound version
-compound home doctor
-```
-
-If you built with `go build` instead of `make install`, no runtime home exists yet: run
-`compound home init` once first, or every command above reports a missing manifest.
-
-A failed doctor is not a clean home. Follow its reported issue before recovery
-or upgrade; do not delete runtime data to clear a warning. The source-setup
-section can report missing Go on a binary-only installation: Go is required
-for building, not for using the prebuilt CLI.
-
-Wire your harness. `compound init` finds Claude Code and Codex on this machine,
-adds Compound's hooks to each one found, and prints one line per harness: wired,
-already wired, or not found. It also prints the exact PATH line for your shell when
-`~/.local/bin` is not on PATH (it never edits shell profiles):
-
-```sh
 compound init
-compound init --check    # later: reports only, changes nothing
 ```
 
-To wire one harness by name, or a project instead of your user settings:
+`compound version` prints `compound 0.1.1 (build ...)`. `compound init` creates the Compound home if
+it is missing and wires each supported harness it finds: a harness is the coding agent you already
+use. It prints one line per harness. With only Claude Code installed, the output looks like this
+(your copy shows full paths):
 
-```sh
-compound hook install --harness codex --scope global
-compound hook install --harness claude-code --scope project   # this project only
-compound hook uninstall --harness codex                      # takes Compound's hooks out again
+```text
+Compound home: ~/.compound (ready)
+Claude Code: wired (~/.claude/settings.json)
+Codex: not found
+OpenCode: not found
+oh-my-pi: not found
+
+Next: start Claude Code in any project. Compound gives it context when the session starts
+and writes a receipt when it ends.
+Check: compound init --check   Last session: compound receipt last   Undo: compound hook uninstall --harness claude-code
 ```
 
-These commands change the chosen harness configuration. Keep its existing
-permission/sandbox settings; a fresh process is needed to load updated hooks.
-The managed interactive default observes actions, not blocks them.
-[Harness Wiring](harness-wiring.md) covers OpenCode, isolated guarded profiles
-and adapter limitations. Listed or installed does not mean execution-ready.
+- If `~/.local/bin` is not in your shell profile yet, `init` adds a `PATH:` line. It names the file
+  to edit and the exact line to add. It never edits a shell profile itself.
+- If it finds no harness, it prints `No supported harness found.` and names the four it supports.
+  Install one, open it once, then run `compound init` again.
+- Running `compound init` again is safe. A harness that is already set up reports `already wired`.
 
-The hook check verifies registration, not model-executor readiness. Governed
-model execution also needs your chosen harness installed and authenticated,
-Compound's model-route metadata for that executor, and an authorized executor
-route for the work. Inspect the route setup without launching a model:
+`compound home doctor` checks the Compound home. If it reports a problem, follow what it says. Do
+not delete files from `~/.compound` to clear a warning.
+
+## 3. Wire your harness
+
+A hook is a command the harness runs at a fixed point in a session, such as session start or
+after each tool call. `compound init` wires the four harnesses Compound supports:
+
+| Harness | Found when this exists | What `compound init` writes | What Compound gets |
+|---|---|---|---|
+| Claude Code | `~/.claude` or the `claude` command | hook entries in `~/.claude/settings.json` | briefing, tool calls, session receipt |
+| Codex | `~/.codex` or the `codex` command | hook entries in `~/.codex/hooks.json` | briefing, tool calls, session receipt |
+| OpenCode | `~/.config/opencode` or the `opencode` command | a plugin file, `~/.config/opencode/plugins/compound.ts`, which OpenCode loads on its own | briefing and tool calls; no session receipt, because OpenCode has no session-end event |
+| oh-my-pi | `~/.omp` or the `omp` command | a hook file, `~/.omp/agent/hooks/pre/compound.ts` | briefing, tool calls, session receipt |
+
+Your other settings stay as they were. Compound changes only its own entries. For OpenCode and
+oh-my-pi it writes only its own file, and it never overwrites or removes a file at that path that
+it did not write.
+
+A harness reads its hooks when a session starts. Restart any session that was open before you ran
+`compound init`.
+
+Hooks record what the agent does. In Claude Code, Codex and OpenCode they never stop it. The
+oh-my-pi hook file asks Compound's policy before each tool call, and blocks the call when the
+policy says no or cannot answer. Compound does not change your harness's own permission settings.
 
 ```sh
-compound route model-capabilities --json
-compound route lane-projection --harness codex --json
+compound init --check                       # one line per harness; changes nothing
+compound hook install --harness codex       # wire one harness by name
+compound hook uninstall --harness opencode  # remove Compound's entries or file, nothing else
+compound hook install --harness claude-code --scope project   # Claude Code, this project only
+compound doctor                             # full check; also names installed harnesses that are not wired
 ```
 
-Use `--harness claude-code` instead if that is your chosen harness. A fresh home
-can report missing `registries/model-capabilities.yaml`; repeating hook
-installation will not create it. Follow [First model route](harness-wiring.md#first-model-route)
-to enroll your existing executor configuration. If it is not configured yet,
-the [local-command demonstration](#2-orient-on-your-repo) remains available;
-it does not run a model.
+`compound init --check` exits 1 when something still needs `compound init`, so a script can use
+it. After `compound hook uninstall`, it reports that harness as `not wired` and exits 1 until you wire it again. That is the expected state, not a fault. The harness names are `claude-code`, `codex`, `opencode` and `oh-my-pi`. What each hook does,
+isolated profiles and other harnesses are in [Harness wiring](harness-wiring.md).
 
-Start your harness in your project and give it a bounded goal, for example:
+## 4. Your first useful session
 
-> Inspect this project's tests and identify one reproducible maintenance issue.
-> Create and claim one bounded Compound task. Record its owner and acceptance
-> predicate, then save an authorized executor selection before execution.
-> Keep changes local, run the relevant checks, and report what is verified
-> and what remains unknown.
-> Do not publish, spend, or change permissions.
+Start your harness in a project you know, and give it one goal with limits. For example:
 
-The harness must establish a work item, owner, acceptance predicate and authorized
-selection before execution. Compound does not promise that every harness turns
-arbitrary prose into an admitted task. The [explicit lifecycle demonstration](#2-orient-on-your-repo)
-below shows those mechanics for integrators; it is not a request to make users
-copy IDs every session.
+> Look at this project's tests and find one problem you can reproduce. Track it as a Compound
+> work item with an owner and a test for done. Keep changes local, run the relevant checks, and
+> tell me what is verified and what is still unknown. Do not publish, spend money or change
+> permissions.
 
-Before launching, have the harness or setup helper run the work-bound
-[readiness check](harness-wiring.md#first-model-route) for the claimed work,
-chosen harness and real project directory. It does not launch a model or prove
-that a model request will succeed.
+While that session runs:
 
-## Daily use and recovery
+- **At session start,** the hook tells the agent how to ask for a briefing on its task. The
+  briefing (a ContextPack) holds the rules, the decisions you recorded, and what was left out and
+  why. `compound orient` is the command that makes it.
+- **During the session,** each tool call is recorded as evidence.
+- **A work item** (a WorkEnvelope) is one job with an owner and a test for done. A later session can
+  pick it up instead of starting again.
+- **At session end,** Compound writes a receipt: the record of what the session did and where its
+  transcript is.
 
-Use the same actor that holds the work. With exactly one held selected task and
-a saved executor, Continue resolves the task and preserves its goal and selection:
+Afterwards:
 
 ```sh
-compound work continue --selected --actor <your-existing-actor> --json
+compound receipt last   # what the last session did
+compound workbench      # open and finished jobs
 ```
 
-Replace the actor placeholder with the identity already holding your work.
-Initial creation/claim is separate. More than one held task is an ambiguity to
-resolve, not permission to pick whichever is convenient.
+Not every agent turns a request like this into a work item on its own. Step 5 does the same thing
+with plain commands.
 
-- **See progress:** `compound workbench` and `compound coordination`, or the
-  local dashboard's Today, Live and Work views.
-- **Interrupted or verifying:** inspect the reported attempt first. When the
-  selected path reports a recoverable, settled attempt, the same command with
-  `--resume` requests a new authorized run. Never blindly repeat an uncertain
-  external effect.
-- **Worker finished:** a successful process is not acceptance. Supply the
-  workflow's actual verification before closing; do not manufacture proof
-  strings just to mark work done.
-- **Needs you:** changed goals, missing authority, new spending and genuine
-  quality decisions remain explicit. There is no silent provider fallback.
-- **Fresh session:** use the same home and actor. Saved work remains available;
-  absence of a memory citation does not prove absence of reuse.
+Compound can also start an agent itself for a tracked job. That needs a model route; see
+[First model route](harness-wiring.md#first-model-route).
 
-For backups and upgrades, follow [Recovery](operations/recovery.md).
-A verified archive and a tested restore into a new target are distinct checks.
-For branch hygiene, inspect `compound executors worktrees --repo /path/to/project --json`.
-Landed, dirty, live, kept and unknown worktrees are different states; “landed”
-does not authorize deleting a checkout. Retirement uses exact reviewed plans.
+## 5. Walk one job through by hand
 
-## Explicit lifecycle demonstration
+This section takes one job through Compound with a plain local command. No model and no harness
+run. Each step shows one record Compound keeps. The demo adds one finished job to your workbench;
+step 1 shows how to keep it out of your real Compound home.
 
-The remaining walkthrough teaches the underlying objects using a local command,
-without a model call. Its outcome is inspectable history, not proof of learning.
-Completing it does not enroll a model route or prove that an agent can execute
-the same goal.
+Run every command in one terminal. The steps save IDs in shell variables (`CTX`, `WORK`,
+`TRANSITION`), and later steps read them. Text in angle brackets, like `<path-to-your-project>`, is
+a placeholder: replace all of it, brackets included.
 
-## 2. Orient on YOUR repo
-
-Point Compound at any repo you work on. This produces a **ContextPack** — the
-frozen context an agent would consume, including what was included **and
-excluded** and why.
+### 1. Go to your project
 
 ```sh
-cd /path/to/your/project
+cd <path-to-your-project>
+```
+
+Any Git project you know works. The demo only reads it.
+
+Optional: to keep the demo out of your real Compound home, run these two lines first. Close the
+terminal afterwards to go back to your real home.
+
+```sh
+export COMPOUND_HOME="$(mktemp -d)/home"
+compound home init
+```
+
+### 2. Orient on your repo
+
+`compound orient` makes the briefing an agent would get for one task: what it is told, what was
+left out, and why. This line saves the briefing's ID in `CTX`:
+
+```sh
+CTX=$(compound orient --harness claude-code --cwd . --task "describe what this project does" --json \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["id"])')
+echo "$CTX"
+```
+
+It prints an ID that starts with `ctx_`, like `ctx_347a9a42488c8412`. After `--harness`, use the
+name of your harness: `claude-code`, `codex`, `opencode` or `oh-my-pi`. Compound refuses an
+unknown harness name or a folder that does not exist.
+
+To read the whole briefing, run the command without saving it:
+
+```sh
 compound orient --harness claude-code --cwd . --task "describe what this project does" --json
 ```
 
-Orientation is bound to real identities before it writes anything. Compound
-resolves the harness through its registry (`claude-code` becomes the canonical
-`claude_code` identity), resolves `--cwd` to an absolute symlink-free existing
-directory, and refuses unknown harnesses, missing paths, or files used as a
-workspace. A successful ContextPack therefore describes a registered harness
-and a real project directory rather than a caller-supplied fiction.
+The ID is the top-level `id` field (`.id`). To copy it by hand instead, type `CTX=` and paste your
+own value after it. Fields worth a look:
 
-You'll see a JSON ContextPack. Copy its `id` (`ctx_...`) into
-`<context_pack_id>` in the next step. Replace all angle-bracket placeholders in
-this guide before running their commands. Key fields:
+- `summary_md`: the briefing in plain language
+- `included`: the context it served, and why
+- `excluded`: what it left out, and why
 
-- `summary_md` — plain-language orientation summary
-- `included[]` — what context was served (and why)
-- `excluded[]` — what was deliberately left out (and why)
-- `id` — the briefing identity to attach to your work
+### 3. Create a work item
 
-This is the spine's first move: **discover reality before acting.** The agent
-gets task-scoped context, not a wall of everything.
-
-## 3. Create a work envelope
-
-A WorkEnvelope is one unit of work with a stable identity (`work_id`) that
-links intent → context → action → receipt → transition.
+A work item is one job with an owner and a test for done, called the predicate.
 
 ```sh
-compound work create \
-  --owner "getting-started" \
-  --predicate "the harness prints hello and records proof" \
-  --context-pack <context_pack_id> \
-  --state ready \
-  --by "operator:you"
-```
-
-Note the returned `work_id` (e.g., `work_a1b2c3d4e5f6`).
-
-```sh
-# See it on the board:
+WORK=$(compound work create --owner getting-started \
+  --predicate "the command prints hello and the run is recorded" \
+  --context-pack "$CTX" --state ready --by operator:you \
+  | awk '/^created/ { print $2 }')
+echo "$WORK"
 compound workbench
-
-# See the full envelope:
-compound work show <work_id>
 ```
 
-## 4. Claim and execute
+`work create` prints `created work_...` on its first line, then the full record. The `awk` keeps
+only the ID, which starts with `work_`. `--by` names who acted. It labels the record; it does not
+log anyone in. The workbench now shows one open job that needs a claim. To see the full record,
+run `compound work show "$WORK"`.
+
+### 4. Claim it and run a command
 
 ```sh
-# Claim it (single-holder lease):
-compound work claim <work_id> --by "agent:claude-code:session-1"
-
-# Run a bounded command through the governed execution path:
-compound work advance <work_id> \
-  --to running \
-  --by "agent:claude-code:session-1" \
-  --execute \
-  --harness os-harness-entrypoints \
-  --workspace "$PWD" \
+compound work claim "$WORK" --by agent:me:session-1
+compound work advance "$WORK" --to running --by agent:me:session-1 \
+  --execute --harness os-harness-entrypoints --workspace "$PWD" \
   -- echo "hello from compound"
-
-# Inspect the WorkEnvelope and the persisted RunAttempt:
-compound work show <work_id> --json
-compound run-attempt list --json
 ```
 
-A successful command prints a `run_attempt_id`, captures a transcript, and
-moves the work to `verifying`. The WorkEnvelope forward-links that `ratt_...`
-record, so the run remains reachable from the work on both success and failure.
+Claiming gives the job one holder. `--execute` runs the command after `--` through Compound's
+governed path, which checks policy and records the run. `os-harness-entrypoints` is Compound's
+built-in runner for a plain local command. The output shows:
 
-You can stop after claiming and return in a later terminal. Use
-`compound workbench` and `compound work show <work_id> --json` to recover the
-claimed work and its `ids.context_pack_id`, then run the execution command
-with the same `--by` identity. This is resumption before launch, not automatic
-recovery of an interrupted subprocess; inspect the RunAttempt before retrying
-a command that may already have produced side effects.
+- `run_attempt_id: ratt_...`: one governed run of a command (a RunAttempt)
+- `transcript:` the file that holds the command's output
+- `-> verifying`: the job now waits for its result to be checked
 
-## 5. Close with proof
+You can stop after the claim and come back later in a new terminal. Find the ID with
+`compound workbench`, type `WORK=` followed by your own value, and use the same `--by` name. Before
+you retry a run, check it with `compound run-attempt list --json`. Do not repeat a command blindly
+if it may already have changed something.
 
-The successful RunAttempt is already attached to the work. Close the verifying
-work to mint a **Receipt** and a **Transition** recording the demonstration's
-outcome. This is an audit of a local command, so use `audit_only`; printing hello
-does not establish a product improvement or learned memory.
+### 5. Close it with a receipt
 
 ```sh
-compound work close <work_id> \
-  --by "agent:claude-code:session-1" \
-  --outcome completed \
-  --move-type audit_only \
+compound work close "$WORK" --by agent:me:session-1 \
+  --outcome completed --move-type audit_only \
   --summary "the local demonstration produced inspectable execution evidence"
 ```
 
-The close output includes both `receipt` and `transition` IDs.
+The first line of the output names two new records. The receipt (`receipt=rec_...`) records what
+the job did. The transition (`transition=tr_...`) records the state change and its evidence.
+`audit_only` marks the job as evidence only: printing hello proves nothing about your project and
+teaches Compound nothing.
+
+### 6. Check the record
 
 ```sh
-# See the proof chain:
-compound work show <work_id> --json
-
-# See the transition:
-compound transition show <transition_id>
-```
-
-The Transition records the work's state change and supporting evidence. The
-receipt is available for later inspection; it does not by itself promote memory
-or guarantee inclusion in a later orientation.
-
-## 6. Wire your agent (hooks)
-
-Compound integrates with agent harnesses through **lifecycle hooks**. See
-[`harness-wiring.md`](./harness-wiring.md) for the full guide. The short
-version for Claude Code:
-
-```sh
-compound init            # wires every supported harness found here
-compound init --check    # reports only; changes nothing
-```
-
-The first command installs the managed interactive posture; the second checks
-it without changing settings. This posture observes actions. See the wiring
-guide for the separately guarded executor profiles.
-
-When hooks are wired:
-- **Session start** → agent receives a ContextPack (task-scoped orientation)
-- **Pre-tool-use** → records ActionIntent + PolicyDecision evidence; the
-  interactive default does not block tool calls
-- **Session end** → the bounded adapter records session outcome evidence
-
-## 7. Verify the loop
-
-```sh
-# The workbench shows your closed work with its receipt:
+compound receipt last
 compound workbench
-
-# Check the local runtime home:
-compound home doctor
-
-# Check that the recorded work's proof references resolve:
+TRANSITION=$(compound work show "$WORK" --json \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["ids"]["transition_id"])')
+compound transition show "$TRANSITION"
 compound work proof-chain-doctor
 ```
 
-## What just happened
+`proof-chain-doctor` checks that the records of every finished job point at each other. It should
+report `0 problem(s) found`.
 
-```text
-orient           → the briefing (ContextPack: task-scoped context, not a preamble)
-work create      → the job at the door (WorkEnvelope: one stable identity)
-claim/--execute  → the edge at work (RunAttempt + transcript, linked to the work)
-close            → the receipt (Receipt + Transition: recorded execution outcome)
-hooks            → policy evidence; enforced postures can gate before mutation
+| Command | Record it made |
+|---|---|
+| `orient` | the briefing (ContextPack, `ctx_...`), with what was left out and why |
+| `work create` | the job (WorkEnvelope, `work_...`): one ID for one unit of work |
+| `work claim`, `work advance --execute` | the run (RunAttempt, `ratt_...`) and its transcript, linked to the job |
+| `work close` | the receipt (`rec_...`) and the transition (`tr_...`) |
+
+The finished job stays in your Compound home, linked to its briefing and its run. A later session
+can read that record instead of rebuilding it. Compound does not learn from every receipt on its
+own. Recall of past decisions is a separate setup: [Memory quickstart](memory-quickstart.md).
+
+## 6. Daily use
+
+- Work in your harness as usual. Give the agent one goal and its limits.
+- For a job that spans sessions, ask the agent to track it as a Compound work item.
+- `compound receipt last` shows what the last session did. `compound workbench` shows open and
+  finished jobs.
+- `compound doctor` checks the whole setup, including harnesses that are installed but not wired.
+  `compound home doctor` checks only the Compound home.
+- A command that exits 0 has not proven a job is done. Check the result against the job's test
+  before you close it, and never write proof text just to close a job.
+- Some calls stay with you: a changed goal, missing permission, new spending, a quality judgment.
+  Compound never switches model providers without telling you.
+
+To pick up a job you already claimed and gave a saved executor (see
+[First model route](harness-wiring.md#first-model-route)):
+
+```sh
+compound work continue --selected --actor <your-actor> --json
 ```
 
-Open a new terminal or agent session and run `compound workbench`, then
-`compound work show <work_id> --json`. The completed work still links to the
-original briefing and execution evidence, so the next session can inspect what
-happened without reconstructing this demonstration.
+Replace `<your-actor>` with the `--by` name that holds the job, such as `agent:me:session-1`. It
+works when you hold exactly one such job. With more than one, or with a run still unsettled, it
+stops and says why.
 
-Automatic recall is a separate step: Compound selects relevant adjudicated
-memory for an orientation. This walkthrough proves durable execution history,
-not automatic learning from every receipt. Continue with the
-[Memory Quickstart](memory-quickstart.md) to set up memory deliberately.
+`compound home backup` saves your Compound home to one archive. Restore, upgrade and rollback are in
+[Recovery](operations/recovery.md). A verified archive and a tested restore are separate checks.
 
 ## Next steps
 
-| I want to... | Read |
+| I want to | Read |
 |---|---|
-| Read the support and security boundary | [`security/supported-scope.md`](./security/supported-scope.md) |
-| Wire Compound into my agent harness | [`harness-wiring.md`](./harness-wiring.md) |
-| Set up semantic memory (search over my docs) | [`memory-quickstart.md`](./memory-quickstart.md) |
-| See the visual console | [`console.md`](./console.md) |
-| Understand the architecture | [`LAYERS.md`](./LAYERS.md) |
-| Contribute to Compound itself | [`CONTRIBUTING.md`](../CONTRIBUTING.md) |
+| Know what the public alpha supports | [Supported scope](security/supported-scope.md) |
+| See what each hook does, harness by harness | [Harness wiring](harness-wiring.md) |
+| Search over my own docs | [Memory quickstart](memory-quickstart.md) |
+| Open the local dashboard | [Console](console.md) |
+| Understand the architecture | [Overview](overview.md), then [LAYERS](LAYERS.md) |
+| Contribute to Compound | [CONTRIBUTING.md](../CONTRIBUTING.md) |

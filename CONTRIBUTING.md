@@ -1,27 +1,27 @@
 # Contributing to Compound
 
-Thank you for your interest in contributing to Compound. This guide covers
-how to build, test, and submit changes.
+This guide covers how to build Compound, test it, and send a change.
 
 ## What Compound is
 
-Compound is a local-first, agent-agnostic **meaning + execution substrate**.
-It makes agent work accumulate: every session leaves claims, receipts, and
-lenses behind, and the next session starts smarter. Read the
-[README](./README.md) for the full thesis and
-[`docs/LAYERS.md`](./docs/LAYERS.md) for the canonical architecture.
+Compound gives coding agents a memory that lasts between sessions. It keeps goals, decisions, work
+items and receipts in local files. A receipt is the record of what a session or job did. Each new
+session starts from that record instead of from nothing. The [README](./README.md) is the short
+version. [`docs/overview.md`](./docs/overview.md) explains how it is built, and
+[`docs/LAYERS.md`](./docs/LAYERS.md) is the canonical architecture.
 
 ## Prerequisites
 
-- **Go 1.27.1+** (the version declared in `go.mod`; `go version` must print at least that)
-- **Git**
-- Optional: **Bun** (for console work), **Ollama** (for semantic memory tests)
+- **Go 1.27.1 or newer**, the version in `go.mod`; `go version` must print at least that. If `go version` prints an older one (Debian 13 packages
+  Go 1.24), install from [go.dev/dl](https://go.dev/dl/) instead.
+- **Git**, **Python 3** and **make**.
+- Optional: **Bun** for dashboard work, **Ollama** for semantic-memory tests.
 
 ## Build
 
 ```sh
-make install          # builds binary, inits home, runs doctor
-# or manually (then create a runtime home before any other command):
+make install          # builds the binaries, creates ~/.compound, runs the health checks
+# or by hand, then create a Compound home before any other command:
 go build ./cmd/compound
 COMPOUND_HOME="$HOME/.compound" ./compound home init
 ```
@@ -29,82 +29,66 @@ COMPOUND_HOME="$HOME/.compound" ./compound home init
 ## Test
 
 ```sh
-# Fast repeatable development feedback (non-certifying):
+# Fast feedback while you work (not certifying):
 go run ./cmd/compound proof-check --dev --base main
 
-# Standalone fresh Go suite (non-certifying; canonical bundle below):
+# The full Go suite in a fresh run (not certifying):
 go run ./scripts/testbattery test
 
-# Single package:
+# One package:
 go test ./internal/work/ -count=1 -timeout 5m
 
-# Architecture doctor (structural integrity):
+# Architecture doctor (package rules, doc-leak gate, contract guards):
 go run ./cmd/compound architecture doctor --strict
 
-# Full proof bundle (tests + vet + build + gofmt + doctors):
+# Full proof bundle (tests, vet, build, gofmt, doctors):
 PRE_LAND_BASE_SHA=$(git rev-parse --verify "main^{commit}")
 go run ./cmd/compound proof-check --base "$PRE_LAND_BASE_SHA" \
   --work <claimed-work-id> --actor <lease-holder> \
   --out <absolute-report.json>
 ```
 
-For a landing ceremony, the blocking gate before the fast-forward is the
-scoped presubmit in `skills/compound-land/SKILL.md` §1 (build, vet, gofmt,
-diff-check, strict doctor, short tests of the affected packages, redact;
-minutes); the canonical bundle runs once on the landed tip, after the land
-(operator ruling 2026-10-23, Law 16).
-Run it as one command: `go run ./cmd/compound proof-check --presubmit --base <full-sha> --out <file>`.
-Capture `PRE_LAND_BASE_SHA` before replay or land and reuse that exact full SHA
-for the post-land canonical battery. Never recapture `main^{commit}` after
-landing; if a rebase changes the candidate, capture a new base, rerun the
-presubmit before landing, and the canonical battery is for the new landed tip.
+`--dev` runs `go test -short` across the repository with Go's test cache. Unchanged packages reuse
+their last pass, and a package reruns when its source, dependencies or test inputs change. It also
+checks formatting, the diff, strict architecture, redaction of changed files, and the dashboard's
+TypeScript when relevant. It is iteration feedback only and does not count as landing proof.
 
-Certifying proof is agent-invocable and supports non-terminal, redirected, or
-backgrounded stdout. Run it unpiped as its own command by default, preserve its
-actual process exit, and read the authoritative full report from `--out`; this
-avoids zsh pipelines masking a failure and is shell-observation safety, not an
-admission requirement. All canonical gates must finish `ok`—a skipped gate is
-diagnostic evidence, not certifying proof.
+Some packages run slowly. `internal/work`, `internal/authority` and `internal/eventstore` take
+2 to 5 minutes each; use `-p 2` to avoid CPU contention timeouts. `cmd/compound` takes longer than
+Go's default 10-minute test timeout, so give it `-timeout 45m`.
 
-**Note:** some packages (`internal/work`, `internal/authority`,
-`internal/eventstore`) have slow tests (2-5 min each). Use `-p 2` to limit
-parallelism and avoid CPU contention timeouts.
+Run the full bundle as its own command, without a pipe, because a pipe can hide its exit code.
+Read its report from the `--out` file.
+Every gate must finish `ok`. A skipped gate is a diagnostic, not proof. How the bundle seals the
+commit it tested is in [Proof-check and the land-lease](docs/architecture/proof-check.md).
 
 ## Code style
 
-- **gofmt** is enforced. Run `gofmt -w .` before committing.
-- **go vet** must pass: `go vet ./...`
-- No personal paths, credentials, or private data in tracked files. This is
-  enforced by `architecture doctor --strict` (doc-leak gate).
-- Tests never compare wall-clock time against fixed fixture dates. Inject the
-  clock or freshen fixture timestamps at runtime.
+- **gofmt** is enforced. Run `gofmt -w .` before you commit.
+- **go vet** must pass: `go vet ./...`.
+- No personal paths, credentials or private data in tracked files. `architecture doctor --strict`
+  enforces this with its doc-leak gate.
+- Tests never compare the wall clock against fixed fixture dates. Inject the clock, or set fixture
+  timestamps at runtime.
 
 ## Architecture rules
 
-These are enforced by `compound architecture doctor --strict` and will fail CI:
+`compound architecture doctor --strict` enforces these, and CI fails when one breaks.
 
-1. **Every `internal/` package must be classified** in `internal/arch/arch.go`
-   (`Classification` map) and documented in `docs/architecture/status.md`.
-   New packages need a classification (spine / object-family / leaf / importer)
-   and a mint home registration in `internal/arch/mint.go`.
-
-2. **One meaning owner.** Compound owns meaning; engines, models, and harnesses
-   are rented edges. Never add a package that becomes a second authority.
-
-3. **Envelope-first.** The spine is: Intent → EffectiveContract → ContextPack →
-   WorkEnvelope → ActionIntent → PolicyDecision → Receipt → Transition. New
+1. **Every `internal/` package is classified** in `internal/arch/arch.go` (the `Classification`
+   map) and documented in `docs/architecture/status.md`. A new package needs a class (spine,
+   object-family, leaf or importer) and a mint-home entry in `internal/arch/mint.go`.
+2. **One meaning owner.** Compound owns meaning. Engines, models and harnesses are rented. Never
+   add a package that becomes a second authority.
+3. **Envelope first.** Work flows through one spine: Intent, EffectiveContract, ContextPack (the
+   briefing), WorkEnvelope (the job), ActionIntent, PolicyDecision, Receipt, Transition. New
    features plug into this spine, not around it.
-
-4. **Candidate-first.** Incoming information is adjudicated
-   (reject / park / promote / operationalize), never written straight to
-   authority.
-
-5. **Subtract by default.** Every new object family must name what old surface
-   it retires. Adding a parallel path without retiring the old one fails the
-   subtraction check.
-
-6. **Public core stays clean.** No private paths, personal data, or
-   operator-specific names in tracked files. `docs_private/` is gitignored.
+4. **Candidates first.** Incoming information is judged (reject, park, promote or operationalize)
+   before it can become authority. It is never written straight to authority.
+5. **Subtract by default.** A new object family names the old surface it retires. A parallel path
+   that leaves the old one in place fails the subtraction check.
+6. **The public core stays clean.** No private paths, personal data or operator-specific names in
+   tracked files. `docs_private/` is gitignored.
 
 ## Package layout
 
@@ -126,83 +110,51 @@ console/                  Next.js operator console (optional)
 skills/                   Agent ceremony definitions
 ```
 
-## Submitting changes
+## Sending a change
 
-1. **Fork and branch** from `main`.
-2. **Write tests** that would fail if the depth were wrong. Tests are how the
-   system understands its own depth — not happy-path coverage.
-3. **Use the fast development profile while iterating**, land behind the
-   scoped presubmit (`skills/compound-land/SKILL.md` §1), and let the canonical
-   proof bundle run on the landed tip after the land:
-   ```sh
-   go run ./cmd/compound proof-check --dev --base main
-   ```
-   `--dev` runs repository-wide `go test -short` with Go's content-addressed
-   cache: unchanged package passes are reused, while packages rerun when their
-   source, dependencies, or observed test inputs change. It also checks formatting,
-   the diff, strict architecture, changed-file redaction, and console TypeScript
-   when relevant. This is iteration feedback only: it does not write canonical
-   installed-runtime proof evidence or satisfy pre-land or post-land proof.
+1. **Send a pull request against `main`.** For anything beyond a small fix, open an issue first.
+2. **Write tests that would fail if the depth were wrong.** A test should catch a real failure mode,
+   not only cover the happy path.
+3. **Iterate with `proof-check --dev`**, then run the full bundle from the Test section.
+4. **One logical change per pull request.** If the change teaches something about the architecture,
+   update the docs, contracts and tests in the same change.
+5. **CI runs subsets on a fresh clone, not the certifying battery.** Hosted GitHub Actions are
+   disabled here; `.woodpecker.yml` runs CI. The files under `.github/workflows/` are inactive and
+   kept for tests. See the [release procedure](docs/release.md).
 
-   Then run the canonical full proof command from the Test section.
-   The caller-selected base is captured as a full SHA; it is not inferred from
-   `git_delivery.expected_base_sha`. Certifying proof refuses a dirty or
-   uncommitted candidate, resolves the base once, and seals repository fingerprint,
-   base SHA, HEAD SHA, tree SHA, and clean state. Diff-check and redact inspect that
-   same committed `base...HEAD`; a rebase, replay, or new HEAD invalidates the prior
-   proof and requires a fresh battery.
+### Proof rules for landing
 
-   Canonical gates run from a detached temporary checkout of that sealed HEAD,
-   with only the four ceremony-owned ignored inputs copied as snapshots. The
-   mutable caller worktree is only revalidated; its bytes are never the gate
-   execution surface.
+These apply when a maintainer lands a change on `main`. The landing steps are in
+[`skills/compound-land/SKILL.md`](skills/compound-land/SKILL.md).
 
-   `--out` is the authoritative report. A new report is private; an ordinary
-   existing file keeps its mode. Symlink, non-regular, or raced targets are refused,
-   publication is atomic within the captured parent, and timing warnings are sealed
-   before file, installed artifact, and JSON output agree. For source-controlled
-   close, the `land-check` candidate tip, current attached commit candidate, and
-   stored successful proof HEAD must match; close refuses a mismatched or rebased
-   tip.
-4. **One logical change per PR.** If your change teaches something about the
-   architecture, update the docs/contracts/tests in the same change.
-5. **CI runs fresh-clone subsets, not the certifying battery.** GitHub-hosted
-   Actions are disabled in this repository. `.woodpecker.yml` runs routine CI and
-   gated release builds on the owned Woodpecker agent. Publication starts on the
-   maintainer's machine as a draft, then requires explicit operator review and
-   publication. The tracked `.github/workflows/proof.yml` and
-   `.github/workflows/release.yml` files are inactive references kept for tests.
-   See [Release procedure](docs/release.md). A landed tip is certified locally by
-   the full `proof-check` battery run on it after the land, never by CI alone.
+- A scoped presubmit gates the fast-forward:
+  `go run ./cmd/compound proof-check --presubmit --base <full-sha> --out <file>`. The full bundle
+  then runs once on the landed commit.
+- Capture `PRE_LAND_BASE_SHA` once, before the land, and reuse that exact SHA for the run on the
+  landed commit. Never capture `main^{commit}` again after landing.
+- A rebase, replay, or new HEAD invalidates prior proof and requires a fresh battery.
+- For source-controlled work, a committed stored successful proof is required: `land-check`
+  candidate tip, current attached commit candidate, and stored proof HEAD must match; close refuses
+  a missing, mismatched, or rebased proof.
 
-A rebase, replay, or new HEAD invalidates prior proof and requires a fresh battery.
-For source-controlled work, a committed stored successful proof is required:
-`land-check` candidate tip, current attached commit candidate, and stored proof HEAD
-must match; close refuses a missing, mismatched, or rebased proof.
+## Good contributions
 
-## What makes a good contribution
-
-- A test that catches a failure mode nobody had considered
-- A doc that makes a concept click for someone new
-- A fixture that proves an envelope shape works
-- A bug fix with a regression test
-- A retirement: removing a scattered surface that a spine object now owns
+- A test that catches a failure mode nobody had considered.
+- A doc that makes a concept click for someone new.
+- A fixture that proves an envelope shape works.
+- A bug fix with a regression test.
+- A retirement: removing a scattered surface that a spine object now owns.
 
 ## What to avoid
 
-- Adding a new service or authority center (Compound is a monolith with deep
-  modules, not microservices)
-- Building ahead of a slice that needs it (one vertical slice, proven with a
-  command + fixtures, then retire the parallel handling)
-- Storing model output as truth (model extracts; code decides)
-- Prompt-level governance (policy is enforced at adapters, not asked in a
-  prompt)
+- A new service or authority center. Compound is one program with deep modules, not microservices.
+- Building ahead of a slice that needs it. Prove one vertical slice with a command and fixtures,
+  then retire the parallel handling.
+- Storing model output as truth. The model extracts; code decides.
+- Governance in a prompt. Policy is enforced at the adapters, not requested in a prompt.
 
-## Questions?
+## Questions and security reports
 
-Open an issue. Compound's architecture docs are thorough — start with
-[`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the reading order.
-Potential vulnerabilities must use the private reporting path in
-[`SECURITY.md`](./SECURITY.md) after that route is verified. Before then, a
-public issue may request a private channel but must not contain exploit details
-or private runtime data.
+Open an issue for questions. [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) gives the reading
+order for the architecture docs. Report a possible vulnerability privately, as
+[`SECURITY.md`](./SECURITY.md) describes, never in a public issue.
