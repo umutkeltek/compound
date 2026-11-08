@@ -134,19 +134,35 @@ func promotionBasisForStatus(s string) string {
 	}
 }
 
+// CanonicalStatus maps a source status line onto the five lifecycle statuses.
+//
+// An empty status keeps the long-standing default, accepted: decision pages
+// without a status line import as in force. A non-empty status must name its
+// state. A word that names no known state is proposed, so it is parked for
+// review: `revoked`, `paused` or a typo never becomes an active decision.
+// Before 2026-11-08 every unknown word, including `revoked`, read as accepted.
 func CanonicalStatus(s string) string {
-	s = strings.ToLower(s)
+	s = strings.ToLower(strings.TrimSpace(s))
 	switch {
+	case s == "":
+		return StatusAccepted
 	case strings.Contains(s, "supersed"):
 		return StatusSuperseded
 	case strings.Contains(s, "propos"), strings.Contains(s, "open"), strings.Contains(s, "draft"):
 		return StatusProposed
-	case strings.Contains(s, "deprecat"), strings.Contains(s, "retired"):
+	case strings.Contains(s, "deprecat"), strings.Contains(s, "retired"), strings.Contains(s, "inactive"),
+		strings.Contains(s, "revok"), strings.Contains(s, "withdr"), strings.Contains(s, "rescind"):
 		return StatusDeprecated
 	case strings.Contains(s, "reject"):
 		return StatusRejected
-	default:
+	case strings.Contains(s, "not accept"), strings.Contains(s, "unaccept"), strings.Contains(s, "non-accept"):
+		return StatusProposed
+	case strings.Contains(s, "accept"), strings.Contains(s, "approv"), strings.Contains(s, "ratif"),
+		strings.Contains(s, "adopt"), strings.Contains(s, "active"), strings.Contains(s, "in force"),
+		strings.Contains(s, "in-force"), strings.Contains(s, "in_force"):
 		return StatusAccepted
+	default:
+		return StatusProposed
 	}
 }
 
