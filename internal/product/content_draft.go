@@ -78,6 +78,7 @@ var contentDraftPlatforms = map[string]bool{
 	"instagram": true,
 	"tiktok":    true,
 	"facebook":  true,
+	"reddit":    true,
 }
 
 // contentDraftPlatformAliases maps other names for a platform onto its canonical

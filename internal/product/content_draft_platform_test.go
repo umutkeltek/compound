@@ -28,7 +28,7 @@ func recordOnPlatform(t *testing.T, homePath, platform string) (ContentDraft, er
 // then marked posted with the real post id. The lifecycle is the same; only the
 // transport differs. Excluding it would lose the record of a post that happened.
 func TestContentDraftAcceptsEveryOperatorApprovedPlatform(t *testing.T) {
-	for _, platform := range []string{"x", "bluesky", "threads", "instagram", "tiktok", "facebook"} {
+	for _, platform := range []string{"x", "bluesky", "threads", "instagram", "tiktok", "facebook", "reddit"} {
 		t.Run(platform, func(t *testing.T) {
 			homePath := t.TempDir()
 			draft, err := recordOnPlatform(t, homePath, platform)
