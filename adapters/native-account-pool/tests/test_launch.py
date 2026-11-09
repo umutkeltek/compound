@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -24,12 +25,20 @@ class LaunchTest(unittest.TestCase):
         self.marker = self.root / "switchback.json"
         self.compound = self.root / "compound"
         self.compound.write_text("""#!/usr/bin/env python3
-import os, sys, time
+import os, subprocess, sys, time
 from pathlib import Path
 assert sys.argv[1:] == ['policy','presence','show','--json']
 kind = os.environ.get('FAKE_PRESENCE')
 if kind == 'nonzero': sys.exit(9)
 if kind == 'timeout': time.sleep(5)
+if kind == 'closed_pipes':
+    os.close(1); os.close(2); time.sleep(10)
+if kind == 'held_pipe':
+    subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+if kind == 'flood_stdout':
+    os.write(1, b'x' * 20000); time.sleep(10)
+if kind == 'flood_stderr':
+    os.write(2, b'x' * 20000); time.sleep(10)
 if kind == 'malformed': print('{'); sys.exit(0)
 print(Path(os.environ['PRESENCE_FILE']).read_text())
 """)
@@ -131,6 +140,27 @@ print('native-output')
             with self.subTest(kind=kind):
                 self.assert_denied(self.run_launch("--", *self.native,
                                   env=dict(self.env, FAKE_PRESENCE=kind)), code)
+
+    def test_presence_probe_bounds_both_pipes_and_descendants(self):
+        for kind in ("flood_stdout", "flood_stderr", "closed_pipes", "held_pipe"):
+            with self.subTest(kind=kind):
+                started = time.monotonic()
+                self.assert_denied(self.run_launch("--", *self.native,
+                                  env=dict(self.env, FAKE_PRESENCE=kind)),
+                                  "presence_unavailable")
+                self.assertLess(time.monotonic() - started, 5)
+
+    def test_executables_must_be_owned_safe_regular_targets(self):
+        alias = self.root / "sb-alias"
+        alias.symlink_to(self.switchback)
+        self.config["switchback_cli"] = str(alias)
+        self.write_config()
+        self.assertEqual(self.run_launch("--plan").returncode, 0)
+        self.switchback.chmod(0o722)
+        self.assert_denied(self.run_launch("--plan"), "executable_invalid")
+        self.switchback.chmod(0o700)
+        self.compound.chmod(0o702)
+        self.assert_denied(self.run_launch("--plan"), "executable_invalid")
 
     def test_settings_and_config_drift_and_unsafe_files(self):
         self.settings.write_text('{"changed":true}')

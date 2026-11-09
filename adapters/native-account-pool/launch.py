@@ -6,8 +6,11 @@ import json
 import os
 from pathlib import Path
 import re
+import selectors
+import signal
 import stat
 import subprocess
+import time
 import sys
 from datetime import datetime, timezone
 from uuid import UUID
@@ -85,11 +88,17 @@ def load_config(path, expected):
         refuse("timeout_invalid")
     for name in ("switchback_cli", "compound_cli"):
         try:
-            info = os.stat(config[name], follow_symlinks=False)
+            link = os.lstat(config[name])
+            info = os.stat(config[name])
         except OSError:
             refuse("executable_unavailable")
-        if not stat.S_ISREG(info.st_mode) or not info.st_mode & 0o111:
+        if (link.st_uid not in (os.getuid(), 0)
+                or info.st_uid not in (os.getuid(), 0)
+                or not stat.S_ISREG(info.st_mode)
+                or info.st_mode & 0o022
+                or not info.st_mode & 0o111):
             refuse("executable_invalid")
+
     return config, revision
 
 
@@ -105,16 +114,71 @@ def parse_time(value):
     return result.astimezone(timezone.utc)
 
 
+def presence_output(cli):
+    """Read both pipes to EOF under one deadline without reaping before group cleanup."""
+    try:
+        process = subprocess.Popen(
+            [cli, "policy", "presence", "show", "--json"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+    except OSError:
+        refuse("presence_unavailable")
+    deadline = time.monotonic() + 3
+    reaped = False
+    reader = selectors.DefaultSelector()
+    output = {process.stdout: bytearray(), process.stderr: bytearray()}
+    try:
+        for stream in output:
+            os.set_blocking(stream.fileno(), False)
+            reader.register(stream, selectors.EVENT_READ)
+        while reader.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                refuse("presence_unavailable")
+            events = reader.select(remaining)
+            if not events:
+                refuse("presence_unavailable")
+            for key, _ in events:
+                chunk = os.read(key.fileobj.fileno(), 4096)
+                if not chunk:
+                    reader.unregister(key.fileobj)
+                    continue
+                output[key.fileobj].extend(chunk)
+                if len(output[key.fileobj]) > MAX_PRESENCE:
+                    refuse("presence_unavailable")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            refuse("presence_unavailable")
+        try:
+            status = process.wait(timeout=remaining)
+            reaped = True
+        except subprocess.TimeoutExpired:
+            refuse("presence_unavailable")
+        if status:
+            refuse("presence_unavailable")
+        return bytes(output[process.stdout])
+    except OSError:
+        refuse("presence_unavailable")
+    finally:
+        reader.close()
+        if not reaped:
+            # The session leader has not been waited on, so its PGID cannot be
+            # reused even if it exited while a grandchild held a pipe open.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+        process.stdout.close()
+        process.stderr.close()
+
+
 def check_presence(cli):
+    raw = presence_output(cli)
     try:
-        result = subprocess.run([cli, "policy", "presence", "show", "--json"],
-                                capture_output=True, timeout=3, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        refuse("presence_unavailable")
-    if result.returncode or len(result.stdout) > MAX_PRESENCE:
-        refuse("presence_unavailable")
-    try:
-        data = json.loads(result.stdout)
+        data = json.loads(raw)
     except (ValueError, UnicodeDecodeError):
         refuse("presence_invalid")
     if not isinstance(data, dict) or data.get("effective") != "away":

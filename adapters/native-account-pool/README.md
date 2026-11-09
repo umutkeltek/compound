@@ -19,7 +19,7 @@ Create an operator-owned regular JSON file at an absolute private path, mode `06
 }
 ```
 
-The account names are ordered Switchback profile names, not credentials. Both config and settings must be owned regular leaf files without symlinks or group/other write access; settings is bounded to 1 MiB. The selected settings path must be the exact profile whose current settings Compound validates. Never add credential bodies, tokens or secrets to this config. No implicit global config is read.
+The CLI paths must resolve to regular executables owned by the operator or root, with no group/other write permission. An owned executable symlink may point to such a target. The account names are ordered Switchback profile names, not credentials. Both config and settings must be owned regular leaf files without symlinks or group/other write access; settings is bounded to 1 MiB. The selected settings path must be the exact profile whose current settings Compound validates. Never add credential bodies, tokens or secrets to this config. No implicit global config is read.
 
 Before activating an alias, configure and verify that profile set through Switchback's existing account doors, and import the owned execution tuple through Compound's existing authority doors. Keep the native CLI executable and the private config in their existing owner habitats. This repository does not install either one or prove live authentication, capture, inference or account availability.
 
