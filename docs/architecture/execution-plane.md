@@ -43,6 +43,16 @@ The interactive harness boundary follows the same split:
   explicit launch inputs to the transport, and can be deleted without moving either authority. The gateway must
   not read Compound policy files, and Compound must not proxy model traffic.
 
+### Native Claude account pool composition edge
+
+The optional [native account pool adapter](../../adapters/native-account-pool/README.md)
+checks a current Compound away window and the exact bytes of the Compound-validated
+Claude profile settings, then hands the existing ClaudeAdapter's admitted native argv
+to Switchback. Switchback rechecks a sealed config digest through a callback before
+each account launch and owns account selection, retries and capture. The wrapper
+owns no permission, hook, policy or account authority. It supports Claude only;
+Codex needs a separately proved native adapter contract.
+
 ### Native OpenCode prompt-only adapter
 
 The `opencode` adapter is a native, prompt-only consumer of the existing model-router
