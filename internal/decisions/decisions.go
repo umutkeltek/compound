@@ -138,9 +138,12 @@ func promotionBasisForStatus(s string) string {
 //
 // An empty status keeps the long-standing default, accepted: decision pages
 // without a status line import as in force. A non-empty status must name its
-// state. A word that names no known state is proposed, so it is parked for
-// review: `revoked`, `paused` or a typo never becomes an active decision.
-// Before 2026-11-08 every unknown word, including `revoked`, read as accepted.
+// state. Acceptance requires an exact affirmative alias, or the legacy
+// "accepted (YYYY-MM-DD)" form with a valid date. Conditions, negations, arbitrary
+// annotations and typos cannot confer authority merely by containing an alias.
+// Other unknown states are proposed and parked for review. Non-accepted legacy
+// prose keeps its conservative precedence; operational imports separately require
+// explicit canonical status and operator provenance. Source bytes are not rewritten.
 func CanonicalStatus(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	switch {
@@ -157,11 +160,19 @@ func CanonicalStatus(s string) string {
 		return StatusRejected
 	case strings.Contains(s, "not accept"), strings.Contains(s, "unaccept"), strings.Contains(s, "non-accept"):
 		return StatusProposed
-	case strings.Contains(s, "accept"), strings.Contains(s, "approv"), strings.Contains(s, "ratif"),
-		strings.Contains(s, "adopt"), strings.Contains(s, "active"), strings.Contains(s, "in force"),
-		strings.Contains(s, "in-force"), strings.Contains(s, "in_force"):
+	case s == "accepted", s == "approved", s == "ratified", s == "adopted",
+		s == "active", s == "in force", s == "in-force", s == "in_force":
 		return StatusAccepted
 	default:
+		// A date is the only supported legacy annotation, not arbitrary prose
+		// in parentheses (which could qualify or negate the apparent acceptance).
+		if date, ok := strings.CutPrefix(s, "accepted ("); ok {
+			if date, ok = strings.CutSuffix(date, ")"); ok {
+				if parsed, err := time.Parse(time.DateOnly, date); err == nil && parsed.Format(time.DateOnly) == date {
+					return StatusAccepted
+				}
+			}
+		}
 		return StatusProposed
 	}
 }
