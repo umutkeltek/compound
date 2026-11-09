@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -23,6 +24,8 @@ class LaunchTest(unittest.TestCase):
         self.settings.chmod(0o600)
         self.presence = self.root / "presence.json"
         self.marker = self.root / "switchback.json"
+        self.survivor = self.root / "survived.txt"
+        self.started = self.root / "started.txt"
         self.compound = self.root / "compound"
         self.compound.write_text("""#!/usr/bin/env python3
 import os, subprocess, sys, time
@@ -33,6 +36,16 @@ if kind == 'nonzero': sys.exit(9)
 if kind == 'timeout': time.sleep(5)
 if kind == 'closed_pipes':
     os.close(1); os.close(2); time.sleep(10)
+if kind == 'cancel_child':
+    subprocess.Popen([sys.executable, '-c',
+        "import os,time;from pathlib import Path;time.sleep(1.5);Path(os.environ['SURVIVOR_MARKER']).write_text('survived')"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    Path(os.environ['STARTED_MARKER']).write_text('started')
+    time.sleep(30)
+if kind == 'quiet_child':
+    subprocess.Popen([sys.executable, '-c',
+        "import os,time;from pathlib import Path;time.sleep(1.5);Path(os.environ['SURVIVOR_MARKER']).write_text('survived')"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 if kind == 'held_pipe':
     subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
 if kind == 'flood_stdout':
@@ -69,7 +82,7 @@ print('native-output')
         self.write_config()
         self.set_window()
         self.native = ["--print", "--permission-mode", "plan", "--session-id", str(uuid4()), "private prompt"]
-        self.env = dict(os.environ, PRESENCE_FILE=str(self.presence), MARKER_FILE=str(self.marker))
+        self.env = dict(os.environ, PRESENCE_FILE=str(self.presence), MARKER_FILE=str(self.marker), SURVIVOR_MARKER=str(self.survivor), STARTED_MARKER=str(self.started))
 
     def write_config(self):
         self.config_path.write_text(json.dumps(self.config))
@@ -149,6 +162,34 @@ print('native-output')
                                   env=dict(self.env, FAKE_PRESENCE=kind)),
                                   "presence_unavailable")
                 self.assertLess(time.monotonic() - started, 5)
+
+    def test_successful_leader_cannot_leave_quiet_descendant(self):
+        result = self.run_launch("--plan", env=dict(self.env, FAKE_PRESENCE="quiet_child"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        time.sleep(1.8)
+        self.assertFalse(self.survivor.exists(), "presence descendant survived leader")
+
+    def test_sigterm_cancels_presence_group(self):
+        env = dict(self.env, FAKE_PRESENCE="cancel_child")
+        process = subprocess.Popen([sys.executable, str(LAUNCH), "--config",
+                                    str(self.config_path), "--plan"],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   text=True, env=env)
+        try:
+            deadline = time.monotonic() + 3
+            while not self.started.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(self.started.exists(), "presence child never started")
+            os.kill(process.pid, signal.SIGTERM)
+            out, err = process.communicate(timeout=5)
+            self.assertEqual(process.returncode, 75, out + err)
+            self.assertEqual(json.loads(err)["error"], "presence_cancelled")
+            time.sleep(1.8)
+            self.assertFalse(self.survivor.exists(), "presence descendant survived cancellation")
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=2)
 
     def test_executables_must_be_owned_safe_regular_targets(self):
         alias = self.root / "sb-alias"

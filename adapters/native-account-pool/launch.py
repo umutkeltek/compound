@@ -114,19 +114,62 @@ def parse_time(value):
     return result.astimezone(timezone.utc)
 
 
+ANCHOR = "import os, signal, subprocess, sys\ntry:\n    child = subprocess.Popen([sys.argv[1], \"policy\", \"presence\", \"show\", \"--json\"])\n    status = child.wait()\nexcept OSError:\n    status = 127\nos.write(int(sys.argv[2]), str(status).encode(\"ascii\"))\nos.close(int(sys.argv[2]))\nos.close(1)\nos.close(2)\nsignal.pause()\n"
+
+
 def presence_output(cli):
-    """Read both pipes to EOF under one deadline without reaping before group cleanup."""
+    cancellation = {"armed": False, "pending": False}
+
+    def on_cancel(signum, frame):
+        if cancellation["armed"]:
+            refuse("presence_cancelled")
+        cancellation["pending"] = True
+
+    saved = []
     try:
-        process = subprocess.Popen(
-            [cli, "policy", "presence", "show", "--json"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            saved.append((signum, signal.signal(signum, on_cancel)))
+        if cancellation["pending"]:
+            refuse("presence_cancelled")
+        result = _presence_output(cli, cancellation)
+        if cancellation["pending"]:
+            refuse("presence_cancelled")
+        return result
+    except ValueError:
+        refuse("presence_unavailable")
+    finally:
+        for signum, old in reversed(saved):
+            signal.signal(signum, old)
+
+
+def _presence_output(cli, cancellation):
+    """Read bounded presence output with a live process-group anchor."""
+    if not hasattr(os, "killpg") or not hasattr(signal, "pause"):
+        refuse("presence_unavailable")
+    try:
+        status_read, status_write = os.pipe()
     except OSError:
         refuse("presence_unavailable")
-    deadline = time.monotonic() + 3
+    process = None
+    status_stream = None
+    reader = None
     reaped = False
-    reader = selectors.DefaultSelector()
-    output = {process.stdout: bytearray(), process.stderr: bytearray()}
     try:
+        process = subprocess.Popen(
+            [sys.executable, "-c", ANCHOR, cli, str(status_write)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            pass_fds=(status_write,), start_new_session=True)
+        cancellation["armed"] = True
+        if cancellation["pending"]:
+            refuse("presence_cancelled")
+        os.close(status_write)
+        status_write = None
+        status_stream = os.fdopen(status_read, "rb", buffering=0)
+        status_read = None
+        deadline = time.monotonic() + 3
+        reader = selectors.DefaultSelector()
+        output = {process.stdout: bytearray(), process.stderr: bytearray(),
+                  status_stream: bytearray()}
         for stream in output:
             os.set_blocking(stream.fileno(), False)
             reader.register(stream, selectors.EVENT_READ)
@@ -143,26 +186,34 @@ def presence_output(cli):
                     reader.unregister(key.fileobj)
                     continue
                 output[key.fileobj].extend(chunk)
-                if len(output[key.fileobj]) > MAX_PRESENCE:
+                limit = 32 if key.fileobj is status_stream else MAX_PRESENCE
+                if len(output[key.fileobj]) > limit:
                     refuse("presence_unavailable")
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
+        status_bytes = bytes(output[status_stream])
+        if not re.fullmatch(rb"-?[0-9]{1,3}", status_bytes):
             refuse("presence_unavailable")
+        # The anchor stays alive after reporting status. Kill its group before
+        # reaping the leader, including quiet descendants with closed pipes.
         try:
-            status = process.wait(timeout=remaining)
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        cancellation["armed"] = False
+        try:
+            process.wait(timeout=1)
             reaped = True
         except subprocess.TimeoutExpired:
             refuse("presence_unavailable")
-        if status:
+        if int(status_bytes):
             refuse("presence_unavailable")
         return bytes(output[process.stdout])
     except OSError:
         refuse("presence_unavailable")
     finally:
-        reader.close()
-        if not reaped:
-            # The session leader has not been waited on, so its PGID cannot be
-            # reused even if it exited while a grandchild held a pipe open.
+        cancellation["armed"] = False
+        if reader is not None:
+            reader.close()
+        if process is not None and not reaped:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
@@ -171,8 +222,15 @@ def presence_output(cli):
                 process.wait(timeout=1)
             except subprocess.TimeoutExpired:
                 pass
-        process.stdout.close()
-        process.stderr.close()
+        if process is not None:
+            process.stdout.close()
+            process.stderr.close()
+        if status_stream is not None:
+            status_stream.close()
+        if status_read is not None:
+            os.close(status_read)
+        if status_write is not None:
+            os.close(status_write)
 
 
 def check_presence(cli):
