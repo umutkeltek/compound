@@ -658,8 +658,8 @@ Harness execution consumes the same authority instead of maintaining a second wr
 model id, alias, then harness id form the resolution precedence; ambiguity fails closed. A declared
 `capacity_source` binds quota evidence to its own provider ref (for example
 `codexbar://provider/qwencloud`) even when the execution route has another name. Capacity admission
-also accepts `kind: switchback_native_pool` with
-`ref: switchback://account-pools/<pool>`. It invokes Switchback's read-only Rust
+also accepts a native account-pool source; its `kind` and `ref` scheme are defined in
+`internal/routeevidence/native_pool_capacity.go`. It invokes the pool transport's read-only
 pool observation command with a bounded deadline and output size, validates the
 pool, revision, membership counts, timestamps and required quota windows, and
 passes the result through the same capacity policy. Available member percentages
