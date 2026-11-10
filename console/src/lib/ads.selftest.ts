@@ -81,7 +81,7 @@ function platform(over: Partial<AdsPlatformView>): AdsPlatformView {
 }
 
 const FIXTURE = {
-  schema_version: "compound.product_ads.v0.1",
+  schema_version: "compound.product_ads.v0.2",
   authority_ref: "compound://ledger/product-ads",
   generated_at: "2026-09-03T12:00:00Z",
   status: "ok",
@@ -129,7 +129,7 @@ export function runAdsSelfTest(): { ok: boolean; details: string[] } {
   checks.push({ name: "null projection maps to null (unreachable door stays honest)", ok: mapAdsProjection(null) === null, detail: "null → null" });
   checks.push({
     name: "projection header + window map",
-    ok: !!proj && proj.schemaVersion === "compound.product_ads.v0.1" && proj.window.days === 3 && proj.window.previousStart === "2026-08-29" && proj.status === "ok",
+    ok: !!proj && proj.schemaVersion === "compound.product_ads.v0.2" && proj.window.days === 3 && proj.window.previousStart === "2026-08-29" && proj.status === "ok",
     detail: proj ? `${proj.schemaVersion} ${proj.window.start}..${proj.window.end}` : "null",
   });
   checks.push({

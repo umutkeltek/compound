@@ -127,7 +127,7 @@ async function consoleSourceFor(candidate: Json): Promise<Json | null> {
  * items/counts/generated_at shape without those extra lookups; it only omits
  * `source_trace_ref`, `evidence_refs`, the nested `evidence` quote object,
  * `annotations`, and `believed_before` per item. No page-load render path
- * reads those fields (the memory-adjudicate DecisionCard/Dialog fall back to
+ * reads those fields (the memory-adjudicate views fall back to
  * `qualifiers.*`, which is always present), so they are dropped entirely from
  * this loader rather than fetched-then-ignored. If a future component needs
  * per-item evidence/annotations, fetch it on demand for that one item rather

@@ -99,7 +99,6 @@ Optional local-only gates:
   `COMPOUND_HOME`, require same-origin localhost POSTs plus the out-of-band
   capability header, and execute through the server-resolved decision
   endpoint. The standard UI remains copy-only.
-  Legacy mutation routes are compatibility adapters only.
 - If a card cannot name a projection, it does not ship.
 
 ## Stable destinations + contextual append
