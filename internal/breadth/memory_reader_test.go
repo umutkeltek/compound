@@ -61,6 +61,9 @@ func TestReadOnlyMemoryReaderUsesSemanticCacheWithoutWriting(t *testing.T) {
 		t.Fatalf("semantic recall: %v %v %v", hits, degraded, err)
 	}
 	hits, err = reader.Query("system", mem.GateList, []string{"decoy"}, 2)
+	if err != nil {
+		t.Fatalf("masked recall: %v", err)
+	}
 	for _, h := range hits {
 		if h.ClaimID == "winner" {
 			t.Fatal("masked claim leaked")
