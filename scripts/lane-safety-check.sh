@@ -73,8 +73,9 @@ else
 fi
 
 # 3. Check main compiles. Compilation failure is always fatal; warnings never
-# downgrade it to a successful exit.
-if go build ./cmd/compound 2>/dev/null; then
+# downgrade it to a successful exit. The output is discarded: a bare
+# `go build ./cmd/compound` would leave a ~50 MB binary in the checkout root.
+if go build -o /dev/null ./cmd/compound 2>/dev/null; then
   echo -e "${GREEN}[ok]${NC} cmd/compound compiles"
 else
   echo -e "${RED}[fail]${NC} cmd/compound does NOT compile — do not land"
