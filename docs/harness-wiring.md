@@ -630,7 +630,7 @@ Compound preserves work lineage and evidence across supported harnesses; each
 executor still needs its own [configured route](#first-model-route). The
 [installed acceptance drill](../scripts/installed-release-acceptance.mjs)
 exercises interruption and resume with a synthetic Codex-compatible worker,
-as described in [Getting Started](getting-started.md#1-install). It does not
+as described in the [release guide](release.md). It does not
 establish Claude-to-Codex model handoff or guarantee that every task's ContextPack
 contains all necessary context. Verify the receiving executor's actual
 continuation outcome.

@@ -244,7 +244,7 @@ Architecture, in reading order: [LAYERS](LAYERS.md), [status](architecture/statu
 [source adapters](architecture/source-adapters.md) and
 [legacy system retirement](operations/legacy-system-retirement.md). Every package under `internal/`
 belongs to exactly one layer of `docs/LAYERS.md`, and `compound architecture doctor --strict`
-enforces it. Importer packages (`authority`, `decisions`, `eventsource`, `sourceobs`,
+enforces it. Importer packages (`authority`, `decisions`, `eventsource`, `knowledge`, `sourceobs`,
 `tooltopology`) adapt existing systems without becoming new owners.
 
 Search engines, vector indexes, model providers, harnesses, MCP servers, browser tools, analytics

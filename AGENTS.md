@@ -175,9 +175,9 @@ compound **observes** executions; it does not become one. The rail is proven by 
 - **Lane identity vs harness type are distinct.** The lane id (the profile: config-dir + statusline) is NOT the
   harness type that names the hook-authority source. Claude-flavored lanes install hooks via their lane's hook
   harness (`install-lane.sh` maps lane→harness, e.g. `--harness claude-zai --config-dir <profile>`) — `hook
-  install`'s allowlist is harness *types* (`claude-code|claude-zai|claude-minimax|claude-qwen|codex|all`) and
-  `--config-dir` is gated to the isolated Claude-family profiles (`claude-zai`, `claude-minimax`,
-  `claude-qwen`), so a raw lane id there fails.
+  install`'s allowlist is harness *types* (`claude-code|claude-zai|claude-minimax|claude-qwen|codex|opencode|
+  oh-my-pi|all`) and `--config-dir` takes exactly one isolated-profile harness (`claude-code`, `claude-zai`,
+  `claude-minimax`, `claude-qwen`, `oh-my-pi`), so a raw lane id there fails.
 
 ## Multi-session coordination (several lanes work this repo at once)
 - **`compound coordination [--actor A]` is the read-only me / others / waiting-on projection** (the console's
