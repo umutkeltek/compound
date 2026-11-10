@@ -1,8 +1,6 @@
 package harness
 
 import (
-	"time"
-
 	"compound/internal/runattempt"
 )
 
@@ -56,12 +54,6 @@ var ohMyPiSpec = piCodingAgentSpec{
 // NewOhMyPiAdapter returns the production adapter. Heartbeats every 5s.
 func NewOhMyPiAdapter(store *runattempt.Store) *OhMyPiAdapter {
 	return newPiCodingAgentAdapter(ohMyPiSpec, store, defaultHeartbeatInterval)
-}
-
-// NewOhMyPiAdapterWithInterval returns an adapter with a custom heartbeat
-// cadence. Test-only.
-func NewOhMyPiAdapterWithInterval(store *runattempt.Store, interval time.Duration) *OhMyPiAdapter {
-	return newPiCodingAgentAdapter(ohMyPiSpec, store, interval)
 }
 
 // FormatOhMyPiDryRunPrompt is the canonical argv-printed summary the verifier

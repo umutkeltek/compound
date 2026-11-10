@@ -568,10 +568,6 @@ func (t *archiveRestoreTarget) readRegularFile(rel string) ([]byte, error) {
 	return data, nil
 }
 
-func (t *archiveRestoreTarget) validatePinnedHome() error {
-	return t.validatePinnedHomeWithStreamed(false)
-}
-
 func (t *archiveRestoreTarget) validatePinnedHomeWithStreamed(streamed bool) error {
 	rootInfo, err := t.root.Stat(".")
 	if err != nil {

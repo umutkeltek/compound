@@ -85,9 +85,3 @@ func (r *Registry) Names() []string {
 	sort.Strings(out)
 	return out
 }
-
-// Has reports whether name is registered. Convenience over Get.
-func (r *Registry) Has(name string) bool {
-	_, ok := r.Get(name)
-	return ok
-}

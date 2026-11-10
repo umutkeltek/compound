@@ -7,18 +7,8 @@ import (
 	"time"
 
 	"compound/internal/envelope"
-	"compound/internal/hook"
 	"compound/internal/policy"
 )
-
-func TriageTranscript(path string, in AskTriageInput) (AskTriageResult, error) {
-	ask, err := hook.LastBlockingAsk(path)
-	if err != nil {
-		return AskTriageResult{}, err
-	}
-	in.Ask, in.Context = ask.Text, ask.Context
-	return TriageAsk(in), nil
-}
 
 type AskDisposition string
 
@@ -116,10 +106,6 @@ func TriageAsk(in AskTriageInput) AskTriageResult {
 		}
 	}
 	return AskTriageResult{Disposition: AskNeedsOperator, RiskReason: risk.Reason, Brief: prepareAskBrief(in)}
-}
-
-func askExitsEnvelope(ask string) bool {
-	return assessAskRisk(ask, policy.DefaultConfig()).Reason != ""
 }
 
 func assessAskRisk(ask string, cfg policy.Config) AskRiskAssessment {

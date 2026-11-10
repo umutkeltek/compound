@@ -43,12 +43,6 @@ func ensureConfig(home string) (created bool, err error) {
 	return true, nil
 }
 
-// EnsureConfigSeeded pre-seeds the config for status/collector-facing reads. Idempotent.
-func EnsureConfigSeeded(home string) error {
-	_, err := ensureConfig(home)
-	return err
-}
-
 // removeConfigIfPresent deletes the config file (compensation when a governed toggle fails AFTER this
 // pass created the baseline — mirrors deleteLaneEntry).
 func removeConfigIfPresent(home string) error {

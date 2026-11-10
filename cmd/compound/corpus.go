@@ -218,20 +218,6 @@ func boolFlag(args []string, name string) bool {
 	return false
 }
 
-func firstPositional(args []string, valueFlags map[string]bool) string {
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if strings.HasPrefix(arg, "-") {
-			if valueFlags[arg] {
-				i++
-			}
-			continue
-		}
-		return arg
-	}
-	return ""
-}
-
 func newCorpusEmbedder(lane corpus.LaneConfig) (corpus.Embedder, error) {
 	return corpus.NewConfiguredEmbedder(lane)
 }

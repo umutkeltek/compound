@@ -258,23 +258,6 @@ func indexContainsOperation(raw []byte, op string) bool {
 	return indexContainsBytes(raw, spaced)
 }
 
-func splitJSONL(raw []byte) [][]byte {
-	var lines [][]byte
-	start := 0
-	for i, b := range raw {
-		if b == '\n' {
-			if i > start {
-				lines = append(lines, raw[start:i])
-			}
-			start = i + 1
-		}
-	}
-	if start < len(raw) {
-		lines = append(lines, raw[start:])
-	}
-	return lines
-}
-
 func indexContainsBytes(haystack, needle []byte) bool {
 	if len(needle) == 0 {
 		return true

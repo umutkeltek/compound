@@ -544,10 +544,6 @@ func sourceListEvaluationNext(items []ExternalRepoSourceListItem, limit int) []E
 	return limitSourceListFollowUps(filterSourceListFollowUps(items, true), limit)
 }
 
-func sourceListGraphImportNext(items []ExternalRepoSourceListItem, limit int) []ExternalRepoSourceListItem {
-	return limitSourceListFollowUps(filterSourceListGraphImportFollowUps(items), limit)
-}
-
 func filterSourceListFollowUps(items []ExternalRepoSourceListItem, reviewed bool) []ExternalRepoSourceListItem {
 	var out []ExternalRepoSourceListItem
 	for _, item := range items {

@@ -1172,59 +1172,6 @@ func joinTrimmed(values []string, sep string) string {
 	return strings.Join(parts, sep)
 }
 
-func legacyCandidateForItem(export Export, item Item, evidenceID string, now time.Time) mem.Candidate {
-	entity := knowledgeEntity(export.Source.Kind, item.Ref)
-	return mem.Candidate{
-		ID:              "cand_" + shortDigest(entity, evidenceID, item.Title, strings.Join(item.Authors, "\x00"), strings.Join(item.Topics, "\x00")),
-		Entity:          entity,
-		Predicate:       "reference_metadata",
-		Object:          metadataClaim(item),
-		ObservationDate: item.PublishedAt,
-		Confidence:      0.8,
-		Derivation:      "deterministic",
-		// Metadata claims are deterministic tool output from the medium's
-		// authoritative API — the definition of a trusted deterministic import.
-		// LLM-extracted meaning candidates (extraction bridge) must NOT carry
-		// a basis; adjudication earns theirs.
-		PromotionBasis: "trusted_deterministic_import",
-		Qualifiers: map[string]string{
-			"source":      "knowledge_import",
-			"source_kind": export.Source.Kind,
-			"source_ref":  export.Source.Ref,
-			"item_ref":    item.Ref,
-			"canonical":   canonicalRef(item),
-		},
-		SourceTraceRef: evidenceID,
-		SnippetHash:    shortDigest(item.Content, item.ContentRef, evidenceID),
-		Visibility:     candidateVisibility(export.Privacy),
-		State:          "proposed",
-		CreatedAt:      rfc3339(now),
-	}
-}
-
-func metadataClaim(item Item) string {
-	parts := []string{}
-	if item.Title != "" {
-		parts = append(parts, "title="+item.Title)
-	}
-	if len(item.Authors) > 0 {
-		parts = append(parts, "authors="+strings.Join(item.Authors, ", "))
-	}
-	if item.PublishedAt != "" {
-		parts = append(parts, "published_at="+item.PublishedAt)
-	}
-	if len(item.Topics) > 0 {
-		parts = append(parts, "topics="+strings.Join(item.Topics, ", "))
-	}
-	if item.URL != "" {
-		parts = append(parts, "url="+item.URL)
-	}
-	if len(parts) == 0 {
-		return "reference " + item.Ref
-	}
-	return strings.Join(parts, "; ")
-}
-
 func writeExtractionRequest(homePath string, export Export, item Item, evidenceID string, now time.Time) (ExtractionRequest, error) {
 	id := "kx_" + shortDigest(canonicalRef(item), evidenceID)
 	req := ExtractionRequest{

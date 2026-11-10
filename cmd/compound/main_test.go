@@ -45,6 +45,7 @@ import (
 	"compound/internal/sourceobs"
 	"compound/internal/tooltopology"
 	"compound/internal/work"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -14011,15 +14012,6 @@ func findHookReadiness(rows []contract.InstalledHookRuntimeReadiness, harnessNam
 	for i := range rows {
 		if rows[i].Harness == harnessName && rows[i].Hook == hookName {
 			return &rows[i]
-		}
-	}
-	return nil
-}
-
-func findHookAction(actions []contract.HookGateAction, kind string) *contract.HookGateAction {
-	for i := range actions {
-		if actions[i].Kind == kind {
-			return &actions[i]
 		}
 	}
 	return nil

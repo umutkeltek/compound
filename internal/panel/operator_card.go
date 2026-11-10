@@ -69,14 +69,6 @@ func OperatorCardForVerdict(p verdictArtifactPayload) (reviewartifact.OperatorCa
 	return reviewartifact.NewOperatorCard(summary, context, group, unlock)
 }
 
-func OperatorCardForVerdictJSON(data []byte) (reviewartifact.OperatorCard, error) {
-	var payload verdictArtifactPayload
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return reviewartifact.OperatorCard{}, err
-	}
-	return OperatorCardForVerdict(payload)
-}
-
 func (p PanelCapabilityFeedbackPlan) ReviewOperatorCard() (reviewartifact.OperatorCard, error) {
 	return OperatorCardForCapabilityFeedback(p)
 }

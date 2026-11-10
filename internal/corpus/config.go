@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/url"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"unicode"
 
@@ -275,13 +274,4 @@ func safePathComponent(value string) string {
 		return "unknown"
 	}
 	return out
-}
-
-func parseIdentityDim(identity string) int {
-	parts := strings.Split(strings.TrimSpace(identity), ":")
-	if len(parts) < 4 {
-		return 0
-	}
-	n, _ := strconv.Atoi(parts[len(parts)-2])
-	return n
 }

@@ -65,8 +65,6 @@ type doctorHookEnforcement struct {
 	Detail    string   `json:"detail,omitempty"`
 }
 
-type installedHookPosture = hookplan.InstalledHookPosture
-
 type hookProbeTarget struct {
 	Binary          string
 	Args            []string
@@ -230,14 +228,6 @@ func hookPostureLabel(posture string) string {
 		return "explicit enforcement"
 	}
 	return "observation-only"
-}
-
-// probeHookEnforcement retains the original helper's meaning for callers that explicitly want to
-// prove enforcement.
-func probeHookEnforcement(binaryPath string) string {
-	return probeHookPosture(binaryPath, []string{
-		"hook", "pre-tool-use", "--live", "--harness", "claude_code", "--enforce",
-	}, hookPostureEnforced, "claude_code")
 }
 
 // checkHookEnforcementResponse is the pure half: given what the binary printed and the nonce it was

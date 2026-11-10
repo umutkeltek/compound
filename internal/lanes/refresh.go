@@ -579,41 +579,6 @@ func RefreshLaneNoCompile(opts RefreshLaneOptions, harnessName string) (LaneVerd
 	return v, nil
 }
 
-// CheckAllInstalledHarnesses is the read-only twin, used by
-// `compound doctor`. It runs CheckLaneDrift per installed harness
-// and returns the verdicts. Verdict text uses the same `LaneVerdict`
-// struct, so doctor and install.sh share one line shape.
-func CheckAllInstalledHarnesses(opts RefreshLaneOptions) ([]LaneVerdict, error) {
-	names, err := InstalledHarnesses(opts.HomePath)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]LaneVerdict, 0, len(names))
-	for _, name := range names {
-		v, _ := CheckLaneDrift(opts, name)
-		out = append(out, v)
-	}
-	return out, nil
-}
-
-// VerdictLine is the on-disk single-line representation of a
-// LaneVerdict. The install.sh install report, the refresh-lane CLI,
-// and doctor all print this exact string so the operator never sees
-// two different wordings for the same state. Use RenderVerdict to
-// write it to an io.Writer; this helper is for callers that want
-// the bytes.
-func VerdictLine(v LaneVerdict) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "instruction-pack: %s %s", v.Harness, v.Status)
-	if v.Detail != "" {
-		fmt.Fprintf(&b, ": %s", v.Detail)
-	}
-	if v.RepairCommand != "" {
-		fmt.Fprintf(&b, " (run: %s)", v.RepairCommand)
-	}
-	return b.String()
-}
-
 // CLIRefreshOpts is what `compound harness refresh-lane` parses from
 // its own flag set; cmd/compound only forwards parsed values, so the
 // arg-parsing logic stays in this package (cmd/compound is line
@@ -769,32 +734,9 @@ var osUserHome = func() (string, error) {
 	return os.UserHomeDir()
 }
 
-// RunCLICheck is the verb body for the read-only check used by
-// doctor (and any future read-only caller). It returns verdicts
-// produced by CheckLaneDrift per installed harness so the doctor's
-// binding-freshness section reads from the same LaneVerdict struct
-// as the installer's per-lane line.
-func RunCLICheck(opts CLIRefreshOpts) ([]LaneVerdict, error) {
-	now := opts.Now
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	checkOpts := RefreshLaneOptions{
-		HomePath:   opts.HomePath,
-		BinaryPath: opts.BinaryPath,
-		BaseDir:    opts.BaseDir,
-		Now:        now,
-	}
-	if opts.HarnessName != "" {
-		v, err := CheckLaneDrift(checkOpts, opts.HarnessName)
-		return []LaneVerdict{v}, err
-	}
-	return CheckAllInstalledHarnesses(checkOpts)
-}
-
 // PrintVerdicts writes verdicts as JSON or text per opts.JSON.
 // Keeping it here keeps cmd/compound's render path one line; the
-// line shape is owned by RenderVerdict / VerdictLine above.
+// line shape is owned by RenderVerdict above.
 func PrintVerdicts(w io.Writer, verdicts []LaneVerdict, jsonOut bool) error {
 	if jsonOut {
 		enc := json.NewEncoder(w)
@@ -836,17 +778,6 @@ func ValueFlag(args []string, flag string) string {
 		}
 	}
 	return ""
-}
-
-// Exit writes v to stderr as a JSON error and returns exit code 1.
-func Exit(v interface{}) int {
-	b, err := json.MarshalIndent(map[string]interface{}{"error": fmt.Sprintf("%v", v)}, "", "  ")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", v)
-		return 1
-	}
-	fmt.Fprintln(os.Stderr, string(b))
-	return 1
 }
 
 // RenderInstalledLaneDriftVerdicts writes the R3B 2026-09-04 doctor

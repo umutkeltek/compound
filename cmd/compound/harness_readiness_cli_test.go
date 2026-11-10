@@ -382,15 +382,6 @@ func TestHarnessReadinessMissingResolverFailsClosed(t *testing.T) {
 	}
 }
 
-func readinessRepairListContains(values []string, want string) bool {
-	for _, v := range values {
-		if v == want {
-			return true
-		}
-	}
-	return false
-}
-
 func readinessRepairListHasPrefix(values []string, prefix string) bool {
 	for _, v := range values {
 		if strings.HasPrefix(v, prefix) {

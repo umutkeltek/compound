@@ -1349,38 +1349,6 @@ func normalizeLegacyReceiptCursorList(raw json.RawMessage) (json.RawMessage, boo
 	return encoded, true, err
 }
 
-// runPass executes every independent bounded phase. Phase/integrity failures
-// fail immediately; candidate-local failures are collected and returned as a
-// typed partial outcome only after the remaining phases have had a chance to
-// make useful progress.
-func runPass(homePath string, store *mem.Store, opts Options, now time.Time, report *Report) error {
-	promote, dedupe, err := runBasisAndDedupe(store, opts, now)
-	if err != nil {
-		return fmt.Errorf("basis/dedupe phase: %w", err)
-	}
-	report.Promote, report.Dedupe = promote, dedupe
-	imports, err := runImports(homePath, store, opts, now)
-	report.Imports = imports
-	if err != nil {
-		return fmt.Errorf("imports phase: %w", err)
-	}
-	report.LaneBeliefs = runLaneBeliefs(homePath, opts, now)
-	if report.LaneBeliefs.Error != "" {
-		return fmt.Errorf("lane-beliefs phase: %s", report.LaneBeliefs.Error)
-	}
-	sweep, err := runSweep(store, opts, now)
-	if err != nil {
-		report.Sweep = sweep
-		return fmt.Errorf("sweep phase: %w", err)
-	}
-	report.Sweep = sweep
-	report.PendingAfter = sweep.ReconciledPending
-	if failures := partialFailures(*report); len(failures) > 0 {
-		return partialPassError{failures: failures}
-	}
-	return nil
-}
-
 type passRecoveryError struct{ err error }
 
 func (e passRecoveryError) Error() string { return "recovery_required: " + e.err.Error() }

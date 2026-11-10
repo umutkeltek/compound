@@ -336,12 +336,3 @@ func writeWorktreeRetirementJSON(w io.Writer, value any) {
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(value)
 }
-
-func allLowerHex(value string) bool {
-	for _, r := range value {
-		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
-			return false
-		}
-	}
-	return true
-}

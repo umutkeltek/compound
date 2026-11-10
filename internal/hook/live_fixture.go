@@ -453,51 +453,6 @@ func mergeLiveSourceEnvelopes(groups ...[]envelope.SourceEnvelope) []envelope.So
 	return merged
 }
 
-func leastLiveSourceTrust(left, right string) string {
-	leftRank := liveEnumRank(left, envelope.SourceTrustClasses)
-	rightRank := liveEnumRank(right, envelope.SourceTrustClasses)
-	if leftRank < 0 {
-		return right
-	}
-	if rightRank < 0 || leftRank <= rightRank {
-		return left
-	}
-	return right
-}
-
-func mostRestrictiveLiveConfidentiality(left, right string) string {
-	leftRank := liveEnumRank(left, envelope.ConfidentialityClasses)
-	rightRank := liveEnumRank(right, envelope.ConfidentialityClasses)
-	if leftRank >= rightRank {
-		return left
-	}
-	return right
-}
-
-func liveEnumRank(value string, values []string) int {
-	for i := range values {
-		if values[i] == value {
-			return i
-		}
-	}
-	return -1
-}
-
-func intersectLiveSourceSinks(left, right []string) []string {
-	allowed := make(map[string]bool, len(right))
-	for _, sink := range right {
-		allowed[sink] = true
-	}
-	var intersection []string
-	for _, sink := range left {
-		if allowed[sink] {
-			intersection = append(intersection, sink)
-		}
-	}
-	sort.Strings(intersection)
-	return intersection
-}
-
 func resolveLiveCoordinationDelivery(homePath, harnessName, hookName string, in LiveInput) (*CoordinationDeliveryInput, error) {
 	homePath = strings.TrimSpace(homePath)
 	sessionID := strings.TrimSpace(in.SessionID)

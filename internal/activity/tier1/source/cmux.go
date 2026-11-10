@@ -45,9 +45,6 @@ func (ExecRunner) Run(ctx context.Context) ([]byte, error) {
 	return exec.CommandContext(ctx, "cmux", "rpc", "surface.list").CombinedOutput()
 }
 
-// execRunner is the package-internal alias preserved for callers in this file.
-type execRunner = ExecRunner
-
 // NewCmuxSource returns a CmuxSource backed by the production ExecRunner.
 func NewCmuxSource() *CmuxSource { return &CmuxSource{runner: ExecRunner{}} }
 

@@ -28,14 +28,6 @@ type CaptureBatchReport struct {
 	Pending   int
 }
 
-// CaptureApprovedDirectory snapshots only the explicitly selected source format.
-// Source identity is family + root-relative path, so moving an approved root
-// does not create a second identity. Original bytes remain in owned custody.
-func CaptureApprovedDirectory(ctx context.Context, homePath, family, root, format string, now time.Time) (SourceManifestReport, error) {
-	report, err := CaptureApprovedDirectoryBatch(ctx, homePath, family, root, format, now)
-	return report.SourceManifestReport, err
-}
-
 // CaptureApprovedDirectoryBatch prioritizes recent changes, bounds each pass,
 // and skips already-custodied unchanged files using size + nanosecond mtime.
 // This is an incremental freshness check, not a content-integrity audit.

@@ -120,11 +120,6 @@ func SelectLensesWithContext(homePath, targetKind string, context LensContext) (
 	return selection, nil
 }
 
-func triggerMatchesTarget(triggers []string, targetKind string) bool {
-	tokens := targetKindTokens(targetKind)
-	return triggerIntersects(triggers, tokens)
-}
-
 func lensTriggerReason(triggers []string, targetTokens, contextTokens map[string]bool) string {
 	if triggerIntersects(triggers, targetTokens) {
 		return lensReasonTriggerMatch

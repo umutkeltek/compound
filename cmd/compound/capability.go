@@ -1404,7 +1404,6 @@ func importCapabilityConnections(store *capgraph.Store, homePath, harnessFilter 
 	}
 
 	var nodeBatch []capgraph.Node
-	var surfaceBatch []capgraph.ConnectionSurface
 	var pending []struct {
 		harnessName string
 		nodeMinted  bool
@@ -1445,7 +1444,6 @@ func importCapabilityConnections(store *capgraph.Store, homePath, harnessFilter 
 			AssertingOwner:    harness.PermissionAuthorityRef(harnessName),
 			SourceRevision:    sourceRevision,
 		}
-		surfaceBatch = append(surfaceBatch, cs)
 		pending = append(pending, struct {
 			harnessName string
 			nodeMinted  bool
@@ -1622,7 +1620,6 @@ func importCapabilityGateway(store *capgraph.Store, homePath, registryPath, gate
 	}
 
 	var nodeBatch []capgraph.Node
-	var surfaceBatch []capgraph.ConnectionSurface
 	var pending []struct {
 		nodeID string
 		name   string
@@ -1647,7 +1644,6 @@ func importCapabilityGateway(store *capgraph.Store, homePath, registryPath, gate
 		AssertingOwner:    gatewayAssertingOwner,
 		SourceRevision:    registry.SourceRevision,
 	}
-	surfaceBatch = append(surfaceBatch, rootCS)
 	pending = append(pending, struct {
 		nodeID string
 		name   string
@@ -1689,7 +1685,6 @@ func importCapabilityGateway(store *capgraph.Store, homePath, registryPath, gate
 			AssertingOwner:    gatewayAssertingOwner,
 			SourceRevision:    registry.SourceRevision,
 		}
-		surfaceBatch = append(surfaceBatch, cs)
 		pending = append(pending, struct {
 			nodeID string
 			name   string

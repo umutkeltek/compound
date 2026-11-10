@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -165,11 +164,6 @@ func (g *AnswerGate) WatchdogAnswer(publish func()) bool {
 		publish()
 	})
 	return won
-}
-
-func StartBudgetWatchdog(command BudgetCommand, gate *AnswerGate, now func() time.Time, publish func(BudgetAnswer)) func() {
-	budget := BudgetFromEnv(os.Getenv)
-	return StartBudgetWatchdogWithBudget(command, gate, now, budget, publish)
 }
 
 // StartBudgetWatchdogWithBudget arms the watchdog with a caller-resolved

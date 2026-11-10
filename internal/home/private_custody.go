@@ -367,17 +367,6 @@ func checkPrivateHomeRoot(r *PrivateCustodyReport, root *os.Root, homePath strin
 	return true
 }
 
-func validateExistingHomeForPrivateInit(homePath string) error {
-	info, err := os.Lstat(homePath)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	return validateHomeRootInfo(info)
-}
-
 func initializePrivateCustodyDirsRooted(root *os.Root, homePath string) error {
 	for _, rel := range privateCustodyKnownDirs {
 		relPath := filepath.FromSlash(rel)

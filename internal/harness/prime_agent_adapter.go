@@ -1,8 +1,6 @@
 package harness
 
 import (
-	"time"
-
 	"compound/internal/runattempt"
 )
 
@@ -36,12 +34,6 @@ var primeAgentSpec = piCodingAgentSpec{
 // NewPrimeAgentAdapter returns the production adapter. Heartbeats every 5s.
 func NewPrimeAgentAdapter(store *runattempt.Store) *PrimeAgentAdapter {
 	return newPiCodingAgentAdapter(primeAgentSpec, store, defaultHeartbeatInterval)
-}
-
-// NewPrimeAgentAdapterWithInterval returns an adapter with a custom heartbeat
-// cadence. Test-only.
-func NewPrimeAgentAdapterWithInterval(store *runattempt.Store, interval time.Duration) *PrimeAgentAdapter {
-	return newPiCodingAgentAdapter(primeAgentSpec, store, interval)
 }
 
 // FormatPrimeAgentDryRunPrompt is the canonical argv-printed summary the

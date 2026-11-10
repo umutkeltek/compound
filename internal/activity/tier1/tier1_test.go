@@ -62,11 +62,6 @@ func importGrants(t *testing.T, homePath string, now time.Time, specs ...grantSp
 	}
 }
 
-func importGrant(t *testing.T, homePath, id, capability, expires string, now time.Time) {
-	t.Helper()
-	importGrants(t, homePath, now, grantSpec{id, capability, expires})
-}
-
 func loadCfg(t *testing.T, homePath string) policy.Config {
 	t.Helper()
 	cfg, _, err := policy.LoadConfig(homePath)
@@ -919,7 +914,7 @@ func (r *recordingSource) TryEnvelope(_ context.Context, _ source.FocusedApp) (s
 }
 func (r *recordingSource) ContentFreeInvariant() error { return nil }
 
-// TestStatusIsReadOnly: runActivityStatus must NOT call EnsureConfigSeeded.
+// TestStatusIsReadOnly: runActivityStatus must NOT seed the config.
 // Calling status on a fresh home (no config file) must report enabled=false
 // + config_status=missing WITHOUT writing the config file. The audit's bug 6:
 // tightening read-only semantics across the CLI.

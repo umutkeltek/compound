@@ -797,38 +797,12 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func clipTranscriptText(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	if n <= 3 {
-		return s[:n]
-	}
-	return s[:n-3] + "..."
-}
-
 func sortedKeys(m map[string]bool) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)
 	}
 	sort.Strings(out)
-	return out
-}
-
-func mergeUniqueStrings(groups ...[]string) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, group := range groups {
-		for _, value := range group {
-			value = strings.TrimSpace(value)
-			if value == "" || seen[value] {
-				continue
-			}
-			seen[value] = true
-			out = append(out, value)
-		}
-	}
 	return out
 }
 

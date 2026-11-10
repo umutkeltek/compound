@@ -3038,24 +3038,6 @@ type hopExtras struct {
 	inboxBacklog      int
 }
 
-// newestClaimCreatedAt returns the most recent CreatedAt across the loaded
-// claims. Zero when claims are empty or all carry an unparseable timestamp.
-// NOTE: declared claim dates are NOT pipeline evidence (see the promotion
-// hop comment); this exists for display surfaces, never for stall detection.
-func newestClaimCreatedAt(claims []Claim) time.Time {
-	var newest time.Time
-	for _, c := range claims {
-		t, err := time.Parse(time.RFC3339, strings.TrimSpace(c.CreatedAt))
-		if err != nil {
-			continue
-		}
-		if t.After(newest) {
-			newest = t
-		}
-	}
-	return newest
-}
-
 // ledgerAppendTime returns the mtime of a ledger file — the append evidence
 // of the pipeline that owns it. Zero when the file is missing or unreadable.
 // Stall detection keys on THIS (the pipeline stopped writing), never on the

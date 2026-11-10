@@ -84,26 +84,6 @@ func BuildSourceManifestDirectory(sourceFamily, root string, now time.Time) (Sou
 	return buildSourceManifestSnapshots(sourceFamily, batch.files, now, func(string) string { return revision })
 }
 
-// BuildOwnedSourceManifestDirectory captures the same spooled snapshots into
-// the existing SourceManifest artifact custody contract.
-func BuildOwnedSourceManifestDirectory(homePath, sourceFamily, root string, now time.Time) (SourceManifest, error) {
-	if strings.TrimSpace(sourceFamily) == "" {
-		return SourceManifest{}, fmt.Errorf("source family required")
-	}
-	absoluteRoot, batch, err := snapshotSourceManifestDirectory(root)
-	if err != nil {
-		return SourceManifest{}, err
-	}
-	defer batch.Close()
-	revision := gitRevisionDirectory(absoluteRoot)
-	manifest, err := buildSourceManifestSnapshots(sourceFamily, batch.files, now, func(string) string { return revision })
-	if err != nil {
-		return SourceManifest{}, err
-	}
-	manifest, err = captureOwnedSourceManifest(homePath, manifest, batch.files, nil)
-	return manifest, err
-}
-
 // CreateSourceManifestDirectory owns the directory capture transaction used by
 // the CLI. Authority never references partial custody; a failure after artifact
 // publication retains safe content-addressed orphans for grace-period GC.

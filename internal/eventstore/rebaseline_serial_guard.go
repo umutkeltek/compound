@@ -106,15 +106,6 @@ func (s *Store) EnforceRebaselineSerialGuard(now time.Time, forceSerial, recover
 	return nil
 }
 
-// ArtifactRefFromBytes returns the canonical eventstore artifact ref for a
-// given byte body. The CLI uses it to detect "mutated but unreceipted": when
-// the on-disk sidecar's artifact ref equals the journaled PostImageRef the
-// locked mutation reached disk, and the operator must distinguish that from a
-// clean rollback.
-func ArtifactRefFromBytes(body []byte) string {
-	return rebaselineArtifactRef(body)
-}
-
 // IsCurrentSidecarMutated reports whether the bytes tx sees right now at the
 // sidecar path are the journaled post-image (i.e. our locked WriteSidecarCAS
 // reached disk and any rollback since failed). The CLI layers one receipt

@@ -433,34 +433,6 @@ func (s *Store) currentGen() int64 {
 	return gen
 }
 
-func (s *Store) visibleWireEdges(cur []Claim, minConf float64) ([]WireEdge, error) {
-	visibleEntities := make(map[string]bool, len(cur))
-	for _, c := range cur {
-		visibleEntities[c.Entity] = true
-	}
-	rels, err := s.loadRelations(minConf)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]WireEdge, 0, len(rels))
-	for _, e := range rels {
-		if !visibleEntities[e.From] || !visibleEntities[e.To] {
-			continue
-		}
-		out = append(out, WireEdge{From: e.From, Kind: e.Kind, To: e.To, Confidence: e.Confidence})
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].From != out[j].From {
-			return out[i].From < out[j].From
-		}
-		if out[i].Kind != out[j].Kind {
-			return out[i].Kind < out[j].Kind
-		}
-		return out[i].To < out[j].To
-	})
-	return out, nil
-}
-
 // AllCurrent returns the current (non-superseded, non-retired) claims — the canon a distiller
 // compares new extractions against (RetrievedPriorState). Public accessor over currentVisible.
 func (s *Store) AllCurrent() ([]Claim, error) { return s.currentVisible() }

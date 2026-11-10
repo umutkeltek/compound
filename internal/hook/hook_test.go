@@ -2593,15 +2593,6 @@ func reasonHas(xs []string, want string) bool {
 	return false
 }
 
-func hasClaim(claims []mem.Claim, predicate, object string) bool {
-	for _, c := range claims {
-		if c.Predicate == predicate && c.Object == object {
-			return true
-		}
-	}
-	return false
-}
-
 func findWorkByPredicate(works []envelope.WorkEnvelope, needle string) envelope.WorkEnvelope {
 	for _, w := range works {
 		if strings.Contains(w.SuccessPredicate, needle) {

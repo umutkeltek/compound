@@ -57,10 +57,6 @@ func (s *Store) candidateEchoKey(c Candidate) (string, error) {
 	return s.ClusterKey(decisionClusterEntity(c.Entity, c.ClaimType, c.Qualifiers, ""), c.Topic(), c.ClaimType)
 }
 
-func (s *Store) claimEchoKey(c Claim) (string, error) {
-	return s.ClusterKey(decisionClusterEntity(c.Entity, c.ClaimType, c.Qualifiers, c.ID), c.Topic(), c.ClaimType)
-}
-
 func (s *Store) claimSlotKey(entity, predicate, claimType string, qualifiers map[string]string, fallbackID string) (string, error) {
 	entities, err := s.Entities()
 	if err != nil {

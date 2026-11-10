@@ -235,10 +235,6 @@ func backupStreamedVersionOptions(homePath, targetPath string, now time.Time, sc
 	return report, nil
 }
 
-func writeStreamedHomeArchiveVersion(homePath, targetPath string, now time.Time, schema string) (ArchiveReport, error) {
-	return writeStreamedHomeArchiveOptions(homePath, targetPath, now, schema, false)
-}
-
 func writeStreamedHomeArchiveOptions(homePath, targetPath string, now time.Time, schema string, snapshotEvents bool) (ArchiveReport, error) {
 	source, err := openLiveArchiveStreamSource(homePath, schema, snapshotEvents)
 	if err != nil {
