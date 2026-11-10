@@ -19,6 +19,7 @@ for tagged releases, subject to the public-alpha compatibility policy in
   exists, and warns when an installed harness is not wired.
 
 - `compound orient --brief` prints a plain-text brief of at most 6,000 bytes instead of the JSON pack (57-77 KB measured): the checkout's own facts from an optional `state/repo-briefs.json` projection, up to five task-matched memory lines, up to five capability offers with what to read or invoke, and the command for the full pack. Outside Compound's own repo it leaves out Compound's internal state. The orient instruction line and the session-start pointer now say `--brief`.
+
 ### Removed
 
 - `compound game`, `compound terminal`, `compound behavioral-lens`, `compound executor-lens`,
