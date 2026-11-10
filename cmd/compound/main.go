@@ -4070,6 +4070,25 @@ func cmdStore(args []string) {
 	os.Exit(storecli.Run(args, os.Stdout, os.Stderr))
 }
 
+// homeMutationFlags names every flag the mutating home subcommands read. The
+// shared home argument loop pockets any "-*" token it does not know, so a
+// mistyped `--dry-run` was ignored and the command ran for real with exit 0.
+// These three refuse an unknown flag before they resolve the home.
+var homeMutationFlags = map[string]struct{ value, boolean map[string]bool }{
+	"archive-history": {
+		value:   map[string]bool{"--kind": true, "--path": true, "--max-files": true, "--home": true},
+		boolean: map[string]bool{"--dry-run": true, "--local": true, "--global": true},
+	},
+	"restore-history": {
+		value:   map[string]bool{"--id": true, "--home": true},
+		boolean: map[string]bool{"--dry-run": true, "--all": true, "--local": true, "--global": true},
+	},
+	"compact": {
+		value:   map[string]bool{"--home": true},
+		boolean: map[string]bool{"--dry-run": true, "--rebuildable": true, "--local": true, "--global": true},
+	},
+}
+
 func cmdHome(args []string) {
 	parsed := home.ParseCLIArgs(args)
 	sub, kind, restPos := parsed.Subcommand, parsed.HomeKind, parsed.RemainingPositionals
@@ -4089,6 +4108,12 @@ func cmdHome(args []string) {
 			fmt.Println("usage: compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact|private-custody> [--home <path>] [--local|--global]")
 		}
 		return
+	}
+	if flags, ok := homeMutationFlags[sub]; ok {
+		if err := validateKnownFlags(args, flags.value, flags.boolean); err != nil {
+			fmt.Fprintf(os.Stderr, "home %s: %v\n", sub, err)
+			os.Exit(2)
+		}
 	}
 	resolve := func() string {
 		p, err := parsed.ResolveHome()
