@@ -69,6 +69,14 @@ func codexSelection() *SelectionCapability {
 	}
 }
 
+func codexPoolSelection() *SelectionCapability {
+	return &SelectionCapability{
+		ModelPassable:   true,
+		ObservedVia:     "argv",
+		SessionEvidence: "unobservable:native account session is owned by transport receipt",
+		Basis:           "named Codex account profile is selected by pinned contract; --model is passed on argv, effort is not attested",
+	}
+}
 func openCodeSelection() *SelectionCapability {
 	return &SelectionCapability{
 		ModelPassable:   true,

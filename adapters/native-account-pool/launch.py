@@ -24,6 +24,12 @@ SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 SHA = re.compile(r"[0-9a-f]{64}\Z")
 KEYS = {"schema_version", "provider", "accounts", "settings_path", "settings_sha256",
         "switchback_cli", "compound_cli", "timeout_seconds"}
+V2 = "compound.native_account_pool.v2"
+V2_KEYS = {"schema_version", "provider", "profile_id", "pool_name", "profile_revision",
+           "authority_revision", "accounts", "account_settings",
+           "native_executable", "native_sha256", "switchback_cli",
+           "compound_cli", "compound_home", "checker_path", "checker_sha256", "approval_policy",
+           "sandbox", "timeout_seconds", "require_capture"}
 
 
 class Refusal(Exception):
@@ -70,19 +76,59 @@ def load_config(path, expected):
         config = json.loads(raw)
     except (ValueError, UnicodeDecodeError):
         refuse("config_invalid")
-    if not isinstance(config, dict) or set(config) != KEYS:
+    if not isinstance(config, dict):
         refuse("config_invalid")
-    if config["schema_version"] != SCHEMA or config["provider"] != "claude":
+    v2 = config.get("schema_version") == V2
+    if set(config) != (V2_KEYS if v2 else KEYS):
+        refuse("config_invalid")
+    if v2:
+        if config["provider"] != "codex" or config["require_capture"] is not True:
+            refuse("config_invalid")
+        for key in ("profile_id", "pool_name"):
+            if not isinstance(config[key], str) or not SAFE_NAME.fullmatch(config[key]):
+                refuse("config_invalid")
+        for key in ("profile_revision", "authority_revision"):
+            if not isinstance(config[key], str) or not config[key].startswith("sha256:") or not SHA.fullmatch(config[key][7:]):
+                refuse("config_invalid")
+        for key in ("native_sha256", "checker_sha256"):
+            if not isinstance(config[key], str) or not SHA.fullmatch(config[key]):
+                refuse("config_invalid")
+        if config["approval_policy"] not in ("never", "on-request") or config["sandbox"] not in ("read-only", "workspace-write"):
+            refuse("posture_unsupported")
+    elif config["schema_version"] != SCHEMA or config["provider"] != "claude":
         refuse("config_invalid")
     accounts = config["accounts"]
     if (not isinstance(accounts, list) or not 1 <= len(accounts) <= 16
             or any(not isinstance(a, str) or not SAFE_NAME.fullmatch(a) for a in accounts)
             or len(set(accounts)) != len(accounts)):
         refuse("accounts_invalid")
-    for name in ("settings_path", "switchback_cli", "compound_cli"):
+    for name in (("native_executable", "checker_path", "switchback_cli", "compound_cli")
+                 if v2 else ("settings_path", "switchback_cli", "compound_cli")):
         if not isinstance(config[name], str) or not os.path.isabs(config[name]):
             refuse("path_invalid")
-    if not isinstance(config["settings_sha256"], str) or not SHA.fullmatch(config["settings_sha256"]):
+    if v2:
+        home = config["compound_home"]
+        if not isinstance(home, str) or not os.path.isabs(home):
+            refuse("path_invalid")
+        try:
+            home_info = os.stat(home)
+        except OSError:
+            refuse("home_unavailable")
+        if (not stat.S_ISDIR(home_info.st_mode) or home_info.st_uid not in (os.getuid(), 0)
+                or home_info.st_mode & 0o022):
+            refuse("home_unsafe")
+        expected = config["account_settings"]
+        if (not isinstance(expected, dict) or set(expected) != set(accounts)
+                or any(not isinstance(value, str) or
+                       (value != "missing" and
+                        (not value.startswith("sha256:") or not SHA.fullmatch(value[7:])))
+                       for value in expected.values())):
+            refuse("settings_attestation_invalid")
+        if os.path.realpath(config["checker_path"]) != os.path.realpath(__file__):
+            refuse("checker_invalid")
+        if digest(owned_bytes(config["checker_path"], MAX_SETTINGS)) != config["checker_sha256"]:
+            refuse("checker_drift")
+    elif not isinstance(config["settings_sha256"], str) or not SHA.fullmatch(config["settings_sha256"]):
         refuse("settings_digest_invalid")
     if type(config["timeout_seconds"]) is not int or not 1 <= config["timeout_seconds"] <= 2700:
         refuse("timeout_invalid")
@@ -117,7 +163,7 @@ def parse_time(value):
 ANCHOR = "import os, signal, subprocess, sys\ntry:\n    child = subprocess.Popen([sys.argv[1], \"policy\", \"presence\", \"show\", \"--json\"])\n    status = child.wait()\nexcept OSError:\n    status = 127\nos.write(int(sys.argv[2]), str(status).encode(\"ascii\"))\nos.close(int(sys.argv[2]))\nos.close(1)\nos.close(2)\nsignal.pause()\n"
 
 
-def presence_output(cli):
+def presence_output(cli, home=None):
     cancellation = {"armed": False, "pending": False}
 
     def on_cancel(signum, frame):
@@ -131,7 +177,7 @@ def presence_output(cli):
             saved.append((signum, signal.signal(signum, on_cancel)))
         if cancellation["pending"]:
             refuse("presence_cancelled")
-        result = _presence_output(cli, cancellation)
+        result = _presence_output(cli, cancellation, home)
         if cancellation["pending"]:
             refuse("presence_cancelled")
         return result
@@ -142,7 +188,7 @@ def presence_output(cli):
             signal.signal(signum, old)
 
 
-def _presence_output(cli, cancellation):
+def _presence_output(cli, cancellation, home):
     """Read bounded presence output with a live process-group anchor."""
     if not hasattr(os, "killpg") or not hasattr(signal, "pause"):
         refuse("presence_unavailable")
@@ -158,7 +204,8 @@ def _presence_output(cli, cancellation):
         process = subprocess.Popen(
             [sys.executable, "-c", ANCHOR, cli, str(status_write)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            pass_fds=(status_write,), start_new_session=True)
+            pass_fds=(status_write,), start_new_session=True,
+            env=dict(os.environ, COMPOUND_HOME=home) if home else None)
         cancellation["armed"] = True
         if cancellation["pending"]:
             refuse("presence_cancelled")
@@ -233,8 +280,8 @@ def _presence_output(cli, cancellation):
             os.close(status_write)
 
 
-def check_presence(cli):
-    raw = presence_output(cli)
+def check_presence(cli, home=None):
+    raw = presence_output(cli, home)
     try:
         data = json.loads(raw)
     except (ValueError, UnicodeDecodeError):
@@ -251,10 +298,11 @@ def check_presence(cli):
 
 
 def check(config):
-    raw = owned_bytes(config["settings_path"], MAX_SETTINGS)
-    if digest(raw) != config["settings_sha256"]:
-        refuse("settings_drift")
-    check_presence(config["compound_cli"])
+    if config["schema_version"] == SCHEMA:
+        raw = owned_bytes(config["settings_path"], MAX_SETTINGS)
+        if digest(raw) != config["settings_sha256"]:
+            refuse("settings_drift")
+    check_presence(config["compound_cli"], config.get("compound_home"))
 
 
 def native_args(argv):
@@ -308,13 +356,17 @@ def main():
         if args.native_argv:
             refuse("native_argv_invalid")
         check(config)
-        print(json.dumps({"ready": True, "admission": "away_window_and_settings_match",
-                          "schema_version": SCHEMA, "config_sha256": revision,
-                          "settings_sha256": config["settings_sha256"],
-                          "pool_count": len(config["accounts"])}))
+        result = {"ready": True, "admission": "away_window_and_pinned_config",
+                  "schema_version": config["schema_version"], "config_sha256": revision,
+                  "pool_count": len(config["accounts"])}
+        if config["schema_version"] == SCHEMA:
+            result["settings_sha256"] = config["settings_sha256"]
+        print(json.dumps(result))
         return
     if not args.native_argv or args.native_argv[0] != "--":
         refuse("native_argv_invalid")
+    if config["schema_version"] == V2:
+        refuse("codex_direct_launch_unsupported")
     native = native_args(args.native_argv[1:])
     check(config)
     callback = [sys.executable, str(Path(__file__).resolve()), "--config",

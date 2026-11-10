@@ -249,7 +249,8 @@ func ReserveGovernedHarnessLaunch(in GovernedHarnessReservationInput) (GovernedH
 		return GovernedHarnessReservation{}, err
 	}
 	autonomyClass := ""
-	if in.ResumeVerifying || (claudeFamily && ClaudeMutationPermissionMode(runInput.PermissionMode)) {
+	if in.ResumeVerifying || (claudeFamily && ClaudeMutationPermissionMode(runInput.PermissionMode)) ||
+		(in.Adapter.Name() == "codex-native-account-pool" && runInput.PermissionMode != "plan" && runInput.PermissionMode != "") {
 		autonomyClass = "build-implement"
 	}
 	running, err := in.Store.Advance(in.ClaimedWork.ID, work.AdvanceInput{
@@ -270,7 +271,7 @@ func ReserveGovernedHarnessLaunch(in GovernedHarnessReservationInput) (GovernedH
 	}
 	// Bind the adapter prompt to the exact generation just reserved. Raw argv
 	// execution keeps its caller-supplied command contract unchanged.
-	if (claudeFamily || in.Adapter.Name() == "codex") && (strings.TrimSpace(runInput.Prompt) != "" || (runInput.Command == "" && len(runInput.Args) == 0)) {
+	if (claudeFamily || in.Adapter.Name() == "codex" || in.Adapter.Name() == "codex-native-account-pool") && (strings.TrimSpace(runInput.Prompt) != "" || (runInput.Command == "" && len(runInput.Args) == 0)) {
 		runInput.Prompt = governedGoalPrompt(running, runInput.Prompt)
 	}
 	runInput, err = PrepareGovernedHarnessLaunch(GovernedHarnessLaunchInput{
@@ -418,6 +419,11 @@ func PrepareGovernedHarnessLaunch(in GovernedHarnessLaunchInput) (harness.RunInp
 		in.ActionIntentID,
 	)
 	if in.ResumeVerifying {
+		runInput.StartGuard = newGovernedResumeStartGuard(in.HomePath, in.RunningWork.ID, in.RunningWork.PolicyDecisionID, in.ActionIntentID, nil)
+	}
+	if in.Adapter.Name() == "codex-native-account-pool" && runInput.PermissionMode != "plan" && runInput.PermissionMode != "" {
+		// The new Codex transport is mutation-capable only behind the same
+		// exact reservation and live build-implement halt used by resumed work.
 		runInput.StartGuard = newGovernedResumeStartGuard(in.HomePath, in.RunningWork.ID, in.RunningWork.PolicyDecisionID, in.ActionIntentID, nil)
 	}
 	if native, err := prepareOMPNativeVerifierLaunch(in, runInput); err != nil {

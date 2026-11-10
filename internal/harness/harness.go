@@ -501,6 +501,18 @@ func DefaultRegistry() Registry {
 			},
 			InjectBudgetMS: 1500,
 		},
+		"codex_native_account_pool": {
+			Name:                 "codex-native-account-pool",
+			Selection:            codexPoolSelection(),
+			Posture:              PostureUnattended,
+			InstructionMechanism: "governed work prompt + native Codex app-server",
+			Capabilities:         Capabilities{},
+			Limitations: []string{
+				"requires an explicit revision-pinned native account pool contract",
+				"account authentication and live capture require separate activation proof",
+				"native hook affordances are not claimed by this transport",
+			},
+		},
 		"hermes": {
 			Name:                 "hermes",
 			Selection:            noSelectionControl("registry identity only; no executor adapter"),

@@ -49,6 +49,7 @@ func NewAdapterRegistry(store *runattempt.Store) *AdapterRegistry {
 		r.RegisterAdapter(newClaudeLaneAdapter(store, name, defaultHeartbeatInterval))
 	}
 	r.RegisterAdapter(NewCodexAdapter(store))
+	r.RegisterAdapter(NewCodexNativeAccountPoolAdapter(store))
 	r.RegisterAdapter(NewOpenCodeAdapter(store))
 	// The pi coding-agent family. Both forks share one adapter implementation
 	// (pi_coding_agent_adapter.go); registering each by its own name keeps the

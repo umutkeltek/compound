@@ -3,6 +3,7 @@ package runattempt
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -52,7 +53,10 @@ type ExecutionSelectionSnapshot struct {
 	// (permissions, hooks, env names). Credentials are REFERENCED by
 	// CredentialRef ("env:NAME"), never copied.
 	SettingsDigest string `json:"settings_digest,omitempty"`
-	CredentialRef  string `json:"credential_ref,omitempty"`
+	// AccountPoolContractSHA256 pins the explicit native pool consumption config.
+	AccountPoolContractRef    string `json:"account_pool_contract_ref,omitempty"`
+	AccountPoolContractSHA256 string `json:"account_pool_contract_sha256,omitempty"`
+	CredentialRef             string `json:"credential_ref,omitempty"`
 	// NativeSessionID is the harness's own session identity for this attempt;
 	// NativeSessionEvidence says how it is known (ExecutionSessionEvidencePrefixes).
 	NativeSessionID       string `json:"native_session_id,omitempty"`
@@ -135,6 +139,12 @@ func (s ExecutionSelectionSnapshot) Validate() error {
 	}
 	if s.SettingsDigest != "" && !strings.HasPrefix(s.SettingsDigest, "sha256:") {
 		errs = append(errs, fmt.Sprintf("settings_digest must be sha256:<hex> when set, got %q", s.SettingsDigest))
+	}
+	if s.AccountPoolContractRef != "" && !filepath.IsAbs(s.AccountPoolContractRef) {
+		errs = append(errs, "account_pool_contract_ref must be absolute when set")
+	}
+	if s.AccountPoolContractSHA256 != "" && (len(s.AccountPoolContractSHA256) != 71 || !strings.HasPrefix(s.AccountPoolContractSHA256, "sha256:")) {
+		errs = append(errs, "account_pool_contract_sha256 must be sha256:<64 hex> when set")
 	}
 	if s.CredentialRef != "" && !strings.HasPrefix(s.CredentialRef, "env:") {
 		errs = append(errs, fmt.Sprintf("credential_ref must be a reference (env:NAME), got %q", s.CredentialRef))

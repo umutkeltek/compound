@@ -237,6 +237,33 @@ print('native-output')
         malformed = self.run_launch("--invalid-flag", "private prompt")
         self.assert_denied(malformed, "cli_invalid")
 
+    def test_codex_v2_is_check_only_and_pins_account_map(self):
+        self.config = {
+            "schema_version": "compound.native_account_pool.v2",
+            "provider": "codex", "profile_id": "work_profile",
+            "pool_name": "work_pool",
+            "profile_revision": "sha256:" + "a" * 64,
+            "authority_revision": "sha256:" + "b" * 64,
+            "accounts": ["one", "two"],
+            "account_settings": {"one": "sha256:" + "c" * 64, "two": "missing"},
+            "native_executable": str(self.switchback),
+            "native_sha256": "d" * 64,
+            "switchback_cli": str(self.switchback),
+            "compound_cli": str(self.compound),
+            "compound_home": str(self.root),
+            "checker_path": str(LAUNCH),
+            "checker_sha256": hashlib.sha256(LAUNCH.read_bytes()).hexdigest(),
+            "approval_policy": "never", "sandbox": "read-only",
+            "timeout_seconds": 90, "require_capture": True,
+        }
+        self.write_config()
+        self.assertEqual(self.run_launch("--plan").returncode, 0)
+        self.assertEqual(json.loads(self.run_launch("--check").stdout)["allow"], True)
+        self.assert_denied(self.run_launch("--", *self.native), "codex_direct_launch_unsupported")
+        self.config["account_settings"].pop("two")
+        self.write_config()
+        self.assert_denied(self.run_launch("--check"), "settings_attestation_invalid")
+
     def test_native_session_and_permission_shape(self):
         for native in [
             ["--print", "--permission-mode", "plan", "private prompt"],

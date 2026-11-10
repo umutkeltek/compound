@@ -104,6 +104,7 @@ func TestNamesSorted(t *testing.T) {
 		"claude_zai",
 		"claude_zai_full",
 		"codex",
+		"codex_native_account_pool",
 		"deepseek_harness",
 		"hermes",
 		"oh_my_pi",

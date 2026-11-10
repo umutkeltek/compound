@@ -35,6 +35,7 @@ func TestAdapterRegistryNewHasBuiltins(t *testing.T) {
 		"claude_zai",
 		"claude_zai_full",
 		"codex",
+		"codex-native-account-pool",
 		"oh_my_pi",
 		"omp-native-verifier",
 		"omp-prompt-only",

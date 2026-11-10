@@ -45,3 +45,66 @@ Register and verify that alias through Compound's existing harness/tuple authori
 On launch, the wrapper checks the config and settings digests plus current `compound policy presence show --json` effective state and real `from`/`through` UTC window. It then replaces itself with `sb account run --provider claude --pool ...`. The Switchback callback receives a sealed config digest and repeats these checks before **every** native account attempt. A callback refusal, malformed output, timeout or nonzero status must stop the whole pool; it must never advance to another account. Switchback owns account choice, retries, capture and its separate account evidence. Native stdout and exit status pass through from Switchback.
 
 Run the synthetic tests with `python3 -m unittest discover -s adapters/native-account-pool/tests -v`. No test calls a real model or login.
+
+## Codex named profile contract (v2)
+
+The dedicated `codex-native-account-pool` Compound harness adapter consumes one
+explicit, reviewed JSON file under the Switchback runtime's
+`config/native-account-pools/` directory. The selection passes the absolute
+file path and its bare lowercase SHA256 as the adapter's two RunInput arguments.
+There is no implicit pool default. The config pins consumption facts; the
+Switchback profile and account authority remain the owners of pool membership,
+native homes and credentials.
+
+```json
+{
+  "schema_version": "compound.native_account_pool.v2",
+  "provider": "codex",
+  "profile_id": "work_profile",
+  "pool_name": "work_pool",
+  "profile_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "authority_revision": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "accounts": ["seat_one", "seat_two"],
+  "account_settings": {
+    "seat_one": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "seat_two": "missing"
+  },
+  "native_executable": "/absolute/path/to/native/codex",
+  "native_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "switchback_cli": "/absolute/path/to/sb",
+  "compound_cli": "/absolute/path/to/compound",
+  "compound_home": "/absolute/owned/compound-home",
+  "checker_path": "/absolute/path/to/compound/adapters/native-account-pool/launch.py",
+  "checker_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "approval_policy": "never",
+  "sandbox": "read-only",
+  "timeout_seconds": 90,
+  "require_capture": true
+}
+```
+
+The file must be an operator-owned, regular, nonsymlink leaf, at most 32 KiB,
+without group or other write access. Export the exact profile and account
+revisions and current `config.toml` digests from the existing profile owner;
+`missing` means the account has no `config.toml` and is checked as such.
+Every named account must have one map entry. The adapter verifies the current
+native `codex` executable as the same native binary the direct Codex adapter
+accepts, then checks its SHA256 again at process start. Switchback verifies the
+referenced profile, account settings and executable before every account
+attempt. Native credentials stay in their account homes; the adapter never
+copies or swaps them.
+
+The admitted permission mode must match the contract exactly: `plan` means
+`never` approval and `read-only` sandbox; `default` means `on-request`
+and `workspace-write`; `bypass` means `never` and `workspace-write`.
+Mutation modes require a governed Work reservation and a live build-implement
+halt check. A manual ungoverned harness run is refused. The callback repeats
+the current away-window and config digest checks before every native attempt.
+The Codex CLI path cannot launch directly through `launch.py`.
+
+The adapter always requests required capture. If the provider task completes
+but capture cannot be verified, Switchback returns 74 and emits the explicit
+non-replay diagnostic and a terminal account receipt; Compound preserves the
+failed RunAttempt, exit code and transcript. Never retry that result without
+reviewing the underlying task. A passing synthetic test proves this contract
+shape, not account authentication or live model execution.
