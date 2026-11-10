@@ -30,6 +30,12 @@ for tagged releases, subject to the public-alpha compatibility policy in
   nothing: `retention apply`, `retention empty-trash` and `presence announce` are governed writes.
 - Parity fixtures enforce the stated limits on `orient_expectations` (negative ceilings, canary
   and private-ref counts and sizes); the check existed and was never called.
+- The console accepts every work id the CLI accepts. The trace view and the advance, continue
+  and dispatch actions refused any id with an underscore, a capital letter, a dot, a dash or a
+  colon, which is most named work; they now share one check with the CLI's rule.
+- `compound architecture doctor` run from a linked worktree applies the operator's private
+  leak-token overlays from the main checkout. A linked worktree never carries them, so the
+  private-name pass was skipped before a landing and failed on main after it.
 
 ### Documentation
 

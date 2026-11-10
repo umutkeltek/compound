@@ -288,9 +288,65 @@ func baselineLeakTokens() []string {
 // home keeps full strictness (baseline + overlay).
 func loadDocLeakTokens(repoRoot string) (toks []string, overlayPresent bool) {
 	toks = append(toks, baselineLeakTokens()...)
-	overlay, present := loadLeakTokens(filepath.Join(repoRoot, "docs_private", "leak-tokens.txt"))
+	overlay, present := loadLeakTokens(leakOverlayPath(repoRoot, "leak-tokens.txt"))
 	toks = append(toks, overlay...)
 	return toks, present
+}
+
+// leakOverlayPath names the operator's gitignored token overlay for this tree.
+//
+// The overlay exists in the main checkout only: `docs_private/` is gitignored, so
+// a linked worktree never carries it. Looking only under repoRoot made the token
+// pass narrower in exactly the place a change is proved before it lands -- a
+// private name passed the doctor in the lane and failed it after the landing,
+// with main already red. A linked worktree therefore borrows the overlay of the
+// main checkout it belongs to. A clone, a sealed proof checkout and a plain
+// directory have no main checkout to borrow from: they keep their own overlay
+// when one was placed there, and the tracked baseline alone otherwise.
+func leakOverlayPath(repoRoot, name string) string {
+	own := filepath.Join(repoRoot, "docs_private", name)
+	if _, err := os.Stat(own); err == nil {
+		return own
+	}
+	if mainRoot := mainWorktreeRoot(repoRoot); mainRoot != "" {
+		return filepath.Join(mainRoot, "docs_private", name)
+	}
+	return own
+}
+
+// mainWorktreeRoot returns the main checkout a linked git worktree belongs to, or
+// "" when repoRoot is not a linked worktree. It reads the two files git itself
+// writes -- `.git` names the worktree's private gitdir, and `commondir` inside it
+// names the shared repository -- instead of running git, so the answer does not
+// depend on the caller's environment or configuration. A submodule has a `.git`
+// file and no `commondir`; a bare repository has no checkout beside it; both
+// answer "".
+func mainWorktreeRoot(repoRoot string) string {
+	body, err := os.ReadFile(filepath.Join(repoRoot, ".git"))
+	if err != nil {
+		return "" // a directory (the main checkout or a clone) or no repository at all
+	}
+	gitdir, ok := strings.CutPrefix(strings.TrimSpace(string(body)), "gitdir:")
+	if !ok {
+		return ""
+	}
+	gitdir = strings.TrimSpace(gitdir)
+	if !filepath.IsAbs(gitdir) {
+		gitdir = filepath.Join(repoRoot, gitdir)
+	}
+	common, err := os.ReadFile(filepath.Join(gitdir, "commondir"))
+	if err != nil {
+		return ""
+	}
+	commonDir := strings.TrimSpace(string(common))
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(gitdir, commonDir)
+	}
+	commonDir = filepath.Clean(commonDir)
+	if filepath.Base(commonDir) != ".git" {
+		return ""
+	}
+	return filepath.Dir(commonDir)
 }
 
 func loadLeakTokens(path string) (toks []string, present bool) {
@@ -1068,7 +1124,7 @@ func relUnderAnyPrefix(rel string, prefixes []string) bool {
 }
 
 func loadSourceLeakTokens(repoRoot string) (toks []string, present bool) {
-	return loadLeakTokens(filepath.Join(repoRoot, "docs_private", "source-leak-tokens.txt"))
+	return loadLeakTokens(leakOverlayPath(repoRoot, "source-leak-tokens.txt"))
 }
 
 // leakScanEnumerateSkipDirs is the fallback-walk skip set used ONLY when repoRoot is not
