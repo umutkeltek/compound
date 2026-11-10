@@ -2,6 +2,7 @@ package retrievalparity
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -114,6 +115,52 @@ func TestOrientFixtureRequiresExactInputIdentity(t *testing.T) {
 	}
 	if err := ValidateFixture(fixture); err == nil || !strings.Contains(err.Error(), "orient_input") {
 		t.Fatalf("orient fixture without exact input error = %v", err)
+	}
+}
+
+// The orient expectation bounds exist so a fixture cannot carry a large private
+// blob or a negative ceiling (which ApplyOrientExpectations reads as "no gate").
+// They only hold if ValidateFixture actually applies them.
+func TestOrientFixtureEnforcesExpectationBounds(t *testing.T) {
+	input := normalizeOrientInput(OrientInput{
+		Harness:     "claude_code",
+		Cwd:         "/workspace/synthetic-library",
+		RepoKind:    "library",
+		RepoKindVia: "flag",
+		Mode:        "review",
+		Topic:       "topic:synthetic",
+	})
+	fixtureWith := func(expect OrientExpectations) Fixture {
+		return Fixture{
+			SchemaVersion:     FixtureSchemaVersion,
+			ClassifierVersion: ClassifierVersion,
+			Coverage:          Coverage{KnownGaps: []string{}},
+			Rows: []FixtureRow{{
+				Consumer:     ConsumerOrient,
+				Query:        "bounded orient expectations",
+				OrientInput:  &input,
+				OrientExpect: &expect,
+			}},
+		}
+	}
+	if err := ValidateFixture(fixtureWith(OrientExpectations{BodyBudgetTokens: 512, PrivateCanaries: []string{"synthetic-canary"}})); err != nil {
+		t.Fatalf("in-bounds orient expectations rejected: %v", err)
+	}
+	tooManyCanaries := make([]string, orientCanaryMaxCount+1)
+	for i := range tooManyCanaries {
+		tooManyCanaries[i] = fmt.Sprintf("synthetic-canary-%d", i)
+	}
+	for name, expect := range map[string]OrientExpectations{
+		"negative latency ceiling": {MaxLatencyMS: -1},
+		"negative context ceiling": {MaxContextTokens: -1},
+		"negative body budget":     {BodyBudgetTokens: -1},
+		"oversized canary":         {PrivateCanaries: []string{strings.Repeat("x", orientCanaryMaxBytes+1)}},
+		"too many canaries":        {PrivateCanaries: tooManyCanaries},
+		"blank private body ref":   {PrivateBodyRefs: []string{" "}},
+	} {
+		if err := ValidateFixture(fixtureWith(expect)); err == nil || !strings.Contains(err.Error(), "orient_expectations") {
+			t.Errorf("%s: ValidateFixture error = %v, want an orient_expectations refusal", name, err)
+		}
 	}
 }
 
