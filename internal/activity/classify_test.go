@@ -100,8 +100,8 @@ func TestClassify_EnvelopeMismatchFallsThroughToBundleRule(t *testing.T) {
 	}
 	// com.apple.Safari is browsing; pane_type=editor must not change it.
 	cat, conf = Classify("com.apple.Safari", map[string]string{"pane_type": "editor"})
-	if cat != CategoryBrowsing {
-		t.Errorf("Safari + pane_type=editor: %s, want browsing", cat)
+	if cat != CategoryBrowsing || conf != 1.0 {
+		t.Errorf("Safari + pane_type=editor: (%s, %.1f), want (browsing, 1.0)", cat, conf)
 	}
 }
 

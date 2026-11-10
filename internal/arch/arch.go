@@ -941,20 +941,9 @@ func statusNarrationLineCount(b []byte) (narration int, mandated int) {
 		narration++
 	}
 	if len(b) > 0 && b[len(b)-1] == '\n' {
-		narration-- // the trailing newline is not a line, matching lineCount's contract
+		narration-- // the trailing newline is not a line
 	}
 	return narration, mandated
-}
-
-func lineCount(b []byte) int {
-	if len(b) == 0 {
-		return 0
-	}
-	n := strings.Count(string(b), "\n")
-	if b[len(b)-1] != '\n' {
-		n++
-	}
-	return n
 }
 
 // checkDocLeak: no GENERIC operator-private identity shape (email, absolute /Users|/home

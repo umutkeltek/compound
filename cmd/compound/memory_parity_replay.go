@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +10,6 @@ import (
 	"time"
 
 	"compound/internal/contract"
-	"compound/internal/corpus"
 	"compound/internal/envelope"
 	"compound/internal/mem"
 	"compound/internal/retrievalparity"
@@ -437,20 +435,6 @@ func parityRecallRefs(result mem.RecallResult) []string {
 	return refs
 }
 
-func parityCorpusRefs(report corpus.QueryReport) []string {
-	refs := make([]string, 0, len(report.Hits))
-	for _, hit := range report.Hits {
-		ref := strings.TrimSpace(hit.ChunkID)
-		if ref == "" {
-			ref = strings.TrimSpace(hit.ItemID)
-		}
-		if ref != "" {
-			refs = append(refs, ref)
-		}
-	}
-	return refs
-}
-
 func parityOrientInput(in contract.Input) retrievalparity.OrientInput {
 	return retrievalparity.OrientInput{
 		Harness:     in.Harness,
@@ -520,7 +504,3 @@ func parityOrientFixtureCanaryMaterial(row retrievalparity.FixtureRow, pack enve
 	}
 	return
 }
-
-// isBytesEqual is used by orient replay tests to verify the wire hash matches
-// the persisted file's bytes.
-func isBytesEqual(a, b []byte) bool { return bytes.Equal(a, b) }

@@ -3,7 +3,6 @@ package product
 import (
 	"fmt"
 	"strings"
-	"time"
 )
 
 // The ads → loop bridge. Ad rows are acquisition evidence, and the product
@@ -196,12 +195,3 @@ func adsMetricValue(t AdsTotals, metric string) (float64, bool) {
 	}
 	return 0, false
 }
-
-// adsSignalObservedAt keeps the bridge's timestamp derivation in one place
-// for tests that assert replay stability.
-func adsSignalObservedAt(after dateRange) string {
-	return after.End.UTC().Format("2006-01-02") + "T00:00:00Z"
-}
-
-var _ = adsSignalObservedAt
-var _ = time.Now

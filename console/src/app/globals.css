@@ -80,7 +80,7 @@
   --color-ink-2: var(--muted);
   --color-ink-3: var(--faint);
 
-  /* legacy accent palette (Chip/AccentSquare/DecisionForm option dots in
+  /* legacy accent palette (Chip/AccentSquare in
      src/components/ui.tsx) — kept at its ORIGINAL literal hex, NOT remapped
      onto the new domain hues (work/memory/capability/route/product), because
      the values differ (e.g. accent-blue #3b82f6 vs work-fg #2563EB) and

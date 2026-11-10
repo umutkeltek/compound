@@ -1930,24 +1930,6 @@ func archiveOperationalFile(homePath string, cand operationalCandidate, now time
 	return entry, nil
 }
 
-func restoreOperationalFile(homePath string, entry OperationalArchiveEntry, now time.Time, _ bool) (OperationalArchiveEntry, error) {
-	source := filepath.Join(homePath, filepath.FromSlash(entry.ArchivePath))
-	if !isUnderHome(homePath, source) || !isUnderHome(homePath, filepath.Join(homePath, filepath.FromSlash(entry.OriginalPath))) {
-		return OperationalArchiveEntry{}, fmt.Errorf("operational archive restore path escapes home: %s", entry.ID)
-	}
-	raw, err := ReadRootedRegularFile(homePath, source, "operational archive restore source")
-	if err != nil {
-		return OperationalArchiveEntry{}, err
-	}
-	if int64(len(raw)) != entry.Size || operationalArchiveBytesSHA256(raw) != strings.TrimSpace(entry.SHA256) {
-		return OperationalArchiveEntry{}, fmt.Errorf("operational archive restore source does not match index entry %s", entry.ID)
-	}
-	restored := entry
-	restored.Operation = "restored"
-	restored.CreatedAt = now.UTC().Format(time.RFC3339)
-	return restored, nil
-}
-
 func selectOperationalArchiveEntries(entries []OperationalArchiveEntry, opts OperationalRestoreOptions) []OperationalArchiveEntry {
 	if opts.All {
 		return append([]OperationalArchiveEntry(nil), entries...)
@@ -4094,33 +4076,6 @@ func sortedArchiveEntries(entries []ArchiveEntry) []ArchiveEntry {
 	out := append([]ArchiveEntry(nil), entries...)
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out
-}
-
-func measureTree(root string) (int, int64, error) {
-	var files int
-	var bytes int64
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		files++
-		bytes += info.Size()
-		return nil
-	})
-	if os.IsNotExist(err) {
-		return 0, 0, nil
-	}
-	return files, bytes, err
 }
 
 func isUnderHome(homePath, path string) bool {

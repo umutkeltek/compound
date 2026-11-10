@@ -1478,14 +1478,6 @@ func normalizeActionTarget(fx Fixture, ai envelope.ActionIntent) envelope.Action
 	return ai
 }
 
-func actionTargetPath(fx Fixture, ai envelope.ActionIntent) string {
-	path, local := LocalTargetPath(ai.Target.Path, fx.Cwd)
-	if !local {
-		return ""
-	}
-	return path
-}
-
 func createHeldGateReview(store *work.Store, fx Fixture, ai envelope.ActionIntent, pd envelope.PolicyDecision, sc policy.SourceControlContext, now time.Time) (envelope.WorkEnvelope, error) {
 	target := strings.TrimSpace(ai.Target.Path)
 	if target == "" {
@@ -3410,10 +3402,6 @@ func writeIncludedList(b *strings.Builder, refs []envelope.IncludedRef, limit in
 	if omitted := len(refs) - rendered; omitted > 0 {
 		fmt.Fprintf(b, "- %d more included ref(s) omitted digest budget; see ContextPack JSON for full provenance\n", omitted)
 	}
-}
-
-func writeCapabilityConstraintSummary(b *strings.Builder, label string, values []envelope.CapabilityOfferConstraint) {
-	b.WriteString(capabilityConstraintSummary(label, values))
 }
 
 // capabilityConstraintSummary renders one labelled constraint field, or "" when the

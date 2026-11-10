@@ -73,7 +73,7 @@ func TestPresenceAnnounceIsGovernedNotRead(t *testing.T) {
 // deleted. The handler is located through the registry itself
 // (runtime.FuncForPC), so renaming a command or moving a file cannot silently
 // drop coverage, and the writer may sit any number of calls deep — presence's
-// sits in cmdPresenceAnnounce, one level down.
+// sits behind work.RunPresence, one level down.
 func TestReadClassifiedCommandsCannotReachAWriterStore(t *testing.T) {
 	t.Parallel()
 

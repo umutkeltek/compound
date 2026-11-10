@@ -120,7 +120,7 @@ func Decode(data []byte) (Evidence, error) {
 // first match (today's full scan errored only if the bad line preceded the
 // match). The ledger is a governed, append-only artifact where a malformed
 // line is already fatal to every writer, and there are no production callers
-// of LookupRequestID/HasRequestID outside this package (tests only).
+// of LookupRequestID outside this package (tests only).
 func LookupRequestID(homePath, requestID string) (Evidence, bool, error) {
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
@@ -142,11 +142,6 @@ func LookupRequestID(homePath, requestID string) (Evidence, bool, error) {
 		ev.RecordedVia = RecorderGeneric
 	}
 	return ev, true, nil
-}
-
-func HasRequestID(homePath, requestID string) (bool, error) {
-	_, ok, err := LookupRequestID(homePath, requestID)
-	return ok, err
 }
 
 func ImportFile(homePath, path string) (ImportResult, error) {

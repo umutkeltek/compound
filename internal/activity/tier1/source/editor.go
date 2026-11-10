@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -124,15 +123,4 @@ type defaultEditorAWClient struct{}
 // focused on the structural logic).
 func (defaultEditorAWClient) FetchEvents(ctx context.Context, bucketID string, start, end time.Time, limit int) ([]editorEvent, error) {
 	return fetchAWEventsForEditor(ctx, bucketID, start, end, limit)
-}
-
-// slugCmdline returns a slug from a command-line fragment, used by tests / future
-// command-basename extraction. Defined here so future phases can import it without
-// pulling in cmd-line parsing.
-func slugCmdline(s string) string {
-	// Truncate at first space (basename only — no args).
-	if i := strings.IndexAny(s, " \t"); i >= 0 {
-		s = s[:i]
-	}
-	return Slug(s)
 }

@@ -13,8 +13,8 @@ import { selectedContinueRevision, selectedContinueView } from "@/lib/work-selec
  * the registry only adds the human layer (headline/options/fields) and bounded
  * argv construction for areas that do not carry a projected command.
  *
- * Adding a new area = adding one entry here; the generic DecisionCard,
- * DecisionForm, and /api/decision/execute route pick it up automatically.
+ * Adding a new area = adding one entry here; the generic decision views and
+ * the /api/decision/execute route pick it up automatically.
  */
 
 /* ---------- types ---------- */
@@ -438,7 +438,7 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
   /* ----------------------------------------------------------------------
    * job-health (operator-blocking fix, 2026-07-11). Modeled directly on the
    * autonomy-grant-mint entry above — same mechanism, zero Decide component
-   * changes: DecisionCard/DecisionForm are generic over the REGISTRY, so a
+   * changes: the decision views are generic over the REGISTRY, so a
    * bespoke spec here is all that's needed. The broken generic "job-health"
    * entry in generic-actions.ts stays UNTOUCHED and simply stops being
    * reachable from the card act ("a bespoke spec always wins" —

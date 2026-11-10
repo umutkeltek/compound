@@ -82,8 +82,6 @@ type sessionMiningCheck struct {
 
 type sessionMiningApplyReport = sessionmining.ApplyReport
 
-type sessionMiningRoutedArtifact = sessionmining.RoutedArtifact
-
 type sessionHookEvent = envelope.HookEvent
 
 func cmdSessions(args []string) {

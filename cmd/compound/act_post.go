@@ -158,40 +158,6 @@ func governedPostIntent(workID, capability string, target envelope.ActionTarget,
 	}
 }
 
-func governedDraftPostIntent(workID string, target envelope.ActionTarget, request product.ContentPostTransportRequest, auth product.ContentPostAuthorization, forward []byte, now time.Time) envelope.ActionIntent {
-	evidence := append([]string(nil), auth.ActionIntent.EvidenceRefs...)
-	evidence = append(evidence,
-		auth.BodyRef,
-		"content-post-authorization:"+auth.DraftID,
-		"action:"+auth.ActionIntentID,
-		"policy:"+auth.PolicyDecisionID,
-	)
-	return envelope.ActionIntent{
-		Header: envelope.Header{
-			SchemaVersion: envelope.SVActionIntent,
-			ID:            actIDFor("act_", workID, product.ContentPostCapability, target.ID, request.DraftID, request.ScheduleAt, string(forward)),
-			CreatedAt:     now.UTC().Format(time.RFC3339),
-			Producer:      envelope.Producer{Kind: "cli", Name: "compound"},
-			IDs:           envelope.IDs{WorkID: workID},
-			Scope:         envelope.Scope{ProductID: request.ProductID},
-			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
-			Privacy:       "private",
-			Risk:          "tier1",
-			EvidenceRefs:  evidence,
-			Uncertainty:   envelope.Uncertainty{Level: "known"},
-		},
-		Actor:         "operator",
-		Capability:    product.ContentPostCapability,
-		Action:        "post_content",
-		Target:        target,
-		MutationClass: "external_side_effect",
-		Reversibility: "irreversible",
-		BlastRadius:   "local",
-		Preview:       fmt.Sprintf("schedule approved draft %s to %s through transport %s", request.DraftID, request.Platform, target.ID),
-		RollbackPlan:  "delete or return the scheduled transport post to draft before publication; no deletion is guaranteed after publication",
-	}
-}
-
 // printActPostPreview names the exact resolved transport and its adapter
 // config path so the operator sees precisely which authority would fire on
 // --confirm.

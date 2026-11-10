@@ -123,18 +123,6 @@ func (s *Store) Preflight() error {
 
 func (s *Store) rootPath() string { return filepath.Join(s.home, eventsDirName) }
 
-func (s *Store) recordPath(ref Reference) string {
-	return filepath.Join(s.rootPath(), ref.ID()+".json")
-}
-
-func (s *Store) resolve(raw string) (Reference, string, error) {
-	ref, err := ParseReference(raw)
-	if err != nil {
-		return Reference{}, "", err
-	}
-	return ref, s.recordPath(ref), nil
-}
-
 // Read resolves a bare, logical, or historical reference. Segments are
 // authoritative when both representations contain the same id.
 func (s *Store) Read(raw string) (Record, error) {

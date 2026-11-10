@@ -458,14 +458,3 @@ func assertPromptSentinelAbsentFromTree(t *testing.T, root, sentinel string) {
 func timeOffset(i int) time.Duration {
 	return time.Duration(i) * time.Second
 }
-
-func assertJSONOmitsPrompt(t *testing.T, value any, raw string) {
-	t.Helper()
-	data, err := json.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), raw) {
-		t.Fatalf("JSON retained raw prompt: %s", data)
-	}
-}

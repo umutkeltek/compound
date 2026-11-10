@@ -31,13 +31,6 @@ const (
 	consoleLifecycleServe = console.LifecycleServe
 )
 
-const (
-	consoleCapabilityEnv       = console.CapabilityEnv
-	consoleLegacySessionEnv    = console.LegacySessionEnv
-	consoleMutationsEnv        = console.MutationsEnv
-	consolePrivateFallbacksEnv = console.PrivateFallbacksEnv
-)
-
 const consoleListenAddress = console.ListenAddress
 
 const consoleShutdownGrace = 2 * time.Second
@@ -442,24 +435,8 @@ func buildConsoleLifecycleLaunchPlan(lifecycle, consoleDirFlag string, mutations
 	return console.BuildLifecycleLaunchPlan(lifecycle, consoleDirFlag, mutations, privateFallbacks, dryRun)
 }
 
-func validateConsoleMutationLaunchEnvironment(mutations bool) error {
-	return console.ValidateMutationLaunchEnvironment(mutations)
-}
-
 func resolveConsoleCompoundBin(currentExe string, lookPath func(string) (string, error)) string {
 	return console.ResolveCompoundBin(currentExe, lookPath)
-}
-
-func consoleExecutableIsTemporary(path string) bool {
-	return console.ExecutableIsTemporary(path)
-}
-
-func resolveConsoleDir(explicit string) (string, error) {
-	return console.ResolveDir(explicit)
-}
-
-func validateConsoleDir(dir string) (string, error) {
-	return console.ValidateDir(dir)
 }
 
 // consoleHomeShortHash fingerprints an absolute home path. It mirrors the

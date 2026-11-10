@@ -84,7 +84,7 @@ Woodpecker gitleaks step complements it because `redact` is a local tool not ins
 runner.
 
 GitHub-hosted Actions are disabled in this repository. Routine CI and release
-builds run on the owned Woodpecker agent. The three release steps require a manual
+builds run on the owned Woodpecker agent. The four release steps require a manual
 pipeline with `RELEASE_VERSION` set and the exact fetched main tip. After the
 portable gates, export-public check, two identical builds, and native Linux drill,
 the agent stages an immutable candidate. The maintainer's machine rebuilds it,

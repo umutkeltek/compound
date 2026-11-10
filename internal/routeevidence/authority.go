@@ -2,7 +2,6 @@ package routeevidence
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -190,8 +189,4 @@ func sortStringIntMap(m map[string]int) {
 	for _, row := range rows {
 		m[row.Key] = row.Value
 	}
-}
-
-func MarshalAuthorityReport(report AuthorityReport) ([]byte, error) {
-	return json.MarshalIndent(report, "", "  ")
 }

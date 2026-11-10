@@ -598,29 +598,6 @@ func installedGuardProjection(bindings []desiredHookBinding) (string, string) {
 	return "", ""
 }
 
-// mergePreToolUseBinding merges compound's PreToolUse binding into an existing harness config without
-// disturbing any other content. It identifies compound's own entry by command marker so re-installs
-// update in place and a user's other PreToolUse hooks are never touched.
-func mergePreToolUseBinding(configPath, matcher, command string, check bool) (string, error) {
-	return mergeHookBindings(configPath, []desiredHookBinding{{Event: "PreToolUse", Matcher: matcher, Command: command}}, check)
-}
-
-// mergeHookBindings retains the narrow single-config seam used by package tests. Multi-harness
-// installs use InstallHooksWithConfigDirAndPublish so every selected config is prepared first.
-func mergeHookBindings(configPath string, bindings []desiredHookBinding, check bool) (string, error) {
-	prepared, _, err := prepareHookBindings("", configPath, bindings, check)
-	if err != nil {
-		return "", err
-	}
-	if !prepared.shouldWrite {
-		return prepared.action, nil
-	}
-	if err := commitPreparedHookConfig(prepared); err != nil {
-		return "", err
-	}
-	return prepared.action, nil
-}
-
 func prepareHookBindings(harnessName, configPath string, bindings []desiredHookBinding, check bool) (preparedHookConfig, map[string]int, error) {
 	prepared := preparedHookConfig{
 		harness: harnessName,

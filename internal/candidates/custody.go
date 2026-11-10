@@ -442,20 +442,6 @@ func candidateBodyDigest(body []byte) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// candidateDigestForFile reads the body of an already-open candidate file
-// and returns its canonical sha256 digest. authorizeCandidateReplacement
-// uses this in place of the previous Fstat-based identity compare so the
-// custody guard's signal is content-stable (APFS no-op touches cannot
-// change sha256) instead of kernel-stat-volatile. The leaf still refuses
-// when the live body's digest differs from the recorded one.
-func candidateDigestForFile(file *os.File) (string, error) {
-	data, err := io.ReadAll(file)
-	if err != nil {
-		return "", err
-	}
-	return candidateBodyDigest(data), nil
-}
-
 // candidateDigestForPath opens name under the directory FD (descriptor-
 // rooted, no-follow) and returns its canonical sha256 digest. Used by the
 // R3F authorize path because openExistingWritable returns a WRONLY FD

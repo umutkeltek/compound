@@ -431,17 +431,6 @@ func validateDelegateInstructionContext(req work.DelegateHarnessReadinessRequest
 	return evidence, details
 }
 
-func readDelegateReadinessJSON(path string, out any) error {
-	body, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	if err := json.Unmarshal(body, out); err != nil {
-		return fmt.Errorf("decode: %w", err)
-	}
-	return nil
-}
-
 func delegateReadinessSurfaceMatches(surface, workspace string) bool {
 	surface = strings.TrimSpace(surface)
 	workspace = strings.TrimSpace(workspace)

@@ -193,9 +193,6 @@ func Index(ctx context.Context, homePath string, lane LaneConfig, embedder Embed
 	return report, nil
 }
 
-func prepareIndex(homePath string, lane LaneConfig) (preparedIndex, error) {
-	return prepareIndexContext(context.Background(), homePath, lane)
-}
 func prepareIndexContext(ctx context.Context, homePath string, lane LaneConfig) (preparedIndex, error) {
 	manifest, err := sourceobs.LoadSourceManifest(homePath, lane.SourceFamily)
 	if err != nil {

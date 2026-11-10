@@ -3132,20 +3132,6 @@ func cmdCompoundBudgetFindings(t *testing.T, repo string, strict bool) []Finding
 	return checkCmdCompoundBudget(repo, strict)
 }
 
-func assertCmdCompoundBudgetSeverity(t *testing.T, fs []Finding, field, want string) {
-	t.Helper()
-	for _, f := range fs {
-		if !strings.Contains(f.Message, field) {
-			continue
-		}
-		if string(f.Severity) != want {
-			t.Fatalf("severity for %q = %s, want %s: %+v", field, f.Severity, want, f)
-		}
-		return
-	}
-	t.Fatalf("no cmd-compound-budget finding for %q in: %+v", field, fs)
-}
-
 func cmdCompoundBudgetCount(fs []Finding, contains string) (Severity, string, bool) {
 	for _, f := range fs {
 		if !strings.Contains(f.Message, contains) {

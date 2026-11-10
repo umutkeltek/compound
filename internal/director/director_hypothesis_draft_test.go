@@ -132,18 +132,6 @@ func TestDirectorDryRunIsByteFree(t *testing.T) {
 	}
 }
 
-func expectedChangeForProduct(productID string) string {
-	switch productID {
-	case "product:gamma-app":
-		return "Pro IAP price step"
-	case "product:alpha-app":
-		return "After public release, the angler-intent subtitle"
-	case "product:beta-app":
-		return "Google Search Console report snapshot observed"
-	}
-	return ""
-}
-
 // stripDraftMetadata returns (productID, changeEvent) the proposal carries
 // inside RequiredInputs. Mirrors the round-trip the apply-side
 // mintDraftCandidatesForApply performs.

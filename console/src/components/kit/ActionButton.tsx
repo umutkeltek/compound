@@ -9,7 +9,7 @@ import { Button, type ButtonVariant } from "./Button";
 type ExecuteResult = { ok: boolean; stdout?: string; stderr?: string };
 type ActionButtonState = "idle" | "pending" | "confirmed" | "error";
 
-/** Same payload contract DecisionForm/PanelApplyButton post to /api/decision/execute today. */
+/** The payload contract of /api/decision/execute. */
 export type ActionButtonPayload = {
   area: string;
   itemId: string;

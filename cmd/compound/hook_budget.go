@@ -15,10 +15,6 @@ func newHookAnswerGate() *hookAnswerGate { return &hookAnswerGate{AnswerGate: ho
 
 func (g *hookAnswerGate) mainAnswer(publish func()) { g.MainAnswer(publish) }
 
-func (g *hookAnswerGate) watchdogAnswer(publish func()) bool {
-	return g.WatchdogAnswer(publish)
-}
-
 func resolveHookBudget(parsed hookCommandArgs, raw string) time.Duration {
 	var harnessBudget time.Duration
 	if ms := harness.DefaultRegistry().HookBudgetMS(parsed.Harness); ms > 0 {

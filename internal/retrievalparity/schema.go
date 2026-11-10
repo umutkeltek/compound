@@ -288,6 +288,11 @@ func ValidateFixture(fixture Fixture) error {
 				return fmt.Errorf("fixture row %d: %w", i+1, err)
 			}
 		}
+		if row.OrientExpect != nil {
+			if err := validateOrientExpectations(*row.OrientExpect); err != nil {
+				return fmt.Errorf("fixture row %d: %w", i+1, err)
+			}
+		}
 		for j, ref := range row.ExpectedRefs {
 			if !validFixtureRef(row.Consumer, ref) {
 				return fmt.Errorf("fixture row %d: expected_ref %d invalid", i+1, j+1)
@@ -933,14 +938,6 @@ func normalizeCoverage(coverage Coverage) Coverage {
 	return coverage
 }
 
-func equalCoverage(left, right Coverage) bool {
-	left = normalizeCoverage(left)
-	right = normalizeCoverage(right)
-	return left.WindowStart == right.WindowStart &&
-		left.WindowEnd == right.WindowEnd &&
-		equalStringSlices(left.KnownGaps, right.KnownGaps)
-}
-
 func freezeOutputName(out string, fixture Fixture) (string, error) {
 	out = strings.TrimSpace(out)
 	if out == "" {
@@ -1172,10 +1169,6 @@ func rowsDependencyPassed(rows []ReplayRow, expectEngine, forbidEngine string) *
 		}
 	}
 	return &passed
-}
-
-func validateReplayRow(row ReplayRow, consumer string) error {
-	return validateReplayRowWithDependency(row, consumer, "", "")
 }
 
 func validateReplayRowWithDependency(row ReplayRow, consumer, expectEngine, forbidEngine string) error {

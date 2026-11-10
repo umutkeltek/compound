@@ -823,25 +823,6 @@ func snapshotRunAttemptDir(t *testing.T, home string) map[string]string {
 	return out
 }
 
-func sameIDSet(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	m := map[string]int{}
-	for _, x := range a {
-		m[x]++
-	}
-	for _, x := range b {
-		m[x]--
-	}
-	for _, v := range m {
-		if v != 0 {
-			return false
-		}
-	}
-	return true
-}
-
 // liveProbeHeartbeatsAndProtects covers the probe=lived case end-to-end:
 // the candidate's binding is probed live (live=true), heartbeat refresh,
 // no terminalization, no kill observable.

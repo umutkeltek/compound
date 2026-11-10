@@ -56,12 +56,6 @@ func newClaudeAdapter(store *runattempt.Store, name, command string, interval ti
 	return &ClaudeAdapter{store: store, heartbeatInterval: interval, name: name, command: command, tupleBacked: tupleBacked}
 }
 
-// NewClaudeAdapterWithInterval returns an adapter with a custom heartbeat
-// cadence. Test-only.
-func NewClaudeAdapterWithInterval(store *runattempt.Store, interval time.Duration) *ClaudeAdapter {
-	return newClaudeAdapter(store, "claude", "claude", interval, false)
-}
-
 // Name returns the manifest adapter id for Claude. Future Registry
 // integration (C.3) keys on this.
 func (a *ClaudeAdapter) Name() string { return a.name }

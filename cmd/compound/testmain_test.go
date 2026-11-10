@@ -176,11 +176,3 @@ func compoundModuleRoot(t *testing.T) string {
 	}
 	return moduleRootDir
 }
-
-// telemetryOffHome disables Go telemetry inside an existing directory and returns it,
-// for call sites whose HOME is a tempdir they already use for other fixtures.
-func telemetryOffHome(t *testing.T, home string) string {
-	t.Helper()
-	disableGoTelemetryIn(t, home)
-	return home
-}

@@ -133,10 +133,6 @@ func LoadEvidenceByID(homePath, evidenceID string) (Evidence, error) {
 	return Evidence{}, fmt.Errorf("route evidence %q not found", id)
 }
 
-func LoadEvidenceForReceipt(homePath, receiptID, workID string) (Evidence, error) {
-	return loadEvidenceForReceiptRefs(homePath, receiptID, workID, nil)
-}
-
 func loadEvidenceForReceiptRefs(homePath, receiptID, workID string, proofRefs []string) (Evidence, error) {
 	receiptID = strings.TrimSpace(receiptID)
 	workID = strings.TrimSpace(workID)

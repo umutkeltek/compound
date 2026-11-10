@@ -1,7 +1,6 @@
 package lanes
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -253,7 +252,3 @@ func writeLaneDefaults(t *testing.T, homePath, harness, cwd, task string) {
 		t.Fatal(err)
 	}
 }
-
-// errNotExistForTest asserts an error wraps os.ErrNotExist; small
-// helper kept here so test bodies stay readable.
-func errNotExistForTest(err error) bool { return errors.Is(err, os.ErrNotExist) }

@@ -88,18 +88,6 @@ func ParseReviewResolution(data []byte) (ReviewResolution, error) {
 	return resolution, nil
 }
 
-func LoadReviewResolution(path string) (ReviewResolution, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ReviewResolution{}, err
-	}
-	resolution, err := ParseReviewResolution(data)
-	if err != nil {
-		return ReviewResolution{}, fmt.Errorf("review resolution %s: %w", path, err)
-	}
-	return resolution, nil
-}
-
 func reviewResolutionForCore(corePath string) (*ReviewResolution, string) {
 	sidecarPath := strings.TrimSuffix(corePath, ".json") + ".reviewed.json"
 	data, err := os.ReadFile(sidecarPath)

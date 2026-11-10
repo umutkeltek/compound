@@ -84,7 +84,7 @@ and toolchain environment. The driver adds no timeout or child-killing mechanism
 the canonical proof runner owns group cancellation and joining. Standalone
 interruption likewise relies on process-group signals. The development profile
 is unchanged and remains non-certifying. The canonical gate retains its name,
-`go-test-count-1-all` proof ref and all 48 gates; certification still requires
+`go-test-count-1-all` proof ref and its full gate inventory; certification still requires
 a fresh committed-source canonical battery on the landed tip (the presubmit runs before the
 land, the canonical battery after it).
 

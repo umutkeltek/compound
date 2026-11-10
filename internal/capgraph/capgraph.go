@@ -1249,18 +1249,6 @@ func ConsumeReceiptsIfGraphExists(homePath string, now time.Time) (ReceiptConsum
 	return report, true, err
 }
 
-func (s *Store) addEdgeOnce(edge Edge, existing map[string]bool, now time.Time) (bool, error) {
-	key := edgeKey(edge)
-	if existing[key] {
-		return false, nil
-	}
-	if err := s.AddEdge(edge, now); err != nil {
-		return false, err
-	}
-	existing[key] = true
-	return true, nil
-}
-
 func (s *Store) List() ([]Node, error) { return s.loadNodes() }
 
 func (s *Store) Edges() ([]Edge, error) { return s.loadEdges() }

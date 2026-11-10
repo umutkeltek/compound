@@ -18,6 +18,19 @@ for tagged releases, subject to the public-alpha compatibility policy in
 - `compound doctor` lists OpenCode and oh-my-pi in its hooks section when their config folder
   exists, and warns when an installed harness is not wired.
 
+### Fixed
+
+- `compound home doctor` in text mode now exits 1 whenever it prints a failing verdict. A global
+  home inside a Git checkout printed the failing verdict and still exited 0, while `--json`
+  exited 1. Both installers run this check before they publish, so an install into such a home
+  is now refused instead of completing with a failing verdict.
+- `compound home compact`, `home archive-history` and `home restore-history` refuse an unknown
+  flag with exit 2. A mistyped `--dry-run` used to be ignored, so the command ran for real.
+- The top-level help no longer says that `retention` never reclaims or that `presence` writes
+  nothing: `retention apply`, `retention empty-trash` and `presence announce` are governed writes.
+- Parity fixtures enforce the stated limits on `orient_expectations` (negative ceilings, canary
+  and private-ref counts and sizes); the check existed and was never called.
+
 ### Documentation
 
 - `docs/getting-started.md` is now a setup guide, not release engineering. It covers

@@ -2075,14 +2075,6 @@ func (s *Store) cleanupPostCompletionRepairClaim(planID string, entry PostComple
 	return nil
 }
 
-func (s *Store) buildPostCompletionRepairResult(plan PostCompletionRepairPlan, authorization PostCompletionRepairAuthorization, history []PostCompletionRepairAuthorization, now time.Time) (PostCompletionRepairResult, error) {
-	presence, err := s.engine.buildSegmentPresence()
-	if err != nil {
-		return PostCompletionRepairResult{}, err
-	}
-	return s.buildPostCompletionRepairResultWithPresence(plan, authorization, history, now, presence)
-}
-
 func (s *Store) buildPostCompletionRepairResultWithPresence(plan PostCompletionRepairPlan, authorization PostCompletionRepairAuthorization, history []PostCompletionRepairAuthorization, now time.Time, presence map[string]segmentLocation) (PostCompletionRepairResult, error) {
 	entries := make([]PostCompletionRepairResultEntry, 0, len(plan.Entries))
 	for _, planned := range plan.Entries {
@@ -4406,18 +4398,6 @@ func (s *Store) ensurePostCompletionRepairProgressArtifact(planID string, state 
 			return nil
 		}
 		root.Artifacts = append(root.Artifacts, want)
-		return nil
-	})
-}
-
-func (s *Store) removePostCompletionRepairArtifact(kind, id string) error {
-	return s.mutatePostCompletionRepairRoot(func(root *PostCompletionRepairRoot) error {
-		for index, artifact := range root.Artifacts {
-			if artifact.Kind == kind && artifact.ID == id {
-				root.Artifacts = append(root.Artifacts[:index], root.Artifacts[index+1:]...)
-				return nil
-			}
-		}
 		return nil
 	})
 }
