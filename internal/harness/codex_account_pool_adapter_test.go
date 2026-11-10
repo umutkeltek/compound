@@ -168,7 +168,7 @@ func TestCodexPoolPinnedLaunchAndSelectionEvidence(t *testing.T) {
 	if err := json.Unmarshal(bytesTrim(body), &argv); err != nil {
 		t.Fatal(err)
 	}
-	for _, flag := range []string{"--profile", "--pool-name", "--expected-profile-revision", "--expected-authority-revision",
+	for _, flag := range []string{"--profile", "--expected-pool-name", "--expected-profile-revision", "--expected-authority-revision",
 		"--expected-native-executable", "--expected-native-sha256", "--expected-account-settings-json",
 		"--require-capture", "--approval-policy", "--sandbox", "--admission-check-command"} {
 		if !poolContainsString(argv, flag) {
@@ -177,6 +177,9 @@ func TestCodexPoolPinnedLaunchAndSelectionEvidence(t *testing.T) {
 	}
 	if got := argv[indexOf(argv, "--profile")+1]; got != f.config.ProfileID {
 		t.Fatalf("profile=%q", got)
+	}
+	if poolContainsString(argv, "--pool-name") || argv[indexOf(argv, "--expected-pool-name")+1] != f.config.PoolName {
+		t.Fatal("pool must be asserted without a conflicting selector")
 	}
 	if got := argv[indexOf(argv, "--sandbox")+1]; got != "read-only" {
 		t.Fatalf("sandbox=%q", got)

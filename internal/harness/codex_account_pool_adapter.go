@@ -365,7 +365,7 @@ func (a *CodexNativeAccountPoolAdapter) Run(ctx context.Context, in RunInput) (R
 	}
 	settingsJSON, _ := json.Marshal(c.AccountSettings)
 	callback, _ := json.Marshal([]string{c.CheckerPath, "--config", in.Args[0], "--expected-config-sha256", in.Args[1], "--check"})
-	args := []string{"account", "run", "--provider", "codex", "--profile", c.ProfileID, "--pool-name", c.PoolName,
+	args := []string{"account", "run", "--provider", "codex", "--profile", c.ProfileID, "--expected-pool-name", c.PoolName,
 		"--expected-profile-revision", c.ProfileRevision,
 		"--expected-authority-revision", c.AuthorityRevision,
 		"--expected-native-executable", c.NativeExecutable,

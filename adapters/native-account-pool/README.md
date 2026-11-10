@@ -1,6 +1,15 @@
-# Native Claude account pool composition
+# Native account pool composition
 
-This optional adapter lets an existing governed Compound Claude launch use Switchback's native account pool during a current operator away window. Compound's existing ClaudeAdapter and work execution still own policy, hook and permission admission. This script only checks the current away window and pinned settings bytes, then passes the native argv unchanged to Switchback. It is a transport adjunct, not an admission grant. Only `provider=claude` is supported here; Codex follow-on requires a separately proved native adapter contract.
+The Claude v1 transport passes an admitted ClaudeAdapter launch to Switchback during
+a current operator away window. The separate Codex v2 harness consumes a pinned
+named profile. Compound retains policy, hook and permission admission; Switchback
+owns account choice and capture. Neither composition creates an admission grant.
+
+The Claude transport always requests `--require-capture`. A successful provider
+result without verified capture is terminal evidence and must not be replayed.
+The separately governed Codex v2 adapter is described below; its profile launch
+uses `--expected-pool-name` to assert the pinned pool. `--pool-name` is a different
+selection mode and cannot accompany `--profile`.
 
 ## Private configuration
 

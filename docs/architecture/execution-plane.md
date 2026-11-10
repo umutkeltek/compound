@@ -51,8 +51,12 @@ Claude profile settings, then hands the existing ClaudeAdapter's admitted native
 to the native account pool transport. The wrapper callback rechecks a sealed
 config digest before each account launch; the transport owns account selection,
 retries and capture. The wrapper
-owns no permission, hook, policy or account authority. It supports Claude only;
-Codex needs a separately proved native adapter contract.
+owns no permission, hook, policy or account authority. Claude v1 requires capture
+and preserves the admitted argv. The separate `codex-native-account-pool` harness
+consumes a v2 named-profile contract, binds its account and settings revisions,
+rechecks away admission before every attempt, and requires a governed reservation.
+A terminal provider result with incomplete capture fails the attempt without
+replaying the underlying task. See the adapter README for the exact contract.
 
 ### Native OpenCode prompt-only adapter
 

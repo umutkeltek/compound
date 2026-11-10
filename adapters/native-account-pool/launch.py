@@ -372,7 +372,7 @@ def main():
     callback = [sys.executable, str(Path(__file__).resolve()), "--config",
                 args.config, "--expected-config-sha256", revision, "--check"]
     launch = [config["switchback_cli"], "account", "run", "--provider", "claude",
-              "--pool", ",".join(config["accounts"]), "--expected-settings-sha256",
+              "--pool", ",".join(config["accounts"]), "--require-capture", "--expected-settings-sha256",
               config["settings_sha256"], "--timeout", str(config["timeout_seconds"]),
               "--admission-check-command", json.dumps(callback, separators=(",", ":")),
               "--", *native]
