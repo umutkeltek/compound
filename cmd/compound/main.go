@@ -340,7 +340,7 @@ compound activity <status|enable|disable|drain|sweep|aw materialize|tier1 collec
 compound narrate [--json|--text] [--mood decide|wander|worry] [--recent N] [--home P] deterministic correspondent script (compound.narrate.v0.1) composed over attention/orient-changed/receipts; also embedded in orient --operator; reads the orient cursor, never advances it
 compound executors [--json] read-only executor projection from Workbench, leases, and profile guide; no health overclaim
 compound lanes matrix [--json] [--projection-dir DIR] [--harness H] [--route R] read-only (harness x lane) projection over the launch owner's published profile-conformance; enumerates from the registry, never a directory listing; an unbound combination reports unknown, never possible, because the projection publishes no wire protocol or tap binding
-compound presence [--json] [--ttl D] [--include-stale] [--tail-bytes N] read-only "who is here now" projection from lease holders + recent work-log actors; presence follows activity, never spawn provenance, so an agent this runtime never launched still appears; writes nothing
+compound presence [--json] [--ttl D] [--include-stale] [--tail-bytes N] read-only "who is here now" projection from lease holders + recent work-log actors; presence follows activity, never spawn provenance, so an agent this runtime never launched still appears; the projection writes nothing; the governed "presence announce --actor A --session S --harness H" records one presence row
 compound stream (--once [--backlog N] | --follow [--cursor BYTE]) [--json] [--home P] read-only byte-cursor tail over events/work.jsonl + ledger/seq; --once is a bounded snapshot (last N + end-of-log cursor + seq + generated_at), --follow is a live JSONL tail; never takes the work-event write lock
 compound behavioral-lens <list|run|compose|signals> composable behavioral-lens framework (compound.behavioral_lens_signal.v0.1): uniform observe->InferredSignal plug + visibility-gated composition; sycophancy (paired-stance shift) is the first lens; evidence-only, never a gate; operator_private signals stay under $COMPOUND_HOME
 compound lens-modulate <arm|thresholds|modulate|revert> governed modulator: turns a crossing behavioral-lens signal into a REVERSIBLE, PolicyDecision-gated route/role demote through act; default off + calibration-guarded; modulate is dry-run unless --confirm; operator_private modulations stay operator-local
@@ -356,7 +356,7 @@ compound schedule <list|show|doctor> [--json] [--source user|system|crontab|all]
   compound browser <list|show|doctor|settings|route|goal> [--json] [--instance UUID] [--swiftshader-only] [--stale-min M] [--idle-cpu-pct PCT] [--fix|--dry-run|--yes-each] process doctor, governed backend switch, bounded public goal; see docs/architecture/execution-plane.md
   compound doctor [--json] [--base DIR] [--binary PATH] one legible operator health surface: hooks, leases, findings, placement freshness, retention; writes nothing
 compound store <doctor|init|status|migrate|sync|embed|recall> [--json]  EXPERIMENTAL/unsupported Postgres+pgvector; requires COMPOUND_STORE=postgres + COMPOUND_EXPERIMENTAL_POSTGRES=1 + COMPOUND_POSTGRES_PROFILE + COMPOUND_DSN; DSNs are never rendered/persisted
-compound retention <classes|scan|plan> [--json]                 declare and inspect artifact retention; plans only, never reclaims
+compound retention <classes|scan|plan|apply|empty-trash> [--json] declare and inspect artifact retention; classes/scan/plan write nothing, the governed apply moves eligible home files to trash and empty-trash unlinks old trash (both dry-run unless --yes)
 compound proof-check [--json] [--dry-run] [--dev] [--repo P] [--out FILE] deterministic verification bundle; --dev is fast, cache-enabled, non-certifying feedback while canonical proof stays fresh
   compound director propose [--dry-run|--apply] --json          suggested work; apply may evidence-admit job_health but never executes it
   compound release export-public [--repo P] [--target archive.tar.gz] [--prefix NAME] [--json] public source archive from git archive HEAD with private/runtime path gate
@@ -4055,16 +4055,11 @@ func cmdOrient(args []string) {
 
 // cmdHome manages COMPOUND_HOME — the runtime body (docs/architecture/runtime.md).
 // The first envelope-first brick: generated state lives here, never in the repo.
-// cmdPresence and cmdPresenceAnnounce are thin shims over the work organ's
-// presence surface (the cmd-budget ratchet keeps cmd/compound a dispatch layer).
+// cmdPresence is a thin shim over the work organ's presence surface, which
+// also dispatches `presence announce` (the cmd-budget ratchet keeps
+// cmd/compound a dispatch layer).
 func cmdPresence(args []string) {
 	if code := work.RunPresence(args); code != 0 {
-		os.Exit(code)
-	}
-}
-
-func cmdPresenceAnnounce(args []string) {
-	if code := work.RunPresenceAnnounce(args); code != 0 {
 		os.Exit(code)
 	}
 }
@@ -4567,7 +4562,9 @@ func printHomeDoctor(r home.Report) {
 	}
 	printHomeGovernanceDoctor(r.Home)
 	fmt.Printf("verdict: %s\n", homeOKStr(r.OK && !smell && r.PrivateCustody.OK))
-	if !r.OK || !r.PrivateCustody.OK {
+	// The exit code follows the printed verdict, as the --json path does: a
+	// global home inside a git repo prints FAIL and must not exit 0.
+	if !r.OK || smell || !r.PrivateCustody.OK {
 		os.Exit(1)
 	}
 }
