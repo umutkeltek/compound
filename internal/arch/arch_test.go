@@ -79,8 +79,8 @@ func TestPostgresADRAuthorityParity(t *testing.T) {
 	}
 
 	accepted := read("docs/adr/0005-postgres-pgvector-storage-experiment.md")
-	if !strings.Contains(accepted, "**Status:** Accepted for additive, opt-in experimentation; production authority cutover is not ratified") {
-		t.Fatal("bounded Postgres experiment is not identified as the one accepted runtime ADR")
+	if !strings.Contains(accepted, "**Status:** Superseded on 2026-11-10: the experimental adapter and the `compound store` command were removed; file is the only backend") {
+		t.Fatal("the Postgres experiment ADR does not say it was superseded and the adapter removed")
 	}
 	consolidation := read("docs/adr/0006-consolidation-freeze-protocol.md")
 	for rel, body := range map[string]string{

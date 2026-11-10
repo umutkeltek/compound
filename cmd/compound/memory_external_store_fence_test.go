@@ -12,21 +12,32 @@ import (
 	"compound/internal/persist"
 )
 
+// File is the only store backend; the experimental Postgres adapter was removed.
+// These tests pin the refusal that stays: the memory CLI never serves the
+// file-backed breadth lane under another selection, and never prints the
+// connection material a stale environment may still carry.
+
+const (
+	removedPostgresOptInEnv   = "COMPOUND_EXPERIMENTAL_POSTGRES"
+	removedPostgresProfileEnv = "COMPOUND_POSTGRES_PROFILE"
+)
+
 func TestMemoryBreadthEngineRefusesExternalStoreSelectionWithoutFileFallback(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		store string
-		valid bool
+		name     string
+		store    string
+		complete bool
 	}{
 		{name: "unknown backend", store: "postgre"},
-		{name: "valid experimental postgres", store: "postgres", valid: true},
+		{name: "removed postgres backend", store: "postgres"},
+		{name: "complete former postgres gate", store: "postgres", complete: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, key := range []string{
 				"COMPOUND_STORE",
 				"COMPOUND_DSN",
-				persist.ExperimentalPostgresEnv,
-				persist.PostgresProfileEnv,
+				removedPostgresOptInEnv,
+				removedPostgresProfileEnv,
 				"COMPOUND_VECTOR_DIMS",
 				"COMPOUND_MEM_ENGINE_BIN",
 			} {
@@ -34,9 +45,9 @@ func TestMemoryBreadthEngineRefusesExternalStoreSelectionWithoutFileFallback(t *
 			}
 			t.Setenv("COMPOUND_STORE", tc.store)
 			secret := "memory-fence-" + "sentinel"
-			if tc.valid {
-				t.Setenv(persist.ExperimentalPostgresEnv, "1")
-				t.Setenv(persist.PostgresProfileEnv, "local-lab")
+			if tc.complete {
+				t.Setenv(removedPostgresOptInEnv, "1")
+				t.Setenv(removedPostgresProfileEnv, "local-lab")
 				t.Setenv("COMPOUND_DSN", strings.Join([]string{
 					"postgres", "://operator:", secret, "@db.example.invalid/compound",
 				}, ""))
@@ -70,8 +81,8 @@ func TestMemoryDoctorReportsExternalStoreRefusalInsteadOfFileHealth(t *testing.T
 		"COMPOUND_HOME":                   homePath,
 		"COMPOUND_STORE":                  "postgre",
 		"COMPOUND_DSN":                    "",
-		persist.ExperimentalPostgresEnv:   "",
-		persist.PostgresProfileEnv:        "",
+		removedPostgresOptInEnv:           "",
+		removedPostgresProfileEnv:         "",
 		"COMPOUND_VECTOR_DIMS":            "",
 		"COMPOUND_MEM_ENGINE_BIN":         "",
 		"COMPOUND_MEMORY_CLI_PROFILE":     "",
@@ -94,6 +105,7 @@ func TestMemoryBreadthCLIsFailClosedOnExternalStoreSelection(t *testing.T) {
 
 	secret := "memory-cli-fence-" + "sentinel"
 	host := "memory-db.example.invalid"
+	dsn := strings.Join([]string{"postgres", "://operator:", secret, "@", host, "/compound"}, "")
 	configurations := []struct {
 		name       string
 		overrides  map[string]string
@@ -107,23 +119,28 @@ func TestMemoryBreadthCLIsFailClosedOnExternalStoreSelection(t *testing.T) {
 			wantOutput: "unsupported COMPOUND_STORE value",
 		},
 		{
-			name: "partial postgres selection",
+			name: "removed postgres backend",
 			overrides: map[string]string{
 				"COMPOUND_STORE": "postgres",
 			},
-			wantOutput: persist.ExperimentalPostgresEnv,
+			wantOutput: "the experimental Postgres backend was removed",
 		},
 		{
-			name: "valid experimental postgres selection",
+			name: "complete former postgres gate",
 			overrides: map[string]string{
-				"COMPOUND_STORE":                "postgres",
-				persist.ExperimentalPostgresEnv: "1",
-				persist.PostgresProfileEnv:      "local-lab",
-				"COMPOUND_DSN": strings.Join([]string{
-					"postgres", "://operator:", secret, "@", host, "/compound",
-				}, ""),
+				"COMPOUND_STORE":          "postgres",
+				removedPostgresOptInEnv:   "1",
+				removedPostgresProfileEnv: "local-lab",
+				"COMPOUND_DSN":            dsn,
 			},
-			wantOutput: "not wired to the memory breadth CLI",
+			wantOutput: "the experimental Postgres backend was removed",
+		},
+		{
+			name: "stray connection string in file mode",
+			overrides: map[string]string{
+				"COMPOUND_DSN": dsn,
+			},
+			wantOutput: "COMPOUND_DSN: this variable configured the removed Postgres backend",
 		},
 	}
 	commands := []struct {
@@ -145,8 +162,8 @@ func TestMemoryBreadthCLIsFailClosedOnExternalStoreSelection(t *testing.T) {
 					"COMPOUND_HOME":                   homePath,
 					"COMPOUND_STORE":                  "",
 					"COMPOUND_DSN":                    "",
-					persist.ExperimentalPostgresEnv:   "",
-					persist.PostgresProfileEnv:        "",
+					removedPostgresOptInEnv:           "",
+					removedPostgresProfileEnv:         "",
 					"COMPOUND_VECTOR_DIMS":            "",
 					"COMPOUND_MEM_ENGINE_BIN":         "",
 					"COMPOUND_MEMORY_CLI_PROFILE":     "",

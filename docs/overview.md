@@ -180,7 +180,7 @@ Run `compound` with no arguments for the full usage list.
 
 The public alpha is a scoped, file-backed, single-user development system:
 
-- File backend only. Postgres is experimental, fenced off, and never authority.
+- File backend only. The experimental Postgres adapter was removed.
 - One trusted OS user on local disk.
 - Explicit home selection. An ancestor `.compound` folder never selects your home; use `--home`,
   `COMPOUND_HOME` or an explicit local selector.

@@ -48,7 +48,6 @@ import (
 	"compound/internal/runtimebinding"
 	"compound/internal/schema"
 	"compound/internal/sourceobs"
-	storecli "compound/internal/store"
 	"compound/internal/work"
 	"compound/internal/writeback"
 )
@@ -236,13 +235,6 @@ func canonicalOSRouteClass(value string) string {
 	}
 }
 
-// The pg recall-engine factory is installed by the internal/store organ (ADR-0005:
-// the spine stays dependency-free; backend construction lives at the composition
-// root, and the organ owns the mechanics).
-func init() {
-	storecli.InstallPgvectorEngineFactory()
-}
-
 func sortedMapKeys(m map[string]int) []string {
 	keys := make([]string, 0, len(m))
 	for key := range m {
@@ -351,7 +343,6 @@ compound placement <resolve|target> where a write belongs: positive canonical-ta
 compound schedule <list|show|doctor> [--json] [--source user|system|crontab|all] [--namespace N] [--stale-days N] read-only launchd + crontab projection; no --fix
   compound browser <list|show|doctor|settings|route|goal> [--json] [--instance UUID] [--swiftshader-only] [--stale-min M] [--idle-cpu-pct PCT] [--fix|--dry-run|--yes-each] process doctor, governed backend switch, bounded public goal; see docs/architecture/execution-plane.md
   compound doctor [--json] [--base DIR] [--binary PATH] one legible operator health surface: hooks, leases, findings, placement freshness, retention; writes nothing
-compound store <doctor|init|status|migrate|sync|embed|recall> [--json]  EXPERIMENTAL/unsupported Postgres+pgvector; requires COMPOUND_STORE=postgres + COMPOUND_EXPERIMENTAL_POSTGRES=1 + COMPOUND_POSTGRES_PROFILE + COMPOUND_DSN; DSNs are never rendered/persisted
 compound retention <classes|scan|plan|apply|empty-trash> [--json] declare and inspect artifact retention; classes/scan/plan write nothing, the governed apply moves eligible home files to trash and empty-trash unlinks old trash (both dry-run unless --yes)
 compound proof-check [--json] [--dry-run] [--dev] [--repo P] [--out FILE] deterministic verification bundle; --dev is fast, cache-enabled, non-certifying feedback while canonical proof stays fresh
   compound director propose [--dry-run|--apply] --json          suggested work; apply may evidence-admit job_health but never executes it
@@ -4058,12 +4049,6 @@ func cmdPresence(args []string) {
 	if code := work.RunPresence(args); code != 0 {
 		os.Exit(code)
 	}
-}
-
-// cmdStore is the thin shell over the internal/store organ (the cmd-budget
-// ratchet keeps cmd/compound a dispatch layer; the surface lives in the organ).
-func cmdStore(args []string) {
-	os.Exit(storecli.Run(args, os.Stdout, os.Stderr))
 }
 
 // homeMutationFlags names every flag the mutating home subcommands read. The

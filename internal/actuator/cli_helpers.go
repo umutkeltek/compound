@@ -10,8 +10,8 @@ import (
 // Small CLI helpers, mirrored from cmd/compound (the flag readers from
 // main.go, encodeJSON from bench.go, indexOf from harness_exec_cli.go). The
 // cmd-budget ratchet keeps cmd/compound a thin shell, so an organ that grows a
-// CLI face carries its own copies rather than importing the shell -- the same
-// arrangement as internal/store/helpers.go. Keep them byte-compatible with the
+// CLI face carries its own copies rather than importing the shell.
+// Keep them byte-compatible with the
 // canonical versions.
 
 func hasFlag(args []string, name string) bool {

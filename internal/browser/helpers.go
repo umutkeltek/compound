@@ -5,7 +5,7 @@ package browser
 // Small CLI helpers the organ needs, mirrored byte-compatible from cmd/compound
 // (hasFlag/valueFlag from main.go). The cmd-budget ratchet keeps cmd/compound a
 // thin dispatch shell, so the organ carries its own copies rather than
-// importing the shell (precedent: internal/store/helpers.go). printJSONBrowser
+// importing the shell. printJSONBrowser
 // already lives in cli.go.
 
 func hasFlag(args []string, name string) bool {

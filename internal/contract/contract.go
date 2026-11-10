@@ -2295,10 +2295,11 @@ type contextPositionRef struct {
 var breadthEngineFactory = mem.DefaultBreadthEngine
 
 // externalStoreSelected reports whether the operator selected anything other
-// than the supported file backend or supplied any Postgres-only configuration.
-// Unknown and partial values deliberately return true: the injected factory
-// then rejects them as degraded configuration, so a typo or stray credential
-// can never silently fall back to file/breadth recall.
+// than the file backend, or left a variable set that only the removed Postgres
+// adapter read. File is the only backend. Unknown and partial values
+// deliberately return true: recall then reports the selection as Degraded, so
+// a typo or a stray credential can never silently fall back to file or
+// breadth recall.
 func externalStoreSelected() bool {
 	selected := os.Getenv("COMPOUND_STORE")
 	if selected != "" && selected != "file" {
@@ -2317,65 +2318,20 @@ func externalStoreSelected() bool {
 	return false
 }
 
-// pgvectorEnabled preserves the existing composition predicate name while the
-// experimental adapter remains the only external-store factory. Admission
-// (exact postgres selection + separate opt-in + profile + DSN) is enforced by
-// that factory before it parses or dials connection data.
-func pgvectorEnabled() bool {
-	return externalStoreSelected()
-}
+// unsupportedStoreIdentity is the requested-engine name recall records when a
+// store other than file is selected. It names the refusal, not an engine.
+const unsupportedStoreIdentity = "unsupported-store"
 
-// CloseableEngine is a rented recall engine whose connections the caller closes
-// after use. The pgvector engine the composition root injects satisfies it.
-type CloseableEngine interface {
-	mem.Engine
-	Close()
-}
-
-// pgvectorEngineFactory builds the rented pgvector recall engine when the operator
-// selects the postgres store backend. It is a package var wired ONCE by the CLI
-// composition root (ADR-0005: the spine stays dependency-free; backend construction
-// — pg.Open, the embed endpoint, credentials — lives in cmd/compound, never here).
-// A nil factory means no pgvector lane is wired; a factory ERROR is a Degraded
-// outcome recorded on the trace, never a silent fall-through to another engine.
-var pgvectorEngineFactory func() (CloseableEngine, error)
-
-// SetPgvectorEngineFactory installs the postgres-backed recall engine factory.
-// The CLI composition root calls it at startup; tests substitute a fake. A nil
-// factory under COMPOUND_STORE=postgres is a selected-but-unavailable backend:
-// recall reports Degraded rather than silently falling through to another engine.
-func SetPgvectorEngineFactory(factory func() (CloseableEngine, error)) {
-	pgvectorEngineFactory = factory
-}
-
-// pgvectorEngineOrNil returns the injected pgvector engine, or nil when the
-// postgres store is not selected, no factory is wired, or construction fails.
-// A missing/failing factory under COMPOUND_STORE=postgres is a Degraded trace
-// outcome (mirroring the mem.Open degradation in
-// semanticTaskRankResultWithEmbedderFromView): visible evidence, never a hidden
-// fallback to another backend. The caller owns Close.
-func pgvectorEngineOrNil(trace *EngineDependencyTrace) CloseableEngine {
-	if !pgvectorEnabled() {
-		return nil
+// markUnsupportedStoreSelected records on the trace that the operator selected
+// a store this build does not have. The selection is visible Degraded
+// evidence, never a hidden fallback to another backend.
+func markUnsupportedStoreSelected(trace *EngineDependencyTrace) {
+	if trace == nil {
+		return
 	}
-	if pgvectorEngineFactory == nil {
-		if trace != nil {
-			trace.Attempted = true
-			trace.Outcome = EngineOutcomeDegraded
-			trace.ErrorClass = EngineErrorUnavailable
-		}
-		return nil
-	}
-	eng, err := pgvectorEngineFactory()
-	if err != nil {
-		if trace != nil {
-			trace.Attempted = true
-			trace.Outcome = EngineOutcomeDegraded
-			trace.ErrorClass = EngineErrorUnavailable
-		}
-		return nil
-	}
-	return eng
+	trace.Attempted = true
+	trace.Outcome = EngineOutcomeDegraded
+	trace.ErrorClass = EngineErrorUnavailable
 }
 
 var breadthEmbedderResolver = breadth.ResolveEmbedder
@@ -2467,7 +2423,7 @@ type semanticTaskRankResult struct {
 // breadth engine for the task, used ONLY to sharpen the ambient ranker — the ledger still gates
 // class-tier/visibility (the engine ranks, the ledger gates). Transient read-only callers use the
 // configured embedder and owned breadth cache in-process; ordinary callers retain the configured
-// sidecar path; an operator-selected postgres store routes to the injected pgvector engine.
+// sidecar path; a selected store other than file is reported as Degraded and ranks nothing.
 // Without a configured lane, or on ANY engine error, it returns an empty result so the ambient
 // rankers (loadMemoryRefsFromView et al.) run exactly as they would without breadth (bulletproof
 // degradation — orient never fails because an embedder/sidecar is down). Weights are descending
@@ -2475,16 +2431,16 @@ type semanticTaskRankResult struct {
 // instead of swamping them.
 func semanticTaskRankResultWithEmbedderFromView(homePath string, in Input, trace *EngineDependencyTrace, embedder breadth.EmbedderAdapter, store *mem.Store, view *mem.CurrentView, expanded *mem.ExpandedQuery) semanticTaskRankResult {
 	if trace != nil {
-		if in.ReadOnlyRetrieval && embedder != nil && !pgvectorEnabled() {
+		if in.ReadOnlyRetrieval && embedder != nil && !externalStoreSelected() {
 			trace.RequestedEngine = breadth.Name
 		} else {
 			trace.RequestedEngine = requestedEngineIdentity()
 		}
 	}
-	if !in.ReadOnlyRetrieval && strings.TrimSpace(os.Getenv("COMPOUND_MEM_ENGINE_BIN")) == "" && !pgvectorEnabled() {
+	if !in.ReadOnlyRetrieval && strings.TrimSpace(os.Getenv("COMPOUND_MEM_ENGINE_BIN")) == "" && !externalStoreSelected() {
 		return semanticTaskRankResult{}
 	}
-	if in.ReadOnlyRetrieval && embedder == nil && !pgvectorEnabled() {
+	if in.ReadOnlyRetrieval && embedder == nil && !externalStoreSelected() {
 		return semanticTaskRankResult{}
 	}
 	if len(memoryTextTokens(in.Task)) == 0 {
@@ -2504,20 +2460,15 @@ func semanticTaskRankResultWithEmbedderFromView(homePath string, in Input, trace
 	if trace != nil {
 		trace.Attempted = true
 	}
+	if externalStoreSelected() {
+		// A store other than file is selected and this build has none. Report it
+		// on the trace; never fall through to file or breadth recall.
+		markUnsupportedStoreSelected(trace)
+		return semanticTaskRankResult{}
+	}
 	var eng mem.Engine
 	closeEng := func() {}
-	if pgvectorEnabled() {
-		// The operator selected the postgres+pgvector recall lane: it is the ONLY
-		// semantic engine here. A missing/failing factory is Degraded evidence on
-		// the trace (marked by pgvectorEngineOrNil), never a silent fall-through
-		// to another backend (ADR-0005).
-		pgEng := pgvectorEngineOrNil(trace)
-		if pgEng == nil {
-			return semanticTaskRankResult{}
-		}
-		eng = pgEng
-		closeEng = pgEng.Close
-	} else if in.ReadOnlyRetrieval {
+	if in.ReadOnlyRetrieval {
 		core, err := breadth.NewEngine(breadth.EngineConfig{Embedder: embedder, CompoundHome: homePath})
 		if err != nil {
 			if trace != nil {
@@ -2590,8 +2541,8 @@ func semanticTaskRankResultWithEmbedderFromView(homePath string, in Input, trace
 }
 
 func requestedEngineIdentity() string {
-	if pgvectorEnabled() {
-		return "pgvector"
+	if externalStoreSelected() {
+		return unsupportedStoreIdentity
 	}
 	if profile := boundedEngineIdentity(os.Getenv("COMPOUND_MEMORY_CLI_PROFILE")); profile != "" {
 		return profile

@@ -1,10 +1,19 @@
 # ADR-0005: Postgres+pgvector Storage Experiment
 
-**Status:** Accepted for additive, opt-in experimentation; production authority cutover is not ratified
+**Status:** Superseded on 2026-11-10: the experimental adapter and the `compound store` command were removed; file is the only backend
 **Date:** 2026-07-31
 **Supersedes:** none
-**Retires:** nothing yet; the file backend remains authoritative
+**Superseded by:** operator ruling of 2026-11-10 (whole-repo audit, delete list): remove the experiment
 **Related:** ADR-0007 (package consolidation and CLI decomposition)
+
+> **Superseded 2026-11-10.** The operator approved removing the experiment after a
+> whole-repo audit: the adapter had no caller, had seen no work since 2026-08-21,
+> and carried five module dependencies. `internal/store`, `internal/persist/pg`
+> and the `compound store` command are gone, and file is the only backend. The
+> admission rule of this decision survives as a refusal: `COMPOUND_STORE=postgres`,
+> any unknown/partial configuration, and a leftover `COMPOUND_DSN` or other adapter
+> variable are refused without file or breadth fallback, and the rejected value
+> is never printed or persisted. The text below records the experiment as it was.
 
 Implementation has advanced beyond the original proposal: an experimental
 `internal/persist/pg` adapter and `compound store` operator surface now exist.

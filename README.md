@@ -99,7 +99,7 @@ Nothing becomes a shared fact on a model's word alone. Irreversible actions stay
   and remote access are not supported.
 - **Plain files.** State lives in `~/.compound`, or in the folder you name with `--home` or
   `COMPOUND_HOME`. Compound never picks up a `.compound` folder from a parent directory
-  (an ambient ancestor folder) on its own. Postgres is experimental and not supported.
+  (an ambient ancestor folder) on its own. Files are the only storage backend.
 - **Hooks observe.** In Claude Code, Codex and OpenCode they record and never stop the agent. The
   oh-my-pi hook file can block a tool call that Compound's policy denies. No setup counts as a
   guard without behavioral proof for that exact setup.

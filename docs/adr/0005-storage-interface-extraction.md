@@ -9,10 +9,10 @@ Package Consolidation" (dated 2026-07-31; never ratified)
 ratified), ADR-0007 (package consolidation + CLI decomposition)
 
 > This split proposal is retained as design history, not current authority.
-> The accepted bounded runtime decision is
-> [ADR-0005: Postgres+pgvector Storage Experiment](0005-postgres-pgvector-storage-experiment.md):
-> file storage is the sole supported public-alpha backend, while the existing
-> Postgres adapter remains an explicitly gated, non-authoritative experiment.
+> The bounded runtime decision that was accepted instead,
+> [ADR-0005: Postgres+pgvector Storage Experiment](0005-postgres-pgvector-storage-experiment.md),
+> was superseded on 2026-11-10: the Postgres adapter was removed and file
+> storage is the only backend.
 
 ## Context
 

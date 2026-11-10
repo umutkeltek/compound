@@ -17,14 +17,12 @@ commits prove.
 ### File backend only
 
 The file backend is the only supported storage backend. All durable state
-lives in local files under `COMPOUND_HOME`. Postgres (`COMPOUND_STORE=postgres`,
-the `compound store` surface, the ADR-0005 experiment) is an explicit
-experimental fence: it is never authority, it is unsupported in the public
-alpha, and it must not carry durable alpha state. Runtime admission requires a
-second exact opt-in (`COMPOUND_EXPERIMENTAL_POSTGRES=1`) plus a nonsecret
-`COMPOUND_POSTGRES_PROFILE`; reports and authority objects carry only that
-opaque profile reference, never a raw or "masked" DSN. Unknown or partial
-backend selection fails closed without falling back to the file recall lane.
+lives in local files under `COMPOUND_HOME`. The experimental Postgres adapter
+(the ADR-0005 experiment and its `compound store` command) was removed.
+`COMPOUND_STORE=postgres`, any other non-file value, and a leftover variable of
+that adapter (`COMPOUND_DSN`, for example) fail closed with a typed refusal. The
+refusal never falls back to the file recall lane and never prints the rejected
+value.
 
 ### One trusted OS user on local disk
 

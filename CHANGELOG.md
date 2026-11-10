@@ -29,6 +29,12 @@ for tagged releases, subject to the public-alpha compatibility policy in
   unknown commands. Use `compound memory ...` and `compound distiller run`.
 - The `sessions job plan|review|apply` code and the `credential exec|bind|list` code. Neither
   was ever reachable from the CLI.
+- The experimental Postgres+pgvector store: the `compound store` command, `internal/store` and
+  `internal/persist/pg`, and five module dependencies (pgx, pgvector-go, puddle, pgpassfile,
+  pgservicefile). It was fenced off, unsupported, and had no caller. File is the only backend.
+  `COMPOUND_STORE=postgres`, any other non-file value, and a leftover `COMPOUND_DSN` or other
+  variable of that adapter are still refused instead of being served from files, and the
+  refusal never prints the rejected value. ADR-0005 is marked superseded.
 
 ### Fixed
 

@@ -66,7 +66,7 @@ path. The alpha may add fields inside a supported schema. A schema change that r
 with backup-first upgrade steps and a tested restore or rollback.
 
 Machine-readable CLI output is versioned JSON. Human-readable output and experimental commands may
-change between public-alpha releases. The compatibility promise does not cover Postgres, the
+change between public-alpha releases. The compatibility promise does not cover the
 dashboard's mutation extension, or anything labeled experimental.
 
 ## Filing a useful issue

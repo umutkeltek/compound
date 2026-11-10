@@ -77,23 +77,14 @@ func memBreadthEngine() (mem.Engine, func()) {
 	return mem.DefaultBreadthEngine(resolved)
 }
 
-// memoryExternalStoreRefusal keeps the public memory CLI from silently using
-// the file-backed breadth lane when an external store was selected. The
-// Postgres experiment has its own explicit `compound store` surface; until the
-// memory CLI is wired to that engine, selecting it is a categorical refusal.
+// memoryExternalStoreRefusal keeps the memory CLI from silently serving the
+// file-backed breadth lane when the environment selects another store. File
+// is the only backend (the experimental Postgres adapter was removed), so any
+// other selection, or a variable of the removed adapter left set, is a
+// categorical refusal.
 func memoryExternalStoreRefusal() error {
-	cfg, err := persist.ConfigFromEnv()
-	if err != nil {
-		return err
-	}
-	if cfg.Backend == persist.BackendPostgres {
-		return &persist.ConfigError{
-			Field:    "COMPOUND_STORE",
-			Reason:   "the selected experimental Postgres backend is not wired to the memory breadth CLI",
-			Recovery: "use the explicit experimental `compound store` commands, or unset Postgres selection for the supported file-backed memory CLI",
-		}
-	}
-	return nil
+	_, err := persist.ConfigFromEnv()
+	return err
 }
 
 type refusedMemoryBreadthEngine struct {

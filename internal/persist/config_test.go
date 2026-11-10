@@ -6,187 +6,102 @@ import (
 	"testing"
 )
 
-func syntheticURLDSN(secret string) string {
-	return strings.Join([]string{"postgres", "://", "operator", ":", secret, "@", "db.example.invalid", "/", "compound"}, "")
-}
+const syntheticSecret = "persist-config-" + "sentinel"
 
-func syntheticKeywordDSN(secret string) string {
-	return strings.Join([]string{"host", "=db.example.invalid", " user", "=operator", " pass", "word", "=", secret, " dbname", "=compound"}, "")
+func syntheticURLDSN() string {
+	return strings.Join([]string{"postgres", "://operator:", syntheticSecret, "@db.example.invalid/compound"}, "")
 }
 
 func clearStoreEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{
-		"COMPOUND_STORE",
-		"COMPOUND_DSN",
-		ExperimentalPostgresEnv,
-		PostgresProfileEnv,
-		"COMPOUND_VECTOR_DIMS",
-	} {
+	t.Setenv("COMPOUND_STORE", "")
+	for _, key := range removedPostgresEnv {
 		t.Setenv(key, "")
 	}
 }
 
-func TestConfigFromEnvDefaultsToSupportedFileBackend(t *testing.T) {
-	clearStoreEnv(t)
+func requireConfigError(t *testing.T, err error, field, reason string) {
+	t.Helper()
+	var configErr *ConfigError
+	if !errors.As(err, &configErr) {
+		t.Fatalf("error = %T %v, want a typed ConfigError", err, err)
+	}
+	if configErr.Field != field || !strings.Contains(configErr.Reason, reason) {
+		t.Fatalf("ConfigError = %+v, want field %q and reason containing %q", configErr, field, reason)
+	}
+	for _, forbidden := range []string{syntheticSecret, "db.example.invalid", "local-lab"} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("refusal disclosed a rejected value %q: %v", forbidden, err)
+		}
+	}
+}
 
-	cfg, err := ConfigFromEnv()
-	if err != nil {
-		t.Fatalf("ConfigFromEnv: %v", err)
+func TestConfigFromEnvDefaultsToFileBackend(t *testing.T) {
+	for _, store := range []string{"", "file"} {
+		clearStoreEnv(t)
+		t.Setenv("COMPOUND_STORE", store)
+		cfg, err := ConfigFromEnv()
+		if err != nil {
+			t.Fatalf("COMPOUND_STORE=%q: %v", store, err)
+		}
+		if cfg != DefaultConfig() || cfg.Backend != BackendFile {
+			t.Fatalf("COMPOUND_STORE=%q: config = %+v, want the file backend", store, cfg)
+		}
 	}
-	if cfg.Backend != BackendFile {
-		t.Fatalf("backend = %q, want %q", cfg.Backend, BackendFile)
-	}
-	if cfg.DSN != "" || cfg.PostgresProfile != "" || cfg.ExperimentalPostgres {
-		t.Fatalf("file config carried experimental credentials: %+v", cfg)
+}
+
+func TestConfigFromEnvRefusesRemovedPostgresBackend(t *testing.T) {
+	// Bare selection, and the complete gate that used to open the adapter.
+	for name, env := range map[string]map[string]string{
+		"bare": {},
+		"complete former gate": {
+			"COMPOUND_EXPERIMENTAL_POSTGRES": "1",
+			"COMPOUND_POSTGRES_PROFILE":      "local-lab",
+			"COMPOUND_DSN":                   syntheticURLDSN(),
+			"COMPOUND_VECTOR_DIMS":           "1536",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			clearStoreEnv(t)
+			t.Setenv("COMPOUND_STORE", "postgres")
+			for key, value := range env {
+				t.Setenv(key, value)
+			}
+			_, err := ConfigFromEnv()
+			requireConfigError(t, err, "COMPOUND_STORE", "Postgres backend was removed")
+		})
 	}
 }
 
 func TestConfigFromEnvRejectsUnknownBackendWithoutFileFallback(t *testing.T) {
-	clearStoreEnv(t)
-	t.Setenv("COMPOUND_STORE", "postgre")
-
-	cfg, err := ConfigFromEnv()
-	if err == nil || !strings.Contains(err.Error(), "unsupported COMPOUND_STORE") {
-		t.Fatalf("error = %v, want unsupported-backend refusal", err)
-	}
-	if cfg != (Config{}) {
-		t.Fatalf("refused unknown backend returned usable config: %+v", cfg)
-	}
-}
-
-func TestConfigFromEnvRequiresExactBackendSelection(t *testing.T) {
-	for _, value := range []string{" postgres ", "POSTGRES", " file ", "FILE"} {
-		t.Run(value, func(t *testing.T) {
+	// Exact match only: a typo, padding or a case variant is a refusal, never
+	// a quiet return to files.
+	for _, store := range []string{"postgre", " file ", "FILE", " postgres ", "POSTGRES", "sqlite"} {
+		t.Run(store, func(t *testing.T) {
 			clearStoreEnv(t)
-			t.Setenv("COMPOUND_STORE", value)
-
+			t.Setenv("COMPOUND_STORE", store)
 			_, err := ConfigFromEnv()
-			if err == nil || !strings.Contains(err.Error(), "unsupported COMPOUND_STORE") {
-				t.Fatalf("COMPOUND_STORE=%q error = %v, want exact-value refusal", value, err)
-			}
+			requireConfigError(t, err, "COMPOUND_STORE", "unsupported COMPOUND_STORE value")
 		})
 	}
 }
 
-func TestConfigFromEnvRejectsPartialPostgresConfigurationWithoutSelection(t *testing.T) {
-	for _, key := range []string{ExperimentalPostgresEnv, PostgresProfileEnv, "COMPOUND_DSN", "COMPOUND_VECTOR_DIMS"} {
-		t.Run(key, func(t *testing.T) {
-			clearStoreEnv(t)
-			t.Setenv(key, "configured")
-
-			cfg, err := ConfigFromEnv()
-			if err == nil || !strings.Contains(err.Error(), "partial Postgres configuration") {
-				t.Fatalf("ConfigFromEnv() = %+v, %v; want partial-selection refusal", cfg, err)
-			}
-			if cfg != (Config{}) {
-				t.Fatalf("refused partial selection returned usable config: %+v", cfg)
-			}
-		})
+func TestConfigFromEnvRefusesStrayRemovedPostgresVariables(t *testing.T) {
+	values := map[string]string{
+		"COMPOUND_EXPERIMENTAL_POSTGRES": "1",
+		"COMPOUND_POSTGRES_PROFILE":      "local-lab",
+		"COMPOUND_DSN":                   syntheticURLDSN(),
+		"COMPOUND_VECTOR_DIMS":           "1536",
 	}
-}
-
-func TestConfigFromEnvRejectsInvalidVectorDimensions(t *testing.T) {
-	for _, value := range []string{"0", "-1", "+1536", "not-a-number", "1536junk", " 1536 ", "١٥٣٦", "9223372036854775808"} {
-		t.Run(value, func(t *testing.T) {
-			clearStoreEnv(t)
-			t.Setenv("COMPOUND_STORE", "postgres")
-			t.Setenv(ExperimentalPostgresEnv, "1")
-			t.Setenv(PostgresProfileEnv, "local-lab")
-			t.Setenv("COMPOUND_DSN", syntheticURLDSN("dimension-sentinel"))
-			t.Setenv("COMPOUND_VECTOR_DIMS", value)
-
-			_, err := ConfigFromEnv()
-			var configErr *ConfigError
-			if !errors.As(err, &configErr) || configErr.Field != "COMPOUND_VECTOR_DIMS" {
-				t.Fatalf("COMPOUND_VECTOR_DIMS=%q error = %T %v, want typed dimension refusal", value, err, err)
-			}
-		})
-	}
-}
-
-func TestConfigFromEnvRequiresSeparateExperimentalPostgresOptIn(t *testing.T) {
-	clearStoreEnv(t)
-	secret := "credential" + "-sentinel"
-	t.Setenv("COMPOUND_STORE", "postgres")
-	t.Setenv("COMPOUND_DSN", syntheticURLDSN(secret))
-	t.Setenv(PostgresProfileEnv, "local-lab")
-
-	_, err := ConfigFromEnv()
-	if err == nil || !strings.Contains(err.Error(), ExperimentalPostgresEnv+"=1") {
-		t.Fatalf("error = %v, want explicit experimental opt-in refusal", err)
-	}
-	var configErr *ConfigError
-	if !errors.As(err, &configErr) || configErr.Field != ExperimentalPostgresEnv {
-		t.Fatalf("error = %T %+v, want typed ConfigError for %s", err, err, ExperimentalPostgresEnv)
-	}
-	if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "db.example.invalid") {
-		t.Fatalf("configuration error leaked DSN material: %v", err)
-	}
-
-	t.Setenv(ExperimentalPostgresEnv, " 1 ")
-	_, err = ConfigFromEnv()
-	if err == nil || !strings.Contains(err.Error(), ExperimentalPostgresEnv+"=1") {
-		t.Fatalf("whitespace-padded opt-in was accepted: %v", err)
-	}
-}
-
-func TestConfigFromEnvRequiresNonsecretPostgresProfile(t *testing.T) {
-	clearStoreEnv(t)
-	secret := "credential" + "-sentinel"
-	t.Setenv("COMPOUND_STORE", "postgres")
-	t.Setenv(ExperimentalPostgresEnv, "1")
-	t.Setenv("COMPOUND_DSN", syntheticURLDSN(secret))
-
-	_, err := ConfigFromEnv()
-	if err == nil || !strings.Contains(err.Error(), PostgresProfileEnv) {
-		t.Fatalf("error = %v, want missing-profile refusal", err)
-	}
-
-	profileSecret := "profile" + "-sentinel"
-	t.Setenv(PostgresProfileEnv, syntheticURLDSN(profileSecret))
-	_, err = ConfigFromEnv()
-	if err == nil || !strings.Contains(err.Error(), "safe profile label") {
-		t.Fatalf("error = %v, want unsafe-profile refusal", err)
-	}
-	if strings.Contains(err.Error(), profileSecret) || strings.Contains(err.Error(), "db.example.invalid") {
-		t.Fatalf("profile validation leaked rejected value: %v", err)
-	}
-}
-
-func TestConfigFromEnvBuildsOpaquePostgresTarget(t *testing.T) {
-	clearStoreEnv(t)
-	secret := "credential" + "-sentinel"
-	t.Setenv("COMPOUND_STORE", "postgres")
-	t.Setenv(ExperimentalPostgresEnv, "1")
-	t.Setenv(PostgresProfileEnv, "local-lab")
-	t.Setenv("COMPOUND_DSN", syntheticKeywordDSN(secret))
-
-	cfg, err := ConfigFromEnv()
-	if err != nil {
-		t.Fatalf("ConfigFromEnv: %v", err)
-	}
-	if got := cfg.PostgresTargetRef(); got != "postgres-profile:local-lab" {
-		t.Fatalf("target ref = %q", got)
-	}
-	if strings.Contains(cfg.PostgresTargetRef(), secret) || strings.Contains(cfg.PostgresTargetRef(), "db.example.invalid") {
-		t.Fatalf("target ref disclosed DSN material: %q", cfg.PostgresTargetRef())
-	}
-}
-
-func TestValidatePostgresExperimentProtectsDirectAdapterConstruction(t *testing.T) {
-	secret := "credential" + "-sentinel"
-	cfg := Config{
-		Backend:          BackendPostgres,
-		DSN:              syntheticURLDSN(secret),
-		PostgresProfile:  "local-lab",
-		VectorDimensions: 1536,
-	}
-	if err := cfg.ValidatePostgresExperiment(); err == nil || !strings.Contains(err.Error(), ExperimentalPostgresEnv) {
-		t.Fatalf("direct config validation = %v, want opt-in refusal", err)
-	}
-	cfg.ExperimentalPostgres = true
-	if err := cfg.ValidatePostgresExperiment(); err != nil {
-		t.Fatalf("valid experimental config rejected: %v", err)
+	for _, store := range []string{"", "file"} {
+		for _, key := range removedPostgresEnv {
+			t.Run(store+"/"+key, func(t *testing.T) {
+				clearStoreEnv(t)
+				t.Setenv("COMPOUND_STORE", store)
+				t.Setenv(key, values[key])
+				_, err := ConfigFromEnv()
+				requireConfigError(t, err, key, "removed Postgres backend")
+			})
+		}
 	}
 }

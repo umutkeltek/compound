@@ -160,12 +160,12 @@ export async function acceptInstalled(bundle, commit, root, priorBundle, priorCo
 
     const sweepRefusal = cli('unsupported-sweep-disabled', ['work', 'sweep-stale', '--yes'], home, 'nonzero');
     assert((sweepRefusal.stdout + sweepRefusal.stderr).includes('--experimental-sweep-stale-mutations'));
-    const postgresRefusal = run('unsupported-postgres-disabled', bin, ['store', 'status', '--json'],
+    const postgresRefusal = run('removed-postgres-refused', bin, ['memory', 'query', 'release acceptance probe'],
       home, 'nonzero', {COMPOUND_STORE: 'postgres'});
-    assert((postgresRefusal.stdout + postgresRefusal.stderr).includes('COMPOUND_EXPERIMENTAL_POSTGRES=1'));
+    assert((postgresRefusal.stdout + postgresRefusal.stderr).includes('the experimental Postgres backend was removed'));
     assert.equal(hash(path.join(home, 'manifest.yaml')), oldManifest);
     report.checks.push({gate: 'excluded_defaults', passed: true, sweep_mutation_disabled: true,
-      partial_postgres_selection_refused: true, home_manifest_unchanged: true});
+      removed_postgres_selection_refused: true, home_manifest_unchanged: true});
 
     const recoveryBins = path.join(root, 'recovery-bin'), recoveryHome = path.join(root, 'recovery-home');
     install('recovery-prior-install', priorBundle, recoveryBins, recoveryHome);

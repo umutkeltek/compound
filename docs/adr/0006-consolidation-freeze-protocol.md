@@ -8,8 +8,9 @@ This decision is independent of the storage experiment. Nothing in ADR-0005
 ratifies package moves, and this protocol must not be executed as part of the
 current additive persistence burst.
 
-The freeze cannot change the storage experiment's admission contract:
-`COMPOUND_DSN` remains a process-memory-only DSN; unknown/partial configuration
+The storage experiment was removed on 2026-11-10 (ADR-0005). Its admission
+contract survives as a refusal that this freeze cannot change: `COMPOUND_DSN` was a
+process-memory-only DSN and is refused when set; unknown/partial configuration
 continues to fail closed without file or breadth fallback.
 
 ## Problem

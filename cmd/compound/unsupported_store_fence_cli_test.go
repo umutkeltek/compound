@@ -14,7 +14,11 @@ import (
 	"compound/internal/home"
 )
 
-func TestOrientCLIValidPostgresGateDegradesWithoutBreadthFallbackOrDSNDisclosure(t *testing.T) {
+// The environment below is the complete gate that used to open the experimental
+// Postgres adapter. The adapter was removed; the selection must still be
+// visible Degraded evidence, never file or breadth recall, and the DSN must
+// reach neither the output nor the home.
+func TestOrientCLIRemovedPostgresSelectionDegradesWithoutBreadthFallbackOrDSNDisclosure(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and executes the compound binary")
 	}
@@ -51,13 +55,13 @@ func TestOrientCLIValidPostgresGateDegradesWithoutBreadthFallbackOrDSNDisclosure
 		"orient",
 		"--harness", "codex",
 		"--cwd", workspace,
-		"--task", "prove selected postgres retrieval degradation",
+		"--task", "prove removed postgres selection degrades retrieval",
 	)
 	cmd.Dir = workspace
 	cmd.Env = os.Environ()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("orient with unavailable selected Postgres: %v\n%s", err, out)
+		t.Fatalf("orient with the removed Postgres selection: %v\n%s", err, out)
 	}
 	var pack envelope.ContextPack
 	if err := json.Unmarshal(out, &pack); err != nil {
@@ -70,10 +74,10 @@ func TestOrientCLIValidPostgresGateDegradesWithoutBreadthFallbackOrDSNDisclosure
 		t.Fatalf("ContextPack omitted retrieval posture: %s", out)
 	}
 	if got := pack.Retrieval; got.Level != envelope.RetrievalLevelDegraded ||
-		got.RequestedEngine != "pgvector" || got.ObservedEngine != "" ||
+		got.RequestedEngine != "unsupported-store" || got.ObservedEngine != "" ||
 		got.Fallback != envelope.RetrievalFallbackLedgerRanker ||
 		got.ErrorClass != envelope.RetrievalErrorUnavailable {
-		t.Fatalf("retrieval posture = %+v, want pgvector degraded/unavailable with ledger-only fallback", got)
+		t.Fatalf("retrieval posture = %+v, want unsupported-store degraded/unavailable with ledger-only fallback", got)
 	}
 
 	for _, forbidden := range []string{dsnHost, dsnUser, dsnDatabase, dsn} {

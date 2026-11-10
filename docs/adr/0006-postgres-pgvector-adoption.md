@@ -9,11 +9,10 @@ implementation into)
 Package Consolidation" (dated 2026-07-31; never ratified)
 
 > This trigger proposal remains useful design evidence but is not current
-> authority. The accepted bounded decision is
-> [ADR-0005: Postgres+pgvector Storage Experiment](0005-postgres-pgvector-storage-experiment.md):
-> preserve the already-built adapter for explicit parity experiments, keep file
-> storage as the sole supported authority, and require a separate experimental
-> gate plus opaque nonsecret profile identity. No production cutover is ratified.
+> authority. The bounded decision that was accepted instead,
+> [ADR-0005: Postgres+pgvector Storage Experiment](0005-postgres-pgvector-storage-experiment.md),
+> was itself superseded on 2026-11-10: the experimental adapter was removed and
+> file storage is the only backend. No production cutover was ever ratified.
 
 ## Context
 

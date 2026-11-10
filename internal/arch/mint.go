@@ -102,13 +102,6 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "rank failed-proof signatures as assimilated, learnable or singleton and measure compression progress as observations newly absorbed by an explanation",
 		Consumer: "`compound interest list` operator door and the private meter line (NOW.md); orient join is slice 3",
 	},
-	// store is the ADR-0005 pg experiment operator surface; it never promotes or gates
-	// memory truth — exports are governed writes with their own PolicyDecision door.
-	"organ:store": {
-		Class:    MintEvidence,
-		Purpose:  "Postgres+pgvector backend operator surface (doctor/init/status/migrate/sync/embed/recall); migrate/sync/embed are governed external_side_effect writes gated by store.postgres_export.write with Receipt+Transition proof in the home event store; migrate reads through mem's locked MigrationSnapshot; owns no authority object",
-		Consumer: "cmd/compound cmdStore shim (`compound store ...`); composition-root pg engine injection in cmd/compound/main.go",
-	},
 	// schedule projects launchd+crontab and dispatches reviewed repairs;
 	// authority owns OS effects and their native phase evidence.
 	"organ:schedule": {
@@ -317,8 +310,8 @@ var mintHomes = map[string]MintHome{
 	},
 	"organ:persist": {
 		Class:    MintEvidence,
-		Purpose:  "storage abstraction layer defining LedgerStore/EventStore/WorkStore/VectorStore interfaces; file is the sole supported backend and the Postgres+pgvector adapter is behind fail-closed experimental admission",
-		Consumer: "internal/store operator verbs and internal/contract's injected experimental recall-engine factory",
+		Purpose:  "storage backend selection: file is the only backend, and any other selection or a leftover variable of the removed Postgres adapter is a typed refusal instead of a silent return to files",
+		Consumer: "cmd/compound memory breadth CLI (memoryExternalStoreRefusal), which refuses query, engine-doctor and doctor under such a selection",
 	},
 	// stream is the read-only tail organ over the work-event log + ledger seq: it emits JSONL frames
 	// (a finite --once snapshot with an end-of-log cursor + generated_at, or a long-running --follow
