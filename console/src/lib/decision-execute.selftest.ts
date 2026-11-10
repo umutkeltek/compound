@@ -42,6 +42,7 @@ import { specFor } from "./decision-registry";
 import { genericActionRevision, reviewResolutionRevision } from "./generic-actions";
 import { isStandingLawCandidate } from "./memory-data";
 import { str, type Json } from "./compound";
+import { isWorkId } from "./work-id";
 
 type Check = { name: string; ok: boolean; detail: string };
 
@@ -57,6 +58,34 @@ function routePromotionItem(recommendation: string): Json {
 export async function runDecisionExecuteSelfTest(): Promise<{ ok: boolean; details: string[] }> {
   const checks: Check[] = [];
   const push = (name: string, ok: boolean, detail: string) => checks.push({ name, ok, detail });
+
+  // Every work area and the trace door share one id check, and it is the CLI's
+  // own rule. The earlier hashed-only patterns refused named ids, which is most
+  // of the board, so the trace drawer and the advance/continue buttons answered
+  // "invalid id" for real work.
+  {
+    const areas = ["work-advance", "work-continue", "work-selected-continue", "work-dispatch"];
+    const accepted = [
+      "work_00009b3b9e07",
+      "work_repo_audit_fixes_20261110",
+      "work_delegation_trial_ops_20261106T02",
+      "work_a.b:c-d",
+    ];
+    const refused = ["work_", "work__x", "work_a b", "work_a/b", "work_a;b", "xwork_abc", "work_abc\n", ""];
+    const wrong: string[] = [];
+    for (const area of areas) {
+      const pattern = specFor(area)?.idPattern;
+      if (!pattern) {
+        wrong.push(`${area}: no spec`);
+        continue;
+      }
+      for (const id of accepted) if (!pattern.test(id)) wrong.push(`${area} refused ${id}`);
+      for (const id of refused) if (pattern.test(id)) wrong.push(`${area} accepted ${JSON.stringify(id)}`);
+    }
+    for (const id of accepted) if (!isWorkId(id)) wrong.push(`isWorkId refused ${id}`);
+    for (const id of refused) if (isWorkId(id)) wrong.push(`isWorkId accepted ${JSON.stringify(id)}`);
+    push("work-id-check-is-shared-and-accepts-named-ids", wrong.length === 0, wrong.join("; ") || "4 areas + isWorkId agree");
+  }
 
   // ObjectFace requests carry all three optimistic identities. Missing or
   // malformed identity is a bad request; drift against the freshly resolved

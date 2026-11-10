@@ -1,6 +1,7 @@
 import { arr, type Json, str } from "@/lib/compound";
 import { MOVE_TYPES } from "@/lib/move-types";
 import { shortText, targetLabel, uniqueBoundaries } from "@/lib/plain-language";
+import { WORK_ID_PATTERN } from "@/lib/work-id";
 import { selectedContinueRevision, selectedContinueView } from "@/lib/work-selected-continue";
 
 /*
@@ -600,7 +601,7 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
     accent: "blue",
     source: "workbench",
     argvAllowlist: [["work", "advance"], ["work", "close"], ["work", "claim"]],
-    idPattern: /^work_[a-z0-9]{6,}$/,
+    idPattern: WORK_ID_PATTERN,
     optionsFor: workOptionsFor,
     options: [],
     plainLanguage: (item) => {
@@ -665,7 +666,7 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
     accent: "green",
     source: "workbench",
     argvAllowlist: [["work", "continue"]],
-    idPattern: /^work_[a-z0-9]{6,}$/,
+    idPattern: WORK_ID_PATTERN,
     options: [
       {
         value: "continue",
@@ -705,7 +706,7 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
     accent: "green",
     source: "workbench",
     argvAllowlist: [["work", "continue", "--selected"]],
-    idPattern: /^work_[a-z0-9_]+$/,
+    idPattern: WORK_ID_PATTERN,
     requiresConfirmation: true,
     revisionFor: (item) => selectedContinueRevision(item, (item.selected_lease ?? null) as Json | null),
     options: [],
@@ -734,7 +735,7 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
     accent: "green",
     source: "workbench",
     argvAllowlist: [["work", "dispatch-step"]],
-    idPattern: /^work_[a-z0-9]{6,}$/,
+    idPattern: WORK_ID_PATTERN,
     options: [
       {
         value: "dispatch_step",

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { compoundFailure, runCompound, str } from "@/lib/compound";
 import { findWorkbenchItem } from "@/lib/work-data";
+import { isWorkId } from "@/lib/work-id";
 import { buildActionRow } from "@/lib/work-pipeline";
 import { mapEnvelopeSpine, parseWorkShow } from "@/lib/work-trace";
 
@@ -17,11 +18,9 @@ import { mapEnvelopeSpine, parseWorkShow } from "@/lib/work-trace";
 
 export const dynamic = "force-dynamic";
 
-const WORK_ID = /^work_[a-z0-9]+$/;
-
 export async function GET(request: Request) {
   const id = new URL(request.url).searchParams.get("id")?.trim() ?? "";
-  if (!WORK_ID.test(id)) {
+  if (!isWorkId(id)) {
     return NextResponse.json({ error: "invalid work id" }, { status: 400 });
   }
 

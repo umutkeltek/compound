@@ -5,6 +5,7 @@ import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { buildLaneTraffic } from "@/lib/lane-traffic";
 import { getTraffic } from "@/lib/traffic";
+import { isWorkId } from "@/lib/work-id";
 import { buildBoard, buildOffered, buildPipeline } from "@/lib/work-pipeline";
 import { buildWorkLensItems, groupWorkLensItems } from "@/lib/work-views";
 import type { WorkLensKey } from "@/components/work/WorkLenses";
@@ -43,7 +44,7 @@ export default async function WorkPage({
   const columns = buildBoard(open, recent);
   const offered = buildOffered(arr(packets?.items));
 
-  const initialTrace = str(trace).match(/^work_[a-z0-9]+$/) ? str(trace) : null;
+  const initialTrace = isWorkId(str(trace)) ? str(trace) : null;
   const mutationsReady = computeConsoleMutationReadiness(consoleMutationsEnabled()).ready;
   const items = buildWorkLensItems(open, traffic);
   const groups = groupWorkLensItems(items, traffic);
