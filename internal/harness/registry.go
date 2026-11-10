@@ -79,6 +79,15 @@ func ReadOnlyLaunchReadiness(home string, expected RunInput) []string {
 	if !ok {
 		return []string{"adapter_preflight: no adapter for " + expected.Harness}
 	}
+	if pool, ok := adapter.(*CodexNativeAccountPoolAdapter); ok {
+		probe := expected
+		if probe.Prompt == "" {
+			probe.Prompt = "readiness probe"
+		}
+		if _, err := pool.validate(context.Background(), probe); err != nil {
+			return []string{"adapter_preflight: " + err.Error()}
+		}
+	}
 	if guard, ok := adapter.(GovernedPermissionAdapter); ok {
 		resolved, err := guard.RevalidateGovernedRun(context.Background(), expected)
 		if err != nil {

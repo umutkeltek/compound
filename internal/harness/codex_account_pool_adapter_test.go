@@ -124,6 +124,13 @@ func (f *poolFixture) save(t *testing.T) {
 	f.digest = poolTestDigest(body)
 }
 
+func TestCodexPoolReadinessNeedsExplicitContract(t *testing.T) {
+	got := ReadOnlyLaunchReadiness(t.TempDir(), RunInput{Harness: codexPoolAdapterName})
+	if len(got) != 1 || !strings.Contains(got[0], "explicit contract path and SHA256") {
+		t.Fatalf("missing contract projected ready: %v", got)
+	}
+}
+
 func TestCodexPoolSelectionPassesModelButRefusesEffort(t *testing.T) {
 	model := &runattempt.ExecutionSelectionSnapshot{
 		Source: "project_default", Harness: codexPoolAdapterName, RequestedModelID: "gpt-synthetic",
