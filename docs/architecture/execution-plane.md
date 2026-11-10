@@ -48,8 +48,9 @@ The interactive harness boundary follows the same split:
 The optional [native account pool adapter](../../adapters/native-account-pool/README.md)
 checks a current Compound away window and the exact bytes of the Compound-validated
 Claude profile settings, then hands the existing ClaudeAdapter's admitted native argv
-to Switchback. Switchback rechecks a sealed config digest through a callback before
-each account launch and owns account selection, retries and capture. The wrapper
+to the native account pool transport. The wrapper callback rechecks a sealed
+config digest before each account launch; the transport owns account selection,
+retries and capture. The wrapper
 owns no permission, hook, policy or account authority. It supports Claude only;
 Codex needs a separately proved native adapter contract.
 
