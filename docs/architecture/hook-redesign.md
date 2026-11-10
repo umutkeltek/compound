@@ -136,7 +136,7 @@ this order:
 1. the Tier-0 law line (one file read, the same line a full pack summary carries);
 2. the door map lines, unchanged;
 3. the operator model block, when the home has one (the same capped block the full start serves);
-4. one pointer: ``Context pack is on demand: run `compound orient --harness <H> --cwd <cwd> --task "<task>"` before a non-trivial task.``
+4. one pointer: ``Context pack is on demand: run `compound orient --harness <H> --cwd <cwd> --task "<task>" --brief` before a non-trivial task.``
 
 The session is still recorded: the SessionStart hook event (session id, harness, input hash) and the
 session's orientation marker. The marker now says the pack was on demand, so the per-prompt pointer

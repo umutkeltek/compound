@@ -145,7 +145,7 @@ func TestSessionPackMinimalServesLawsDoorMapAndPointerOnly(t *testing.T) {
 				"Tier-0 constitution: Laws 1. Discover reality before acting. · 2. Subtract by default.",
 				"## Door map",
 				"PASS web: search-cli",
-				"Context pack is on demand: run `compound orient --harness " + harnessName + " --cwd " + repo + " --task \"<task>\"` before a non-trivial task.",
+				"Context pack is on demand: run `compound orient --harness " + harnessName + " --cwd " + repo + " --task \"<task>\" --brief` before a non-trivial task.",
 			} {
 				if !strings.Contains(served, want) {
 					t.Fatalf("minimal session start missing %q:\n%s", want, served)

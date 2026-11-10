@@ -74,7 +74,7 @@ func onDemandPackPointer(fx Fixture) string {
 	if cwd == "" {
 		cwd = "<repository>"
 	}
-	return fmt.Sprintf("Context pack is on demand: run `compound orient --harness %s --cwd %s --task \"<task>\"` before a non-trivial task.", harnessName, cwd)
+	return fmt.Sprintf("Context pack is on demand: run `compound orient --harness %s --cwd %s --task \"<task>\" --brief` before a non-trivial task.", harnessName, cwd)
 }
 
 // pointerShellWord single-quotes a path the agent will paste into a shell when it

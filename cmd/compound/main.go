@@ -328,7 +328,7 @@ compound home <init|doctor|where|backup|export|verify|restore|archive-history|re
   compound envelope <validate <file>...|kinds>                  typed runtime envelopes
   compound schema <list|export|validate>                        JSON Schema export + contract-aware validation
   compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
-  compound orient --harness H [--cwd D] [--task T] [--topic S]  ContextPack orient from records excluded; --topic narrows ambient recall
+  compound orient --harness H [--cwd D] [--task T] [--topic S] [--brief]  ContextPack orient from records excluded; --topic narrows ambient recall; --brief prints a plain-text brief under 6,000 bytes
   compound mcp-transport                                      stdio MCP server for initialized clients: bounded finding evidence + orient recall; no memory promotion/authority
   compound console [dev|build|serve] --operator                  own the canonical local console lifecycle on :3777
   compound console status [--json]                               verify console identity, HTTP, and static-asset health
@@ -4031,7 +4031,7 @@ func cmdOrient(args []string) {
 	in, err := parseOrientArgsWithHome(args, homePath)
 	die(err)
 	if in.Harness == "" {
-		fmt.Fprintln(os.Stderr, "usage: compound orient --harness <h> [--cwd <dir>] [--task <t>] [--repo-kind <k>] [--mode <m>] [--topic <topic-slug>] [--body-budget <estimated-tokens>]")
+		fmt.Fprintln(os.Stderr, "usage: compound orient --harness <h> [--cwd <dir>] [--task <t>] [--repo-kind <k>] [--mode <m>] [--topic <topic-slug>] [--body-budget <estimated-tokens>] [--brief]")
 		os.Exit(2)
 	}
 	bodyBudget, err := parseBodyBudget(args)
@@ -4042,6 +4042,10 @@ func cmdOrient(args []string) {
 	now := time.Now()
 	pack, err := materializeOrientContextPack(homePath, in, bodyBudget, now)
 	die(err)
+	if hasFlag(args, "--brief") {
+		fmt.Print(contract.RenderOrientBrief(contract.OrientBriefInput{HomePath: homePath, Input: in, Pack: pack, FullCommand: contract.OrientFullPackCommand(args), Now: now}))
+		return
+	}
 	printJSON(pack)
 }
 

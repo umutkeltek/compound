@@ -10,8 +10,8 @@ import (
 // Pin the current default blocks. Template changes must update these hashes
 // and regenerate AGENTS.md/CLAUDE.md in the same change; task text stays out.
 const (
-	preChangeCodexSHA256      = "sha256:f190616a9f3434da175191054526c2214f04970c8b3a549113b3760ac12e36df"
-	preChangeClaudeCodeSHA256 = "sha256:44f1b150a4e49622401e5a986834c4ede1560487beda58e2b3b100fd0c36aec2"
+	preChangeCodexSHA256      = "sha256:478f50ff670a4ad4bfe68ac7c0455b4f32e785a2098da1ddee58576677d2456f"
+	preChangeClaudeCodeSHA256 = "sha256:48b531adddc4428c708357278cef046199ad3fb9384a48e8fda15d1ac823ebeb"
 )
 
 // Falsifier B1: default block ContentSHA256 is byte-identical pre/post change.

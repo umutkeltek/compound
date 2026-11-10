@@ -117,7 +117,7 @@ func TestHookLiveSessionStartIsMinimalByDefaultAndFullOnRequest(t *testing.T) {
 	}
 
 	minimal, minted := serve(t, "")
-	if !strings.Contains(minimal, "Context pack is on demand: run `compound orient --harness claude_code --cwd /repo/product --task \"<task>\"`") ||
+	if !strings.Contains(minimal, "Context pack is on demand: run `compound orient --harness claude_code --cwd /repo/product --task \"<task>\" --brief`") ||
 		strings.Contains(minimal, "Door map") || // this home has no door map, so none is served
 		!strings.Contains(minimal, "## Operator model (private, from "+tooltopology.OperatorModelPath+")\n- Lead with the decision.") {
 		t.Fatalf("minimal session start lacks the pointer, the door map or the operator model:\n%s", minimal)
