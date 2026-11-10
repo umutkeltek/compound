@@ -6,7 +6,7 @@ Status: accepted
 
 Compound mints many self-describing artifacts, each carrying a `schema_version`
 string of the form `compound.<domain>_<kind>.v0.N` (activity observations,
-source manifests, distiller plans, executor-lens reports, status surfaces, …).
+source manifests, distiller plans, status surfaces, …).
 Direct inspection found the versioning discipline was inconsistent:
 
 1. **Most schemas are frozen at `v0.1` and drift silently.** Fields are added

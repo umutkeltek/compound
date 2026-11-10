@@ -100,9 +100,12 @@ func TestActiveRootHelpPreservesInvalidAndRetiredAdmission(t *testing.T) {
 		}
 	}
 	for _, flag := range []string{"--help", "-h"} {
+		// The Gen-1 verbs had exit-2 tombstones; those are removed, so a Gen-1 verb is
+		// an ordinary unknown command. It must still answer with usage and exit 2
+		// before it resolves a home, even when the selected home is unusable.
 		stdout, stderr, exit := runActiveHelpCLI(t, binary, unusableHome, "recall", flag)
-		if exit != 2 || stdout != "" || !strings.Contains(stderr, "recall retired") {
-			t.Fatalf("retired help: exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+		if exit != 2 || stdout != "" || !strings.Contains(stderr, "usage:") || strings.Contains(stderr, "not a directory") {
+			t.Fatalf("removed verb help: exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
 		}
 		stdout, stderr, exit = runActiveHelpCLI(t, binary, unusableHome, "product", flag)
 		if exit != 0 || stderr != "" || !strings.Contains(stdout, "usage: compound product") {

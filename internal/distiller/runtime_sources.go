@@ -153,7 +153,7 @@ func LoadTraceEnvelopes(homePath string, traceIDs []string) ([]envelope.Envelope
 func loadHookEvents(events *eventstore.Store, workID, contextPackID string) ([]envelope.HookEvent, error) {
 	// Read the authoritative hook_ records through the Scan seam. The prior
 	// hook-events.ndjson stream is frozen once migration completes; Scan is the
-	// deduped store view (executorlens doctrine), and the deterministic
+	// deduped store view, and the deterministic
 	// (created_at, id) sort below reproduces the previous order byte-for-byte.
 	entries, err := events.Scan(eventstore.ScanOptions{Prefixes: []string{"hook_"}, RegularOnly: true})
 	if err != nil {

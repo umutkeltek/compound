@@ -121,7 +121,7 @@ func handlerFuncName(run func([]string)) string {
 	if index := strings.LastIndex(name, "."); index >= 0 {
 		name = name[index+1:]
 	}
-	// A closure ("cmdX.funcN", as retiredCommand builds) has no body to walk.
+	// A closure ("cmdX.funcN") has no body to walk.
 	if strings.HasPrefix(name, "func") {
 		return ""
 	}

@@ -18,6 +18,17 @@ for tagged releases, subject to the public-alpha compatibility policy in
 - `compound doctor` lists OpenCode and oh-my-pi in its hooks section when their config folder
   exists, and warns when an installed harness is not wired.
 
+### Removed
+
+- `compound game`, `compound terminal`, `compound behavioral-lens`, `compound executor-lens`,
+  `compound lens-modulate` and `compound intent`, with their packages. No script, skill,
+  console page or scheduled job called them.
+- The nine Gen-1 tombstone commands (`distill`, `scope`, `promote`, `build`, `reconcile`,
+  `timeline`, `recall`, `pack`, `ledger`). They printed a pointer and exited 2; they are now
+  unknown commands. Use `compound memory ...` and `compound distiller run`.
+- The `sessions job plan|review|apply` code and the `credential exec|bind|list` code. Neither
+  was ever reachable from the CLI.
+
 ### Fixed
 
 - `compound home doctor` in text mode now exits 1 whenever it prints a failing verdict. A global

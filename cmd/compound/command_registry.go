@@ -6,14 +6,11 @@ import (
 	actuatorcli "compound/internal/actuator"
 	archcli "compound/internal/arch"
 	browsercli "compound/internal/browser"
-	executorlenscli "compound/internal/executorlens"
-	gamecli "compound/internal/game/cli"
 	interestcli "compound/internal/interest"
 	lanematrixcli "compound/internal/lanematrix"
 	noticecli "compound/internal/operatornotice"
 	"compound/internal/policy"
 	schedulecli "compound/internal/schedule"
-	terminalcli "compound/internal/terminal/cli"
 	"compound/internal/tooltopology"
 )
 
@@ -60,12 +57,6 @@ func cmdVersion(args []string) {
 	printJSON(versionReport(valueFlag(args, "--challenge")))
 }
 
-func retiredCommand(name string) func([]string) {
-	return func([]string) {
-		cmdRetiredGen1(name)
-	}
-}
-
 // compoundCommandRegistry is both executable dispatch and admission metadata.
 // A command is therefore impossible to expose without choosing its outer
 // posture. "hold" is the safe default for commands whose internal governance
@@ -77,15 +68,6 @@ func compoundCommandRegistry() map[string]compoundCommand {
 		"receipt":   readCommand(cmdReceipt),
 		"--version": readCommand(cmdVersion),
 		"-v":        readCommand(cmdVersion),
-		"distill":   readCommand(retiredCommand("distill")),
-		"scope":     readCommand(retiredCommand("scope")),
-		"promote":   readCommand(retiredCommand("promote")),
-		"build":     readCommand(retiredCommand("build")),
-		"reconcile": readCommand(retiredCommand("reconcile")),
-		"timeline":  readCommand(retiredCommand("timeline")),
-		"recall":    readCommand(retiredCommand("recall")),
-		"pack":      readCommand(retiredCommand("pack")),
-		"ledger":    readCommand(retiredCommand("ledger")),
 		"authority": governedCommand(cmdAuthority),
 		"decisions": heldCommand(cmdDecisions),
 		"director":  heldCommand(cmdDirector),
@@ -128,13 +110,6 @@ func compoundCommandRegistry() map[string]compoundCommand {
 			withSubcommandAdmission("measure", policy.FirstPartyCommandGoverned),
 		"attention": readCommand(cmdAttention),
 		"activity":  heldCommand(cmdActivity),
-		"terminal": readCommand(terminalcli.Run).
-			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead).
-			withSubcommandAdmission("wire", policy.FirstPartyCommandGoverned).
-			withSubcommandAdmission("unwire", policy.FirstPartyCommandGoverned).
-			withSubcommandAdmission("hooks", policy.FirstPartyCommandRead).
-			withSubcommandAdmission("workspace", policy.FirstPartyCommandGoverned).
-			withSubcommandAdmission("feed", policy.FirstPartyCommandGoverned),
 		"narrate":   readCommand(cmdNarrate),
 		"stream":    readCommand(cmdStream),
 		"executors": readCommand(cmdExecutors),
@@ -190,18 +165,14 @@ func compoundCommandRegistry() map[string]compoundCommand {
 		"distiller": heldCommand(cmdDistiller),
 		"capability": heldCommand(cmdCapability).
 			withSubcommandFlagAdmission("import-skills", "--dry-run", policy.FirstPartyCommandRead),
-		"bench":           heldCommand(cmdBench),
-		"latent-tax":      heldCommand(cmdLatentTax),
-		"behavioral-lens": heldCommand(cmdBehavioralLens),
-		"executor-lens":   heldCommand(executorlenscli.RunCLI),
-		"lens-modulate":   heldCommand(cmdLensModulate),
-		"act":             heldCommand(cmdAct).withSubcommandAdmission("credential-verify", policy.FirstPartyCommandGoverned).withSubcommandAdmission("credential-password-align", policy.FirstPartyCommandGoverned).withSubcommandAdmission("runtime-config-install", policy.FirstPartyCommandGoverned),
-		"actuator":        heldCommand(actuatorcli.RunCLI),
-		"capture":         heldCommand(cmdCapture),
-		"intent":          heldCommand(cmdIntent),
-		"land-lease":      governedCommand(cmdLandLease),
-		"panel":           heldCommand(cmdPanel),
-		"local-models":    heldCommand(cmdLocalModels),
+		"bench":        heldCommand(cmdBench),
+		"latent-tax":   heldCommand(cmdLatentTax),
+		"act":          heldCommand(cmdAct).withSubcommandAdmission("credential-verify", policy.FirstPartyCommandGoverned).withSubcommandAdmission("credential-password-align", policy.FirstPartyCommandGoverned).withSubcommandAdmission("runtime-config-install", policy.FirstPartyCommandGoverned),
+		"actuator":     heldCommand(actuatorcli.RunCLI),
+		"capture":      heldCommand(cmdCapture),
+		"land-lease":   governedCommand(cmdLandLease),
+		"panel":        heldCommand(cmdPanel),
+		"local-models": heldCommand(cmdLocalModels),
 		"lanebeliefs": heldCommand(cmdLaneBeliefs).
 			withSubcommandAdmission("fold", policy.FirstPartyCommandRead).
 			withSubcommandFlagAdmission("fold", "--dry-run", policy.FirstPartyCommandRead).
@@ -231,16 +202,6 @@ func compoundCommandRegistry() map[string]compoundCommand {
 			withSubcommandAdmission("route", policy.FirstPartyCommandRead).withSubcommandAdmission("goal", policy.FirstPartyCommandGoverned).withSubcommandAdmission("settings", policy.FirstPartyCommandRead).
 			withSubcommandAdmission("provider-pricing", policy.FirstPartyCommandGoverned).withSubcommandAdmission("credential-set", policy.FirstPartyCommandGoverned).withSubcommandAdmission("credential-rotate", policy.FirstPartyCommandGoverned).
 			withSubcommandFlagAdmission("settings", "--enable", policy.FirstPartyCommandGoverned).withSubcommandFlagAdmission("settings", "--disable", policy.FirstPartyCommandGoverned).withSubcommandFlagAdmission("doctor", "--fix", policy.FirstPartyCommandGoverned),
-		"game": readCommand(gamecli.Run).
-			withSubcommandAdmission("doctor", policy.FirstPartyCommandRead).
-			withSubcommandAdmission("observe", policy.FirstPartyCommandGoverned).
-			withSubcommandAdmission("genres", policy.FirstPartyCommandRead).
-			withSubcommandAdmission("companies", policy.FirstPartyCommandRead).
-			withSubcommandAdmission("trending", policy.FirstPartyCommandRead).
-			withSubcommandAdmission("scout", policy.FirstPartyCommandRead).
-			withSubcommandAdmission("draft", policy.FirstPartyCommandGoverned).
-			withSubcommandAdmission("unity", policy.FirstPartyCommandGoverned).
-			withSubcommandAdmission("release", policy.FirstPartyCommandGoverned),
 	}
 }
 

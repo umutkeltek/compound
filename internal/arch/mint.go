@@ -215,29 +215,6 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "body-free adaptive projection of harness-native context and rate-limit metadata with TTL-bound hysteresis and reversible terminal themes",
 		Consumer: "compound system status-surface snapshot/render plus Claude Code statusLine and the Codex theme projection",
 	},
-	// terminal is the unified host-terminal (cmux / iTerm2 / Warp / Terminal.app) operator
-	// surface. It is read-mostly: doctor + hooks + wire/unwire + workspace + feed verbs expose
-	// per-terminal IPC bridges through a single Terminal interface, with workspace and feed
-	// mutations governed at the command-registry layer (FirstPartyCommandGoverned). It does
-	// not promote or gate memory, write to a ledger, or own an authority object; the terminal
-	// IPC handles the only mutations, and those happen under the operator's explicit policy
-	// grant — so it is evidence, not enforcement.
-	"organ:terminal": {
-		Class:    MintEvidence,
-		Purpose:  "unified host-terminal operator surface (cmux/iTerm2/Warp/Terminal.app) — Terminal interface + registry + per-terminal adapters; doctor/hooks are read, wire/unwire/workspace/feed are governed at command-registry layer; no authority object, no ledger write, no memory promotion",
-		Consumer: "internal/terminal/cli (terminalcli.Run wired in cmd/compound command registry) + terminal_admission_test.go contract pin",
-	},
-	// game is the read-only game-catalog + doctor projection surface; aggregates from
-	// internal/sourceobs (Source Observation Memory) into a stable gmid_* catalog keyed on
-	// (source, sourceKey, kind). It owns no authority object, writes no ledger byte, and
-	// promotes no memory candidate — the projection is consumed verbatim by the cmd/compound
-	// `game` CLI (doctor / observe / genres / companies / trending), so it is evidence, not
-	// enforcement. observe is governed at the command-registry layer (subcommand admission).
-	"organ:game": {
-		Class:    MintEvidence,
-		Purpose:  "read-only game catalog + doctor projection aggregating internal/sourceobs into stable gmid_* keys; no authority object, no ledger write, no memory promotion",
-		Consumer: "cmd/compound game CLI (doctor / observe / genres / companies / trending); observe is governed at the command-registry layer",
-	},
 	// finding is the direct-write home for agent-authored operational findings under
 	// COMPOUND_HOME/observed/findings — the POSITIVE counterpart to the placement guard: a governed
 	// place to record a durable operational note instead of inventing a path. It writes only a
@@ -321,16 +298,6 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "probe-refresh collector that re-observes current unit liveness for declared probe targets (files under COMPOUND_HOME) and refreshes the job-roster authority so job_health derives from observed state, not stale imported claims",
 		Consumer: "authority job-roster refresh surface consumed by the director job_health scanner (compound/internal/director)",
 	},
-	// behaviorallens is the composable behavioral-lens framework: a uniform observe->InferredSignal
-	// plug with visibility-gated composition and a first sycophancy (paired-stance shift) lens. It
-	// records evidence rows only — it never gates, promotes, or changes a route/role — so it is
-	// evidence, not enforcement. The governed modulator that would act on a signal is a DEFERRED
-	// enforcement-class consumer (minted only once a second lens exists — two-consumers law).
-	"organ:behaviorallens": {
-		Class:    MintEvidence,
-		Purpose:  "composable behavioral-lens framework — a uniform observe->InferredSignal plug with visibility-gated composition and a per-lane sycophancy (paired-stance endorsement shift) lens; records evidence rows only, never a gate and never auto-acting",
-		Consumer: "compound behavioral-lens CLI (list/run/compose/signals) projecting only public_safe signals for operator review; operator_private signals stay under COMPOUND_HOME; the governed modulator is the named later enforcement consumer",
-	},
 	// landlease is the land-lease coordination hint: a single-holder, TTL-bounded, steal-with-reason
 	// advisory MUTEX over the ACT of landing to main (a flock-guarded JSON lease under COMPOUND_HOME).
 	// Acquire REFUSES a competing LIVE holder, but that refusal is a cooperative mutex hint, NOT a
@@ -342,31 +309,6 @@ var mintHomes = map[string]MintHome{
 		Class:    MintEvidence,
 		Purpose:  "single-holder, TTL-bounded, steal-with-reason advisory mutex over the ACT of landing to main (a flock-guarded JSON lease under COMPOUND_HOME) so concurrent executor lanes serialize the fast-forward-merge window instead of colliding; records who holds the right to land, never mutates repo state and emits no PolicyDecision/Receipt",
 		Consumer: "the compound-land ceremony (skills/compound-land) — a lane reads `compound land-lease status --json` at scope-claim (§0), acquires it with holder `<harness>:<session>:<work_id>` immediately before the ff-merge (§3, `--wait --timeout 120`), and releases it with the same holder string right after the guarded merge lands (§4); steal-with-reason is the auditable override for a stale holder",
-	},
-	// executorlens is the executor-receipt locator: an evidence-only collector that reads THIS repo's
-	// own executor lanes' (Codex, Claude Code) receipts/events under COMPOUND_HOME and builds
-	// behaviorallens Observations — public_safe hedging over executor output text, operator_private
-	// agreement-asymmetry over receipt verdicts. It records evidence rows only through behaviorallens
-	// and emits outward only the public projection, so it is evidence, not enforcement.
-	"organ:executorlens": {
-		Class:    MintEvidence,
-		Purpose:  "evidence-only collector that reads this repo's executor lanes' (Codex, Claude Code) receipts/events and builds behaviorallens Observations (public_safe hedging over output text + operator_private agreement-asymmetry over receipt verdicts), so the agents that execute compound's work are themselves measured for behavior-bending",
-		Consumer: "compound executor-lens CLI (run/subjects) composing through behaviorallens.RegistryForHome and recording signals; the outward projection is public_safe only (operator_private executor signals stay under COMPOUND_HOME); the deferred governed modulator is the later enforcement consumer",
-	},
-	// lensmodulator is the governed modulator behaviorallens named as its later enforcement consumer:
-	// it reads recorded lens signals and, when one crosses an operator-armed threshold, applies a
-	// REVERSIBLE route/role demote THROUGH act.Execute — which refuses without a matching allowing
-	// PolicyDecision. Its teeth ARE that policy gate plus the calibration guard (a threshold cannot arm
-	// on an empty signal ledger); it is the compilation of the "no route/role modulation without a
-	// valid PolicyDecision and a calibrated threshold" ruling, with a receipt (outward_delta) and undo
-	// (RevertIntent) on every act — so it is enforcement, not evidence. Consumer: compound lens-modulate
-	// CLI (arm/thresholds/modulate --confirm/revert); default off, operator_private modulations stay
-	// operator-local (never a shared route projection).
-	"organ:lensmodulator": {Class: MintEnforcement},
-	"organ:intent": {
-		Class:    MintEvidence,
-		Purpose:  "thin expressive-intent coordinator that preserves exact source capture and presents work-owned meaning resolution as a reviewable create-plan or named ambiguity park without owning a plan, context, policy, or admission format",
-		Consumer: "compound intent plan|review|apply CLI plus the existing work admission and operator-review path that alone may materialize the proposed WorkEnvelope",
 	},
 	"organ:retrievalparity": {
 		Class:    MintEvidence,

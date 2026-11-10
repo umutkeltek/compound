@@ -1,8 +1,7 @@
 // Command compound is the CLI for the compound information kernel / transition substrate.
 // Built envelope-first: the proven spine is P0-P6 first slice (home, envelopes, contract/orient, work,
 // policy, harness/hook, memory ledger). Memory is one slice on top (P6, re-bound through the spine), not the
-// system boundary. Gen-1 memory-era commands are retired tombstones; canonical memory lives
-// under `compound memory ...`.
+// system boundary; canonical memory lives under `compound memory ...`.
 // Architecture: docs/architecture/{substrate,runtime,transition}.md, docs/roadmap/phases.md.
 package main
 
@@ -342,15 +341,12 @@ compound executors [--json] read-only executor projection from Workbench, leases
 compound lanes matrix [--json] [--projection-dir DIR] [--harness H] [--route R] read-only (harness x lane) projection over the launch owner's published profile-conformance; enumerates from the registry, never a directory listing; an unbound combination reports unknown, never possible, because the projection publishes no wire protocol or tap binding
 compound presence [--json] [--ttl D] [--include-stale] [--tail-bytes N] read-only "who is here now" projection from lease holders + recent work-log actors; presence follows activity, never spawn provenance, so an agent this runtime never launched still appears; the projection writes nothing; the governed "presence announce --actor A --session S --harness H" records one presence row
 compound stream (--once [--backlog N] | --follow [--cursor BYTE]) [--json] [--home P] read-only byte-cursor tail over events/work.jsonl + ledger/seq; --once is a bounded snapshot (last N + end-of-log cursor + seq + generated_at), --follow is a live JSONL tail; never takes the work-event write lock
-compound behavioral-lens <list|run|compose|signals> composable behavioral-lens framework (compound.behavioral_lens_signal.v0.1): uniform observe->InferredSignal plug + visibility-gated composition; sycophancy (paired-stance shift) is the first lens; evidence-only, never a gate; operator_private signals stay under $COMPOUND_HOME
-compound lens-modulate <arm|thresholds|modulate|revert> governed modulator: turns a crossing behavioral-lens signal into a REVERSIBLE, PolicyDecision-gated route/role demote through act; default off + calibration-guarded; modulate is dry-run unless --confirm; operator_private modulations stay operator-local
 compound act repoint --target-path P --target-id KEY --value V --work W [--confirm] [--capability CAP] generic governed OUTBOUND write through the act seam (config-key repoint); dry-run unless --confirm; requires an allowing PolicyDecision; pre/post images + receipt land in $COMPOUND_HOME/events
 compound act dns-record --service S --host H --address A --remote-host RH --work W [--confirm] governed ADDITIVE DNS record on a router over an injectable ssh transport; external_side_effect held by default; preflight-resolves the service:* entity
 compound act vhost --service S --server-name N --upstream U --remote-host RH --work W [--confirm] governed ADDITIVE NPM vhost block on an apps host over the same seam; additive-only, held by default, pre/post images + receipt in $COMPOUND_HOME/events
 compound land-lease <acquire|release|status|steal> TTL-bounded single-holder landing mutex under $COMPOUND_HOME; steal records a reason + prior holder
 compound finding <record|list|show|doctor> private direct-write home for durable operational findings (evidence-class, never ledger); record accepts bounded --body / --body-file / --stdin and returns a minimal body-free JSON ack with status=recorded|duplicate; doctor flags superseded/stale
 compound capture --source S [--text T] [--work W] | capture show <cid> gesture-fired capture front door: content-addressed body under observed/capture/ (never ledger), mints ONE observed-class proposed candidate (never auto-promotable); day-salted dedup
-compound intent <plan|review|apply> expressive utterance -> task-scoped ContextPack -> reviewable existing work create-plan; ambiguity parks and apply requires an explicit reviewer
 compound placement <resolve|target> where a write belongs: positive canonical-target redirect for a blocked path (guidance, not a gate)
 compound schedule <list|show|doctor> [--json] [--source user|system|crontab|all] [--namespace N] [--stale-days N] read-only launchd + crontab projection; no --fix
   compound browser <list|show|doctor|settings|route|goal> [--json] [--instance UUID] [--swiftshader-only] [--stale-min M] [--idle-cpu-pct PCT] [--fix|--dry-run|--yes-each] process doctor, governed backend switch, bounded public goal; see docs/architecture/execution-plane.md
@@ -428,10 +424,6 @@ compound event-store migrate (--dry-run | --apply | --verify) [--batch N] [--jso
 compound event-store rebaseline [--home P] [--work W] [--confirm] [--json]     governed re-baseline of the frozen-stream doctor's byte-size baseline; dry-run preview by default, --confirm requires an allowing PolicyDecision
 compound event-store repair (plan | review | supersede | apply) ...             governed post-completion loose-record repair; exact operator review + current running-work PolicyDecision, content-addressed recovery, segment truth preserved
 compound writeback <gate|no-promote>                           OwnerWritebackGate + NoPromoteDecision
-
-retired Gen-1 tombstones:
-  compound distill|scope|promote|build|reconcile|timeline|recall|pack|ledger
-  These exit 2 and point to canonical compound memory/distiller surfaces.
 `)
 }
 
@@ -2185,7 +2177,7 @@ func findingEvidenceRefs(args []string) []string {
 // finding/capture/placement/knowledge/memory CLI surfaces) now calls valueFlag directly; this
 // name survives only as a compatibility forward for callers in files outside that packet's
 // touch boundary (activity_cli.go, doctor_cli.go, act_cli.go, landlease_cli.go,
-// executorlens_cli.go, latenttax_cli.go, capability.go, bench.go, and others — see the packet
+// latenttax_cli.go, capability.go, bench.go, and others — see the packet
 // handoff for the full list). Follow-up: migrate those callers to valueFlag, then delete this.
 func flagValue(args []string, name string) string {
 	return valueFlag(args, name)
@@ -4771,22 +4763,6 @@ func cmdSchema(args []string) {
 		fmt.Fprintln(os.Stderr, "usage: compound schema <list|export|validate> ...")
 		os.Exit(2)
 	}
-}
-
-func cmdRetiredGen1(verb string) {
-	replacements := map[string]string{
-		"distill":   "compound distiller run <trace.json>",
-		"scope":     "compound memory entity resolve <token>",
-		"promote":   "compound memory adjudicate <candidate-id> --verdict promote",
-		"build":     "compound memory positions / compound memory patterns",
-		"reconcile": "compound memory adjudicate (supersession is spine-native)",
-		"timeline":  "compound memory timeline <entity>",
-		"recall":    "compound memory recall <query>",
-		"pack":      "compound memory query <query>",
-		"ledger":    "compound memory doctor",
-	}
-	fmt.Fprintf(os.Stderr, "compound %s retired with the Gen-1 memory stack. Use %s.\n", verb, replacements[verb])
-	os.Exit(2)
 }
 
 func openMemStore() (*mem.Store, string) {

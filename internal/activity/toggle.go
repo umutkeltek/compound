@@ -34,7 +34,7 @@ type ToggleResult struct {
 	TransitionID string
 }
 
-// actionRecord is the append-only governed-toggle ledger row (mirrors lensmodulator.actionRecord).
+// actionRecord is the append-only governed-toggle ledger row.
 type actionRecord struct {
 	SchemaVersion  string `json:"schema_version"`
 	Kind           string `json:"kind"` // "enable" | "disable"

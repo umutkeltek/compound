@@ -42,7 +42,7 @@ func actuatorUsage() string {
 }
 
 // RunCLI is the organ's CLI face, called from cmd/compound's command
-// registry. Mirrors internal/executorlens: the organ owns the exit code so
+// registry. The organ owns the exit code so
 // cmd/compound stays a thin dispatch shell.
 func RunCLI(args []string) {
 	if code := runCLI(args, os.Stdout, os.Stderr); code != 0 {
