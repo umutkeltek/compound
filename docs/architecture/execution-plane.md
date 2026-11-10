@@ -658,6 +658,16 @@ Harness execution consumes the same authority instead of maintaining a second wr
 model id, alias, then harness id form the resolution precedence; ambiguity fails closed. A declared
 `capacity_source` binds quota evidence to its own provider ref (for example
 `codexbar://provider/qwencloud`) even when the execution route has another name. Capacity admission
+also accepts `kind: switchback_native_pool` with
+`ref: switchback://account-pools/<pool>`. It invokes Switchback's read-only Rust
+pool observation command with a bounded deadline and output size, validates the
+pool, revision, membership counts, timestamps and required quota windows, and
+passes the result through the same capacity policy. Available member percentages
+are never added together. Unknown observations remain confirmation-gated; a
+failed declared source never falls back to an unrelated default account.
+This read does not refresh usage, log in, change pool membership, or grant away
+execution. Native configuration/settings pins and permission/hook checks remain
+independent admission requirements. Capacity admission
 answers to the run's own bounded duration: a Claude-family lane preflight and governed start
 revalidation compare the quota reset against `ceil(RunInput.Timeout / minute)` (minimum one minute,
 exact multiples exact), so a bounded run requires quota to outlive that rounded bound,

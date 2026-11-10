@@ -1003,7 +1003,7 @@ func validateModelCapabilities(manifest ModelCapabilitiesManifest) error {
 			errs = append(errs, validateLaneResolution(id, model.Resolution)...)
 		}
 		if source := model.CapacitySource; source != nil {
-			if strings.TrimSpace(source.Kind) != "codexbar" {
+			if strings.TrimSpace(source.Kind) != "codexbar" && strings.TrimSpace(source.Kind) != "switchback_native_pool" {
 				errs = append(errs, "model "+id+" has unknown capacity source kind "+source.Kind)
 			}
 			if source.FreshnessMinutes <= 0 {
@@ -1014,6 +1014,13 @@ func validateModelCapabilities(manifest ModelCapabilitiesManifest) error {
 			} else if strings.TrimSpace(source.Kind) == "codexbar" {
 				if _, err := codexBarProviderFromRef(source.Ref); err != nil {
 					errs = append(errs, "model "+id+" "+err.Error())
+				}
+			} else if strings.TrimSpace(source.Kind) == "switchback_native_pool" {
+				if _, err := nativePoolFromRef(source.Ref); err != nil {
+					errs = append(errs, "model "+id+" "+err.Error())
+				}
+				if source.FreshnessMinutes > 60 {
+					errs = append(errs, "model "+id+" native pool freshness exceeds 60 minutes")
 				}
 			}
 		}

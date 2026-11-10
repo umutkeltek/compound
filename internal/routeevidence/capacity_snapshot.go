@@ -88,6 +88,7 @@ type LaneCapacityConfig struct {
 	Paths                   LaneCapacityPaths
 	ExpectedMinutes         int
 	SuppressRefusalEvidence bool
+	NativePoolRunner        CapacityCommandRunner
 }
 
 // DefaultLaneCapacityConfig points at the operator-owned read projections without embedding any
@@ -787,6 +788,9 @@ func guardDeclaredLaneCapacityWithProbe(homePath, lane, capabilityClass string, 
 
 func guardDeclaredLaneCapacityWithConfigAndProbe(homePath, lane, capabilityClass string, source LaneCapacitySourceRef, now time.Time, expectedMinutes int, confirm bool, alternatives []string, suppressRefusalEvidence bool, cfg LaneCapacityConfig, probe codexBarCapacityProbeFunc) (LaneCapacityDecision, error) {
 	kind := strings.ToLower(strings.TrimSpace(source.Kind))
+	if kind == "switchback_native_pool" {
+		return guardNativePoolCapacity(homePath, lane, capabilityClass, source, now, expectedMinutes, confirm, alternatives, suppressRefusalEvidence, cfg)
+	}
 	if kind != "codexbar" {
 		return LaneCapacityDecision{}, fmt.Errorf("unknown capacity source kind %q", source.Kind)
 	}
