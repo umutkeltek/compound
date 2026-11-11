@@ -5,7 +5,8 @@ already happened and asks you the same question again. Compound keeps your goals
 and evidence in local files, so the next session starts from what is already known.
 
 **Status: public alpha, version 0.1.1.** One user, one machine, plain files. Compound works with
-four coding agents: Claude Code, Codex, OpenCode and oh-my-pi. Setup needs a terminal. Compound does
+Claude Code and Codex through `compound init`. Development version 0.1.2 also wires OpenCode and
+oh-my-pi. Setup needs a terminal. Compound does
 not yet prove that your later work got easier.
 
 ## First run (a minute or two)
@@ -39,15 +40,15 @@ What these lines did:
 - The `export PATH=...` line works for this terminal only. If `~/.local/bin` is not in your shell
   profile yet, `compound init` prints the exact line to add.
 
-| Harness | What `compound init` writes |
-|---|---|
-| Claude Code | hook entries in `~/.claude/settings.json` |
-| Codex | hook entries in `~/.codex/hooks.json` |
-| OpenCode | a plugin file, `~/.config/opencode/plugins/compound.ts`, which OpenCode loads on its own |
-| oh-my-pi | a hook file, `~/.omp/agent/hooks/pre/compound.ts` |
+| Harness | Available in | What `compound init` writes |
+|---|---|---|
+| Claude Code | v0.1.1 | hook entries in `~/.claude/settings.json` |
+| Codex | v0.1.1 | hook entries in `~/.codex/hooks.json` |
+| OpenCode | Development 0.1.2; not v0.1.1 | a plugin file, `~/.config/opencode/plugins/compound.ts`, which OpenCode loads on its own |
+| oh-my-pi | Development 0.1.2; not v0.1.1 | a hook file, `~/.omp/agent/hooks/pre/compound.ts` |
 
-If no harness is installed, `compound init` prints `No supported harness found.` and names the four
-it supports. Install one, open it once, then run `compound init` again.
+If no harness is installed, `compound init` prints `No supported harness found.` and names the harnesses
+that version supports. Install one, open it once, then run `compound init` again.
 
 Now start your harness in any project, the way you always do. At session start, Compound tells the
 agent how to get a briefing for its task. While the agent works, Compound records each tool call.
@@ -59,7 +60,7 @@ Everything stays in `~/.compound`.
 - `compound init --check` checks the setup again. It changes nothing, and exits 1 if something still
   needs `compound init`.
 - `compound hook uninstall --harness claude-code` removes Compound's hooks and leaves the rest of
-  your settings alone. The other names are `codex`, `opencode` and `oh-my-pi`.
+  your settings alone. Version 0.1.1 also accepts `codex`; `opencode` and `oh-my-pi` require development 0.1.2.
 
 ## What it is not
 

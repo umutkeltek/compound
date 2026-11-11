@@ -60,6 +60,112 @@ export function verifyBundle(bundle, commit, platform) {
   return {commit, version, platform, artifacts: [...names, 'SHA256SUMS'].sort().map(name => ({name, path: path.join(bundle, name), sha256: hash(path.join(bundle, name))}))};
 }
 
+const bytesSHA = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+function snapshot(root) {
+  const entries = [];
+  function visit(dir) {
+    for (const name of fs.readdirSync(dir).sort()) {
+      const file = path.join(dir, name), stat = fs.lstatSync(file);
+      entries.push([path.relative(root, file), stat.mode,
+        stat.isFile() ? bytesSHA(fs.readFileSync(file)) : stat.isSymbolicLink() ? fs.readlinkSync(file) : 'directory']);
+      if (stat.isDirectory()) visit(file);
+    }
+  }
+  visit(root);
+  return entries;
+}
+
+// Called by installed-release-acceptance against its installed executable.
+// All state, agent settings, and source fixtures stay beneath an absent scratch root.
+export function verifyInstalledSafety(binary, root) {
+  assert(path.isAbsolute(binary) && path.isAbsolute(root) && !fs.existsSync(root),
+    'absolute executable and absent safety root required');
+  fs.mkdirSync(root, {recursive: true, mode: 0o700});
+  const profile = path.join(root, 'profile'), home = path.join(root, 'home');
+  fs.mkdirSync(profile);
+  const deadline = Date.now() + 5 * 60 * 1000;
+  const report = {binary_sha256: bytesSHA(fs.readFileSync(binary)), checks: [], commands: []};
+  function run(name, args, where = home, expected = 0) {
+    assert(Date.now() < deadline, 'bounded installed safety deadline');
+    const result = spawnSync(binary, args, {cwd: root, encoding: 'utf8', timeout: Math.min(60000, deadline - Date.now()),
+      env: {PATH: '/usr/bin:/bin:/usr/sbin:/sbin', LANG: 'C', HOME: profile, COMPOUND_HOME: where},
+      maxBuffer: 8 * 1024 * 1024});
+    report.commands.push({name, args, exit_code: result.status, signal: result.signal});
+    for (const stream of ['stdout', 'stderr']) fs.writeFileSync(path.join(root, name + '.' + stream),
+      result[stream] ?? '', {flag: 'wx', mode: 0o600});
+    assert(!result.error, name + ': ' + result.error?.message);
+    assert.equal(result.status, expected, name + ': ' + result.stdout + result.stderr);
+    return result.stdout;
+  }
+  try {
+    report.version = JSON.parse(run('version', ['version', '--json']));
+    run('initialize', ['home', 'init']);
+    const before = snapshot(home);
+    for (const [command, rest] of [['compact', []], ['archive-history', ['--kind', 'review']],
+      ['restore-history', ['--all']]]) {
+      run('unknown-' + command, ['home', command, ...rest, '--dry-rnu'], home, 2);
+      assert.deepEqual(snapshot(home), before, command + ': rejected flag changed home');
+    }
+    report.checks.push({gate: 'maintenance_unknown_flags', passed: true, home_unchanged: true});
+
+    const doctorRoot = path.join(root, 'doctor-source'), doctorHome = path.join(doctorRoot, '.compound');
+    fs.mkdirSync(doctorRoot);
+    run('doctor-initialize', ['home', 'init'], doctorHome);
+    run('doctor-healthy-text', ['home', 'doctor'], doctorHome);
+    fs.mkdirSync(path.join(doctorRoot, '.git'));
+    const text = run('doctor-failing-text', ['home', 'doctor'], doctorHome, 1);
+    assert(text.includes('generated_state_in_repo_source: true'), 'doctor must fail on the intended source-placement defect');
+    assert.equal(JSON.parse(run('doctor-failing-json', ['home', 'doctor', '--json'], doctorHome, 1)).verdict, 'fail');
+    report.checks.push({gate: 'home_doctor_exit_status', passed: true, text_and_json_agree: true});
+
+    const statuses = ['not approved', 'not active', 'acceptedd', 'approved if tests pass'];
+    const decisionHome = path.join(root, 'decision-home');
+    run('decisions-initialize', ['home', 'init'], decisionHome);
+    function source(id, status, predecessor = '') {
+      const file = path.join(root, id + '.md');
+      const bytes = ['---', 'id: ' + id, 'title: ' + id, 'kind: policy', 'status: ' + JSON.stringify(status),
+        'falsifier: A contrary observation.', 'review_trigger: New evidence.',
+        'supersedes: [' + predecessor + ']', '---', '', '# ' + id, ''].join('\n');
+      fs.writeFileSync(file, bytes, {flag: 'wx', mode: 0o600});
+      return {file, bytes};
+    }
+    const predecessor = source('release-valid-predecessor', 'accepted');
+    run('accepted-decision', ['decisions', 'import', '--policy', predecessor.file], decisionHome);
+    for (const [index, status] of statuses.entries()) {
+      const fixture = source('release-ambiguous-' + index, status, 'release-valid-predecessor');
+      const output = run('ambiguous-decision-' + index, ['decisions', 'import', '--policy', fixture.file], decisionHome);
+      assert(output.includes('status=proposed') && !output.includes(': promote '), 'ambiguous status acquired acceptance: ' + status);
+      assert.equal(fs.readFileSync(fixture.file, 'utf8'), fixture.bytes, 'source evidence changed');
+      const current = JSON.parse(run('predecessor-after-' + index,
+        ['decisions', 'show', 'release-valid-predecessor', '--json'], decisionHome));
+      assert.equal(current.lifecycle.status, 'accepted');
+      assert.equal(current.claim.state, 'promoted');
+    }
+    assert.equal(fs.readFileSync(predecessor.file, 'utf8'), predecessor.bytes);
+    report.checks.push({gate: 'ordinary_decision_status', passed: true, ambiguous_statuses: statuses,
+      predecessor_preserved: true, source_bytes_unchanged: true});
+
+    for (const directory of ['.claude', '.codex', '.config/opencode', '.omp']) {
+      fs.mkdirSync(path.join(profile, directory), {recursive: true});
+    }
+    for (const harness of ['claude-code', 'codex', 'opencode', 'oh-my-pi']) {
+      run('init-' + harness, ['init', '--harness', harness, '--base', profile, '--binary', binary]);
+      run('check-' + harness, ['init', '--harness', harness, '--base', profile, '--binary', binary, '--check']);
+    }
+    assert(fs.existsSync(path.join(profile, '.config/opencode/plugins/compound.ts')));
+    assert(fs.existsSync(path.join(profile, '.omp/agent/hooks/pre/compound.ts')));
+    report.checks.push({gate: 'documented_harness_setup', passed: true, harnesses: ['claude-code', 'codex', 'opencode', 'oh-my-pi']});
+    report.status = 'passed';
+    return report;
+  } catch (error) {
+    report.status = 'failed';
+    report.error = error.stack;
+    throw error;
+  } finally {
+    fs.writeFileSync(path.join(root, 'safety-acceptance.json'), JSON.stringify(report, null, 2) + '\n', {flag: 'wx', mode: 0o600});
+  }
+}
+
 // This is an acceptance consumer of shipped files, not another execution or evidence owner.
 export async function acceptInstalled(bundle, commit, root, priorBundle, priorCommit) {
   assert(path.isAbsolute(root) && !fs.existsSync(root), 'acceptance location must be absolute and absent');
@@ -156,6 +262,9 @@ export async function acceptInstalled(bundle, commit, root, priorBundle, priorCo
     assert.equal(json('first-use', ['home', 'doctor', '--json']).verdict, 'ok');
     for (const name of ['compound', 'compound-breadth-engine']) assert(fs.statSync(path.join(bins, name)).mode & 0o111);
     report.installed = {version, absolute_binary: bin, pair: pair(bins)};
+    const safety = verifyInstalledSafety(bin, path.join(root, 'release-safety'));
+    report.checks.push(...safety.checks);
+    report.safety = {report: path.join(root, 'release-safety', 'safety-acceptance.json'), binary_sha256: safety.binary_sha256};
     report.checks.push({gate: 'installation_first_use', passed: true, explicit_home: home});
 
     const sweepRefusal = cli('unsupported-sweep-disabled', ['work', 'sweep-stale', '--yes'], home, 'nonzero');

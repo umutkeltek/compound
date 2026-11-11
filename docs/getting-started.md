@@ -210,6 +210,10 @@ present the install as a published Compound version.
 
 ## 2. First run
 
+The signed installation commands above select **v0.1.1**, which wires Claude Code and Codex.
+OpenCode and oh-my-pi setup is in **development 0.1.2**, not in the published v0.1.1 artifacts.
+The version column below distinguishes them; a development checkout is not a supported release.
+
 ```sh
 export PATH="$HOME/.local/bin:$PATH"
 compound version
@@ -225,8 +229,6 @@ use. It prints one line per harness. With only Claude Code installed, the output
 Compound home: ~/.compound (ready)
 Claude Code: wired (~/.claude/settings.json)
 Codex: not found
-OpenCode: not found
-oh-my-pi: not found
 
 Next: start Claude Code in any project. Compound gives it context when the session starts
 and writes a receipt when it ends.
@@ -235,7 +237,7 @@ Check: compound init --check   Last session: compound receipt last   Undo: compo
 
 - If `~/.local/bin` is not in your shell profile yet, `init` adds a `PATH:` line. It names the file
   to edit and the exact line to add. It never edits a shell profile itself.
-- If it finds no harness, it prints `No supported harness found.` and names the four it supports.
+- If it finds no harness, it prints `No supported harness found.` and names the harnesses that version supports.
   Install one, open it once, then run `compound init` again.
 - Running `compound init` again is safe. A harness that is already set up reports `already wired`.
 
@@ -245,14 +247,14 @@ not delete files from `~/.compound` to clear a warning.
 ## 3. Wire your harness
 
 A hook is a command the harness runs at a fixed point in a session, such as session start or
-after each tool call. `compound init` wires the four harnesses Compound supports:
+after each tool call. Published v0.1.1 wires the first two harnesses below; development 0.1.2 wires all four:
 
-| Harness | Found when this exists | What `compound init` writes | What Compound gets |
-|---|---|---|---|
-| Claude Code | `~/.claude` or the `claude` command | hook entries in `~/.claude/settings.json` | briefing, tool calls, session receipt |
-| Codex | `~/.codex` or the `codex` command | hook entries in `~/.codex/hooks.json` | briefing, tool calls, session receipt |
-| OpenCode | `~/.config/opencode` or the `opencode` command | a plugin file, `~/.config/opencode/plugins/compound.ts`, which OpenCode loads on its own | briefing and tool calls; no session receipt, because OpenCode has no session-end event |
-| oh-my-pi | `~/.omp` or the `omp` command | a hook file, `~/.omp/agent/hooks/pre/compound.ts` | briefing, tool calls, session receipt |
+| Harness | Available in | Found when this exists | What `compound init` writes | What Compound gets |
+|---|---|---|---|---|
+| Claude Code | v0.1.1 | `~/.claude` or the `claude` command | hook entries in `~/.claude/settings.json` | briefing, tool calls, session receipt |
+| Codex | v0.1.1 | `~/.codex` or the `codex` command | hook entries in `~/.codex/hooks.json` | briefing, tool calls, session receipt |
+| OpenCode | Development 0.1.2 | `~/.config/opencode` or the `opencode` command | a plugin file, `~/.config/opencode/plugins/compound.ts`, which OpenCode loads on its own | briefing and tool calls; no session receipt, because OpenCode has no session-end event |
+| oh-my-pi | Development 0.1.2 | `~/.omp` or the `omp` command | a hook file, `~/.omp/agent/hooks/pre/compound.ts` | briefing, tool calls, session receipt |
 
 Your other settings stay as they were. Compound changes only its own entries. For OpenCode and
 oh-my-pi it writes only its own file, and it never overwrites or removes a file at that path that
@@ -268,7 +270,7 @@ policy says no or cannot answer. Compound does not change your harness's own per
 ```sh
 compound init --check                       # one line per harness; changes nothing
 compound hook install --harness codex       # wire one harness by name
-compound hook uninstall --harness opencode  # remove Compound's entries or file, nothing else
+compound hook uninstall --harness codex     # remove Compound's entries, nothing else
 compound hook install --harness claude-code --scope project   # Claude Code, this project only
 compound doctor                             # full check; also names installed harnesses that are not wired
 ```

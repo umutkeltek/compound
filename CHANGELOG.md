@@ -6,6 +6,15 @@ for tagged releases, subject to the public-alpha compatibility policy in
 
 ## [Unreleased]
 
+The next corrective candidate is 0.1.2; it is not published by this source change.
+
+### Release verification
+- The installed-artifact acceptance now exercises ambiguous ordinary decision statuses, unknown
+  maintenance flags with a byte-for-byte home snapshot, failing home-doctor exits, and all four
+  documented harness setup commands in isolated profiles. It runs against the packaged executable.
+- Installation guidance distinguishes the published v0.1.1 two-harness setup from development
+  0.1.2 four-harness support. Existing release tags and artifacts remain immutable.
+
 ### Added
 
 - `compound init` wires OpenCode and oh-my-pi as well as Claude Code and Codex. OpenCode gets one

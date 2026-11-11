@@ -1,5 +1,9 @@
 # Release without GitHub-hosted Actions
 
+Installed acceptance also checks the release executable against decision-status, maintenance-flag,
+home-doctor exit and four-harness setup regressions. Its isolated safety report binds the exact
+executable hash and version. Source tests alone do not satisfy these checks.
+
 Each SBOM inspects the freshly built executable with the explicit release
 version. It does not infer the application's version from source Git tags,
 so linked worktrees, shared prior clones and later tag creation preserve the

@@ -1,5 +1,7 @@
 # Compound overview for contributors
 
+Version note: the published v0.1.1 `init` wires Claude Code and Codex. OpenCode and oh-my-pi setup described here requires development 0.1.2; it is not in v0.1.1.
+
 This page explains why Compound exists, how it is built, where its state lives, and the command
 map. The [README](../README.md) is the short version for a first-time reader.
 [Getting started](getting-started.md) is the install guide. Build, test and landing rules are in

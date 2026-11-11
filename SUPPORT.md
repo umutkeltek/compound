@@ -1,5 +1,7 @@
 # Public-alpha support policy
 
+Version note: the published v0.1.1 `init` wires Claude Code and Codex. OpenCode and oh-my-pi setup described here requires development 0.1.2; it is not in v0.1.1.
+
 Compound is an early developer preview. Support is best-effort through GitHub issues. There is no
 uptime, response-time or backward-compatibility promise.
 
