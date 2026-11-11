@@ -44,7 +44,7 @@ func TestFailOpenDistinguishesContextFailureFromAbsentCapability(t *testing.T) {
 	deps := baseDeps()
 
 	fxB := Fixture{Harness: "codex", SessionID: "sess_failopen", Cwd: t.TempDir()}
-	breaker := contextBreakerResult("UserPromptSubmit", fxB, deps, "", now)
+	breaker := contextBreakerResult("UserPromptSubmit", fxB, deps, "", now, ContextFailureBudgetTimeout, 0)
 	if breaker.Event.Status != "fail_open" {
 		t.Fatalf("precondition: breaker must still fail open, got %q", breaker.Event.Status)
 	}

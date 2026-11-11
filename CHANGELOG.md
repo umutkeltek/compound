@@ -54,6 +54,11 @@ The next corrective candidate is 0.1.2; it is not published by this source chang
 
 ### Fixed
 
+- A hook that fails open because its context could not be built now records which of three things
+  happened and how long it took. The stored hook record carries `context_failure` (`build_error`,
+  `late_completion` or `budget_timeout`) beside `breaker_tripped`, and the event's `duration_ms`
+  holds the elapsed time. Every such record used to store `duration_ms: 0` and no cause, so the
+  failure could not be read back afterwards. No error text is stored, and no budget changed.
 - Provider-lane hooks (`claude-minimax`, `claude-zai`, `claude-qwen`) are installed, read by
   `compound doctor`, checked by the governed roster gate and reconciled from the profile the lane
   launcher actually starts. They used an older profile tree nothing started, so doctor and launch

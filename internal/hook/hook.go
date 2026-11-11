@@ -176,6 +176,10 @@ type Result struct {
 	Context              *ContextObservation      `json:"-"`
 	CoordinationDelivery *hookplan.DeliveryReport `json:"-"`
 	BreakerTripped       bool                     `json:"breaker_tripped,omitempty"`
+	// ContextFailure names which context-build failure tripped the breaker (one of
+	// the ContextFailure* constants). Empty unless BreakerTripped. Stored beside
+	// breaker_tripped on the hook record, not on the envelope.
+	ContextFailure       string `json:"context_failure,omitempty"`
 	pendingExactApproval *pendingExactApproval
 }
 
@@ -452,7 +456,7 @@ func Run(fx Fixture, deps Deps, now time.Time) (Result, error) {
 				}
 			}
 			if strings.TrimSpace(deps.HomePath) != "" {
-				if err := writeHookEvent(deps.HomePath, res.Event, res.BreakerTripped); err != nil {
+				if err := writeHookEvent(deps.HomePath, res.Event, res.BreakerTripped, res.ContextFailure); err != nil {
 					return fmt.Errorf("persist hook event: %w", err)
 				}
 			}
@@ -477,7 +481,7 @@ func Run(fx Fixture, deps Deps, now time.Time) (Result, error) {
 		}
 	}
 	if strings.TrimSpace(deps.HomePath) != "" {
-		if err := writeHookEvent(deps.HomePath, res.Event, res.BreakerTripped); err != nil {
+		if err := writeHookEvent(deps.HomePath, res.Event, res.BreakerTripped, res.ContextFailure); err != nil {
 			return res, fmt.Errorf("persist hook event: %w", err)
 		}
 	}
@@ -859,17 +863,21 @@ func buildContextWithBreaker(name string, fx Fixture, deps Deps, mode string, no
 	}()
 	select {
 	case result := <-done:
+		// One clock read serves both the over-budget check and the event, so the
+		// stated elapsed time is the one the decision was made on.
+		elapsed := hookNow(deps).Sub(started)
 		if result.Err != nil {
-			breaker := contextBreakerResult(name, fx, deps, mode, now)
+			breaker := contextBreakerResult(name, fx, deps, mode, now, ContextFailureBuildError, elapsed)
 			return contextBuild{}, &breaker, nil
 		}
-		if budget > 0 && hookNow(deps).Sub(started) > budget {
-			breaker := contextBreakerResult(name, fx, deps, mode, now)
+		if budget > 0 && elapsed > budget {
+			breaker := contextBreakerResult(name, fx, deps, mode, now, ContextFailureLateCompletion, elapsed)
 			return contextBuild{}, &breaker, nil
 		}
 		return result.Build, nil, nil
 	case <-hookAfter(deps, budget):
-		breaker := contextBreakerResult(name, fx, deps, mode, now)
+		elapsed := hookNow(deps).Sub(started)
+		breaker := contextBreakerResult(name, fx, deps, mode, now, ContextFailureBudgetTimeout, elapsed)
 		return contextBuild{}, &breaker, nil
 	}
 }
@@ -881,7 +889,20 @@ func nonNegativeDuration(duration time.Duration) time.Duration {
 	return duration
 }
 
-func contextBreakerResult(name string, fx Fixture, deps Deps, mode string, now time.Time) Result {
+// The categories of a context_unavailable fail-open, stored on the hook record beside
+// breaker_tripped (see Result.ContextFailure). Only contextBreakerResult sets one.
+const (
+	// ContextFailureBuildError: context construction returned an error.
+	ContextFailureBuildError = "build_error"
+	// ContextFailureLateCompletion: construction finished, but after its budget.
+	// duration_ms is the real build time.
+	ContextFailureLateCompletion = "late_completion"
+	// ContextFailureBudgetTimeout: the budget timer fired while construction was
+	// still running. duration_ms is how long the hook waited, not the build time.
+	ContextFailureBudgetTimeout = "budget_timeout"
+)
+
+func contextBreakerResult(name string, fx Fixture, deps Deps, mode string, now time.Time, category string, elapsed time.Duration) Result {
 	ev := newEvent(name, fx, "fail_open", contextHookInputHash(name, fx, mode), fx.AdapterSideEffects, now)
 	// Name the meaning ON THE EVENT. BreakerTripped below says the same thing, but it
 	// lives on the Result and dies with the process: every consumer that reads the
@@ -890,7 +911,11 @@ func contextBreakerResult(name string, fx Fixture, deps Deps, mode string, now t
 	// has no native hook". Pinned by
 	// TestFailOpenDistinguishesContextFailureFromAbsentCapability.
 	ev.FailOpenReason = envelope.FailOpenContextUnavailable
-	return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: "", BreakerTripped: true}
+	// Which of the three failures this was, and how long it took, so the next failure
+	// is readable from the stored record. A category and a number only: never the
+	// error text, which can carry paths or prompt content.
+	ev.DurationMS = int(nonNegativeDuration(elapsed).Milliseconds())
+	return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: "", BreakerTripped: true, ContextFailure: category}
 }
 
 func hookNow(deps Deps) time.Time {
@@ -2436,10 +2461,13 @@ func writeContextArtifacts(homePath, hookID string, req envelope.ContextRequest,
 type hookEventRecord struct {
 	envelope.HookEvent
 	BreakerTripped bool `json:"breaker_tripped,omitempty"`
+	// ContextFailure is a sibling of breaker_tripped: which context-build failure
+	// tripped the breaker. Omitted when empty, so every other record is unchanged.
+	ContextFailure string `json:"context_failure,omitempty"`
 }
 
-func writeHookEvent(homePath string, ev envelope.HookEvent, breakerTripped bool) error {
-	record := hookEventRecord{HookEvent: ev, BreakerTripped: breakerTripped}
+func writeHookEvent(homePath string, ev envelope.HookEvent, breakerTripped bool, contextFailure string) error {
+	record := hookEventRecord{HookEvent: ev, BreakerTripped: breakerTripped, ContextFailure: contextFailure}
 	store, err := eventstore.Open(homePath)
 	if err != nil {
 		return err
