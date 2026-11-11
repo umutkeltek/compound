@@ -116,6 +116,8 @@ The full boundary, with the gaps that are still open, is in
 - [Harness wiring](docs/harness-wiring.md): what each hook does, harness by harness.
 - [Memory quickstart](docs/memory-quickstart.md): optional semantic search over your docs.
 - [Dashboard](docs/console.md): the optional local web view.
+- [The placebo test](docs/placebo-test/README.md): a blind on/off trial for anything you load into
+  your agent, with the run that changed how Compound starts a session.
 - [Support policy](SUPPORT.md), [security policy](SECURITY.md) and [changelog](CHANGELOG.md).
 
 **For contributors:** build and test rules are in [CONTRIBUTING.md](CONTRIBUTING.md). How Compound

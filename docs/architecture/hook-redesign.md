@@ -146,9 +146,10 @@ tells the truth. No ContextRequest, EffectiveContract, or ContextPack is built o
 arm B had the session-start pack injected. A judge from a different model family graded both
 orders. The rule, fixed before the run: keep the always-on pack only if B wins at least 6 of 10
 outright. Result: B 3, A 3, ties 4; B used 28% fewer tokens. The pack did not earn its place.
-Measured use of the served pack over 76 sessions points the same way: of 1,437 served items, agents
-used 63 door lines, 14 memory lines, 4 positions, 0 capability offers, and 0 skills. The door map
-is the only part with real use, so it stays.
+Measured use of the served pack over 76 sessions points the same way: of 2,569 served items, agents
+used 81: 63 of 1,437 door lines, 14 of 446 memory lines, 4 of 416 positions, 0 of 259 capability
+offers, and 0 of 11 skills. The door map is the only part with real use, so it stays. The script, the
+judge prompt and the per-task scores are in [the placebo test](../placebo-test/README.md).
 
 **Cost.** In live sessions the full start measured 3.4 s median and injected about 5 KB. On the
 built binary, with a scratch home (ten doors and a short synthetic operator model) and a repository

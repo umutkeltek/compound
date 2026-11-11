@@ -1,0 +1,37 @@
+{
+  "what": "First recorded run of the placebo test: Compound's session-start pack, on against off.",
+  "date": "2026-11-03",
+  "rule_written_before_the_run": "The pack stays in every session only if ON wins at least 6 of 10 pairs outright and uses no more than 2x the tokens of OFF.",
+  "arms": {
+    "off": "Claude Code headless, Claude Opus, all hooks disabled. The project rules file, plain notes and skills stayed.",
+    "on": "The same, with the installed hooks: the session-start pack (memory lines, positions, a count of capability offers) and the list of working tools."
+  },
+  "judge": "GLM-5.3, run in an empty folder, both orders",
+  "note": "Field names follow placebo_test.py. The original file named the arms A (off) and B (on) and the outcome ON-DEMAND. The numbers are unchanged. A verdict is the answer the judge picked: 1 is the answer shown first, 2 the answer shown second.",
+  "rule": {
+    "pairs": 10,
+    "on_wins": 3,
+    "off_wins": 3,
+    "ties": 4,
+    "unjudged": 0,
+    "tokens_off": 4092860,
+    "tokens_on": 2956178,
+    "token_ratio_on_over_off": 0.722,
+    "win_bar": 6,
+    "token_ratio_cap": 2.0,
+    "complete": true,
+    "outcome": "NOT-KEPT"
+  },
+  "tasks": [
+    {"task": "T01", "kind": "discovery", "winner": "tie", "verdict_off_first": "2", "verdict_on_first": "2", "off": {"tokens_total": 182361, "wall_s": 36.5, "num_turns": 4}, "on": {"tokens_total": 183779, "wall_s": 48.9, "num_turns": 4}},
+    {"task": "T02", "kind": "discovery", "winner": "off", "verdict_off_first": "1", "verdict_on_first": "2", "off": {"tokens_total": 234909, "wall_s": 39.2, "num_turns": 5}, "on": {"tokens_total": 320568, "wall_s": 57.5, "num_turns": 8}},
+    {"task": "T03", "kind": "discovery", "winner": "off", "verdict_off_first": "1", "verdict_on_first": "2", "off": {"tokens_total": 216398, "wall_s": 35.2, "num_turns": 5}, "on": {"tokens_total": 230762, "wall_s": 109.2, "num_turns": 5}},
+    {"task": "T04", "kind": "discovery", "winner": "tie", "verdict_off_first": "1", "verdict_on_first": "1", "off": {"tokens_total": 317872, "wall_s": 42.8, "num_turns": 7}, "on": {"tokens_total": 238270, "wall_s": 41.0, "num_turns": 5}},
+    {"task": "T05", "kind": "lesson", "winner": "tie", "verdict_off_first": "TIE", "verdict_on_first": "TIE", "off": {"tokens_total": 411991, "wall_s": 53.2, "num_turns": 9}, "on": {"tokens_total": 384226, "wall_s": 70.0, "num_turns": 8}},
+    {"task": "T06", "kind": "known outcome", "winner": "on", "verdict_off_first": "2", "verdict_on_first": "1", "off": {"tokens_total": 199742, "wall_s": 47.7, "num_turns": 6}, "on": {"tokens_total": 118293, "wall_s": 59.4, "num_turns": 3}},
+    {"task": "T07", "kind": "known outcome", "winner": "on", "verdict_off_first": "2", "verdict_on_first": "1", "off": {"tokens_total": 226447, "wall_s": 52.6, "num_turns": 5}, "on": {"tokens_total": 301205, "wall_s": 79.7, "num_turns": 6}},
+    {"task": "T08", "kind": "known outcome", "winner": "tie", "verdict_off_first": "TIE", "verdict_on_first": "TIE", "off": {"tokens_total": 319385, "wall_s": 50.6, "num_turns": 9}, "on": {"tokens_total": 283015, "wall_s": 48.6, "num_turns": 10}},
+    {"task": "T09", "kind": "known outcome", "winner": "on", "verdict_off_first": "2", "verdict_on_first": "1", "off": {"tokens_total": 349848, "wall_s": 43.0, "num_turns": 7}, "on": {"tokens_total": 208410, "wall_s": 50.7, "num_turns": 4}},
+    {"task": "T10", "kind": "known outcome", "winner": "off", "verdict_off_first": "1", "verdict_on_first": "2", "off": {"tokens_total": 1633907, "wall_s": 434.9, "num_turns": 36}, "on": {"tokens_total": 687650, "wall_s": 414.1, "num_turns": 18}}
+  ]
+}

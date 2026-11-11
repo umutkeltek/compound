@@ -1,0 +1,26 @@
+{
+  "rule": {
+    "win_bar": 2,
+    "token_ratio_cap": 2.0
+  },
+  "tasks": [
+    {
+      "id": "T01",
+      "cwd": "/path/to/your/project",
+      "task": "The integration tests hang on the CI runner and never finish. What do you do?",
+      "known_right_action": "Run them through the project's wrapper script, which sets the database port. The bare test command waits forever on the default port."
+    },
+    {
+      "id": "T02",
+      "cwd": "/path/to/your/project",
+      "task": "Is version 2.4.0 already released?",
+      "known_right_action": "Ask the live system instead of a note: read the release list from the package registry and report the state it returns."
+    },
+    {
+      "id": "T03",
+      "cwd": "/path/to/another/project",
+      "task": "Should we raise the ad budget this week? Decide.",
+      "known_right_action": "No. Last month's test showed each extra install cost about twice what it earned. Hold the budget until the next review date."
+    }
+  ]
+}
