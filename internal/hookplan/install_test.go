@@ -73,7 +73,7 @@ func TestInstallHooksAllHarnesses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rep.Entries) != 5 {
+	if len(rep.Entries) != 6 {
 		t.Fatalf("expected all managed harnesses, got %d entries", len(rep.Entries))
 	}
 	minimaxEntry := hookInstallEntryForHarness(t, rep, claudeMinimaxHarness)
@@ -119,7 +119,7 @@ func TestInstallHooksAllHarnesses(t *testing.T) {
 		for _, binding := range entry.Bindings {
 			if binding.Event == "PreToolUse" {
 				foundPreTool = true
-				if harnessName == claudeZaiHarness || harnessName == claudeMinimaxHarness || harnessName == claudeQwenHarness {
+				if isIsolatedProfileLane(harnessName) {
 					if binding.Matcher != entry.Matcher || binding.Command != entry.Command ||
 						!strings.Contains(binding.Command, " --enforce") {
 						t.Fatalf("isolated guard projection drifted from binding: entry=%+v binding=%+v", entry, binding)
@@ -503,11 +503,12 @@ func TestInstallHooksEmitsCanonicalRuntimeHarnessNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]string{
-		"claude-code":    "claude_code",
-		"claude-zai":     "claude_zai",
-		"claude-minimax": "claude_minimax",
-		"claude-qwen":    "claude_qwen",
-		"codex":          "codex",
+		"claude-code":       "claude_code",
+		"claude-zai":        "claude_zai",
+		"claude-minimax":    "claude_minimax",
+		"claude-qwen":       "claude_qwen",
+		"claude-unattended": "claude_unattended",
+		"codex":             "codex",
 	}
 	for _, entry := range rep.Entries {
 		runtimeHarness, ok := want[entry.Harness]
@@ -909,7 +910,7 @@ func TestInstallHooksRollsBackEveryNativeConfigWhenPublishFails(t *testing.T) {
 		false,
 		func(report HookInstallReport) error {
 			publisherCalled = true
-			if len(report.Entries) != 5 {
+			if len(report.Entries) != 6 {
 				t.Fatalf("publisher received %d entries, want one complete all-harness report", len(report.Entries))
 			}
 			for _, entry := range report.Entries {

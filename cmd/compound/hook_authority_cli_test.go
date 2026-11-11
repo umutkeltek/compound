@@ -44,10 +44,11 @@ func TestInstalledRuntimeSupportUsesBoundedSessionEndForEveryInstalledClaudeProf
 	t.Parallel()
 
 	want := map[string]string{
-		"claude_code":    "compound hook session-end-adapter --live --harness claude_code",
-		"claude_zai":     "compound hook session-end-adapter --live --harness claude_zai",
-		"claude_minimax": "compound hook session-end-adapter --live --harness claude_minimax",
-		"claude_qwen":    "compound hook session-end-adapter --live --harness claude_qwen",
+		"claude_code":       "compound hook session-end-adapter --live --harness claude_code",
+		"claude_zai":        "compound hook session-end-adapter --live --harness claude_zai",
+		"claude_minimax":    "compound hook session-end-adapter --live --harness claude_minimax",
+		"claude_qwen":       "compound hook session-end-adapter --live --harness claude_qwen",
+		"claude_unattended": "compound hook session-end-adapter --live --harness claude_unattended",
 		// codex 0.149.x fires a native SessionEnd with transcript_path (rule_delta 2026-08-26);
 		// it routes through the generic verb, never the bounded Claude adapter.
 		"codex": "compound hook session-end --live --harness codex",

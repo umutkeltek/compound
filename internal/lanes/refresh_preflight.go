@@ -26,7 +26,7 @@ func preflightLaneRefresh(opts RefreshLaneOptions, harnessName string) LaneVerdi
 	harnessName = strings.TrimSpace(harnessName)
 	v := LaneVerdict{Harness: harnessName, Status: StatusError}
 	switch hookInstallHarness(harnessName) {
-	case "claude-code", "claude-zai", "claude-minimax", "claude-qwen", "codex":
+	case "claude-code", "claude-zai", "claude-minimax", "claude-qwen", "claude-unattended", "codex":
 		if _, err := hookplan.InstallHooksWithRoster(opts.BaseDir, opts.BinaryPath, "global",
 			[]string{hookInstallHarness(harnessName)}, "", nil, true, nil); err != nil {
 			v.Detail = "native hook refresh preflight: " + err.Error()

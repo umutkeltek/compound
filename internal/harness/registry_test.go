@@ -33,6 +33,7 @@ func TestAdapterRegistryNewHasBuiltins(t *testing.T) {
 		"claude_minimax",
 		"claude_neuralwatt",
 		"claude_qwen",
+		"claude_unattended",
 		"claude_zai",
 		"claude_zai_full",
 		"codex",

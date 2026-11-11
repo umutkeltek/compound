@@ -653,6 +653,7 @@ func observeHarnessHookInstallation(harnessHome string) (hookplan.InstallationSn
 		{Harness: "claude_zai", Ref: "harness://claude_zai/settings", Path: laneHookSettingsPath(harnessHome, "claude_zai")},
 		{Harness: "claude_minimax", Ref: "harness://claude_minimax/settings", Path: laneHookSettingsPath(harnessHome, "claude_minimax")},
 		{Harness: "claude_qwen", Ref: "harness://claude_qwen/settings", Path: laneHookSettingsPath(harnessHome, "claude_qwen")},
+		{Harness: "claude_unattended", Ref: "harness://claude_unattended/settings", Path: laneHookSettingsPath(harnessHome, "claude_unattended")},
 		{Harness: "codex", Ref: "harness://codex/hooks", Path: filepath.Join(harnessHome, ".codex", "hooks.json")},
 	}
 	var sourceRevisions []string

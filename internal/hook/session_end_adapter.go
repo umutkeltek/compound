@@ -36,7 +36,7 @@ const (
 	sessionEndAdapterMaxInputBytes       = 1 << 20
 	sessionEndAdapterMaxChildOutputBytes = 256 << 10
 	sessionEndAdapterWorkerOverrideEnv   = "COMPOUND_SESSION_END_ADAPTER_ALLOW_WORKER_OVERRIDE"
-	sessionEndAdapterUsage               = "usage: compound hook session-end-adapter --live --harness claude_code|claude_zai|claude_minimax|claude_qwen [--timeout 2s] OR compound hook session-end-adapter --replay hook_sessend_attempt_<id> [--timeout 30s]"
+	sessionEndAdapterUsage               = "usage: compound hook session-end-adapter --live --harness claude_code|claude_zai|claude_minimax|claude_qwen|claude_unattended [--timeout 2s] OR compound hook session-end-adapter --replay hook_sessend_attempt_<id> [--timeout 30s]"
 )
 
 type sessionEndAdapterArgs struct {
@@ -579,6 +579,8 @@ func canonicalSessionEndHarness(value string) (string, bool) {
 		return "claude_minimax", true
 	case "claude_qwen", "claude-qwen":
 		return "claude_qwen", true
+	case "claude_unattended", "claude-unattended":
+		return "claude_unattended", true
 	default:
 		return "", false
 	}

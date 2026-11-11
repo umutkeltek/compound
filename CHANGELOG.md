@@ -16,6 +16,11 @@ The next corrective candidate is 0.1.2; it is not published by this source chang
   0.1.2 four-harness support. Existing release tags and artifacts remain immutable.
 
 ### Added
+- `claude_unattended` (installer label `claude-unattended`): a first-party Claude lane for unattended
+  governed work that runs from its own launcher profile, like the provider lanes. `compound hook install
+  --harness claude-unattended` writes a blocking PreToolUse (`--enforce`) and the other lifecycle hooks into
+  that profile only; readiness, installed-hook authority, the governed roster gate and the doctor read the
+  same profile. The interactive Claude Code config (`claude-code`) keeps its watch-only binding.
 
 - `compound init` wires OpenCode and oh-my-pi as well as Claude Code and Codex. OpenCode gets one
   Compound-owned plugin file at `~/.config/opencode/plugins/compound.ts`, which OpenCode loads on

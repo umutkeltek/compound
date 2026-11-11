@@ -3951,7 +3951,7 @@ func hookManifestHarnesses(manifest contract.InstalledHooksManifest) []string {
 
 func installedHookRuntimeSupport() []contract.HookRuntimeSupport {
 	supports := []contract.HookRuntimeSupport{}
-	for _, harnessName := range []string{"claude_code", "claude_zai", "claude_minimax", "claude_qwen"} {
+	for _, harnessName := range []string{"claude_code", "claude_zai", "claude_minimax", "claude_qwen", "claude_unattended"} {
 		supports = append(supports,
 			hookRuntimeSupport(harnessName, "SessionStart", "fixtures/hooks/session-start.json", true),
 			hookRuntimeSupport(harnessName, "UserPromptSubmit", "fixtures/hooks/user-prompt-submit.json", true),

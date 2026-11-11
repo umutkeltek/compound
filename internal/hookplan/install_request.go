@@ -59,18 +59,18 @@ func ResolveInstallRequest(laneFile, harnessFlag, rosterFlag, configDir string) 
 	} else {
 		switch strings.TrimSpace(harnessFlag) {
 		case "", "all":
-		case "claude-code", "claude-zai", "claude-minimax", "claude-qwen", "codex", "oh-my-pi", "opencode":
+		case "claude-code", "claude-zai", "claude-minimax", "claude-qwen", "claude-unattended", "codex", "oh-my-pi", "opencode":
 			harnesses = []string{strings.TrimSpace(harnessFlag)}
 		default:
-			return InstallRequest{}, fmt.Errorf("--harness must be claude-code, claude-zai, claude-minimax, claude-qwen, codex, oh-my-pi, opencode, or all")
+			return InstallRequest{}, fmt.Errorf("--harness must be claude-code, claude-zai, claude-minimax, claude-qwen, claude-unattended, codex, oh-my-pi, opencode, or all")
 		}
 	}
 	allowedEvents, err := rosterEvent(roster)
 	if err != nil {
 		return InstallRequest{}, err
 	}
-	if strings.TrimSpace(configDir) != "" && (len(harnesses) != 1 || (harnesses[0] != "claude-code" && harnesses[0] != "claude-zai" && harnesses[0] != "claude-minimax" && harnesses[0] != "claude-qwen" && harnesses[0] != "oh-my-pi")) {
-		return InstallRequest{}, fmt.Errorf("--config-dir requires one isolated-profile harness: claude-code, claude-zai, claude-minimax, claude-qwen, or oh-my-pi")
+	if strings.TrimSpace(configDir) != "" && (len(harnesses) != 1 || (harnesses[0] != "claude-code" && harnesses[0] != "claude-zai" && harnesses[0] != "claude-minimax" && harnesses[0] != "claude-qwen" && harnesses[0] != "claude-unattended" && harnesses[0] != "oh-my-pi")) {
+		return InstallRequest{}, fmt.Errorf("--config-dir requires one isolated-profile harness: claude-code, claude-zai, claude-minimax, claude-qwen, claude-unattended, or oh-my-pi")
 	}
 	return InstallRequest{Harnesses: harnesses, ConfigDir: strings.TrimSpace(configDir), AllowedEvents: allowedEvents}, nil
 }

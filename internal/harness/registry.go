@@ -38,6 +38,7 @@ func NewAdapterRegistry(store *runattempt.Store) *AdapterRegistry {
 		"claude_qwen",
 		"claude_zai",
 		"claude_zai_full",
+		"claude_unattended",
 		"claude_neuralwatt",
 		"claude_gpt56_sol_wpcom",
 		"claude_gpt56_sol_wpcom_headroom",

@@ -80,15 +80,15 @@ func TestImportHookInstallReportPublishesAllHarnessesAsOneAuthorityUpdate(t *tes
 	if result.SourceAuthority.SourcePath != managedHookInstallationRef {
 		t.Fatalf("combined source ref = %q, want %q", result.SourceAuthority.SourcePath, managedHookInstallationRef)
 	}
-	wantHarnesses := []string{"claude_code", "claude_minimax", "claude_qwen", "claude_zai", "codex"}
+	wantHarnesses := []string{"claude_code", "claude_minimax", "claude_qwen", "claude_unattended", "claude_zai", "codex"}
 	if strings.Join(result.Harnesses, ",") != strings.Join(wantHarnesses, ",") {
 		t.Fatalf("combined harnesses = %v, want %v", result.Harnesses, wantHarnesses)
 	}
-	// 24 = three isolated Claude lanes at five bindings each, plus codex at five (native SessionEnd added 2026-08-26;
+	// 29 = four isolated Claude lanes at five bindings each, plus codex at five (native SessionEnd added 2026-08-26;
 	// SessionEnd receipt) and claude_code at four (no per-turn UserPromptSubmit).
-	if result.IncomingHookCount != 24 || len(result.Manifest.Hooks) != 24 {
+	if result.IncomingHookCount != 29 || len(result.Manifest.Hooks) != 29 {
 		t.Fatalf(
-			"combined manifest incoming=%d hooks=%d, want all 24 lifecycle bindings",
+			"combined manifest incoming=%d hooks=%d, want all 29 lifecycle bindings",
 			result.IncomingHookCount,
 			len(result.Manifest.Hooks),
 		)

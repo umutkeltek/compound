@@ -39,8 +39,8 @@ func TestEveryRegisteredHarnessHasSelectionCapabilityRow(t *testing.T) {
 			}
 		}
 	}
-	if claudeLanes != 12 {
-		t.Fatalf("claude_* registry rows with a selection row = %d, want 12", claudeLanes)
+	if claudeLanes != 13 {
+		t.Fatalf("claude_* registry rows with a selection row = %d, want 13", claudeLanes)
 	}
 	// The retired name list carried "claude_mini" (never registered) and the raw
 	// non-tuple "claude" adapter must not borrow claude_code's tuple binding.

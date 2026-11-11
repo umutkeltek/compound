@@ -318,6 +318,33 @@ func DefaultRegistry() Registry {
 			},
 			InjectBudgetMS: 1500,
 		},
+		"claude_unattended": {
+			Name:                 "claude_unattended",
+			Selection:            claudeLaneSelection(),
+			Posture:              PostureUnattended,
+			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
+			// First-party Claude for unattended governed work. claude_code is the
+			// operator's interactive profile and stays watch-only; this lane runs
+			// from its own profile (hookplan.LaneHookSettingsPath) where
+			// `compound hook install --harness claude-unattended` writes
+			// SessionStart, UserPromptSubmit, PreToolUse (blocking, --enforce),
+			// PostToolUse and the bounded SessionEnd adapter, the same floor as the
+			// provider lanes. Stop stays unregistered. Verify a change here with
+			// `compound harness capability-drift`.
+			Capabilities: Capabilities{
+				SessionStartContext: true, UserPromptContext: true,
+				PreToolUseBlock: true, PostToolUseEvent: true, SessionEndReceipt: true,
+				NativeSkills: true, MCP: true,
+			},
+			Limitations: []string{
+				"profile-local settings and history require separate hook installation",
+				"global steering requires the managed profile link; repository CLAUDE.md discovery remains shared",
+				"long-session instruction drift",
+				"instruction/context budget cap",
+				"subscription seat lane; the launcher must start Claude with this lane's profile and never fall back to the interactive profile",
+			},
+			InjectBudgetMS: 1500,
+		},
 		"claude_neuralwatt": {
 			Name:                 "claude_neuralwatt",
 			Selection:            claudeLaneSelection(),
@@ -1069,7 +1096,7 @@ func firstNonEmptyString(values ...string) string {
 
 func defaultInjectBudgetMS(name string) int {
 	switch canonicalHarnessName(name) {
-	case "claude_code", "claude_zai", "claude_minimax", "claude_qwen", "claude_zai_full", "codex":
+	case "claude_code", "claude_zai", "claude_minimax", "claude_qwen", "claude_zai_full", "claude_unattended", "codex":
 		return 1500
 	default:
 		return 1000

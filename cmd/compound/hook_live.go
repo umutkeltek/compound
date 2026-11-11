@@ -17,7 +17,7 @@ import (
 	"compound/internal/work"
 )
 
-const hookUsage = "usage: compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> [--enforce] <fixture.json> OR compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> --live --harness <claude_code|claude_zai|claude_minimax|claude_qwen|codex|oh_my_pi|opencode> [--enforce|--enforce-governed] [--parity-log <dir>] OR compound hook pre-tool-use --live --harness <name> --spool OR compound hook drain [--once|--follow] OR compound hook lessons-index [--from lessons.json] [--skills DIR]"
+const hookUsage = "usage: compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> [--enforce] <fixture.json> OR compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> --live --harness <claude_code|claude_zai|claude_minimax|claude_qwen|claude_unattended|codex|oh_my_pi|opencode> [--enforce|--enforce-governed] [--parity-log <dir>] OR compound hook pre-tool-use --live --harness <name> --spool OR compound hook drain [--once|--follow] OR compound hook lessons-index [--from lessons.json] [--skills DIR]"
 
 type hookCommandArgs = hook.BudgetCommand
 

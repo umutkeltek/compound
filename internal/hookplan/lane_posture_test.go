@@ -17,8 +17,11 @@ func TestProviderLaneHooksLiveInLauncherProviderProfiles(t *testing.T) {
 		claudeMinimaxHarness: "minimax-lane",
 		claudeZaiHarness:     "zai-lane",
 		claudeQwenHarness:    "qwen",
+		// The first-party unattended lane is the same kind of lane: its own
+		// launcher profile, never the interactive ~/.claude config.
+		claudeUnattendedHarness: "unattended-lane",
 	}
-	rep, err := InstallHooks(base, "/opt/compound/bin/compound", "global", []string{claudeMinimaxHarness, claudeZaiHarness, claudeQwenHarness}, false)
+	rep, err := InstallHooks(base, "/opt/compound/bin/compound", "global", []string{claudeMinimaxHarness, claudeZaiHarness, claudeQwenHarness, claudeUnattendedHarness}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +64,7 @@ func TestLaneReinstallKeepsInstalledPreToolUsePosture(t *testing.T) {
 		{name: "enforced lane stays enforced", existing: true, existingFlag: "--enforce", wantFlag: "--enforce", wantPosture: HookPostureEnforced},
 		{name: "governed-only lane stays governed-only", existing: true, existingFlag: EnforceGovernedFlag, wantFlag: EnforceGovernedFlag, wantPosture: HookPostureGovernedOnly},
 	}
-	for _, harnessName := range []string{claudeMinimaxHarness, claudeZaiHarness, claudeQwenHarness} {
+	for _, harnessName := range []string{claudeMinimaxHarness, claudeZaiHarness, claudeQwenHarness, claudeUnattendedHarness} {
 		for _, tc := range cases {
 			t.Run(harnessName+"/"+tc.name, func(t *testing.T) {
 				base := t.TempDir()

@@ -198,6 +198,8 @@ func hookInstallHarness(canonical string) string {
 		return "claude-zai"
 	case "claude_qwen":
 		return "claude-qwen"
+	case "claude_unattended":
+		return "claude-unattended"
 	case "claude_code":
 		return "claude-code"
 	case "claude_neuralwatt", "claude_kimi", "claude_gpt56_sol_wpcom":

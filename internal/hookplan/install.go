@@ -35,6 +35,22 @@ const claudeMinimaxHarness = "claude-minimax"
 // lane. Enrollment raises the claude_qwen registry floor to the four genuinely installed bindings.
 const claudeQwenHarness = "claude-qwen"
 
+// claudeUnattendedHarness is the first-party Claude lane for unattended governed work. It is an
+// isolated-profile harness like the provider lanes: its own profile, its own blocking PreToolUse,
+// its own permission authority. The operator's interactive Claude Code profile (claude-code) is
+// a different config and keeps its watch-only posture.
+const claudeUnattendedHarness = "claude-unattended"
+
+// isIsolatedProfileLane reports whether an installer label names a Claude lane that runs from
+// its own launcher profile (laneProfileLabel), not from the interactive Claude Code config.
+func isIsolatedProfileLane(installerHarness string) bool {
+	switch installerHarness {
+	case claudeZaiHarness, claudeMinimaxHarness, claudeQwenHarness, claudeUnattendedHarness:
+		return true
+	}
+	return false
+}
+
 type desiredHookBinding struct {
 	Event    string
 	Matcher  string
@@ -69,7 +85,7 @@ func ConfigRel(harness, scope string) string {
 	switch harness {
 	case "codex":
 		return filepath.Join(".codex", "hooks.json")
-	case claudeZaiHarness, claudeMinimaxHarness, claudeQwenHarness:
+	case claudeZaiHarness, claudeMinimaxHarness, claudeQwenHarness, claudeUnattendedHarness:
 		label, _ := laneProfileLabel(harness)
 		return filepath.Join(launcherProviderProfileRel(label), "settings.json")
 	default: // claude-code
@@ -107,6 +123,8 @@ func laneProfileLabel(harnessName string) (string, bool) {
 		return "qwen", true
 	case claudeZaiHarness, "claude_zai", "claude_zai_full":
 		return "zai-lane", true
+	case claudeUnattendedHarness, "claude_unattended":
+		return "unattended-lane", true
 	}
 	return "", false
 }
@@ -249,7 +267,8 @@ func isClaudeFamilyInstallerLabel(harness string) bool {
 	case "claude-code", "claude_code",
 		"claude-zai", "claude_zai",
 		"claude-minimax", "claude_minimax",
-		"claude-qwen", "claude_qwen":
+		"claude-qwen", "claude_qwen",
+		"claude-unattended", "claude_unattended":
 		return true
 	default:
 		return false
@@ -270,6 +289,8 @@ func runtimeHarnessName(installerHarness string) string {
 		return "claude_minimax"
 	case claudeQwenHarness:
 		return "claude_qwen"
+	case claudeUnattendedHarness:
+		return "claude_unattended"
 	default:
 		return strings.TrimSpace(installerHarness)
 	}
@@ -402,20 +423,20 @@ func installHooksImpl(
 		want[strings.TrimSpace(h)] = true
 	}
 	if strings.TrimSpace(configDir) != "" {
-		if len(want) != 1 || (!want["claude-code"] && !want[claudeZaiHarness] && !want[claudeMinimaxHarness] && !want[claudeQwenHarness]) {
+		if len(want) != 1 || (!want["claude-code"] && !want[claudeZaiHarness] && !want[claudeMinimaxHarness] && !want[claudeQwenHarness] && !want[claudeUnattendedHarness]) {
 			return report, fmt.Errorf(
-				"config dir is supported only with a single Claude profile harness (claude-code, %s, %s, or %s)",
-				claudeZaiHarness, claudeMinimaxHarness, claudeQwenHarness,
+				"config dir is supported only with a single Claude profile harness (claude-code, %s, %s, %s, or %s)",
+				claudeZaiHarness, claudeMinimaxHarness, claudeQwenHarness, claudeUnattendedHarness,
 			)
 		}
 	}
-	prepared := make([]preparedHookConfig, 0, 5)
-	for _, harness := range []string{"claude-code", claudeZaiHarness, claudeMinimaxHarness, claudeQwenHarness, "codex"} {
+	prepared := make([]preparedHookConfig, 0, 6)
+	for _, harness := range []string{"claude-code", claudeZaiHarness, claudeMinimaxHarness, claudeQwenHarness, claudeUnattendedHarness, "codex"} {
 		if len(want) > 0 && !want[harness] {
 			continue
 		}
 		configPath := filepath.Join(baseDir, ConfigRel(harness, scope))
-		if strings.TrimSpace(configDir) != "" && (harness == "claude-code" || harness == claudeZaiHarness || harness == claudeMinimaxHarness || harness == claudeQwenHarness) {
+		if strings.TrimSpace(configDir) != "" && (harness == "claude-code" || isIsolatedProfileLane(harness)) {
 			configPath = filepath.Join(configDir, "settings.json")
 		}
 		compiledBindings, _, err := compiledManagedHookBindings(binaryPath, harness, scope, allowedEvents)
@@ -526,7 +547,7 @@ func compiledManagedHookBindings(
 	allowedEvents map[string]bool,
 ) ([]desiredHookBinding, CompiledPosture, error) {
 	registry := harness.DefaultRegistry()
-	if harnessName == claudeZaiHarness || harnessName == claudeMinimaxHarness || harnessName == claudeQwenHarness {
+	if isIsolatedProfileLane(harnessName) {
 		configScope = "profile"
 	}
 	compiled, err := CompileDefaultPosture(DefaultPostureRequest{
@@ -1140,7 +1161,8 @@ func isClaudeFamilyHarnessName(name string) bool {
 	case "claude-code", "claude_code",
 		"claude-zai", "claude_zai",
 		"claude-minimax", "claude_minimax",
-		"claude-qwen", "claude_qwen":
+		"claude-qwen", "claude_qwen",
+		"claude-unattended", "claude_unattended":
 		return true
 	default:
 		return false

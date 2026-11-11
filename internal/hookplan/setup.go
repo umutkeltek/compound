@@ -180,7 +180,7 @@ func UninstallHooks(
 	}
 	var prepared []preparedHookConfig
 	changed := HookInstallReport{Check: check, Scope: scope}
-	for _, harnessName := range []string{"claude-code", claudeZaiHarness, claudeMinimaxHarness, claudeQwenHarness, "codex"} {
+	for _, harnessName := range []string{"claude-code", claudeZaiHarness, claudeMinimaxHarness, claudeQwenHarness, claudeUnattendedHarness, "codex"} {
 		if len(want) > 0 && !want[harnessName] {
 			continue
 		}
