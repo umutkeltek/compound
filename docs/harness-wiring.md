@@ -364,8 +364,10 @@ not turn `hold` or `deny` into a blocking process exit. The isolated
 harness-native blocking decision and returns the policy gate exit (`3` for hold,
 `4` for deny).
 
-Enforcement posture is derived by the adapter from explicit `--enforce`; hook
-input cannot claim it. Exact approval is eligible only for a direct,
+Enforcement posture is derived by the adapter from explicit `--enforce`, or
+from `--enforce-governed` plus the `COMPOUND_RUN_ATTEMPT_ID` the harness runner
+sets on a governed launch (blocking inside governed runs, observing in the
+operator's own sessions on the same profile); hook input cannot claim it. Exact approval is eligible only for a direct,
 single-action baseline hold. Observe-only and batch calls, denies, security
 floors, placement blocks, dirty source-control state, and coordination holds
 are excluded. The adapter persists the `ActionIntent` before minting or reusing

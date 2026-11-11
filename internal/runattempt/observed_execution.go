@@ -28,6 +28,14 @@ type ObservedExecution struct {
 	Source string `json:"source"`
 }
 
+// LaunchEnvRunAttemptID names the environment variable a launched process
+// carries its RunAttempt id in. The shared harness subprocess runner sets it on
+// every adapter launch right after Mint, and `work delegate` sets it on
+// delegated sessions. A PreToolUse hook installed with --enforce-governed blocks
+// only when it is set, so a provider lane profile can stay watch-only in the
+// operator's own sessions and still block inside governed runs.
+const LaunchEnvRunAttemptID = "COMPOUND_RUN_ATTEMPT_ID"
+
 // ObservedHookPostures are the legal ObservedHookPosture values.
 var ObservedHookPostures = []string{"enforce", "observe", "none"}
 

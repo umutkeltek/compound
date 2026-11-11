@@ -4148,9 +4148,12 @@ func installedHookStatusForCommand(event, command, explicitStatus string) string
 	if status := strings.TrimSpace(explicitStatus); status != "" {
 		return status
 	}
+	// --enforce-governed blocks inside every governed run, the only execution
+	// installed-hook readiness admits, so it is a blocking registration here.
 	if canonicalHookEvent(event) == "PreToolUse" &&
 		compoundLivePreToolUseCommand(command) &&
-		!hookCommandHasExactField(command, "--enforce") {
+		!hookCommandHasExactField(command, "--enforce") &&
+		!hookCommandHasExactField(command, enforceGovernedFlag) {
 		return "non_blocking"
 	}
 	return "current"

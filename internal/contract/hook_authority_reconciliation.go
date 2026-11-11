@@ -88,10 +88,10 @@ func ImportHookInstallReport(
 			if event == "" || command == "" {
 				return nil, fmt.Errorf("%s installed hook binding needs event and command", entry.Harness)
 			}
-			if event == "PreToolUse" && binding.Blocking != hookCommandHasExactField(command, "--enforce") {
+			if event == "PreToolUse" && binding.Blocking != installedPreToolUseCommandBlocks(command) {
 				return nil, fmt.Errorf(
-					"%s PreToolUse blocking metadata does not match explicit --enforce command",
-					entry.Harness,
+					"%s PreToolUse blocking metadata does not match explicit --enforce or %s command",
+					entry.Harness, enforceGovernedFlag,
 				)
 			}
 			status := "current"
@@ -650,9 +650,9 @@ func observeHarnessHookInstallation(harnessHome string) (hookplan.InstallationSn
 	}
 	sources := []hookInstallationSource{
 		{Harness: "claude_code", Ref: "harness://claude_code/settings", Path: filepath.Join(harnessHome, ".claude", "settings.json")},
-		{Harness: "claude_zai", Ref: "harness://claude_zai/settings", Path: filepath.Join(harnessHome, ".config", "switchback", "claude", "zai-direct", "settings.json")},
-		{Harness: "claude_minimax", Ref: "harness://claude_minimax/settings", Path: filepath.Join(harnessHome, ".config", "switchback", "claude", "_providers", "minimax-lane", "settings.json")},
-		{Harness: "claude_qwen", Ref: "harness://claude_qwen/settings", Path: filepath.Join(harnessHome, ".config", "switchback", "claude", "_providers", "qwen", "settings.json")},
+		{Harness: "claude_zai", Ref: "harness://claude_zai/settings", Path: laneHookSettingsPath(harnessHome, "claude_zai")},
+		{Harness: "claude_minimax", Ref: "harness://claude_minimax/settings", Path: laneHookSettingsPath(harnessHome, "claude_minimax")},
+		{Harness: "claude_qwen", Ref: "harness://claude_qwen/settings", Path: laneHookSettingsPath(harnessHome, "claude_qwen")},
 		{Harness: "codex", Ref: "harness://codex/hooks", Path: filepath.Join(harnessHome, ".codex", "hooks.json")},
 	}
 	var sourceRevisions []string
@@ -872,4 +872,23 @@ func canonicalHookCommandFields(command string) []string {
 		fields[i] = strings.Trim(fields[i], "\"'`")
 	}
 	return fields
+}
+
+// laneHookSettingsPath reads a provider lane's hook settings from the one
+// owner of that path, hookplan.LaneHookSettingsPath.
+func laneHookSettingsPath(harnessHome, harnessName string) string {
+	path, _ := hookplan.LaneHookSettingsPath(harnessHome, harnessName)
+	return path
+}
+
+// enforceGovernedFlag is the blocking-in-governed-runs-only PreToolUse word,
+// owned by hookplan.
+const enforceGovernedFlag = hookplan.EnforceGovernedFlag
+
+// installedPreToolUseCommandBlocks reports whether an installed PreToolUse
+// command blocks in governed execution: --enforce blocks everywhere and
+// --enforce-governed blocks inside every governed run.
+func installedPreToolUseCommandBlocks(command string) bool {
+	return hookCommandHasExactField(command, "--enforce") ||
+		hookCommandHasExactField(command, enforceGovernedFlag)
 }

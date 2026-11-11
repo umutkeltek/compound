@@ -158,7 +158,7 @@ func RunInstallCommand(args []string, stdout, stderr io.Writer) int {
 	head := map[bool]string{false: "installed", true: "check"}[o.check]
 	printHookReport(stdout, o.json, "hook "+head, report)
 	if !o.check && !o.json {
-		fmt.Fprintln(stdout, "\ninteractive Codex/Claude PreToolUse is observation-only; isolated executor profiles use explicit enforcement.")
+		fmt.Fprintln(stdout, "\ninteractive Codex/Claude PreToolUse is observation-only; isolated executor profiles use explicit enforcement, or --enforce-governed (blocks only inside governed runs) where the lane was watch-only.")
 	}
 	return 0
 }

@@ -22,6 +22,7 @@ import (
 	"compound/internal/hook"
 	"compound/internal/hookplan"
 	"compound/internal/policy"
+	"compound/internal/runattempt"
 )
 
 // doctor_hook_enforcement.go answers the question that made a real fail-open last 48 minutes with
@@ -51,6 +52,7 @@ const hookEnforcementProbeTimeout = 5 * time.Second
 const (
 	hookPostureObservationOnly = hookplan.HookPostureObservationOnly
 	hookPostureEnforced        = hookplan.HookPostureEnforced
+	hookPostureGovernedOnly    = hookplan.HookPostureGovernedOnly
 )
 
 // doctorHookEnforcement is one binary+posture the installed hooks would invoke. A shared binary
@@ -60,8 +62,8 @@ type doctorHookEnforcement struct {
 	// posture. Equivalent rows share one subprocess probe.
 	Harnesses []string `json:"harnesses"`
 	Binary    string   `json:"binary"`
-	Posture   string   `json:"posture"` // observation_only | enforced
-	Status    string   `json:"status"`  // observing | enforcing | fail_open
+	Posture   string   `json:"posture"` // observation_only | enforced | enforced_in_governed_runs
+	Status    string   `json:"status"`  // observing | enforcing | enforcing_in_governed_runs | fail_open
 	Detail    string   `json:"detail,omitempty"`
 }
 
@@ -113,8 +115,11 @@ func buildHookEnforcementRows(hooks []doctorHook) ([]doctorHookEnforcement, int)
 		sort.Strings(harnesses)
 		detail := probeHookPosture(target.Binary, target.Args, target.Posture, target.ExpectedHarness)
 		status := "observing"
-		if target.Posture == hookPostureEnforced {
+		switch target.Posture {
+		case hookPostureEnforced:
 			status = "enforcing"
+		case hookPostureGovernedOnly:
+			status = "enforcing_in_governed_runs"
 		}
 		if detail != "" {
 			status = "fail_open"
@@ -149,10 +154,34 @@ var hookCommandWords = hookplan.HookCommandWords
 
 // probeHookPosture returns "" when the exact installed live command evaluates the mutation and
 // honors the configured process-exit posture, or a one-line reason why it does not.
+//
+// A governed-only binding is probed on both sides of its posture: without a
+// RunAttempt id (the operator's own session) it must observe, and with one (a
+// governed run) it must return the exact gate exit.
 func probeHookPosture(binaryPath string, installedArgs []string, posture, expectedHarness string) string {
 	if detail := hook.ValidateDoctorProbeArgs(installedArgs, posture == hookPostureEnforced, expectedHarness); detail != "" {
 		return detail
 	}
+	if posture == hookPostureGovernedOnly {
+		if detail := probeHookPostureRun(binaryPath, installedArgs, hookPostureObservationOnly, nil); detail != "" {
+			return "outside a governed run: " + detail
+		}
+		governedEnv := []string{runattempt.LaunchEnvRunAttemptID + "=" + doctorProbeRunAttemptID}
+		if detail := probeHookPostureRun(binaryPath, installedArgs, hookPostureEnforced, governedEnv); detail != "" {
+			return "inside a governed run: " + detail
+		}
+		return ""
+	}
+	return probeHookPostureRun(binaryPath, installedArgs, posture, nil)
+}
+
+// doctorProbeRunAttemptID marks the probe's governed side. The hook only checks
+// that a RunAttempt id is present; it never resolves it.
+const doctorProbeRunAttemptID = "ratt_doctor_hook_probe"
+
+// probeHookPostureRun runs the installed command once in a throwaway home with
+// extraEnv added and checks its exit against the expected posture.
+func probeHookPostureRun(binaryPath string, installedArgs []string, posture string, extraEnv []string) string {
 	nonce, err := mintHookProbeNonce()
 	if err != nil {
 		return "could not mint a probe nonce: " + err.Error()
@@ -181,7 +210,7 @@ func probeHookPosture(binaryPath string, installedArgs []string, posture, expect
 	args := append([]string(nil), installedArgs...)
 	cmd := exec.CommandContext(ctx, binaryPath, args...)
 	cmd.Dir = sandbox
-	cmd.Env = hook.DoctorProbeEnvironment(homePath)
+	cmd.Env = append(hook.DoctorProbeEnvironment(homePath), extraEnv...)
 	cmd.Stdin = bytes.NewReader(input)
 	out, runErr := cmd.Output()
 	if ctx.Err() != nil {
@@ -226,6 +255,9 @@ func hookPostureExpectedExit(posture, outcome string) (int, bool) {
 func hookPostureLabel(posture string) string {
 	if posture == hookPostureEnforced {
 		return "explicit enforcement"
+	}
+	if posture == hookPostureGovernedOnly {
+		return "enforcement in governed runs only"
 	}
 	return "observation-only"
 }
@@ -338,6 +370,10 @@ func printHookEnforcement(stdout io.Writer, rep doctorReport) {
 		}
 		if row.Status == "enforcing" {
 			fmt.Fprintf(stdout, "- ok   %-24s %s (explicit enforcement; evaluated policy and returned the exact gate exit)\n", harnesses, row.Binary)
+			continue
+		}
+		if row.Status == "enforcing_in_governed_runs" {
+			fmt.Fprintf(stdout, "- ok   %-24s %s (blocks only in governed runs; probed both: exited 0 outside a run, returned the exact gate exit inside one)\n", harnesses, row.Binary)
 			continue
 		}
 		fmt.Fprintf(stdout, "- FAIL %-24s %s (%s)\n", harnesses, row.Binary, hookPostureLabel(row.Posture))

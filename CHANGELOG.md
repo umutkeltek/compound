@@ -48,6 +48,13 @@ The next corrective candidate is 0.1.2; it is not published by this source chang
 
 ### Fixed
 
+- Provider-lane hooks (`claude-minimax`, `claude-zai`, `claude-qwen`) are installed, read by
+  `compound doctor`, checked by the governed roster gate and reconciled from the profile the lane
+  launcher actually starts. They used an older profile tree nothing started, so doctor and launch
+  records reported blocking for lanes whose live profile was watch-only. A reinstall now keeps a
+  lane's PreToolUse posture; a watch-only lane becomes `--enforce-governed`, which blocks only inside
+  governed runs (the harness runner now sets `COMPOUND_RUN_ATTEMPT_ID` on every launch) and observes
+  in the operator's own sessions. Doctor probes it both ways.
 - `compound home doctor` in text mode now exits 1 whenever it prints a failing verdict. A global
   home inside a Git checkout printed the failing verdict and still exited 0, while `--json`
   exited 1. Both installers run this check before they publish, so an install into such a home

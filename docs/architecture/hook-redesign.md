@@ -205,7 +205,16 @@ Evidence that would justify building it, measured from drained records over at l
 `compound hook install` renders the interactive Claude Code and Codex PreToolUse entry in the
 `--spool` form with a 5-second timeout. A timeout already set on the existing Compound entry wins
 over that default. Enforced lanes keep their synchronous `--enforce` entries, and the other events
-keep their synchronous commands. The operator also runs a drainer (`compound hook drain --follow`, or
+keep their synchronous commands.
+
+Provider lanes (`claude-minimax`, `claude-zai`, `claude-qwen`) install into the provider profile the
+lane launcher starts them from; `hookplan.LaneHookSettingsPath` is the one owner of that path. A reinstall
+keeps the PreToolUse posture a lane already has. A lane whose PreToolUse is watch-only is rewritten
+to `--enforce-governed`: the hook blocks only when the process carries `COMPOUND_RUN_ATTEMPT_ID`,
+which the shared harness runner sets on every launch and `work delegate` sets on delegated
+sessions. The operator's own sessions on that profile keep observing; governed runs on it block.
+Readiness and installed-hook authority count `--enforce-governed` as blocking, and `compound
+doctor` probes it both ways (exit 0 without a run id, the exact gate exit with one). The operator also runs a drainer (`compound hook drain --follow`, or
 `--once` on a schedule) and builds the lesson index from the lesson store.
 
 `compound doctor` probes a `--spool` route by running it, then running the same binary's

@@ -35,6 +35,7 @@ import (
 	"compound/internal/harness"
 	"compound/internal/home"
 	"compound/internal/hook"
+	"compound/internal/hookplan"
 	"compound/internal/knowledge"
 	"compound/internal/lanes"
 	"compound/internal/mem"
@@ -45,6 +46,7 @@ import (
 	"compound/internal/reviewartifact"
 	"compound/internal/routeevidence"
 	routeevidencecli "compound/internal/routeevidence/cli"
+	"compound/internal/runattempt"
 	"compound/internal/runtimebinding"
 	"compound/internal/schema"
 	"compound/internal/sourceobs"
@@ -1844,16 +1846,24 @@ func recordLiveHookRetrieval(homePath string, parsed hookCommandArgs, res hook.R
 	))
 }
 
+// hookGetenv reads the hook process environment; tests swap it.
+var hookGetenv = os.Getenv
+
 func parseHookArgs(args []string) (hookCommandArgs, error) {
 	var parsed hookCommandArgs
 	if len(args) < 2 {
 		return parsed, fmt.Errorf(hookUsage)
 	}
 	parsed.HookName = args[0]
+	enforceGoverned := false
 	for i := 1; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--enforce" {
 			parsed.Enforce = true
+			continue
+		}
+		if arg == hookplan.EnforceGovernedFlag {
+			enforceGoverned = true
 			continue
 		}
 		if arg == "--live" {
@@ -1886,8 +1896,17 @@ func parseHookArgs(args []string) (hookCommandArgs, error) {
 		parsed.FixturePath = arg
 	}
 	// --spool is watch-only: an enforced lane keeps the synchronous policy gate.
-	if parsed.Spool && (!parsed.Live || parsed.Enforce || parsed.HookName != "pre-tool-use" || parsed.ParityLogDir != "") {
-		return parsed, fmt.Errorf("%s\n--spool needs --live pre-tool-use and cannot be combined with --enforce or --parity-log", hookUsage)
+	if parsed.Spool && (!parsed.Live || parsed.Enforce || enforceGoverned || parsed.HookName != "pre-tool-use" || parsed.ParityLogDir != "") {
+		return parsed, fmt.Errorf("%s\n--spool needs --live pre-tool-use and cannot be combined with --enforce, --enforce-governed or --parity-log", hookUsage)
+	}
+	// --enforce-governed blocks only inside a governed run: the process carries
+	// its RunAttempt id (the harness runner and `work delegate` set it). In any
+	// other session it is the synchronous observation posture.
+	if enforceGoverned {
+		if !parsed.Live || parsed.Enforce || parsed.HookName != "pre-tool-use" {
+			return parsed, fmt.Errorf("%s\n--enforce-governed needs --live pre-tool-use and cannot be combined with --enforce", hookUsage)
+		}
+		parsed.Enforce = strings.TrimSpace(hookGetenv(runattempt.LaunchEnvRunAttemptID)) != ""
 	}
 	if parsed.Live {
 		if strings.TrimSpace(parsed.Harness) == "" || parsed.FixturePath != "" {

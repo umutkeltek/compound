@@ -10,12 +10,15 @@ import (
 	"unicode"
 )
 
-// Installed PreToolUse postures. The exact --enforce word is part of a
-// binding's identity: two configs can share one binary while deliberately
-// asking it for different postures.
+// Installed PreToolUse postures. The exact --enforce or --enforce-governed
+// word is part of a binding's identity: two configs can share one binary while
+// deliberately asking it for different postures. HookPostureGovernedOnly blocks
+// inside a governed run (runattempt.LaunchEnvRunAttemptID set) and observes in
+// every other session.
 const (
 	HookPostureObservationOnly = "observation_only"
 	HookPostureEnforced        = "enforced"
+	HookPostureGovernedOnly    = "enforced_in_governed_runs"
 )
 
 // InstalledHookPosture is one Compound PreToolUse binding a harness config would execute.
@@ -58,18 +61,30 @@ func installedHookPosturesFrom(data []byte) []InstalledHookPosture {
 				!containsWord(words[3:], "--live") {
 				continue
 			}
-			posture := HookPostureObservationOnly
-			if containsWord(words[3:], "--enforce") {
-				posture = HookPostureEnforced
-			}
 			installed = append(installed, InstalledHookPosture{
 				Binary:  words[0],
 				Args:    append([]string(nil), words[1:]...),
-				Posture: posture,
+				Posture: hookPostureFromWords(words),
 			})
 		}
 	}
 	return installed
+}
+
+// hookPostureFromWords reads the posture of one parsed Compound hook command:
+// the exact --enforce word blocks everywhere, --enforce-governed blocks only in
+// governed runs, and anything else observes.
+func hookPostureFromWords(words []string) string {
+	if len(words) < 2 {
+		return HookPostureObservationOnly
+	}
+	switch {
+	case containsWord(words[1:], "--enforce"):
+		return HookPostureEnforced
+	case containsWord(words[1:], EnforceGovernedFlag):
+		return HookPostureGovernedOnly
+	}
+	return HookPostureObservationOnly
 }
 
 func containsWord(words []string, want string) bool {
@@ -107,10 +122,13 @@ type LiveHookPosture struct {
 }
 
 // ReadLiveHookPosture reads the harness's hook config with the same reader
-// doctor uses. Any enforced binding makes the harness "enforce"; otherwise any
-// observation binding makes it "observe"; an absent config or one with no
-// Compound binding is "none". ok=false when Compound knows no config path for
-// the harness: that posture is unknown, not "none".
+// doctor uses, and reports the posture a process launched by the shared
+// subprocess runner gets. Any binding that blocks there makes the harness
+// "enforce": --enforce, and also --enforce-governed, because the runner sets
+// runattempt.LaunchEnvRunAttemptID on every launch. Otherwise any observation
+// binding makes it "observe"; an absent config or one with no Compound binding
+// is "none". ok=false when Compound knows no config path for the harness: that
+// posture is unknown, not "none".
 func ReadLiveHookPosture(baseDir, harnessName string) (LiveHookPosture, bool) {
 	path, ok := HookConfigPath(baseDir, harnessName)
 	if !ok || strings.TrimSpace(baseDir) == "" {
@@ -124,7 +142,7 @@ func ReadLiveHookPosture(baseDir, harnessName string) (LiveHookPosture, bool) {
 	sum := sha256.Sum256(data)
 	live.ConfigDigest = "sha256:" + hex.EncodeToString(sum[:])
 	for _, installed := range installedHookPosturesFrom(data) {
-		if installed.Posture == HookPostureEnforced {
+		if installed.Posture == HookPostureEnforced || installed.Posture == HookPostureGovernedOnly {
 			live.Posture = "enforce"
 			break
 		}

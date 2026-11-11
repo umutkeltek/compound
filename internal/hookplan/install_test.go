@@ -803,7 +803,7 @@ func TestCommitPreparedHookConfigRefusesPreimageDrift(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			prepared, _, err := prepareHookBindings(
+			prepared, _, _, err := prepareHookBindings(
 				"codex",
 				path,
 				[]desiredHookBinding{{
@@ -836,11 +836,11 @@ func TestHookInstallTransactionRollsBackPriorCommitsOnLaterPreimageDrift(t *test
 		Matcher: "*",
 		Command: "compound hook pre-tool-use --live",
 	}}
-	first, _, err := prepareHookBindings("claude-code", firstPath, bindings, false)
+	first, _, _, err := prepareHookBindings("claude-code", firstPath, bindings, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	later, _, err := prepareHookBindings("codex", laterPath, bindings, false)
+	later, _, _, err := prepareHookBindings("codex", laterPath, bindings, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1498,7 +1498,7 @@ func TestInstallHooksCheckDetectsStaleUserPromptSubmitOnClaudeCode(t *testing.T)
 	// the event set is unchanged must NOT read drift. This protects against a future
 	// change that over-reports drift and false-positives the column.
 	base2 := t.TempDir()
-	settingsPath2 := filepath.Join(base2, ".config", "switchback", "claude", "zai-direct", "settings.json")
+	settingsPath2 := filepath.Join(base2, ".switchback", "config", "claude", "_providers", "zai-lane", "settings.json")
 	if err := os.MkdirAll(filepath.Dir(settingsPath2), 0o755); err != nil {
 		t.Fatal(err)
 	}

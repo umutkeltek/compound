@@ -60,7 +60,7 @@ func TestGovernedFullRosterRefusal(t *testing.T) {
 	}
 
 	// Minimal roster: refusal naming the missing events.
-	profile := filepath.Join(base, ".config", "switchback", "claude", "_providers", "minimax-lane")
+	profile := filepath.Join(base, ".switchback", "config", "claude", "_providers", "minimax-lane")
 	writeLaneSettings(t, profile, laneSettingsHooks("SessionStart", "PreToolUse"))
 	reason := GovernedFullRosterRefusal("claude_minimax")
 	if reason == "" {
@@ -96,15 +96,18 @@ func TestLaneHookSettingsPathPinsStandardProfilePaths(t *testing.T) {
 		harness string
 		want    string
 	}{
-		{"claude-minimax", filepath.Join(ClaudeMinimaxProfileDir(base), "settings.json")},
-		{"claude_minimax", filepath.Join(ClaudeMinimaxProfileDir(base), "settings.json")},
-		{"claude-qwen", filepath.Join(ClaudeQwenProfileDir(base), "settings.json")},
-		{"claude_qwen", filepath.Join(ClaudeQwenProfileDir(base), "settings.json")},
-		{"claude-zai", filepath.Join(ClaudeZaiProfileDir(base), "settings.json")},
-		{"claude_zai", filepath.Join(ClaudeZaiProfileDir(base), "settings.json")},
-		// The full zai lane runs a separate subscription profile, not the
-		// zai-direct profile the base zai lane shares with the direct tap.
-		{"claude_zai_full", filepath.Join(base, ".config", "switchback", "claude", "_providers", "zai-lane", "settings.json")},
+		// Literal paths, not the helpers: these are the profile homes the
+		// lane launcher starts the lanes from. Its older config tree is
+		// started by nothing, so reading it reported a posture no lane ran
+		// with. claude-zai and claude-zai-full both launch the zai provider
+		// lane and share the zai-lane profile.
+		{"claude-minimax", filepath.Join(base, ".switchback", "config", "claude", "_providers", "minimax-lane", "settings.json")},
+		{"claude_minimax", filepath.Join(base, ".switchback", "config", "claude", "_providers", "minimax-lane", "settings.json")},
+		{"claude-qwen", filepath.Join(base, ".switchback", "config", "claude", "_providers", "qwen", "settings.json")},
+		{"claude_qwen", filepath.Join(base, ".switchback", "config", "claude", "_providers", "qwen", "settings.json")},
+		{"claude-zai", filepath.Join(base, ".switchback", "config", "claude", "_providers", "zai-lane", "settings.json")},
+		{"claude_zai", filepath.Join(base, ".switchback", "config", "claude", "_providers", "zai-lane", "settings.json")},
+		{"claude_zai_full", filepath.Join(base, ".switchback", "config", "claude", "_providers", "zai-lane", "settings.json")},
 	}
 	for _, tc := range cases {
 		t.Run(tc.harness, func(t *testing.T) {

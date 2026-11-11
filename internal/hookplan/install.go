@@ -47,6 +47,12 @@ type desiredHookBinding struct {
 	// reinstalls so a hand-set timeout is not silently dropped when the
 	// installer replaces Compound-owned entries wholesale.
 	Timeout int
+	// GovernedCommand is the blocking-in-governed-runs-only form of a
+	// provider lane's blocking PreToolUse command (EnforceGovernedFlag). It is
+	// empty for every other binding. keepLanePreToolUsePosture switches to it
+	// when the lane's installed PreToolUse is watch-only or already
+	// governed-only, so a reinstall keeps the posture the lane runs with.
+	GovernedCommand string
 }
 
 // HarnessMatcher deliberately covers every tool. Interactive postures need a
@@ -63,12 +69,9 @@ func ConfigRel(harness, scope string) string {
 	switch harness {
 	case "codex":
 		return filepath.Join(".codex", "hooks.json")
-	case claudeZaiHarness:
-		return filepath.Join(".config", "switchback", "claude", "zai-direct", "settings.json")
-	case claudeMinimaxHarness:
-		return filepath.Join(".config", "switchback", "claude", "_providers", "minimax-lane", "settings.json")
-	case claudeQwenHarness:
-		return filepath.Join(".config", "switchback", "claude", "_providers", "qwen", "settings.json")
+	case claudeZaiHarness, claudeMinimaxHarness, claudeQwenHarness:
+		label, _ := laneProfileLabel(harness)
+		return filepath.Join(launcherProviderProfileRel(label), "settings.json")
 	default: // claude-code
 		return filepath.Join(".claude", claudeSettingsFile(scope))
 	}
@@ -82,47 +85,58 @@ func claudeSettingsFile(scope string) string {
 	return strings.Join(append(parts, "json"), ".")
 }
 
-// ClaudeZaiProfileDir is the default isolated Claude profile home under a user's base directory.
+// launcherProviderProfileRel is the Claude profile home the lane launcher
+// starts a provider lane from, relative to the user's base directory: the
+// launcher runs Claude with CLAUDE_CONFIG_DIR set to
+// <launcher root>/config/claude/_providers/<profile_label>. It is the one place
+// Compound names that root. The launcher's older config tree is no longer
+// started by anything; reading it reported a posture no lane ran with.
+func launcherProviderProfileRel(label string) string {
+	return filepath.Join(".switchback", "config", "claude", "_providers", label)
+}
+
+// laneProfileLabel maps a hook-governed Claude provider lane, by installer label
+// (claude-minimax) or registry name (claude_minimax), to its launcher
+// profile_label. claude-zai and claude-zai-full both launch the zai provider
+// lane, so they share the zai-lane profile.
+func laneProfileLabel(harnessName string) (string, bool) {
+	switch strings.TrimSpace(harnessName) {
+	case claudeMinimaxHarness, "claude_minimax":
+		return "minimax-lane", true
+	case claudeQwenHarness, "claude_qwen":
+		return "qwen", true
+	case claudeZaiHarness, "claude_zai", "claude_zai_full":
+		return "zai-lane", true
+	}
+	return "", false
+}
+
+// ClaudeZaiProfileDir is the z.ai lane's Claude profile home under the user's base directory.
 func ClaudeZaiProfileDir(baseDir string) string {
-	return filepath.Join(baseDir, ".config", "switchback", "claude", "zai-direct")
+	return filepath.Join(baseDir, launcherProviderProfileRel("zai-lane"))
 }
 
-// ClaudeMinimaxProfileDir is the default isolated Claude profile home for the minimax lane, under
-// a user's base directory.
+// ClaudeMinimaxProfileDir is the MiniMax lane's Claude profile home under the user's base directory.
 func ClaudeMinimaxProfileDir(baseDir string) string {
-	return filepath.Join(baseDir, ".config", "switchback", "claude", "_providers", "minimax-lane")
+	return filepath.Join(baseDir, launcherProviderProfileRel("minimax-lane"))
 }
 
-// ClaudeQwenProfileDir is the default isolated Claude profile home for the qwen lane, under a
-// user's base directory. It matches the profile_default recorded for the qwen lane in
-// adapters/_lib/lanes.json.
+// ClaudeQwenProfileDir is the Qwen lane's Claude profile home under the user's base directory.
 func ClaudeQwenProfileDir(baseDir string) string {
-	return filepath.Join(baseDir, ".config", "switchback", "claude", "_providers", "qwen")
+	return filepath.Join(baseDir, launcherProviderProfileRel("qwen"))
 }
 
 // LaneHookSettingsPath returns the settings.json path compound installs a
 // governed claude lane's hooks into, under baseDir, or ("", false) if the
 // harness is not a hook-governed claude lane. It is the one place that names a
-// lane's hook settings path (the same convention ConfigRel encodes for install,
-// plus the zai-full profile whose profile dir is _providers/zai-lane). Governed
-// spawn reads the observed roster from this path; the install path writes it.
+// lane's hook settings path (ConfigRel encodes the same path for install).
+// Governed spawn reads the observed roster from this path; install writes it.
 func LaneHookSettingsPath(baseDir, harnessName string) (string, bool) {
-	var profileDir string
-	switch harnessName {
-	case "claude-minimax", "claude_minimax":
-		profileDir = ClaudeMinimaxProfileDir(baseDir)
-	case "claude-qwen", "claude_qwen":
-		profileDir = ClaudeQwenProfileDir(baseDir)
-	case "claude-zai", "claude_zai":
-		profileDir = ClaudeZaiProfileDir(baseDir)
-	case "claude_zai_full":
-		// The full zai lane runs a separate subscription profile, not the
-		// zai-direct profile the base zai lane shares with the direct tap.
-		profileDir = filepath.Join(baseDir, ".config", "switchback", "claude", "_providers", "zai-lane")
-	default:
+	label, ok := laneProfileLabel(harnessName)
+	if !ok {
 		return "", false
 	}
-	return filepath.Join(profileDir, "settings.json"), true
+	return filepath.Join(baseDir, launcherProviderProfileRel(label), "settings.json"), true
 }
 
 // HookCommand is the exact observation-only command a harness runs for Compound PreToolUse.
@@ -151,6 +165,22 @@ func InstalledHookCommandForEvent(binaryPath, harness, event string, blocking bo
 		return command + " --spool", WatchOnlySpoolTimeoutSeconds
 	}
 	return command, 0
+}
+
+// EnforceGovernedFlag is the PreToolUse posture that blocks only inside a
+// governed run: the hook enforces when the process carries
+// runattempt.LaunchEnvRunAttemptID (the shared subprocess runner sets it on
+// every adapter launch) and observes otherwise. A provider lane whose own
+// interactive sessions are watch-only uses it, so governed runs on that same
+// profile still block. Readiness, installed-hook authority and the doctor treat
+// it as blocking for governed execution.
+const EnforceGovernedFlag = "--enforce-governed"
+
+// GovernedOnlyHookCommandForEvent is the exact PreToolUse command for the
+// blocking-in-governed-runs-only posture. Like --enforce it keeps the
+// synchronous policy gate and the harness default timeout.
+func GovernedOnlyHookCommandForEvent(binaryPath, harness, event string) string {
+	return HookCommandForEvent(binaryPath, harness, event) + " " + EnforceGovernedFlag
 }
 
 // Session-start pack modes. Full builds and injects the ContextPack at session
@@ -388,7 +418,15 @@ func installHooksImpl(
 		if strings.TrimSpace(configDir) != "" && (harness == "claude-code" || harness == claudeZaiHarness || harness == claudeMinimaxHarness || harness == claudeQwenHarness) {
 			configPath = filepath.Join(configDir, "settings.json")
 		}
-		bindings, _, err := compiledManagedHookBindings(binaryPath, harness, scope, allowedEvents)
+		compiledBindings, _, err := compiledManagedHookBindings(binaryPath, harness, scope, allowedEvents)
+		if err != nil {
+			return report, fmt.Errorf("%s: %w", harness, err)
+		}
+		// prepareHookBindings returns the bindings it actually installs: a
+		// provider lane keeps its installed PreToolUse posture (see
+		// keepLanePreToolUsePosture), so the report and the published
+		// authority describe the written command, not the compiled default.
+		staged, bindings, installedTimeouts, err := prepareHookBindings(harness, configPath, compiledBindings, check)
 		if err != nil {
 			return report, fmt.Errorf("%s: %w", harness, err)
 		}
@@ -402,10 +440,6 @@ func installHooksImpl(
 			})
 		}
 		matcher, command := installedGuardProjection(bindings)
-		staged, installedTimeouts, err := prepareHookBindings(harness, configPath, bindings, check)
-		if err != nil {
-			return report, fmt.Errorf("%s: %w", harness, err)
-		}
 		// Project the installed per-event timeout onto the reported bindings so
 		// the install report reflects the live, on-disk timeout that survived
 		// the wholesale Compound-entry replace (hand-set timeout adopted from
@@ -514,15 +548,78 @@ func compiledManagedHookBindings(
 	bindings := make([]desiredHookBinding, 0, len(compiled.HookPlan.Bindings))
 	for _, binding := range selectBindings(compiled.HookPlan.Bindings, allowedEvents) {
 		command, timeout := InstalledHookCommandForEvent(binaryPath, harnessName, binding.Event, binding.Blocking)
-		bindings = append(bindings, desiredHookBinding{
+		desired := desiredHookBinding{
 			Event:    binding.Event,
 			Matcher:  binding.Matcher,
 			Command:  command,
 			Blocking: binding.Blocking,
 			Timeout:  timeout,
-		})
+		}
+		if _, lane := laneProfileLabel(harnessName); lane && binding.Blocking && binding.Event == "PreToolUse" {
+			desired.GovernedCommand = GovernedOnlyHookCommandForEvent(binaryPath, harnessName, binding.Event)
+		}
+		bindings = append(bindings, desired)
 	}
 	return bindings, compiled, nil
+}
+
+// keepLanePreToolUsePosture carries a provider lane's PreToolUse posture
+// across a reinstall. The compiled default for an isolated provider lane
+// blocks everywhere (--enforce). An operator may set a lane profile's
+// PreToolUse to watch only, because a blocking gate in their own interactive
+// sessions gets in the way; governed runs start from that same profile and must
+// still block. A reinstall therefore never flips the posture an installed lane
+// already has:
+//
+//   - installed --enforce: keep blocking everywhere (the compiled default);
+//   - installed --enforce-governed: keep blocking only in governed runs;
+//   - installed watch-only Compound PreToolUse: block only in governed runs,
+//     so the operator's sessions stay watch-only and governed runs are gated;
+//   - no installed Compound PreToolUse: the compiled default.
+//
+// Only bindings carrying a GovernedCommand (provider-lane blocking
+// PreToolUse) are affected. The returned slice is a copy.
+func keepLanePreToolUsePosture(hooks map[string]any, bindings []desiredHookBinding) []desiredHookBinding {
+	out := append([]desiredHookBinding(nil), bindings...)
+	posture, found := installedCompoundPreToolUsePosture(hooks)
+	if !found || posture == HookPostureEnforced {
+		return out
+	}
+	for i := range out {
+		if out[i].GovernedCommand == "" || out[i].Event != "PreToolUse" || !out[i].Blocking {
+			continue
+		}
+		out[i].Command = out[i].GovernedCommand
+		out[i].Timeout = 0
+	}
+	return out
+}
+
+// installedCompoundPreToolUsePosture reports the posture of the Compound
+// PreToolUse binding already in a harness hook config, read with the same
+// word parser the posture reader uses. found is false when no Compound
+// PreToolUse binding is installed.
+func installedCompoundPreToolUsePosture(hooks map[string]any) (string, bool) {
+	groups, _ := hooks["PreToolUse"].([]any)
+	for _, group := range groups {
+		entry, ok := group.(map[string]any)
+		if !ok {
+			continue
+		}
+		inner, _ := entry["hooks"].([]any)
+		for _, hook := range inner {
+			if !hookIsCompoundEvent(hook, "PreToolUse") {
+				continue
+			}
+			command, _ := hook.(map[string]any)["command"].(string)
+			words, ok := HookCommandWords(command)
+			if !ok {
+				continue
+			}
+			return hookPostureFromWords(words), true
+		}
+	}
+	return "", false
 }
 
 func validateInstallableDefaultPosture(harnessName string, compiled CompiledPosture) error {
@@ -598,7 +695,7 @@ func installedGuardProjection(bindings []desiredHookBinding) (string, string) {
 	return "", ""
 }
 
-func prepareHookBindings(harnessName, configPath string, bindings []desiredHookBinding, check bool) (preparedHookConfig, map[string]int, error) {
+func prepareHookBindings(harnessName, configPath string, bindings []desiredHookBinding, check bool) (preparedHookConfig, []desiredHookBinding, map[string]int, error) {
 	prepared := preparedHookConfig{
 		harness: harnessName,
 		path:    configPath,
@@ -606,7 +703,7 @@ func prepareHookBindings(harnessName, configPath string, bindings []desiredHookB
 	}
 	for _, binding := range bindings {
 		if strings.TrimSpace(binding.Event) == "" || strings.TrimSpace(binding.Command) == "" {
-			return preparedHookConfig{}, nil, fmt.Errorf("hook binding needs event and command")
+			return preparedHookConfig{}, nil, nil, fmt.Errorf("hook binding needs event and command")
 		}
 	}
 
@@ -615,21 +712,21 @@ func prepareHookBindings(harnessName, configPath string, bindings []desiredHookB
 	switch {
 	case err == nil:
 		if info.Mode()&os.ModeSymlink != 0 {
-			return preparedHookConfig{}, nil, fmt.Errorf("refuse symlinked hook config %s", configPath)
+			return preparedHookConfig{}, nil, nil, fmt.Errorf("refuse symlinked hook config %s", configPath)
 		}
 		if !info.Mode().IsRegular() {
-			return preparedHookConfig{}, nil, fmt.Errorf("hook config %s must be a regular file", configPath)
+			return preparedHookConfig{}, nil, nil, fmt.Errorf("hook config %s must be a regular file", configPath)
 		}
 		data, readErr := os.ReadFile(configPath)
 		if readErr != nil {
-			return preparedHookConfig{}, nil, readErr
+			return preparedHookConfig{}, nil, nil, readErr
 		}
 		afterReadInfo, statErr := os.Lstat(configPath)
 		if statErr != nil {
-			return preparedHookConfig{}, nil, fmt.Errorf("hook config %s changed during preflight: %w", configPath, statErr)
+			return preparedHookConfig{}, nil, nil, fmt.Errorf("hook config %s changed during preflight: %w", configPath, statErr)
 		}
 		if afterReadInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(info, afterReadInfo) {
-			return preparedHookConfig{}, nil, fmt.Errorf("hook config %s changed during preflight", configPath)
+			return preparedHookConfig{}, nil, nil, fmt.Errorf("hook config %s changed during preflight", configPath)
 		}
 		prepared.existed = true
 		prepared.before = append([]byte(nil), data...)
@@ -637,7 +734,7 @@ func prepareHookBindings(harnessName, configPath string, bindings []desiredHookB
 		prepared.preimage = afterReadInfo
 		if len(strings.TrimSpace(string(data))) > 0 {
 			if err := json.Unmarshal(data, &root); err != nil {
-				return preparedHookConfig{}, nil, fmt.Errorf("parse %s: %w", configPath, err)
+				return preparedHookConfig{}, nil, nil, fmt.Errorf("parse %s: %w", configPath, err)
 			}
 			if root == nil {
 				root = map[string]any{}
@@ -645,7 +742,7 @@ func prepareHookBindings(harnessName, configPath string, bindings []desiredHookB
 		}
 	case os.IsNotExist(err):
 	case err != nil:
-		return preparedHookConfig{}, nil, err
+		return preparedHookConfig{}, nil, nil, err
 	}
 
 	hooks, _ := root["hooks"].(map[string]any)
@@ -653,6 +750,7 @@ func prepareHookBindings(harnessName, configPath string, bindings []desiredHookB
 		hooks = map[string]any{}
 	}
 	action := "ok"
+	bindings = keepLanePreToolUsePosture(hooks, bindings)
 	desiredByEvent := make(map[string]desiredHookBinding, len(bindings))
 	for _, binding := range bindings {
 		desiredByEvent[binding.Event] = binding
@@ -699,7 +797,7 @@ func prepareHookBindings(harnessName, configPath string, bindings []desiredHookB
 	prepared.action = action
 	if action == "ok" {
 		prepared.after = append([]byte(nil), prepared.before...)
-		return prepared, installedTimeoutByEvent, nil
+		return prepared, bindings, installedTimeoutByEvent, nil
 	}
 	if len(hooks) == 0 {
 		delete(root, "hooks") // an uninstall leaves no empty "hooks" object behind
@@ -708,11 +806,11 @@ func prepareHookBindings(harnessName, configPath string, bindings []desiredHookB
 	}
 	data, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
-		return preparedHookConfig{}, nil, err
+		return preparedHookConfig{}, nil, nil, err
 	}
 	prepared.after = append(data, '\n')
 	prepared.shouldWrite = !check
-	return prepared, installedTimeoutByEvent, nil
+	return prepared, bindings, installedTimeoutByEvent, nil
 }
 
 func hookConfigRevision(data []byte) string {

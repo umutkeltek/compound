@@ -192,7 +192,7 @@ func UninstallHooks(
 		if err != nil {
 			return report, fmt.Errorf("%s: %w", harnessName, err)
 		}
-		staged, _, err := prepareHookBindings(harnessName, configPath, nil, check)
+		staged, _, _, err := prepareHookBindings(harnessName, configPath, nil, check)
 		if err != nil {
 			return report, fmt.Errorf("%s: %w", harnessName, err)
 		}

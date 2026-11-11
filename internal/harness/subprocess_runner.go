@@ -307,6 +307,12 @@ func runWithSubprocessOptions(
 		}
 	}
 	cmd := build(ctx, in)
+	// Every runner launch is a governed or recorded harness run, never the
+	// operator's own session: hand the child its RunAttempt id. A provider
+	// lane's PreToolUse installed with --enforce-governed blocks only when it
+	// sees this variable, so the profile the operator uses watch-only still
+	// gates the run started here. Any inherited value is replaced, never trusted.
+	cmd.Env = withLaunchRunAttemptID(cmd.Env, ra.ID)
 	// The shared runner is the SOLE cancellation owner. Adapters that build
 	// with exec.CommandContext inherit two extra killers from os/exec: the
 	// default Cancel callback kills only the DIRECT process, and a nonzero
@@ -811,4 +817,23 @@ func heartbeatLoop(store runAttemptStore, id string, start time.Time, interval t
 // to colocate the transcript under the same directory.
 func storePath(store runAttemptStore, ra runattempt.RunAttempt) string {
 	return filepath.Join(store.Home(), "run_attempts", ra.ID+".json")
+}
+
+// withLaunchRunAttemptID returns env with runattempt.LaunchEnvRunAttemptID set
+// to id exactly once. A nil env means the child inherits the process
+// environment, so the result starts from os.Environ() rather than from an empty
+// list (an env holding only this variable would drop PATH and HOME).
+func withLaunchRunAttemptID(env []string, id string) []string {
+	if env == nil {
+		env = os.Environ()
+	}
+	prefix := runattempt.LaunchEnvRunAttemptID + "="
+	out := make([]string, 0, len(env)+1)
+	for _, item := range env {
+		if strings.HasPrefix(item, prefix) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return append(out, prefix+id)
 }

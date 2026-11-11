@@ -1017,9 +1017,9 @@ func TestObserveHarnessHookInstallationResolvesSwitchbackPublishedPaths(t *testi
 		relPath string // path relative to harnessHome where switchback publishes this harness's settings.json
 	}{
 		{harness: "claude_code", relPath: filepath.Join(".claude", "settings.json")},
-		{harness: "claude_zai", relPath: filepath.Join(".config", "switchback", "claude", "zai-direct", "settings.json")},
-		{harness: "claude_minimax", relPath: filepath.Join(".config", "switchback", "claude", "_providers", "minimax-lane", "settings.json")},
-		{harness: "claude_qwen", relPath: filepath.Join(".config", "switchback", "claude", "_providers", "qwen", "settings.json")},
+		{harness: "claude_zai", relPath: filepath.Join(".switchback", "config", "claude", "_providers", "zai-lane", "settings.json")},
+		{harness: "claude_minimax", relPath: filepath.Join(".switchback", "config", "claude", "_providers", "minimax-lane", "settings.json")},
+		{harness: "claude_qwen", relPath: filepath.Join(".switchback", "config", "claude", "_providers", "qwen", "settings.json")},
 	}
 
 	// Minimal settings.json body: parseObservedHarnessHooks produces one binding

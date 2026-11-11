@@ -41,8 +41,9 @@ func ValidateDoctorProbeArgs(args []string, enforced bool, expectedHarness strin
 		return "installed live hook harness does not match the configured harness row"
 	}
 	// The one optional trailing flag is the posture: --enforce for an enforced
-	// lane, --spool for a watch-only one (its records arrive through drain).
-	if len(args) == 6 && args[5] != "--enforce" && args[5] != "--spool" {
+	// lane, --enforce-governed for one that blocks only inside governed runs,
+	// --spool for a watch-only one (its records arrive through drain).
+	if len(args) == 6 && args[5] != "--enforce" && args[5] != hookplan.EnforceGovernedFlag && args[5] != "--spool" {
 		return "unsupported installed live hook arguments; probe refused before execution"
 	}
 	if (len(args) == 6 && args[5] == "--enforce") != enforced {

@@ -89,7 +89,7 @@ routing_defaults:
 	}
 
 	userHome := t.TempDir()
-	minimaxProfile := filepath.Join(userHome, ".config", "switchback", "claude", "_providers", "minimax-lane")
+	minimaxProfile := filepath.Join(userHome, ".switchback", "config", "claude", "_providers", "minimax-lane")
 	writeLaneSettings(t, minimaxProfile, laneSettingsHooks("SessionStart", "PreToolUse"))
 
 	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
