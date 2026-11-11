@@ -122,6 +122,27 @@ func TestAdapterRegistryRegisterOverride(t *testing.T) {
 	}
 }
 
+func TestAdapterRegistryRefusesAmbiguousCanonicalAliases(t *testing.T) {
+	r := NewAdapterRegistry(runattempt.Open(t.TempDir()))
+	for _, name := range []string{"sample-pool_name", "sample_pool-name"} {
+		if err := r.RegisterAdapter(stubAdapter{name: name}); err != nil {
+			t.Fatal(err)
+		}
+		if adapter, ok := r.AdapterByName(name); !ok || adapter.Name() != name {
+			t.Fatal("exact name lost precedence")
+		}
+	}
+	if adapter, ok := r.AdapterByName("sample_pool_name"); ok || adapter != nil {
+		t.Fatal("ambiguous alias selected an arbitrary adapter")
+	}
+	if err := r.RegisterAdapter(stubAdapter{name: "sample_pool_name"}); err != nil {
+		t.Fatal(err)
+	}
+	if adapter, ok := r.AdapterByName("sample-pool-name"); !ok || adapter.Name() != "sample_pool_name" {
+		t.Fatal("canonical key lost precedence")
+	}
+}
+
 // TestAdapterRegistryRegisterRejectsNil: defensive contract -- the
 // registry refuses to register a nil or nameless adapter.
 func TestAdapterRegistryRegisterRejectsNil(t *testing.T) {

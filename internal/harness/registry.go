@@ -146,10 +146,17 @@ func (r *AdapterRegistry) AdapterByName(name string) (Adapter, bool) {
 	}
 	// Pool transport names use dashes while manifest keys use underscores.
 	// Preserve exact-name precedence, then resolve the same canonical identity.
+	var match Adapter
 	for registered, adapter := range r.adapters {
 		if canonicalHarnessName(registered) == canonicalHarnessName(name) {
-			return adapter, true
+			if match != nil {
+				return nil, false
+			}
+			match = adapter
 		}
+	}
+	if match != nil {
+		return match, true
 	}
 	return a, ok
 }

@@ -34,7 +34,10 @@ func claudePoolFixture(t *testing.T) (*poolFixture, *ClaudeNativeAccountPoolAdap
 	f.input.Harness = claudePoolAdapterName
 	f.input.Args = []string{f.contractPath, f.digest, f.config.CheckerPath, f.config.CheckerSHA256}
 	f.input.ExecutionSelectionSnapshot.Harness = claudePoolAdapterName
-	f.input.RequestedModelID = "synthetic-model"
+	// Public CLI binding supplies requested identity on the selection snapshot;
+	// the adapter must consume it rather than silently use a native default.
+	f.input.ExecutionSelectionSnapshot.RequestedModelID = "synthetic-model"
+	f.input.ExecutionSelectionSnapshot.ProviderRoute = "synthetic-native-route"
 	return f, NewClaudeNativeAccountPoolAdapter(poolTestStore(t, f.root))
 }
 
@@ -96,6 +99,8 @@ func TestClaudePoolRefusesBeforeAttempt(t *testing.T) {
 		{"no_selection", func(f *poolFixture) { f.input.ExecutionSelectionSnapshot = nil }},
 		{"no_prompt", func(f *poolFixture) { f.input.Prompt = "" }},
 		{"effort", func(f *poolFixture) { f.input.ExecutionSelectionSnapshot.RequestedEffort = "high" }},
+		{"model_override", func(f *poolFixture) { f.input.RequestedModelID = "unselected-model" }},
+		{"provider_override", func(f *poolFixture) { f.input.RequestedProviderRoute = "unselected-route" }},
 		{"bad_contract", func(f *poolFixture) { f.input.Args[1] = strings.Repeat("a", 64) }},
 		{"bad_checker", func(f *poolFixture) { f.input.Args[3] = strings.Repeat("a", 64) }},
 		{"wrong_command", func(f *poolFixture) { f.input.Command = f.config.CompoundCLI }},

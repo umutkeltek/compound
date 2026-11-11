@@ -509,7 +509,7 @@ func DefaultRegistry() Registry {
 			Capabilities:         Capabilities{},
 			Limitations: []string{
 				"plan mode only; selected-account mutation authorities are not attested",
-				"requires explicit pinned v1 contract and checker; capture required for one native attempt",
+				"requires explicit pinned v1/v3 contract and checker; capture required for one native attempt",
 				"account authentication and live capture require separate activation proof",
 			},
 		},

@@ -106,6 +106,11 @@ freshness and current policy without minting, advancing or taking a mutation loc
 A stale reservation, revoked policy, missing authority or non-plan mode refuses
 launch. V3 does not use presence as a grant and cannot widen the underlying policy.
 
+The adapter binds the owner-resolved model and provider from the public launch
+selection snapshot before preflight; a conflicting RunInput identity is refused.
+Without a saved or explicit profile, evidence remains `project_default` with no
+requested model claim; only capture can establish the observed model.
+
 The adapter stamps the exact running policy into attempt posture evidence. Its
 checker callback carries `--work`, `--policy-decision`, `--action-intent` and
 `--permission-mode plan`; a bare v3 `--check`, a v1 check with these arguments,

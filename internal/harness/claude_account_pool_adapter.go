@@ -129,6 +129,14 @@ func (a *ClaudeNativeAccountPoolAdapter) Preflight(ctx context.Context, in RunIn
 	if strings.TrimSpace(in.Prompt) == "" {
 		return RunInput{}, errors.New("Claude pool requires explicit prompt")
 	}
+	if snapshot := in.ExecutionSelectionSnapshot; snapshot != nil {
+		if (in.RequestedModelID != "" && in.RequestedModelID != snapshot.RequestedModelID) ||
+			(in.RequestedProviderRoute != "" && in.RequestedProviderRoute != snapshot.ProviderRoute) {
+			return RunInput{}, errors.New("Claude pool model or provider differs from execution selection")
+		}
+		in.RequestedModelID = snapshot.RequestedModelID
+		in.RequestedProviderRoute = snapshot.ProviderRoute
+	}
 	if _, err := a.validate(ctx, in, false); err != nil {
 		return RunInput{}, err
 	}
