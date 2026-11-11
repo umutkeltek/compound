@@ -177,7 +177,7 @@ The answers are not published. They quote account numbers, sales figures and rel
 author's apps. The task wording above is reworded for the same reason.
 
 The checker flagged four tool calls in the 20 runs. Two were one off run trying to write its own
-planning note. Two were a retrieval tool the checker did not know.
+planning note. Two were calls that fetch back the full text of shortened tool output (see Limits).
 
 ### What real sessions did with the pack
 
@@ -213,6 +213,9 @@ place at session start until it passes.
 - A tie means the pack could not show that it helps. It is not proof that it does nothing.
 - Some right actions were also in plain notes that both runs could open. That was deliberate: the
   question was what the pack adds on top of them.
+- Both runs sat behind the same local proxy, which shortens long tool output to save tokens. It
+  treated both arms alike, so it does not favour one. It does mean neither arm read every long file in
+  full. The judge's replies quote the answers word for word, so the judge read them intact.
 - The script drives Claude Code only.
 
 ## Tests
