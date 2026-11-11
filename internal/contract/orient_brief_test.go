@@ -148,7 +148,7 @@ func TestOrientBriefControlPlaneKeepsCompoundPositions(t *testing.T) {
 		Pack:     briefTestPack(),
 		Now:      briefTestNow,
 	})
-	for _, want := range []string{"(control-plane repo): no repo facts recorded in " + RepoBriefsRelPath, "- ExampleLedger: Compound owns ExampleLedger lifecycle", "route-example-lane-to-cheap-model"} {
+	for _, want := range []string{"(control-plane repo): no sessions recorded for this checkout yet", "- ExampleLedger: Compound owns ExampleLedger lifecycle", "route-example-lane-to-cheap-model"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("control-plane brief misses %q:\n%s", want, out)
 		}
@@ -205,8 +205,8 @@ func TestOrientBriefMissingAndMalformedProjection(t *testing.T) {
 	repo := t.TempDir()
 	missingHome := t.TempDir()
 	missing := RenderOrientBrief(OrientBriefInput{HomePath: missingHome, Input: Input{Cwd: repo, RepoKind: "product"}, Pack: briefTestPack(), Now: briefTestNow})
-	if !strings.Contains(missing, "(product repo): no repo facts recorded in "+RepoBriefsRelPath) {
-		t.Fatalf("missing projection must say no facts are recorded:\n%s", missing)
+	if !strings.Contains(missing, "(product repo): no sessions recorded for this checkout yet") {
+		t.Fatalf("missing projection must say nothing is recorded for the checkout:\n%s", missing)
 	}
 	brokenHome := t.TempDir()
 	path := filepath.Join(brokenHome, filepath.FromSlash(RepoBriefsRelPath))
@@ -217,7 +217,7 @@ func TestOrientBriefMissingAndMalformedProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	broken := RenderOrientBrief(OrientBriefInput{HomePath: brokenHome, Input: Input{Cwd: repo, RepoKind: "product"}, Pack: briefTestPack(), Now: briefTestNow})
-	if !strings.Contains(broken, "Repo facts unavailable: "+RepoBriefsRelPath+" is not valid JSON") || strings.Contains(broken, "no repo facts recorded") {
+	if !strings.Contains(broken, "Repo facts unavailable: "+RepoBriefsRelPath+" is not valid JSON") || strings.Contains(broken, "recorded for this checkout") {
 		t.Fatalf("malformed projection must be reported as unavailable:\n%s", broken)
 	}
 	if !strings.Contains(broken, "Capabilities (offers, not execution):") {

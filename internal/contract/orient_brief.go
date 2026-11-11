@@ -20,7 +20,9 @@ import (
 // 2026-11-10 and agents used about 3% of its items (pack hit rate, 2026-11-03),
 // so the brief leads with the checkout's own facts and keeps four short
 // sections. The pack is still materialized and recorded; the brief only
-// changes what is printed.
+// changes what is printed. The facts come from the projection when it has an
+// entry for the checkout, and from Compound's own records when it has none
+// (orient_brief_native.go).
 
 // OrientBriefMaxBytes is the hard cap on the whole brief, footer included.
 const OrientBriefMaxBytes = 6000
@@ -40,8 +42,9 @@ const (
 	repoBriefsMaxFileBytes     = 4 << 20
 	orientBriefTruncatedLine   = "(brief cut at the size cap; the full pack has the rest)"
 	orientBriefControlPlane    = "control-plane"
-	orientBriefNoFactsSuffix   = "no repo facts recorded in " + RepoBriefsRelPath
+	orientBriefNoFactsSuffix   = "no sessions recorded for this checkout yet"
 	orientBriefTaskPlaceholder = "<same task>"
+	orientBriefStampLayout     = "2006-01-02 15:04 UTC"
 )
 
 // RepoBrief is one checkout's facts in the projection: the repository root it
@@ -111,7 +114,7 @@ func orientBriefFacts(in OrientBriefInput) []string {
 	}
 	match, ok := MatchRepoBrief(briefs, in.Input.Cwd)
 	if !ok {
-		return []string{briefLine(repoName) + " (" + kind + " repo): " + orientBriefNoFactsSuffix}
+		return orientBriefNativeFacts(in, briefLine(repoName)+" ("+kind+" repo)")
 	}
 	title := clipBytes(sanitizeBriefText(match.Title), orientBriefTitleMaxBytes)
 	if title == "" {
@@ -137,7 +140,7 @@ func repoBriefsAge(generatedAt string, now time.Time) string {
 		return "(facts from " + RepoBriefsRelPath + ", generation time unknown)"
 	}
 	age := now.Sub(at)
-	stamp := at.UTC().Format("2006-01-02 15:04 UTC")
+	stamp := at.UTC().Format(orientBriefStampLayout)
 	if age > orientBriefStaleAfter {
 		return fmt.Sprintf("(facts from %s as of %s: STALE, %d days old)", RepoBriefsRelPath, stamp, int(age.Hours()/24))
 	}

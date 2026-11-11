@@ -33,6 +33,7 @@ The next corrective candidate is 0.1.2; it is not published by this source chang
   exists, and warns when an installed harness is not wired.
 
 - `compound orient --brief` prints a plain-text brief of at most 6,000 bytes instead of the JSON pack (57-77 KB measured): the checkout's own facts from an optional `state/repo-briefs.json` projection, up to five task-matched memory lines, up to five capability offers with what to read or invoke, and the command for the full pack. Outside Compound's own repo it leaves out Compound's internal state. The orient instruction line and the session-start pointer now say `--brief`.
+- `compound orient --brief` now has facts for a checkout that `state/repo-briefs.json` does not cover, which is every checkout in a new home. It prints the last session that ended in the checkout (time, tool calls, changed files, and the transcript path on a line of its own so it is never cut), and the last session that changed files when that is an older one. Both come from the session receipts Compound already writes, read from a fixed recent window, so an old session is not shown. A checkout with a projection entry prints exactly what it printed before. With no session recorded the line reads `no sessions recorded for this checkout yet`; a receipt store that cannot be read prints why.
 
 ### Removed
 
