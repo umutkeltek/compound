@@ -69,6 +69,14 @@ func codexSelection() *SelectionCapability {
 	}
 }
 
+func claudePoolSelection() *SelectionCapability {
+	return &SelectionCapability{
+		ModelPassable: true, SessionPinnable: true, ObservedVia: "argv",
+		SessionEvidence: "unobservable:native account session is owned by transport receipt",
+		Basis:           "explicit plan-only Claude pool contract; model and fresh session are pinned on argv; effort is not attested",
+	}
+}
+
 func codexPoolSelection() *SelectionCapability {
 	return &SelectionCapability{
 		ModelPassable:   true,

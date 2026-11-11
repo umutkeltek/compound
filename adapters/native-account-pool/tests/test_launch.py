@@ -105,6 +105,29 @@ print('native-output')
         if code:
             self.assertEqual(json.loads(result.stderr)["error"], code)
 
+    def test_v3_requires_exact_governed_plan_authority_without_away(self):
+        self.config["schema_version"] = "compound.native_account_pool.v3"
+        self.write_config()
+        self.set_window(effective="present")
+        self.compound.write_text("""#!/usr/bin/env python3
+import json,sys
+expected=['work','execution-authority','--work','work_fixture','--policy-decision','pol_fixture','--action-intent','act_fixture','--permission-mode','plan','--json']
+assert sys.argv[1:]==expected
+print(json.dumps({'allow':True}))
+""")
+        self.compound.chmod(0o700)
+        authority=["--work","work_fixture","--policy-decision","pol_fixture","--action-intent","act_fixture","--permission-mode","plan"]
+        result=self.run_launch("--check",*authority)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertTrue(json.loads(result.stdout)["allow"])
+        for bad in ([],authority[:-1]+["bypass"],authority[:3]+["pol_other"]+authority[4:]):
+            with self.subTest(args=bad):
+                self.assert_denied(self.run_launch("--check",*bad))
+        self.assert_denied(self.run_launch("--",*self.native),"governed_v3_check_only")
+        self.config["schema_version"]="compound.native_account_pool.v1"
+        self.write_config()
+        self.assert_denied(self.run_launch("--check",*authority),"governed_admission_requires_v3")
+
     def test_launch_preserves_native_argv_and_callback_rechecks(self):
         result = self.run_launch("--", *self.native)
         self.assertEqual(result.returncode, 0, result.stderr)

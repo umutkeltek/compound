@@ -50,6 +50,7 @@ func NewAdapterRegistry(store *runattempt.Store) *AdapterRegistry {
 	}
 	r.RegisterAdapter(NewCodexAdapter(store))
 	r.RegisterAdapter(NewCodexNativeAccountPoolAdapter(store))
+	r.RegisterAdapter(NewClaudeNativeAccountPoolAdapter(store))
 	r.RegisterAdapter(NewOpenCodeAdapter(store))
 	// The pi coding-agent family. Both forks share one adapter implementation
 	// (pi_coding_agent_adapter.go); registering each by its own name keeps the
@@ -78,6 +79,11 @@ func ReadOnlyLaunchReadiness(home string, expected RunInput) []string {
 	adapter, ok := NewAdapterRegistry(runattempt.Open(home)).AdapterByName(expected.Harness)
 	if !ok {
 		return []string{"adapter_preflight: no adapter for " + expected.Harness}
+	}
+	if pool, ok := adapter.(*ClaudeNativeAccountPoolAdapter); ok {
+		if _, err := pool.validate(context.Background(), expected, false); err != nil {
+			return []string{"adapter_preflight: " + err.Error()}
+		}
 	}
 	if pool, ok := adapter.(*CodexNativeAccountPoolAdapter); ok {
 		probe := expected
@@ -134,6 +140,16 @@ func (r *AdapterRegistry) AdapterByName(name string) (Adapter, bool) {
 	}
 	if canonical := canonicalHarnessName(name); canonical != name {
 		a, ok = r.adapters[canonical]
+		if ok {
+			return a, true
+		}
+	}
+	// Pool transport names use dashes while manifest keys use underscores.
+	// Preserve exact-name precedence, then resolve the same canonical identity.
+	for registered, adapter := range r.adapters {
+		if canonicalHarnessName(registered) == canonicalHarnessName(name) {
+			return adapter, true
+		}
 	}
 	return a, ok
 }

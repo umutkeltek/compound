@@ -24,6 +24,7 @@ SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 SHA = re.compile(r"[0-9a-f]{64}\Z")
 KEYS = {"schema_version", "provider", "accounts", "settings_path", "settings_sha256",
         "switchback_cli", "compound_cli", "timeout_seconds"}
+V3 = "compound.native_account_pool.v3"
 V2 = "compound.native_account_pool.v2"
 V2_KEYS = {"schema_version", "provider", "profile_id", "pool_name", "profile_revision",
            "authority_revision", "accounts", "account_settings",
@@ -95,7 +96,7 @@ def load_config(path, expected):
                 refuse("config_invalid")
         if config["approval_policy"] not in ("never", "on-request") or config["sandbox"] not in ("read-only", "workspace-write"):
             refuse("posture_unsupported")
-    elif config["schema_version"] != SCHEMA or config["provider"] != "claude":
+    elif config["schema_version"] not in (SCHEMA, V3) or config["provider"] != "claude":
         refuse("config_invalid")
     accounts = config["accounts"]
     if (not isinstance(accounts, list) or not 1 <= len(accounts) <= 16
@@ -160,10 +161,10 @@ def parse_time(value):
     return result.astimezone(timezone.utc)
 
 
-ANCHOR = "import os, signal, subprocess, sys\ntry:\n    child = subprocess.Popen([sys.argv[1], \"policy\", \"presence\", \"show\", \"--json\"])\n    status = child.wait()\nexcept OSError:\n    status = 127\nos.write(int(sys.argv[2]), str(status).encode(\"ascii\"))\nos.close(int(sys.argv[2]))\nos.close(1)\nos.close(2)\nsignal.pause()\n"
+ANCHOR = "import json, os, signal, subprocess, sys\ntry:\n    child = subprocess.Popen([sys.argv[1], *json.loads(sys.argv[3])])\n    status = child.wait()\nexcept OSError:\n    status = 127\nos.write(int(sys.argv[2]), str(status).encode(\"ascii\"))\nos.close(int(sys.argv[2]))\nos.close(1)\nos.close(2)\nsignal.pause()\n"
 
 
-def presence_output(cli, home=None):
+def presence_output(cli, home=None, cli_args=None):
     cancellation = {"armed": False, "pending": False}
 
     def on_cancel(signum, frame):
@@ -177,7 +178,7 @@ def presence_output(cli, home=None):
             saved.append((signum, signal.signal(signum, on_cancel)))
         if cancellation["pending"]:
             refuse("presence_cancelled")
-        result = _presence_output(cli, cancellation, home)
+        result = _presence_output(cli, cancellation, home, cli_args)
         if cancellation["pending"]:
             refuse("presence_cancelled")
         return result
@@ -188,7 +189,7 @@ def presence_output(cli, home=None):
             signal.signal(signum, old)
 
 
-def _presence_output(cli, cancellation, home):
+def _presence_output(cli, cancellation, home, cli_args):
     """Read bounded presence output with a live process-group anchor."""
     if not hasattr(os, "killpg") or not hasattr(signal, "pause"):
         refuse("presence_unavailable")
@@ -202,7 +203,8 @@ def _presence_output(cli, cancellation, home):
     reaped = False
     try:
         process = subprocess.Popen(
-            [sys.executable, "-c", ANCHOR, cli, str(status_write)],
+            [sys.executable, "-c", ANCHOR, cli, str(status_write),
+             json.dumps(cli_args or ["policy", "presence", "show", "--json"])],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             pass_fds=(status_write,), start_new_session=True,
             env=dict(os.environ, COMPOUND_HOME=home) if home else None)
@@ -297,12 +299,26 @@ def check_presence(cli, home=None):
         refuse("presence_window_closed")
 
 
-def check(config):
-    if config["schema_version"] == SCHEMA:
+def check(config, authority=None):
+    if config["schema_version"] in (SCHEMA, V3):
         raw = owned_bytes(config["settings_path"], MAX_SETTINGS)
         if digest(raw) != config["settings_sha256"]:
             refuse("settings_drift")
-    check_presence(config["compound_cli"], config.get("compound_home"))
+    if config["schema_version"] == V3:
+        if authority is None or not all((authority.work, authority.policy_decision, authority.action_intent)) or authority.permission_mode != "plan":
+            refuse("governed_plan_reservation_required")
+        argv = ["work", "execution-authority", "--work", authority.work,
+                "--policy-decision", authority.policy_decision,
+                "--action-intent", authority.action_intent, "--permission-mode", "plan", "--json"]
+        raw = presence_output(config["compound_cli"], cli_args=argv)
+        try:
+            result = json.loads(raw)
+        except (ValueError, UnicodeDecodeError):
+            refuse("execution_authority_invalid")
+        if not isinstance(result, dict) or result.get("allow") is not True:
+            refuse("execution_authority_refused")
+    else:
+        check_presence(config["compound_cli"], config.get("compound_home"))
 
 
 def native_args(argv):
@@ -338,6 +354,8 @@ def main():
     parser = QuietParser(description=__doc__)
     parser.add_argument("--config", required=True)
     parser.add_argument("--expected-config-sha256")
+    for name in ("--work", "--policy-decision", "--action-intent", "--permission-mode"):
+        parser.add_argument(name)
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--check", action="store_true")
     group.add_argument("--plan", action="store_true")
@@ -346,16 +364,20 @@ def main():
     if args.expected_config_sha256 is not None and not SHA.fullmatch(args.expected_config_sha256):
         refuse("config_digest_invalid")
     config, revision = load_config(args.config, args.expected_config_sha256)
+    if config["schema_version"] != V3 and any((args.work, args.policy_decision, args.action_intent, args.permission_mode)):
+        refuse("governed_admission_requires_v3")
     if args.check:
         if args.native_argv:
             refuse("native_argv_invalid")
-        check(config)
-        print(json.dumps({"allow": True, "schema_version": SCHEMA, "config_sha256": revision}))
+        check(config, args)
+        print(json.dumps({"allow": True, "schema_version": config["schema_version"], "config_sha256": revision}))
         return
+    if config["schema_version"] == V3:
+        refuse("governed_v3_check_only")
     if args.plan:
         if args.native_argv:
             refuse("native_argv_invalid")
-        check(config)
+        check(config, args)
         result = {"ready": True, "admission": "away_window_and_pinned_config",
                   "schema_version": config["schema_version"], "config_sha256": revision,
                   "pool_count": len(config["accounts"])}

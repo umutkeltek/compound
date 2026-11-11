@@ -271,7 +271,7 @@ func ReserveGovernedHarnessLaunch(in GovernedHarnessReservationInput) (GovernedH
 	}
 	// Bind the adapter prompt to the exact generation just reserved. Raw argv
 	// execution keeps its caller-supplied command contract unchanged.
-	if (claudeFamily || in.Adapter.Name() == "codex" || in.Adapter.Name() == "codex-native-account-pool") && (strings.TrimSpace(runInput.Prompt) != "" || (runInput.Command == "" && len(runInput.Args) == 0)) {
+	if (claudeFamily || in.Adapter.Name() == "codex" || in.Adapter.Name() == "codex-native-account-pool" || in.Adapter.Name() == "claude-native-account-pool") && (strings.TrimSpace(runInput.Prompt) != "" || (runInput.Command == "" && len(runInput.Args) == 0)) {
 		runInput.Prompt = governedGoalPrompt(running, runInput.Prompt)
 	}
 	runInput, err = PrepareGovernedHarnessLaunch(GovernedHarnessLaunchInput{
@@ -430,6 +430,9 @@ func PrepareGovernedHarnessLaunch(in GovernedHarnessLaunchInput) (harness.RunInp
 		return harness.RunInput{}, err
 	} else {
 		runInput = native
+	}
+	if in.Adapter.Name() == "claude-native-account-pool" {
+		runInput.ExecutionPosture = &runattempt.ExecutionPosture{PermissionMode: "plan", PolicyDecisionID: in.RunningWork.PolicyDecisionID}
 	}
 	if _, claudeFamily := in.Adapter.(harness.GovernedPermissionAdapter); !claudeFamily {
 		return prepareOMPPromptOnlyLaunch(in, runInput)

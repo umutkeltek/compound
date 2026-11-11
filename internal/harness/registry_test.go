@@ -22,6 +22,7 @@ func TestAdapterRegistryNewHasBuiltins(t *testing.T) {
 	// without adding it here fails loudly, which is the point.
 	want := []string{
 		"claude",
+		"claude-native-account-pool",
 		"claude_code",
 		"claude_deepseek_flash_api",
 		"claude_deepseek_flash_nvidia",
@@ -89,7 +90,7 @@ func TestClaudeFamilyAdaptersAdvertiseGovernedPermissionPosture(t *testing.T) {
 			t.Fatalf("adapter %q does not advertise governed permission posture", name)
 		}
 	}
-	for _, name := range []string{"codex", "os-harness-entrypoints"} {
+	for _, name := range []string{"codex", "claude-native-account-pool", "os-harness-entrypoints"} {
 		adapter, ok := r.AdapterByName(name)
 		if !ok {
 			t.Fatalf("missing adapter %q", name)

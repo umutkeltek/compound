@@ -267,10 +267,11 @@ func poolExplicitEnv(extra []string, runtimeRoot, compoundHome string) []string 
 	return append(env, "COMPOUND_HOME="+compoundHome)
 }
 
-func poolAdmissionCheck(ctx context.Context, c codexPoolContract, path, digest string) error {
+func poolAdmissionCheck(ctx context.Context, c codexPoolContract, path, digest string, authorityArgs ...string) error {
 	checkCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(checkCtx, c.CheckerPath, "--config", path, "--expected-config-sha256", digest, "--check")
+	args := append([]string{"--config", path, "--expected-config-sha256", digest, "--check"}, authorityArgs...)
+	cmd := exec.CommandContext(checkCtx, c.CheckerPath, args...)
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Env = poolExplicitEnv(nil, "", c.CompoundHome)

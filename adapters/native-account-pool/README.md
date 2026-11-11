@@ -55,6 +55,65 @@ On launch, the wrapper checks the config and settings digests plus current `comp
 
 Run the synthetic tests with `python3 -m unittest discover -s adapters/native-account-pool/tests -v`. No test calls a real model or login.
 
+## Governed Claude adapter (v1)
+
+The `claude-native-account-pool` harness consumes the same v1 contract directly,
+without a private executable alias. The selected command is the absolute
+`switchback_cli` from that contract. Its four RunInput arguments are the absolute
+contract path under Switchback `config/native-account-pools/`, its bare SHA256,
+the absolute `launch.py` checker path, and the
+checker's bare SHA256. Both files are immutable launch inputs: the adapter
+rechecks their ownership and hashes inside the exact governed start guard.
+The contract location binds `SWITCHBACK_RUNTIME_ROOT`; the governing store binds
+`COMPOUND_HOME`, and inherited `CLAUDE_CONFIG_DIR` is removed. There is no default
+account or implicit pool.
+
+This adapter accepts only `plan` (an omitted mode resolves to `plan`). Mutation
+modes fail before an attempt is minted: global Claude permission and blocking-hook
+authority cannot attest an account selected from isolated profiles. The adapter
+does not claim native blocking-hook capabilities. Enabling mutation requires a
+separate selected-profile authority binding; a healthy account or capture alone
+cannot provide it.
+
+The launch pins a fresh UUID session, passes the requested model, and requires
+capture plus the contract's settings digest on the selected account. Switchback
+chooses an eligible enrolled account in the explicit ordered pool and validates
+that account's settings before native inference. `--max-attempts 1` bounds each
+Compound attempt to one native task; a capture failure is terminal and is never
+replayed. Requested effort is refused because this transport cannot attest it.
+The callback repeats the pinned v1 admission check before account launch, with
+`COMPOUND_HOME` bound to the governing attempt store. The shared subprocess runner
+owns attempt minting, reservation checks, launch records and finalization.
+Native stdout remains the Switchback stream; successful execution does not imply
+that a downstream product consumer has parsed or accepted it.
+
+## Governed read-only admission (v3)
+
+For read-only work while the operator is present, create a separate contract with
+`schema_version` set to `compound.native_account_pool.v3`. Every other JSON field
+is exactly the Claude v1 contract above. Keep the existing v1 contract unchanged:
+v1 still requires a current away window. Use only enrolled accounts whose current
+settings bytes already match the pinned settings digest; the v3 transport does
+not synchronize or rewrite account settings.
+
+V3 is accepted only by the governed plan-only native adapter. Its preflight checks
+the pinned files; after work enters `running`, the adapter and every per-account
+callback require the exact work id, policy decision and latest action intent.
+The checker calls the read-only `compound work execution-authority` owner, which
+uses the same `ValidateExecutionStartAuthority` as the governed launch guard.
+This verifies the current running generation, action/policy binding, authorization
+freshness and current policy without minting, advancing or taking a mutation lock.
+A stale reservation, revoked policy, missing authority or non-plan mode refuses
+launch. V3 does not use presence as a grant and cannot widen the underlying policy.
+
+The adapter stamps the exact running policy into attempt posture evidence. Its
+checker callback carries `--work`, `--policy-decision`, `--action-intent` and
+`--permission-mode plan`; a bare v3 `--check`, a v1 check with these arguments,
+or a direct v3 script launch is refused. File hashes, pool membership, per-seat
+settings validation, required capture and one-native-task behavior remain the
+same. Successful capture is a separate activation proof, never inferred from a
+healthy capacity probe or a passing fixture.
+
 ## Codex named profile contract (v2)
 
 The dedicated `codex-native-account-pool` Compound harness adapter consumes one

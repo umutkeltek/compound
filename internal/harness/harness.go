@@ -501,6 +501,18 @@ func DefaultRegistry() Registry {
 			},
 			InjectBudgetMS: 1500,
 		},
+		"claude_native_account_pool": {
+			Name:                 claudePoolAdapterName,
+			Selection:            claudePoolSelection(),
+			Posture:              PostureUnattended,
+			InstructionMechanism: "governed work prompt + isolated native Claude accounts",
+			Capabilities:         Capabilities{},
+			Limitations: []string{
+				"plan mode only; selected-account mutation authorities are not attested",
+				"requires explicit pinned v1 contract and checker; capture required for one native attempt",
+				"account authentication and live capture require separate activation proof",
+			},
+		},
 		"codex_native_account_pool": {
 			Name:                 "codex-native-account-pool",
 			Selection:            codexPoolSelection(),

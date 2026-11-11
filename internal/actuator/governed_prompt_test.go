@@ -35,6 +35,12 @@ func TestRegistryClaudeLanesSupportGovernedGoalPrompt(t *testing.T) {
 			t.Fatalf("registered adapter %q missing", name)
 		}
 		_, permissionAdapter := adapter.(harness.GovernedPermissionAdapter)
+		if name == "claude-native-account-pool" {
+			if permissionAdapter {
+				t.Fatal("plan-only native pool borrowed global Claude mutation authority")
+			}
+			continue
+		}
 		if strings.HasPrefix(name, "claude") {
 			if !permissionAdapter {
 				t.Fatalf("Claude lane %q will miss goal handoff", name)
@@ -149,44 +155,51 @@ func TestGovernedGoalPromptNamesContextPack(t *testing.T) {
 	}
 }
 
-func TestGovernedCodexReservationReceivesCurrentGoal(t *testing.T) {
-	now := time.Now().UTC()
-	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", now); err != nil {
-		t.Fatal(err)
-	}
-	store, err := work.Open(homePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	created, err := store.Create(work.CreateInput{
-		Owner: "goal-capture-test", DesiredOutcome: "audit the held-out metadata routes",
-		SuccessPredicate: "six route verdicts with source evidence",
-		NonGoals:         []string{"do not modify the product"},
-	}, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	claimed, err := store.Claim(created.ID, "goal-capture-test", now.Add(time.Second))
-	if err != nil {
-		t.Fatal(err)
-	}
-	adapter, ok := harness.NewAdapterRegistry(runattempt.Open(homePath)).AdapterByName("codex")
-	if !ok {
-		t.Fatal("production Codex adapter missing")
-	}
-	reserved, err := ReserveGovernedHarnessLaunch(GovernedHarnessReservationInput{
-		HomePath: homePath, Store: store, ClaimedWork: claimed, Adapter: adapter,
-		RunInput: harness.RunInput{WorkID: claimed.ID, Harness: "codex", Workspace: t.TempDir(), Prompt: "resume the product audit", PermissionMode: "plan"},
-		Actor:    "goal-capture-test", Target: "running", Now: now.Add(2 * time.Second),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{claimed.ID, created.DesiredOutcome, created.SuccessPredicate, created.NonGoals[0], "resume the product audit"} {
-		if !strings.Contains(reserved.RunInput.Prompt, want) {
-			t.Fatalf("Codex prompt missing %q: %s", want, reserved.RunInput.Prompt)
-		}
+func TestGovernedNativeReservationReceivesCurrentGoal(t *testing.T) {
+	for _, name := range []string{"codex", "claude-native-account-pool"} {
+		t.Run(name, func(t *testing.T) {
+			now := time.Now().UTC()
+			homePath := t.TempDir()
+			if err := home.Init(homePath, "test", now); err != nil {
+				t.Fatal(err)
+			}
+			store, err := work.Open(homePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			created, err := store.Create(work.CreateInput{
+				Owner: "goal-capture-test", DesiredOutcome: "audit the held-out metadata routes",
+				SuccessPredicate: "six route verdicts with source evidence",
+				NonGoals:         []string{"do not modify the product"},
+			}, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			claimed, err := store.Claim(created.ID, "goal-capture-test", now.Add(time.Second))
+			if err != nil {
+				t.Fatal(err)
+			}
+			adapter, ok := harness.NewAdapterRegistry(runattempt.Open(homePath)).AdapterByName(name)
+			if !ok {
+				t.Fatal("production adapter missing")
+			}
+			reserved, err := ReserveGovernedHarnessLaunch(GovernedHarnessReservationInput{
+				HomePath: homePath, Store: store, ClaimedWork: claimed, Adapter: adapter,
+				RunInput: harness.RunInput{WorkID: claimed.ID, Harness: name, Workspace: t.TempDir(), Prompt: "resume the product audit", PermissionMode: "plan"},
+				Actor:    "goal-capture-test", Target: "running", Now: now.Add(2 * time.Second),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if name == "claude-native-account-pool" && (reserved.RunInput.ExecutionPosture == nil || reserved.RunInput.ExecutionPosture.PermissionMode != "plan" || reserved.RunInput.ExecutionPosture.PolicyDecisionID != reserved.RunningWork.PolicyDecisionID) {
+				t.Fatal("native pool did not receive exact governed policy")
+			}
+			for _, want := range []string{claimed.ID, created.DesiredOutcome, created.SuccessPredicate, created.NonGoals[0], "resume the product audit"} {
+				if !strings.Contains(reserved.RunInput.Prompt, want) {
+					t.Fatalf("native prompt missing %q: %s", want, reserved.RunInput.Prompt)
+				}
+			}
+		})
 	}
 }
 

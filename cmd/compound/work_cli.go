@@ -114,12 +114,13 @@ type workVerbHelp struct {
 	Example string
 }
 
-const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|reconcile-run-attempts|run-attempt-link|continue|dispatch-plan|dispatch-claim|dispatch-execute|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|delivery-capture|advance-plan|advance|delegate|steer|attach|collaborate|observe-run|land-check|verifier-verdict|proof-review|proof-manifest|proof-adopt|salvage-plan|private-source-publish|action-plan|act|close-plan|close|set-aside|sweep-stale|reseal> ..."
+const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|execution-authority|list|leases|active-packet-proof|proof-chain-doctor|reconcile-run-attempts|run-attempt-link|continue|dispatch-plan|dispatch-claim|dispatch-execute|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|delivery-capture|advance-plan|advance|delegate|steer|attach|collaborate|observe-run|land-check|verifier-verdict|proof-review|proof-manifest|proof-adopt|salvage-plan|private-source-publish|action-plan|act|close-plan|close|set-aside|sweep-stale|reseal> ..."
 
 var workVerbHelpByName = map[string]workVerbHelp{
-	"proof-review":   {Usage: work.ProofAdoptionUsage, Example: "compound work proof-review work_example --actor executor --file review.md"},
-	"proof-manifest": {Usage: work.ProofAdoptionUsage, Example: "compound work proof-manifest work_example --actor executor --file manifest.json"},
-	"proof-adopt":    {Usage: work.ProofAdoptionUsage, Example: "compound work proof-adopt work_example --actor executor --proof-result pfrs_example --manifest artifact:sha256:DIGEST"},
+	"execution-authority": {Usage: workExecutionAuthorityUsage, Example: "compound work execution-authority --work work_example --policy-decision pol_example --action-intent act_example --permission-mode plan --json"},
+	"proof-review":        {Usage: work.ProofAdoptionUsage, Example: "compound work proof-review work_example --actor executor --file review.md"},
+	"proof-manifest":      {Usage: work.ProofAdoptionUsage, Example: "compound work proof-manifest work_example --actor executor --file manifest.json"},
+	"proof-adopt":         {Usage: work.ProofAdoptionUsage, Example: "compound work proof-adopt work_example --actor executor --proof-result pfrs_example --manifest artifact:sha256:DIGEST"},
 	"private-source-publish": {
 		Usage:   work.PrivateSourcePublishUsage,
 		Example: "compound work private-source-publish --work work_example --actor codex:example --repo /clean/source --review-action act_example --json",
@@ -313,6 +314,9 @@ func previewDispatchClaim(store *work.Store, now time.Time, opts work.DispatchPl
 // The command owner parses any mixed read/write surface so invalid and read-only
 // requests cannot materialize the work habitat.
 func workCommandNeedsWritableStore(sub string, args []string) bool {
+	if sub == "execution-authority" {
+		return false
+	}
 	if sub == "proof-manifest" || sub == "proof-adopt" || sub == "proof-review" {
 		return work.ProofAdoptionCLIRequiresWritableStore(sub, args)
 	}
@@ -766,6 +770,9 @@ func cmdWork(args []string) {
 		die(err)
 		fmt.Printf("imported packet %q -> %s created=%v state=%s\n", report.PacketTitle, report.Work.ID, report.Created, report.Work.State)
 		printJSON(report)
+	case "execution-authority":
+		die(checkWorkExecutionAuthority(store, rest, time.Now()))
+		printJSON(map[string]bool{"allow": true})
 	case "show":
 		if err := validateKnownFlags(rest, nil, map[string]bool{"--json": true}); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)

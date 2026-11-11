@@ -99,6 +99,7 @@ func TestNamesSorted(t *testing.T) {
 		"claude_gpt56_sol_wpcom_headroom",
 		"claude_kimi",
 		"claude_minimax",
+		"claude_native_account_pool",
 		"claude_neuralwatt",
 		"claude_qwen",
 		"claude_zai",

@@ -28,7 +28,11 @@ func TestEveryRegisteredHarnessHasSelectionCapabilityRow(t *testing.T) {
 		if got, ok := SelectionCapabilityFor(name); !ok || got != *h.Selection {
 			t.Errorf("SelectionCapabilityFor(%q) = %+v ok=%v, want the registry row", name, got, ok)
 		}
-		if strings.HasPrefix(name, "claude_") {
+		if name == "claude_native_account_pool" {
+			if *h.Selection != *claudePoolSelection() {
+				t.Errorf("native pool selection differs from its transport row: %+v", h.Selection)
+			}
+		} else if strings.HasPrefix(name, "claude_") {
 			claudeLanes++
 			if *h.Selection != *claudeLaneSelection() {
 				t.Errorf("claude lane %q diverges from the shared claude lane row: %+v", name, h.Selection)
