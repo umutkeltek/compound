@@ -1,0 +1,814 @@
+{
+ "runs_total": 53,
+ "what": "Where were we? Brand-new sessions asked three words after one small working session.",
+ "date": "2026-11-12",
+ "facts": [
+  "the flag is done",
+  "no colored output",
+  "the reason: the output goes to other tools",
+  "the release waits on the version name",
+  "nothing gets tagged or released"
+ ],
+ "scrubbed": "Machine paths, session ids and the operator's first name are replaced in the answers. Nothing else is changed.",
+ "summary": {
+  "nothing written down | asker claude | same folder": [
+   1,
+   1,
+   1,
+   1,
+   1,
+   1
+  ],
+  "nothing written down | asker codex | same folder": [
+   1,
+   1,
+   1,
+   1,
+   1,
+   1
+  ],
+  "agent's own notes | asker claude | same folder": [
+   5,
+   5,
+   5,
+   5,
+   5,
+   5
+  ],
+  "agent's own notes | asker codex | same folder": [
+   1,
+   1,
+   1,
+   1,
+   1,
+   1
+  ],
+  "agent's own notes | asker claude | git worktree": [
+   5,
+   5
+  ],
+  "agent's own notes | asker claude | fresh clone": [
+   1,
+   1,
+   1,
+   1,
+   1
+  ],
+  "notes in the repo | asker claude | same folder": [
+   5,
+   5,
+   5,
+   5,
+   5
+  ],
+  "notes in the repo | asker codex | same folder": [
+   5,
+   5,
+   5,
+   5,
+   4,
+   4
+  ],
+  "compound record, briefing before the change | asker codex | same folder": [
+   1,
+   1,
+   1
+  ],
+  "compound record, briefing after the change | asker codex | same folder": [
+   5,
+   5,
+   5
+  ],
+  "compound record, briefing after the change | asker claude | same folder": [
+   5,
+   5,
+   1,
+   5,
+   5
+  ]
+ },
+ "runs": [
+  {
+   "run": 1,
+   "setup": "nothing written down",
+   "worker": "none (change applied by hand)",
+   "asker": "claude",
+   "asked_in": "same folder",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 1,
+   "answer": "I don't have a record of an earlier conversation: this session starts fresh and there are no saved memory notes for this project. All I can go on is the repo, which shows:\n\n- **Branch:** `main`, with a clean working tree, no stashes and no other branches.\n- **Last commit:** `407da48`, \"add --json flag\", which changed `hello.py` (+12/−3).\n- **Before that:** `dff3384`, \"initial hello script\", which added `README.md` and `hello.py`.\n\nSo the last thing finished was the `--json` flag on `hello.py`, and nothing is left in progress on disk. If you tell me what you had planned next, I can pick it up from there."
+  },
+  {
+   "run": 2,
+   "setup": "nothing written down",
+   "worker": "claude (saved no notes)",
+   "asker": "claude",
+   "asked_in": "same folder",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 2,
+   "answer": "I don't have any record of an earlier conversation: this session starts fresh and there are no saved memory notes for this project. Here is what the repo itself shows.\n\n- **State:** you're on `main` with a clean working tree, no stashes and no other branches.\n- **Last commit:** `83cfe54` \"add --json flag\", which made `hello.py` take an optional name (default `world`) and print the greeting as JSON when `--json` is passed.\n- **Before that:** `6631688` \"initial hello script\", which added `hello.py` and a three-line `README.md`.\n\nNothing is in progress or half-finished. The one loose end I can see is that the README doesn't mention the name argument or `--json`.\n\nWhat did you have in mind as the next step?"
+  },
+  {
+   "run": 3,
+   "setup": "nothing written down",
+   "worker": "claude (saved no notes)",
+   "asker": "claude",
+   "asked_in": "same folder",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 2,
+   "answer": "I don't have a record of our earlier conversation — this session starts fresh and no memory was saved for this project — so this is reconstructed from the repo.\n\nThe last thing done was adding a `--json` flag to `hello.py` (commit `83cfe54`, today), right after the initial commit of the script and README. The working tree is clean, there is only `main`, and nothing is stashed, so there is no half-finished work on disk.\n\n- **Current state:** `hello.py` takes an optional name (default \"world\") and prints `Hello, <name>`, or `{\"greeting\": ...}` with `--json`.\n- **Possible loose end:** the README still only says \"A tiny greeting script.\" and doesn't mention the name argument or `--json`.\n\nIf you had a next step in mind beyond the `--json` flag, tell me what it was and I'll pick it up."
+  },
+  {
+   "run": 4,
+   "setup": "nothing written down",
+   "worker": "claude (saved no notes)",
+   "asker": "claude",
+   "asked_in": "same folder",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 2,
+   "answer": "I don't have a record of an earlier session — no saved memory or prior conversation — so this is reconstructed from the repo alone.\n\nThe repo is a tiny greeting script, `hello.py`, on `main` with a clean working tree and two commits, both from today:\n\n1. **`6631688` initial hello script** — added `hello.py` and a three-line `README.md`.\n2. **`83cfe54` add --json flag** — `hello.py` now takes an optional name (default `world`) and a `--json` flag that prints `{\"greeting\": \"Hello, <name>\"}` instead of plain text.\n\nNothing is in progress: no uncommitted changes, stashes, or other branches. The one loose end I can see is that the README doesn't mention the `--json` flag or the name argument.\n\nWhat did you want to do next?"
+  },
+  {
+   "run": 5,
+   "setup": "nothing written down",
+   "worker": "codex",
+   "asker": "claude",
+   "asked_in": "same folder",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 2,
+   "answer": "I don't have a record of our earlier conversation — no saved memory for this project, and this session starts fresh — so here's what the repo itself shows.\n\n- **State:** on `main`, with a clean working tree, no stashes and no other branches.\n- **Last commit:** `3a843ee` \"add --json flag\", made today at 02:25. It added a `--json` option to `hello.py`, which prints the greeting as `{\"greeting\": \"Hello, <name>\"}`.\n- **Before that:** `50cf821` \"initial hello script\", which added `hello.py` and a three-line `README.md`.\n\nNothing is left half-finished. The one loose end I can see is that the README doesn't mention the `--json` flag or show any usage.\n\nWhat were you planning to do next?"
+  },
+  {
+   "run": 6,
+   "setup": "nothing written down",
+   "worker": "codex",
+   "asker": "claude",
+   "asked_in": "same folder",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 2,
+   "answer": "I have no record of an earlier session here (no saved memory, no prior conversation), so this is reconstructed from the repo alone.\n\nThe repo is a tiny greeting script on `main`, with a clean working tree and no stashes or other branches. It has two commits, both from today:\n\n1. **`a0ec2ae` initial hello script** added `hello.py` and a three-line `README.md`.\n2. **`0b6667f` add --json flag** made `hello.py` take an optional name (default \"world\") and a `--json` flag that prints `{\"greeting\": \"Hello, <name>\"}` instead of plain text.\n\nNothing is in progress, so the last thing finished was the `--json` flag. The README doesn't mention the name argument or `--json` yet, and there are no tests.\n\nWhat did you want to pick up?"
+  },
+  {
+   "run": 7,
+   "setup": "nothing written down",
+   "worker": "none (change applied by hand)",
+   "asker": "codex",
+   "asked_in": "same folder",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 15,
+   "answer": "The last recorded work here was adding `--json` support to `hello.py`, so greetings can print as plain text or JSON.\n\nThat’s committed as `407da48` on `main`, and the working tree is clean. I couldn’t recover a saved next step."
+  },
+  {
+   "run": 8,
+   "setup": "nothing written down",
+   "worker": "claude (saved no notes)",
+   "asker": "codex",
+   "asked_in": "same folder",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 17,
+   "answer": "The last saved work here was adding `--json` output to [hello.py](<repo>/hello.py). The script accepts an optional name and prints either plain text or JSON.\n\nEverything is committed on `main`; latest commit: `83cfe54` — “add --json flag.”\n\nI found no saved next-step notes, so the intended follow-up is unclear."
+  },
+  {
+   "run": 9,
+   "setup": "nothing written down",
+   "worker": "claude (saved no notes)",
+   "asker": "codex",
+   "asked_in": "same folder",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 19,
+   "answer": "The last recorded change was adding `--json` to `hello.py` in commit `83cfe54`:\n\n- `python hello.py Ada` → `Hello, Ada`\n- `python hello.py Ada --json` → `{\"greeting\": \"Hello, Ada\"}`\n\nThe working tree is clean. I found no saved next step, so I can confirm where the code stands but not what we planned to do next."
+  },
+  {
+   "run": 10,
+   "setup": "nothing written down",
+   "worker": "claude (saved no notes)",
+   "asker": "codex",
+   "asked_in": "same folder",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 19,
+   "answer": "The last saved change added `--json` to the greeting script, `hello.py` (commit `83cfe54`). It accepts an optional name and can print the greeting as JSON.\n\nThe working tree is clean. There’s no saved handoff or next step, so that’s the latest point I can verify."
+  },
+  {
+   "run": 11,
+   "setup": "nothing written down",
+   "worker": "codex",
+   "asker": "codex",
+   "asked_in": "same folder",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 18,
+   "answer": "The last recorded change here was adding `--json` to the greeting script, `hello.py` (commit `3a843ee`). The working tree is clean.\n\nCompound has no saved handoff or pending task for this repo, so the intended next step isn’t recorded."
+  },
+  {
+   "run": 12,
+   "setup": "nothing written down",
+   "worker": "codex",
+   "asker": "codex",
+   "asked_in": "same folder",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 17,
+   "answer": "The last recorded change was adding `--json` to `hello.py`:\n\n`python hello.py [name] --json` → `{\"greeting\": \"Hello, [name]\"}`\n\nIt’s committed as `0b6667f` on `main`, and the working tree is clean. I found no saved handoff or recorded next step."
+  },
+  {
+   "run": 13,
+   "setup": "agent's own notes",
+   "worker": "claude",
+   "asker": "claude",
+   "asked_in": "same folder",
+   "facts": 5,
+   "missing": [],
+   "lookups": 3,
+   "answer": "Here's where things stand:\n\n- **Repo:** `main` is clean, with two commits — the initial `hello.py` script and the `--json` flag. There is no uncommitted work, no stashes, no other branches and no tags.\n- **1.0 release:** on hold until you pick the version name. Nothing has been tagged or bumped.\n- **Colored output:** you decided against it, because `hello.py`'s output is piped into other tools.\n\nThe open item is the version name. Have you picked one?"
+  },
+  {
+   "run": 14,
+   "setup": "agent's own notes",
+   "worker": "claude",
+   "asker": "claude",
+   "asked_in": "same folder",
+   "facts": 5,
+   "missing": [],
+   "lookups": 3,
+   "answer": "I don't have the previous conversation itself, but from my saved notes and the repo, this is where things stand:\n\n- **The 1.0 release is waiting on you.** You still need to pick the version name. Until then, I'm not tagging, bumping versions, or releasing.\n- **The code is committed and clean.** `hello.py` has the initial script plus the `--json` flag (latest commit `071631d`), on `main` with no uncommitted changes, stashes, other branches, or tags.\n- **Colored output is ruled out.** You decided against it because the script's output is piped into other tools.\n\nHave you picked the version name? If so, tell me and I can prepare the 1.0 release."
+  },
+  {
+   "run": 15,
+   "setup": "agent's own notes",
+   "worker": "claude",
+   "asker": "claude",
+   "asked_in": "same folder",
+   "facts": 5,
+   "missing": [],
+   "lookups": 3,
+   "answer": "I don't have the previous conversation itself, but from my saved notes and the repo, here's where things stand:\n\n- **Code:** `hello.py` exists with a `--json` flag added in the latest commit (`b4e7943`). The working tree is clean and there are no tags.\n- **1.0 release:** on hold until you pick the version name. I'm not to tag, bump the version or release until you do.\n- **Standing decision:** no colored output in `hello.py`, since its output is piped into other tools.\n\nHave you picked the 1.0 name yet? If so, tell me and I can prepare the release; otherwise, let me know what you'd like to work on next."
+  },
+  {
+   "run": 16,
+   "setup": "agent's own notes",
+   "worker": "claude",
+   "asker": "claude",
+   "asked_in": "same folder",
+   "facts": 5,
+   "missing": [],
+   "lookups": 3,
+   "answer": "I don't have the previous conversation itself, only my saved notes and the repo, so this is reconstructed from those.\n\n- **Repo state:** `main` is clean with two commits, both from last night: `22bd550 initial hello script` and `ca7de03 add --json flag`. There are no other branches, tags or stashes, so nothing is in progress on disk.\n- **1.0 release:** it is on hold until you pick the version name. I'm not tagging or releasing anything until then.\n- **Output constraint:** `hello.py` stays free of color and ANSI codes, because its output is piped into other tools.\n\nThe open item is the version name: have you picked one? If so, I can start on the release work."
+  },
+  {
+   "run": 17,
+   "setup": "agent's own notes",
+   "worker": "claude",
+   "asker": "claude",
+   "asked_in": "same folder",
+   "facts": 5,
+   "missing": [],
+   "lookups": 3,
+   "answer": "I don't have the previous conversation itself, only my saved notes and the repo, so this is pieced together from those.\n\n- **Repo state:** `main` is clean with two commits, the latest being `add --json flag` on top of the initial hello script. There are no tags and no stashes, so nothing is in progress on disk.\n- **1.0 release:** this is on hold until you pick the version name. I'm not tagging, bumping the version or releasing until you do.\n- **Colored output:** you ruled it out for `hello.py`, because its output is piped into other tools.\n\nThe open item is the version name. Have you picked one?"
+  },
+  {
+   "run": 18,
+   "setup": "agent's own notes",
+   "worker": "claude",
+   "asker": "claude",
+   "asked_in": "same folder",
+   "facts": 5,
+   "missing": [],
+   "lookups": 3,
+   "answer": "I don't have the previous conversation itself, only my saved notes and the repo, so this is reconstructed from those:\n\n- **Repo state:** `main` is clean with two commits — `initial hello script` and `add --json flag` (both from last night). There are no tags, stashes, or other branches, so nothing is in progress in the working tree.\n- **1.0 release:** on hold until you pick the version name. I haven't tagged or released anything, and won't until you say the name is chosen.\n- **Colored output:** you decided `hello.py` won't get any, because its output is piped into other tools.\n\nSo the open item is the version name for 1.0. Have you picked one, or is there something else you want to do on `hello.py` first?"
+  },
+  {
+   "run": 19,
+   "setup": "agent's own notes",
+   "worker": "claude",
+   "asker": "codex",
+   "asked_in": "same folder",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 23,
+   "answer": "The last recorded work here was adding `--json` to [hello.py](<repo>/hello.py). It accepts an optional name and outputs either a plain greeting or JSON.\n\nThat’s committed as `bde614b` (`add --json flag`), and `main` is clean.\n\nCompound has no saved handoff or next task for this repo, so the planned next step isn’t recorded."
+  },
+  {
+   "run": 20,
+   "setup": "agent's own notes",
+   "worker": "claude",
+   "asker": "codex",
+   "asked_in": "same folder",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 19,
+   "answer": "The latest saved work was adding `--json` to the Python greeting script, `hello.py`. It accepts an optional name, defaults to `world`, and can output `{\"greeting\": \"Hello, world\"}`.\n\nThat change is committed as `071631d` (`add --json flag`). The working tree is clean, and no next step is recorded in the saved context."
+  },
+  {
+   "run": 21,
+   "setup": "agent's own notes",
+   "worker": "claude",
+   "asker": "codex",
+   "asked_in": "same folder",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 16,
+   "answer": "We’d just added `--json` support to `hello.py` in commit `b4e7943`.\n\nThe script accepts an optional name and can output `{\"greeting\": \"Hello, [name]\"}`.\n\nEverything is committed on `main`, and the working tree is clean. I found no recorded next task."
+  },
+  {
+   "run": 22,
+   "setup": "agent's own notes",
+   "worker": "claude",
+   "asker": "codex",
+   "asked_in": "same folder",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 9,
+   "answer": "The latest recorded work was adding `--json` to `hello.py` (commit `ca7de03`). For example:\n\n```sh\npython hello.py Ada --json\n# {\"greeting\": \"Hello, Ada\"}\n```\n\nEverything is committed, and the working tree is clean. I didn’t find a saved next step."
+  },
+  {
+   "run": 23,
+   "setup": "agent's own notes",
+   "worker": "claude",
+   "asker": "codex",
+   "asked_in": "same folder",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 20,
+   "answer": "The last visible work was adding `--json` to the greeting script, so it can print either `Hello, <name>` or JSON.\n\nThat change is committed as `6eb09b9`, and the working tree is clean. I found no saved handoff or recorded next step."
+  },
+  {
+   "run": 24,
+   "setup": "agent's own notes",
+   "worker": "claude",
+   "asker": "codex",
+   "asked_in": "same folder",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 6,
+   "answer": "The last recorded work was adding `--json` support to [hello.py](<repo>/hello.py), the tiny greeting script.\n\n- Committed as `20bb8fe` — `add --json flag`.\n- Working tree is clean on `main`.\n- Compound has no saved next step, so I can confirm where the code stands, but not what we planned next."
+  },
+  {
+   "run": 25,
+   "setup": "agent's own notes",
+   "worker": "claude",
+   "asker": "claude",
+   "asked_in": "git worktree",
+   "facts": 5,
+   "missing": [],
+   "lookups": 4,
+   "answer": "I don't have the previous conversation itself, only the notes saved from it and the repo state. Here's what they show:\n\n- **The 1.0 release is waiting on you.** You still needed to pick the version name, so nothing has been tagged, bumped or released.\n- **Colored output is ruled out.** You decided `hello.py` won't get color or ANSI styling, because its output is piped into other tools.\n- **The repo is clean.** You're on `second-copy`, which sits at the same commit as `main` (`071631d add --json flag`), with no uncommitted work.\n\nSo there is nothing in progress on the code side; the open item is the version name. Have you picked one?"
+  },
+  {
+   "run": 26,
+   "setup": "agent's own notes",
+   "worker": "claude",
+   "asker": "claude",
+   "asked_in": "fresh clone",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 1,
+   "answer": "I don't have any earlier conversation to pick up from — this session starts fresh and there are no saved memory notes for this project. What I can tell you is the state of the repo:\n\n- **Branch:** `main`, with a clean working tree, no stashes and no other branches.\n- **Last commit:** `b4e7943` \"add --json flag\", which changed `hello.py` (12 insertions, 3 deletions).\n- **Before that:** `804b270` \"initial hello script\", which added `README.md` and `hello.py`.\n\nSo the last thing finished was adding the `--json` flag to the hello script, and nothing is in progress on disk. What would you like to do next?"
+  },
+  {
+   "run": 27,
+   "setup": "agent's own notes",
+   "worker": "claude",
+   "asker": "claude",
+   "asked_in": "git worktree",
+   "facts": 5,
+   "missing": [],
+   "lookups": 4,
+   "answer": "I don't have the previous conversation itself, only my saved notes and the repo state. From those:\n\n- **Waiting on you:** the 1.0 release is on hold until you pick the version name. Nothing gets tagged or released before that.\n- **Repo state:** this worktree is on `second-copy` at `ca7de03` (\"add --json flag\"), the same commit as `main`, with a clean working tree, so there is no work in progress here.\n- **Standing constraint:** `hello.py` gets no colored output, because its output is piped into other tools.\n\nHave you picked the version name? If so, tell me and I can start on the release; otherwise, let me know what you'd like to work on next."
+  },
+  {
+   "run": 28,
+   "setup": "agent's own notes",
+   "worker": "claude",
+   "asker": "claude",
+   "asked_in": "fresh clone",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 2,
+   "answer": "I don't have any record of an earlier session here — no saved memory or prior conversation — so this is what the repo itself shows:\n\n- **Last work:** the most recent commit on `main` is `071631d add --json flag`, which made `hello.py` take an optional name and a `--json` flag that prints the greeting as JSON. Before that there is only the initial commit.\n- **Current state:** the working tree is clean, there are no stashes, and `main` is in sync with `origin/main`. The `origin/second-copy` branch points at the same commit, so nothing is pending there either.\n- **Possible loose end:** `README.md` still only says \"A tiny greeting script.\" and doesn't mention the name argument or `--json`.\n\nNothing is in progress. What did you want to do next?"
+  },
+  {
+   "run": 29,
+   "setup": "agent's own notes",
+   "worker": "claude",
+   "asker": "claude",
+   "asked_in": "fresh clone",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 2,
+   "answer": "I don't have any record of an earlier session here: no saved memory and no prior conversation, so this is what the repo itself shows.\n\n- **Project:** a tiny greeting script, `hello.py`, plus a three-line `README.md`.\n- **Last work:** the most recent commit, `ca7de03` \"add --json flag\", added a `--json` option that prints the greeting as `{\"greeting\": \"Hello, <name>\"}`. Before that there is only the initial commit.\n- **State:** `main` is clean and in sync with `origin/main`, with no stashes or uncommitted work. The remote also has a `second-copy` branch pointing at the same commit as `main`.\n\nNothing is left half-finished. The one gap I noticed is that the README doesn't mention the `--json` flag, and there are no tests.\n\nWhat were you planning to do next?"
+  },
+  {
+   "run": 30,
+   "setup": "agent's own notes",
+   "worker": "claude",
+   "asker": "claude",
+   "asked_in": "fresh clone",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 1,
+   "answer": "I don't have a record of an earlier session — no saved memory for this project and no prior conversation in context — so all I can go on is the repo state:\n\n- **Branch:** `main`, clean working tree, in sync with `origin/main`, no stashes or other branches.\n- **Last commit:** `6eb09b9` \"add --json flag\", which changed `hello.py` (+12/−3).\n- **Before that:** `9d10ef3` \"initial hello script\", which added `hello.py` and `README.md`.\n\nSo the last thing finished was the `--json` flag on `hello.py`, and nothing is left in progress on disk. What do you want to pick up next?"
+  },
+  {
+   "run": 31,
+   "setup": "agent's own notes",
+   "worker": "claude",
+   "asker": "claude",
+   "asked_in": "fresh clone",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 2,
+   "answer": "I have no record of an earlier conversation or any saved notes for this project, so this is reconstructed from the repo alone.\n\nThe last thing done was adding a `--json` flag to `hello.py` (commit `20bb8fe`), on top of the initial hello script (`9f3c9aa`). The script now takes an optional name and prints either `Hello, <name>` or the same greeting as JSON.\n\nNothing is in progress: the working tree is clean, `main` is in sync with `origin/main`, and there are no stashes or other branches.\n\nOne loose end is that `README.md` still just says \"A tiny greeting script.\" and doesn't mention the name argument or `--json`. If you had something else in mind as the next step, tell me and I'll pick it up."
+  },
+  {
+   "run": 32,
+   "setup": "notes in the repo",
+   "worker": "claude",
+   "asker": "claude",
+   "asked_in": "same folder",
+   "facts": 5,
+   "missing": [],
+   "lookups": 3,
+   "answer": "The `--json` flag for `hello.py` is finished and committed (`6d4728a`), and the working tree is clean. The handoff note still says nothing is committed, so it is out of date on that point.\n\nThe six manual runs recorded in the handoff all passed, though the JSON output was only checked by eye, not through a parser. There are no tests in the repo.\n\nTwo things are waiting on you:\n\n1. **Version name for 1.0.** The release is blocked on it, and nothing gets tagged, released or version-bumped until you pick it.\n2. **`argparse` side effects.** Switching to `argparse` changed two behaviours nobody asked for, and since other tools consume this script's output, you need to say whether they are acceptable:\n   - An unknown flag now exits with status 2 and a usage message; before, `python3 hello.py --bogus` printed `Hello, --bogus`.\n   - Extra positional arguments are now an error; before, they were silently ignored.\n\nOne smaller thing to be aware of: `--json` escapes non-ASCII characters (`Ü` comes out as a `\\u` escape). That is valid JSON, and `ensure_ascii=False` would switch it to raw characters if a downstream tool needs them.\n\nColoured output is ruled out, because the output is piped into other tools."
+  },
+  {
+   "run": 33,
+   "setup": "notes in the repo",
+   "worker": "claude",
+   "asker": "claude",
+   "asked_in": "same folder",
+   "facts": 5,
+   "missing": [],
+   "lookups": 6,
+   "answer": "We were wrapping up the `--json` flag on `hello.py`. The work itself is done; what's left is waiting on you.\n\n**Done:** `python3 hello.py --json [name]` prints `{\"greeting\": \"Hello, <name>\"}`, and plain output is unchanged. Six manual runs passed last session; I didn't rerun them today. The JSON was only checked by eye, not through a parser, and the repo has no tests.\n\n**Changed since the handoff note:** the note says nothing is committed, but it now is — commit `6d4728a` \"add --json flag\" contains `hello.py`, `HANDOFF.md`, `CLAUDE.md` and `decisions/`. The only uncommitted file is a new untracked `AGENTS.md`, which is a copy of the one-line `CLAUDE.md`.\n\n**Waiting on you:**\n1. **Version name:** pick the 1.0 name. Tagging and releasing are on hold until you do, and no tags exist.\n2. **`argparse` side effects:** say whether these two are acceptable, since other tools consume this script's output:\n   - An unknown flag now exits with status 2 and a usage message; before, `--bogus` printed `Hello, --bogus`.\n   - Extra positional arguments are now an error; before, they were silently ignored.\n3. **Non-ASCII in JSON:** characters like `Ü` come out escaped (`\\u00dc`), which is valid JSON. If a downstream tool needs the raw characters, it's a one-argument change (`ensure_ascii=False`).\n4. **`AGENTS.md`:** commit it or delete it — your call, as you said you'd handle commits yourself.\n\nColored output stays off the table, as you decided."
+  },
+  {
+   "run": 34,
+   "setup": "notes in the repo",
+   "worker": "claude",
+   "asker": "claude",
+   "asked_in": "same folder",
+   "facts": 5,
+   "missing": [],
+   "lookups": 9,
+   "answer": "We'd finished adding the `--json` flag to `hello.py`, and since the handoff note was written the work has been committed as `6d4728a` (\"add --json flag\"). The handoff still says nothing is committed, so that line is stale.\n\nThe six manual runs recorded in the handoff all passed (plain and `--json`, with and without a name). The JSON output was only read by eye, not fed through a parser, and there are no tests in the repo.\n\nStill waiting on you:\n\n- **Version name:** the 1.0 release is blocked until you pick it. Nothing gets tagged, released or version-bumped before then.\n- **`argparse` side effects:** switching to `argparse` changed two behaviours nobody asked for, and since other tools consume this script's output you need to say whether they are acceptable.\n  - An unknown flag now exits with status 2 and a usage message; before, `python3 hello.py --bogus` printed `Hello, --bogus`.\n  - Extra positional arguments are now an error; before, they were silently ignored.\n- **Non-ASCII in `--json`:** characters like `Ü` are escaped in the output. That is valid JSON, but if a downstream tool needs the raw characters it is a one-argument change (`ensure_ascii=False`).\n- **`AGENTS.md`:** it is the only uncommitted file, a one-line copy of `CLAUDE.md`. Commit it or delete it, as you prefer.\n\nColored output is decided against, because the output gets piped into other tools."
+  },
+  {
+   "run": 35,
+   "setup": "notes in the repo",
+   "worker": "claude",
+   "asker": "claude",
+   "asked_in": "same folder",
+   "facts": 5,
+   "missing": [],
+   "lookups": 3,
+   "answer": "The `--json` flag for `hello.py` is finished and committed (`061de2d add --json flag`), and the working tree is clean. `HANDOFF.md` still lists the commit as pending, so that line is out of date.\n\nThe `--json` checks in the handoff were manual runs from earlier today; I did not re-run them this session.\n\n**Waiting on you**\n- **1.0 version name:** you pick it. Nothing gets tagged or released until then.\n- **Two `argparse` behaviour changes** that you have not confirmed as acceptable:\n  - Unknown flags and extra arguments now exit with status 2 and a usage message. Before, `hello.py --bogus` printed `Hello, --bogus` and extras were ignored.\n  - A name starting with a dash now needs `--` in front: `hello.py -- -x`.\n\n**Open, not blocking**\n- **No automated tests:** nothing covers `hello.py` beyond those manual runs.\n- **Escaped non-ASCII in `--json`:** characters come out as `\\uXXXX`, which is valid JSON. If a downstream tool wants raw UTF-8, it is a one-argument change (`ensure_ascii=False`).\n\n**Decided**\n- **No colored output:** the script's output gets piped into other tools.\n\nAre the two `argparse` changes acceptable, given the output is piped into other tools? If so, the next step I'd suggest is adding tests."
+  },
+  {
+   "run": 36,
+   "setup": "notes in the repo",
+   "worker": "codex",
+   "asker": "claude",
+   "asked_in": "same folder",
+   "facts": 5,
+   "missing": [],
+   "lookups": 4,
+   "answer": "Here's where things stand, per `HANDOFF.md`, the decision notes, and the repo:\n\n**Done**\n- `hello.py` has the `--json` flag: `python3 hello.py --json Ada` prints `{\"greeting\": \"Hello, Ada\"}`. Plain text is still the default output and `world` the default name.\n- The last session recorded 12 exact-output CLI checks as passing; I did not re-run them.\n- The change is now committed as `d179e77 add --json flag`, and the working tree is clean. The handoff still says \"uncommitted\", so that line is stale.\n\n**Still open**\n- **Work record:** `work_93100501566f` is still in `verifying`. Now that the commit exists, the remaining step is to bind the delivery evidence for it and close the record. I haven't touched it.\n- **1.0 release:** this is waiting on you to pick the version name. There are no tags yet, and tagging or releasing stays on hold until you explicitly authorize it.\n\n**Standing constraints**\n- No colored output, because the script's output is piped into other tools.\n- I don't commit, tag or release on your behalf.\n\nDo you want me to close out `work_93100501566f` against `d179e77` and update the stale line in `HANDOFF.md`? The handoff edit would be left uncommitted for you."
+  },
+  {
+   "run": 37,
+   "setup": "notes in the repo",
+   "worker": "claude",
+   "asker": "codex",
+   "asked_in": "same folder",
+   "facts": 5,
+   "missing": [],
+   "lookups": 40,
+   "answer": "We’d finished `hello.py`’s `--json` flag, and the handoff records the checks as passing. Plain-text output still works.\n\nThat work is already committed as `6d4728a` (`add --json flag`), so the handoff’s “uncommitted” note is stale.\n\nTwo things remained:\n\n- Decide whether to keep the incidental `argparse` changes: unknown flags and extra positional arguments now produce errors.\n- Pick the **1.0 version name**. Tags, releases, and version bumps remain on hold.\n\nColored output was ruled out because the script’s output gets piped into other tools."
+  },
+  {
+   "run": 38,
+   "setup": "notes in the repo",
+   "worker": "claude",
+   "asker": "codex",
+   "asked_in": "same folder",
+   "facts": 5,
+   "missing": [],
+   "lookups": 16,
+   "answer": "We’d finished adding `--json` to `hello.py`. The handoff records six passing checks.\n\nStill pending:\n\n- **Argument behavior:** `argparse` now rejects unknown flags and extra positional arguments. We were waiting for your call on those changes.\n- **1.0 version name:** waiting for you to choose it. No tags, releases, or version bumps until then.\n\nColored output is ruled out because other tools consume the script’s output.\n\nOne stale handoff detail: it says the changes are uncommitted, but the repo now contains commit `6d4728a` — `add --json flag`."
+  },
+  {
+   "run": 39,
+   "setup": "notes in the repo",
+   "worker": "claude",
+   "asker": "codex",
+   "asked_in": "same folder",
+   "facts": 5,
+   "missing": [],
+   "lookups": 19,
+   "answer": "We’d finished `hello.py`’s `--json` flag. The handoff records six passing checks. Git now shows it committed as `6d4728a` (`add --json flag`), so the handoff’s “uncommitted” note is stale.\n\nTwo things remain:\n\n- Decide whether to keep the stricter argument handling: unknown flags and extra positional arguments now cause errors.\n- Pick the **1.0 version name**. Tags, releases, and version bumps remain on hold until then.\n\nColored output remains ruled out because other tools consume the script’s output. Only `AGENTS.md` is currently untracked."
+  },
+  {
+   "run": 40,
+   "setup": "notes in the repo",
+   "worker": "claude",
+   "asker": "codex",
+   "asked_in": "same folder",
+   "facts": 5,
+   "missing": [],
+   "lookups": 20,
+   "answer": "We’d finished adding `--json` to `hello.py` and recorded passing manual checks. Plain-text output still works. We also decided against colored output because the script feeds other tools.\n\nStill open:\n\n- Confirm the stricter argument parsing: unknown flags and extra arguments now error; names starting with `-` need `--`.\n- You pick the 1.0 release name. Tagging and releasing remain on hold.\n\nOne handoff detail is stale: the change is already committed as `061de2d` (`add --json flag`), and the working tree is clean."
+  },
+  {
+   "run": 41,
+   "setup": "notes in the repo",
+   "worker": "codex",
+   "asker": "codex",
+   "asked_in": "same folder",
+   "facts": 4,
+   "missing": [
+    "the reason: the output goes to other tools"
+   ],
+   "lookups": 14,
+   "answer": "We’d finished `hello.py`’s `--json` option and passed 12 CLI checks. Plain text remains the default; output stays color-free.\n\nThe handoff says “uncommitted,” but Git now shows commit `d179e77` (`add --json flag`) and a clean working tree.\n\nRemaining: close the Compound work record with commit evidence, and let you choose the 1.0 version name. Tagging and releasing remain on hold until you explicitly authorize them."
+  },
+  {
+   "run": 42,
+   "setup": "notes in the repo",
+   "worker": "claude",
+   "asker": "codex",
+   "asked_in": "same folder",
+   "facts": 4,
+   "missing": [
+    "the reason: the output goes to other tools"
+   ],
+   "lookups": null,
+   "answer": "We’d finished `--json`. It prints `{\"greeting\": \"Hello, Ada\"}`, and plain output stays unchanged.\n\nIt’s already committed as `dfdf629` (`add --json flag`), and the working tree is clean. The handoff’s “not committed” note is stale.\n\nThe remaining decision is the **1.0 version name**. Tagging or releasing still needs your explicit go-ahead. The agreed constraints remain: no colored output and no changes to the JSON shape."
+  },
+  {
+   "run": 43,
+   "setup": "compound record, briefing before the change",
+   "worker": "claude (saved no notes)",
+   "asker": "codex",
+   "asked_in": "same folder",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 13,
+   "answer": "We’d just added `--json` support to the Python greeting script:\n\n- `python3 hello.py Ada` → `Hello, Ada`\n- `python3 hello.py Ada --json` → `{\"greeting\": \"Hello, Ada\"}`\n\nThat’s committed as `83cfe54` (`add --json flag`) on `main`. The working tree is clean.\n\nI found no saved next step in the project context."
+  },
+  {
+   "run": 44,
+   "setup": "compound record, briefing before the change",
+   "worker": "claude (saved no notes)",
+   "asker": "codex",
+   "asked_in": "same folder",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 15,
+   "answer": "The latest saved work was adding `--json` to [hello.py](<repo>/hello.py) in commit `83cfe54`.\n\nIt accepts an optional name and can output `{\"greeting\": \"Hello, world\"}` instead of plain text. The working tree is clean.\n\nI couldn’t find a saved next step or unfinished task."
+  },
+  {
+   "run": 45,
+   "setup": "compound record, briefing before the change",
+   "worker": "claude (saved no notes)",
+   "asker": "codex",
+   "asked_in": "same folder",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 15,
+   "answer": "The latest work I can verify here was adding `--json` to the Python greeting script (`83cfe54`):\n\n- `python3 hello.py Ada` prints `Hello, Ada`.\n- Adding `--json` prints `{\"greeting\": \"Hello, Ada\"}`.\n\nThe working tree is clean. I found no saved handoff or next step, so that’s the last confirmed stopping point."
+  },
+  {
+   "run": 46,
+   "setup": "compound record, briefing after the change",
+   "worker": "claude (saved no notes)",
+   "asker": "codex",
+   "asked_in": "same folder",
+   "facts": 5,
+   "missing": [],
+   "lookups": 14,
+   "answer": "We’d finished adding `--json` to `hello.py`:\n\n- `python3 hello.py [name] --json` prints `{\"greeting\": \"Hello, [name]\"}`.\n- Plain text remains the default; output stays uncolored for piping.\n- The change is now committed as `83cfe54` (`add --json flag`), and the working tree is clean.\n\nThe pending decision is **your version name for 1.0**. You’d explicitly put tagging and releasing on hold until you choose it."
+  },
+  {
+   "run": 47,
+   "setup": "compound record, briefing after the change",
+   "worker": "claude (saved no notes)",
+   "asker": "codex",
+   "asked_in": "same folder",
+   "facts": 5,
+   "missing": [],
+   "lookups": 13,
+   "answer": "We’d finished adding `--json` to `hello.py`. It prints `{\"greeting\": \"Hello, <name>\"}`; plain text remains the default. The change is now committed as `83cfe54`, and the working tree is clean.\n\nThe **1.0 release is waiting on you to choose the version name**. Tagging and releasing remain on hold. We’re also keeping output color-free because it gets piped into other tools."
+  },
+  {
+   "run": 48,
+   "setup": "compound record, briefing after the change",
+   "worker": "claude (saved no notes)",
+   "asker": "codex",
+   "asked_in": "same folder",
+   "facts": 5,
+   "missing": [],
+   "lookups": 32,
+   "answer": "We’d finished adding `--json` to `hello.py`:\n\n- `python hello.py [name] --json` prints `{\"greeting\": \"Hello, [name]\"}`.\n- Normal output stays plain text, with no colors because it gets piped into other tools.\n\nGit now shows commit `83cfe54` (`add --json flag`) on `main`, with a clean working tree.\n\nThe remaining item is your choice of version name for **1.0**. Tagging and releasing remain on hold; no tags exist."
+  },
+  {
+   "run": 49,
+   "setup": "compound record, briefing after the change",
+   "worker": "claude (saved no notes)",
+   "asker": "claude",
+   "asked_in": "same folder",
+   "facts": 5,
+   "missing": [],
+   "lookups": 6,
+   "answer": "Last session (Nov 11) was one task, and it's finished: adding a `--json` flag to `hello.py`.\n\n- **What was done:** `hello.py` now takes `--json` and prints `{\"greeting\": \"Hello, <name>\"}`; without the flag the output is unchanged.\n- **Committed:** the change is in `83cfe54 add --json flag`, and the working tree is clean. You had said you would commit it yourself.\n- **Behaviour changes from switching to `argparse`:** `--json` works before or after the name, unknown flags or extra arguments now exit with a usage error instead of being ignored, and `-h` prints help.\n- **Not confirmed:** the exact byte-for-byte spacing of the JSON output was never checked, because the tool display reformatted it. It comes from plain `json.dumps`, so it should be one line with a space after the colon.\n- **README:** left untouched, so it doesn't mention `--json`.\n\nConstraints you set that still stand:\n- No colored output, because the script's output gets piped into other tools.\n- No tagging or releasing: the 1.0 release is waiting on you to pick a version name.\n\nNothing is in progress. The only open item is the 1.0 version name, which is yours to pick."
+  },
+  {
+   "run": 50,
+   "setup": "compound record, briefing after the change",
+   "worker": "claude (saved no notes)",
+   "asker": "claude",
+   "asked_in": "same folder",
+   "facts": 5,
+   "missing": [],
+   "lookups": 4,
+   "answer": "Last session (Nov 11) I added a `--json` flag to `hello.py`, and that work is now committed as `83cfe54` (\"add --json flag\"). The working tree is clean, so nothing is in progress.\n\n- **What changed:** `hello.py --json` prints `{\"greeting\": \"Hello, <name>\"}`; without the flag the output is unchanged.\n- **Behaviour differences from switching to `argparse`:** `--json` works before or after the name, unknown flags or extra arguments now exit with a usage error instead of being ignored, and `-h` prints help.\n- **Not confirmed:** I never checked the JSON output byte-for-byte (the byte-inspection commands were blocked). The plain, JSON and quoted-name runs all gave the right greeting.\n- **README:** untouched; it doesn't mention `--json`.\n\nYour standing constraints from that session:\n- No colored output, because the script's output is piped into other tools.\n- No tagging or releasing, since 1.0 is waiting on you to pick the version name.\n\nPossible next steps are documenting `--json` in the README or doing the byte-level check of the JSON output — say if you want either."
+  },
+  {
+   "run": 51,
+   "setup": "compound record, briefing after the change",
+   "worker": "claude (saved no notes)",
+   "asker": "claude",
+   "asked_in": "same folder",
+   "facts": 1,
+   "missing": [
+    "no colored output",
+    "the reason: the output goes to other tools",
+    "the release waits on the version name",
+    "nothing gets tagged or released"
+   ],
+   "lookups": 2,
+   "answer": "I don't have a record of our previous conversation — no saved memory for this project — so this is reconstructed from the repo.\n\nThe last thing done was adding a `--json` flag to `hello.py` (commit `83cfe54`, today). The script was switched from `sys.argv` to `argparse`, and `--json` prints the greeting as `{\"greeting\": \"Hello, <name>\"}`. Before that there is only the initial commit with the script and a three-line README.\n\nThe working tree is clean, on `main`, with no other branches or stashes, so nothing is left half-finished.\n\nTwo loose ends I can see:\n- **README:** it still just says \"A tiny greeting script\" and doesn't mention `--json` or the name argument.\n- **Tests:** there are none.\n\nIf you had a next step in mind that isn't one of those, tell me what it was and I'll pick it up."
+  },
+  {
+   "run": 52,
+   "setup": "compound record, briefing after the change",
+   "worker": "codex",
+   "asker": "claude",
+   "asked_in": "same folder",
+   "facts": 5,
+   "missing": [],
+   "lookups": 14,
+   "answer": "We had just finished adding the `--json` flag to `hello.py`, and nothing is in progress now. This comes from the two Codex sessions on this repo from last night, since I have no saved memory of my own here.\n\n- **What was done:** `python3 hello.py Ada --json` now prints `{\"greeting\": \"Hello, Ada\"}`, and plain greetings still work. Codex reported that its 11 CLI checks passed; I did not re-run them.\n- **Committed:** the change is in `3a843ee` (\"add --json flag\") and the working tree is clean. You had told Codex not to commit, and the commit landed right as that session ended.\n- **Still waiting on you:** the 1.0 release is blocked until you pick the version name. Nothing was to be tagged or released.\n- **Standing decision:** no colored output, because the script's output gets piped into other tools.\n\nOne loose end: Codex said the Compound work record (`work_26551ab11d7f`) stayed open because closing it required Git delivery. A later Codex session said Compound had no saved work item for this repo. I couldn't check which is true because the `compound work list` command was blocked for approval.\n\nNo next step is recorded after the flag, so the only open item is the version name."
+  },
+  {
+   "run": 53,
+   "setup": "compound record, briefing after the change",
+   "worker": "codex",
+   "asker": "claude",
+   "asked_in": "same folder",
+   "facts": 5,
+   "missing": [],
+   "lookups": 12,
+   "answer": "Here is where things stand, reconstructed from last night's Codex session in this repo (I have no memory of my own from it).\n\n**What you asked for:** a `--json` flag on `hello.py` that prints `{\"greeting\": \"Hello, <name>\"}` instead of plain text.\n\n**What is done:**\n- `hello.py` now uses `argparse` and `json.dumps`, so `python3 hello.py Ada --json` prints `{\"greeting\": \"Hello, Ada\"}`; plain output is unchanged.\n- That session reported eight command-line checks passing (default name, named, flag in either position, quotes, newlines, Unicode). I did not re-run them.\n- The change is committed as `0b6667f add --json flag`, one second after the session ended saying it was leaving the change uncommitted. You had said you would commit it yourself, so that is presumably yours.\n- The working tree is clean, and there is only `main`.\n\n**Your two constraints from that session, still in force:**\n- No coloured output, because the script's output is piped into other tools.\n- No tag or release, because 1.0 is waiting on you to pick a version name.\n\n**Still open:**\n- **Version name:** the 1.0 release is blocked on your choice.\n- **Compound work record:** `work_ed218edff748` was left open because its completion gate needed Git delivery authority. Now that the commit exists it can probably be closed, but my check of its current state was blocked by permissions, so I can't confirm it.\n- **README:** it still says only \"A tiny greeting script.\" and does not mention `--json`. Nobody asked for that; say if you want it.\n\nIf you want to continue, the natural next step is closing the work record, or the release once you have a version name."
+  }
+ ]
+}

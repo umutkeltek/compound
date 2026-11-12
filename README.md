@@ -118,6 +118,8 @@ The full boundary, with the gaps that are still open, is in
 - [Dashboard](docs/console.md): the optional local web view.
 - [The placebo test](docs/placebo-test/README.md): a blind on/off trial for anything you load into
   your agent, with the run that changed how Compound starts a session.
+- [Where were we?](docs/where-were-we/README.md): what a brand-new session knows after the last one,
+  tested with two agents, and the prompt that makes the answer the same for both.
 - [Support policy](SUPPORT.md), [security policy](SECURITY.md) and [changelog](CHANGELOG.md).
 
 **For contributors:** build and test rules are in [CONTRIBUTING.md](CONTRIBUTING.md). How Compound
