@@ -212,6 +212,7 @@ type Growth struct {
 	StaleDays     int                 `json:"stale_days"`
 	AssessDays    int                 `json:"assess_days"`
 	Boundary      string              `json:"boundary"`
+	Catalog       GrowthCatalogInfo   `json:"catalog"`
 	ProfileDims   map[string][]string `json:"profile_dimensions"`
 	Groups        []GrowthAreaGroup   `json:"groups"`
 	Areas         []GrowthArea        `json:"areas"`
@@ -367,7 +368,7 @@ func BuildGrowth(homePath string, opts GrowthOptions) (Growth, error) {
 	}
 	cat := opts.catalog
 	if cat == nil {
-		loaded, err := loadEmbeddedGrowthCatalog()
+		loaded, err := loadGrowthCatalog(homePath)
 		if err != nil {
 			return Growth{}, fmt.Errorf("growth catalog: %w", err)
 		}
@@ -584,6 +585,7 @@ func BuildGrowth(homePath string, opts GrowthOptions) (Growth, error) {
 		StaleDays:     opts.StaleDays,
 		AssessDays:    opts.AssessDays,
 		Boundary:      growthBoundary,
+		Catalog:       cat.info(),
 		ProfileDims:   cat.profileDimensions(),
 		Groups:        append([]GrowthAreaGroup{}, cat.Groups...),
 		Areas:         cat.publicAreas(),
@@ -1710,6 +1712,9 @@ func (g Growth) Validate() error {
 	}
 	if len(g.Groups) == 0 || len(g.Areas) == 0 {
 		return fmt.Errorf("catalog incomplete: %d groups, %d areas", len(g.Groups), len(g.Areas))
+	}
+	if c := g.Catalog; c.Source != "embedded" || c.Groups != len(g.Groups) || c.Areas != len(g.Areas) || c.SchemaVersion == "" {
+		return fmt.Errorf("catalog block %+v does not match %d groups and %d areas", c, len(g.Groups), len(g.Areas))
 	}
 	groupIDs := map[string]bool{}
 	for _, gr := range g.Groups {

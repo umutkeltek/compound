@@ -221,3 +221,81 @@ func TestGrowthCatalogFormInheritsBaseRow(t *testing.T) {
 		t.Fatalf("public area = %+v", got)
 	}
 }
+
+func writeGrowthOverlay(t *testing.T, home, body string) {
+	t.Helper()
+	dir := filepath.Join(home, "config")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "product-growth-catalog.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGrowthCatalogOverlayAddsSkillsAndAreas(t *testing.T) {
+	embedded, err := loadEmbeddedGrowthCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	writeGrowthOverlay(t, home, `areas:
+  - id: acquisition_search
+    skills: [example-search-helper]
+  - id: retention_widget_use
+    group: retention
+    title: Widget use
+    question: "Do people add the widget to their home screen?"
+    measure: widget use
+    needs: [retention_repeat_use]
+`)
+	writeGrowthSignals(t, home, growthDaily("product:alpha", "app_store_connect_impressions", 5, 0, 10)...)
+	g := buildGrowthT(t, home, growthOpts())
+	if g.Catalog.Overlay != GrowthCatalogOverlayPath || g.Catalog.OverlayError != "" || g.Catalog.Areas != len(embedded.Areas)+1 {
+		t.Fatalf("catalog = %+v", g.Catalog)
+	}
+	idx := map[string]int{}
+	for i, a := range g.Areas {
+		idx[a.ID] = i
+	}
+	search := g.Areas[idx["acquisition_search"]]
+	if !containsString(search.Skills, "seo-audit") || !containsString(search.Skills, "example-search-helper") || !containsString(search.Kinds["ios_app"].Skills, "example-search-helper") {
+		t.Fatalf("overlay skill must append, not replace: %+v", search)
+	}
+	if !containsString(growthAudit(t, g.Apps[0], "acquisition_search").Skills, "example-search-helper") {
+		t.Fatal("the audit row must carry the overlay skill")
+	}
+	w, ok := idx["retention_widget_use"]
+	if !ok || g.Areas[w].Group != "retention" || idx["retention_repeat_use"] > w || w > idx["customer_feedback"] {
+		t.Fatalf("new area must sit in its group: %v", idx)
+	}
+	if a := growthAudit(t, g.Apps[0], "retention_widget_use"); a.Status != GrowthBlind || a.AreaID != "retention_widget_use" {
+		t.Fatalf("new area audit = %+v", a)
+	}
+	// The embedded catalog is untouched for the next caller.
+	if again, _ := loadEmbeddedGrowthCatalog(); len(again.Areas) != len(embedded.Areas) {
+		t.Fatal("an overlay leaked into the embedded catalog")
+	}
+}
+
+func TestGrowthCatalogBrokenOverlayServesEmbedded(t *testing.T) {
+	embedded, _ := loadEmbeddedGrowthCatalog()
+	for name, body := range map[string]string{
+		"unknown group": "areas:\n  - {id: nowhere_one, group: nowhere, title: One, question: \"One?\", measure: one}\n",
+		"bad yaml":      "areas: [\n",
+		"bad branch":    "areas:\n  - {id: acquisition_search, branch: shouting}\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			writeGrowthOverlay(t, home, body)
+			writeGrowthSignals(t, home, growthDaily("product:alpha", "gsc_clicks", 3, 0, 1)...)
+			g := buildGrowthT(t, home, growthOpts())
+			if g.Catalog.OverlayError == "" || !strings.Contains(g.Catalog.OverlayError, GrowthCatalogOverlayPath) || g.Catalog.Overlay != "" {
+				t.Fatalf("catalog = %+v", g.Catalog)
+			}
+			if len(g.Areas) != len(embedded.Areas) || len(g.Apps[0].Audit) != len(embedded.Areas) {
+				t.Fatalf("broken overlay must serve the embedded catalog: %d areas", len(g.Areas))
+			}
+		})
+	}
+}

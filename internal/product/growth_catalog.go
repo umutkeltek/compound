@@ -2,8 +2,11 @@ package product
 
 import (
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -156,6 +159,143 @@ func loadEmbeddedGrowthCatalog() (*growthAreaCatalog, error) {
 		return nil, embeddedGrowthCatalogErr
 	}
 	return embeddedGrowthCatalog.clone(), nil
+}
+
+// GrowthCatalogOverlayPath is the operator's optional catalog overlay,
+// relative to the Compound home.
+const GrowthCatalogOverlayPath = "config/product-growth-catalog.yaml"
+
+// loadGrowthCatalog is the embedded catalog with the home's overlay merged in.
+// A missing overlay is normal. A broken overlay never breaks the projection:
+// the embedded catalog is served and the error is reported on the catalog.
+func loadGrowthCatalog(homePath string) (*growthAreaCatalog, error) {
+	base, err := loadEmbeddedGrowthCatalog()
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(homePath) == "" {
+		return base, nil
+	}
+	raw, err := os.ReadFile(filepath.Join(homePath, filepath.FromSlash(GrowthCatalogOverlayPath)))
+	if errors.Is(err, fs.ErrNotExist) {
+		return base, nil
+	}
+	if err == nil {
+		var overlay growthCatalogFile
+		if overlay, err = parseGrowthCatalogFile(raw); err == nil {
+			var merged *growthAreaCatalog
+			if merged, err = base.withOverlay(overlay); err == nil {
+				merged.Overlay = GrowthCatalogOverlayPath
+				return merged, nil
+			}
+		}
+	}
+	base.OverlayError = GrowthCatalogOverlayPath + ": " + err.Error()
+	return base, nil
+}
+
+// withOverlay merges an overlay file by id and validates the result. An
+// overlay area with an existing id overrides the fields it sets and appends
+// its skills; a new id adds an area. Groups and profile values merge the same
+// way.
+func (c *growthAreaCatalog) withOverlay(o growthCatalogFile) (*growthAreaCatalog, error) {
+	if o.SchemaVersion != "" && o.SchemaVersion != c.SchemaVersion {
+		return nil, fmt.Errorf("schema_version = %q, want %q", o.SchemaVersion, c.SchemaVersion)
+	}
+	out := c.clone()
+	for _, g := range o.Groups {
+		i, ok := out.groupIdx[g.ID]
+		if !ok {
+			out.Groups = append(out.Groups, g)
+			out.groupIdx[g.ID] = len(out.Groups) - 1
+			continue
+		}
+		cur := &out.Groups[i]
+		if g.Title != "" {
+			cur.Title = g.Title
+		}
+		if g.Question != "" {
+			cur.Question = g.Question
+		}
+		if g.Branch != "" {
+			cur.Branch = g.Branch
+		}
+	}
+	for dim, values := range o.Profile {
+		out.Profile[dim] = appendUnique(out.Profile[dim], values...)
+	}
+	for _, a := range o.Areas {
+		i, ok := out.byID[a.ID]
+		if !ok {
+			out.Areas = append(out.Areas, a.clone())
+			out.byID[a.ID] = len(out.Areas) - 1
+			continue
+		}
+		out.Areas[i] = out.Areas[i].overlaid(a)
+	}
+	if err := out.finish(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// overlaid applies one overlay row to an existing row.
+func (a growthAreaDef) overlaid(o growthAreaDef) growthAreaDef {
+	out := a.clone()
+	for _, f := range []struct {
+		dst *string
+		src string
+	}{
+		{&out.Group, o.Group}, {&out.Title, o.Title}, {&out.Question, o.Question}, {&out.Measure, o.Measure}, {&out.Branch, o.Branch},
+	} {
+		if f.src != "" {
+			*f.dst = f.src
+		}
+	}
+	if o.Applies != nil {
+		out.Applies = o.clone().Applies
+	}
+	if o.Needs != nil {
+		out.Needs = append([]string{}, o.Needs...)
+	}
+	if !o.Evidence.empty() {
+		out.Evidence = o.Evidence.clone()
+	}
+	out.Skills = appendUnique(out.Skills, o.Skills...)
+	for kind, f := range out.Kinds {
+		if f.Skills != nil {
+			f.Skills = appendUnique(f.Skills, o.Skills...)
+			out.Kinds[kind] = f
+		}
+	}
+	for kind, f := range o.clone().Kinds {
+		cur, ok := out.Kinds[kind]
+		if !ok {
+			out.Kinds[kind] = f
+			continue
+		}
+		if f.Title != "" {
+			cur.Title = f.Title
+		}
+		if f.Question != "" {
+			cur.Question = f.Question
+		}
+		if f.Measure != "" {
+			cur.Measure = f.Measure
+		}
+		if f.Evidence != nil {
+			cur.Evidence = f.Evidence
+		}
+		if f.Skills != nil {
+			base := cur.Skills
+			if base == nil {
+				base = append([]string{}, out.Skills...)
+			}
+			cur.Skills = appendUnique(base, f.Skills...)
+		}
+		out.Kinds[kind] = cur
+	}
+	return out
 }
 
 func readGrowthCatalogFS(fsys fs.FS) ([]growthCatalogFile, error) {
@@ -564,4 +704,21 @@ func appendUnique(list []string, values ...string) []string {
 		}
 	}
 	return list
+}
+
+// GrowthCatalogInfo says which catalog judged the products.
+type GrowthCatalogInfo struct {
+	SchemaVersion string `json:"schema_version"`
+	Source        string `json:"source"`
+	Overlay       string `json:"overlay"`
+	OverlayError  string `json:"overlay_error"`
+	Groups        int    `json:"groups"`
+	Areas         int    `json:"areas"`
+}
+
+func (c *growthAreaCatalog) info() GrowthCatalogInfo {
+	return GrowthCatalogInfo{
+		SchemaVersion: c.SchemaVersion, Source: "embedded", Overlay: c.Overlay, OverlayError: c.OverlayError,
+		Groups: len(c.Groups), Areas: len(c.Areas),
+	}
 }
