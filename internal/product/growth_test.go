@@ -2,6 +2,7 @@ package product
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1022,5 +1023,52 @@ func TestGrowthNextMovesBlockedAfterNeedsAndSetProfile(t *testing.T) {
 	}
 	if set == nil || set.AreaID != "" || !strings.Contains(set.Why, "objectives") || !strings.Contains(set.Brief, "compound product import") {
 		t.Fatalf("set_profile move = %+v in %+v", set, app.NextMoves)
+	}
+}
+
+func TestGrowthAreaBrief(t *testing.T) {
+	home := t.TempDir()
+	writeGrowthSignals(t, home, growthDaily("product:alpha", "app_store_connect_impressions", 5, 0, 10)...)
+	o := growthOpts()
+	o.ProductID, o.Area = "alpha", "activation_onboarding"
+	b, err := BuildGrowthArea(home, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.SchemaVersion != GrowthAreaSchemaVersion || b.ProductID != "product:alpha" || b.Area.ID != "activation_onboarding" || b.Area.Branch != "activation" {
+		t.Fatalf("brief = %+v", b)
+	}
+	if b.Audit.Status != GrowthBlind || strings.Join(b.Audit.BlockedBy, ",") != "experience_journeys" || strings.Join(b.Area.Skills, ",") != "onboarding" {
+		t.Fatalf("audit = %+v area = %+v", b.Audit, b.Area)
+	}
+	if len(b.Needs) != 1 || b.Needs[0].AreaID != "experience_journeys" || b.Needs[0].Status != GrowthBlind || b.Needs[0].Title == "" {
+		t.Fatalf("needs = %+v", b.Needs)
+	}
+	if !strings.Contains(b.Record, "area: activation_onboarding") || !strings.Contains(b.Record, "compound product import") {
+		t.Fatalf("record = %q", b.Record)
+	}
+	var text strings.Builder
+	RenderGrowthAreaText(&text, b)
+	if lines := strings.Count(text.String(), "\n"); lines < 6 || lines > 12 || !strings.Contains(text.String(), "needs first: Core user journeys") {
+		t.Fatalf("text brief (%d lines):\n%s", lines, text.String())
+	}
+
+	o.Area = "experience_journeys"
+	j, err := BuildGrowthArea(home, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(j.Unblocks) < 3 || j.Unblocks[0].AreaID != "activation_onboarding" {
+		t.Fatalf("unblocks = %+v", j.Unblocks)
+	}
+
+	var usage *GrowthUsageError
+	o.Area = "onbording"
+	if _, err := BuildGrowthArea(home, o); !errors.As(err, &usage) || !strings.Contains(err.Error(), "activation_onboarding") {
+		t.Fatalf("unknown area must be a usage error with a suggestion: %v", err)
+	}
+	o.ProductID, o.Area = "", "activation_onboarding"
+	if _, err := BuildGrowthArea(home, o); !errors.As(err, &usage) {
+		t.Fatalf("--area without --product must be a usage error: %v", err)
 	}
 }

@@ -45,6 +45,8 @@ type GrowthOptions struct {
 	StaleDays  int
 	// AssessDays is how old an assessment may get before it reads as stale.
 	AssessDays int
+	// Area selects one area for BuildGrowthArea; BuildGrowth ignores it.
+	Area string
 
 	// catalog replaces the loaded catalog; tests only.
 	catalog *growthAreaCatalog
