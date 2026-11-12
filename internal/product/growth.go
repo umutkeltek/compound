@@ -43,6 +43,8 @@ type GrowthOptions struct {
 	WindowDays int
 	SeriesDays int
 	StaleDays  int
+	// AssessDays is how old an assessment may get before it reads as stale.
+	AssessDays int
 
 	// catalog replaces the loaded catalog; tests only.
 	catalog *growthAreaCatalog
@@ -121,11 +123,22 @@ type GrowthEvidence struct {
 }
 
 type GrowthAudit struct {
-	AreaID   string           `json:"area_id"`
-	Status   string           `json:"status"`
-	Summary  string           `json:"summary"`
-	Evidence []GrowthEvidence `json:"evidence"`
-	NextMove string           `json:"next_move"`
+	AreaID    string           `json:"area_id"`
+	Status    string           `json:"status"`
+	Basis     string           `json:"basis"`
+	Title     string           `json:"title"`
+	Question  string           `json:"question"`
+	Forms     []string         `json:"forms"`
+	Summary   string           `json:"summary"`
+	Reason    string           `json:"reason"`
+	Evidence  []GrowthEvidence `json:"evidence"`
+	NextMove  string           `json:"next_move"`
+	BlockedBy []string         `json:"blocked_by"`
+	Branch    string           `json:"branch"`
+	Skills    []string         `json:"skills"`
+
+	gap        string // next-move kind for a gap: connect_data, record_answer or assess
+	assessment bool   // the status rests on a learned-fact assessment
 }
 
 type GrowthCoverage struct {
@@ -134,6 +147,8 @@ type GrowthCoverage struct {
 	Stale         int     `json:"stale"`
 	Blind         int     `json:"blind"`
 	NotApplicable int     `json:"not_applicable"`
+	Unknown       int     `json:"unknown"`
+	Deferred      int     `json:"deferred"`
 	Score         float64 `json:"score"`
 }
 
@@ -190,6 +205,7 @@ type Growth struct {
 	WindowDays    int                 `json:"window_days"`
 	SeriesDays    int                 `json:"series_days"`
 	StaleDays     int                 `json:"stale_days"`
+	AssessDays    int                 `json:"assess_days"`
 	Boundary      string              `json:"boundary"`
 	ProfileDims   map[string][]string `json:"profile_dimensions"`
 	Groups        []GrowthAreaGroup   `json:"groups"`
@@ -230,8 +246,8 @@ const (
 
 // Validate checks the options after defaults are applied.
 func (o GrowthOptions) Validate() error {
-	if o.WindowDays <= 0 || o.SeriesDays <= 0 || o.StaleDays <= 0 {
-		return fmt.Errorf("window, series-days and stale-days must be positive")
+	if o.WindowDays <= 0 || o.SeriesDays <= 0 || o.StaleDays <= 0 || o.AssessDays <= 0 {
+		return fmt.Errorf("window, series-days, stale-days and assess-days must be positive")
 	}
 	if o.AsOf.IsZero() || o.Now.IsZero() {
 		return fmt.Errorf("as-of and now required")
@@ -256,6 +272,9 @@ func normalizeGrowthOptions(o GrowthOptions) GrowthOptions {
 	}
 	if o.StaleDays == 0 {
 		o.StaleDays = 14
+	}
+	if o.AssessDays == 0 {
+		o.AssessDays = 180
 	}
 	o.ProductID = strings.TrimSpace(o.ProductID)
 	return o
@@ -558,6 +577,7 @@ func BuildGrowth(homePath string, opts GrowthOptions) (Growth, error) {
 		WindowDays:    opts.WindowDays,
 		SeriesDays:    opts.SeriesDays,
 		StaleDays:     opts.StaleDays,
+		AssessDays:    opts.AssessDays,
 		Boundary:      growthBoundary,
 		ProfileDims:   cat.profileDimensions(),
 		Groups:        append([]GrowthAreaGroup{}, cat.Groups...),
@@ -1112,25 +1132,11 @@ func (c growthCtx) buildApp(g *growthGroup) (GrowthApp, growthFacts) {
 	}
 	app.Hypotheses = GrowthHypotheses{Open: open, Reviewed: len(reviewed)}
 
-	app.Audit = c.audit(g, app, facts.kind)
+	app.Audit = c.audit(g, app)
 	for _, a := range app.Audit {
 		facts.areaStatus[a.AreaID] = a.Status
-		switch a.Status {
-		case GrowthMeasured:
-			app.Coverage.Measured++
-		case GrowthPartial:
-			app.Coverage.Partial++
-		case GrowthStale:
-			app.Coverage.Stale++
-		case GrowthBlind:
-			app.Coverage.Blind++
-		default:
-			app.Coverage.NotApplicable++
-		}
 	}
-	if applicable := len(app.Audit) - app.Coverage.NotApplicable; applicable > 0 {
-		app.Coverage.Score = growthRound((float64(app.Coverage.Measured) + 0.5*float64(app.Coverage.Partial) + 0.25*float64(app.Coverage.Stale)) / float64(applicable))
-	}
+	app.Coverage = growthCoverage(app.Audit)
 	app.NextMoves = c.nextMoves(app)
 	return app, facts
 }
@@ -1309,82 +1315,86 @@ func (g *growthGroup) hasOpenHypothesisFor(spec growthAreaSpec) bool {
 	return false
 }
 
-func (c growthCtx) audit(g *growthGroup, app GrowthApp, kind string) []GrowthAudit {
-	out := make([]GrowthAudit, 0, len(c.cat.Areas))
+// growthFormResult is one form's verdict from its metric, custom, record and
+// assessment evidence.
+type growthFormResult struct {
+	spec     growthAreaSpec
+	status   string
+	basis    string
+	summary  string
+	nextMove string
+	evidence []GrowthEvidence
+}
+
+// evalMetrics runs the metric and custom evaluators for one form. ok is false
+// when the form declares no metric or custom evidence at all.
+func (c growthCtx) evalMetrics(g *growthGroup, app GrowthApp, spec growthAreaSpec, funnelFresh, funnelAny int) (growthFormResult, bool) {
+	if len(spec.patterns)+len(spec.capped)+len(spec.companion) == 0 && spec.custom == "" {
+		return growthFormResult{}, false
+	}
 	stale := c.opts.StaleDays
-	funnelFresh, funnelAny := 0, 0
-	for _, f := range app.Funnel {
-		switch f.Status {
-		case GrowthMeasured:
-			funnelFresh++
-			funnelAny++
-		case GrowthStale, GrowthPartial:
-			funnelAny++
-		}
+	a := GrowthAudit{AreaID: spec.ID, Evidence: []GrowthEvidence{}}
+	full := c.evidence(g, spec.patterns)
+	capped := c.evidence(g, spec.capped)
+	all := append(append([]growthEv{}, full...), capped...)
+	for _, e := range all {
+		a.Evidence = append(a.Evidence, e.GrowthEvidence)
 	}
-	for _, area := range c.cat.Areas {
-		spec := area.spec(kind)
-		a := GrowthAudit{AreaID: spec.ID, Evidence: []GrowthEvidence{}}
-		full := c.evidence(g, spec.patterns)
-		capped := c.evidence(g, spec.capped)
-		all := append(append([]growthEv{}, full...), capped...)
-		for _, e := range all {
-			a.Evidence = append(a.Evidence, e.GrowthEvidence)
+	latest, rows90 := "", 0
+	for _, e := range all {
+		if e.LatestDate > latest {
+			latest = e.LatestDate
 		}
-		latest, rows90 := "", 0
-		for _, e := range all {
-			if e.LatestDate > latest {
-				latest = e.LatestDate
-			}
-			rows90 += e.rows90
-		}
-		missing := ""
-		var staleEv []growthEv
-		status := GrowthMeasured
-		switch spec.custom {
-		case "feedback":
-			status, missing = growthFeedback(g, c, &a)
-		case "funnel":
-			switch {
-			case funnelFresh >= 5:
-			case funnelAny >= 2:
-				status, missing = GrowthPartial, fmt.Sprintf("Only %d of 7 funnel stages are fresh. Instrument the missing stages.", funnelFresh)
-			default:
-				status = GrowthBlind
-			}
-		case "experiments":
-			cut := c.day(90)
-			recent := 0
-			for _, r := range g.reviews {
-				if d := firstNonEmpty(r.ReviewedAt, r.AppliedAt); len(d) >= 10 && d[:10] > cut {
-					recent++
-				}
-			}
-			switch {
-			case recent > 0:
-			case app.Hypotheses.Open > 0:
-				status, missing = GrowthPartial, "No hypothesis has been reviewed in 90 days. Review an open hypothesis."
-			default:
-				status = GrowthBlind
-			}
-			a.Evidence = append(a.Evidence, GrowthEvidence{Metric: "hypotheses_open", Rows: app.Hypotheses.Open}, GrowthEvidence{Metric: "reviews", Rows: len(g.reviews)})
+		rows90 += e.rows90
+	}
+	missing := ""
+	var staleEv []growthEv
+	status := GrowthMeasured
+	switch spec.custom {
+	case "feedback":
+		status, missing = growthFeedback(g, c, &a)
+	case "funnel":
+		switch {
+		case funnelFresh >= 5:
+		case funnelAny >= 2:
+			status, missing = GrowthPartial, fmt.Sprintf("Only %d of 7 funnel stages are fresh. Instrument the missing stages.", funnelFresh)
 		default:
-			if len(all) == 0 {
-				status = GrowthBlind
+			status = GrowthBlind
+		}
+	case "experiments":
+		cut := c.day(90)
+		recent := 0
+		for _, r := range g.reviews {
+			if d := firstNonEmpty(r.ReviewedAt, r.AppliedAt); len(d) >= 10 && d[:10] > cut {
+				recent++
 			}
 		}
-		if spec.custom == "" || spec.custom == "organic" || spec.custom == "search_ads" || spec.custom == "web_traffic" || spec.custom == "pricing" || spec.custom == "unit_economics" {
-			status, missing, staleEv = c.metricStatus(g, spec, full, capped, latest, rows90, stale)
+		switch {
+		case recent > 0:
+		case app.Hypotheses.Open > 0:
+			status, missing = GrowthPartial, "No hypothesis has been reviewed in 90 days. Review an open hypothesis."
+		default:
+			status = GrowthBlind
 		}
-		if status == GrowthBlind && spec.paywall && g.mentionsPaywall() {
-			status, missing = GrowthPartial, "Only hypotheses and reviews mention the paywall. Add paywall events."
+		a.Evidence = append(a.Evidence, GrowthEvidence{Metric: "hypotheses_open", Rows: app.Hypotheses.Open}, GrowthEvidence{Metric: "reviews", Rows: len(g.reviews)})
+	default:
+		if len(all) == 0 {
+			status = GrowthBlind
 		}
-		a.Status = status
-		a.Summary = c.summary(g, spec, status, missing, all, latest, staleEv, app)
-		a.NextMove = c.nextMove(g, spec, status, missing, latest, staleEv)
-		out = append(out, a)
 	}
-	return out
+	if spec.custom == "" || spec.custom == "organic" || spec.custom == "search_ads" || spec.custom == "web_traffic" || spec.custom == "pricing" || spec.custom == "unit_economics" {
+		status, missing, staleEv = c.metricStatus(g, spec, full, capped, latest, rows90, stale)
+	}
+	if status == GrowthBlind && spec.paywall && g.mentionsPaywall() {
+		status, missing = GrowthPartial, "Only hypotheses and reviews mention the paywall. Add paywall events."
+	}
+	r := growthFormResult{spec: spec, status: status, basis: "metric", evidence: a.Evidence}
+	if status == GrowthBlind {
+		r.basis = "none"
+	}
+	r.summary = c.summary(g, spec, status, missing, all, latest, staleEv, app)
+	r.nextMove = c.nextMove(g, spec, status, missing, latest, staleEv)
+	return r, true
 }
 
 func growthFeedback(g *growthGroup, c growthCtx, a *GrowthAudit) (string, string) {
@@ -1693,7 +1703,7 @@ func (c growthCtx) allocate(app GrowthApp, f growthFacts) GrowthAllocation {
 	al := GrowthAllocation{ProductID: app.ProductID, Name: app.Name, Rule: growthAllocationRule}
 	activationBlind := true
 	for _, a := range app.Audit {
-		if (a.AreaID == "activation_onboarding" || a.AreaID == "activation_time_to_value") && a.Status != GrowthBlind && a.Status != GrowthNotApplicable {
+		if (a.AreaID == "activation_onboarding" || a.AreaID == "activation_time_to_value") && (a.Status == GrowthMeasured || a.Status == GrowthPartial || a.Status == GrowthStale) {
 			activationBlind = false
 		}
 	}
@@ -1722,7 +1732,9 @@ func (c growthCtx) allocate(app GrowthApp, f growthFacts) GrowthAllocation {
 // ---------------------------------------------------------------------------
 // validation
 
-var growthStatuses = map[string]bool{GrowthMeasured: true, GrowthPartial: true, GrowthStale: true, GrowthBlind: true, GrowthNotApplicable: true}
+var growthStatuses = map[string]bool{GrowthMeasured: true, GrowthPartial: true, GrowthStale: true, GrowthBlind: true, GrowthNotApplicable: true, GrowthUnknown: true, GrowthDeferred: true}
+
+var growthFunnelStatuses = map[string]bool{GrowthMeasured: true, GrowthStale: true, GrowthBlind: true, GrowthNotApplicable: true}
 
 // Validate checks the projection against the contract shape.
 func (g Growth) Validate() error {
@@ -1735,7 +1747,7 @@ func (g Growth) Validate() error {
 	if _, ok := parseGrowthDay(g.AsOf); !ok {
 		return fmt.Errorf("as_of invalid: %q", g.AsOf)
 	}
-	if g.WindowDays <= 0 || g.SeriesDays <= 0 || g.StaleDays <= 0 {
+	if g.WindowDays <= 0 || g.SeriesDays <= 0 || g.StaleDays <= 0 || g.AssessDays <= 0 {
 		return fmt.Errorf("window_days, series_days and stale_days must be positive")
 	}
 	if len(g.Groups) == 0 || len(g.Areas) == 0 {
@@ -1789,12 +1801,12 @@ func (g Growth) Validate() error {
 			return fmt.Errorf("app %s funnel has %d stages, want 7", app.ProductID, len(app.Funnel))
 		}
 		for _, f := range app.Funnel {
-			if !growthStatuses[f.Status] {
+			if !growthFunnelStatuses[f.Status] {
 				return fmt.Errorf("app %s funnel %s status %q invalid", app.ProductID, f.ID, f.Status)
 			}
 		}
 		cv := app.Coverage
-		if cv.Measured+cv.Partial+cv.Stale+cv.Blind+cv.NotApplicable != len(g.Areas) {
+		if cv.Measured+cv.Partial+cv.Stale+cv.Blind+cv.NotApplicable+cv.Unknown+cv.Deferred != len(g.Areas) {
 			return fmt.Errorf("app %s coverage counts do not sum to %d", app.ProductID, len(g.Areas))
 		}
 		if cv.Score < 0 || cv.Score > 1 {

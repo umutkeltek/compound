@@ -334,7 +334,12 @@ func TestGrowthAuditStatuses(t *testing.T) {
 			t.Fatalf("%s on a website uses the App Store form: %+v", id, got)
 		}
 	}
-	wantScore := (float64(web.Coverage.Measured) + 0.5*float64(web.Coverage.Partial) + 0.25*float64(web.Coverage.Stale)) / float64(len(g.Areas)-web.Coverage.NotApplicable)
+	// The score is the measured share of the areas the profile can judge.
+	judged := len(g.Areas) - web.Coverage.NotApplicable - web.Coverage.Deferred - web.Coverage.Unknown
+	if web.Coverage.Unknown == 0 {
+		t.Fatal("a website with no revenue on file cannot tell whether monetization applies")
+	}
+	wantScore := float64(web.Coverage.Measured) / float64(judged)
 	if d := web.Coverage.Score - wantScore; d > 0.001 || d < -0.001 {
 		t.Fatalf("score %v want %v", web.Coverage.Score, wantScore)
 	}
@@ -429,7 +434,11 @@ func TestGrowthAppsWithoutDataAndExperiments(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"product:empty", "product:tested"} {
-		if _, err := Apply(home, store, registryBundle(id, strings.TrimPrefix(id, "product:")), id+".yaml", tProduct); err != nil {
+		b := registryBundle(id, strings.TrimPrefix(id, "product:"))
+		if id == "product:tested" {
+			b.Product.Profile = ProductProfile{Objectives: []string{"revenue"}}
+		}
+		if _, err := Apply(home, store, b, id+".yaml", tProduct); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -781,5 +790,137 @@ func TestGrowthProfileInference(t *testing.T) {
 	}
 	if len(g.ProfileDims["kinds"]) == 0 || len(g.ProfileDims["objectives"]) == 0 {
 		t.Fatalf("profile_dimensions = %v", g.ProfileDims)
+	}
+}
+
+func TestGrowthApplicabilityFromProfile(t *testing.T) {
+	home := t.TempDir()
+	applyGrowthBundle(t, home, "product:adopt", func(p *Product) {
+		p.Profile = ProductProfile{Kinds: []string{"web_app"}, Objectives: []string{"adoption"}}
+	})
+	applyGrowthBundle(t, home, "product:silent", nil)
+	applyGrowthBundle(t, home, "product:paused", func(p *Product) {
+		p.Profile = ProductProfile{Kinds: []string{"web_app"}, Objectives: []string{"revenue"}, Deferred: []ProfileDeferral{
+			{Area: "monetization", Reason: "free during the beta"},
+			{Area: "brand_trust", Reason: "too early", Until: growthDay(-30)},
+			{Area: "acquisition_paid", Reason: "no budget this quarter", Until: growthDay(30)},
+		}}
+	})
+	g := buildGrowthT(t, home, growthOpts())
+	cat, _ := loadEmbeddedGrowthCatalog()
+	adopt, silent, paused := growthApp(t, g, "product:adopt"), growthApp(t, g, "product:silent"), growthApp(t, g, "product:paused")
+	monetization := 0
+	for _, area := range cat.Areas {
+		if area.Group != "monetization" {
+			continue
+		}
+		monetization++
+		if a := growthAudit(t, adopt, area.ID); a.Status != GrowthNotApplicable || !strings.Contains(a.Reason, "objectives") || !strings.Contains(a.Reason, "adoption") {
+			t.Fatalf("%s for an adoption product = %+v", area.ID, a)
+		}
+		if a := growthAudit(t, silent, area.ID); a.Status != GrowthUnknown || !strings.Contains(a.Reason, "objectives") {
+			t.Fatalf("%s with no profile and no data = %+v", area.ID, a)
+		}
+		if a := growthAudit(t, paused, area.ID); a.Status != GrowthDeferred || !strings.Contains(a.Reason, "free during the beta") {
+			t.Fatalf("%s deferred by group = %+v", area.ID, a)
+		}
+	}
+	if monetization == 0 {
+		t.Fatal("catalog has no monetization areas")
+	}
+	if a := growthAudit(t, paused, "brand_trust"); a.Status != GrowthDeferred || !strings.Contains(a.Reason, "Until "+growthDay(-30)) {
+		t.Fatalf("brand_trust deferral = %+v", a)
+	}
+	if a := growthAudit(t, paused, "acquisition_paid"); a.Status == GrowthDeferred {
+		t.Fatalf("a deferral whose date passed must lapse: %+v", a)
+	}
+	if adopt.Coverage.NotApplicable != monetization || silent.Coverage.Unknown != monetization || paused.Coverage.Deferred != monetization+1 {
+		t.Fatalf("coverage adopt %+v silent %+v paused %+v", adopt.Coverage, silent.Coverage, paused.Coverage)
+	}
+}
+
+func TestGrowthKindFormsAcrossKinds(t *testing.T) {
+	home := t.TempDir()
+	rows := growthDaily("product:phone", "app_store_connect_impressions", 6, 0, 40)
+	rows = append(rows, growthDaily("product:site", "gsc_clicks", 6, 0, 3)...)
+	rows = append(rows, growthDaily("product:both", "app_store_connect_units", 6, 0, 1)...)
+	rows = append(rows, growthDaily("product:both", "gsc_clicks", 6, 0, 2)...)
+	writeGrowthSignals(t, home, rows...)
+	g := buildGrowthT(t, home, growthOpts())
+
+	phone := growthAudit(t, growthApp(t, g, "product:phone"), "acquisition_search")
+	if phone.Title != "App Store search" || strings.Join(phone.Forms, ",") != "App Store search" || phone.Status != GrowthMeasured || phone.Basis != GrowthBasisMetric {
+		t.Fatalf("app = %+v", phone)
+	}
+	if strings.Join(phone.Skills, ",") != "aso" || phone.Branch != "distribution" {
+		t.Fatalf("app form skills and branch = %+v", phone)
+	}
+	site := growthAudit(t, growthApp(t, g, "product:site"), "acquisition_search")
+	if site.Title != "Search engines" || site.Status != GrowthMeasured || len(site.Evidence) == 0 || !strings.HasPrefix(site.Evidence[0].Metric, "gsc_") {
+		t.Fatalf("website = %+v", site)
+	}
+	both := growthAudit(t, growthApp(t, g, "product:both"), "acquisition_search")
+	if both.Status != GrowthPartial || len(both.Forms) != 2 || both.Title != "Search discoverability" {
+		t.Fatalf("both kinds = %+v", both)
+	}
+	if !strings.Contains(both.Summary, "Nothing measures App Store search yet.") || !strings.Contains(both.NextMove, "App Store Connect analytics") {
+		t.Fatalf("partial must name the missing form: %+v", both)
+	}
+}
+
+const growthRecordAreas = `areas:
+  - id: alpha_audience
+    group: alpha
+    title: Audience
+    question: "Do we know who it is for?"
+    measure: the audience
+    evidence: {record: [essence.audience]}
+  - id: beta_assessed
+    group: beta
+    title: Assessed
+    question: "Has anyone assessed it?"
+    measure: the assessed thing
+    needs: [alpha_audience]
+    skills: [customer-research]
+`
+
+func TestGrowthRecordAndAssessmentEvidence(t *testing.T) {
+	cat, err := buildTestGrowthCatalog(t, growthTestCore, growthRecordAreas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	applyGrowthBundle(t, home, "product:known", func(p *Product) {
+		p.Essence = Essence{Audience: "Night-shift nurses who chart by hand"}
+		p.Learned = []LearnedFact{{At: growthAsOf.AddDate(0, 0, -10), Fact: "Five of six interviews named charting time first.", EvidenceRef: "fixture:interviews", Area: "beta_assessed"}}
+	})
+	applyGrowthBundle(t, home, "product:old", func(p *Product) {
+		p.Learned = []LearnedFact{{At: growthAsOf.AddDate(0, 0, -200), Fact: "Checked once.", EvidenceRef: "fixture:old", Area: "beta_assessed"}}
+	})
+	applyGrowthBundle(t, home, "product:blank", nil)
+	o := growthOpts()
+	o.catalog = cat
+	g := buildGrowthT(t, home, o)
+
+	known := growthApp(t, g, "product:known")
+	if a := growthAudit(t, known, "alpha_audience"); a.Status != GrowthMeasured || a.Basis != GrowthBasisRecord || !strings.HasPrefix(a.Summary, "On file: Night-shift nurses") {
+		t.Fatalf("record on file = %+v", a)
+	}
+	if a := growthAudit(t, known, "beta_assessed"); a.Status != GrowthMeasured || a.Basis != GrowthBasisAssessment || !strings.HasPrefix(a.Summary, "Assessed on "+growthDay(10)) {
+		t.Fatalf("fresh assessment = %+v", a)
+	}
+	if a := growthAudit(t, growthApp(t, g, "product:old"), "beta_assessed"); a.Status != GrowthStale || !strings.Contains(a.Summary, growthDay(200)) {
+		t.Fatalf("old assessment = %+v", a)
+	}
+	blank := growthApp(t, g, "product:blank")
+	if a := growthAudit(t, blank, "alpha_audience"); a.Status != GrowthBlind || a.NextMove != "Write it in the product contract." || a.Basis != GrowthBasisNone {
+		t.Fatalf("record absent = %+v", a)
+	}
+	b := growthAudit(t, blank, "beta_assessed")
+	if b.Status != GrowthBlind || b.NextMove != "Run customer-research and record what it finds." || strings.Join(b.BlockedBy, ",") != "alpha_audience" {
+		t.Fatalf("unassessed = %+v", b)
+	}
+	if a := growthAudit(t, known, "beta_assessed"); len(a.BlockedBy) != 0 {
+		t.Fatalf("a need that is on file must not block: %+v", a)
 	}
 }
