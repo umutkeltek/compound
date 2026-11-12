@@ -83,19 +83,27 @@ func applyAutonomyEnvelope(pd envelope.PolicyDecision, ai envelope.ActionIntent,
 	if !ok {
 		return pd
 	}
+	reason := fmt.Sprintf(
+		"autonomy envelope %s: hold auto-cleared inside %s:%s; classification=%s/%s",
+		AutonomyLevelFullProjectScope, grantID(grant), grant.TargetPath, ai.Action, ai.MutationClass)
 	if autonomyEnvelopeNarrowedAway(ai, cfg, now) {
-		pd.Reasons = append(pd.Reasons, fmt.Sprintf(
-			"autonomy envelope narrowed: operator presence is away, so %s:%s clears only local_reversible holds; %s/%s needs an exact capability grant with requires_presence away",
-			grantID(grant), grant.TargetPath, ai.Capability, ai.MutationClass))
-		return pd
+		exact, ok := awayExactGrant(ai, cfg, now)
+		if !ok {
+			pd.Reasons = append(pd.Reasons, fmt.Sprintf(
+				"autonomy envelope narrowed: operator presence is away, so %s:%s clears only local_reversible holds; %s/%s needs an exact grant naming that capability and mutation_class, a target_path covering %s, and requires_presence away",
+				grantID(grant), grant.TargetPath, ai.Capability, ai.MutationClass, path))
+			return pd
+		}
+		grant = exact
+		reason = fmt.Sprintf(
+			"autonomy envelope %s: operator presence is away; hold cleared by exact away grant %s:%s (capability=%q class=%q requires_presence=away); classification=%s/%s",
+			AutonomyLevelFullProjectScope, grantID(grant), grant.TargetPath, grant.Capability, grant.MutationClass, ai.Action, ai.MutationClass)
 	}
 	pd.Outcome = "allow_with_obligations"
 	pd.Obligations = grantObligations(ai, cfg)
 	pd.StandingGrantID = grant.ID
 	pd.ExpiresAt = grant.ExpiresAt
-	pd.Reasons = append(pd.Reasons, fmt.Sprintf(
-		"autonomy envelope %s: hold auto-cleared inside %s:%s; classification=%s/%s",
-		AutonomyLevelFullProjectScope, grantID(grant), grant.TargetPath, ai.Action, ai.MutationClass))
+	pd.Reasons = append(pd.Reasons, reason)
 	if ref := strings.TrimSpace(cfg.OperatorAutonomyAuthorityRef); ref != "" {
 		pd.EvidenceRefs = mergeStrings(pd.EvidenceRefs, ref)
 	}
@@ -136,23 +144,63 @@ const AwayEnvelopeClearableClass = "local_reversible"
 // is away, a path scope stops being an authorization for consequences: the
 // envelope clears a hold only on a local_reversible intent. Everything else --
 // external_side_effect, financial, destructive, public, security, unknown --
-// needs a grant that matchGrant accepts on its own (exact capability and
-// class), and for a held class that grant is written with requires_presence
-// away. This deliberately ignores the grant's own mutation_class: the envelope
-// never matched class, so a class-bearing path grant would otherwise reopen
-// the same hole. Presence only ever narrows here; it never clears anything.
+// needs a grant written for exactly that work and exactly that absence (see
+// awayExactGrant). This deliberately ignores the scope grant's own
+// mutation_class: the envelope never matched class, so a class-bearing path
+// grant would otherwise reopen the same hole. Presence only ever narrows here;
+// it never clears anything.
 func autonomyEnvelopeNarrowedAway(ai envelope.ActionIntent, cfg Config, now time.Time) bool {
 	return cfg.OperatorPresence.Effective(now) == PresenceAway &&
 		strings.TrimSpace(ai.MutationClass) != AwayEnvelopeClearableClass
 }
 
-// autonomyEnvelopeGrant is the envelope's answer for this intent: the scope
-// grant, unless the away narrowing withholds it.
-func autonomyEnvelopeGrant(ai envelope.ActionIntent, cfg Config, now time.Time) (StandingGrant, bool) {
-	if autonomyEnvelopeNarrowedAway(ai, cfg, now) {
-		return StandingGrant{}, false
+// awayExactGrant is the one key that reopens a narrowed envelope while the
+// operator is away. Without it the narrowing had no key at all for a hold the
+// security floor raises AFTER matchGrant: a capability grant could match and
+// still leave the unknown-classification floor standing, so the narrowed
+// message pointed at a grant that could not clear anything.
+//
+// The grant must
+//
+//   - ask for presence away -- an empty or "any" grant was written for an
+//     operator who can still be asked, and says nothing about an absence;
+//   - name the intent's capability AND mutation class, both non-empty -- a
+//     wildcard field is a scope, and a scope is exactly what away narrows;
+//   - name a target_path that covers the intent's path;
+//   - pass every check matchGrant applies (expiry, not_before, presence,
+//     reversibility, blast radius, destination, cost). It IS matchGrant, run
+//     over only the grants that meet the three rules above.
+//
+// It reaches nothing the envelope cannot reach while the operator is present:
+// the caller has already refused a deny floor, an operator-gated action, a
+// non-clearable floor reason, a forbidden path, an envelope not in force, and
+// an empty target path.
+func awayExactGrant(ai envelope.ActionIntent, cfg Config, now time.Time) (StandingGrant, bool) {
+	var exact []StandingGrant
+	for _, g := range cfg.StandingGrants {
+		if strings.ToLower(strings.TrimSpace(g.RequiresPresence)) != PresenceAway {
+			continue
+		}
+		if strings.TrimSpace(g.Capability) == "" || strings.TrimSpace(g.MutationClass) == "" || strings.TrimSpace(g.TargetPath) == "" {
+			continue
+		}
+		if g.Capability != ai.Capability || g.MutationClass != ai.MutationClass {
+			continue
+		}
+		exact = append(exact, g)
 	}
-	return autonomyEnvelopeScopeGrant(ai, cfg, now)
+	g, _, ok := matchGrant(exact, ai, cfg, now)
+	return g, ok
+}
+
+// autonomyEnvelopeGrant is the envelope's answer for this intent: the scope
+// grant, or -- while the away narrowing applies -- only an exact away grant.
+func autonomyEnvelopeGrant(ai envelope.ActionIntent, cfg Config, now time.Time) (StandingGrant, bool) {
+	scope, ok := autonomyEnvelopeScopeGrant(ai, cfg, now)
+	if !ok || !autonomyEnvelopeNarrowedAway(ai, cfg, now) {
+		return scope, ok
+	}
+	return awayExactGrant(ai, cfg, now)
 }
 
 // autonomyEnvelopeScopeGrant finds the standing grant whose SCOPE covers this intent.

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"compound/internal/envelope"
 )
 
 // Away mode: a December grant set imports now and self-activates (not_before),
@@ -627,5 +629,301 @@ func TestPresenceDoctorLine(t *testing.T) {
 	line := active.String()
 	if strings.Count(line, "\n") != 1 || !strings.Contains(line, "away") || !strings.Contains(line, through.Format(time.RFC3339)) || !strings.Contains(line, "2 grant(s)") {
 		t.Fatalf("active window doctor line = %q", line)
+	}
+}
+
+// --- The exact away grant: the key the narrowed envelope names ---
+//
+// While away, the narrowing above withholds every clearance except
+// local_reversible. A hold raised by the unknown-classification floor sits
+// AFTER matchGrant, so a matching capability grant alone could never clear it:
+// the narrowed message named a key that did not open the door, and no
+// configuration let an unattended release batch build anything while the
+// operator was away. These tests run the two calls the live PreToolUse hook
+// makes -- MonitorToolAction, then EvaluateWithContext on the floored intent.
+
+const awayProjects = "/operator/projects"
+
+// awayBuildGrant is the exact away grant a release worker needs for commands the
+// classifier does not recognize: one capability, one class, one subtree, and
+// only while the operator is away.
+func awayBuildGrant() StandingGrant {
+	return StandingGrant{
+		ID:                   "grant_away_build_commands",
+		Capability:           "shell.unknown_command",
+		MutationClass:        "security",
+		ReversibilityCeiling: "irreversible",
+		BlastRadius:          "host",
+		TargetPath:           awayProjects + "/**",
+		RequiresPresence:     PresenceAway,
+	}
+}
+
+// awayBuildConfig is the operator's live shape (L3 plus the projects-tree scope
+// grant) with any extra grants; presence is away unless present is true.
+func awayBuildConfig(present bool, extra ...StandingGrant) Config {
+	cfg := liveShapedProjectsConfig(awayProjects)
+	if !present {
+		cfg.OperatorPresence = awayWindow(fixedNow.Add(-time.Hour), fixedNow.Add(time.Hour))
+	}
+	cfg.StandingGrants = append(cfg.StandingGrants, extra...)
+	return cfg
+}
+
+// awayHook answers a shell command the way the live hook does.
+func awayHook(t *testing.T, cfg Config, cwd, command string, ctx EvaluationContext) (MonitoredAction, envelope.PolicyDecision) {
+	t.Helper()
+	got := MonitorToolAction(ToolActionRequest{
+		WorkID: "work_away_build", Actor: "lane", Harness: "lane", Tool: "Bash",
+		Cwd: cwd, Arguments: map[string]any{"command": command}, ToolSchemaRevision: "builtin:bash",
+	}, cfg, fixedNow)
+	return got, EvaluateWithContext(got.Intent, cfg, ctx, fixedNow)
+}
+
+// awayUnknownIntent is the floored intent the monitor builds for an unknown
+// command, written out so a test can vary one field at a time.
+func awayUnknownIntent(path string) envelope.ActionIntent {
+	return envelope.ActionIntent{
+		Header:               envelope.Header{ID: "act_away_unknown", IDs: envelope.IDs{WorkID: "work_away_build"}},
+		Actor:                "lane",
+		Capability:           "shell.unknown_command",
+		Action:               "unknown_command",
+		Target:               envelope.ActionTarget{Kind: "command", Path: path},
+		MutationClass:        "security",
+		Reversibility:        "hard",
+		BlastRadius:          "host",
+		SecurityFloorOutcome: "hold",
+		SecurityReasons:      []string{UnknownClassificationFloorReason},
+	}
+}
+
+var awayBuildCommands = []string{
+	"python3 -m example_module",
+	"uploader builds upload --ipa out/App.ipa",
+	"zsh build.sh",
+	"buildtool archive -scheme App",
+}
+
+func TestAwayExactGrantClearsUnknownCommandFloor(t *testing.T) {
+	cwd := awayProjects + "/app"
+	without := awayBuildConfig(false)
+	with := awayBuildConfig(false, awayBuildGrant())
+	for _, command := range awayBuildCommands {
+		t.Run(command, func(t *testing.T) {
+			got, hook := awayHook(t, without, cwd, command, EvaluationContext{})
+			if got.Intent.Capability != "shell.unknown_command" || got.Intent.MutationClass != "security" {
+				t.Fatalf("fixture drift: %q classified %s/%s, want shell.unknown_command/security", command, got.Intent.Capability, got.Intent.MutationClass)
+			}
+			for name, pd := range map[string]envelope.PolicyDecision{"monitor": got.Decision, "hook": hook} {
+				if pd.Outcome != "hold" || !reasonContains(pd.Reasons, "operator presence is away") {
+					t.Fatalf("%s, away without an away grant: want hold naming the narrowing, got %q reasons=%v", name, pd.Outcome, pd.Reasons)
+				}
+			}
+
+			got, hook = awayHook(t, with, cwd, command, EvaluationContext{})
+			for name, pd := range map[string]envelope.PolicyDecision{"monitor": got.Decision, "hook": hook} {
+				if pd.Outcome != "allow_with_obligations" || pd.StandingGrantID != "grant_away_build_commands" || len(pd.Obligations) == 0 {
+					t.Fatalf("%s, away with the exact away grant: want allow_with_obligations via grant_away_build_commands, got %q grant=%q obligations=%v reasons=%v",
+						name, pd.Outcome, pd.StandingGrantID, pd.Obligations, pd.Reasons)
+				}
+				if !reasonContains(pd.Reasons, "operator presence is away; hold cleared by exact away grant grant_away_build_commands") {
+					t.Fatalf("%s: the clearance must name the grant and the absence, reasons=%v", name, pd.Reasons)
+				}
+			}
+		})
+	}
+}
+
+// TestAwayNarrowedMessageNamesTheWholeKey: the narrowed reason must describe a
+// grant that would actually clear the hold, path included.
+func TestAwayNarrowedMessageNamesTheWholeKey(t *testing.T) {
+	cwd := awayProjects + "/app"
+	_, hook := awayHook(t, awayBuildConfig(false), cwd, "zsh build.sh", EvaluationContext{})
+	if !reasonContains(hook.Reasons, "needs an exact grant naming that capability and mutation_class, a target_path covering "+cwd+", and requires_presence away") {
+		t.Fatalf("narrowed reason does not name capability, class, target_path and presence, reasons=%v", hook.Reasons)
+	}
+}
+
+func TestAwayExactGrantStopsAtItsTargetPath(t *testing.T) {
+	narrow := awayBuildGrant()
+	narrow.TargetPath = awayProjects + "/release/**"
+	// Inside the projects-tree envelope, outside the away grant's subtree.
+	cwd := awayProjects + "/app"
+	_, hook := awayHook(t, awayBuildConfig(false, narrow), cwd, "zsh build.sh", EvaluationContext{})
+	if hook.Outcome != "hold" || hook.StandingGrantID != "" {
+		t.Fatalf("away grant for %s must not clear a command in %s, got %q grant=%q reasons=%v", narrow.TargetPath, cwd, hook.Outcome, hook.StandingGrantID, hook.Reasons)
+	}
+	_, inside := awayHook(t, awayBuildConfig(false, narrow), awayProjects+"/release/app", "zsh build.sh", EvaluationContext{})
+	if inside.Outcome != "allow_with_obligations" || inside.StandingGrantID != narrow.ID {
+		t.Fatalf("control: inside %s the same grant must clear, got %q grant=%q reasons=%v", narrow.TargetPath, inside.Outcome, inside.StandingGrantID, inside.Reasons)
+	}
+}
+
+// TestAwayGrantMustBeExact: a grant one field short of exact is not the key.
+// Each of these would be accepted by matchGrant (or is a scope), so each also
+// shows that matchGrant accepting a grant is not enough on its own.
+func TestAwayGrantMustBeExact(t *testing.T) {
+	cwd := awayProjects + "/app"
+	cases := map[string]func(*StandingGrant){
+		"requires_presence empty": func(g *StandingGrant) { g.RequiresPresence = "" },
+		"requires_presence any":   func(g *StandingGrant) { g.RequiresPresence = PresenceAny },
+		"capability empty":        func(g *StandingGrant) { g.Capability = "" },
+		"mutation_class empty":    func(g *StandingGrant) { g.MutationClass = "" },
+		"target_path empty":       func(g *StandingGrant) { g.TargetPath = "" },
+		"other capability":        func(g *StandingGrant) { g.Capability = "shell.network_command" },
+		"other mutation_class":    func(g *StandingGrant) { g.MutationClass = "external_side_effect" },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			g := awayBuildGrant()
+			mutate(&g)
+			got, hook := awayHook(t, awayBuildConfig(false, g), cwd, "zsh build.sh", EvaluationContext{})
+			for which, pd := range map[string]envelope.PolicyDecision{"monitor": got.Decision, "hook": hook} {
+				if pd.Outcome != "hold" {
+					t.Fatalf("%s: a grant with %s must not clear while away, got %q grant=%q reasons=%v", which, name, pd.Outcome, pd.StandingGrantID, pd.Reasons)
+				}
+			}
+		})
+	}
+}
+
+func TestAwayExactGrantLeavesEveryOtherStopInPlace(t *testing.T) {
+	cwd := awayProjects + "/app"
+	cfg := awayBuildConfig(false, awayBuildGrant())
+
+	// Control: the hand-built intent clears, so every hold below is the stop
+	// under test and not a broken fixture.
+	if pd := Evaluate(awayUnknownIntent(cwd), cfg, fixedNow); pd.Outcome != "allow_with_obligations" || pd.StandingGrantID != "grant_away_build_commands" {
+		t.Fatalf("control: want allow via grant_away_build_commands, got %q grant=%q reasons=%v", pd.Outcome, pd.StandingGrantID, pd.Reasons)
+	}
+
+	// A destructive command is another class; the security grant does not reach it.
+	got, hook := awayHook(t, cfg, cwd, "rm -rf build", EvaluationContext{})
+	if got.Intent.MutationClass != "destructive" {
+		t.Fatalf("fixture drift: rm -rf build classified %s/%s", got.Intent.Capability, got.Intent.MutationClass)
+	}
+	if hook.Outcome != "hold" {
+		t.Fatalf("away + security grant must not clear a destructive command, got %q reasons=%v", hook.Outcome, hook.Reasons)
+	}
+
+	// An operator-gated shape stays held even against an away grant written
+	// exactly for its capability, class, radius and path.
+	gated, _ := awayHook(t, cfg, cwd, "git push --force origin main", EvaluationContext{})
+	if !gated.Classification.OperatorGated {
+		t.Fatalf("fixture drift: force push is not operator-gated: %+v", gated.Classification)
+	}
+	exactForGated := StandingGrant{
+		ID: "grant_away_gated", Capability: gated.Intent.Capability, MutationClass: gated.Intent.MutationClass,
+		ReversibilityCeiling: "irreversible", BlastRadius: gated.Intent.BlastRadius,
+		TargetPath: awayProjects + "/**", RequiresPresence: PresenceAway,
+	}
+	gated, hook = awayHook(t, awayBuildConfig(false, awayBuildGrant(), exactForGated), cwd, "git push --force origin main", EvaluationContext{})
+	for which, pd := range map[string]envelope.PolicyDecision{"monitor": gated.Decision, "hook": hook} {
+		if pd.Outcome != "hold" {
+			t.Fatalf("%s: away grant must not clear an operator-gated shape, got %q grant=%q reasons=%v", which, pd.Outcome, pd.StandingGrantID, pd.Reasons)
+		}
+	}
+
+	deny := awayUnknownIntent(cwd)
+	deny.SecurityFloorOutcome = "deny"
+	deny.SecurityReasons = []string{"invalid source lineage: test"}
+	if pd := Evaluate(deny, cfg, fixedNow); Allowed(pd) || pd.Outcome != "deny" {
+		t.Fatalf("deny floor: want deny, got %q reasons=%v", pd.Outcome, pd.Reasons)
+	}
+
+	suspicious := awayUnknownIntent(cwd)
+	suspicious.SecurityReasons = append(suspicious.SecurityReasons, "classifier marked content suspicious; classifier may raise the burden but never grant")
+	if pd := Evaluate(suspicious, cfg, fixedNow); pd.Outcome != "hold" {
+		t.Fatalf("a non-clearable floor reason must stay held, got %q reasons=%v", pd.Outcome, pd.Reasons)
+	}
+
+	if pd := Evaluate(awayUnknownIntent(cwd+"/.env"), cfg, fixedNow); pd.Outcome != "deny" {
+		t.Fatalf("forbidden path: want deny, got %q reasons=%v", pd.Outcome, pd.Reasons)
+	}
+
+	if pd := Evaluate(awayUnknownIntent(""), cfg, fixedNow); pd.Outcome != "hold" {
+		t.Fatalf("empty target path: want hold, got %q grant=%q reasons=%v", pd.Outcome, pd.StandingGrantID, pd.Reasons)
+	}
+
+	notInForce := cfg
+	notInForce.OperatorAutonomyLevel = ""
+	if pd := Evaluate(awayUnknownIntent(cwd), notInForce, fixedNow); pd.Outcome != "hold" {
+		t.Fatalf("autonomy level not in force: want hold, got %q grant=%q reasons=%v", pd.Outcome, pd.StandingGrantID, pd.Reasons)
+	}
+	unsigned := cfg
+	unsigned.OperatorAutonomyAuthorityRef = ""
+	if pd := Evaluate(awayUnknownIntent(cwd), unsigned, fixedNow); pd.Outcome != "hold" {
+		t.Fatalf("L3 with no authority ref: want hold, got %q grant=%q reasons=%v", pd.Outcome, pd.StandingGrantID, pd.Reasons)
+	}
+}
+
+func TestAwayExactGrantHonorsItsWindow(t *testing.T) {
+	cwd := awayProjects + "/app"
+	expired := awayBuildGrant()
+	expired.ExpiresAt = fixedNow.Add(-time.Minute).Format(time.RFC3339)
+	early := awayBuildGrant()
+	early.NotBefore = fixedNow.Add(time.Hour).Format(time.RFC3339)
+	for name, g := range map[string]StandingGrant{"expired": expired, "not_before in the future": early} {
+		t.Run(name, func(t *testing.T) {
+			_, hook := awayHook(t, awayBuildConfig(false, g), cwd, "zsh build.sh", EvaluationContext{})
+			if hook.Outcome != "hold" || hook.StandingGrantID != "" {
+				t.Fatalf("%s away grant must not clear, got %q grant=%q reasons=%v", name, hook.Outcome, hook.StandingGrantID, hook.Reasons)
+			}
+		})
+	}
+}
+
+// TestAwayGrantChangesNothingWhilePresent: present, the envelope answers with
+// the scope grant exactly as before, whether or not the away grant is in the
+// registry.
+func TestAwayGrantChangesNothingWhilePresent(t *testing.T) {
+	cwd := awayProjects + "/app"
+	for _, command := range append(append([]string{}, awayBuildCommands...), "rm -rf build") {
+		t.Run(command, func(t *testing.T) {
+			_, bare := awayHook(t, awayBuildConfig(true), cwd, command, EvaluationContext{})
+			_, with := awayHook(t, awayBuildConfig(true, awayBuildGrant()), cwd, command, EvaluationContext{})
+			for name, pd := range map[string]envelope.PolicyDecision{"without away grant": bare, "with away grant": with} {
+				if pd.Outcome != "allow_with_obligations" || pd.StandingGrantID != "grant_operator_projects_tree_20260831" ||
+					!reasonContains(pd.Reasons, "hold auto-cleared inside grant_operator_projects_tree_20260831") {
+					t.Fatalf("present, %s: want the L3 scope clearance, got %q grant=%q reasons=%v", name, pd.Outcome, pd.StandingGrantID, pd.Reasons)
+				}
+				if reasonContains(pd.Reasons, "exact away grant") {
+					t.Fatalf("present, %s: the away key must not be used, reasons=%v", name, pd.Reasons)
+				}
+			}
+			if bare.Outcome != with.Outcome || bare.StandingGrantID != with.StandingGrantID {
+				t.Fatalf("present: the away grant moved a decision: %q/%q vs %q/%q", bare.Outcome, bare.StandingGrantID, with.Outcome, with.StandingGrantID)
+			}
+		})
+	}
+}
+
+// TestAwayExactGrantKeepsTheDirtyRepoRuleInStep: the source-control gate asks
+// the envelope the same question (autonomyEnvelopeCovers), so in a repo with
+// foreign changes the away key behaves as the present envelope does -- a
+// command that cannot touch the working tree is not escalated, and a capturing
+// one still is.
+func TestAwayExactGrantKeepsTheDirtyRepoRuleInStep(t *testing.T) {
+	cwd := awayProjects + "/app"
+	dirty := EvaluationContext{SourceControl: &SourceControlContext{
+		Status: "dirty", GitRoot: cwd, ChangedPaths: 3,
+		SessionOwnershipKnown: true, SessionForeignChangedPaths: 3,
+	}}
+	_, present := awayHook(t, awayBuildConfig(true), cwd, "zsh build.sh", dirty)
+	if !Allowed(present) {
+		t.Fatalf("control: present in a dirty repo the envelope leaves a non-capturing command alone, got %q reasons=%v", present.Outcome, present.Reasons)
+	}
+	_, bare := awayHook(t, awayBuildConfig(false), cwd, "zsh build.sh", dirty)
+	if bare.Outcome != "hold" {
+		t.Fatalf("away without a grant in a dirty repo: want hold, got %q reasons=%v", bare.Outcome, bare.Reasons)
+	}
+	_, away := awayHook(t, awayBuildConfig(false, awayBuildGrant()), cwd, "zsh build.sh", dirty)
+	if away.Outcome != "allow_with_obligations" || away.StandingGrantID != "grant_away_build_commands" {
+		t.Fatalf("away with the exact grant in a dirty repo: want the present answer, got %q grant=%q reasons=%v", away.Outcome, away.StandingGrantID, away.Reasons)
+	}
+	capturing := awayUnknownIntent(cwd)
+	capturing.CapturesWorkInProgress = true
+	if pd := EvaluateWithContext(capturing, awayBuildConfig(false, awayBuildGrant()), dirty, fixedNow); pd.Outcome != "hold" {
+		t.Fatalf("a capturing command in a dirty repo must still be held, got %q reasons=%v", pd.Outcome, pd.Reasons)
 	}
 }
