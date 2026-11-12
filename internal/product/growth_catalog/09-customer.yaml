@@ -1,0 +1,22 @@
+areas:
+  - id: customer_feedback
+    group: customer
+    title: User feedback collection
+    question: Do we hear what users ask for and complain about?
+    measure: customer feedback
+    skills: [customer-research]
+    evidence:
+      custom: feedback
+  - id: customer_ratings
+    group: customer
+    title: Ratings and review strategy
+    question: Do users rate the product well where others can see it?
+    measure: ratings
+    kinds:
+      ios_app:
+        title: App Store ratings
+        question: Do users rate the app well?
+        evidence:
+          metrics: [app_store_connect_review_count, "*rating*"]
+          companion: [app_store_connect_review_count, "*rating*"]
+          source: App Store Connect reviews

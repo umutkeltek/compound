@@ -1,0 +1,58 @@
+areas:
+  - id: monetization_pricing
+    group: monetization
+    title: Pricing and packaging
+    question: Is the price right for what the product gives?
+    measure: pricing
+    applies: {objectives: [revenue]}
+    skills: [pricing]
+    evidence:
+      capped: [app_store_connect_developer_proceeds_usd, app_store_connect_units]
+      source: App Store Connect sales
+      custom: pricing
+      cap_partial: true
+  - id: monetization_free_tier
+    group: monetization
+    title: Free tiers, trials, demos and samples
+    question: Do trials and free versions convert people who hesitate?
+    measure: trials and offers
+    applies: {objectives: [revenue]}
+    skills: [pricing]
+    kinds:
+      ios_app:
+        title: Trials and offers
+        question: Do trials and offers convert people who hesitate?
+        evidence:
+          metrics: [app_store_connect_iap_units, "*subscription*", "*trial*"]
+          source: App Store Connect subscription reports
+  - id: monetization_purchase_prompt
+    group: monetization
+    title: Paywalls, pricing pages and purchase prompts
+    question: Does the purchase prompt explain the offer clearly?
+    measure: paywall design
+    applies: {objectives: [revenue]}
+    needs: [analytics_funnel]
+    skills: [paywalls]
+    evidence:
+      metrics: ["posthog_*paywall*"]
+      source: PostHog paywall events
+      paywall: true
+  - id: monetization_triggers
+    group: monetization
+    title: Purchase triggers and upgrade paths
+    question: Is the offer shown at the moment users want more?
+    measure: paywall triggers
+    applies: {objectives: [revenue]}
+    needs: [analytics_funnel]
+    skills: [paywalls]
+    evidence:
+      metrics: ["posthog_*paywall*"]
+      source: PostHog paywall events
+      paywall: true
+  - id: monetization_billing_recovery
+    group: monetization
+    title: Billing, refunds and payment recovery
+    question: Do we win back payments that fail or get refunded?
+    measure: refunds and failed payments
+    applies: {objectives: [revenue]}
+    skills: [churn-prevention]

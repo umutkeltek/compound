@@ -13,7 +13,7 @@ import (
 )
 
 // GrowthSchemaVersion is the contract version of the app growth projection.
-const GrowthSchemaVersion = "compound.product_growth.v0.1"
+const GrowthSchemaVersion = "compound.product_growth.v0.2"
 
 const growthBoundary = "read-only projection over product signals, ads rows, hypotheses and reviews; evidence, not truth; writes nothing"
 
@@ -43,22 +43,32 @@ type GrowthOptions struct {
 	WindowDays int
 	SeriesDays int
 	StaleDays  int
+
+	// catalog replaces the loaded catalog; tests only.
+	catalog *growthAreaCatalog
 }
 
-type GrowthStage struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
-	Question string `json:"question"`
-}
-
+// GrowthArea is one catalog area as the projection publishes it.
 type GrowthArea struct {
-	ID        string   `json:"id"`
-	Number    int      `json:"number"`
-	Stage     string   `json:"stage"`
-	Title     string   `json:"title"`
-	Question  string   `json:"question"`
-	Inputs    []string `json:"inputs"`
-	AppliesTo []string `json:"applies_to"`
+	ID       string                    `json:"id"`
+	Number   int                       `json:"number"`
+	Group    string                    `json:"group"`
+	Title    string                    `json:"title"`
+	Question string                    `json:"question"`
+	Inputs   []string                  `json:"inputs"`
+	Applies  map[string][]string       `json:"applies"`
+	Needs    []string                  `json:"needs"`
+	Branch   string                    `json:"branch"`
+	Skills   []string                  `json:"skills"`
+	Kinds    map[string]GrowthAreaForm `json:"kinds"`
+}
+
+// GrowthAreaForm is what an area means for one product kind.
+type GrowthAreaForm struct {
+	Title    string   `json:"title"`
+	Question string   `json:"question"`
+	Inputs   []string `json:"inputs"`
+	Skills   []string `json:"skills"`
 }
 
 type GrowthKpi struct {
@@ -173,17 +183,17 @@ type GrowthPortfolio struct {
 }
 
 type Growth struct {
-	SchemaVersion string          `json:"schema_version"`
-	GeneratedAt   string          `json:"generated_at"`
-	AsOf          string          `json:"as_of"`
-	WindowDays    int             `json:"window_days"`
-	SeriesDays    int             `json:"series_days"`
-	StaleDays     int             `json:"stale_days"`
-	Boundary      string          `json:"boundary"`
-	Stages        []GrowthStage   `json:"stages"`
-	Areas         []GrowthArea    `json:"areas"`
-	Portfolio     GrowthPortfolio `json:"portfolio"`
-	Apps          []GrowthApp     `json:"apps"`
+	SchemaVersion string            `json:"schema_version"`
+	GeneratedAt   string            `json:"generated_at"`
+	AsOf          string            `json:"as_of"`
+	WindowDays    int               `json:"window_days"`
+	SeriesDays    int               `json:"series_days"`
+	StaleDays     int               `json:"stale_days"`
+	Boundary      string            `json:"boundary"`
+	Groups        []GrowthAreaGroup `json:"groups"`
+	Areas         []GrowthArea      `json:"areas"`
+	Portfolio     GrowthPortfolio   `json:"portfolio"`
+	Apps          []GrowthApp       `json:"apps"`
 }
 
 // GrowthKpiKeys lists the KPI keys in contract order.
@@ -251,105 +261,6 @@ func normalizeGrowthOptions(o GrowthOptions) GrowthOptions {
 
 // ---------------------------------------------------------------------------
 // catalog
-
-var growthStages = []GrowthStage{
-	{"acquisition", "Acquisition", "How do people find the app?"},
-	{"activation", "Activation", "Do new users reach the value they came for?"},
-	{"monetization", "Monetization", "Does the app earn money from the people it serves?"},
-	{"retention", "Retention", "Do people come back and stay?"},
-	{"measurement", "Measurement", "Can we tell what works?"},
-}
-
-type growthAreaSpec struct {
-	GrowthArea
-	patterns   []string // metric globs that count as full evidence
-	capped     []string // metric globs that only ever justify "partial"
-	companion  []string // all of these globs must match something, else partial
-	source     string   // human name of the source to connect
-	measure    string   // noun phrase for "Nothing measures X today"
-	paywall    bool     // hypothesis/review text mentioning paywall counts as partial
-	capPartial bool     // never better than partial
-	custom     string   // custom evaluator key
-}
-
-var growthAll = []string{"all"}
-var growthIOS = []string{"ios_app"}
-
-var growthCatalog = []growthAreaSpec{
-	{GrowthArea: GrowthArea{ID: "aso", Stage: "acquisition", Title: "App Store search", Question: "Do people find the app when they search?", Inputs: []string{"app_store_connect_impressions"}, AppliesTo: growthIOS},
-		patterns: []string{"app_store_connect_impressions"}, source: "App Store Connect analytics", measure: "App Store search"},
-	{GrowthArea: GrowthArea{ID: "product_page", Stage: "acquisition", Title: "Product page conversion", Question: "Do visitors to the product page download the app?", Inputs: []string{"app_store_product_page_conversion", "app_store_connect_product_page_views", "app_store_connect_first_time_downloads", "app.conversion_rate"}, AppliesTo: growthIOS},
-		patterns:  []string{"app_store_product_page_conversion", "app_store_connect_product_page_views", "app_store_connect_first_time_downloads", "app.conversion_rate"},
-		companion: []string{"app_store_connect_product_page_views", "app_store_connect_first_time_downloads"}, source: "App Store Connect analytics", measure: "product page conversion"},
-	{GrowthArea: GrowthArea{ID: "search_ads", Stage: "acquisition", Title: "Apple Search Ads", Question: "Does paid search bring in installs at a fair price?", Inputs: []string{"ads rows (platform apple_search_ads)"}, AppliesTo: growthIOS},
-		patterns: []string{growthAppleAds}, source: "Apple Search Ads import", measure: "paid search", custom: "search_ads"},
-	{GrowthArea: GrowthArea{ID: "organic", Stage: "acquisition", Title: "Organic distribution", Question: "Do posts and content bring people to the app?", Inputs: []string{"content post records"}, AppliesTo: growthAll},
-		patterns: []string{growthContentPosts}, source: "content post records", measure: "organic distribution", custom: "organic"},
-	{GrowthArea: GrowthArea{ID: "web_traffic", Stage: "acquisition", Title: "Website and links", Question: "Do people reach the site and the links that point to the app?", Inputs: []string{"gsc_*", "ga4_*"}, AppliesTo: growthAll},
-		patterns: []string{"gsc_*", "ga4_*"}, source: "Search Console or Google Analytics", measure: "web traffic", custom: "web_traffic"},
-	{GrowthArea: GrowthArea{ID: "competitors", Stage: "acquisition", Title: "Competitor intelligence", Question: "What do rival apps do that changes our odds?", Inputs: []string{}, AppliesTo: growthAll},
-		measure: "competitors"},
-
-	{GrowthArea: GrowthArea{ID: "onboarding", Stage: "activation", Title: "Onboarding", Question: "Do new users get through the first run?", Inputs: []string{"posthog_*"}, AppliesTo: growthAll},
-		patterns: []string{"posthog_*"}, source: "PostHog events", measure: "onboarding"},
-	{GrowthArea: GrowthArea{ID: "time_to_value", Stage: "activation", Title: "Time to value", Question: "Do new users reach the result they downloaded the app for?", Inputs: []string{"posthog_*"}, AppliesTo: growthAll},
-		patterns: []string{"posthog_*"}, source: "PostHog events", measure: "time to value"},
-	{GrowthArea: GrowthArea{ID: "user_flows", Stage: "activation", Title: "User flows", Question: "Where do users drop out of the main flows?", Inputs: []string{"posthog_*"}, AppliesTo: growthAll},
-		patterns: []string{"posthog_*"}, source: "PostHog events", measure: "user flows"},
-	{GrowthArea: GrowthArea{ID: "feature_discovery", Stage: "activation", Title: "Feature discovery", Question: "Do users find the features that matter?", Inputs: []string{"posthog_*"}, AppliesTo: growthAll},
-		patterns: []string{"posthog_*"}, source: "PostHog events", measure: "feature discovery"},
-	{GrowthArea: GrowthArea{ID: "trust", Stage: "activation", Title: "Trust and privacy", Question: "Do users trust the app with their data?", Inputs: []string{"app_store_connect_review_count", "rating metrics"}, AppliesTo: growthAll},
-		patterns: []string{"app_store_connect_review_count", "*rating*"}, companion: []string{"app_store_connect_review_count", "*rating*"}, source: "App Store Connect reviews", measure: "trust"},
-
-	{GrowthArea: GrowthArea{ID: "paywall_design", Stage: "monetization", Title: "Paywall design", Question: "Does the paywall explain the offer clearly?", Inputs: []string{"posthog_*paywall*"}, AppliesTo: growthIOS},
-		patterns: []string{"posthog_*paywall*"}, source: "PostHog paywall events", measure: "paywall design", paywall: true},
-	{GrowthArea: GrowthArea{ID: "paywall_triggers", Stage: "monetization", Title: "Paywall triggers", Question: "Is the paywall shown at the moment users want more?", Inputs: []string{"posthog_*paywall*"}, AppliesTo: growthIOS},
-		patterns: []string{"posthog_*paywall*"}, source: "PostHog paywall events", measure: "paywall triggers", paywall: true},
-	{GrowthArea: GrowthArea{ID: "pricing", Stage: "monetization", Title: "Pricing", Question: "Is the price right for what the app gives?", Inputs: []string{"app_store_connect_developer_proceeds_usd", "app_store_connect_units"}, AppliesTo: growthAll},
-		capped: []string{"app_store_connect_developer_proceeds_usd", "app_store_connect_units"}, source: "App Store Connect sales", measure: "pricing", capPartial: true, custom: "pricing"},
-	{GrowthArea: GrowthArea{ID: "offers", Stage: "monetization", Title: "Trials and offers", Question: "Do trials and offers convert people who hesitate?", Inputs: []string{"app_store_connect_iap_units", "subscription metrics"}, AppliesTo: growthIOS},
-		patterns: []string{"app_store_connect_iap_units", "*subscription*", "*trial*"}, source: "App Store Connect subscription reports", measure: "trials and offers"},
-	{GrowthArea: GrowthArea{ID: "purchase_recovery", Stage: "monetization", Title: "Refunds and failed payments", Question: "Do we win back payments that fail or get refunded?", Inputs: []string{}, AppliesTo: growthIOS},
-		measure: "refunds and failed payments"},
-
-	{GrowthArea: GrowthArea{ID: "retention", Stage: "retention", Title: "Retention and churn", Question: "Do users still use the app weeks later?", Inputs: []string{"posthog_*retention*", "app_store_connect_redownloads"}, AppliesTo: growthAll},
-		patterns: []string{"posthog_*retention*", "posthog_*churn*"}, capped: []string{"app_store_connect_redownloads"}, source: "PostHog retention events", measure: "retention"},
-	{GrowthArea: GrowthArea{ID: "repeat_value", Stage: "retention", Title: "Repeat value", Question: "Does each return visit give users something new?", Inputs: []string{"posthog_*"}, AppliesTo: growthAll},
-		patterns: []string{"posthog_*"}, source: "PostHog events", measure: "repeat value"},
-	{GrowthArea: GrowthArea{ID: "reengagement", Stage: "retention", Title: "Re-engagement", Question: "Do we bring lapsed users back?", Inputs: []string{"posthog_*"}, AppliesTo: growthAll},
-		patterns: []string{"posthog_*"}, source: "PostHog events", measure: "re-engagement"},
-	{GrowthArea: GrowthArea{ID: "ratings", Stage: "retention", Title: "Ratings and reviews", Question: "Do users rate the app well?", Inputs: []string{"app_store_connect_review_count", "rating metrics"}, AppliesTo: growthIOS},
-		patterns: []string{"app_store_connect_review_count", "*rating*"}, companion: []string{"app_store_connect_review_count", "*rating*"}, source: "App Store Connect reviews", measure: "ratings"},
-	{GrowthArea: GrowthArea{ID: "feedback", Stage: "retention", Title: "Customer feedback", Question: "Do we hear what users ask for and complain about?", Inputs: []string{"open source issues", "reviews"}, AppliesTo: growthAll},
-		measure: "customer feedback", custom: "feedback"},
-
-	{GrowthArea: GrowthArea{ID: "funnel", Stage: "measurement", Title: "Funnel instrumentation", Question: "Can we follow a user from first view to purchase?", Inputs: []string{"funnel stages"}, AppliesTo: growthAll},
-		measure: "the funnel", custom: "funnel"},
-	{GrowthArea: GrowthArea{ID: "experiments", Stage: "measurement", Title: "Experiments", Question: "Do we test changes and learn from the result?", Inputs: []string{"hypotheses", "reviews"}, AppliesTo: growthAll},
-		measure: "experiments", custom: "experiments"},
-	{GrowthArea: GrowthArea{ID: "unit_economics", Stage: "measurement", Title: "Unit economics", Question: "Does each paid install earn back what it costs?", Inputs: []string{"app_store_connect_developer_proceeds_usd", "ads_spend"}, AppliesTo: growthAll},
-		patterns: []string{"app_store_connect_developer_proceeds_usd", growthAdsSpend}, companion: []string{"app_store_connect_developer_proceeds_usd", growthAdsSpend}, source: "App Store sales and ad revenue links", measure: "unit economics", custom: "unit_economics"},
-	{GrowthArea: GrowthArea{ID: "quality", Stage: "measurement", Title: "Product quality and crashes", Question: "Does the app crash or break for users?", Inputs: []string{}, AppliesTo: growthAll},
-		measure: "product quality and crashes"},
-}
-
-func init() {
-	for i := range growthCatalog {
-		growthCatalog[i].Number = i + 1
-	}
-}
-
-// GrowthCatalog returns the 25 areas in order.
-func GrowthCatalog() []GrowthArea {
-	out := make([]GrowthArea, 0, len(growthCatalog))
-	for _, s := range growthCatalog {
-		a := s.GrowthArea
-		a.Inputs = append([]string{}, a.Inputs...)
-		a.AppliesTo = append([]string{}, a.AppliesTo...)
-		out = append(out, a)
-	}
-	return out
-}
 
 // ---------------------------------------------------------------------------
 // data model
@@ -420,6 +331,14 @@ func BuildGrowth(homePath string, opts GrowthOptions) (Growth, error) {
 	opts = normalizeGrowthOptions(opts)
 	if err := opts.Validate(); err != nil {
 		return Growth{}, err
+	}
+	cat := opts.catalog
+	if cat == nil {
+		loaded, err := loadEmbeddedGrowthCatalog()
+		if err != nil {
+			return Growth{}, fmt.Errorf("growth catalog: %w", err)
+		}
+		cat = loaded
 	}
 	store, err := mem.OpenScan(homePath)
 	if err != nil {
@@ -631,10 +550,10 @@ func BuildGrowth(homePath string, opts GrowthOptions) (Growth, error) {
 		SeriesDays:    opts.SeriesDays,
 		StaleDays:     opts.StaleDays,
 		Boundary:      growthBoundary,
-		Stages:        append([]GrowthStage{}, growthStages...),
-		Areas:         GrowthCatalog(),
+		Groups:        append([]GrowthAreaGroup{}, cat.Groups...),
+		Areas:         cat.publicAreas(),
 	}
-	ctx := growthCtx{opts: opts}
+	ctx := growthCtx{opts: opts, cat: cat}
 	type ranked struct {
 		app   GrowthApp
 		alloc GrowthAllocation
@@ -801,7 +720,10 @@ func growthHumanize(id string) string {
 // ---------------------------------------------------------------------------
 // per-app computation
 
-type growthCtx struct{ opts GrowthOptions }
+type growthCtx struct {
+	opts GrowthOptions
+	cat  *growthAreaCatalog
+}
 
 type growthFacts struct {
 	hasAnyData  bool
@@ -930,7 +852,7 @@ func (c growthCtx) kind(g *growthGroup) string {
 	case has("app_store_*", "app.*", growthAppleAds) || strings.Contains(g.surfaces, "app"):
 		return "ios_app"
 	case has("gsc_*", "ga4_*") || strings.Contains(g.surfaces, "web") || strings.Contains(g.surfaces, "site"):
-		return "web"
+		return "website"
 	}
 	return "unknown"
 }
@@ -1312,7 +1234,7 @@ func (c growthCtx) funnel(g *growthGroup, kind string) []GrowthFunnelStage {
 	out := make([]GrowthFunnelStage, 0, len(defs))
 	for _, d := range defs {
 		st := GrowthFunnelStage{ID: d.id, Label: d.label}
-		if d.storeOnly && kind == "web" {
+		if d.storeOnly && kind == "website" {
 			st.Status = GrowthNotApplicable
 			st.Note = "Does not apply to a web product."
 			out = append(out, st)
@@ -1381,7 +1303,7 @@ func (g *growthGroup) hasOpenHypothesisFor(spec growthAreaSpec) bool {
 }
 
 func (c growthCtx) audit(g *growthGroup, app GrowthApp, kind string) []GrowthAudit {
-	out := make([]GrowthAudit, 0, len(growthCatalog))
+	out := make([]GrowthAudit, 0, len(c.cat.Areas))
 	stale := c.opts.StaleDays
 	funnelFresh, funnelAny := 0, 0
 	for _, f := range app.Funnel {
@@ -1393,15 +1315,9 @@ func (c growthCtx) audit(g *growthGroup, app GrowthApp, kind string) []GrowthAud
 			funnelAny++
 		}
 	}
-	for _, spec := range growthCatalog {
+	for _, area := range c.cat.Areas {
+		spec := area.spec(kind)
 		a := GrowthAudit{AreaID: spec.ID, Evidence: []GrowthEvidence{}}
-		if !growthApplies(spec.AppliesTo, kind) {
-			a.Status = GrowthNotApplicable
-			a.Summary = fmt.Sprintf("Not applicable: this is not an iOS app, so there is no %s.", strings.ToLower(spec.Title))
-			a.NextMove = "None needed."
-			out = append(out, a)
-			continue
-		}
 		full := c.evidence(g, spec.patterns)
 		capped := c.evidence(g, spec.capped)
 		all := append(append([]growthEv{}, full...), capped...)
@@ -1462,18 +1378,6 @@ func (c growthCtx) audit(g *growthGroup, app GrowthApp, kind string) []GrowthAud
 		out = append(out, a)
 	}
 	return out
-}
-
-func growthApplies(appliesTo []string, kind string) bool {
-	if kind == "unknown" {
-		return true
-	}
-	for _, a := range appliesTo {
-		if a == "all" || a == kind {
-			return true
-		}
-	}
-	return false
 }
 
 func growthFeedback(g *growthGroup, c growthCtx, a *GrowthAudit) (string, string) {
@@ -1728,8 +1632,8 @@ func (c growthCtx) nextMove(g *growthGroup, spec growthAreaSpec, status, missing
 
 func (c growthCtx) nextMoves(app GrowthApp) []GrowthNextMove {
 	byID := map[string]growthAreaSpec{}
-	for _, s := range growthCatalog {
-		byID[s.ID] = s
+	for _, area := range c.cat.Areas {
+		byID[area.ID] = area.spec(app.Kind)
 	}
 	rank := func(a GrowthAudit) int {
 		spec := byID[a.AreaID]
@@ -1782,7 +1686,7 @@ func (c growthCtx) allocate(app GrowthApp, f growthFacts) GrowthAllocation {
 	al := GrowthAllocation{ProductID: app.ProductID, Name: app.Name, Rule: growthAllocationRule}
 	activationBlind := true
 	for _, a := range app.Audit {
-		if (a.AreaID == "onboarding" || a.AreaID == "time_to_value") && a.Status != GrowthBlind && a.Status != GrowthNotApplicable {
+		if (a.AreaID == "activation_onboarding" || a.AreaID == "activation_time_to_value") && a.Status != GrowthBlind && a.Status != GrowthNotApplicable {
 			activationBlind = false
 		}
 	}
@@ -1827,8 +1731,17 @@ func (g Growth) Validate() error {
 	if g.WindowDays <= 0 || g.SeriesDays <= 0 || g.StaleDays <= 0 {
 		return fmt.Errorf("window_days, series_days and stale_days must be positive")
 	}
-	if len(g.Stages) != 5 || len(g.Areas) != len(growthCatalog) {
-		return fmt.Errorf("catalog incomplete: %d stages, %d areas", len(g.Stages), len(g.Areas))
+	if len(g.Groups) == 0 || len(g.Areas) == 0 {
+		return fmt.Errorf("catalog incomplete: %d groups, %d areas", len(g.Groups), len(g.Areas))
+	}
+	groupIDs := map[string]bool{}
+	for _, gr := range g.Groups {
+		groupIDs[gr.ID] = true
+	}
+	for i, a := range g.Areas {
+		if !groupIDs[a.Group] || a.Number != i+1 {
+			return fmt.Errorf("area %s has group %q and number %d at position %d", a.ID, a.Group, a.Number, i+1)
+		}
 	}
 	if g.Portfolio.AppCount != len(g.Apps) || len(g.Portfolio.Allocation) != len(g.Apps) {
 		return fmt.Errorf("portfolio app_count/allocation does not match apps")

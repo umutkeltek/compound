@@ -1,0 +1,16 @@
+areas:
+  - id: analytics_funnel
+    group: analytics
+    title: Funnel and journey analytics
+    question: Can we follow a user from first view to purchase?
+    measure: the funnel
+    evidence:
+      custom: funnel
+  - id: analytics_experiment_design
+    group: analytics
+    title: Experiment design and hypothesis tracking
+    question: Do we test changes and learn from the result?
+    measure: experiments
+    branch: experiment
+    evidence:
+      custom: experiments

@@ -301,46 +301,46 @@ func TestGrowthAuditStatuses(t *testing.T) {
 	if ios.Kind != "ios_app" {
 		t.Fatalf("kind = %s", ios.Kind)
 	}
-	if got := growthAudit(t, ios, "aso").Status; got != GrowthBlind {
+	if got := growthAudit(t, ios, "acquisition_search").Status; got != GrowthBlind {
 		t.Fatalf("aso = %s, want blind", got)
 	}
-	if got := growthAudit(t, ios, "onboarding").Status; got != GrowthBlind {
+	if got := growthAudit(t, ios, "activation_onboarding").Status; got != GrowthBlind {
 		t.Fatalf("onboarding = %s", got)
 	}
-	if got := growthAudit(t, ios, "pricing").Status; got != GrowthPartial {
+	if got := growthAudit(t, ios, "monetization_pricing").Status; got != GrowthPartial {
 		t.Fatalf("pricing is never better than partial, got %s", got)
 	}
-	retention := growthAudit(t, ios, "retention")
+	retention := growthAudit(t, ios, "retention_repeat_use")
 	if retention.Status != GrowthStale || !strings.Contains(retention.NextMove, growthDay(60)) {
 		t.Fatalf("retention = %+v", retention)
 	}
-	if got := growthAudit(t, ios, "competitors"); got.Status != GrowthBlind || !strings.Contains(got.Summary, "No data source") {
+	if got := growthAudit(t, ios, "opportunity_competitors"); got.Status != GrowthBlind || !strings.Contains(got.Summary, "No data source") {
 		t.Fatalf("competitors = %+v", got)
 	}
 
 	web := growthApp(t, g, "product:web_two")
-	if web.Kind != "web" {
+	if web.Kind != "website" {
 		t.Fatalf("kind = %s", web.Kind)
 	}
-	wt := growthAudit(t, web, "web_traffic")
+	wt := growthAudit(t, web, "acquisition_search")
 	if wt.Status != GrowthMeasured || !strings.Contains(wt.Summary, "clicks from web search") {
-		t.Fatalf("web_traffic = %+v", wt)
+		t.Fatalf("acquisition_search on a website = %+v", wt)
 	}
-	for _, id := range []string{"aso", "product_page", "search_ads", "paywall_design", "ratings"} {
-		if got := growthAudit(t, web, id).Status; got != GrowthNotApplicable {
-			t.Fatalf("%s on a web app = %s, want not_applicable", id, got)
+	// The App Store forms never judge a website: the store-only areas fall back
+	// to their base question and never ask for App Store data.
+	for _, id := range []string{"acquisition_listing", "acquisition_paid", "monetization_purchase_prompt", "customer_ratings", "brand_trust"} {
+		got := growthAudit(t, web, id)
+		if strings.Contains(got.Summary+got.NextMove, "App Store") || strings.Contains(got.Summary+got.NextMove, "Apple") {
+			t.Fatalf("%s on a website uses the App Store form: %+v", id, got)
 		}
 	}
-	if web.Coverage.NotApplicable == 0 {
-		t.Fatal("coverage must count not_applicable")
-	}
-	wantScore := (float64(web.Coverage.Measured) + 0.5*float64(web.Coverage.Partial) + 0.25*float64(web.Coverage.Stale)) / float64(25-web.Coverage.NotApplicable)
+	wantScore := (float64(web.Coverage.Measured) + 0.5*float64(web.Coverage.Partial) + 0.25*float64(web.Coverage.Stale)) / float64(len(g.Areas)-web.Coverage.NotApplicable)
 	if d := web.Coverage.Score - wantScore; d > 0.001 || d < -0.001 {
 		t.Fatalf("score %v want %v", web.Coverage.Score, wantScore)
 	}
 
 	st := growthApp(t, g, "product:stale-web")
-	if got := growthAudit(t, st, "web_traffic"); got.Status != GrowthStale || !strings.Contains(got.NextMove, growthDay(20)) {
+	if got := growthAudit(t, st, "acquisition_search"); got.Status != GrowthStale || !strings.Contains(got.NextMove, growthDay(20)) {
 		t.Fatalf("stale web_traffic = %+v", got)
 	}
 	if !st.Freshness.Stale || st.Freshness.Sources[0].Source != "search_console" || st.Freshness.Sources[0].DaysSince != 20 {
@@ -349,7 +349,7 @@ func TestGrowthAuditStatuses(t *testing.T) {
 	if len(web.NextMoves) != 3 {
 		t.Fatalf("next_moves = %+v", web.NextMoves)
 	}
-	if web.NextMoves[0].AreaID != "organic" && web.NextMoves[0].AreaID != "onboarding" {
+	if web.NextMoves[0].AreaID != "experience_journeys" {
 		t.Fatalf("first move must be the earliest broken sourced stage: %+v", web.NextMoves)
 	}
 }
@@ -375,7 +375,7 @@ func TestGrowthUnitEconomicsPartialWithoutAdRevenue(t *testing.T) {
 				AdRow{ProductID: "product:alpha", Date: growthDay(3), Spend: 5, HasRevenue: tc.hasRevenue, Revenue: tc.revenue},
 			)
 			g := buildGrowthT(t, home, growthOpts())
-			got := growthAudit(t, g.Apps[0], "unit_economics")
+			got := growthAudit(t, g.Apps[0], "operations_unit_economics")
 			if got.Status != tc.want {
 				t.Fatalf("unit_economics = %+v, want %s", got, tc.want)
 			}
@@ -450,14 +450,14 @@ func TestGrowthAppsWithoutDataAndExperiments(t *testing.T) {
 	if tested.Hypotheses.Open != 1 {
 		t.Fatalf("hypotheses = %+v", tested.Hypotheses)
 	}
-	if got := growthAudit(t, tested, "experiments").Status; got != GrowthPartial {
+	if got := growthAudit(t, tested, "analytics_experiment_design").Status; got != GrowthPartial {
 		t.Fatalf("experiments with only an open hypothesis = %s", got)
 	}
-	if got := growthAudit(t, tested, "paywall_design").Status; got != GrowthPartial {
+	if got := growthAudit(t, tested, "monetization_purchase_prompt").Status; got != GrowthPartial {
 		t.Fatalf("a paywall hypothesis must count as partial, got %s", got)
 	}
 	empty := growthApp(t, g, "product:empty")
-	if got := growthAudit(t, empty, "experiments").Status; got != GrowthBlind {
+	if got := growthAudit(t, empty, "analytics_experiment_design").Status; got != GrowthBlind {
 		t.Fatalf("experiments with nothing = %s", got)
 	}
 	for _, k := range empty.Kpis {
@@ -474,13 +474,14 @@ func TestGrowthValidateRejectsBrokenShape(t *testing.T) {
 	raw, _ := json.Marshal(g)
 	var m Growth
 	_ = json.Unmarshal(raw, &m)
-	if len(m.Areas) != 25 || len(m.Stages) != 5 || len(m.Apps[0].Funnel) != 7 {
-		t.Fatalf("catalog shape wrong")
+	if len(m.Areas) < 25 || len(m.Groups) != 12 || len(m.Apps[0].Funnel) != 7 {
+		t.Fatalf("catalog shape wrong: %d areas, %d groups", len(m.Areas), len(m.Groups))
 	}
 	cases := map[string]func(*Growth){
 		"schema":   func(x *Growth) { x.SchemaVersion = "v0" },
 		"as_of":    func(x *Growth) { x.AsOf = "yesterday" },
-		"audit":    func(x *Growth) { x.Apps[0].Audit = x.Apps[0].Audit[:24] },
+		"audit":    func(x *Growth) { x.Apps[0].Audit = x.Apps[0].Audit[:len(x.Apps[0].Audit)-1] },
+		"group":    func(x *Growth) { x.Areas[0].Group = "nowhere" },
 		"series":   func(x *Growth) { x.Apps[0].Series["units"] = nil },
 		"coverage": func(x *Growth) { x.Apps[0].Coverage.Blind += 3 },
 		"status":   func(x *Growth) { x.Apps[0].Audit[0].Status = "great" },
@@ -564,7 +565,7 @@ func TestGrowthStaleNamesTheStaleInput(t *testing.T) {
 	writeGrowthAds(t, home, ads...)
 	app := buildGrowthT(t, home, growthOpts()).Apps[0]
 
-	ue := growthAudit(t, app, "unit_economics")
+	ue := growthAudit(t, app, "operations_unit_economics")
 	if ue.Status != GrowthStale {
 		t.Fatalf("unit_economics = %+v", ue)
 	}
@@ -576,7 +577,7 @@ func TestGrowthStaleNamesTheStaleInput(t *testing.T) {
 		t.Fatalf("next_move = %q", ue.NextMove)
 	}
 
-	ret := growthAudit(t, app, "retention")
+	ret := growthAudit(t, app, "retention_repeat_use")
 	if ret.Status != GrowthStale {
 		t.Fatalf("retention = %+v", ret)
 	}
@@ -637,10 +638,10 @@ func TestGrowthSingularCounts(t *testing.T) {
 	}
 	writeGrowthSignals(t, home, growthRow{product: "product:alpha", metric: "app_store_connect_units", date: growthDay(1), value: 1}, growthRow{product: "product:alpha", metric: "app_store_connect_developer_proceeds_usd", date: growthDay(1), value: 5})
 	app := buildGrowthT(t, home, growthOpts()).Apps[0]
-	if s := growthAudit(t, app, "experiments").Summary; !strings.Contains(s, "1 open hypothesis and 0 reviews") {
+	if s := growthAudit(t, app, "analytics_experiment_design").Summary; !strings.Contains(s, "1 open hypothesis and 0 reviews") {
 		t.Fatalf("experiments summary = %q", s)
 	}
-	if s := growthAudit(t, app, "pricing").Summary; !strings.Contains(s, "on 1 unit in 30 days") {
+	if s := growthAudit(t, app, "monetization_pricing").Summary; !strings.Contains(s, "on 1 unit in 30 days") {
 		t.Fatalf("pricing summary = %q", s)
 	}
 }
@@ -666,11 +667,11 @@ func TestGrowthBlindTextIsVendorNeutral(t *testing.T) {
 				}
 			}
 			switch a.AreaID {
-			case "onboarding":
+			case "activation_onboarding":
 				if a.Summary != "Nothing measures onboarding today." || a.NextMove != growthPrivacyMove {
 					t.Fatalf("onboarding = %+v", a)
 				}
-			case "organic":
+			case "acquisition_organic":
 				if a.Summary != "No posted content is recorded for this app." || a.NextMove != "Record posts and their results so reach can be compared." {
 					t.Fatalf("organic = %+v", a)
 				}

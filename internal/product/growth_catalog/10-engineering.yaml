@@ -1,0 +1,8 @@
+areas:
+  - id: engineering_quality
+    group: engineering
+    title: Testing and quality assurance
+    question: Does the product crash or break for users?
+    measure: product quality and crashes
+    branch: qa
+    skills: [tdd, diagnosing-bugs]

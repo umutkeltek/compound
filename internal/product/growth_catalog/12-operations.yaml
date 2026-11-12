@@ -1,0 +1,11 @@
+areas:
+  - id: operations_unit_economics
+    group: operations
+    title: Unit economics and profitability
+    question: Does each paid user earn back what it costs to get them?
+    measure: unit economics
+    evidence:
+      metrics: [app_store_connect_developer_proceeds_usd, ads_spend]
+      companion: [app_store_connect_developer_proceeds_usd, ads_spend]
+      source: App Store sales and ad revenue links
+      custom: unit_economics

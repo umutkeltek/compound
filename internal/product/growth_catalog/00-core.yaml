@@ -1,0 +1,68 @@
+# Product growth catalog: core file.
+#
+# The catalog is the list of areas `compound product growth` judges a product
+# against. Each area asks one plain question that fits any digital product.
+# A product's profile (kinds, audiences, revenue models, objectives) decides
+# whether an area applies; a kind form says what the question means for one
+# kind of product. Files load in name order; this file sorts first.
+schema_version: compound.product_growth_catalog.v0.1
+
+# Groups, in order. `branch` is the product-pipeline branch an area of the
+# group routes to unless the area names its own.
+groups:
+  - id: opportunity
+    title: Opportunity
+    question: Is there a real problem worth solving for people we can reach?
+    branch: research
+  - id: strategy
+    title: Strategy
+    question: Do we know what we build, for whom, and why it wins?
+    branch: strategy
+  - id: brand
+    title: Brand
+    question: Does the product look and sound like one thing people recognize and trust?
+    branch: visuals
+  - id: experience
+    title: Experience
+    question: Can people use the product without friction?
+    branch: ux
+  - id: activation
+    title: Activation
+    question: Do new users reach the value they came for?
+    branch: activation
+  - id: acquisition
+    title: Acquisition
+    question: How do people find the product?
+    branch: distribution
+  - id: monetization
+    title: Monetization
+    question: Does the product earn money from the people it serves?
+    branch: experiment
+  - id: retention
+    title: Retention
+    question: Do people come back and stay?
+    branch: retention
+  - id: customer
+    title: Customer
+    question: Do we hear and understand the people who use the product?
+    branch: research
+  - id: engineering
+    title: Engineering
+    question: Does the product work, stay up and stay safe?
+    branch: delivery
+  - id: analytics
+    title: Analytics
+    question: Can we tell what works?
+    branch: measurement
+  - id: operations
+    title: Operations
+    question: Does the business around the product hold up?
+    branch: measurement
+
+# Allowed profile values per dimension. A product contract may only declare
+# these; an area's `applies` and `kinds` keys may only name these.
+profile:
+  kinds: [ios_app, android_app, web_app, website, api, dev_tool, browser_extension, digital_download, marketplace, ai_agent, internal_tool]
+  audiences: [consumer, business, developer, internal]
+  revenue_models: [one_time, subscription, usage, ads, licensing, transactions, enterprise, none]
+  objectives: [revenue, adoption, hours_saved, learning]

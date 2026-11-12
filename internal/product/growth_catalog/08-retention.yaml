@@ -1,0 +1,27 @@
+areas:
+  - id: retention_repeat_use
+    group: retention
+    title: Retention and repeat use
+    question: Do users still use the product weeks later?
+    measure: retention
+    evidence:
+      metrics: ["posthog_*retention*", "posthog_*churn*"]
+      capped: [app_store_connect_redownloads]
+      source: PostHog retention events
+  - id: retention_recurring_value
+    group: retention
+    title: Recurring value and habit
+    question: Does each return visit give users something new?
+    measure: repeat value
+    evidence:
+      metrics: ["posthog_*"]
+      source: PostHog events
+  - id: retention_reengagement
+    group: retention
+    title: Notifications and re-engagement
+    question: Do we bring lapsed users back?
+    measure: re-engagement
+    skills: [emails]
+    evidence:
+      metrics: ["posthog_*"]
+      source: PostHog events

@@ -1,0 +1,86 @@
+areas:
+  - id: acquisition_search
+    group: acquisition
+    title: Search discoverability
+    question: Do people find the product when they search?
+    measure: search discoverability
+    skills: [seo-audit]
+    kinds:
+      ios_app:
+        title: App Store search
+        question: Do people find the app when they search the store?
+        measure: App Store search
+        evidence:
+          metrics: [app_store_connect_impressions]
+          source: App Store Connect analytics
+        skills: [aso]
+      website:
+        title: Search engines
+        question: Do people find the site when they search the web?
+        measure: web search traffic
+        evidence:
+          metrics: ["gsc_*"]
+          source: Search Console
+          custom: web_traffic
+        skills: [seo-audit, ai-seo]
+      web_app:
+        title: Search engines
+        question: Do people find the product when they search the web?
+        measure: web search traffic
+        evidence:
+          metrics: ["gsc_*"]
+          source: Search Console
+          custom: web_traffic
+        skills: [seo-audit, ai-seo]
+  - id: acquisition_listing
+    group: acquisition
+    title: Store listings and marketplace presence
+    question: Does the product's listing turn visitors into users?
+    measure: listing conversion
+    kinds:
+      ios_app:
+        title: App Store product page
+        question: Do visitors to the product page download the app?
+        measure: product page conversion
+        evidence:
+          metrics: [app_store_product_page_conversion, app_store_connect_product_page_views, app_store_connect_first_time_downloads, app.conversion_rate]
+          companion: [app_store_connect_product_page_views, app_store_connect_first_time_downloads]
+          source: App Store Connect analytics
+        skills: [aso, app-store-screenshots]
+  - id: acquisition_landing
+    group: acquisition
+    title: Landing pages and website conversion
+    question: Do people who reach the site take the next step?
+    measure: website traffic
+    skills: [cro, copywriting]
+    evidence:
+      metrics: ["ga4_*"]
+      source: Google Analytics
+  - id: acquisition_organic
+    group: acquisition
+    title: Organic content and social distribution
+    question: Do posts and content bring people to the product?
+    measure: organic distribution
+    evidence:
+      metrics: [content_posts]
+      source: content post records
+      custom: organic
+  - id: acquisition_paid
+    group: acquisition
+    title: Paid advertising and campaigns
+    question: Does paid advertising bring in users at a fair price?
+    measure: paid advertising
+    needs: [operations_unit_economics]
+    evidence:
+      metrics: [ads_spend]
+      source: ads import
+      custom: search_ads
+    kinds:
+      ios_app:
+        title: Apple Search Ads
+        question: Does paid search bring in installs at a fair price?
+        measure: paid search
+        evidence:
+          metrics: [apple_search_ads_spend]
+          source: Apple Search Ads import
+          custom: search_ads

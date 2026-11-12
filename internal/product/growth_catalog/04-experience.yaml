@@ -1,0 +1,9 @@
+areas:
+  - id: experience_journeys
+    group: experience
+    title: Core user journeys and task flows
+    question: Where do users drop out of the main flows?
+    measure: user flows
+    evidence:
+      metrics: ["posthog_*"]
+      source: PostHog events

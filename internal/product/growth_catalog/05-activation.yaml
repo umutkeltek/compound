@@ -1,0 +1,29 @@
+areas:
+  - id: activation_onboarding
+    group: activation
+    title: Onboarding and guided setup
+    question: Do new users get through the first run?
+    measure: onboarding
+    needs: [experience_journeys]
+    skills: [onboarding]
+    evidence:
+      metrics: ["posthog_*"]
+      source: PostHog events
+  - id: activation_time_to_value
+    group: activation
+    title: Time to first value
+    question: Do new users reach the result they came for?
+    measure: time to value
+    needs: [experience_journeys]
+    evidence:
+      metrics: ["posthog_*"]
+      source: PostHog events
+  - id: activation_feature_discovery
+    group: activation
+    title: Feature discovery and education
+    question: Do users find the features that matter?
+    measure: feature discovery
+    needs: [experience_journeys]
+    evidence:
+      metrics: ["posthog_*"]
+      source: PostHog events

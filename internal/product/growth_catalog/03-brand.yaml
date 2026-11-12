@@ -1,0 +1,14 @@
+areas:
+  - id: brand_trust
+    group: brand
+    title: Trust signals and social proof
+    question: Do people trust the product with their data and money?
+    measure: trust
+    kinds:
+      ios_app:
+        title: Store reviews as trust
+        question: Do store reviews and ratings tell new users the app is safe to try?
+        evidence:
+          metrics: [app_store_connect_review_count, "*rating*"]
+          companion: [app_store_connect_review_count, "*rating*"]
+          source: App Store Connect reviews
