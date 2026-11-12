@@ -413,9 +413,9 @@ func (g *growthGroup) put(m map[string]map[string]growthPV, metric, date string,
 // ---------------------------------------------------------------------------
 // build
 
-// BuildGrowth folds the signal ledger, ads rows, hypotheses, reviews and
-// product registry into the growth projection. It reads only; it never
-// opens the memory store for writing.
+// BuildGrowth folds the signal ledger, the daily App Store sales series, ads
+// rows, hypotheses, reviews and product registry into the growth projection.
+// It reads only; it never opens the memory store for writing.
 func BuildGrowth(homePath string, opts GrowthOptions) (Growth, error) {
 	opts = normalizeGrowthOptions(opts)
 	if err := opts.Validate(); err != nil {
@@ -502,6 +502,12 @@ func BuildGrowth(homePath string, opts GrowthOptions) (Growth, error) {
 			g.put(g.ranges, metric, date, s.After, at)
 		}
 	}
+
+	ascSales, err := loadGrowthASCSalesSeries(homePath)
+	if err != nil {
+		return Growth{}, err
+	}
+	applyGrowthASCSales(ascSales, growthASCAppIDs(signals, groups, resolve), asOfStr)
 
 	// Ads: dedupe a re-imported (platform, campaign, date), keep the latest import.
 	type adKey struct{ g, platform, campaign, date string }
