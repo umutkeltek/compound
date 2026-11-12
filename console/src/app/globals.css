@@ -17,6 +17,7 @@
   --text-xl:  22px;     --text-xl--line-height: 1.2;
   --text-hero:24px;     --text-hero--line-height: 1.24;  /* primary operator question */
   --text-2xl: 30px;     --text-2xl--line-height: 1.1;    /* KPI value */
+  --text-3xl: 34px;     --text-3xl--line-height: 1.1;    /* page title */
 
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, system-ui, sans-serif;
   --font-mono: "SF Mono", ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
@@ -27,7 +28,7 @@
   --radius-xl: 18px;    --radius-pill: 100px;
 
   /* — semantic layout sizes (the only "spacing" tokens) — */
-  --rail-w: 52px;   --nav-w: 218px;   --drawer-w: 460px;   --composer-w: 560px;   --read-max: 720px;
+  --rail-w: 52px;   --nav-w: 252px;   --drawer-w: 460px;   --composer-w: 560px;   --read-max: 720px;
 
   /* — motion — */
   --dur-fast: 120ms;   --dur-base: 180ms;   --dur-slow: 240ms;   --dur-slower: 400ms;
@@ -99,9 +100,11 @@
    ============================================================ */
 :root, :root[data-theme="light"] {
   color-scheme: light;
-  --page:#F4F5F7; --panel:#FFFFFF; --soft:#F8F9FB; --soft-2:#F1F3F6;
-  --ink:#101828; --strong:#0A101E; --muted:#51606F; --faint:#98A2B3;
-  --hair:#E8EAEF; --hair-2:#EEF0F4;
+  /* neutral, faintly warm greys (operator references 2026-11-12): a quiet
+     frame (--page) holding one white working panel (--panel). */
+  --page:#F1F1EF; --panel:#FFFFFF; --soft:#F8F8F6; --soft-2:#F2F2EF;
+  --ink:#18181B; --strong:#0C0C0E; --muted:#5C5E66; --faint:#94969E;
+  --hair:#E6E6E2; --hair-2:#EEEEEA;
 
   /* domain (cool) */
   --work-fg:#2563EB;   --work-soft:#EAF1FE;   --work-line:#C7DBFB;
@@ -115,6 +118,8 @@
   --seam-fg:#B26F09;   --seam-soft:#FCF1DC;   --seam-line:#F1D89B;   /* the attention color */
   --crit-fg:#DC2626;   --crit-soft:#FCE9E7;   --crit-line:#F5C4BE;
   --scrim:rgba(16,26,38,.38);
+  /* chart series (validated: dataviz validate_palette, light + dark) */
+  --viz-1:#EA580C; --viz-2:#2563EB; --viz-grid:#EEEEEA;
 
   /* — §9.2 heat glows (light): bottom-rising domain ambience into transparent.
      Spec baseline percentages read well over the near-white --page/--panel;
@@ -152,6 +157,7 @@
   --seam-fg:#F0AE48;   --seam-soft:#302510;   --seam-line:#654A18;
   --crit-fg:#FF7A68;   --crit-soft:#331714;   --crit-line:#633029;
   --scrim:rgba(2,4,8,.62);
+  --viz-1:#EA580C; --viz-2:#3B82F6; --viz-grid:#1F2630;
 
   /* — §9.2 heat glows (dark): a translucent hue over the near-black substrate
      reads as EMISSIVE (adds light), so the deltas vs light are tuned for even
@@ -224,24 +230,43 @@ body {
   font-size: 12px;
 }
 
-/* Sidebar nav item */
+/* Sidebar nav item — the sidebar sits on the frame (--page); the active row
+   lifts to a white panel chip, like a selected tab. */
 .nav-item {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 7px 10px;
+  padding: 6px 10px;
+  border: 1px solid transparent;
   border-radius: 10px;
-  color: var(--color-ink-2);
-  font-weight: 500;
-  font-size: 13.5px;
+  color: var(--muted);
+  font-weight: 450;
+  font-size: 14px;
+  line-height: 1.35;
 }
 .nav-item:hover {
-  background: var(--soft-2);
-  color: var(--color-ink);
+  background: color-mix(in srgb, var(--panel) 60%, transparent);
+  color: var(--ink);
 }
 .nav-item[data-active="true"] {
-  background: var(--soft-2);
-  color: var(--work-fg);
+  background: var(--panel);
+  border-color: var(--hair);
+  box-shadow: var(--shadow-sm);
+  color: var(--ink);
+  font-weight: 500;
+}
+
+/* The one working panel the page lives in (md+: inset, rounded, hairline). */
+@media (min-width: 768px) {
+  .shell-panel {
+    background: var(--panel);
+    border: 1px solid var(--hair);
+    border-radius: 18px;
+    box-shadow: var(--shadow-sm);
+  }
+}
+@media (max-width: 767px) {
+  .shell-panel { background: var(--panel); }
 }
 .nav-item[data-soon="true"] {
   opacity: 0.45;
@@ -602,16 +627,8 @@ body {
   isolation: isolate;
 }
 
-.console-stage::before {
-  content: "";
-  position: absolute;
-  inset: -1.5rem -1.5rem auto;
-  height: 22rem;
-  z-index: -1;
-  background-image: var(--heat-work);
-  opacity: .28;
-  pointer-events: none;
-}
+/* The page-top heat glow was retired with the 2026-11-12 workspace look:
+   the white working panel carries no ambient wash. */
 
 .focus-hero {
   box-shadow:

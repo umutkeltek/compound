@@ -2,19 +2,16 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
+import { NAV_GROUPS } from "@/lib/experience";
 
 type Item =
   | { kind: "nav"; label: string; href: string }
   | { kind: "cmd"; label: string; cmd: string };
 
 const ITEMS: Item[] = [
-  { kind: "nav", label: "Today", href: "/" },
-  { kind: "nav", label: "Live", href: "/live" },
-  { kind: "nav", label: "Work", href: "/work" },
-  { kind: "nav", label: "Decide", href: "/reviews" },
-  { kind: "nav", label: "Knowledge", href: "/memory" },
-  { kind: "nav", label: "System", href: "/map" },
-  { kind: "nav", label: "Outcomes", href: "/loops" },
+  ...NAV_GROUPS.flatMap((group) => group.items.map((item): Item => ({ kind: "nav", label: item.label, href: item.href }))),
+  { kind: "nav", label: "Settings", href: "/settings" },
+  { kind: "cmd", label: "Growth model (terminal)", cmd: "compound product growth" },
   { kind: "cmd", label: "Workbench (terminal)", cmd: "compound workbench" },
   { kind: "cmd", label: "Review queue (terminal)", cmd: "compound reviews" },
   { kind: "cmd", label: "External-repo reviews", cmd: "compound reviews --area external-repo-intake" },
@@ -38,8 +35,16 @@ export function CommandK() {
       }
       if (e.key === "Escape") setOpen(false);
     }
+    function onOpen() {
+      setOpen(true);
+      setQ("");
+    }
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("compound:command-k", onOpen);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("compound:command-k", onOpen);
+    };
   }, []);
 
   const results = useMemo(() => {
@@ -68,25 +73,11 @@ export function CommandK() {
     }
   }
 
-  if (!open)
-    return (
-      <button
-        onClick={() => setOpen(true)}
-        className="rounded-pill border border-hair bg-panel px-2.5 py-1 text-xs font-medium text-muted hover:bg-soft"
-        title="Command palette"
-      >
-        ⌘K
-      </button>
-    );
+  // The visible trigger is the sidebar search box (it dispatches compound:command-k).
+  if (!open) return null;
 
   return (
     <>
-      <button
-        onClick={() => setOpen(true)}
-        className="rounded-pill border border-hair bg-panel px-2.5 py-1 text-xs font-medium text-muted"
-      >
-        ⌘K
-      </button>
       <div
         className="fixed inset-0 z-50 flex items-start justify-center bg-scrim pt-[18vh] backdrop-blur-sm"
         onClick={() => setOpen(false)}

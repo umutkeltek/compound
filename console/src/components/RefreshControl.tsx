@@ -28,21 +28,22 @@ export function RefreshControl({ responsive = false }: { responsive?: boolean })
           type="button"
           aria-pressed={auto}
           onClick={() => setAuto(!auto)}
-          className={`shrink-0 whitespace-nowrap rounded-full px-2.5 py-1 text-[11.5px] font-medium transition-colors ${
-            auto ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"
+          className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border border-hair px-2.5 py-1 text-xs font-medium transition-colors hover:bg-soft ${
+            auto ? "text-ink" : "text-faint"
           }`}
           title="Refresh every 30 seconds"
         >
-          auto 30s {auto ? "on" : "off"}
+          <span className={`h-1.5 w-1.5 rounded-full ${auto ? "bg-good" : "bg-faint"}`} aria-hidden />
+          Auto-refresh {auto ? "on" : "off"}
         </button>
         <button
           type="button"
           aria-label={pending ? "Refreshing" : "Refresh now"}
           onClick={() => startTransition(() => router.refresh())}
           disabled={pending}
-          className="shrink-0 whitespace-nowrap rounded-full bg-slate-100 px-2.5 py-1 text-[11.5px] font-medium text-slate-600 transition-colors hover:bg-slate-200 disabled:cursor-wait disabled:opacity-60"
+          className="shrink-0 whitespace-nowrap rounded-lg border border-hair px-2.5 py-1 text-xs font-medium text-ink transition-colors hover:bg-soft disabled:cursor-wait disabled:opacity-60"
         >
-          {pending ? "refreshing..." : "refresh"}
+          {pending ? "Refreshing…" : "Refresh"}
         </button>
       </div>
       {responsive ? (

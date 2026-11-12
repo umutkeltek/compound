@@ -1,137 +1,261 @@
 "use client";
-
 import * as Dialog from "@radix-ui/react-dialog";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
-
-import { BrainIcon, GavelIcon, GridIcon, LoopIcon, PulseIcon, RouteIcon, TableIcon } from "@/components/kit/icons";
-import { EXPERIENCE_SURFACES, routeIsActive, surfaceForPath } from "@/lib/experience";
+import { useEffect, useState, type ReactNode } from "react";
+import {
+  BarChartIcon,
+  BoardIcon,
+  BrainIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+  ChevronsUpDownIcon,
+  CoinsIcon,
+  GavelIcon,
+  GridIcon,
+  HomeIcon,
+  LoopIcon,
+  PulseIcon,
+  RouteIcon,
+  SearchIcon,
+  ShieldIcon,
+  SlidersIcon,
+  SourceIcon,
+  TargetIcon,
+  UsersIcon,
+  LayersIcon,
+} from "@/components/kit/icons";
+import { NAV_GROUPS, routeIsActive, type NavGroup, type NavIconKey } from "@/lib/experience";
 
 /**
- * The primary rail is needs-led rather than object-led. Existing routes stay
- * stable beneath one of seven product surfaces; the active surface expands its
- * secondary navigation without making every advanced route permanently loud.
+ * The workspace sidebar. Layout follows the operator's reference: workspace
+ * switcher, search, an always-open Essentials group, the Apps list (projects),
+ * Growth, then Knowledge and System, which collapse until one of their pages is
+ * active. Every console route stays reachable from here — nothing is hidden,
+ * only quieted.
  */
 type BadgeTone = "seam" | "quiet";
-type NavBadge = { count: number; tone: BadgeTone };
 
 export type NavProps = {
-  /** Needs-you group count for the Decide queue (interim source: `compound reviews --json` groups — see NavContainer). Amber, the only amber badge. */
+  /** Needs-you group count for Decide (from `compound attention --json`). Amber — the only amber badge. */
   decideCount?: number | null;
-  /** Cheap needs-claim count from the existing workbench fetch (`counts.needs_claim`). Quiet slate — not a needs-you signal. */
+  /** Workbench needs-you count. Quiet slate — not a needs-you signal on its own. */
   workCount?: number | null;
   variant?: "desktop" | "mobile";
+  /** Server-rendered Apps list (streams in behind Suspense; never blocks the shell). */
+  apps?: ReactNode;
+  /** Server-rendered system status card (autonomy, data freshness, instance). */
+  status?: ReactNode;
 };
 
-const SURFACE_ICONS = {
-  today: GridIcon,
-  live: PulseIcon,
-  work: TableIcon,
-  decide: GavelIcon,
-  knowledge: BrainIcon,
-  system: RouteIcon,
-  outcomes: LoopIcon,
+const ICONS: Record<NavIconKey, (p: { size?: number }) => ReactNode> = {
+  home: HomeIcon,
+  board: BoardIcon,
+  gavel: GavelIcon,
+  pulse: PulseIcon,
+  users: UsersIcon,
+  route: RouteIcon,
+  chart: BarChartIcon,
+  target: TargetIcon,
+  loop: LoopIcon,
+  coins: CoinsIcon,
+  brain: BrainIcon,
+  law: ShieldIcon,
+  source: SourceIcon,
+  map: LayersIcon,
+  sliders: SlidersIcon,
+  grid: GridIcon,
 };
 
 function CountPill({ count, tone }: { count: number; tone: BadgeTone }) {
   if (count <= 0) return null;
-  const cls = tone === "seam" ? "border-seam-line bg-seam-soft text-seam" : "border-hair bg-soft-2 text-muted";
+  const cls = tone === "seam" ? "bg-seam-soft text-seam" : "text-faint";
   return (
-    <span
-      className={`mono ml-auto inline-flex min-w-5 items-center justify-center rounded-pill border px-1.5 py-0.5 text-2xs font-semibold tabular-nums ${cls}`}
-    >
+    <span className={`ml-auto inline-flex min-w-5 items-center justify-center rounded-pill px-1.5 text-xs font-medium tabular-nums ${cls}`}>
       {count}
     </span>
   );
 }
 
-function Brand() {
+function Workspace() {
   return (
-    <div className="flex items-center gap-2.5 px-1">
-      <span className="flex h-8 w-8 items-center justify-center rounded-md bg-ink text-md font-bold text-panel">
-        c
+    <Link
+      href="/settings"
+      className="flex items-center gap-2.5 rounded-xl border border-hair bg-panel px-2.5 py-2 shadow-sm transition-colors hover:bg-soft"
+      title="Workspace settings"
+    >
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-strong text-md font-bold text-panel">c</span>
+      <span className="min-w-0 flex-1 leading-tight">
+        <span className="block text-2xs text-faint">Workspace</span>
+        <span className="block truncate text-md font-semibold text-ink">Compound</span>
       </span>
-      <div className="leading-tight">
-        <div className="text-base font-semibold text-ink">compound</div>
-        <div className="text-xs text-faint">console</div>
-      </div>
+      <span className="text-faint"><ChevronsUpDownIcon size={14} /></span>
+    </Link>
+  );
+}
+
+function SearchButton() {
+  return (
+    <button
+      type="button"
+      onClick={() => window.dispatchEvent(new CustomEvent("compound:command-k"))}
+      className="flex w-full items-center gap-2 rounded-xl border border-hair bg-panel px-3 py-2 text-left text-sm text-faint transition-colors hover:border-faint hover:text-muted"
+      title="Search pages and commands (⌘K)"
+    >
+      <SearchIcon size={14} />
+      <span className="flex-1">Search</span>
+      <kbd className="rounded-md border border-hair bg-soft px-1.5 text-2xs font-medium text-faint">⌘K</kbd>
+    </button>
+  );
+}
+
+function GroupLabel({ children, action }: { children: ReactNode; action?: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between px-2.5 pb-1.5 pt-1">
+      <span className="text-xs font-medium text-faint">{children}</span>
+      {action}
     </div>
   );
 }
 
-function NavLinks({
+function NavRow({
+  href,
+  label,
+  icon,
+  active,
+  title,
+  badge,
+  onNavigate,
+}: {
+  href: string;
+  label: string;
+  icon: NavIconKey;
+  active: boolean;
+  title?: string;
+  badge?: ReactNode;
+  onNavigate?: () => void;
+}) {
+  const Icon = ICONS[icon];
+  return (
+    <Link href={href} className="nav-item" data-active={active} aria-current={active ? "page" : undefined} onClick={onNavigate} title={title}>
+      <span className={active ? "text-ink" : "text-faint"}><Icon size={15} /></span>
+      <span className="truncate">{label}</span>
+      {badge}
+    </Link>
+  );
+}
+
+function Group({
+  group,
   pathname,
   decideCount,
   workCount,
-  mobile = false,
+  onNavigate,
+}: {
+  group: NavGroup;
+  pathname: string;
+  decideCount?: number | null;
+  workCount?: number | null;
+  onNavigate?: () => void;
+}) {
+  const containsActive = group.items.some((item) => routeIsActive(pathname, item));
+  const [open, setOpen] = useState(!group.collapsible || containsActive);
+  useEffect(() => {
+    if (containsActive) setOpen(true);
+  }, [containsActive]);
+
+  const rows = group.items.map((item) => {
+    const badge =
+      item.badge === "decide" && decideCount != null ? <CountPill count={decideCount} tone="seam" />
+        : item.badge === "work" && workCount != null ? <CountPill count={workCount} tone="quiet" />
+          : null;
+    return (
+      <NavRow
+        key={item.href}
+        href={item.href}
+        label={item.label}
+        icon={item.icon}
+        active={routeIsActive(pathname, item)}
+        title={item.description}
+        badge={badge}
+        onNavigate={onNavigate}
+      />
+    );
+  });
+
+  if (!group.collapsible) {
+    return (
+      <div>
+        <GroupLabel>{group.label}</GroupLabel>
+        <div className="flex flex-col gap-0.5">{rows}</div>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between rounded-lg px-2.5 pb-1.5 pt-1 text-xs font-medium text-faint hover:text-muted"
+      >
+        <span>{group.label}</span>
+        <span className="flex items-center gap-1.5">
+          {!open ? <span className="tabular-nums">{group.items.length}</span> : null}
+          {open ? <ChevronDownIcon size={13} /> : <ChevronRightIcon size={13} />}
+        </span>
+      </button>
+      {open ? <div className="flex flex-col gap-0.5">{rows}</div> : null}
+    </div>
+  );
+}
+
+function Divider() {
+  return <div className="mx-2.5 border-t border-hair" />;
+}
+
+function NavBody({
+  pathname,
+  decideCount,
+  workCount,
+  apps,
+  status,
   onNavigate,
 }: {
   pathname: string;
   decideCount?: number | null;
   workCount?: number | null;
-  mobile?: boolean;
+  apps?: ReactNode;
+  status?: ReactNode;
   onNavigate?: () => void;
 }) {
-  const linkClass = mobile ? "nav-item py-2.5" : "nav-item";
-  const activeSurface = surfaceForPath(pathname);
+  const [essentials, growth, ...rest] = NAV_GROUPS;
   return (
-    <nav className="flex flex-1 flex-col gap-1" aria-label="Primary">
-      {EXPERIENCE_SURFACES.map((surface) => {
-        const active = activeSurface.id === surface.id;
-        const Icon = SURFACE_ICONS[surface.id];
-        const badge: NavBadge | undefined = surface.id === "decide" && decideCount != null
-          ? { count: decideCount, tone: "seam" }
-          : surface.id === "work" && workCount != null
-            ? { count: workCount, tone: "quiet" }
-            : undefined;
-        return (
-          <div key={surface.id}>
-            <Link
-              href={surface.href}
-              className={linkClass}
-              data-active={active}
-              aria-current={pathname === surface.href ? "page" : undefined}
-              onClick={onNavigate}
-              title={surface.description}
-            >
-              <span className={active ? "text-work" : "text-faint"}><Icon size={14} /></span>
-              {surface.label}
-              {badge ? <CountPill count={badge.count} tone={badge.tone} /> : null}
-            </Link>
-            {active && surface.routes.length > 1 ? (
-              <div className="ml-7 mt-0.5 flex flex-col border-l border-hair pl-2">
-                {surface.routes.map((route) => (
-                  <Link
-                    key={route.href}
-                    href={route.href}
-                    onClick={onNavigate}
-                    className="rounded-md px-2 py-1.5 text-xs text-faint transition-colors hover:bg-soft hover:text-ink data-[active=true]:text-work"
-                    data-active={routeIsActive(pathname, route)}
-                  >
-                    {route.label}
-                  </Link>
-                ))}
-              </div>
-            ) : null}
-          </div>
-        );
-      })}
-    </nav>
+    <>
+      <div className="flex flex-col gap-3">
+        <Workspace />
+        <SearchButton />
+      </div>
+      <nav className="flex flex-1 flex-col gap-4" aria-label="Primary">
+        <Group group={essentials} pathname={pathname} decideCount={decideCount} workCount={workCount} onNavigate={onNavigate} />
+        <Divider />
+        {apps}
+        <Group group={growth} pathname={pathname} onNavigate={onNavigate} />
+        <Divider />
+        {rest.map((group) => (
+          <Group key={group.id} group={group} pathname={pathname} onNavigate={onNavigate} />
+        ))}
+      </nav>
+      <div className="flex flex-col gap-3">
+        {status}
+        <Divider />
+        <NavRow href="/settings" label="Settings" icon="sliders" active={pathname === "/settings"} onNavigate={onNavigate} />
+      </div>
+    </>
   );
 }
 
-function NavFooter() {
-  return (
-    <div className="px-1 text-2xs leading-relaxed text-faint">
-      Projection-first · evidence-backed.
-      <br />
-      Depth changes presentation, never truth.
-    </div>
-  );
-}
-
-export function Nav({ decideCount, workCount, variant = "desktop" }: NavProps) {
+export function Nav({ decideCount, workCount, variant = "desktop", apps, status }: NavProps) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
 
@@ -154,9 +278,8 @@ export function Nav({ decideCount, workCount, variant = "desktop" }: NavProps) {
         </Dialog.Trigger>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-[60] bg-scrim backdrop-blur-sm motion-reduce:backdrop-blur-none md:hidden" />
-          <Dialog.Content className="fixed inset-y-0 left-0 z-[60] flex w-[min(86vw,300px)] flex-col gap-6 overflow-y-auto overscroll-contain border-r border-hair bg-panel px-4 py-5 shadow-lg focus:outline-none md:hidden">
-            <div className="flex items-center justify-between gap-3">
-              <Dialog.Title asChild><div><Brand /></div></Dialog.Title>
+          <Dialog.Content className="fixed inset-y-0 left-0 z-[60] flex w-[min(86vw,300px)] flex-col gap-5 overflow-y-auto overscroll-contain border-r border-hair bg-page px-3 py-4 shadow-lg focus:outline-none md:hidden">
+            <div className="flex items-center justify-end">
               <Dialog.Close asChild>
                 <button
                   type="button"
@@ -168,9 +291,9 @@ export function Nav({ decideCount, workCount, variant = "desktop" }: NavProps) {
                 </button>
               </Dialog.Close>
             </div>
-            <Dialog.Description className="sr-only">Navigate between Compound console workspaces.</Dialog.Description>
-            <NavLinks pathname={pathname} decideCount={decideCount} workCount={workCount} mobile onNavigate={() => setOpen(false)} />
-            <NavFooter />
+            <Dialog.Title className="sr-only">Navigation</Dialog.Title>
+            <Dialog.Description className="sr-only">Navigate between Compound console pages.</Dialog.Description>
+            <NavBody pathname={pathname} decideCount={decideCount} workCount={workCount} apps={apps} status={status} onNavigate={() => setOpen(false)} />
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>
@@ -178,10 +301,8 @@ export function Nav({ decideCount, workCount, variant = "desktop" }: NavProps) {
   }
 
   return (
-    <aside className="sticky top-0 hidden h-screen w-[var(--nav-w)] shrink-0 flex-col gap-6 border-r border-hair bg-panel/70 px-4 py-5 backdrop-blur md:flex">
-      <Brand />
-      <NavLinks pathname={pathname} decideCount={decideCount} workCount={workCount} />
-      <NavFooter />
+    <aside className="sticky top-0 hidden h-screen w-[var(--nav-w)] shrink-0 flex-col gap-5 overflow-y-auto px-3 py-4 md:flex">
+      <NavBody pathname={pathname} decideCount={decideCount} workCount={workCount} apps={apps} status={status} />
     </aside>
   );
 }

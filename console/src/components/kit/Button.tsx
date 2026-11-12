@@ -32,7 +32,7 @@ const VARIANT: Record<ButtonVariant, (tone: ButtonTone) => string> = {
 
 export function Button({
   variant = "secondary",
-  tone = "work",
+  tone = "ink",
   className = "",
   children,
   ...rest

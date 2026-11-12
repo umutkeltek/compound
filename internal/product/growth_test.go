@@ -1,0 +1,683 @@
+package product
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+	"time"
+
+	"compound/internal/candidates"
+	"compound/internal/mem"
+)
+
+// growthAsOf is injected; no growth test reads the wall clock.
+var growthAsOf = time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
+
+func growthOpts() GrowthOptions {
+	return GrowthOptions{Now: growthAsOf.Add(9 * time.Hour), AsOf: growthAsOf}
+}
+
+func growthDay(offset int) string { return growthAsOf.AddDate(0, 0, -offset).Format("2006-01-02") }
+
+type growthRow struct {
+	product, metric string
+	date            string
+	value           float64
+	observed        string
+}
+
+func writeGrowthSignals(t *testing.T, home string, rows ...growthRow) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(home, "ledger"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	for i, r := range rows {
+		prefix := "daily snapshot "
+		if strings.HasPrefix(r.metric, "gsc_") {
+			prefix = "snapshot "
+		}
+		observed := r.observed
+		if observed == "" {
+			observed = "2026-11-01T00:00:00Z"
+		}
+		line, _ := json.Marshal(Signal{
+			ID: fmt.Sprintf("sig_%d", i), ProductID: r.product, MetricName: r.metric,
+			Before: 0, After: r.value, Window: prefix + r.date, ObservedAt: observed,
+		})
+		b.Write(line)
+		b.WriteByte('\n')
+	}
+	if err := os.WriteFile(signalsLog(home), []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeGrowthAds(t *testing.T, home string, rows ...AdRow) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(home, "ledger"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	for i, r := range rows {
+		r.ID = fmt.Sprintf("adrow_%d", i)
+		if r.Platform == "" {
+			r.Platform = "apple_search_ads"
+		}
+		if r.CampaignID == "" {
+			r.CampaignID = "camp1"
+		}
+		line, _ := json.Marshal(r)
+		b.Write(line)
+		b.WriteByte('\n')
+	}
+	if err := os.WriteFile(adsRowsLog(home), []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// daily returns one row per day for offsets from..to (days before as-of).
+func growthDaily(product, metric string, from, to int, value float64) []growthRow {
+	var out []growthRow
+	for off := from; off >= to; off-- {
+		out = append(out, growthRow{product: product, metric: metric, date: growthDay(off), value: value})
+	}
+	return out
+}
+
+func buildGrowthT(t *testing.T, home string, opts GrowthOptions) Growth {
+	t.Helper()
+	g, err := BuildGrowth(home, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	return g
+}
+
+func growthApp(t *testing.T, g Growth, id string) GrowthApp {
+	t.Helper()
+	for _, a := range g.Apps {
+		if a.ProductID == id {
+			return a
+		}
+	}
+	t.Fatalf("app %s not found in %v", id, func() []string {
+		var ids []string
+		for _, a := range g.Apps {
+			ids = append(ids, a.ProductID)
+		}
+		return ids
+	}())
+	return GrowthApp{}
+}
+
+func growthAudit(t *testing.T, a GrowthApp, area string) GrowthAudit {
+	t.Helper()
+	for _, x := range a.Audit {
+		if x.AreaID == area {
+			return x
+		}
+	}
+	t.Fatalf("area %s missing", area)
+	return GrowthAudit{}
+}
+
+func TestGrowthMergesSpellingVariantsAndAcceptsAliases(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := registryBundle("product:alpha_app", "Alpha App")
+	if _, err := Apply(home, store, b, "alpha.yaml", tProduct); err != nil {
+		t.Fatal(err)
+	}
+	// The hyphen spelling carries more rows, but the registry id still wins.
+	rows := growthDaily("product:alpha-app", "app_store_connect_units", 5, 0, 2)
+	rows = append(rows, growthRow{product: "product:alpha_app", metric: "app_store_connect_units", date: growthDay(9), value: 1})
+	writeGrowthSignals(t, home, rows...)
+
+	g := buildGrowthT(t, home, growthOpts())
+	if g.Portfolio.AppCount != 1 || len(g.Apps) != 1 {
+		t.Fatalf("want one merged app, got %d", len(g.Apps))
+	}
+	app := g.Apps[0]
+	if app.ProductID != "product:alpha_app" || app.Name != "Alpha App" {
+		t.Fatalf("canonical = %s / %s", app.ProductID, app.Name)
+	}
+	if len(app.Aliases) != 1 || app.Aliases[0] != "product:alpha-app" {
+		t.Fatalf("aliases = %v", app.Aliases)
+	}
+	if got := *app.Kpis["units"].Value; got != 13 {
+		t.Fatalf("units across both spellings = %v, want 13", got)
+	}
+	for _, q := range []string{"product:alpha-app", "alpha-app", "Alpha_App", "product:alpha_app"} {
+		o := growthOpts()
+		o.ProductID = q
+		one := buildGrowthT(t, home, o)
+		if len(one.Apps) != 1 || one.Apps[0].ProductID != "product:alpha_app" {
+			t.Fatalf("--product %q resolved to %v", q, one.Apps)
+		}
+	}
+	o := growthOpts()
+	o.ProductID = "product:nope"
+	if _, err := BuildGrowth(home, o); err == nil {
+		t.Fatal("unknown product must error")
+	}
+}
+
+func TestGrowthUnregisteredSpellingsPickMostRows(t *testing.T) {
+	home := t.TempDir()
+	rows := growthDaily("product:gamma-web", "gsc_clicks", 4, 0, 1)
+	rows = append(rows, growthRow{product: "product:gamma_web", metric: "gsc_clicks", date: growthDay(8), value: 1})
+	writeGrowthSignals(t, home, rows...)
+	g := buildGrowthT(t, home, growthOpts())
+	if len(g.Apps) != 1 || g.Apps[0].ProductID != "product:gamma-web" || g.Apps[0].Name != "Gamma Web" {
+		t.Fatalf("apps = %+v", g.Apps)
+	}
+}
+
+// A feed that stops must read as missing, never as zero revenue. This test
+// fails if the series were zero-filled.
+func TestGrowthSeriesNeverZeroFills(t *testing.T) {
+	home := t.TempDir()
+	rows := growthDaily("product:alpha", "app_store_connect_developer_proceeds_usd", 40, 30, 5)
+	writeGrowthSignals(t, home, rows...)
+	g := buildGrowthT(t, home, growthOpts())
+	app := growthApp(t, g, "product:alpha")
+	pts := app.Series["proceeds_usd"]
+	if len(pts) != 120 {
+		t.Fatalf("series length = %d", len(pts))
+	}
+	if pts[len(pts)-1].Date != growthDay(0) || pts[0].Date != growthDay(119) {
+		t.Fatalf("series range %s..%s", pts[0].Date, pts[len(pts)-1].Date)
+	}
+	have, missing := 0, 0
+	for _, p := range pts {
+		if p.Value == nil {
+			missing++
+			continue
+		}
+		have++
+		if *p.Value != 5 {
+			t.Fatalf("value %v on %s", *p.Value, p.Date)
+		}
+	}
+	if have != 11 || missing != 109 {
+		t.Fatalf("have %d missing %d", have, missing)
+	}
+	if pts[len(pts)-1].Value != nil {
+		t.Fatal("last day has no row and must be null, not zero")
+	}
+	if pts2 := g.Portfolio.Series["proceeds_usd"]; pts2[len(pts2)-1].Value != nil {
+		t.Fatal("portfolio series must be null when no app reported")
+	}
+}
+
+func TestGrowthKpiWindowPreviousAndDedupe(t *testing.T) {
+	home := t.TempDir()
+	m := "app_store_connect_developer_proceeds_usd"
+	var rows []growthRow
+	// window (offsets 0..29): rows on offsets 1, 3, 5 worth 10 each
+	for _, off := range []int{1, 3, 5} {
+		rows = append(rows, growthRow{product: "product:alpha", metric: m, date: growthDay(off), value: 10})
+	}
+	// previous window (offsets 30..59): two rows worth 4
+	for _, off := range []int{31, 40} {
+		rows = append(rows, growthRow{product: "product:alpha", metric: m, date: growthDay(off), value: 4})
+	}
+	// re-import of offset 1: the later import wins, not a double count
+	rows = append(rows, growthRow{product: "product:alpha", metric: m, date: growthDay(1), value: 12, observed: "2026-11-05T00:00:00Z"})
+	writeGrowthSignals(t, home, rows...)
+	g := buildGrowthT(t, home, growthOpts())
+	k := growthApp(t, g, "product:alpha").Kpis["proceeds_usd"]
+	if k.Value == nil || *k.Value != 32 {
+		t.Fatalf("value = %v, want 32 (12+10+10)", k.Value)
+	}
+	if k.Previous == nil || *k.Previous != 8 {
+		t.Fatalf("previous = %v, want 8", k.Previous)
+	}
+	if k.DaysReported != 3 || k.DaysInWindow != 30 || !k.HasData || k.LatestDate != growthDay(1) || k.Unit != "usd" {
+		t.Fatalf("kpi = %+v", k)
+	}
+	if units := growthApp(t, g, "product:alpha").Kpis["units"]; units.HasData || units.Value != nil {
+		t.Fatalf("absent metric must be null: %+v", units)
+	}
+	// narrower window changes the math
+	o := growthOpts()
+	o.WindowDays = 2
+	k2 := *buildGrowthT(t, home, o).Apps[0].Kpis["proceeds_usd"].Value
+	if k2 != 12 {
+		t.Fatalf("2-day window = %v, want 12", k2)
+	}
+}
+
+func TestGrowthAdKpisAndCPA(t *testing.T) {
+	home := t.TempDir()
+	writeGrowthSignals(t, home)
+	writeGrowthAds(t, home,
+		AdRow{ProductID: "product:alpha", Date: growthDay(2), Spend: 6, Conversions: 2, ImportedAt: "2026-11-01T00:00:00Z"},
+		AdRow{ProductID: "product:alpha", Date: growthDay(3), Spend: 4, Conversions: 0, ImportedAt: "2026-11-01T00:00:00Z"},
+		AdRow{ProductID: "product:alpha", Date: growthDay(3), Spend: 4, Conversions: 0, ImportedAt: "2026-11-01T00:00:00Z"}, // exact re-import
+		AdRow{ProductID: "product:beta-app", Date: growthDay(2), Spend: 3, Conversions: 0, ImportedAt: "2026-11-01T00:00:00Z"},
+	)
+	g := buildGrowthT(t, home, growthOpts())
+	a := growthApp(t, g, "product:alpha").Kpis
+	if *a["ad_spend_usd"].Value != 10 || *a["ad_conversions"].Value != 2 || *a["ad_cpa_usd"].Value != 5 {
+		t.Fatalf("ads kpis = %+v", a)
+	}
+	b := growthApp(t, g, "product:beta-app").Kpis
+	if b["ad_cpa_usd"].Value != nil {
+		t.Fatalf("cpa with zero conversions must be null: %+v", b["ad_cpa_usd"])
+	}
+	if got := *g.Portfolio.Totals["ad_spend_usd"].Value; got != 13 {
+		t.Fatalf("portfolio spend = %v", got)
+	}
+}
+
+func TestGrowthAuditStatuses(t *testing.T) {
+	home := t.TempDir()
+	var rows []growthRow
+	// ios app: units fresh and plenty, impressions absent, redownloads stale.
+	rows = append(rows, growthDaily("product:ios-one", "app_store_connect_units", 9, 0, 1)...)
+	rows = append(rows, growthDaily("product:ios-one", "app_store_connect_developer_proceeds_usd", 9, 0, 3)...)
+	rows = append(rows, growthRow{product: "product:ios-one", metric: "app_store_connect_redownloads", date: growthDay(60), value: 1})
+	// web app: search console rows, fresh for web_traffic.
+	rows = append(rows, growthDaily("product:web_two", "gsc_clicks", 6, 0, 7)...)
+	rows = append(rows, growthDaily("product:web_two", "gsc_impressions", 6, 0, 70)...)
+	// stale web: last row 20 days ago.
+	rows = append(rows, growthDaily("product:stale-web", "gsc_clicks", 25, 20, 1)...)
+	writeGrowthSignals(t, home, rows...)
+	g := buildGrowthT(t, home, growthOpts())
+
+	ios := growthApp(t, g, "product:ios-one")
+	if ios.Kind != "ios_app" {
+		t.Fatalf("kind = %s", ios.Kind)
+	}
+	if got := growthAudit(t, ios, "aso").Status; got != GrowthBlind {
+		t.Fatalf("aso = %s, want blind", got)
+	}
+	if got := growthAudit(t, ios, "onboarding").Status; got != GrowthBlind {
+		t.Fatalf("onboarding = %s", got)
+	}
+	if got := growthAudit(t, ios, "pricing").Status; got != GrowthPartial {
+		t.Fatalf("pricing is never better than partial, got %s", got)
+	}
+	retention := growthAudit(t, ios, "retention")
+	if retention.Status != GrowthStale || !strings.Contains(retention.NextMove, growthDay(60)) {
+		t.Fatalf("retention = %+v", retention)
+	}
+	if got := growthAudit(t, ios, "competitors"); got.Status != GrowthBlind || !strings.Contains(got.Summary, "No data source") {
+		t.Fatalf("competitors = %+v", got)
+	}
+
+	web := growthApp(t, g, "product:web_two")
+	if web.Kind != "web" {
+		t.Fatalf("kind = %s", web.Kind)
+	}
+	wt := growthAudit(t, web, "web_traffic")
+	if wt.Status != GrowthMeasured || !strings.Contains(wt.Summary, "clicks from web search") {
+		t.Fatalf("web_traffic = %+v", wt)
+	}
+	for _, id := range []string{"aso", "product_page", "search_ads", "paywall_design", "ratings"} {
+		if got := growthAudit(t, web, id).Status; got != GrowthNotApplicable {
+			t.Fatalf("%s on a web app = %s, want not_applicable", id, got)
+		}
+	}
+	if web.Coverage.NotApplicable == 0 {
+		t.Fatal("coverage must count not_applicable")
+	}
+	wantScore := (float64(web.Coverage.Measured) + 0.5*float64(web.Coverage.Partial) + 0.25*float64(web.Coverage.Stale)) / float64(25-web.Coverage.NotApplicable)
+	if d := web.Coverage.Score - wantScore; d > 0.001 || d < -0.001 {
+		t.Fatalf("score %v want %v", web.Coverage.Score, wantScore)
+	}
+
+	st := growthApp(t, g, "product:stale-web")
+	if got := growthAudit(t, st, "web_traffic"); got.Status != GrowthStale || !strings.Contains(got.NextMove, growthDay(20)) {
+		t.Fatalf("stale web_traffic = %+v", got)
+	}
+	if !st.Freshness.Stale || st.Freshness.Sources[0].Source != "search_console" || st.Freshness.Sources[0].DaysSince != 20 {
+		t.Fatalf("freshness = %+v", st.Freshness)
+	}
+	if len(web.NextMoves) != 3 {
+		t.Fatalf("next_moves = %+v", web.NextMoves)
+	}
+	if web.NextMoves[0].AreaID != "organic" && web.NextMoves[0].AreaID != "onboarding" {
+		t.Fatalf("first move must be the earliest broken sourced stage: %+v", web.NextMoves)
+	}
+}
+
+func TestGrowthUnitEconomicsPartialWithoutAdRevenue(t *testing.T) {
+	cases := []struct {
+		name       string
+		hasRevenue bool
+		revenue    float64
+		want       string
+	}{
+		{"no revenue linked", false, 0, GrowthPartial},
+		{"has_revenue but zero", true, 0, GrowthPartial},
+		{"revenue linked", true, 9, GrowthMeasured},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			writeGrowthSignals(t, home, growthDaily("product:alpha", "app_store_connect_developer_proceeds_usd", 9, 0, 3)...)
+			writeGrowthAds(t, home,
+				AdRow{ProductID: "product:alpha", Date: growthDay(1), Spend: 5, HasRevenue: tc.hasRevenue, Revenue: tc.revenue},
+				AdRow{ProductID: "product:alpha", Date: growthDay(2), Spend: 5, HasRevenue: tc.hasRevenue, Revenue: tc.revenue},
+				AdRow{ProductID: "product:alpha", Date: growthDay(3), Spend: 5, HasRevenue: tc.hasRevenue, Revenue: tc.revenue},
+			)
+			g := buildGrowthT(t, home, growthOpts())
+			got := growthAudit(t, g.Apps[0], "unit_economics")
+			if got.Status != tc.want {
+				t.Fatalf("unit_economics = %+v, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGrowthAllocationClasses(t *testing.T) {
+	home := t.TempDir()
+	var rows []growthRow
+	// fix_data: earned, but the sales feed stopped 25 days ago.
+	rows = append(rows, growthDaily("product:fixme", "app_store_connect_developer_proceeds_usd", 40, 25, 9)...)
+	// grow: proceeds in the window, fresh.
+	rows = append(rows, growthDaily("product:growme", "app_store_connect_developer_proceeds_usd", 5, 0, 2)...)
+	rows = append(rows, growthDaily("product:growme", "app_store_connect_units", 5, 0, 1)...)
+	// measure: web traffic, no proceeds.
+	rows = append(rows, growthDaily("product:measureme", "gsc_clicks", 10, 0, 30)...)
+	// hold: a lone review count and nothing else.
+	rows = append(rows, growthRow{product: "product:holdme", metric: "app_store_connect_review_count", date: growthDay(2), value: 1})
+	writeGrowthSignals(t, home, rows...)
+	g := buildGrowthT(t, home, growthOpts())
+	want := map[string]string{
+		"product:fixme": GrowthFocusFixData, "product:growme": GrowthFocusGrow,
+		"product:measureme": GrowthFocusMeasure, "product:holdme": GrowthFocusHold,
+	}
+	got := map[string]GrowthAllocation{}
+	for _, al := range g.Portfolio.Allocation {
+		got[al.ProductID] = al
+		if al.Rule == "" || al.Reason == "" {
+			t.Fatalf("allocation needs rule and reason: %+v", al)
+		}
+	}
+	for id, focus := range want {
+		if got[id].Focus != focus {
+			t.Fatalf("%s focus = %s, want %s (%s)", id, got[id].Focus, focus, got[id].Reason)
+		}
+	}
+	// ranked by 90-day proceeds (fixme 144, growme 22), then clicks.
+	if got["product:fixme"].Rank != 1 || got["product:growme"].Rank != 2 || got["product:measureme"].Rank != 3 || got["product:holdme"].Rank != 4 {
+		t.Fatalf("ranks = %+v", got)
+	}
+	if !strings.Contains(got["product:fixme"].Reason, growthDay(25)) {
+		t.Fatalf("fix_data reason must cite the stop date: %s", got["product:fixme"].Reason)
+	}
+}
+
+func TestGrowthAppsWithoutDataAndExperiments(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"product:empty", "product:tested"} {
+		if _, err := Apply(home, store, registryBundle(id, strings.TrimPrefix(id, "product:")), id+".yaml", tProduct); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir := filepath.Join(home, candidates.InboxDir(candidates.ProductHypothesis))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h := HypothesisCandidate{ID: "hyp_1", ProductID: "product:tested", ChangeEvent: "Rework the paywall copy", ExpectedEffect: "more purchases", Metrics: []string{"posthog_paywall_views"}}
+	b, _ := json.Marshal(h)
+	if err := os.WriteFile(filepath.Join(dir, "hyp_1.json"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := buildGrowthT(t, home, growthOpts())
+	if len(g.Portfolio.AppsWithoutData) != 2 {
+		t.Fatalf("apps_without_data = %v", g.Portfolio.AppsWithoutData)
+	}
+	tested := growthApp(t, g, "product:tested")
+	if tested.Hypotheses.Open != 1 {
+		t.Fatalf("hypotheses = %+v", tested.Hypotheses)
+	}
+	if got := growthAudit(t, tested, "experiments").Status; got != GrowthPartial {
+		t.Fatalf("experiments with only an open hypothesis = %s", got)
+	}
+	if got := growthAudit(t, tested, "paywall_design").Status; got != GrowthPartial {
+		t.Fatalf("a paywall hypothesis must count as partial, got %s", got)
+	}
+	empty := growthApp(t, g, "product:empty")
+	if got := growthAudit(t, empty, "experiments").Status; got != GrowthBlind {
+		t.Fatalf("experiments with nothing = %s", got)
+	}
+	for _, k := range empty.Kpis {
+		if k.HasData || k.Value != nil {
+			t.Fatalf("empty app kpi has data: %+v", k)
+		}
+	}
+}
+
+func TestGrowthValidateRejectsBrokenShape(t *testing.T) {
+	home := t.TempDir()
+	writeGrowthSignals(t, home, growthDaily("product:alpha", "gsc_clicks", 3, 0, 1)...)
+	g := buildGrowthT(t, home, growthOpts())
+	raw, _ := json.Marshal(g)
+	var m Growth
+	_ = json.Unmarshal(raw, &m)
+	if len(m.Areas) != 25 || len(m.Stages) != 5 || len(m.Apps[0].Funnel) != 7 {
+		t.Fatalf("catalog shape wrong")
+	}
+	cases := map[string]func(*Growth){
+		"schema":   func(x *Growth) { x.SchemaVersion = "v0" },
+		"as_of":    func(x *Growth) { x.AsOf = "yesterday" },
+		"audit":    func(x *Growth) { x.Apps[0].Audit = x.Apps[0].Audit[:24] },
+		"series":   func(x *Growth) { x.Apps[0].Series["units"] = nil },
+		"coverage": func(x *Growth) { x.Apps[0].Coverage.Blind += 3 },
+		"status":   func(x *Growth) { x.Apps[0].Audit[0].Status = "great" },
+	}
+	for name, mutate := range cases {
+		c := Growth{}
+		_ = json.Unmarshal(raw, &c)
+		mutate(&c)
+		if err := c.Validate(); err == nil {
+			t.Fatalf("%s: Validate accepted a broken projection", name)
+		}
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"value":null`) {
+		t.Fatal("missing values must serialize as null")
+	}
+}
+
+// The projection must never write to the home it reads.
+func TestGrowthIsReadOnly(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(home, store, registryBundle("product:alpha", "Alpha"), "a.yaml", tProduct); err != nil {
+		t.Fatal(err)
+	}
+	writeGrowthSignals(t, home, growthDaily("product:alpha", "app_store_connect_units", 5, 0, 1)...)
+	writeGrowthAds(t, home, AdRow{ProductID: "product:alpha", Date: growthDay(1), Spend: 1})
+	snapshot := func() []string {
+		var out []string
+		_ = filepath.Walk(home, func(p string, info os.FileInfo, err error) error {
+			if err == nil && !info.IsDir() {
+				out = append(out, fmt.Sprintf("%s %d %d", p, info.Size(), info.ModTime().UnixNano()))
+			}
+			return nil
+		})
+		sort.Strings(out)
+		return out
+	}
+	before := snapshot()
+	buildGrowthT(t, home, growthOpts())
+	after := snapshot()
+	if strings.Join(before, "\n") != strings.Join(after, "\n") {
+		t.Fatalf("growth changed the home:\nbefore %v\nafter  %v", before, after)
+	}
+}
+
+func TestGrowthOptionsValidate(t *testing.T) {
+	if err := (GrowthOptions{Now: growthAsOf, AsOf: growthAsOf, WindowDays: -1, SeriesDays: 1, StaleDays: 1}).Validate(); err == nil {
+		t.Fatal("negative window must fail")
+	}
+	if err := normalizeGrowthOptionsForTest().Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func normalizeGrowthOptionsForTest() GrowthOptions {
+	o := normalizeGrowthOptions(GrowthOptions{Now: growthAsOf})
+	if o.WindowDays != 30 || o.SeriesDays != 120 || o.StaleDays != 14 {
+		panic("defaults changed")
+	}
+	return o
+}
+
+// Mixed-source areas: the summary and next move must name the input that is
+// actually stale, with its own date, never the newest date across inputs.
+func TestGrowthStaleNamesTheStaleInput(t *testing.T) {
+	home := t.TempDir()
+	rows := growthDaily("product:alpha", "app_store_connect_developer_proceeds_usd", 40, 26, 3)
+	rows = append(rows, growthDaily("product:alpha", "app_store_connect_units", 40, 26, 1)...)
+	rows = append(rows, growthRow{product: "product:alpha", metric: "app_store_connect_redownloads", date: growthDay(60), value: 1})
+	writeGrowthSignals(t, home, rows...)
+	var ads []AdRow
+	for off := 5; off >= 0; off-- {
+		ads = append(ads, AdRow{ProductID: "product:alpha", Date: growthDay(off), Spend: 2, HasRevenue: true})
+	}
+	writeGrowthAds(t, home, ads...)
+	app := buildGrowthT(t, home, growthOpts()).Apps[0]
+
+	ue := growthAudit(t, app, "unit_economics")
+	if ue.Status != GrowthStale {
+		t.Fatalf("unit_economics = %+v", ue)
+	}
+	wantSummary := fmt.Sprintf("Sales data stopped on %s (26 days ago); ad spend is current; ads have no revenue linked.", growthDay(26))
+	if ue.Summary != wantSummary {
+		t.Fatalf("summary = %q\nwant      %q", ue.Summary, wantSummary)
+	}
+	if strings.Contains(ue.Summary, growthDay(0)) || !strings.Contains(ue.NextMove, "App Store Connect sales") || !strings.Contains(ue.NextMove, growthDay(26)) {
+		t.Fatalf("next_move = %q", ue.NextMove)
+	}
+
+	ret := growthAudit(t, app, "retention")
+	if ret.Status != GrowthStale {
+		t.Fatalf("retention = %+v", ret)
+	}
+	if strings.Contains(ret.NextMove, "PostHog") || !strings.Contains(ret.NextMove, "App Store Connect analytics") || !strings.Contains(ret.NextMove, growthDay(60)) {
+		t.Fatalf("retention next_move names the wrong source: %q", ret.NextMove)
+	}
+	if !strings.Contains(ret.Summary, growthDay(60)) || !strings.Contains(ret.Summary, "App Store Connect analytics") {
+		t.Fatalf("retention summary = %q", ret.Summary)
+	}
+}
+
+func TestGrowthFunnelPurchasesNeedRealPurchaseMetric(t *testing.T) {
+	purchases := func(g Growth) GrowthFunnelStage {
+		for _, f := range g.Apps[0].Funnel {
+			if f.ID == "purchases" {
+				return f
+			}
+		}
+		t.Fatal("no purchases stage")
+		return GrowthFunnelStage{}
+	}
+	// units alone count free downloads: blind, value withheld.
+	home := t.TempDir()
+	writeGrowthSignals(t, home, growthDaily("product:alpha", "app_store_connect_units", 5, 0, 1)...)
+	p := purchases(buildGrowthT(t, home, growthOpts()))
+	if p.Status != GrowthBlind || p.Value != nil || p.Note != "Units are tracked, but purchases are not separated from free downloads." {
+		t.Fatalf("purchases from units = %+v", p)
+	}
+	// IAP units are real purchases.
+	home = t.TempDir()
+	rows := growthDaily("product:alpha", "app_store_connect_units", 5, 0, 1)
+	rows = append(rows, growthRow{product: "product:alpha", metric: "app_store_connect_iap_units", date: growthDay(1), value: 1})
+	writeGrowthSignals(t, home, rows...)
+	p = purchases(buildGrowthT(t, home, growthOpts()))
+	if p.Status != GrowthMeasured || p.Value == nil || *p.Value != 1 || !strings.HasPrefix(p.Note, "1 purchase,") {
+		t.Fatalf("purchases from iap units = %+v", p)
+	}
+}
+
+func TestGrowthSingularCounts(t *testing.T) {
+	for _, tc := range []struct {
+		v         float64
+		one, many string
+		want      string
+	}{{1, "unit", "units", "1 unit"}, {0, "unit", "units", "0 units"}, {2, "unit", "units", "2 units"}, {1, "open hypothesis", "open hypotheses", "1 open hypothesis"}} {
+		if got := growthCount(tc.v, tc.one, tc.many); got != tc.want {
+			t.Fatalf("got %q want %q", got, tc.want)
+		}
+	}
+	home := t.TempDir()
+	dir := filepath.Join(home, candidates.InboxDir(candidates.ProductHypothesis))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(HypothesisCandidate{ID: "hyp_1", ProductID: "product:alpha", ChangeEvent: "x", Metrics: []string{"gsc_clicks"}})
+	if err := os.WriteFile(filepath.Join(dir, "hyp_1.json"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeGrowthSignals(t, home, growthRow{product: "product:alpha", metric: "app_store_connect_units", date: growthDay(1), value: 1}, growthRow{product: "product:alpha", metric: "app_store_connect_developer_proceeds_usd", date: growthDay(1), value: 5})
+	app := buildGrowthT(t, home, growthOpts()).Apps[0]
+	if s := growthAudit(t, app, "experiments").Summary; !strings.Contains(s, "1 open hypothesis and 0 reviews") {
+		t.Fatalf("experiments summary = %q", s)
+	}
+	if s := growthAudit(t, app, "pricing").Summary; !strings.Contains(s, "on 1 unit in 30 days") {
+		t.Fatalf("pricing summary = %q", s)
+	}
+}
+
+// Some apps promise users no third-party analytics, so blind text must never
+// name or prescribe a vendor.
+func TestGrowthBlindTextIsVendorNeutral(t *testing.T) {
+	home := t.TempDir()
+	writeGrowthSignals(t, home,
+		growthRow{product: "product:alpha", metric: "app_store_connect_units", date: growthDay(1), value: 1},
+		growthRow{product: "product:web_two", metric: "gsc_clicks", date: growthDay(1), value: 1})
+	g := buildGrowthT(t, home, growthOpts())
+	blind := 0
+	for _, app := range g.Apps {
+		for _, a := range app.Audit {
+			if a.Status != GrowthBlind {
+				continue
+			}
+			blind++
+			for _, text := range []string{a.Summary, a.NextMove} {
+				if strings.Contains(strings.ToLower(text), "posthog") {
+					t.Fatalf("%s/%s names a vendor: %q", app.ProductID, a.AreaID, text)
+				}
+			}
+			switch a.AreaID {
+			case "onboarding":
+				if a.Summary != "Nothing measures onboarding today." || a.NextMove != growthPrivacyMove {
+					t.Fatalf("onboarding = %+v", a)
+				}
+			case "organic":
+				if a.Summary != "No posted content is recorded for this app." || a.NextMove != "Record posts and their results so reach can be compared." {
+					t.Fatalf("organic = %+v", a)
+				}
+			}
+		}
+	}
+	if blind == 0 {
+		t.Fatal("fixture should have blind areas")
+	}
+}

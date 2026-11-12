@@ -488,3 +488,30 @@ Table, Flow, and Space use the WorkEnvelope state for lifecycle filters, priorit
 badges, and accessible work labels. Run status appears separately as execution evidence:
 a successful attempt does not complete work awaiting verification, and a running attempt does
 not override a held work item.
+
+## 11. Workspace refresh (2026-11-12)
+
+The operator supplied two references: a task-board workspace and a performance-overview dashboard.
+These deviations from §1–§10 follow from them.
+
+- **Shell.** The sidebar sits on a quiet frame (`--page`). The page lives in one white, rounded,
+  hairline panel (`.shell-panel`). The sidebar order is workspace switcher, search (opens ⌘K),
+  Essentials, Apps, Growth, then Knowledge and System. Knowledge and System collapse until one of
+  their pages is active. Every route stays one click away. Autonomy, freshness and instance identity
+  move from the top bar into the sidebar status card. Ask Compound floats at the bottom centre.
+- **Neutrals.** Light `--page/--ink/--muted/--faint/--hair` move from blue-grey to faintly warm
+  grey. Dark mode is unchanged.
+- **Type.** Page titles use a new `--text-3xl` step (34px). A `PageHeader` stat strip reads
+  "26 open · 2 blocked", with a bold number and a quiet label.
+- **Buttons.** The default primary is solid ink. Work-blue stays available as `tone="work"`.
+- **Work.** The board is the default view. Columns are soft trays with a coloured state dot and a
+  count, in this order: Suggested · Ready · In progress · Needs you · In review · Done. Cards show a
+  state chip, the app (from `canonical_surface`), the title, the next step, stage segments, the owner
+  avatar and the age.
+- **Growth.** There are three new pages: `/apps` (portfolio), `/growth` (25-area audit matrix) and
+  `/apps/[slug]`. All read `compound product growth --json`. Chart series use `--viz-1` (orange) and
+  `--viz-2` (blue), which pass the dataviz palette validator in both themes. A day with no data is
+  drawn as a gap, never as zero.
+- **Blind is soft.** In the audit matrix and on coverage bars, a blind area is a pale red fill. When
+  most of the portfolio is blind, the few measured cells must stand out, and the absence must stay
+  visible without shouting.

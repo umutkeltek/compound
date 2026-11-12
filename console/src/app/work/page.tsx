@@ -1,4 +1,5 @@
-import { FreshnessChip, PageHeader } from "@/components/kit";
+import { FreshnessChip, HeaderStat, PageHeader } from "@/components/kit";
+import { CopyActionButton } from "@/components/CopyCmd";
 import { WorkLenses } from "@/components/work/WorkLenses";
 import { arr, getSourceConnections, getWorkbench, runJson, str } from "@/lib/compound";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
@@ -49,24 +50,33 @@ export default async function WorkPage({
   const items = buildWorkLensItems(open, traffic);
   const groups = groupWorkLensItems(items, traffic);
   const allowedLenses = new Set<WorkLensKey>(["pipeline", "table", "flow", "space", "board", "offered"]);
-  const defaultLens = allowedLenses.has(lens as WorkLensKey) ? lens as WorkLensKey : "table";
+  const defaultLens = allowedLenses.has(lens as WorkLensKey) ? lens as WorkLensKey : "board";
+  const count = (key: string) => columns.find((column) => column.key === key)?.cards.length ?? 0;
 
   return (
     <div className="console-stage flex flex-col gap-6">
       <PageHeader
         breadcrumb="operate / work"
         title="Work"
+        stats={
+          <>
+            <HeaderStat value={open.length} label="open" />
+            <HeaderStat value={count("needs-me")} label="need you" tone={count("needs-me") ? "seam" : undefined} />
+            <HeaderStat value={count("running")} label="in progress" />
+            <HeaderStat value={count("review")} label="in review" />
+            <HeaderStat value={count("ready")} label="ready" />
+          </>
+        }
         right={
-          <FreshnessChip
-            generatedAt={str(workbench?.generated_at)}
-            source="compound workbench / sources / director dry-run"
-          />
+          <>
+            <FreshnessChip
+              generatedAt={str(workbench?.generated_at)}
+              source="compound workbench / sources / director dry-run"
+            />
+            <CopyActionButton cmd={'compound work create --owner <owner> --predicate "<what done looks like>"'} label="New work" />
+          </>
         }
       />
-      <p className="text-sm text-muted" style={{ maxWidth: "var(--read-max)" }}>
-        See what is moving, who owns it, and what needs intervention. Start with the focused table; switch to Flow
-        or Space when relationships matter, and open any item for its complete trace.
-      </p>
 
       <WorkLenses
         stages={stages}

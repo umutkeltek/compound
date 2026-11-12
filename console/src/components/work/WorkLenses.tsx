@@ -4,6 +4,7 @@ import * as Tabs from "@radix-ui/react-tabs";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { BoardIcon, InboxIcon, LayersIcon, ListIcon, RouteIcon, TimelineIcon } from "@/components/kit/icons";
 import { BoardLens } from "@/components/work/BoardLens";
 import { CapsuleColumns } from "@/components/work/CapsuleColumns";
 import { OfferedLens } from "@/components/work/OfferedLens";
@@ -34,8 +35,8 @@ import type { WorkLensGroup, WorkLensItem } from "@/lib/work-views";
 export type WorkLensKey = "pipeline" | "table" | "flow" | "space" | "board" | "offered";
 
 const TAB_CLASS =
-  "shrink-0 rounded-md px-3 py-1.5 text-xs font-semibold text-muted " +
-  "data-[state=active]:bg-work-soft data-[state=active]:text-work data-[state=active]:shadow-sm";
+  "inline-flex shrink-0 items-center gap-1.5 rounded-md border border-transparent px-3 py-1.5 text-sm font-medium text-muted transition-colors hover:text-ink " +
+  "data-[state=active]:border-hair data-[state=active]:bg-panel data-[state=active]:text-ink data-[state=active]:shadow-sm";
 
 export function WorkLenses({
   stages,
@@ -78,7 +79,7 @@ export function WorkLenses({
     if (next.trace === null) params.delete("trace");
     else if (next.trace) params.set("trace", next.trace);
     if (next.lens) {
-      if (next.lens === "table") params.delete("lens");
+      if (next.lens === "board") params.delete("lens");
       else params.set("lens", next.lens);
     }
     const query = params.toString();
@@ -106,23 +107,33 @@ export function WorkLenses({
         setLens(next);
         replaceParams({ lens: next });
       }} className="flex min-w-0 flex-col gap-4">
-        <Tabs.List className="inline-flex w-full max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-hair bg-soft p-1 sm:w-fit">
-          <Tabs.Trigger value="table" className={TAB_CLASS}>
-            Table
-            <span className="mono ml-1.5 tabular-nums text-faint">{items.length}</span>
+        <Tabs.List className="inline-flex w-full max-w-full items-center gap-0.5 overflow-x-auto rounded-lg border border-hair bg-soft p-0.5 sm:w-fit">
+          <Tabs.Trigger value="board" className={TAB_CLASS}>
+            <BoardIcon size={14} />
+            Board
+            <span className="tabular-nums text-faint">{openCount}</span>
           </Tabs.Trigger>
-          <Tabs.Trigger value="flow" className={TAB_CLASS}>Flow</Tabs.Trigger>
-          <Tabs.Trigger value="space" className={TAB_CLASS}>Space</Tabs.Trigger>
+          <Tabs.Trigger value="table" className={TAB_CLASS}>
+            <ListIcon size={14} />
+            List
+            <span className="tabular-nums text-faint">{items.length}</span>
+          </Tabs.Trigger>
           <Tabs.Trigger value="pipeline" className={TAB_CLASS}>
+            <TimelineIcon size={14} />
             Pipeline
           </Tabs.Trigger>
-          <Tabs.Trigger value="board" className={TAB_CLASS}>
-            Board
-            <span className="mono ml-1.5 tabular-nums text-faint">{openCount}</span>
+          <Tabs.Trigger value="flow" className={TAB_CLASS}>
+            <RouteIcon size={14} />
+            Flow
+          </Tabs.Trigger>
+          <Tabs.Trigger value="space" className={TAB_CLASS}>
+            <LayersIcon size={14} />
+            Space
           </Tabs.Trigger>
           <Tabs.Trigger value="offered" className={TAB_CLASS}>
-            Offered packets
-            <span className="mono ml-1.5 tabular-nums text-faint">{offered.length}</span>
+            <InboxIcon size={14} />
+            Packets
+            <span className="tabular-nums text-faint">{offered.length}</span>
           </Tabs.Trigger>
         </Tabs.List>
 

@@ -36,7 +36,7 @@ function StatTile({
 }
 
 export default async function LoopsPage() {
-  const [{ generatedAt, loops }, portfolio] = await Promise.all([
+  const [{ generatedAt, loops, status, error }, portfolio] = await Promise.all([
     getProductLoopsReport(),
     getProductPortfolio(),
   ]);
@@ -72,7 +72,15 @@ export default async function LoopsPage() {
         <StatTile label="Awaiting data" value={loops.length - withSignals} sub="connected, no signal yet" />
       </div>
 
-      {loops.length === 0 ? (
+      {loops.length === 0 && status === "unreachable" ? (
+        <div className="rounded-2xl border border-seam-line bg-seam-soft p-5 text-sm">
+          <div className="font-semibold text-seam">Feedback loops could not be loaded.</div>
+          <p className="mt-1 text-muted">
+            <code className="mono">compound product loops --json</code> did not answer. This is a failed read, not an empty portfolio.
+            {error ? <span className="mt-1 block text-xs text-faint">{error.slice(0, 240)}</span> : null}
+          </p>
+        </div>
+      ) : loops.length === 0 ? (
         <EmptyState>
           No loops yet. A loop starts when a subject gets a signal — register an app with{" "}
           <code className="mono">compound product import &lt;product.yaml&gt;</code> and feed it a metric.

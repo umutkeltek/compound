@@ -4,7 +4,7 @@ import type { FormEvent, ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 
-import { Button, Drawer, StatusChip } from "@/components/kit";
+import { Button, Drawer, SparkIcon, StatusChip } from "@/components/kit";
 
 const DEFAULT_SUGGESTIONS = ["What needs me?", "Why is work blocked?", "Compare the top decision", "Show the freshest evidence"];
 
@@ -85,10 +85,13 @@ export function AskCompound() {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="inline-flex h-7 items-center gap-1.5 rounded-pill border border-hair bg-panel px-2.5 text-xs font-semibold text-muted shadow-sm transition-colors hover:bg-soft hover:text-ink"
+        className="fixed bottom-5 left-1/2 z-50 inline-flex h-10 -translate-x-1/2 items-center gap-2 rounded-pill border border-hair bg-panel pl-2 pr-4 text-sm font-medium text-ink shadow-lg transition-colors hover:bg-soft md:left-[calc(50%+var(--nav-w)/2)]"
+        title={`Ask Compound about ${context.label.toLowerCase()}`}
       >
-        Ask <span className="hidden sm:inline">Compound</span>
-        <span className="rounded-pill bg-route-soft px-1.5 py-0.5 text-2xs text-route">preview</span>
+        <span className="flex h-6.5 w-6.5 items-center justify-center rounded-full bg-work text-panel" aria-hidden>
+          <SparkIcon size={14} />
+        </span>
+        Ask Compound
       </button>
 
       <Drawer

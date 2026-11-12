@@ -34,7 +34,7 @@ export function ThemeToggle({ responsive = false }: { responsive?: boolean }) {
   const [pref, setPref] = useState<ThemePref | null>(null);
 
   useEffect(() => {
-    const stored = (localStorage.getItem(THEME_KEY) as ThemePref | null) ?? "auto";
+    const stored = (localStorage.getItem(THEME_KEY) as ThemePref | null) ?? "light";
     setPref(stored);
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     const onChange = () => {
@@ -50,7 +50,7 @@ export function ThemeToggle({ responsive = false }: { responsive?: boolean }) {
     applyTheme(next);
   }
 
-  const current = pref ?? "auto";
+  const current = pref ?? "light";
   const currentIndex = OPTIONS.findIndex((option) => option.value === current);
   const activeOption = OPTIONS[currentIndex];
   const nextOption = OPTIONS[(currentIndex + 1) % OPTIONS.length];

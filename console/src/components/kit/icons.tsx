@@ -206,3 +206,107 @@ export const SlidersIcon = (p: IconProps) => (
     <path d="M2 15h6M9 8h6M16 17h6" />
   </Base>
 );
+
+export const HomeIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M3 10.5 12 3l9 7.5" />
+    <path d="M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5" />
+  </Base>
+);
+
+export const BoardIcon = (p: IconProps) => (
+  <Base {...p}>
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="M9 4v16M15 4v16" />
+  </Base>
+);
+
+export const ListIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M9 6h12M9 12h12M9 18h12" />
+    <path d="M4 6h.01M4 12h.01M4 18h.01" />
+  </Base>
+);
+
+export const TimelineIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M4 6h10M8 12h12M4 18h8" />
+  </Base>
+);
+
+export const SearchIcon = (p: IconProps) => (
+  <Base {...p}>
+    <circle cx="11" cy="11" r="7" />
+    <path d="m20 20-3.5-3.5" />
+  </Base>
+);
+
+export const ChevronsUpDownIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="m7 9 5-5 5 5M7 15l5 5 5-5" />
+  </Base>
+);
+
+export const ChevronDownIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="m6 9 6 6 6-6" />
+  </Base>
+);
+
+export const ChevronRightIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="m9 6 6 6-6 6" />
+  </Base>
+);
+
+export const PlusIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M12 5v14M5 12h14" />
+  </Base>
+);
+
+export const TrendIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="m3 17 6-6 4 4 8-8" />
+    <path d="M15 7h6v6" />
+  </Base>
+);
+
+export const TargetIcon = (p: IconProps) => (
+  <Base {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <circle cx="12" cy="12" r="5" />
+    <circle cx="12" cy="12" r="1" />
+  </Base>
+);
+
+export const SparkIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M12 3v4M12 17v4M3 12h4M17 12h4M6.3 6.3l2.5 2.5M15.2 15.2l2.5 2.5M6.3 17.7l2.5-2.5M15.2 8.8l2.5-2.5" />
+  </Base>
+);
+
+export const FlagIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M5 21V4M5 4h11l-2 4 2 4H5" />
+  </Base>
+);
+
+export const ChecklistIcon = (p: IconProps) => (
+  <Base {...p}>
+    <rect x="3" y="3" width="18" height="18" rx="3" />
+    <path d="m8 12 3 3 5-6" />
+  </Base>
+);
+
+export const DotsIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M5 12h.01M12 12h.01M19 12h.01" strokeWidth={3} />
+  </Base>
+);
+
+export const FilterIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M3 5h18l-7 8v6l-4 2v-8Z" />
+  </Base>
+);

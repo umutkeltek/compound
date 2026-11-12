@@ -74,3 +74,34 @@ export function CliCaption({ argv }: { argv: string[] | null }) {
     </button>
   );
 }
+
+/**
+ * A primary-looking action whose effect is copying a CLI command — for
+ * creation flows the console does not execute itself (e.g. new work). The
+ * label says what happens after the click, so it never pretends to act.
+ */
+export function CopyActionButton({ cmd, label, copiedLabel = "Command copied" }: { cmd: string; label: string; copiedLabel?: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(cmd);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch {
+      /* clipboard unavailable — the title still shows the command */
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      title={`Copies: ${cmd}`}
+      className="inline-flex items-center gap-1.5 rounded-lg border border-strong bg-strong px-3.5 py-2 text-sm font-medium text-panel shadow-sm transition-colors hover:bg-ink"
+    >
+      <span aria-hidden>+</span>
+      {copied ? copiedLabel : label}
+    </button>
+  );
+}

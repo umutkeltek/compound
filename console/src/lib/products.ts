@@ -1,4 +1,4 @@
-import { arr, num, runJson, str } from "@/lib/compound";
+import { HEAVY_PROJECTION_TIMEOUT_MS, arr, num, runJson, runProjection, str, type ProjectionStatus } from "@/lib/compound";
 import type { Accent } from "@/components/ui";
 
 /*
@@ -104,17 +104,24 @@ function mapLoop(p: Record<string, unknown>): ProductLoop {
   };
 }
 
-export type ProductLoopsReport = { generatedAt: string; loops: ProductLoop[] };
+export type ProductLoopsReport = { generatedAt: string; loops: ProductLoop[]; status: ProjectionStatus; error: string | null };
 
 /** Loops plus the projection's own generated_at, so the page can stamp a
- *  FreshnessChip against the real read time (not a fabricated one). */
+ *  FreshnessChip against the real read time (not a fabricated one).
+ *  `product loops` reads the release-observation inventory and takes ~25s on
+ *  a real home, past the default 15s budget; a timed-out read used to render
+ *  as "No loops yet". It gets the heavy budget, and the page tells an
+ *  unreachable read apart from a genuinely empty one. */
 export async function getProductLoopsReport(): Promise<ProductLoopsReport> {
-  const j = await runJson(["product", "loops", "--json"]);
+  const read = await runProjection(["product", "loops", "--json"], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS });
+  const j = read.value;
   return {
     generatedAt: str(j?.generated_at),
     loops: arr(j?.products)
       .map((p) => mapLoop(p as Record<string, unknown>))
       .sort((a, b) => b.signalCount - a.signalCount),
+    status: read.status,
+    error: read.error,
   };
 }
 

@@ -86,6 +86,8 @@ export type BoardCard = {
   running: boolean;
   /** envelope-stage position for the card's SegmentedProgress (§9.3). */
   progress: StageProgress;
+  /** canonical surface (e.g. `product:<id>`), so the board can show which app a card belongs to. */
+  surface: string;
 };
 
 export type RailNode = "empty" | "filled" | "seat" | "done" | "run";
@@ -194,10 +196,11 @@ function workCard(item: Json, note = "", progress?: StageProgress): BoardCard {
     tone: toneForState(state),
     ageLabel: age ? ago(age) : "",
     moveType: str(item.move_type),
-    note,
+    note: note || shortText(str(item.next_action) || str(item.desired_outcome), 150),
     traceable: Boolean(id),
     running: state === "running",
     progress: progress ?? stageProgressForState(state),
+    surface: str(item.canonical_surface),
   };
 }
 
@@ -217,6 +220,7 @@ function proposalCard(p: Json): BoardCard {
     traceable: false,
     running: false,
     progress: progressAt(1), // a suggestion sits at Suggest
+    surface: "",
   };
 }
 
@@ -238,6 +242,7 @@ function admissionCard(ap: Json): BoardCard {
     traceable: Boolean(id),
     running: false,
     progress: stageProgressForState(state),
+    surface: str(ap.canonical_surface),
   };
 }
 
@@ -362,12 +367,13 @@ export function buildPipeline(
 export function buildBoard(open: Json[], recent: Json[]): BoardColumnModel[] {
   const byStates = (states: string[]) => open.filter((w) => states.includes(str(w.state)));
   const columns: { key: string; label: string; description: string; tone: StateTone; states: string[]; empty: string }[] = [
-    { key: "inbox", label: "Inbox", description: "Suggested tasks waiting to be added.", tone: "draft", states: ["proposed", "admitted"], empty: "Nothing suggested." },
+    { key: "inbox", label: "Suggested", description: "Proposed work waiting to be admitted.", tone: "draft", states: ["proposed", "admitted"], empty: "Nothing suggested." },
     { key: "ready", label: "Ready", description: "Waiting for an executor to start.", tone: "queued", states: ["ready"], empty: "Nothing ready to start." },
-    { key: "running", label: "Running", description: "Started, in progress, or being checked.", tone: "live", states: ["claimed", "in_progress", "running", "verifying"], empty: "Nothing running." },
-    { key: "needs-me", label: "Needs me", description: "Blocked or held on your decision.", tone: "seam", states: ["blocked", "held"], empty: "Clean seam. Nothing waits on you." },
+    { key: "running", label: "In progress", description: "Claimed or running.", tone: "live", states: ["claimed", "in_progress", "running"], empty: "Nothing running." },
+    { key: "needs-me", label: "Needs you", description: "Blocked or held on your decision.", tone: "seam", states: ["blocked", "held"], empty: "Clean seam. Nothing waits on you." },
+    { key: "review", label: "In review", description: "Finished running; proof is being checked.", tone: "live", states: ["verifying"], empty: "Nothing being verified." },
   ];
-  return columns.map((col) => ({
+  const board: BoardColumnModel[] = columns.map((col) => ({
     key: col.key,
     label: col.label,
     description: col.description,
@@ -375,6 +381,16 @@ export function buildBoard(open: Json[], recent: Json[]): BoardColumnModel[] {
     emptyCopy: col.empty,
     cards: byStates(col.states).map((w) => workCard(w)),
   }));
+  const done = recent.filter((w) => ["completed", "failed", "cancelled"].includes(str(w.state)));
+  board.push({
+    key: "done",
+    label: "Done",
+    description: "Recently closed, with a receipt.",
+    tone: "done",
+    emptyCopy: "Nothing closed recently.",
+    cards: done.map((w) => workCard(w)),
+  });
+  return board;
 }
 
 export function buildOffered(packets: Json[]): OfferedPacketModel[] {
