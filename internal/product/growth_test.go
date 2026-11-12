@@ -351,11 +351,13 @@ func TestGrowthAuditStatuses(t *testing.T) {
 	if !st.Freshness.Stale || st.Freshness.Sources[0].Source != "search_console" || st.Freshness.Sources[0].DaysSince != 20 {
 		t.Fatalf("freshness = %+v", st.Freshness)
 	}
-	if len(web.NextMoves) != 3 {
+	if len(web.NextMoves) != growthMaxMoves {
 		t.Fatalf("next_moves = %+v", web.NextMoves)
 	}
-	if web.NextMoves[0].AreaID != "experience_journeys" {
-		t.Fatalf("first move must be the earliest broken sourced stage: %+v", web.NextMoves)
+	// No revenue on file hides whether monetization applies, so the profile
+	// comes first; then the open gap most other areas need.
+	if web.NextMoves[0].Kind != "set_profile" || web.NextMoves[1].AreaID != "experience_journeys" || web.NextMoves[1].Unblocks == 0 {
+		t.Fatalf("first moves = %+v", web.NextMoves)
 	}
 }
 
@@ -922,5 +924,103 @@ func TestGrowthRecordAndAssessmentEvidence(t *testing.T) {
 	}
 	if a := growthAudit(t, known, "beta_assessed"); len(a.BlockedBy) != 0 {
 		t.Fatalf("a need that is on file must not block: %+v", a)
+	}
+}
+
+// growthTwelveGroupAreas gives every embedded group two areas: one free, one
+// that needs a single root area in the last group.
+func growthTwelveGroupAreas(t *testing.T) string {
+	t.Helper()
+	cat, err := loadEmbeddedGrowthCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	b.WriteString("areas:\n")
+	row := func(id, group, extra string) {
+		fmt.Fprintf(&b, "  - {id: %s, group: %s, title: %s, question: \"%s?\", measure: %s, skills: [cro]%s}\n", id, group, id, id, id, extra)
+	}
+	for _, g := range cat.Groups {
+		if g.ID == "operations" {
+			row("operations_root", g.ID, "")
+		} else if g.ID == "analytics" {
+			row("analytics_one", g.ID, ", evidence: {metrics: [gsc_clicks], source: Search Console}")
+		} else {
+			row(g.ID+"_one", g.ID, "")
+		}
+		row(g.ID+"_two", g.ID, ", needs: [operations_root]")
+	}
+	return b.String()
+}
+
+func TestGrowthNextMovesRanking(t *testing.T) {
+	raw, err := growthCatalogFS.ReadFile("growth_catalog/00-core.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cat, err := buildTestGrowthCatalog(t, string(raw), growthTwelveGroupAreas(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	writeGrowthSignals(t, home, growthDaily("product:alpha", "gsc_clicks", 40, 30, 4)...)
+	o := growthOpts()
+	o.catalog = cat
+	app := buildGrowthT(t, home, o).Apps[0]
+	moves := app.NextMoves
+	if len(moves) != growthMaxMoves {
+		t.Fatalf("moves = %+v", moves)
+	}
+	if moves[0].Kind != "refresh_data" || moves[0].AreaID != "analytics_one" {
+		t.Fatalf("stale data must come first: %+v", moves[0])
+	}
+	if moves[1].AreaID != "operations_root" || moves[1].Unblocks != 12 || moves[1].Kind != "assess" {
+		t.Fatalf("the area most others need must come next, even from the last group: %+v", moves[1])
+	}
+	groups := map[string]bool{}
+	for _, m := range moves {
+		area, _ := cat.area(m.AreaID)
+		groups[area.Group] = true
+		if strings.HasSuffix(m.AreaID, "_two") {
+			t.Fatalf("a blocked area came before what it needs: %+v", moves)
+		}
+		if m.Branch != cat.branch(area) || strings.Join(m.Skills, ",") != "cro" || m.Brief != growthBrief("product:alpha", m.AreaID) {
+			t.Fatalf("move must carry the catalog branch, skills and brief: %+v", m)
+		}
+	}
+	if len(groups) < 3 {
+		t.Fatalf("picks come from too few groups: %v", groups)
+	}
+}
+
+func TestGrowthNextMovesBlockedAfterNeedsAndSetProfile(t *testing.T) {
+	cat, err := buildTestGrowthCatalog(t, growthTestCore, growthRecordAreas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	applyGrowthBundle(t, home, "product:blank", nil)
+	o := growthOpts()
+	o.catalog = cat
+	moves := buildGrowthT(t, home, o).Apps[0].NextMoves
+	if len(moves) != 2 || moves[0].AreaID != "alpha_audience" || moves[0].Kind != "record_answer" {
+		t.Fatalf("moves = %+v", moves)
+	}
+	if moves[1].AreaID != "beta_assessed" || !strings.HasPrefix(moves[1].Why, "Needs Audience first.") || strings.Join(moves[1].BlockedBy, ",") != "alpha_audience" {
+		t.Fatalf("blocked move must follow its need and name it: %+v", moves[1])
+	}
+
+	// No profile and no data: monetization is unknown and the profile move exists.
+	home = t.TempDir()
+	applyGrowthBundle(t, home, "product:silent", nil)
+	app := buildGrowthT(t, home, growthOpts()).Apps[0]
+	var set *GrowthNextMove
+	for i := range app.NextMoves {
+		if app.NextMoves[i].Kind == "set_profile" {
+			set = &app.NextMoves[i]
+		}
+	}
+	if set == nil || set.AreaID != "" || !strings.Contains(set.Why, "objectives") || !strings.Contains(set.Brief, "compound product import") {
+		t.Fatalf("set_profile move = %+v in %+v", set, app.NextMoves)
 	}
 }

@@ -158,10 +158,15 @@ type GrowthHypotheses struct {
 }
 
 type GrowthNextMove struct {
-	AreaID string `json:"area_id"`
-	Kind   string `json:"kind"`
-	Title  string `json:"title"`
-	Why    string `json:"why"`
+	AreaID    string   `json:"area_id"`
+	Kind      string   `json:"kind"`
+	Title     string   `json:"title"`
+	Why       string   `json:"why"`
+	Unblocks  int      `json:"unblocks"`
+	BlockedBy []string `json:"blocked_by"`
+	Branch    string   `json:"branch"`
+	Skills    []string `json:"skills"`
+	Brief     string   `json:"brief"`
 }
 
 type GrowthApp struct {
@@ -1137,7 +1142,7 @@ func (c growthCtx) buildApp(g *growthGroup) (GrowthApp, growthFacts) {
 		facts.areaStatus[a.AreaID] = a.Status
 	}
 	app.Coverage = growthCoverage(app.Audit)
-	app.NextMoves = c.nextMoves(app)
+	app.NextMoves = c.nextMoves(g, app)
 	return app, facts
 }
 
@@ -1647,53 +1652,6 @@ func (c growthCtx) nextMove(g *growthGroup, spec growthAreaSpec, status, missing
 	return "Write a hypothesis and test it."
 }
 
-func (c growthCtx) nextMoves(app GrowthApp) []GrowthNextMove {
-	byID := map[string]growthAreaSpec{}
-	for _, area := range c.cat.Areas {
-		byID[area.ID] = area.spec(app.Kind)
-	}
-	rank := func(a GrowthAudit) int {
-		spec := byID[a.AreaID]
-		if len(spec.Inputs) == 0 && a.Status == GrowthBlind {
-			return 2 // no source exists yet: after anything fixable
-		}
-		switch a.Status {
-		case GrowthBlind, GrowthStale, GrowthPartial:
-			return 0
-		case GrowthMeasured:
-			return 1
-		}
-		return 3
-	}
-	var picks []GrowthAudit
-	for tier := 0; tier <= 2 && len(picks) < 3; tier++ {
-		for _, a := range app.Audit {
-			if rank(a) == tier && len(picks) < 3 {
-				picks = append(picks, a)
-			}
-		}
-	}
-	out := make([]GrowthNextMove, 0, len(picks))
-	for _, a := range picks {
-		spec := byID[a.AreaID]
-		m := GrowthNextMove{AreaID: a.AreaID, Why: a.Summary}
-		switch a.Status {
-		case GrowthBlind, GrowthPartial:
-			m.Kind, m.Title = "connect_data", "Connect data for "+spec.Title
-		case GrowthStale:
-			m.Kind, m.Title = "refresh_data", "Refresh data for "+spec.Title
-		default:
-			if strings.HasPrefix(a.NextMove, "Review") {
-				m.Kind, m.Title = "review_hypothesis", "Review the open hypothesis for "+spec.Title
-			} else {
-				m.Kind, m.Title = "run_experiment", "Run an experiment on "+spec.Title
-			}
-		}
-		out = append(out, m)
-	}
-	return out
-}
-
 // ---------------------------------------------------------------------------
 // allocation
 
@@ -1822,8 +1780,13 @@ func (g Growth) Validate() error {
 				return fmt.Errorf("app %s kpis missing %s", app.ProductID, key)
 			}
 		}
-		if len(app.NextMoves) > 3 {
-			return fmt.Errorf("app %s has %d next_moves, want at most 3", app.ProductID, len(app.NextMoves))
+		if len(app.NextMoves) > growthMaxMoves {
+			return fmt.Errorf("app %s has %d next_moves, want at most %d", app.ProductID, len(app.NextMoves), growthMaxMoves)
+		}
+		for _, m := range app.NextMoves {
+			if !growthMoveKinds[m.Kind] || strings.TrimSpace(m.Title) == "" || strings.TrimSpace(m.Brief) == "" {
+				return fmt.Errorf("app %s next move %q (%s) is incomplete", app.ProductID, m.Title, m.Kind)
+			}
 		}
 	}
 	return nil
