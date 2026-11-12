@@ -20,6 +20,9 @@ actual owners. Verify claims against source/output. Name one outcome, primary me
 denominator, baseline, observation window and guardrails. When baseline is unknown,
 select bounded observation rather than inventing an intervention benefit. Unreleased
 products can measure first-value completion and release readiness before revenue/retention.
+For a registered product, start from `compound product growth --product <id>`: its next moves name the area, branch and optional complements.
+`compound product growth --product <id> --area <area_id>` prints that area's brief, including how to record the result
+(a learned fact with `area: <area_id>` in the product contract, then `compound product import`).
 
 ## Compose generic to specific
 
