@@ -155,6 +155,7 @@ type GrowthApp struct {
 	Aliases    []string                 `json:"aliases"`
 	Kind       string                   `json:"kind"`
 	Essence    *GrowthEssence           `json:"essence"`
+	Profile    GrowthProfile            `json:"profile"`
 	Freshness  GrowthFreshness          `json:"freshness"`
 	Kpis       map[string]GrowthKpi     `json:"kpis"`
 	Series     map[string][]GrowthPoint `json:"series"`
@@ -183,17 +184,18 @@ type GrowthPortfolio struct {
 }
 
 type Growth struct {
-	SchemaVersion string            `json:"schema_version"`
-	GeneratedAt   string            `json:"generated_at"`
-	AsOf          string            `json:"as_of"`
-	WindowDays    int               `json:"window_days"`
-	SeriesDays    int               `json:"series_days"`
-	StaleDays     int               `json:"stale_days"`
-	Boundary      string            `json:"boundary"`
-	Groups        []GrowthAreaGroup `json:"groups"`
-	Areas         []GrowthArea      `json:"areas"`
-	Portfolio     GrowthPortfolio   `json:"portfolio"`
-	Apps          []GrowthApp       `json:"apps"`
+	SchemaVersion string              `json:"schema_version"`
+	GeneratedAt   string              `json:"generated_at"`
+	AsOf          string              `json:"as_of"`
+	WindowDays    int                 `json:"window_days"`
+	SeriesDays    int                 `json:"series_days"`
+	StaleDays     int                 `json:"stale_days"`
+	Boundary      string              `json:"boundary"`
+	ProfileDims   map[string][]string `json:"profile_dimensions"`
+	Groups        []GrowthAreaGroup   `json:"groups"`
+	Areas         []GrowthArea        `json:"areas"`
+	Portfolio     GrowthPortfolio     `json:"portfolio"`
+	Apps          []GrowthApp         `json:"apps"`
 }
 
 // GrowthKpiKeys lists the KPI keys in contract order.
@@ -279,6 +281,13 @@ type growthGroup struct {
 	tokens     map[string]bool // lowercased aliases, identifiers, ids, identity keys
 	surfaces   string
 	essence    *GrowthEssence
+
+	essenceRec      *Essence        // the full essence on file, when any
+	profile         ProductProfile  // declared profile facts
+	profileDeclared map[string]bool // dimensions with a declared value
+	subscriptionIDs bool            // subscription product ids are on file
+	learned         []LearnedFact   // learned facts across the group's ids
+	claims          map[string]string
 
 	signals map[string]map[string]growthPV // metric -> date -> value (periodic rows)
 	ranges  map[string]map[string]growthPV // metric -> end date -> value (range snapshots)
@@ -550,6 +559,7 @@ func BuildGrowth(homePath string, opts GrowthOptions) (Growth, error) {
 		SeriesDays:    opts.SeriesDays,
 		StaleDays:     opts.StaleDays,
 		Boundary:      growthBoundary,
+		ProfileDims:   cat.profileDimensions(),
 		Groups:        append([]GrowthAreaGroup{}, cat.Groups...),
 		Areas:         cat.publicAreas(),
 	}
@@ -618,6 +628,7 @@ func BuildGrowth(homePath string, opts GrowthOptions) (Growth, error) {
 func newGrowthGroup(i int) *growthGroup {
 	return &growthGroup{
 		idx: i, idSet: map[string]bool{}, registered: map[string]bool{}, rows: map[string]int{}, tokens: map[string]bool{},
+		profileDeclared: map[string]bool{}, claims: map[string]string{},
 		signals: map[string]map[string]growthPV{}, ranges: map[string]map[string]growthPV{},
 		daily: map[string]map[string]float64{},
 	}
@@ -664,6 +675,9 @@ func growthGroups(idx *whereIndex) ([]*growthGroup, map[string]*growthGroup) {
 			if c, ok := idx.claim(e.Slug, "surfaces"); ok {
 				g.surfaces += " " + strings.ToLower(c.Object)
 			}
+			if c, ok := idx.claim(e.Slug, "release_subscription_ids"); ok && strings.TrimSpace(c.Object) != "" {
+				g.subscriptionIDs = true
+			}
 			if e.CreatedAt != "" || len(e.Aliases) > 0 || len(e.Identifiers) > 0 {
 				g.registered[e.Slug] = true
 			}
@@ -694,12 +708,28 @@ func (g *growthGroup) finalize(idx *whereIndex) {
 	}
 	g.canonical = best
 	for _, id := range g.ids {
-		if facts := idx.claims[id]; len(facts) > 0 && hasEssenceFacts(facts) {
-			rec := essenceRecordFromFacts(id, facts)
+		facts := idx.claims[id]
+		if len(facts) == 0 {
+			continue
+		}
+		rec := essenceRecordFromFacts(id, facts)
+		g.learned = append(g.learned, rec.Learned...)
+		if hasEssenceFacts(facts) && g.essenceRec == nil {
+			e := rec.Essence
+			g.essenceRec = &e
+		}
+		if hasEssenceFacts(facts) && g.essence == nil {
 			e := rec.Essence
 			if e.Audience != "" || e.Problem != "" || e.Value != "" {
 				g.essence = &GrowthEssence{Audience: e.Audience, Problem: e.Problem, Value: e.Value}
-				break
+			}
+		}
+		if len(g.profileDeclared) == 0 {
+			g.profile, g.profileDeclared = profileFromFacts(facts)
+		}
+		for predicate, c := range facts {
+			if _, seen := g.claims[predicate]; !seen {
+				g.claims[predicate] = c.Object
 			}
 		}
 	}
@@ -830,31 +860,6 @@ func (c growthCtx) series(daily map[string]map[string]float64) map[string][]Grow
 		out[key] = pts
 	}
 	return out
-}
-
-func (c growthCtx) kind(g *growthGroup) string {
-	has := func(globs ...string) bool {
-		for _, gl := range globs {
-			for metric := range g.daily {
-				if growthMatch(gl, metric) {
-					return true
-				}
-			}
-			for metric := range g.ranges {
-				if growthMatch(gl, metric) {
-					return true
-				}
-			}
-		}
-		return false
-	}
-	switch {
-	case has("app_store_*", "app.*", growthAppleAds) || strings.Contains(g.surfaces, "app"):
-		return "ios_app"
-	case has("gsc_*", "ga4_*") || strings.Contains(g.surfaces, "web") || strings.Contains(g.surfaces, "site"):
-		return "website"
-	}
-	return "unknown"
 }
 
 type growthEv struct {
@@ -1018,13 +1023,15 @@ func growthThousands(s string) string {
 func growthUSD(v float64) string { return "$" + growthNum(math.Round(v*100)/100) }
 
 func (c growthCtx) buildApp(g *growthGroup) (GrowthApp, growthFacts) {
-	facts := growthFacts{kind: c.kind(g), areaStatus: map[string]string{}}
+	profile := c.profile(g)
+	facts := growthFacts{kind: profile.firstKind(), areaStatus: map[string]string{}}
 	name := growthHumanize(g.canonical)
 	app := GrowthApp{
 		ProductID: g.canonical,
 		Name:      name,
 		Kind:      facts.kind,
 		Essence:   g.essence,
+		Profile:   profile,
 		Aliases:   []string{},
 		Kpis:      c.kpis(g.daily),
 		Series:    c.series(g.daily),
@@ -1093,7 +1100,7 @@ func (c growthCtx) buildApp(g *growthGroup) (GrowthApp, growthFacts) {
 		facts.salesStale = c.age(facts.salesLatest) > c.opts.StaleDays
 	}
 
-	app.Funnel = c.funnel(g, facts.kind)
+	app.Funnel = c.funnel(g, profile)
 	open, reviewed := 0, map[string]bool{}
 	for _, h := range g.hyps {
 		if isOpenLoopHypothesis(h) {
@@ -1192,7 +1199,7 @@ func (c growthCtx) windowOrLatest(g *growthGroup, metric string) (v float64, dat
 	return
 }
 
-func (c growthCtx) funnel(g *growthGroup, kind string) []GrowthFunnelStage {
+func (c growthCtx) funnel(g *growthGroup, profile GrowthProfile) []GrowthFunnelStage {
 	type def struct {
 		id, label string
 		storeOnly bool
@@ -1234,9 +1241,9 @@ func (c growthCtx) funnel(g *growthGroup, kind string) []GrowthFunnelStage {
 	out := make([]GrowthFunnelStage, 0, len(defs))
 	for _, d := range defs {
 		st := GrowthFunnelStage{ID: d.id, Label: d.label}
-		if d.storeOnly && kind == "website" {
+		if d.storeOnly && !profile.isStoreApp() {
 			st.Status = GrowthNotApplicable
-			st.Note = "Does not apply to a web product."
+			st.Note = "Does not apply: this product is not sold in an app store."
 			out = append(out, st)
 			continue
 		}

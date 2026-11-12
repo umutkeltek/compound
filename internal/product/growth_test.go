@@ -682,3 +682,104 @@ func TestGrowthBlindTextIsVendorNeutral(t *testing.T) {
 		t.Fatal("fixture should have blind areas")
 	}
 }
+
+// applyGrowthBundle registers one synthetic product with the given profile,
+// learned facts and essence.
+func applyGrowthBundle(t *testing.T, home, id string, edit func(*Product)) {
+	t.Helper()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := registryBundle(id, growthHumanize(id))
+	b.Product.Surfaces = []Surface{{ID: "docs", Kind: "docs", Ref: "https://docs.example.invalid/" + strings.TrimPrefix(id, "product:")}}
+	if edit != nil {
+		edit(&b.Product)
+	}
+	if _, err := Apply(home, store, b, strings.TrimPrefix(id, "product:")+".yaml", tProduct); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGrowthProfileDeclaredRoundTripsThroughFacts(t *testing.T) {
+	home := t.TempDir()
+	applyGrowthBundle(t, home, "product:declared", func(p *Product) {
+		p.Profile = ProductProfile{
+			Kinds: []string{"web_app", "api"}, Audiences: []string{"developer"}, RevenueModels: []string{"usage"},
+			Objectives: []string{"adoption"},
+			Deferred:   []ProfileDeferral{{Area: "monetization", Reason: "free while in beta", Until: "2027-01-01"}},
+		}
+		p.Essence = Essence{Audience: "Teams that ship small services", Stage: "beta"}
+	})
+	app := growthApp(t, buildGrowthT(t, home, growthOpts()), "product:declared")
+	p := app.Profile
+	if strings.Join(p.Kinds.Values, ",") != "web_app,api" || p.Kinds.Source != GrowthProfileDeclared || app.Kind != "web_app" {
+		t.Fatalf("kinds = %+v, kind = %s", p.Kinds, app.Kind)
+	}
+	if p.Audiences.Source != GrowthProfileDeclared || p.RevenueModels.Values[0] != "usage" || p.Objectives.Values[0] != "adoption" {
+		t.Fatalf("profile = %+v", p)
+	}
+	if p.Stage.Source != GrowthProfileDeclared || p.Stage.Values[0] != "beta" || len(p.Unknown) != 0 {
+		t.Fatalf("stage = %+v unknown = %v", p.Stage, p.Unknown)
+	}
+	if len(p.Deferred) != 1 || p.Deferred[0].Area != "monetization" || p.Deferred[0].Until != "2027-01-01" {
+		t.Fatalf("deferred = %+v", p.Deferred)
+	}
+	// Store-only funnel stages do not apply to a product that is not sold in a store.
+	for _, f := range app.Funnel {
+		if f.ID == "impressions" && f.Status != GrowthNotApplicable {
+			t.Fatalf("impressions stage for a web app = %+v", f)
+		}
+	}
+}
+
+func TestGrowthProfileRejectsUndeclaredValues(t *testing.T) {
+	for name, prof := range map[string]ProductProfile{
+		"kind":     {Kinds: []string{"smart_fridge"}},
+		"audience": {Audiences: []string{"everyone"}},
+		"deferral": {Deferred: []ProfileDeferral{{Area: "Monetization!", Reason: "later"}}},
+		"until":    {Deferred: []ProfileDeferral{{Area: "monetization", Reason: "later", Until: "soon"}}},
+		"reason":   {Deferred: []ProfileDeferral{{Area: "monetization"}}},
+	} {
+		b := registryBundle("product:bad", "Bad")
+		b.Product.Profile = prof
+		if err := Validate(b); err == nil {
+			t.Fatalf("%s: Validate accepted %+v", name, prof)
+		}
+	}
+	b := registryBundle("product:bad", "Bad")
+	b.Product.Learned = []LearnedFact{{At: growthAsOf, Fact: "x", EvidenceRef: "fixture:x", Area: "Not An Id"}}
+	if err := Validate(b); err == nil {
+		t.Fatal("a learned area that is not an id must fail")
+	}
+}
+
+func TestGrowthProfileInference(t *testing.T) {
+	home := t.TempDir()
+	rows := growthDaily("product:both", "app_store_connect_developer_proceeds_usd", 3, 0, 2)
+	rows = append(rows, growthDaily("product:both", "gsc_clicks", 3, 0, 5)...)
+	rows = append(rows, growthDaily("product:both", "revenuecat_active_subscriptions", 3, 0, 9)...)
+	rows = append(rows, growthDaily("product:quiet", "posthog_sessions", 3, 0, 1)...)
+	writeGrowthSignals(t, home, rows...)
+	g := buildGrowthT(t, home, growthOpts())
+	both := growthApp(t, g, "product:both").Profile
+	if strings.Join(both.Kinds.Values, ",") != "ios_app,website" || both.Kinds.Source != GrowthProfileInferred {
+		t.Fatalf("kinds = %+v", both.Kinds)
+	}
+	if strings.Join(both.RevenueModels.Values, ",") != "subscription" || both.Objectives.Values[0] != "revenue" || both.Objectives.Source != GrowthProfileInferred {
+		t.Fatalf("revenue = %+v objectives = %+v", both.RevenueModels, both.Objectives)
+	}
+	if both.Audiences.Source != GrowthProfileUnknown || strings.Join(both.Unknown, ",") != "audiences,stage" {
+		t.Fatalf("audiences must never be inferred: %+v unknown %v", both.Audiences, both.Unknown)
+	}
+	quiet := growthApp(t, g, "product:quiet")
+	if quiet.Kind != "unknown" || quiet.Profile.Kinds.Source != GrowthProfileUnknown || len(quiet.Profile.Kinds.Values) != 0 {
+		t.Fatalf("quiet profile = %+v", quiet.Profile)
+	}
+	if strings.Join(quiet.Profile.Unknown, ",") != "kinds,audiences,revenue_models,objectives,stage" {
+		t.Fatalf("unknown = %v", quiet.Profile.Unknown)
+	}
+	if len(g.ProfileDims["kinds"]) == 0 || len(g.ProfileDims["objectives"]) == 0 {
+		t.Fatalf("profile_dimensions = %v", g.ProfileDims)
+	}
+}

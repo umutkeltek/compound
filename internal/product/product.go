@@ -110,6 +110,9 @@ type Product struct {
 	Essence Essence       `json:"essence,omitzero" yaml:"essence,omitempty"`
 	Forms   []Form        `json:"forms,omitempty" yaml:"forms,omitempty"`
 	Learned []LearnedFact `json:"learned,omitempty" yaml:"learned,omitempty"`
+	// Profile tells the growth projection which catalog areas apply. It is
+	// recorded as profile.* facts (essence.go).
+	Profile ProductProfile `json:"profile,omitzero" yaml:"profile,omitempty"`
 }
 
 // Deployment is where a product actually runs and how it gets there. Surfaces

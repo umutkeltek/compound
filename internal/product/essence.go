@@ -52,6 +52,145 @@ type LearnedFact struct {
 	Stage       string    `json:"stage,omitempty" yaml:"stage,omitempty"`
 	Fact        string    `json:"fact" yaml:"fact"`
 	EvidenceRef string    `json:"evidence_ref" yaml:"evidence_ref"`
+	// Area is the growth catalog area this fact assesses, when it assesses one.
+	Area string `json:"area,omitempty" yaml:"area,omitempty"`
+}
+
+// ProductProfile says what kind of product this is, for whom, how it earns,
+// and what it is run for. The growth catalog reads it to decide which areas
+// apply. Values must be ones the growth catalog declares.
+type ProductProfile struct {
+	Kinds         []string          `json:"kinds,omitempty" yaml:"kinds,omitempty"`
+	Audiences     []string          `json:"audiences,omitempty" yaml:"audiences,omitempty"`
+	RevenueModels []string          `json:"revenue_models,omitempty" yaml:"revenue_models,omitempty"`
+	Objectives    []string          `json:"objectives,omitempty" yaml:"objectives,omitempty"`
+	Deferred      []ProfileDeferral `json:"deferred,omitempty" yaml:"deferred,omitempty"`
+}
+
+// ProfileDeferral is an owner's "not now" for one growth area or a whole
+// group. Until, when set, is the date (YYYY-MM-DD) the deferral lapses.
+type ProfileDeferral struct {
+	Area   string `json:"area" yaml:"area"`
+	Reason string `json:"reason" yaml:"reason"`
+	Until  string `json:"until,omitempty" yaml:"until,omitempty"`
+}
+
+func (p ProductProfile) declared() bool {
+	return len(compact(p.Kinds))+len(compact(p.Audiences))+len(compact(p.RevenueModels))+len(compact(p.Objectives))+len(p.Deferred) > 0
+}
+
+type profileDim struct {
+	name   string
+	values []string
+}
+
+// dimensionValues pairs each profile list with its dimension name, in
+// contract order.
+func (p ProductProfile) dimensionValues() []profileDim {
+	return []profileDim{{"kinds", p.Kinds}, {"audiences", p.Audiences}, {"revenue_models", p.RevenueModels}, {"objectives", p.Objectives}}
+}
+
+var profileAreaRE = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// validateProfile checks a declared profile against the growth catalog's
+// allowed values.
+func validateProfile(p ProductProfile) error {
+	if !p.declared() {
+		return nil
+	}
+	cat, err := loadEmbeddedGrowthCatalog()
+	if err != nil {
+		return fmt.Errorf("profile: growth catalog: %w", err)
+	}
+	for _, dv := range p.dimensionValues() {
+		dim := dv.name
+		for _, v := range dv.values {
+			if !containsString(cat.Profile[dim], strings.TrimSpace(v)) {
+				return fmt.Errorf("profile %s value %q is not one of %s", dim, v, strings.Join(cat.Profile[dim], ", "))
+			}
+		}
+	}
+	for i, d := range p.Deferred {
+		if !profileAreaRE.MatchString(strings.TrimSpace(d.Area)) || strings.TrimSpace(d.Reason) == "" {
+			return fmt.Errorf("profile deferred[%d] needs an area id (or group id) and a reason", i)
+		}
+		if u := strings.TrimSpace(d.Until); u != "" {
+			if _, err := time.Parse("2006-01-02", u); err != nil {
+				return fmt.Errorf("profile deferred[%d] until %q must be YYYY-MM-DD", i, d.Until)
+			}
+		}
+	}
+	return nil
+}
+
+// profileFacts are the profile.* facts for a declared profile. Like essence, a
+// declared profile records every field and writes EssenceUnknown for a blank
+// one, so dropping a value supersedes the old fact.
+func profileFacts(p ProductProfile) []productFact {
+	if !p.declared() {
+		return nil
+	}
+	var facts []productFact
+	add := func(predicate, value string) {
+		if strings.TrimSpace(value) == "" {
+			value = EssenceUnknown
+		}
+		facts = append(facts, productFact{predicate, value})
+	}
+	for _, dv := range p.dimensionValues() {
+		add("profile."+dv.name, jsonList(dv.values))
+	}
+	deferred := ""
+	if len(p.Deferred) > 0 {
+		clean := make([]ProfileDeferral, 0, len(p.Deferred))
+		for _, d := range p.Deferred {
+			clean = append(clean, ProfileDeferral{Area: strings.TrimSpace(d.Area), Reason: strings.TrimSpace(d.Reason), Until: strings.TrimSpace(d.Until)})
+		}
+		blob, _ := json.Marshal(clean)
+		deferred = string(blob)
+	}
+	add("profile.deferred", deferred)
+	return facts
+}
+
+// profileFromFacts rebuilds a product profile from its current facts. declared
+// names the dimensions (and "deferred") that carry a real value, not the
+// EssenceUnknown placeholder.
+func profileFromFacts(facts map[string]mem.Claim) (ProductProfile, map[string]bool) {
+	var p ProductProfile
+	declared := map[string]bool{}
+	for predicate, claim := range facts {
+		field, ok := strings.CutPrefix(predicate, "profile.")
+		if !ok {
+			continue
+		}
+		value := claim.Object
+		switch field {
+		case "kinds":
+			p.Kinds = parseList(value)
+		case "audiences":
+			p.Audiences = parseList(value)
+		case "revenue_models":
+			p.RevenueModels = parseList(value)
+		case "objectives":
+			p.Objectives = parseList(value)
+		case "deferred":
+			if value != EssenceUnknown && value != "" {
+				_ = json.Unmarshal([]byte(value), &p.Deferred)
+			}
+		default:
+			continue
+		}
+	}
+	for _, dv := range p.dimensionValues() {
+		if len(dv.values) > 0 {
+			declared[dv.name] = true
+		}
+	}
+	if len(p.Deferred) > 0 {
+		declared["deferred"] = true
+	}
+	return p, declared
 }
 
 const (
@@ -103,14 +242,17 @@ func validateEssence(p Product) error {
 		if l.At.IsZero() || strings.TrimSpace(l.Fact) == "" || strings.TrimSpace(l.EvidenceRef) == "" {
 			return fmt.Errorf("learned[%d] needs at, fact, and evidence_ref", i)
 		}
+		if a := strings.TrimSpace(l.Area); a != "" && !profileAreaRE.MatchString(a) {
+			return fmt.Errorf("learned[%d] area %q must match %s", i, l.Area, profileAreaRE)
+		}
 	}
-	return nil
+	return validateProfile(p.Profile)
 }
 
 type productFact struct{ predicate, value string }
 
-// essenceFacts are the essence.*, form.*, learned.*, and taste.* facts the
-// product registry records for p. A declared essence records every field,
+// essenceFacts are the essence.*, form.*, learned.*, taste.*, and profile.*
+// facts the product registry records for p. A declared essence records every field,
 // writing EssenceUnknown for a blank one; an undeclared essence records none.
 func essenceFacts(p Product) []productFact {
 	var facts []productFact
@@ -150,7 +292,7 @@ func essenceFacts(p Product) []productFact {
 	sort.SliceStable(learned, func(i, j int) bool { return learned[i].At.Before(learned[j].At) })
 	for i, l := range learned {
 		l.At = l.At.UTC()
-		l.Stage, l.Fact, l.EvidenceRef = strings.TrimSpace(l.Stage), strings.TrimSpace(l.Fact), strings.TrimSpace(l.EvidenceRef)
+		l.Stage, l.Fact, l.EvidenceRef, l.Area = strings.TrimSpace(l.Stage), strings.TrimSpace(l.Fact), strings.TrimSpace(l.EvidenceRef), strings.TrimSpace(l.Area)
 		blob, _ := json.Marshal(l)
 		add("learned."+strconv.Itoa(i+1), string(blob))
 	}
@@ -160,7 +302,7 @@ func essenceFacts(p Product) []productFact {
 	if list := jsonList(p.TasteProfile.RedLines); list != "" {
 		add("taste.red_lines", list)
 	}
-	return facts
+	return append(facts, profileFacts(p.Profile)...)
 }
 
 func essenceDeclared(e Essence) bool {
