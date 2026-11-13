@@ -1169,23 +1169,35 @@ func mergeDaily(maps ...map[string]float64) map[string]float64 {
 	return out
 }
 
+// growthSortedKeys lists a map's keys in order, so a walk over it does not
+// depend on map order.
+func growthSortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // latestPoint returns the newest reading across periodic and range rows.
+// When two metrics share the newest date, the first metric by name wins.
 func (c growthCtx) latestPoint(g *growthGroup, globs []string) (v float64, date string, ok bool) {
-	for metric, m := range g.daily {
+	for _, metric := range growthSortedKeys(g.daily) {
 		if !growthMatchAny(globs, metric) || strings.HasPrefix(metric, "ads_") {
 			continue
 		}
-		for d, val := range m {
+		for d, val := range g.daily[metric] {
 			if d > date {
 				v, date, ok = val, d, true
 			}
 		}
 	}
-	for metric, m := range g.ranges {
+	for _, metric := range growthSortedKeys(g.ranges) {
 		if !growthMatchAny(globs, metric) {
 			continue
 		}
-		for d, pv := range m {
+		for d, pv := range g.ranges[metric] {
 			if d > date {
 				v, date, ok = pv.v, d, true
 			}
