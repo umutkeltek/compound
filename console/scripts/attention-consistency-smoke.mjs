@@ -317,11 +317,14 @@ const degradationProbe = `
     const visit = (node) => {
       if (Array.isArray(node)) { node.forEach(visit); return; }
       if (!node || typeof node !== "object") return;
-      if (node.type?.name === "ReadNotice" && node.props?.label === "what waits on you") {
+      // The page answers its question in QuestionHeader's \`answer\` slot, so the
+      // read notice may sit there instead of among the children.
+      if (node.type?.name === "ReadNotice" && node.props?.label === "what waits for you") {
         if (node.props.read?.status === "loading") seen.loading = true;
         if (node.props.read?.status === "unreachable") seen.failed = true;
       }
       if (node.type?.name === "DecideQueue") seen.queues += 1;
+      visit(node.props?.answer);
       visit(node.props?.children);
     };
     visit(root);
