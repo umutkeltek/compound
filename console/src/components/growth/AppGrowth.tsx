@@ -64,10 +64,9 @@ function Dot() {
 }
 
 function MoveMeta({ move }: { move: NextMove }) {
+  // The kind is not repeated here: the CLI's titles already lead with it
+  // ("Refresh data for …", "Record the answer for …"). It stays on the number badge's tooltip.
   const parts: ReactNode[] = [];
-  const kind = MOVE_KIND_LABEL[move.kind] ?? move.kind;
-  // The CLI's titles already start with the kind ("Refresh data for …"); say it only when they do not.
-  if (kind && !move.title.toLowerCase().startsWith(kind.toLowerCase())) parts.push(<span key="kind">{kind}</span>);
   if (move.branch) parts.push(<span key="branch">Pipeline: {branchLabel(move.branch)}</span>);
   if (move.skills.length) parts.push(<span key="skills">Skills that can help: {move.skills.join(", ")}</span>);
   if (move.areaId) parts.push(<a key="area" href={`#area-${move.areaId}`} className="mono hover:text-ink hover:underline">{move.areaId}</a>);
@@ -113,7 +112,12 @@ export function NextMoves({ app, look }: { app: GrowthApp; look: Lookup }) {
     <ol className="flex flex-col divide-y divide-hair-2 rounded-2xl border border-hair bg-panel">
       {moves.map((move, i) => (
         <li key={`${move.kind}-${move.areaId}-${i}`} className="flex gap-4 p-4">
-          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-strong text-xs font-semibold text-panel tabular-nums">{i + 1}</span>
+          <span
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-strong text-xs font-semibold text-panel tabular-nums"
+            title={MOVE_KIND_LABEL[move.kind] ?? move.kind}
+          >
+            {i + 1}
+          </span>
           <div className="flex min-w-0 flex-1 flex-col gap-1">
             <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
               <h3 className="min-w-0 text-md font-semibold text-ink">{move.title}</h3>

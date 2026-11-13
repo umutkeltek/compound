@@ -523,9 +523,9 @@ export function barClass(st: GrowthStatus): string {
 /** Plain words for next-move kinds (the CLI's order is the claim; this is only the label). */
 export const MOVE_KIND_LABEL: Record<string, string> = {
   refresh_data: "Refresh data",
-  set_profile: "Fill in the profile",
+  set_profile: "Write the profile",
   connect_data: "Connect data",
-  record_answer: "Write down the answer",
+  record_answer: "Record the answer",
   assess: "Assess",
   review_hypothesis: "Review a hypothesis",
   run_experiment: "Run an experiment",
