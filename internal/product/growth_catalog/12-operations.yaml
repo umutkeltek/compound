@@ -1,7 +1,7 @@
 areas:
   - id: operations_unit_economics
     group: operations
-    title: Unit economics and profitability
+    title: Profit per user
     question: Does each paid user earn back what it costs to get them?
     measure: unit economics
     needs: [monetization_model]

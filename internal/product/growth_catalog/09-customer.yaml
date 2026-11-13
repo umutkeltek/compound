@@ -1,7 +1,7 @@
 areas:
   - id: customer_feedback
     group: customer
-    title: User feedback collection
+    title: User feedback
     question: Do we hear what users ask for and complain about?
     measure: customer feedback
     skills: [customer-research]
@@ -9,7 +9,7 @@ areas:
       custom: feedback
   - id: customer_ratings
     group: customer
-    title: Ratings and review strategy
+    title: Public ratings
     question: Do users rate the product well where others can see it?
     measure: ratings
     kinds:

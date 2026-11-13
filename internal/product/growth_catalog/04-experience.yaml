@@ -28,8 +28,8 @@ areas:
         skills: [api-design]
   - id: experience_journeys
     group: experience
-    title: Core user journeys and task flows
-    question: Where do users drop out of the main flows?
+    title: Main tasks
+    question: Can users finish the main tasks without dropping out?
     measure: user flows
     evidence:
       metrics: ["posthog_*"]

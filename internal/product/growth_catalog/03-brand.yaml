@@ -51,7 +51,7 @@ areas:
       record: [taste.standards]
   - id: brand_trust
     group: brand
-    title: Trust signals and social proof
+    title: Signs of trust
     question: Do people trust the product with their data and money?
     measure: trust
     kinds:

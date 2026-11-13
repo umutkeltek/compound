@@ -17,7 +17,7 @@ areas:
       source: PostHog or Google Analytics events
   - id: analytics_funnel
     group: analytics
-    title: Funnel and journey analytics
+    title: Path to purchase
     question: Can we follow a user from first view to purchase?
     measure: the funnel
     needs: [experience_journeys]
@@ -31,7 +31,7 @@ areas:
     needs: [activation_criteria]
   - id: analytics_experiment_design
     group: analytics
-    title: Experiment design and hypothesis tracking
+    title: Testing changes
     question: Do we test changes and learn from the result?
     measure: experiments
     branch: experiment

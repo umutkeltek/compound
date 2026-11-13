@@ -1,6 +1,7 @@
 package product
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -72,6 +73,77 @@ func TestGrowthCatalogEmbeddedLoadsClean(t *testing.T) {
 	areas := cat.publicAreas()
 	if areas[0].Number != 1 || areas[len(areas)-1].Number != len(areas) {
 		t.Fatalf("areas are not numbered in order")
+	}
+}
+
+// growthPlainTitle checks a title is a short plain label: two to four words,
+// no list (no "and", no commas) and no jargon word.
+func growthPlainTitle(title string) error {
+	words := strings.Fields(title)
+	if len(words) < 2 || len(words) > 4 {
+		return fmt.Errorf("title %q has %d words, want 2 to 4", title, len(words))
+	}
+	if strings.Contains(title, ",") || containsString(words, "and") {
+		return fmt.Errorf("title %q is a list", title)
+	}
+	for _, w := range words {
+		if growthJargon[strings.ToLower(w)] {
+			return fmt.Errorf("title %q uses jargon word %q", title, w)
+		}
+	}
+	return nil
+}
+
+// growthYesNoQuestion checks a question is a plain yes-or-no question under
+// 90 characters.
+func growthYesNoQuestion(q string) error {
+	first, _, _ := strings.Cut(q, " ")
+	switch first {
+	case "Do", "Does", "Is", "Are", "Can", "Will", "Has", "Have":
+	default:
+		return fmt.Errorf("question %q is not a yes-or-no question", q)
+	}
+	if !strings.HasSuffix(q, "?") || len([]rune(q)) >= 90 {
+		return fmt.Errorf("question %q must end in ? and stay under 90 characters", q)
+	}
+	return nil
+}
+
+// The 25 areas migrated from the hardcoded catalog use the same short plain
+// titles as the seed areas and ask plain yes-or-no questions.
+func TestGrowthCatalogMigratedTitlesArePlain(t *testing.T) {
+	for _, old := range []string{"Paywalls, pricing pages and purchase prompts", "Retention and repeat use", "Funnel and journey analytics", "Core user journeys and task flows"} {
+		if growthPlainTitle(old) == nil {
+			t.Fatalf("the check accepts the old title %q", old)
+		}
+	}
+	if growthYesNoQuestion("Where do users drop out of the main flows?") == nil {
+		t.Fatal("the check accepts a where-question")
+	}
+	cat, err := loadEmbeddedGrowthCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range growthMigratedAreas {
+		a, ok := cat.area(id)
+		if !ok {
+			t.Errorf("migrated area %s missing", id)
+			continue
+		}
+		if err := growthPlainTitle(a.Title); err != nil {
+			t.Errorf("%s: %v", id, err)
+		}
+		if err := growthYesNoQuestion(a.Question); err != nil {
+			t.Errorf("%s: %v", id, err)
+		}
+		for kind, f := range a.Kinds {
+			if f.Question == "" {
+				continue
+			}
+			if err := growthYesNoQuestion(f.Question); err != nil {
+				t.Errorf("%s.%s: %v", id, kind, err)
+			}
+		}
 	}
 }
 

@@ -11,7 +11,7 @@ areas:
       record: [profile.revenue_models]
   - id: monetization_pricing
     group: monetization
-    title: Pricing and packaging
+    title: Price level
     question: Is the price right for what the product gives?
     measure: pricing
     applies: {objectives: [revenue]}
@@ -24,7 +24,7 @@ areas:
       cap_partial: true
   - id: monetization_free_tier
     group: monetization
-    title: Free tiers, trials, demos and samples
+    title: Free trials
     question: Do trials and free versions convert people who hesitate?
     measure: trials and offers
     applies: {objectives: [revenue]}
@@ -39,7 +39,7 @@ areas:
           source: App Store Connect subscription reports
   - id: monetization_purchase_prompt
     group: monetization
-    title: Paywalls, pricing pages and purchase prompts
+    title: Purchase screen
     question: Does the purchase prompt explain the offer clearly?
     measure: paywall design
     applies: {objectives: [revenue]}
@@ -51,7 +51,7 @@ areas:
       paywall: true
   - id: monetization_triggers
     group: monetization
-    title: Purchase triggers and upgrade paths
+    title: Upgrade timing
     question: Is the offer shown at the moment users want more?
     measure: paywall triggers
     applies: {objectives: [revenue]}
@@ -87,7 +87,7 @@ areas:
     skills: [pricing]
   - id: monetization_billing_recovery
     group: monetization
-    title: Billing, refunds and payment recovery
+    title: Lost payments
     question: Do we win back payments that fail or get refunded?
     measure: refunds and failed payments
     applies: {objectives: [revenue]}

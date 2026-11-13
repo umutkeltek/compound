@@ -1,7 +1,7 @@
 areas:
   - id: retention_repeat_use
     group: retention
-    title: Retention and repeat use
+    title: Repeat use
     question: Do users still use the product weeks later?
     measure: retention
     needs: [activation_criteria]
@@ -11,7 +11,7 @@ areas:
       source: PostHog retention events
   - id: retention_recurring_value
     group: retention
-    title: Recurring value and habit
+    title: Reasons to return
     question: Does each return visit give users something new?
     measure: repeat value
     evidence:
@@ -25,7 +25,7 @@ areas:
     skills: [emails]
   - id: retention_reengagement
     group: retention
-    title: Notifications and re-engagement
+    title: Bringing users back
     question: Do we bring lapsed users back?
     measure: re-engagement
     skills: [emails]

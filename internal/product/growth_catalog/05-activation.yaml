@@ -7,7 +7,7 @@ areas:
     skills: [copywriting]
   - id: activation_onboarding
     group: activation
-    title: Onboarding and guided setup
+    title: First run
     question: Do new users get through the first run?
     measure: onboarding
     needs: [experience_journeys]
@@ -39,7 +39,7 @@ areas:
         skills: [api-design]
   - id: activation_time_to_value
     group: activation
-    title: Time to first value
+    title: Time to first result
     question: Do new users reach the result they came for?
     measure: time to value
     needs: [experience_journeys]
@@ -73,7 +73,7 @@ areas:
         measure: code samples
   - id: activation_feature_discovery
     group: activation
-    title: Feature discovery and education
+    title: Finding key features
     question: Do users find the features that matter?
     measure: feature discovery
     needs: [experience_journeys]

@@ -916,7 +916,7 @@ func TestGrowthKindFormsAcrossKinds(t *testing.T) {
 		t.Fatalf("website = %+v", site)
 	}
 	both := growthAudit(t, growthApp(t, g, "product:both"), "acquisition_search")
-	if both.Status != GrowthPartial || len(both.Forms) != 2 || both.Title != "Search discoverability" {
+	if both.Status != GrowthPartial || len(both.Forms) != 2 || both.Title != "Search visibility" {
 		t.Fatalf("both kinds = %+v", both)
 	}
 	if !strings.Contains(both.Summary, "Nothing measures App Store search yet.") || !strings.Contains(both.NextMove, "App Store Connect analytics") {
@@ -1102,7 +1102,7 @@ func TestGrowthAreaBrief(t *testing.T) {
 	}
 	var text strings.Builder
 	RenderGrowthAreaText(&text, b)
-	if lines := strings.Count(text.String(), "\n"); lines < 6 || lines > 12 || !strings.Contains(text.String(), "needs first: Core user journeys") {
+	if lines := strings.Count(text.String(), "\n"); lines < 6 || lines > 12 || !strings.Contains(text.String(), "needs first: Main tasks (blind)") {
 		t.Fatalf("text brief (%d lines):\n%s", lines, text.String())
 	}
 

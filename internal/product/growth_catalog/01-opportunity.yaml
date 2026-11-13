@@ -40,7 +40,7 @@ areas:
     skills: [competitor-profiling]
   - id: opportunity_competitors
     group: opportunity
-    title: Competitor discovery and monitoring
+    title: Rival moves
     question: Do we know what rival products do that changes our odds?
     measure: competitors
     skills: [competitor-profiling, competitors]

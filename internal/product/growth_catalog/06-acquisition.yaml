@@ -9,7 +9,7 @@ areas:
       record: [channels]
   - id: acquisition_search
     group: acquisition
-    title: Search discoverability
+    title: Search visibility
     question: Do people find the product when they search?
     measure: search discoverability
     skills: [seo-audit]
@@ -42,7 +42,7 @@ areas:
         skills: [seo-audit, ai-seo]
   - id: acquisition_listing
     group: acquisition
-    title: Store listings and marketplace presence
+    title: Product listing
     question: Does the product's listing turn visitors into users?
     measure: listing conversion
     kinds:
@@ -67,7 +67,7 @@ areas:
         skills: [directory-submissions]
   - id: acquisition_landing
     group: acquisition
-    title: Landing pages and website conversion
+    title: Website visitors
     question: Do people who reach the site take the next step?
     measure: website traffic
     skills: [cro, copywriting]
@@ -76,7 +76,7 @@ areas:
       source: Google Analytics
   - id: acquisition_organic
     group: acquisition
-    title: Organic content and social distribution
+    title: Reach from posts
     question: Do posts and content bring people to the product?
     measure: organic distribution
     evidence:
@@ -85,7 +85,7 @@ areas:
       custom: organic
   - id: acquisition_paid
     group: acquisition
-    title: Paid advertising and campaigns
+    title: Paid ads
     question: Does paid advertising bring in users at a fair price?
     measure: paid advertising
     needs: [operations_unit_economics, acquisition_attribution]

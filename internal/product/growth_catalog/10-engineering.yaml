@@ -51,7 +51,7 @@ areas:
     measure: backups and restore
   - id: engineering_quality
     group: engineering
-    title: Testing and quality assurance
+    title: Crash-free use
     question: Does the product crash or break for users?
     measure: product quality and crashes
     branch: qa
