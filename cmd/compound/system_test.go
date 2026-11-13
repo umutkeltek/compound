@@ -139,6 +139,43 @@ func TestSystemInventoryRefreshCommandStoresSnapshot(t *testing.T) {
 	}
 }
 
+func TestSystemInventoryReadCommand(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+
+	missing := captureStdout(t, func() { cmdSystem([]string{"inventory", "--json"}) })
+	var empty projection.InventoryProjection
+	if err := json.Unmarshal([]byte(missing), &empty); err != nil {
+		t.Fatalf("missing snapshot must still print JSON: %v\n%s", err, missing)
+	}
+	if empty.Snapshot.State != "missing" || !strings.Contains(empty.Snapshot.Notice, "refresh --collector-json") {
+		t.Fatalf("missing snapshot = %+v", empty.Snapshot)
+	}
+
+	file := filepath.Join(t.TempDir(), "observation.json")
+	writeCmdTestFile(t, file, cmdInventoryObservation(time.Now().Add(-time.Hour)))
+	captureStdout(t, func() { cmdSystem([]string{"inventory", "refresh", "--collector-json", file}) })
+
+	out := captureStdout(t, func() { cmdSystem([]string{"inventory", "--json", "--stale-hours", "12"}) })
+	var report projection.InventoryProjection
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse inventory json: %v\n%s", err, out)
+	}
+	if report.SchemaVersion != projection.InventorySchemaVersion || report.Snapshot.State != "fresh" || report.Summary.Resources != 2 || report.Filter.StaleHours != 12 {
+		t.Fatalf("inventory = %+v / %+v", report.Snapshot, report.Summary)
+	}
+
+	text := captureStdout(t, func() { cmdSystem([]string{"inventory"}) })
+	for _, want := range []string{"Inventory observed", "Needs attention (2):", "dns: source needs sign-in", "Disk used is 91%, above 80%", "account: 1 (aws 1); cost or credit not known for 1", "Resources:"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("text missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, cmdInventoryLongID) || !strings.Contains(text, "…"+cmdInventoryLongID[len(cmdInventoryLongID)-4:]) {
+		t.Fatalf("text must show only the masked id:\n%s", text)
+	}
+}
+
 func writeCmdTestFile(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

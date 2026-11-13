@@ -200,8 +200,51 @@ func cmdSystemInventory(args []string) {
 		cmdSystemInventoryRefresh(args[1:])
 		return
 	}
-	fmt.Fprintln(os.Stderr, systemInventoryUsage)
-	os.Exit(2)
+	query := projection.InventoryQuery{StaleHours: projection.DefaultInventoryStaleHours}
+	var jsonOut bool
+	for i := 0; i < len(args); i++ {
+		switch flag := args[i]; flag {
+		case "--json":
+			jsonOut = true
+		case "--kind", "--provider", "--stale-hours":
+			if i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" {
+				fmt.Fprintln(os.Stderr, systemInventoryUsage)
+				os.Exit(2)
+			}
+			i++
+			switch flag {
+			case "--kind":
+				query.Kind = args[i]
+			case "--provider":
+				query.Provider = args[i]
+			default:
+				hours, err := strconv.ParseFloat(args[i], 64)
+				if err != nil || hours <= 0 {
+					fmt.Fprintln(os.Stderr, "system inventory: --stale-hours must be a positive number")
+					os.Exit(2)
+				}
+				query.StaleHours = hours
+			}
+		default:
+			fmt.Fprintln(os.Stderr, systemInventoryUsage)
+			os.Exit(2)
+		}
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	report, err := projection.BuildInventory(homePath, query, time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "system inventory:", err)
+		os.Exit(1)
+	}
+	if jsonOut {
+		printJSON(report)
+		return
+	}
+	fmt.Print(projection.FormatInventoryText(report))
 }
 
 func cmdSystemInventoryRefresh(args []string) {

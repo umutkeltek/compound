@@ -250,3 +250,112 @@ func TestInventoryRefreshUsesOverlayKindsAndSurvivesBrokenOverlay(t *testing.T) 
 		t.Fatal("refresh must report the overlay error")
 	}
 }
+
+func inventoryImported(t *testing.T, at time.Time) string {
+	t.Helper()
+	home := t.TempDir()
+	if _, err := RefreshInventory(home, inventoryFixtureAt(at), InventoryRefreshOptions{}, at); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	return home
+}
+
+func findInventoryResource(p InventoryProjection, id string) (InventoryResourceView, bool) {
+	for _, r := range p.Resources {
+		if r.ID == id {
+			return r, true
+		}
+	}
+	return InventoryResourceView{}, false
+}
+
+func findInventoryFact(r InventoryResourceView, name string) (InventoryFactView, bool) {
+	for _, f := range r.Facts {
+		if f.Name == name {
+			return f, true
+		}
+	}
+	return InventoryFactView{}, false
+}
+
+func TestInventoryProjectionShape(t *testing.T) {
+	home := inventoryImported(t, inventoryT0)
+	now := inventoryT0.Add(2 * time.Hour)
+	p, err := BuildInventory(home, InventoryQuery{}, now)
+	if err != nil {
+		t.Fatalf("BuildInventory: %v", err)
+	}
+	if p.SchemaVersion != InventorySchemaVersion || p.Snapshot.State != "fresh" || p.Snapshot.AgeHours == nil || *p.Snapshot.AgeHours != 2 {
+		t.Fatalf("snapshot = %+v", p.Snapshot)
+	}
+	if p.Filter.StaleHours != DefaultInventoryStaleHours || p.Boundary == "" || len(p.Kinds) != 8 {
+		t.Fatalf("filter/boundary/kinds = %+v %q %d", p.Filter, p.Boundary, len(p.Kinds))
+	}
+	if p.Summary.Resources != 6 || p.Summary.ByKind["guest"] != 2 || p.Summary.ByProvider["examplehv"] != 3 {
+		t.Fatalf("summary = %+v", p.Summary)
+	}
+	host, ok := findInventoryResource(p, "examplehv:node:example-node-1")
+	if !ok || host.Children != 2 {
+		t.Fatalf("host = %+v", host)
+	}
+	// Every declared fact is listed in kind order, then the undeclared ones.
+	if len(host.Facts) != 5 || host.Facts[0].Name != "cpu_pct" || host.Facts[4].Name != "cost_month" {
+		t.Fatalf("host facts = %+v", host.Facts)
+	}
+	account, _ := findInventoryResource(p, inventoryLongID)
+	tail, ok := findInventoryFact(account, "account_tail")
+	if !ok || tail.Group != InventoryGroupOther || tail.Value != "q7z9" {
+		t.Fatalf("undeclared fact must be kept as other: %+v", tail)
+	}
+	// Order: failed source, sign-in source, then warnings by how far past.
+	var order []string
+	for _, a := range p.Attention {
+		order = append(order, a.Kind+":"+a.Label+":"+a.Fact)
+	}
+	want := []string{"source:edge-box:", "source:dns:", "host:lab-node:disk_pct", "plan:Example seat:window_used_pct", "guest:app-vm:memory_pct"}
+	if strings.Join(order, ",") != strings.Join(want, ",") {
+		t.Fatalf("attention order = %v\nwant %v", order, want)
+	}
+	if p.Changes.Note == "" || len(p.Changes.Added) != 0 {
+		t.Fatalf("first import has nothing to compare: %+v", p.Changes)
+	}
+
+	byKind, err := BuildInventory(home, InventoryQuery{Kind: "guest"}, now)
+	if err != nil || byKind.Summary.Resources != 2 {
+		t.Fatalf("--kind guest = %+v, %v", byKind.Summary, err)
+	}
+	byProvider, _ := BuildInventory(home, InventoryQuery{Provider: "dnsco"}, now)
+	if byProvider.Summary.Resources != 1 || len(byProvider.Sources) != 1 || byProvider.Sources[0].ID != "dns" {
+		t.Fatalf("--provider dnsco = %+v sources %+v", byProvider.Summary, byProvider.Sources)
+	}
+	if _, err := BuildInventory(home, InventoryQuery{Kind: "bucket"}, now); err == nil || !strings.Contains(err.Error(), `unknown kind "bucket"`) {
+		t.Fatalf("unknown --kind err = %v", err)
+	}
+}
+
+func TestInventoryMissingSnapshotIsValidJSONWithNotice(t *testing.T) {
+	p, err := BuildInventory(t.TempDir(), InventoryQuery{}, inventoryT0)
+	if err != nil {
+		t.Fatalf("BuildInventory: %v", err)
+	}
+	if p.Snapshot.State != "missing" || !strings.Contains(p.Snapshot.Notice, "compound system inventory refresh --collector-json") {
+		t.Fatalf("snapshot = %+v", p.Snapshot)
+	}
+	if len(p.Attention) != 1 || p.Attention[0].Kind != "snapshot" {
+		t.Fatalf("attention = %+v", p.Attention)
+	}
+	data, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back map[string]any
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("missing snapshot JSON invalid: %v", err)
+	}
+	if back["resources"] == nil || back["attention"] == nil || back["sources"] == nil {
+		t.Fatalf("arrays must be [] not null: %s", data)
+	}
+	if text := FormatInventoryText(p); !strings.Contains(text, "no snapshot") || !strings.Contains(text, "refresh --collector-json") {
+		t.Fatalf("missing text = %q", text)
+	}
+}
