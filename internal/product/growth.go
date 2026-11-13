@@ -1379,6 +1379,11 @@ func (c growthCtx) funnel(g *growthGroup, profile GrowthProfile) []GrowthFunnelS
 		{"first_time_downloads", "First-time downloads", true, func() (float64, string, bool) {
 			// The Sales report counts every new download exactly; analytics
 			// adds noise. Use Sales where it has the number.
+			// Same number and window as the units KPI.
+			if k := c.kpiFor("units", g.daily); k.HasData {
+				downloadsFrom = "Counted by the Sales report (exact)."
+				return *k.Value, k.LatestDate, true
+			}
 			if v, d, ok := c.windowOrLatest(g, growthSalesFirstDownloads); ok {
 				downloadsFrom = "Counted by the Sales report (exact)."
 				return v, d, ok
