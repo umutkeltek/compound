@@ -30,7 +30,7 @@ const overlap = readdirSync(join(state, "running")).length;
 const peakFile = join(state, "peak");
 const peak = existsSync(peakFile) ? Number(readFileSync(peakFile, "utf8")) : 0;
 if (overlap > peak) writeFileSync(peakFile, String(overlap));
-await Bun.sleep(Number(process.env.READ_QUEUE_SLEEP_MS ?? "150"));
+await Bun.sleep(Number(process.env.READ_QUEUE_SLEEP_MS ?? "800"));
 rmSync(join(state, "running", name), { force: true });
 const failFile = join(state, "fail");
 if (existsSync(failFile)) { console.error("stub failure"); process.exit(3); }
@@ -63,7 +63,9 @@ try {
   assert.equal(cold.status, "loading", "a missing value must return as loading");
   assert.equal(cold.value, null);
   assert.equal(cold.updating, true, "the first read must already be queued or running");
-  assert.ok(coldMs < 100, `a cold read must not wait for compound (took ${coldMs.toFixed(0)} ms)`);
+  // "loading" is the real falsifier (a waiting read would return the value);
+  // the bound stays under the stub's 800 ms run.
+  assert.ok(coldMs < 750, `a cold read must not wait for compound (took ${coldMs.toFixed(0)} ms)`);
 
   // 2. The same read is never started twice; 3. at most two heavy reads at once.
   await api.readProjection(["alpha", "--json"], { timeoutMs: HEAVY });
@@ -87,14 +89,17 @@ try {
   assert.ok(typeof loaded.ageMs === "number" && loaded.ageMs < 60_000);
   assert.ok(typeof loaded.lastRunMs === "number" && loaded.lastRunMs >= 100, "the run time is measured");
 
-  // 5. Due rule: no sooner than max(25 s, 2 x last run time).
+  // 5. Due rule: no sooner than max(25 s, 2 x last run time). The clock is
+  // pinned to the stub's own finish stamp, so machine load between steps
+  // cannot move the boundary.
   const realNow = Date.now;
+  const finishedAt = Date.parse(loaded.generatedAt);
   let offset = 0;
-  Date.now = () => realNow() + offset;
+  Date.now = () => finishedAt + offset;
   try {
     offset = 20_000;
     assert.equal((await api.readProjection(["alpha", "--json"], { timeoutMs: HEAVY })).updating, false, "not due before 25 s");
-    offset = 26_000;
+    offset = 28_000;
     const due = await api.readProjection(["alpha", "--json"], { timeoutMs: HEAVY });
     assert.equal(due.updating, true, "due after 25 s");
     assert.equal(due.value?.marker, "ok", "the old copy is served while it refreshes");

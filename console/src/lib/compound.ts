@@ -711,6 +711,13 @@ export function markRunJsonCacheOutOfDate(): void {
  */
 export const READ_QUEUE_LIMIT = 2;
 const READ_MIN_GAP_MS = 25_000;
+/**
+ * A queued read runs in the background, so a longer budget costs no page any
+ * time. On a loaded machine `workbench --json` and `director propose` were
+ * measured at just over 180 s and were killed at the heavy limit every time;
+ * background heavy reads get 300 s instead. Blocking callers keep their own.
+ */
+export const BACKGROUND_HEAVY_TIMEOUT_MS = 300_000;
 /** A read that took at least this long joins the heavy lane. */
 const READ_HEAVY_RUN_MS = 10_000;
 /** A copy older than this, or a failed refresh, earns a warning colour. */
@@ -840,7 +847,8 @@ export async function readProjection(
   if (cached === "retry") cached = runJsonCache.get(key) ?? null;
   const entry = cached;
   const now = Date.now();
-  if (opts?.enabled !== false && readIsDue(key, entry, now)) enqueueRead(key, args, timeoutMs, entry);
+  const queueTimeoutMs = timeoutMs >= HEAVY_PROJECTION_TIMEOUT_MS ? Math.max(timeoutMs, BACKGROUND_HEAVY_TIMEOUT_MS) : timeoutMs;
+  if (opts?.enabled !== false && readIsDue(key, entry, now)) enqueueRead(key, args, queueTimeoutMs, entry);
 
   const updating = runJsonInflight.has(key) || runJsonGlobals.queued.has(key);
   const source = `compound ${args.join(" ")}`;
