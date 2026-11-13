@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"compound/internal/home"
 )
 
 var queueEquivalenceNow = time.Date(2026, 7, 23, 11, 0, 0, 0, time.UTC)
@@ -181,5 +183,65 @@ func TestQueueReadsEachReviewDirectoryOnce(t *testing.T) {
 			dirs = append(dirs, dir)
 		}
 		t.Fatalf("listed %d directories, want 3 (one per review directory): %q", len(listing.dirs), dirs)
+	}
+}
+
+// TestArchivedExtraPathsByDirectoryMatchesFullScan compares the grouped lookup
+// with the full archive-index scan for items in several directories, with
+// archived siblings, look-alike stems, other kinds and duplicate originals.
+func TestArchivedExtraPathsByDirectoryMatchesFullScan(t *testing.T) {
+	homePath := filepath.Join(t.TempDir(), "home")
+	var entries []home.OperationalArchiveEntry
+	var items []QueueItem
+	areas := []string{"worktree-retirement", "panel-verdicts", "worktree-retirement/nested-evidence"}
+	for a, area := range areas {
+		for i := 0; i < 12; i++ {
+			stem := fmt.Sprintf("review_arch_%02d", i)
+			original := "reviews/" + area + "/" + stem + ".json"
+			items = append(items, QueueItem{Area: area, ID: stem, JSONPath: filepath.Join(homePath, filepath.FromSlash(original)), ExtraPaths: []string{filepath.Join(homePath, "reviews", area, stem+".md")}})
+			for j, suffix := range []string{".preimage", ".result.json", ".md", "0.json"} {
+				if (i+j+a)%3 == 0 {
+					continue
+				}
+				kind := "review"
+				if (i+j)%7 == 0 {
+					kind = "work"
+				}
+				entries = append(entries, home.OperationalArchiveEntry{
+					Kind:         kind,
+					OriginalPath: "reviews/" + area + "/" + stem + suffix,
+					ArchivePath:  fmt.Sprintf("archive/ops/%d/%s/%s%s", (i+j)%2, area, stem, suffix),
+				})
+			}
+		}
+	}
+	// Duplicate original paths: byOriginal keeps the last, the scan sees both.
+	entries = append(entries, home.OperationalArchiveEntry{Kind: "review", OriginalPath: "reviews/panel-verdicts/review_arch_01.preimage", ArchivePath: "archive/ops/dup/review_arch_01.preimage"})
+	// An item outside reviews/ is skipped by both.
+	items = append(items, QueueItem{Area: "outside", ID: "outside", JSONPath: filepath.Join(homePath, "elsewhere", "outside.json")})
+
+	scanned := append([]QueueItem(nil), items...)
+	grouped := append([]QueueItem(nil), items...)
+	for i := range items {
+		scanned[i].ExtraPaths = append([]string(nil), items[i].ExtraPaths...)
+		grouped[i].ExtraPaths = append([]string(nil), items[i].ExtraPaths...)
+	}
+	if err := attachArchivedReviewExtraPaths(homePath, scanned, entries); err != nil {
+		t.Fatal(err)
+	}
+	if err := attachArchivedReviewExtraPathsByDir(homePath, grouped, entries); err != nil {
+		t.Fatal(err)
+	}
+	attached := 0
+	for i := range scanned {
+		if strings.Join(scanned[i].ExtraPaths, "\n") != strings.Join(grouped[i].ExtraPaths, "\n") {
+			t.Fatalf("item %s/%s extras differ\nscan:    %q\ngrouped: %q", scanned[i].Area, scanned[i].ID, scanned[i].ExtraPaths, grouped[i].ExtraPaths)
+		}
+		if len(scanned[i].ExtraPaths) > 1 {
+			attached++
+		}
+	}
+	if attached < 20 {
+		t.Fatalf("fixture attached archived extras to only %d items", attached)
 	}
 }

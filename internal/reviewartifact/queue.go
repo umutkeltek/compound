@@ -292,7 +292,11 @@ func queue(homePath string, opt QueueOptions, now time.Time, listing *queueDirLi
 	if err != nil {
 		return QueueReport{}, err
 	}
-	if err := attachArchivedReviewExtraPaths(homePath, report.Items, archiveEntries); err != nil {
+	attach := attachArchivedReviewExtraPaths
+	if listing != nil {
+		attach = attachArchivedReviewExtraPathsByDir
+	}
+	if err := attach(homePath, report.Items, archiveEntries); err != nil {
 		return QueueReport{}, err
 	}
 	if opt.IncludeArchived {
@@ -1074,6 +1078,40 @@ func attachArchivedReviewExtraPaths(homePath string, items []QueueItem, entries 
 			continue
 		}
 		items[i].ExtraPaths = uniqueSortedPaths(append(items[i].ExtraPaths, archivedReviewExtraPaths(entries, byOriginal, homePath, rel)...))
+	}
+	return nil
+}
+
+// attachArchivedReviewExtraPathsByDir is attachArchivedReviewExtraPaths with
+// the archive entries grouped by review directory first, so each item scans
+// only the archived reviews of its own directory instead of the whole index.
+// archivedReviewExtraPaths keeps only review entries whose directory equals
+// the item's directory and sorts its result, so handing it just that group
+// returns the same paths.
+func attachArchivedReviewExtraPathsByDir(homePath string, items []QueueItem, entries []home.OperationalArchiveEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	byOriginal := map[string]home.OperationalArchiveEntry{}
+	byDir := map[string][]home.OperationalArchiveEntry{}
+	for _, entry := range entries {
+		byOriginal[entry.OriginalPath] = entry
+		if entry.Kind == "review" {
+			dir := filepath.ToSlash(filepath.Dir(entry.OriginalPath))
+			byDir[dir] = append(byDir[dir], entry)
+		}
+	}
+	for i := range items {
+		rel, err := filepath.Rel(homePath, items[i].JSONPath)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if !strings.HasPrefix(rel, "reviews/") {
+			continue
+		}
+		group := byDir[filepath.ToSlash(filepath.Dir(rel))]
+		items[i].ExtraPaths = uniqueSortedPaths(append(items[i].ExtraPaths, archivedReviewExtraPaths(group, byOriginal, homePath, rel)...))
 	}
 	return nil
 }
