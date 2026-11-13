@@ -161,7 +161,10 @@ type GrowthHypotheses struct {
 }
 
 type GrowthNextMove struct {
-	AreaID    string   `json:"area_id"`
+	AreaID string `json:"area_id"`
+	// AreaIDs lists every area the move covers, in catalog order: [area_id]
+	// for one area, all of them for a folded refresh, empty for set_profile.
+	AreaIDs   []string `json:"area_ids"`
 	Kind      string   `json:"kind"`
 	Title     string   `json:"title"`
 	Why       string   `json:"why"`
@@ -1543,17 +1546,20 @@ func (c growthCtx) summary(g *growthGroup, spec growthAreaSpec, status, missing 
 			return s
 		}
 	}
+	// Name where the rows come from as a plain source, never a metric id.
 	names := make([]string, 0, 3)
+	seen := map[string]bool{}
 	rows := 0
-	for i, e := range ev {
+	for _, e := range ev {
 		rows += e.Rows
-		if i < 3 {
-			names = append(names, e.Metric)
+		if src := growthMetricSource(e.Metric); !seen[src] && len(names) < 3 {
+			seen[src] = true
+			names = append(names, src)
 		}
 	}
 	s := ""
 	if len(ev) > 0 {
-		s = fmt.Sprintf("%s across %s, latest %s.", growthCount(float64(rows), "row", "rows"), strings.Join(names, ", "), latest)
+		s = fmt.Sprintf("%s from %s, latest %s.", growthCount(float64(rows), "row", "rows"), growthAnd(names), latest)
 	} else {
 		s = "Tracked from product records."
 	}
@@ -1810,6 +1816,9 @@ func (g Growth) Validate() error {
 		for _, m := range app.NextMoves {
 			if !growthMoveKinds[m.Kind] || strings.TrimSpace(m.Title) == "" || strings.TrimSpace(m.Brief) == "" {
 				return fmt.Errorf("app %s next move %q (%s) is incomplete", app.ProductID, m.Title, m.Kind)
+			}
+			if m.AreaIDs == nil || (m.AreaID == "") != (len(m.AreaIDs) == 0) || (m.AreaID != "" && m.AreaIDs[0] != m.AreaID) {
+				return fmt.Errorf("app %s next move %q area_ids %v must start with area_id %q", app.ProductID, m.Title, m.AreaIDs, m.AreaID)
 			}
 		}
 	}

@@ -91,7 +91,7 @@ func (c growthCtx) nextMoves(g *growthGroup, app GrowthApp) []GrowthNextMove {
 	}
 	move := func(a GrowthAudit, kind, title, why string) GrowthNextMove {
 		return GrowthNextMove{
-			AreaID: a.AreaID, Kind: kind, Title: title, Why: why, Unblocks: unblocks[a.AreaID],
+			AreaID: a.AreaID, AreaIDs: []string{a.AreaID}, Kind: kind, Title: title, Why: why, Unblocks: unblocks[a.AreaID],
 			BlockedBy: append([]string{}, a.BlockedBy...), Branch: a.Branch, Skills: append([]string{}, a.Skills...),
 			Brief: growthBrief(app.ProductID, a.AreaID),
 		}
@@ -105,9 +105,10 @@ func (c growthCtx) nextMoves(g *growthGroup, app GrowthApp) []GrowthNextMove {
 	}
 
 	// 1. Data that stopped: one move per stopped source, pointing at the first
-	// area (in catalog order) that reads it. An area stale on something with
-	// no source (an old assessment) keeps its own move. Stale data can always
-	// be refreshed, so a refresh move waits on nothing.
+	// area (in catalog order) that reads it and listing every such area in
+	// area_ids. An area stale on something with no source (an old assessment)
+	// keeps its own move. Stale data can always be refreshed, so a refresh
+	// move waits on nothing.
 	sourceAreas := map[string][]GrowthAudit{}
 	for _, a := range app.Audit {
 		if a.Status == GrowthStale && !a.assessment && len(a.stale) > 0 {
@@ -121,9 +122,9 @@ func (c growthCtx) nextMoves(g *growthGroup, app GrowthApp) []GrowthNextMove {
 			continue
 		}
 		if a.assessment || len(a.stale) == 0 {
-			title := "Refresh data for " + a.Title
+			title := growthMoveTitle("Refresh data", a.Title)
 			if a.assessment {
-				title = "Assess " + a.Title + " again"
+				title = growthMoveTitle("Assess again", a.Title)
 			}
 			m := move(a, "refresh_data", title, gapWhy(a))
 			m.BlockedBy = []string{}
@@ -141,6 +142,7 @@ func (c growthCtx) nextMoves(g *growthGroup, app GrowthApp) []GrowthNextMove {
 			ids = append(ids, x.AreaID)
 		}
 		m := move(areas[0], "refresh_data", "Refresh "+key, growthRefreshWhy(areas))
+		m.AreaIDs = ids
 		m.Unblocks = 0
 		for _, id := range c.cat.dependents(ids...) {
 			if growthApplies(status[id]) {
@@ -162,11 +164,11 @@ func (c growthCtx) nextMoves(g *growthGroup, app GrowthApp) []GrowthNextMove {
 		}
 		switch a.gap {
 		case "connect_data":
-			add(move(a, "connect_data", "Connect data for "+a.Title, gapWhy(a)))
+			add(move(a, "connect_data", growthMoveTitle("Connect data", a.Title), gapWhy(a)))
 		case "record_answer":
-			add(move(a, "record_answer", "Record the answer for "+a.Title, gapWhy(a)))
+			add(move(a, "record_answer", growthMoveTitle("Record the answer", a.Title), gapWhy(a)))
 		default:
-			add(move(a, "assess", "Assess "+a.Title, gapWhy(a)))
+			add(move(a, "assess", growthMoveTitle("Assess", a.Title), gapWhy(a)))
 		}
 	}
 	// 4. Measured areas: test what is known.
@@ -175,9 +177,9 @@ func (c growthCtx) nextMoves(g *growthGroup, app GrowthApp) []GrowthNextMove {
 			continue
 		}
 		if c.openHypothesisFor(g, app, a.AreaID) {
-			add(move(a, "review_hypothesis", "Review the open hypothesis for "+a.Title, a.Summary))
+			add(move(a, "review_hypothesis", growthMoveTitle("Review the hypothesis", a.Title), a.Summary))
 		} else {
-			add(move(a, "run_experiment", "Run an experiment on "+a.Title, a.Summary))
+			add(move(a, "run_experiment", growthMoveTitle("Run an experiment", a.Title), a.Summary))
 		}
 	}
 	// 5. Gaps that wait on a need, naming the need.
@@ -193,13 +195,18 @@ func (c growthCtx) nextMoves(g *growthGroup, app GrowthApp) []GrowthNextMove {
 		if kind == "" {
 			kind = "assess"
 		}
-		add(move(a, kind, "Assess "+a.Title, "Needs "+growthAnd(needs)+" first. "+a.Summary))
+		add(move(a, kind, growthMoveTitle("Assess", a.Title), "Needs "+growthAnd(needs)+" first. "+a.Summary))
 	}
 	if out == nil {
 		out = []GrowthNextMove{}
 	}
 	return out
 }
+
+// growthMoveTitle names a one-area move as "<what to do>: <area title>", so
+// an area title never reads as part of the sentence ("Assess: What people use
+// today"). A folded refresh names its source instead ("Refresh Search Console").
+func growthMoveTitle(verb, area string) string { return verb + ": " + area }
 
 // growthStaleName names the stopped sources of one area, as its next move
 // names them.
@@ -211,15 +218,19 @@ func growthStaleName(stale []growthStaleSource) string {
 	return strings.Join(names, " and ")
 }
 
-// growthRefreshWhy says when a stopped source last sent data (the oldest date
-// across the areas that read it) and names up to three of those areas.
+// growthRefreshWhy says when a stopped source last sent data and names up to
+// three of the areas that read it. When those areas stopped on different
+// days it names both ends instead of hiding the newer one.
 func growthRefreshWhy(areas []GrowthAudit) string {
-	oldest := ""
+	oldest, newest := "", ""
 	titles := make([]string, 0, 3)
 	for i, a := range areas {
 		for _, s := range a.stale {
 			if oldest == "" || s.date < oldest {
 				oldest = s.date
+			}
+			if s.date > newest {
+				newest = s.date
 			}
 		}
 		if i < 3 {
@@ -230,7 +241,11 @@ func growthRefreshWhy(areas []GrowthAudit) string {
 	if rest := len(areas) - len(titles); rest > 0 {
 		list += fmt.Sprintf(" and %d more", rest)
 	}
-	return fmt.Sprintf("The last data is from %s. %s it: %s.", oldest, growthCount(float64(len(areas)), "area uses", "areas use"), list)
+	when := "The last data is from " + oldest + "."
+	if newest != oldest {
+		when = fmt.Sprintf("The data stopped between %s and %s.", oldest, newest)
+	}
+	return fmt.Sprintf("%s %s it: %s.", when, growthCount(float64(len(areas)), "area uses", "areas use"), list)
 }
 
 // setProfileMove asks for the profile dimensions that leave areas unknown.
@@ -258,8 +273,9 @@ func (c growthCtx) setProfileMove(app GrowthApp) (GrowthNextMove, bool) {
 		}
 	}
 	return GrowthNextMove{
-		Kind:  "set_profile",
-		Title: "Write the product profile",
+		AreaIDs: []string{},
+		Kind:    "set_profile",
+		Title:   "Write the product profile",
 		Why: fmt.Sprintf("%s cannot be judged until the product's %s are on file.",
 			growthCount(float64(areas), "area", "areas"), growthAnd(labels)),
 		BlockedBy: []string{}, Branch: "strategy", Skills: []string{},

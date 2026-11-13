@@ -110,9 +110,20 @@ func TestGrowthRefreshMovesFoldBySource(t *testing.T) {
 		t.Fatalf("moves = %+v", moves)
 	}
 	sales, search := moves[0], moves[1]
-	wantWhy := "The last data is from " + growthDay(40) + ". 3 areas use it: Sales one, Sales two, Sales three."
+	// Sales three stopped on day 40, Sales one and two on day 30: say both ends.
+	wantWhy := "The data stopped between " + growthDay(40) + " and " + growthDay(30) + ". 3 areas use it: Sales one, Sales two, Sales three."
 	if sales.Kind != "refresh_data" || sales.Title != "Refresh App Store Connect sales" || sales.Why != wantWhy {
 		t.Fatalf("sales move = %+v\nwant why %q", sales, wantWhy)
+	}
+	// The folded move names every area it covers, in catalog order, so a page
+	// can mark each one; area_id stays the first.
+	if got := strings.Join(sales.AreaIDs, ","); got != "alpha_sales_one,alpha_sales_two,alpha_sales_three" {
+		t.Fatalf("folded move area_ids = %q, want all three sales areas", got)
+	}
+	for _, m := range moves[1:] {
+		if len(m.AreaIDs) != 1 || m.AreaIDs[0] != m.AreaID {
+			t.Fatalf("a one-area move lists exactly its area: %+v", m)
+		}
 	}
 	if sales.AreaID != "alpha_sales_one" || sales.Brief != growthBrief("product:alpha", "alpha_sales_one") || sales.Branch != "research" ||
 		sales.Unblocks != 1 || len(sales.BlockedBy) != 0 || sales.BlockedBy == nil {
@@ -127,7 +138,45 @@ func TestGrowthRefreshMovesFoldBySource(t *testing.T) {
 			t.Fatalf("one stopped source must be one move, got %+v", moves)
 		}
 	}
-	if moves[2].AreaID != "beta_four" {
-		t.Fatalf("the freed slots go to the next moves in order: %+v", moves[2:])
+	if moves[2].AreaID != "beta_four" || moves[2].Title != "Assess: Beta four" {
+		t.Fatalf("the freed slots go to the next moves in order, titled \"<verb>: <area>\": %+v", moves[2:])
+	}
+}
+
+// When every folded area stopped on the same day, the why line keeps the one
+// date ("The last data is from ...").
+func TestGrowthRefreshWhySameDay(t *testing.T) {
+	cat, err := buildTestGrowthCatalog(t, growthTestCore, growthRefreshAreas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	rows := growthDaily("product:alpha", "app_store_connect_units", 40, 30, 1)
+	rows = append(rows, growthDaily("product:alpha", "app_store_connect_developer_proceeds_usd", 40, 30, 2)...)
+	writeGrowthSignals(t, home, rows...)
+	o := growthOpts()
+	o.catalog = cat
+	sales := buildGrowthT(t, home, o).Apps[0].NextMoves[0]
+	want := "The last data is from " + growthDay(30) + ". 3 areas use it: Sales one, Sales two, Sales three."
+	if sales.Title != "Refresh App Store Connect sales" || sales.Why != want || len(sales.AreaIDs) != 3 {
+		t.Fatalf("sales move = %+v\nwant why %q", sales, want)
+	}
+}
+
+// One-area moves read "<what to do>: <area title>"; only a folded refresh
+// names its source. Every kind's verb is pinned here.
+func TestGrowthMoveTitlesUseColonForm(t *testing.T) {
+	for verb, want := range map[string]string{
+		"Refresh data":          "Refresh data: Main tasks",
+		"Assess again":          "Assess again: Main tasks",
+		"Connect data":          "Connect data: Main tasks",
+		"Record the answer":     "Record the answer: Main tasks",
+		"Assess":                "Assess: Main tasks",
+		"Review the hypothesis": "Review the hypothesis: Main tasks",
+		"Run an experiment":     "Run an experiment: Main tasks",
+	} {
+		if got := growthMoveTitle(verb, "Main tasks"); got != want {
+			t.Fatalf("growthMoveTitle(%q) = %q, want %q", verb, got, want)
+		}
 	}
 }

@@ -85,7 +85,8 @@ func TestGrowthBaseFormMissingOnlyWithItsOwnRule(t *testing.T) {
 	app := buildGrowthT(t, home, o).Apps[0]
 
 	reach := growthAudit(t, app, "alpha_reach")
-	want := "Store search: 7 rows across app_store_connect_impressions, latest " + growthDay(0) + "."
+	// The summary names the source in plain words, never the metric id.
+	want := "Store search: 7 rows from App Store Connect analytics, latest " + growthDay(0) + "."
 	if reach.Status != GrowthMeasured || reach.Summary != want || strings.Join(reach.Forms, "; ") != "Store search" || reach.Title != "Reach" {
 		t.Fatalf("base row without a rule\n status %s\n summary %q\n forms %q\n title %q\nwant measured, %q", reach.Status, reach.Summary, reach.Forms, reach.Title, want)
 	}

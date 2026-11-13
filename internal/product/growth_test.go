@@ -1028,7 +1028,7 @@ func TestGrowthNextMovesRanking(t *testing.T) {
 	if moves[0].Kind != "refresh_data" || moves[0].AreaID != "analytics_one" {
 		t.Fatalf("stale data must come first: %+v", moves[0])
 	}
-	if moves[1].AreaID != "operations_root" || moves[1].Unblocks != 12 || moves[1].Kind != "assess" {
+	if moves[1].AreaID != "operations_root" || moves[1].Unblocks != 12 || moves[1].Kind != "assess" || moves[1].Title != "Assess: operations_root" {
 		t.Fatalf("the area most others need must come next, even from the last group: %+v", moves[1])
 	}
 	groups := map[string]bool{}
@@ -1057,7 +1057,7 @@ func TestGrowthNextMovesBlockedAfterNeedsAndSetProfile(t *testing.T) {
 	o := growthOpts()
 	o.catalog = cat
 	moves := buildGrowthT(t, home, o).Apps[0].NextMoves
-	if len(moves) != 2 || moves[0].AreaID != "alpha_audience" || moves[0].Kind != "record_answer" {
+	if len(moves) != 2 || moves[0].AreaID != "alpha_audience" || moves[0].Kind != "record_answer" || moves[0].Title != "Record the answer: Audience" {
 		t.Fatalf("moves = %+v", moves)
 	}
 	if moves[1].AreaID != "beta_assessed" || !strings.HasPrefix(moves[1].Why, "Needs Audience first.") || strings.Join(moves[1].BlockedBy, ",") != "alpha_audience" {
