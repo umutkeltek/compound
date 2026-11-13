@@ -66,7 +66,7 @@ const groups = [
   group("source-control-cleanup|scr", "source-control-cleanup/scr_0a1b2c3d4e5f.preimage", 3),
   group("launchd-repair|review", "launchd-repair", 4),
   group("git-index-lock|review", "git-index-lock", 2),
-  group("bench|review", "bench", 1),
+  group("bench|review", "bench", 1, { operator_summary: "product:fixture-app has a product hypothesis. Review it?", operator_unlock: "the product loop gets an evidence-shaped hypothesis" }),
   group("route-promotions|x", "route-promotions", 1, { terminal_reason: "actions are item-specific; no safe batch action exposed" }),
   group("worktree-retirement|review", "worktree-retirement", 1),
 ];
@@ -337,6 +337,11 @@ try {
   assert.match(warm.Decide, /No button exists for this kind of decision yet/);
   assert.match(warm.Decide, /None can be decided with a button right now\. 7 have no button for their kind of decision yet\./);
   assert.doesNotMatch(warm.Decide, /paused|pause while/i, "an old copy is only old: never 'paused'");
+  // A title that starts with a product id leads with the product's name on
+  // Decide too, as on Today; the id stays as small text.
+  assert.match(warm.Decide, /Fixture App has a product hypothesis\. Review it\?/);
+  assert.match(warm.Today, /Fixture App has a product hypothesis\. Review it\?/);
+  assert.doesNotMatch(warm.Decide, /product:fixture-app has/, "a raw product id never leads a Decide title");
 
   // 5. The opened decision checks its own evidence (`reviews --json --area`):
   // "Checking…" while that read runs, then its real standing from that read.
@@ -357,6 +362,14 @@ try {
   assert.match(opened, /6 have no button for their kind of decision yet and 1 is decided item by item/);
   assert.deepEqual(findBannedPhrases(opened), []);
   await scopedEvidenceCases();
+
+  // 6. The opened card: product name in the title, the id small, and the
+  // tool's "why" line in plain words in its "Why it matters" box.
+  const bench = visibleText(wrap("/reviews", await Decide({ searchParams: Promise.resolve({ decision: "bench|review" }) })));
+  assert.match(bench, /Fixture App has a product hypothesis\. Review it\?/);
+  assert.match(bench, /product:fixture-app/, "the id stays, as small text");
+  assert.match(bench, /Why it matters The product gets an idea to test that rests on evidence\./);
+  assert.doesNotMatch(bench, /evidence-shaped/, "the tool's raw why line never reaches the card");
 
   // 4. Decide sends only the open decision's detail.
   const page = await Decide({ searchParams: Promise.resolve({}) });

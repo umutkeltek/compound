@@ -21,7 +21,8 @@ import type { DecisionEffectKind } from "@/lib/decision-registry";
 import { buildEnumerableActionRequest, decideActIdentity, RATIONALE_REQUIRED_MESSAGE } from "@/lib/governed-action-client";
 import { OPERATOR_INPUTS } from "@/lib/operator-inputs";
 import { ownerUnavailableMessage } from "@/lib/glossary";
-import { plainArea, plainDecisionState, plainNextStep, plainReach, plainReason, plainText, standingLine } from "@/lib/plain-words";
+import { humanizeProductId } from "@/lib/app-identity";
+import { plainArea, plainDecisionState, plainNextStep, plainReach, plainReason, plainText, plainWhy, productTitle, standingLine } from "@/lib/plain-words";
 import { GovernedAct, type ExecuteResult } from "./GovernedAct";
 
 /** Decide's two lists, in plain words (the split itself is decide-members' face-state rule). */
@@ -97,6 +98,19 @@ function operatorText(value: string): string {
       .replace(/\bclaude_code\b/gi, "Claude Code")
       .replace(/\bswitchback_api\b/gi, "Switchback API"),
   );
+}
+
+/**
+ * A title in plain words, as Today shows it: a title that starts with a
+ * product id leads with the product's name (named as the apps pages name
+ * it), and the id comes back apart for small secondary text.
+ */
+function titled(value: string): { text: string; id: string } {
+  return productTitle(operatorText(value), humanizeProductId);
+}
+
+function TitleId({ id, className = "" }: { id: string; className?: string }) {
+  return id ? <span className={`mono block truncate text-2xs font-normal text-faint ${className}`} title={id}>{id}</span> : null;
 }
 
 function actorLabel(value: string): string {
@@ -644,8 +658,9 @@ function DecisionRow({
          * objectText). Falls back to the title for the (common) areas where
          * title already carries the real headline. */}
         <span className="mt-1 line-clamp-2 block text-sm font-semibold leading-snug text-ink">
-          {operatorText(group.objectText || group.title)}
+          {titled(group.objectText || group.title).text}
         </span>
+        <TitleId id={titled(group.objectText || group.title).id} className="mt-0.5" />
         {demoteBlockedStamp ? null : <StandingText group={group} className="mt-2" />}
         {group.count > 1 ? <span className="mono mt-1 block text-2xs text-faint">{group.count} items</span> : null}
         {group.face.primaryAction ? (
@@ -838,10 +853,11 @@ function DecisionDetail({
          * visually primary. Never gated behind a tab: this must read in the
          * first three seconds regardless of which tab happens to be open. */}
         <blockquote className="mt-3 max-w-read border-l-2 border-work-line pl-3 text-lg font-semibold leading-snug text-ink">
-          {group.objectText ? operatorText(group.objectText) : "The system has not written down what this decision is about yet."}
+          {group.objectText ? titled(group.objectText).text : "The system has not written down what this decision is about yet."}
         </blockquote>
+        <TitleId id={titled(group.objectText).id} className="mt-1 pl-3.5" />
         {group.title && group.title !== group.objectText ? (
-          <p className="mt-1 max-w-read text-xs font-medium text-muted">{operatorText(group.title)}</p>
+          <p className="mt-1 max-w-read text-xs font-medium text-muted">{titled(group.title).text}</p>
         ) : null}
 
         {/* 2. WHAT changes if approved — one sentence when derivable; the row
@@ -873,7 +889,12 @@ function DecisionDetail({
 
           <div className="rounded-md border border-hair bg-soft px-3 py-2.5">
             <div className="text-2xs font-bold uppercase tracking-wide text-faint">Why it matters</div>
-            <p className="mt-1 max-w-read text-sm leading-relaxed text-ink">{operatorText(group.face.whyNow)}</p>
+            {/* The tool's own line in plain words (lib/plain-words.ts plainWhy); a
+              * line that is only a command says nothing about why, so the
+              * model's own default stands in for it. */}
+            <p className="mt-1 max-w-read text-sm leading-relaxed text-ink">
+              {plainWhy(operatorText(group.face.whyNow)) || "Your review is the next safe step for this item."}
+            </p>
           </div>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-2xs text-faint">
@@ -909,7 +930,7 @@ function DecisionDetail({
 
         <TabsContent value="summary">
           <section className="border-t border-hair px-4 py-4">
-            {group.body ? <p className="max-w-read text-sm leading-relaxed text-muted">{group.body}</p> : (
+            {group.body ? <p className="max-w-read text-sm leading-relaxed text-muted">{productTitle(group.body, humanizeProductId).text}</p> : (
               <p className="text-sm leading-relaxed text-muted">This decision is waiting for you. The system wrote no longer summary.</p>
             )}
             {group.consequences ? <ConsequencePair approve={group.consequences.approve} hold={group.consequences.hold} /> : null}
@@ -1074,7 +1095,7 @@ export function DecideQueue({
   const visible = useMemo(() => {
     const query = filter.trim().toLowerCase();
     if (!query) return groups;
-    return groups.filter((group) => `${group.title} ${group.areaLabel} ${group.body}`.toLowerCase().includes(query));
+    return groups.filter((group) => `${group.title} ${titled(group.title).text} ${group.areaLabel} ${group.body}`.toLowerCase().includes(query));
   }, [groups, filter]);
   const readinessSections = useMemo(() => decideReadinessSections(visible), [visible]);
   const visibleIndexByKey = useMemo(() => new Map(visible.map((group, index) => [group.key, index])), [visible]);
@@ -1183,7 +1204,7 @@ export function DecideQueue({
   const selected = visible.find((group) => group.key === selectedKey) ?? retained[selectedKey]?.group ?? visible[0] ?? null;
   // The queue only renders with groups, so "nothing selected" means the
   // filter hides them all - never that nothing waits.
-  const liveMessage = selected ? `Selected decision: ${operatorText(selected.title)}` : "No decision matches this filter.";
+  const liveMessage = selected ? `Selected decision: ${titled(selected.title).text}` : "No decision matches this filter.";
   const selectedIdentity = selected ? decisionIdentity(selected) : "";
   const selectedRetained = selected ? retained[selected.key] : undefined;
   const panelGroups = groups.filter((group) => Boolean(group.panel));
@@ -1295,7 +1316,7 @@ export function DecideQueue({
               {!selectedHasDetail ? (
                 <div role="status" className="rounded-xl border border-hair bg-panel px-4 py-6">
                   <div className="text-2xs font-bold uppercase text-faint">{plainArea(selected.area || selected.areaLabel)}</div>
-                  <p className="mt-2 text-lg font-semibold leading-snug text-ink">{operatorText(selected.objectText || selected.title)}</p>
+                  <p className="mt-2 text-lg font-semibold leading-snug text-ink">{titled(selected.objectText || selected.title).text}</p>
                   <p className="mt-3 text-sm text-muted">Opening this decision…</p>
                 </div>
               ) : (
