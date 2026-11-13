@@ -8,13 +8,17 @@ import {
 import {
   arr,
   compoundFailure,
-  invalidateRunJsonCache,
   type Json,
+  markRunJsonCacheOutOfDate,
   reviewItems,
   runCompound,
-  runJson,
+  runJsonFresh,
   str,
 } from "@/lib/compound";
+
+/** Resolution reads never answer from the page cache: owner truth is read
+ * now, for this click. */
+const runJson = runJsonFresh;
 import {
   type GenericActionGate,
   type GenericActionRejection,
@@ -544,7 +548,9 @@ export async function executeDecision(body: Record<string, unknown>): Promise<Re
 
   // Every execution path re-resolves owner truth outside the short read cache.
   // This must happen before the generic branch as well as the bespoke branch.
-  invalidateRunJsonCache();
+  // Resolution reads below are fresh `compound` runs (runJsonFresh /
+  // runProjectionFresh), so the cache the pages read is left alone here; a
+  // preview changes nothing.
   const spec = specFor(area);
   // Legacy bespoke callers remain live until owner truth proves that THIS
   // concrete item has a complete current stamped action. Once it does, the
@@ -668,7 +674,10 @@ export async function executeDecision(body: Record<string, unknown>): Promise<Re
     // The mutation succeeded - every cached `compound ... --json` read is now
     // potentially stale. Clear the memo so the client's router.refresh() (see
     // ReviewDecisionForm/ContinueButton) re-execs and shows truth.
-    invalidateRunJsonCache();
+    // Mark every cached read out of date (kept as the last good copy, shown
+    // as "updating" and refreshed by the queue) instead of deleting it: a
+    // deleted cache made every page wait minutes for cold reads afterwards.
+    if (!preview) markRunJsonCacheOutOfDate();
     return Response.json({
       ok: true,
       stdout: result.stdout,
@@ -678,6 +687,8 @@ export async function executeDecision(body: Record<string, unknown>): Promise<Re
       effect: decisionExecutionEffect(area, result.stdout, preview),
     });
   } catch (error) {
+    // A failed command may still have changed state part way.
+    if (!preview) markRunJsonCacheOutOfDate();
     const failure = compoundFailure(error);
     return decisionCommandFailureResponse(area, failure, preview);
   }
@@ -861,7 +872,7 @@ async function executeGenericAction(
     const result = await runCompound(action.argv);
     // Same reasoning as the bespoke path above: a mutation just ran, so every
     // cached `compound ... --json` read is potentially stale.
-    invalidateRunJsonCache();
+    markRunJsonCacheOutOfDate();
     return Response.json({
       ok: true,
       stdout: result.stdout,
@@ -869,6 +880,8 @@ async function executeGenericAction(
       refs: extractDecisionRefs(result.stdout, result.stderr),
     });
   } catch (error) {
+    // A failed command may still have changed state part way.
+    markRunJsonCacheOutOfDate();
     const failure = compoundFailure(error);
     if (isReviewResolution) return reviewResolutionCommandFailureResponse(failure);
     return Response.json({

@@ -160,7 +160,9 @@ async function execRunJson(args: string[], timeoutMs: number): Promise<Json | nu
  *
  * Bounded to ~50 entries (oldest-touched evicted first). Never throws - same
  * fail-soft contract as the pre-cache runJson. Mutations call
- * invalidateRunJsonCache() so router.refresh() always shows fresh truth.
+ * markRunJsonCacheOutOfDate(): values stay as last-good copies but are never
+ * `live` again until a read that started after the action lands.
+ * invalidateRunJsonCache() is the hard reset (memory, disk, queue).
  */
 const RUN_JSON_TTL_MS = 25_000;
 const RUN_JSON_MAX_ENTRIES = 50;
@@ -186,6 +188,13 @@ type RunJsonCacheEntry = {
   /** message from the most recent failed attempt, if any (may postdate storedAt). */
   lastError: string | null;
   lastErrorAt: number | null;
+  /** ms epoch the read that produced `value` STARTED (its snapshot moment). An
+   * action marked after this moment makes the value out of date. */
+  readStartedAt?: number | null;
+  /** wall time of the most recent finished attempt (success or failure). */
+  lastRunMs?: number | null;
+  /** ms epoch the most recent attempt finished (success or failure). */
+  lastAttemptAt?: number | null;
 };
 
 type RunJsonInflightEntry = {
@@ -203,6 +212,10 @@ type RunJsonInflightEntry = {
  * instance in the process, which both persists last-good data across requests
  * and collapses same-argv fan-outs (page+layout) through the in-flight map.
  */
+type ReadLane = "heavy" | "light";
+
+type ReadJob = { key: string; args: string[]; timeoutMs: number; lane: ReadLane; missing: boolean };
+
 type RunJsonCacheGlobals = {
   cache: Map<string, RunJsonCacheEntry>;
   inflight: Map<string, RunJsonInflightEntry>;
@@ -214,6 +227,14 @@ type RunJsonCacheGlobals = {
         value: InstalledBinaryFreshness;
       }
     | null;
+  /** the background read queue (non-blocking readers only). */
+  queue: ReadJob[];
+  queued: Set<string>;
+  active: Record<ReadLane, number>;
+  /** ms epoch of the last action that made every cached value out of date. */
+  staleMarkAt: number;
+  staleMarkLoaded: boolean;
+  binaryFreshnessRefreshing: boolean;
 };
 
 const runJsonGlobals = ((globalThis as typeof globalThis & {
@@ -224,13 +245,25 @@ const runJsonGlobals = ((globalThis as typeof globalThis & {
   generation: 0,
   diskWork: Promise.resolve(),
   binaryFreshness: null,
+  queue: [],
+  queued: new Set<string>(),
+  active: { heavy: 0, light: 0 },
+  staleMarkAt: 0,
+  staleMarkLoaded: false,
+  binaryFreshnessRefreshing: false,
 });
 
 const runJsonCache = runJsonGlobals.cache;
 const runJsonInflight = runJsonGlobals.inflight;
 
-// Module reloads can retain an older global cache object without this field.
+// Module reloads can retain an older global cache object without these fields.
 runJsonGlobals.diskWork ??= Promise.resolve();
+runJsonGlobals.queue ??= [];
+runJsonGlobals.queued ??= new Set<string>();
+runJsonGlobals.active ??= { heavy: 0, light: 0 };
+runJsonGlobals.staleMarkAt ??= 0;
+runJsonGlobals.staleMarkLoaded ??= false;
+runJsonGlobals.binaryFreshnessRefreshing ??= false;
 
 function queueRunJsonDiskWork<T>(work: () => Promise<T>): Promise<T> {
   const result = runJsonGlobals.diskWork.then(work);
@@ -265,25 +298,36 @@ function commitRunJsonSuccess(
   key: string,
   value: Json | null,
   startedGeneration: number,
+  startedAt: number = Date.now(),
 ): RunJsonCacheEntry {
   if (startedGeneration !== runJsonGlobals.generation) return runJsonEntryAfterDiscard(key);
   // Exit 0 but no parseable JSON object in stdout is not a confirmed empty
   // result - bookkeep it as a failure so never-cache-null holds even when the
   // exec itself didn't reject.
   if (value === null) {
-    return commitRunJsonFailure(key, "compound produced no parseable JSON output", startedGeneration);
+    return commitRunJsonFailure(key, "compound produced no parseable JSON output", startedGeneration, startedAt);
   }
   // delete-then-set moves the key to the end of Map's iteration order, so the
   // eviction above naturally drops the least-recently-refreshed entry first.
   runJsonCache.delete(key);
   const storedAt = Date.now();
-  const entry: RunJsonCacheEntry = { value, storedAt, revalidating: false, lastError: null, lastErrorAt: null };
+  const lastRunMs = Math.max(0, storedAt - startedAt);
+  const entry: RunJsonCacheEntry = {
+    value,
+    storedAt,
+    revalidating: false,
+    lastError: null,
+    lastErrorAt: null,
+    readStartedAt: startedAt,
+    lastRunMs,
+    lastAttemptAt: storedAt,
+  };
   runJsonCache.set(key, entry);
   pruneRunJsonCache();
   // Write-through to the disk tier so other render processes (and the next
   // server restart) inherit this last-good fact. Fire-and-forget: disk is an
   // optimization tier, never a correctness gate.
-  void writeRunJsonDiskEntry(key, value, storedAt);
+  void writeRunJsonDiskEntry(key, value, storedAt, startedAt, lastRunMs);
   return entry;
 }
 
@@ -293,16 +337,21 @@ function commitRunJsonFailure(
   key: string,
   message: string,
   startedGeneration: number,
+  startedAt: number = Date.now(),
 ): RunJsonCacheEntry {
   if (startedGeneration !== runJsonGlobals.generation) return runJsonEntryAfterDiscard(key);
   const prev = runJsonCache.get(key);
   runJsonCache.delete(key);
+  const now = Date.now();
   const entry: RunJsonCacheEntry = {
     value: prev?.value ?? null,
     storedAt: prev?.storedAt ?? null,
     revalidating: false,
     lastError: message,
-    lastErrorAt: Date.now(),
+    lastErrorAt: now,
+    readStartedAt: prev?.readStartedAt ?? null,
+    lastRunMs: Math.max(0, now - startedAt),
+    lastAttemptAt: now,
   };
   runJsonCache.set(key, entry);
   pruneRunJsonCache();
@@ -320,21 +369,36 @@ function commitRunJsonFailure(
  *    background exec revalidates,
  *  - a server restart degrades honestly to `stale` (last-good on disk) instead
  *    of `unreachable` — the value on disk IS the last-good fact.
- * Files live under the user's tmpdir (private to the uid), keyed by
- * sha256(argv); invalidateRunJsonCache() clears the dir on mutations.
+ * Files live under the user's tmpdir (private to the uid) unless
+ * COMPOUND_CONSOLE_CACHE_DIR moves them, keyed by sha256(bin, home, argv).
+ * Actions leave them in place and persist an out-of-date mark beside them;
+ * invalidateRunJsonCache() (the hard reset) clears the dir.
  */
-const RUN_JSON_DISK_DIR = join(tmpdir(), "compound-console-run-json");
+/** Environment variable that moves the console's read cache folder. A cold
+ * start can then be tested against a new, empty folder without touching (or
+ * deleting) the operator's real cache. */
+export const RUN_JSON_CACHE_DIR_ENV = "COMPOUND_CONSOLE_CACHE_DIR";
 const RUN_JSON_DISK_MAX_FILES = 64;
+/** Holds the ms epoch of the last action; not a `.json` file, so pruning
+ * never removes it. */
+const RUN_JSON_STALE_MARK_FILE = "_out-of-date-mark";
+
+export function runJsonCacheDir(): string {
+  const configured = (process.env[RUN_JSON_CACHE_DIR_ENV] ?? "").trim();
+  return configured ? resolve(configured) : join(tmpdir(), "compound-console-run-json");
+}
 
 function runJsonDiskPath(key: string): string {
-  return join(RUN_JSON_DISK_DIR, createHash("sha256").update(key).digest("hex") + ".json");
+  return join(runJsonCacheDir(), createHash("sha256").update(key).digest("hex") + ".json");
 }
+
+const optionalNumber = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
 
 async function readRunJsonDiskEntry(key: string): Promise<RunJsonCacheEntry | null> {
   return queueRunJsonDiskWork(async () => {
     try {
       const raw = await readFile(runJsonDiskPath(key), "utf8");
-      const parsed = JSON.parse(raw) as { storedAt?: unknown; value?: unknown };
+      const parsed = JSON.parse(raw) as { storedAt?: unknown; value?: unknown; readStartedAt?: unknown; lastRunMs?: unknown };
       if (typeof parsed.storedAt !== "number" || parsed.value == null || typeof parsed.value !== "object") {
         return null;
       }
@@ -344,6 +408,9 @@ async function readRunJsonDiskEntry(key: string): Promise<RunJsonCacheEntry | nu
         revalidating: false,
         lastError: null,
         lastErrorAt: null,
+        readStartedAt: optionalNumber(parsed.readStartedAt),
+        lastRunMs: optionalNumber(parsed.lastRunMs),
+        lastAttemptAt: null,
       };
     } catch {
       return null;
@@ -351,13 +418,51 @@ async function readRunJsonDiskEntry(key: string): Promise<RunJsonCacheEntry | nu
   });
 }
 
-async function writeRunJsonDiskEntry(key: string, value: Json, storedAt: number): Promise<void> {
+/** Load the persisted out-of-date mark once per process, so a restart (or a
+ * second render process) never serves pre-action values as current. */
+async function loadStaleMarkOnce(): Promise<void> {
+  if (runJsonGlobals.staleMarkLoaded) return;
+  runJsonGlobals.staleMarkLoaded = true;
+  await queueRunJsonDiskWork(async () => {
+    try {
+      const raw = await readFile(join(runJsonCacheDir(), RUN_JSON_STALE_MARK_FILE), "utf8");
+      const mark = Number(raw.trim());
+      if (Number.isFinite(mark) && mark > runJsonGlobals.staleMarkAt) runJsonGlobals.staleMarkAt = mark;
+    } catch {
+      // No mark yet: nothing has been marked out of date.
+    }
+  });
+}
+
+function writeStaleMark(mark: number): void {
+  void queueRunJsonDiskWork(async () => {
+    try {
+      const dir = runJsonCacheDir();
+      await mkdir(dir, { recursive: true });
+      const final = join(dir, RUN_JSON_STALE_MARK_FILE);
+      const tmp = `${final}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+      await writeFile(tmp, String(mark), { mode: 0o600 });
+      await rename(tmp, final);
+    } catch {
+      // The in-memory mark still holds for this process.
+    }
+  });
+}
+
+async function writeRunJsonDiskEntry(
+  key: string,
+  value: Json,
+  storedAt: number,
+  readStartedAt: number | null = null,
+  lastRunMs: number | null = null,
+): Promise<void> {
   return queueRunJsonDiskWork(async () => {
     try {
+      const RUN_JSON_DISK_DIR = runJsonCacheDir();
       await mkdir(RUN_JSON_DISK_DIR, { recursive: true });
       const final = runJsonDiskPath(key);
       const tmp = `${final}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
-      await writeFile(tmp, JSON.stringify({ storedAt, value }), { mode: 0o600 });
+      await writeFile(tmp, JSON.stringify({ storedAt, value, readStartedAt, lastRunMs }), { mode: 0o600 });
       await rename(tmp, final);
       // Bound the dir: once past the cap, unlink the oldest files. Cheap readdir,
       // best-effort — a failed prune only costs disk, never correctness.
@@ -388,6 +493,7 @@ function clearRunJsonDiskEntries(): void {
   // Fire-and-forget deletion alone lets an invalidated value return as live.
   void queueRunJsonDiskWork(async () => {
     try {
+      const RUN_JSON_DISK_DIR = runJsonCacheDir();
       const names = await readdir(RUN_JSON_DISK_DIR);
       await Promise.all(names.map((name) => rm(join(RUN_JSON_DISK_DIR, name), { force: true }).catch(() => undefined)));
     } catch {
@@ -405,9 +511,10 @@ function startRunJsonInflight(
 
   const token = Symbol(key);
   const startedGeneration = runJsonGlobals.generation;
+  const startedAt = Date.now();
   const promise = execRunJson(args, timeoutMs)
-    .then((value) => commitRunJsonSuccess(key, value, startedGeneration))
-    .catch((error) => commitRunJsonFailure(key, compoundFailure(error).message, startedGeneration))
+    .then((value) => commitRunJsonSuccess(key, value, startedGeneration, startedAt))
+    .catch((error) => commitRunJsonFailure(key, compoundFailure(error).message, startedGeneration, startedAt))
     .finally(() => {
       if (runJsonInflight.get(key)?.token === token) runJsonInflight.delete(key);
     });
@@ -421,31 +528,53 @@ function startRunJsonInflight(
  * `runJson` (value-only, back-compat) and `runProjection` (full honest-
  * degradation model below) read through this shared memo.
  */
-async function readRunJsonEntry(args: string[], timeoutMs: number): Promise<RunJsonCacheEntry> {
-  // Key includes COMPOUND_BIN so the disk tier cannot resurrect a last-good
-  // payload written by a different executable into a process whose binary is
-  // broken or pointed somewhere else (e.g. a smoke probing with
-  // COMPOUND_BIN=bun must see a cold cache, not the operator's real success).
-  const key = `${COMPOUND_BIN}\0${JSON.stringify(args)}`;
-  let entry = runJsonCache.get(key) ?? null;
+/** Key includes COMPOUND_BIN so the disk tier cannot resurrect a last-good
+ * payload written by a different executable into a process whose binary is
+ * broken or pointed somewhere else (e.g. a smoke probing with COMPOUND_BIN=bun
+ * must see a cold cache, not the operator's real success), and COMPOUND_HOME so
+ * two homes can never share or mix a cached value. */
+function runJsonKey(args: string[]): string {
+  return `${COMPOUND_BIN}\0${COMPOUND_HOME}\0${JSON.stringify(args)}`;
+}
 
-  if (!entry) {
-    // Memory miss: this process has never seen the argv. The disk tier may
-    // still carry a last-good fact from another process or a prior run.
-    const diskGeneration = runJsonGlobals.generation;
-    const disk = await readRunJsonDiskEntry(key);
-    if (diskGeneration !== runJsonGlobals.generation) {
-      return readRunJsonEntry(args, timeoutMs);
-    }
-    if (disk) {
-      runJsonCache.delete(key);
-      runJsonCache.set(key, disk);
-      entry = disk;
-    }
+/** Memory first, then the disk tier. Never runs compound. */
+async function cachedRunJsonEntry(key: string): Promise<RunJsonCacheEntry | null | "retry"> {
+  await loadStaleMarkOnce();
+  const entry = runJsonCache.get(key) ?? null;
+  if (entry) return entry;
+  // Memory miss: this process has never seen the argv. The disk tier may
+  // still carry a last-good fact from another process or a prior run.
+  const diskGeneration = runJsonGlobals.generation;
+  const disk = await readRunJsonDiskEntry(key);
+  if (diskGeneration !== runJsonGlobals.generation) return "retry";
+  // A completion may have landed while the disk read was pending; it is newer.
+  const landed = runJsonCache.get(key);
+  if (landed) return landed;
+  if (disk) {
+    runJsonCache.delete(key);
+    runJsonCache.set(key, disk);
+    pruneRunJsonCache();
+    return disk;
   }
+  return null;
+}
+
+/** True when an action happened after the read that produced this value
+ * started: the value is a real last-good copy, but no longer current. */
+function entryOutOfDate(entry: RunJsonCacheEntry): boolean {
+  if (entry.storedAt === null) return false;
+  const snapshotAt = entry.readStartedAt ?? entry.storedAt;
+  return snapshotAt < runJsonGlobals.staleMarkAt;
+}
+
+async function readRunJsonEntry(args: string[], timeoutMs: number): Promise<RunJsonCacheEntry> {
+  const key = runJsonKey(args);
+  const cached = await cachedRunJsonEntry(key);
+  if (cached === "retry") return readRunJsonEntry(args, timeoutMs);
+  const entry = cached;
 
   if (entry) {
-    const fresh = entry.storedAt !== null && Date.now() - entry.storedAt < RUN_JSON_TTL_MS;
+    const fresh = entry.storedAt !== null && Date.now() - entry.storedAt < RUN_JSON_TTL_MS && !entryOutOfDate(entry);
     if (fresh) return entry;
 
     // Stale values return immediately while they revalidate. A cached cold
@@ -498,7 +627,7 @@ function projectionStatus(entry: RunJsonCacheEntry, now: number): ProjectionStat
   if (entry.storedAt === null) return "unreachable";
   const failedSinceSuccess = entry.lastErrorAt !== null && entry.lastErrorAt > entry.storedAt;
   const fresh = now - entry.storedAt < RUN_JSON_TTL_MS;
-  return fresh && !failedSinceSuccess ? "live" : "stale";
+  return fresh && !failedSinceSuccess && !entryOutOfDate(entry) ? "live" : "stale";
 }
 
 /**
@@ -529,10 +658,257 @@ export function invalidateRunJsonCache(): void {
   runJsonGlobals.generation += 1;
   runJsonCache.clear();
   runJsonInflight.clear();
+  runJsonGlobals.queue.length = 0;
+  runJsonGlobals.queued.clear();
   runJsonGlobals.binaryFreshness = null;
   // A mutation wants the next render to read post-mutation truth: the disk
   // tier must not resurrect pre-mutation last-good values.
   clearRunJsonDiskEntries();
+}
+
+/**
+ * What an action calls instead of `invalidateRunJsonCache`: every cached value
+ * stays (memory and disk) as the last good copy, but is marked out of date, so
+ * the next read serves it at once as "updating" and the queue refreshes it.
+ * Deleting the cache made every page after an action wait for a cold read
+ * (one to two minutes on a real home). The mark is persisted next to the disk
+ * tier so a restart cannot serve a pre-action value as current.
+ */
+export function markRunJsonCacheOutOfDate(): void {
+  const mark = Date.now();
+  runJsonGlobals.staleMarkAt = Math.max(runJsonGlobals.staleMarkAt, mark);
+  runJsonGlobals.binaryFreshness = null;
+  writeStaleMark(runJsonGlobals.staleMarkAt);
+}
+
+/* ---------- non-blocking reads: a page never waits for compound ----------
+ * `readProjection` returns at once from memory or disk and never awaits a
+ * `compound` process:
+ *  - a missing value returns as "loading" and its read starts in the background;
+ *  - a value that exists returns with its real age, and a refresh is queued
+ *    behind it when it is due;
+ *  - a failed or timed-out read keeps the last good value and records the
+ *    failure (when, why) - it never becomes zero, empty or "clean".
+ * One queue runs those reads: at most 2 heavy reads at a time (plus one lane for
+ * sub-second reads, so a 0.1 s policy read never waits two minutes behind
+ * them); the same read is never started twice (an exec already running for the
+ * key, from either path, is joined); and a read is due again no sooner than
+ * max(25 s, 2 x its last run time).
+ */
+export const READ_QUEUE_LIMITS: Readonly<Record<ReadLane, number>> = { heavy: 2, light: 1 };
+const READ_MIN_GAP_MS = 25_000;
+/** A read that took at least this long joins the heavy lane. */
+const READ_HEAVY_RUN_MS = 10_000;
+/** A copy older than this, or a failed refresh, earns a warning colour. */
+export const READ_WARN_AGE_MS = 10 * 60_000;
+
+export type ReadState = ProjectionStatus | "loading";
+
+export type LiveRead = {
+  /**
+   * - `loading`: no copy yet and no failure: the first read is running or queued.
+   * - `live` / `stale`: a copy exists (same meaning as `runProjection`: `live`
+   *   only inside the 25 s TTL with no failure and no action since).
+   * - `unreachable`: no copy, and the last attempt failed.
+   */
+  status: ReadState;
+  value: Json | null;
+  generatedAt: string | null;
+  lastGoodAt: string | null;
+  /** the most recent failure, when it happened after the last good copy. */
+  error: string | null;
+  failedAt: string | null;
+  /** a read for this value is queued or running now. */
+  updating: boolean;
+  /** an action happened after this copy was read. */
+  outOfDate: boolean;
+  /** the copy is older than 10 minutes, or the last refresh failed. */
+  warn: boolean;
+  /** age of the copy (its own generated_at, else when its read started). */
+  ageMs: number | null;
+  /** how long the last finished attempt took; null when never measured. */
+  lastRunMs: number | null;
+  /** the command, for provenance. */
+  source: string;
+  elapsedMs: number;
+};
+
+function readLane(entry: RunJsonCacheEntry | null, timeoutMs: number): ReadLane {
+  const ran = entry?.lastRunMs;
+  if (typeof ran === "number") return ran >= READ_HEAVY_RUN_MS ? "heavy" : "light";
+  return timeoutMs > DEFAULT_RUN_JSON_TIMEOUT_MS ? "heavy" : "light";
+}
+
+export function readRefreshGapMs(lastRunMs: number | null | undefined): number {
+  return Math.max(READ_MIN_GAP_MS, 2 * (lastRunMs ?? 0));
+}
+
+function readIsDue(key: string, entry: RunJsonCacheEntry | null, now: number): boolean {
+  if (runJsonInflight.has(key) || runJsonGlobals.queued.has(key)) return false;
+  if (!entry) return true;
+  const lastAttemptAt = entry.lastAttemptAt ?? entry.storedAt;
+  if (lastAttemptAt === null) return true;
+  // After an action, refresh once at once: unless an attempt already finished
+  // after the mark (then the normal gap applies, so a failing read cannot spin).
+  if (entryOutOfDate(entry) && lastAttemptAt < runJsonGlobals.staleMarkAt) return true;
+  return now - lastAttemptAt >= readRefreshGapMs(entry.lastRunMs);
+}
+
+function pumpReadQueue(): void {
+  const { queue, queued, active } = runJsonGlobals;
+  for (let i = 0; i < queue.length; ) {
+    const job = queue[i];
+    if (active[job.lane] >= READ_QUEUE_LIMITS[job.lane]) {
+      i += 1;
+      continue;
+    }
+    queue.splice(i, 1);
+    queued.delete(job.key);
+    // Never start the same read twice: a blocking caller may have started it.
+    if (runJsonInflight.has(job.key)) continue;
+    active[job.lane] += 1;
+    const finished = () => {
+      active[job.lane] = Math.max(0, active[job.lane] - 1);
+      pumpReadQueue();
+    };
+    startRunJsonInflight(job.key, job.args, job.timeoutMs).then(finished, finished);
+  }
+}
+
+function enqueueRead(key: string, args: string[], timeoutMs: number, entry: RunJsonCacheEntry | null): void {
+  const { queue, queued } = runJsonGlobals;
+  if (queued.has(key) || runJsonInflight.has(key)) return;
+  const missing = !entry || entry.storedAt === null;
+  const job: ReadJob = { key, args, timeoutMs, lane: readLane(entry, timeoutMs), missing };
+  // A value nobody has yet goes ahead of refreshes of values people can see.
+  const at = missing ? queue.findIndex((queuedJob) => !queuedJob.missing) : -1;
+  if (at >= 0) queue.splice(at, 0, job);
+  else queue.push(job);
+  queued.add(key);
+  pumpReadQueue();
+}
+
+function ageOf(entry: RunJsonCacheEntry, now: number): number | null {
+  if (entry.storedAt === null) return null;
+  const generated = typeof entry.value?.generated_at === "string" ? Date.parse(entry.value.generated_at) : NaN;
+  const at = Number.isFinite(generated) ? generated : entry.readStartedAt ?? entry.storedAt;
+  return Math.max(0, now - at);
+}
+
+/**
+ * The non-blocking read. Returns at once with the cached copy (or "loading")
+ * and queues a refresh when one is due. `enabled: false` returns the cached
+ * copy (if any) without queueing anything - for sections hidden at the
+ * current depth.
+ */
+export async function readProjection(
+  args: string[],
+  opts?: { timeoutMs?: number; enabled?: boolean },
+): Promise<LiveRead> {
+  const startedAt = Date.now();
+  const timeoutMs = opts?.timeoutMs ?? DEFAULT_RUN_JSON_TIMEOUT_MS;
+  const key = runJsonKey(args);
+  let cached = await cachedRunJsonEntry(key);
+  if (cached === "retry") cached = runJsonCache.get(key) ?? null;
+  const entry = cached;
+  const now = Date.now();
+  if (opts?.enabled !== false && readIsDue(key, entry, now)) enqueueRead(key, args, timeoutMs, entry);
+
+  const updating = runJsonInflight.has(key) || runJsonGlobals.queued.has(key);
+  const source = `compound ${args.join(" ")}`;
+  const hasValue = !!entry && entry.storedAt !== null;
+  const failedSinceSuccess =
+    !!entry && entry.lastErrorAt !== null && (entry.storedAt === null || entry.lastErrorAt > entry.storedAt);
+  const ageMs = entry ? ageOf(entry, now) : null;
+  const status: ReadState = hasValue
+    ? projectionStatus(entry!, now)
+    : failedSinceSuccess
+      ? "unreachable"
+      : "loading";
+  return {
+    status,
+    value: hasValue ? entry!.value : null,
+    generatedAt: hasValue && typeof entry!.value?.generated_at === "string" ? entry!.value.generated_at : null,
+    lastGoodAt: hasValue ? new Date(entry!.storedAt!).toISOString() : null,
+    error: failedSinceSuccess ? entry!.lastError : null,
+    failedAt: failedSinceSuccess && entry!.lastErrorAt !== null ? new Date(entry!.lastErrorAt).toISOString() : null,
+    updating,
+    outOfDate: hasValue ? entryOutOfDate(entry!) : false,
+    warn: failedSinceSuccess || (ageMs !== null && ageMs > READ_WARN_AGE_MS),
+    ageMs,
+    lastRunMs: entry?.lastRunMs ?? null,
+    source,
+    elapsedMs: Date.now() - startedAt,
+  };
+}
+
+/**
+ * Action resolution: always runs compound NOW and never answers from a cached
+ * copy, because an action must re-resolve owner truth. (Before, actions got
+ * this by deleting the whole cache, which made every page wait afterwards.)
+ * A success is recorded in the cache as a normal last-good value; a failure
+ * returns `unreachable` with no value - never a stale copy.
+ */
+export async function runProjectionFresh(args: string[], opts?: { timeoutMs?: number }): Promise<ProjectionRead> {
+  const key = runJsonKey(args);
+  const startedGeneration = runJsonGlobals.generation;
+  const startedAt = Date.now();
+  try {
+    const value = await execRunJson(args, opts?.timeoutMs ?? DEFAULT_RUN_JSON_TIMEOUT_MS);
+    const entry = commitRunJsonSuccess(key, value, startedGeneration, startedAt);
+    if (value === null) {
+      return {
+        status: "unreachable", value: null, generatedAt: null, lastGoodAt: null,
+        error: entry.lastError ?? "compound produced no parseable JSON output", elapsedMs: Date.now() - startedAt,
+      };
+    }
+    return {
+      status: "live",
+      value,
+      generatedAt: typeof value.generated_at === "string" ? value.generated_at : null,
+      lastGoodAt: new Date().toISOString(),
+      error: null,
+      elapsedMs: Date.now() - startedAt,
+    };
+  } catch (error) {
+    const message = compoundFailure(error).message;
+    commitRunJsonFailure(key, message, startedGeneration, startedAt);
+    return { status: "unreachable", value: null, generatedAt: null, lastGoodAt: null, error: message, elapsedMs: Date.now() - startedAt };
+  }
+}
+
+/** Value-only form of `runProjectionFresh`. */
+export async function runJsonFresh(args: string[], opts?: { timeoutMs?: number }): Promise<Json | null> {
+  return (await runProjectionFresh(args, opts)).value;
+}
+
+/** Start a read in the background (if due) without reading the value. */
+export function prefetchProjection(args: string[], opts?: { timeoutMs?: number }): void {
+  void readProjection(args, opts);
+}
+
+/** Introspection for tests and the proof: what the queue is doing right now. */
+export function readQueueSnapshot(): { active: Record<ReadLane, number>; queued: number; inflight: number } {
+  return {
+    active: { ...runJsonGlobals.active },
+    queued: runJsonGlobals.queue.length,
+    inflight: runJsonInflight.size,
+  };
+}
+
+/** Tests: wait until no read is queued or running. */
+export async function settleProjectionReads(): Promise<void> {
+  for (let i = 0; i < 1000; i += 1) {
+    const running = [...runJsonInflight.values()].map((entry) => entry.promise);
+    if (running.length === 0 && runJsonGlobals.queue.length === 0) return;
+    if (running.length === 0) {
+      pumpReadQueue();
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      continue;
+    }
+    await Promise.allSettled(running);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
 }
 
 /** Worktree inventory is scoped by an explicit operator repository binding.
@@ -570,11 +946,31 @@ function classifyBuild(installedBuild: string, head: string): InstalledBinaryFre
   return "stale";
 }
 
+/**
+ * Never waits: returns the last known answer (or "unknown" before the first
+ * check lands) and refreshes it in the background once it is older than the
+ * TTL. The shell renders this on every page, so a slow `compound version`
+ * under machine load must not hold the page.
+ */
 export async function getInstalledBinaryFreshness(): Promise<InstalledBinaryFreshness> {
-  if (runJsonGlobals.binaryFreshness && Date.now() - runJsonGlobals.binaryFreshness.storedAt < RUN_JSON_TTL_MS) {
-    return runJsonGlobals.binaryFreshness.value;
+  const known = runJsonGlobals.binaryFreshness;
+  if (known && Date.now() - known.storedAt < RUN_JSON_TTL_MS) return known.value;
+  if (!runJsonGlobals.binaryFreshnessRefreshing) {
+    runJsonGlobals.binaryFreshnessRefreshing = true;
+    void checkInstalledBinaryFreshness().finally(() => {
+      runJsonGlobals.binaryFreshnessRefreshing = false;
+    });
   }
+  return known?.value ?? {
+    status: "unknown",
+    binary: COMPOUND_BIN,
+    installedBuild: "",
+    head: "",
+    message: "Installed compound build freshness is being checked.",
+  };
+}
 
+async function checkInstalledBinaryFreshness(): Promise<InstalledBinaryFreshness> {
   const binary = COMPOUND_BIN;
   const binaryLooksMissing = binary !== "compound" && !existsSync(binary);
   if (binaryLooksMissing) {
@@ -658,8 +1054,18 @@ export async function getSourceConnections(): Promise<Json | null> {
   return runJson(["source", "connections", "--json"]);
 }
 
+export const EXECUTORS_ARGS = ["executors", "--json"];
+export const DIRECTOR_PROPOSE_ARGS = ["director", "propose", "--dry-run", "--json"];
+
+/** `executors --json` takes about a minute on a real home: it needs the heavy
+ * timeout, or it never lands (the old 15 s limit killed every attempt). */
 export async function getExecutors(): Promise<Json | null> {
-  return runJson(["executors", "--json"]);
+  return (await runProjection(EXECUTORS_ARGS, { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS })).value;
+}
+
+/** Non-blocking executors read for pages (see `readProjection`). */
+export async function readExecutors(opts?: { enabled?: boolean }): Promise<LiveRead> {
+  return readProjection(EXECUTORS_ARGS, { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS, enabled: opts?.enabled });
 }
 
 export async function getWorkList(): Promise<Json | null> {

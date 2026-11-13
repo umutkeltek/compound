@@ -1,4 +1,4 @@
-import { arr, type Json, type ProjectionStatus, runProjection, str } from "@/lib/compound";
+import { arr, HEAVY_PROJECTION_TIMEOUT_MS, type Json, type ProjectionStatus, runProjectionFresh, str } from "@/lib/compound";
 import { parseActionAuthorityBundle } from "@/lib/action-authority";
 import { argvMatchesAllowlist } from "@/lib/decision-registry";
 import type { AuthorityFace } from "@/representation";
@@ -498,13 +498,12 @@ export function adaptAttentionProjectionForArea(attention: Json | null, area: st
 }
 
 /**
- * The act path always resolves against a COLD read: decision-execute.ts
- * deliberately calls invalidateRunJsonCache() before resolving, so owner
- * truth is re-fetched outside the read cache — and `compound attention
- * --json` takes ~13-17s wall today, past the 15s runJson default. Grant
- * resolution the same extended budget the dashboard doors get (page.tsx,
- * 45s per door): a click is worth waiting for, and the argv is the same
- * cache key, so a successful read warms both surfaces.
+ * The act path always resolves against a FRESH read (`runProjectionFresh`
+ * runs compound now and never answers from a cached copy), so owner truth is
+ * re-fetched outside the read cache without deleting the cache the pages
+ * read. `reviews --json --area` takes seconds; `attention --json` takes about
+ * two minutes on a real home and gets the heavy budget. A successful read is
+ * recorded under the same cache key, so it warms the pages too.
  */
 const GENERIC_RESOLUTION_TIMEOUT_MS = 45_000;
 
@@ -580,7 +579,7 @@ export function reviewResolutionGuardFromRead(
 }
 
 export async function readReviewResolutionProjection(area: string): Promise<GenericResolutionRead> {
-  return runProjection(["reviews", "--json", "--area", area], { timeoutMs: GENERIC_RESOLUTION_TIMEOUT_MS });
+  return runProjectionFresh(["reviews", "--json", "--area", area], { timeoutMs: GENERIC_RESOLUTION_TIMEOUT_MS });
 }
 
 /**
@@ -686,9 +685,12 @@ export async function resolveGenericAction(
   actionId: string,
   rationale?: string,
 ): Promise<GenericActionResolution> {
-  const argv = ATTENTION_SOURCED_GENERIC_AREAS.has(area)
-    ? ["attention", "--json"]
-    : ["reviews", "--json", "--area", area];
-  const read = await runProjection(argv, { timeoutMs: GENERIC_RESOLUTION_TIMEOUT_MS });
+  const attentionSourced = ATTENTION_SOURCED_GENERIC_AREAS.has(area);
+  const argv = attentionSourced ? ["attention", "--json"] : ["reviews", "--json", "--area", area];
+  // `attention --json` has no single-item form and takes about two minutes on
+  // a real home: it needs the heavy budget, or the click always times out.
+  const read = await runProjectionFresh(argv, {
+    timeoutMs: attentionSourced ? HEAVY_PROJECTION_TIMEOUT_MS : GENERIC_RESOLUTION_TIMEOUT_MS,
+  });
   return resolveGenericActionFromRead(read, area, itemId, actionId, rationale);
 }
