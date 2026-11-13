@@ -52,7 +52,7 @@ export function LatestMoment({
           </span>
         </div>
 
-        <h2 className="mt-4 text-lg font-semibold leading-snug tracking-tight text-strong text-balance">
+        <h2 className="mt-3 line-clamp-3 text-md font-semibold leading-snug text-strong" title={moment.headline}>
           {moment.headline}
         </h2>
 

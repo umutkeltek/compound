@@ -1,7 +1,8 @@
-import type { ReadView } from "@/components/kit";
+import { ReadChip, ReadNotice, type ReadView } from "@/components/kit";
 import type { WaitingOnYou } from "@/lib/attention";
-import { humanAge, isOld } from "@/lib/briefing";
+import { humanAge } from "@/lib/briefing";
 import { str } from "@/lib/compound";
+import { unit } from "@/lib/counts";
 
 const TZ = "Europe/Istanbul";
 
@@ -16,44 +17,23 @@ function dateLabel(now: Date): string {
   return new Intl.DateTimeFormat("en-US", { timeZone: TZ, weekday: "long", month: "long", day: "numeric" }).format(now);
 }
 
-const PILL = "inline-flex w-fit items-center gap-2 whitespace-nowrap rounded-pill border px-3 py-1 text-xs font-semibold tabular-nums";
-
-/**
- * "N decision groups wait on you · M items · oldest age", from the ONE
- * definition (lib/attention.ts `waitingOnYou`) the sidebar and Work use, with
- * the units named. Amber (seam) whenever something waits (DESIGN.md §0/§2).
- * An attention read that has not landed is never shown as zero or "clear".
- */
-function AttentionPill({ waiting, read, oldest }: { waiting: WaitingOnYou | null; read: ReadView; oldest: unknown }) {
-  if (!waiting) {
-    const failed = read.status === "unreachable";
-    return (
-      <span className={`${PILL} ${failed ? "border-seam-line bg-seam-soft text-seam" : "border-hair bg-soft text-faint"}`}>
-        <span className={`h-1.5 w-1.5 rounded-full ${failed ? "bg-seam" : "bg-faint"}`} aria-hidden />
-        {failed ? "Could not read what waits on you" : "Reading what waits on you…"}
-      </span>
-    );
-  }
-  const none = waiting.groups <= 0;
-  const warn = isOld(oldest);
-  const age = humanAge(oldest);
-  const tone = none ? "border-hair bg-soft text-muted" : "border-seam-line bg-seam-soft text-seam";
-  return (
-    <span className={`${PILL} ${tone}`} title="Decision groups (one card each on Decide) and the items inside them">
-      <span className={`h-1.5 w-1.5 rounded-full ${none ? "bg-faint" : "bg-seam"}`} aria-hidden />
-      {none ? (
-        "No decisions wait on you"
-      ) : (
-        <>
-          {waiting.groups.toLocaleString("en-US")} decision {waiting.groups === 1 ? "group waits" : "groups wait"} on you
-          <span className="opacity-70">· {waiting.items.toLocaleString("en-US")} {waiting.items === 1 ? "item" : "items"}</span>
-          {age ? <span className={warn ? "" : "opacity-70"}>· oldest {age}</span> : null}
-        </>
-      )}
-    </span>
-  );
+/** "125d" → "125 days", "3h" → "3 hours", "now" → "a moment". */
+function ageWords(value: unknown): string {
+  const age = humanAge(value);
+  const match = age.match(/^(\d+)([mhd])$/);
+  if (!match) return age === "now" ? "a moment" : "";
+  const n = Number(match[1]);
+  const word = match[2] === "m" ? "minute" : match[2] === "h" ? "hour" : "day";
+  return unit(n, word);
 }
 
+/**
+ * Today's question and its answer, first on the page: "What needs you
+ * today?" and one sentence built from the ONE "waiting for you" definition
+ * (lib/counts.ts → lib/attention.ts `waitingOnYou`) the sidebar, Work and
+ * Live use, with the units named. An attention read that has not landed shows
+ * its read state (being read / could not read), never zero or "nothing".
+ */
 export function BriefingHeader({
   now,
   waiting,
@@ -65,13 +45,29 @@ export function BriefingHeader({
   read: ReadView;
   oldest: unknown;
 }) {
+  const age = ageWords(oldest);
   return (
-    <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-strong">{greeting(now)}</h1>
-        <div className="mt-1 text-sm text-faint">{dateLabel(now)}</div>
+    <header className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-faint">
+        <span>
+          {greeting(now)} · {dateLabel(now)}
+        </span>
+        <ReadChip read={read} />
       </div>
-      <AttentionPill waiting={waiting} read={read} oldest={oldest} />
+      <h1 className="text-3xl font-semibold tracking-tight text-strong">What needs you today?</h1>
+      {!waiting ? (
+        <ReadNotice read={read} label="what waits for you" />
+      ) : waiting.groups <= 0 ? (
+        <p className="max-w-read text-lg leading-snug text-ink">
+          Nothing needs you today. No decision is waiting for you.
+        </p>
+      ) : (
+        <p className="max-w-read text-lg leading-snug text-ink">
+          <strong className="font-semibold text-seam">{unit(waiting.groups, "decision")}</strong>{" "}
+          {waiting.groups === 1 ? "waits" : "wait"} for you, with {unit(waiting.items, "item")} in all.
+          {age ? <> The oldest has waited {age}.</> : null} Start with the first one below.
+        </p>
+      )}
     </header>
   );
 }

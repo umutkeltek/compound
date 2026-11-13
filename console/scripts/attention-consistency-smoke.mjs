@@ -17,16 +17,14 @@ if (!process.versions.bun) {
 const [
   { default: ReviewsPage },
   { getAttentionProjection, toAttentionReport },
-  { DecideList },
-  { Headline },
+  { NeedsYouList },
   { decisionSelectionHref, initialDecideIndex, initialDecideKey },
   { enrichAttentionGroups },
   { buildDecideGroups },
 ] = await Promise.all([
   import("../src/app/reviews/page.tsx"),
   import("../src/lib/attention.ts"),
-  import("../src/components/briefing/DecideList.tsx"),
-  import("../src/components/briefing/Headline.tsx"),
+  import("../src/components/briefing/NeedsYouList.tsx"),
   import("../src/components/decide/DecideQueue.tsx"),
   import("../src/lib/review-data.ts"),
   import("../src/lib/decide-model.ts"),
@@ -153,10 +151,13 @@ assert.deepEqual(
   "Attention loader must human-filter operator_attention independently",
 );
 
-const briefing = DecideList({
+// Today's answer (NeedsYouList) shows at most five decisions in Attention's
+// order, each deep-linked to its exact key, then one link to the rest.
+const briefing = NeedsYouList({
   groups: attentionGroups,
   total: attentionGroups.length,
-  read: { status: "live", lastGoodAt: null },
+  act: null,
+  mutationsEnabled: false,
 });
 const briefingHrefs = [];
 const collectHrefs = (node) => {
@@ -171,29 +172,34 @@ const collectHrefs = (node) => {
 collectHrefs(briefing);
 assert.deepEqual(
   briefingHrefs,
-  attentionKeys.map((key) => `/reviews?decision=${encodeURIComponent(key)}`),
-  "every Briefing decision row must deep-link its exact Attention key",
+  [
+    ...attentionKeys.slice(0, 5).map((key) => `/reviews?decision=${encodeURIComponent(key)}`),
+    ...(attentionKeys.length > 5 ? ["/reviews"] : []),
+  ],
+  "every Today decision row must deep-link its exact Attention key, in Attention's order",
 );
 
 const heroKey = "decision-candidates|fixture hero identity";
 briefingHrefs.length = 0;
-collectHrefs(Headline({
-  top: {
+collectHrefs(NeedsYouList({
+  groups: [{
     key: heroKey,
     area: "decision-candidates",
     operator_summary: "A decision needs review.",
     operator_unlock: "",
+    terminal_reason: "",
+    oldest_created_at: "",
+    reversibility: "reversible",
     count: 1,
-  },
+  }],
+  total: 1,
   act: null,
   mutationsEnabled: false,
-  runningAgents: 0,
-  read: { status: "live", lastGoodAt: null },
 }));
 assert.deepEqual(
   briefingHrefs,
   [`/reviews?decision=${encodeURIComponent(heroKey)}`],
-  "the Briefing hero must deep-link its exact Attention key",
+  "Today's first decision must deep-link its exact Attention key",
 );
 
 // Attention chooses identity, membership, and order. A matching Reviews group
