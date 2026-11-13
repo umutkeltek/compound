@@ -468,7 +468,10 @@ export function rowTsMs(item: Json): number {
 
 /** Preserve the memory read's evidence state through both home-page cards. */
 export type MemoryBriefing = {
-  observation: ProjectionStatus | "invalid";
+  /** `loading`: memory has not been read yet (never shown as zero). */
+  observation: ProjectionStatus | "invalid" | "loading";
+  /** the latest refresh failed; the totals are the last good copy. */
+  failed: boolean;
   lastGoodAt: string | null;
   generatedAt: string | null;
   totals: { promoted: number; parked: number; awaiting: number; reopened: number } | null;
@@ -476,10 +479,16 @@ export type MemoryBriefing = {
   delta: number | null;
 };
 
-export function memoryBriefing(read: ProjectionRead, now = Date.now()): MemoryBriefing {
-  const base = { observation: read.status, lastGoodAt: read.lastGoodAt, generatedAt: read.generatedAt,
+export function memoryBriefing(
+  read: Pick<ProjectionRead, "value" | "lastGoodAt" | "generatedAt" | "error"> & { status: ProjectionStatus | "loading" },
+  now = Date.now(),
+): MemoryBriefing {
+  if (read.status === "loading") {
+    return { observation: "loading", failed: false, lastGoodAt: null, generatedAt: null, totals: null, promotedThisWeek: null, delta: null };
+  }
+  const base = { observation: read.status, failed: Boolean(read.error), lastGoodAt: read.lastGoodAt, generatedAt: read.generatedAt,
     totals: null, promotedThisWeek: null, delta: null };
-  if (read.status === "unreachable" || !read.value) return { ...base, observation: "unreachable" };
+  if (read.status === "unreachable" || !read.value) return { ...base, failed: true, observation: "unreachable" };
   const counts = (read.value.counts as Json | undefined)?.by_state;
   if (!counts || typeof counts !== "object" || Array.isArray(counts) ||
       !Array.isArray(read.value.items) ||
@@ -517,9 +526,12 @@ export function memoryBriefing(read: ProjectionRead, now = Date.now()): MemoryBr
 }
 
 export function memoryBriefingNotice(memory: MemoryBriefing): string {
+  if (memory.observation === "loading") return "Reading memory for the first time";
   if (memory.observation === "invalid") return "Memory report incomplete";
   if (!memory.totals) return "Memory unavailable";
-  if (memory.observation === "stale") return "Last known memory; current read unavailable";
+  // A copy that is merely older than the 25 s TTL is still the current copy;
+  // only a failed refresh makes it "last known".
+  if (memory.observation === "stale" && memory.failed) return "Last known memory; current read unavailable";
   return "";
 }
 

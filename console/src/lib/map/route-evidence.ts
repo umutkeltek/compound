@@ -1,7 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
-import { arr, COMPOUND_HOME, num, privateFallbacksEnabled, runJson, str } from "@/lib/compound";
+import { arr, COMPOUND_HOME, num, privateFallbacksEnabled, readProjection, runJson, str } from "@/lib/compound";
 
 /*
  * Execution route evidence — metadata only (no prompts/responses/secrets).
@@ -25,8 +25,11 @@ export type RouteRecord = {
 
 export async function readRouteEvidence(
   limit = 200,
+  opts?: { nonBlocking?: boolean },
 ): Promise<{ records: RouteRecord[]; mtime: string | null }> {
-  const projected = await runJson(["route", "evidence-authority", "--json", "--recent", String(limit)]);
+  const argv = ["route", "evidence-authority", "--json", "--recent", String(limit)];
+  // nonBlocking: the cached copy (or nothing yet) at once; never waits for compound.
+  const projected = opts?.nonBlocking ? (await readProjection(argv)).value : await runJson(argv);
   if (projected) {
     return {
       records: arr(projected.recent).map((row) => ({

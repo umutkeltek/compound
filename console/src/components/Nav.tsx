@@ -37,12 +37,12 @@ import { NAV_GROUPS, routeIsActive, type NavGroup, type NavIconKey } from "@/lib
 type BadgeTone = "seam" | "quiet";
 
 export type NavProps = {
-  /** Needs-you group count for Decide (from `compound attention --json`). Amber — the only amber badge. */
+  /** Decision groups waiting on you (lib/attention.ts waitingOnYou). Amber — the only amber badge. null = not read yet. */
   decideCount?: number | null;
-  /** Workbench needs-you count. Quiet slate — not a needs-you signal on its own. */
+  /** Work items waiting on you (same function). Quiet slate. null = not read yet. */
   workCount?: number | null;
   variant?: "desktop" | "mobile";
-  /** Server-rendered Apps list (streams in behind Suspense; never blocks the shell). */
+  /** Server-rendered Apps list (never waits for compound). */
   apps?: ReactNode;
   /** Server-rendered system status card (autonomy, data freshness, instance). */
   status?: ReactNode;
@@ -70,8 +70,13 @@ const ICONS: Record<NavIconKey, (p: { size?: number }) => ReactNode> = {
 function CountPill({ count, tone }: { count: number; tone: BadgeTone }) {
   if (count <= 0) return null;
   const cls = tone === "seam" ? "bg-seam-soft text-seam" : "text-faint";
+  // Name the unit: the two badges count different things (lib/attention.ts waitingOnYou).
+  const unit = tone === "seam" ? (count === 1 ? "decision group waits" : "decision groups wait") : count === 1 ? "work item waits" : "work items wait";
   return (
-    <span className={`ml-auto inline-flex min-w-5 items-center justify-center rounded-pill px-1.5 text-xs font-medium tabular-nums ${cls}`}>
+    <span
+      title={`${count} ${unit} on you`}
+      className={`ml-auto inline-flex min-w-5 items-center justify-center rounded-pill px-1.5 text-xs font-medium tabular-nums ${cls}`}
+    >
       {count}
     </span>
   );

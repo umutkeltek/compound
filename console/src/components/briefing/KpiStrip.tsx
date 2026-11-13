@@ -65,15 +65,25 @@ export function KpiStrip({
   mind,
   autonomy,
   worldDelta,
+  worldNote = "Reading work history…",
+  autonomyNote = "Reading the autonomy level…",
 }: {
-  world: { outward: number; meaning: number; rules: number; upkeep: number; total: number; lowOutward: boolean };
+  /** null while the workbench read has no copy: shown as "…", never 0. */
+  world: { outward: number; meaning: number; rules: number; upkeep: number; total: number; lowOutward: boolean } | null;
   mind: MemoryBriefing;
-  autonomy: AutonomyPosture;
+  /** null while the policy read has no copy (never "fail-closed" by default). */
+  autonomy: AutonomyPosture | null;
+  /** what to say for a null world / autonomy ("being read…" or "could not read"). */
+  worldNote?: string;
+  autonomyNote?: string;
   /** week-over-week change in outward moves — null when the window can't cover the prior week (§9.6). */
   worldDelta?: number | null;
 }) {
   return (
     <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      {!world ? (
+        <KpiTile label="World Δ · 7d" dot="bg-work" value={<span className="text-faint">…</span>} sub={worldNote} />
+      ) : (
       <KpiTile
         label="World Δ · 7d"
         dot="bg-work"
@@ -100,6 +110,7 @@ export function KpiStrip({
           ]}
         />
       </KpiTile>
+      )}
 
       <KpiTile
         label="Mind Δ · 7d"
@@ -120,6 +131,9 @@ export function KpiStrip({
           </span>
         ) : null}
       </KpiTile>
+      {!autonomy ? (
+        <KpiTile label="Autonomy" dot="bg-faint" value={<span className="text-faint">…</span>} sub={autonomyNote} />
+      ) : (
       <KpiTile
         label="Autonomy"
         dot={autonomy.tone === "good" ? "bg-good" : "bg-seam"}
@@ -128,6 +142,7 @@ export function KpiStrip({
       >
         <span className="mt-3 text-2xs leading-snug text-faint">{autonomy.detail}</span>
       </KpiTile>
+      )}
 
       <KpiTile label="Spend · today" value={<span className="text-faint">—</span>} sub="No spend projection wired yet">
         <span className="mt-3 text-2xs leading-snug text-faint">

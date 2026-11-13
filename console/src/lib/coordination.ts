@@ -1,4 +1,4 @@
-import { arr, HEAVY_PROJECTION_TIMEOUT_MS, num, runProjection, str, type Json, type ProjectionStatus } from "@/lib/compound";
+import { arr, HEAVY_PROJECTION_TIMEOUT_MS, type LiveRead, num, readProjection, runProjection, str, type Json, type ProjectionStatus } from "@/lib/compound";
 import {
   normalizeOperatorCoordination,
   type CoordinationActor,
@@ -150,6 +150,19 @@ export function buildCoordinationView(value: Json | null): CoordinationView {
 
 /** Server I/O: read the coordination verb through the honest-degradation memo.
  *  `actor` recenters "me" (generic actor id; empty = the verb's default). */
+/**
+ * Non-blocking companion of `getCoordination` (lib/compound.ts
+ * `readProjection`): the cached view at once, or `loading` while the first
+ * read runs in the background. Never waits for compound.
+ */
+export async function readCoordination(actor?: string): Promise<{ view: CoordinationView; read: LiveRead }> {
+  const args = ["coordination", "--json"];
+  const trimmed = (actor ?? "").trim();
+  if (trimmed) args.push("--actor", trimmed);
+  const read = await readProjection(args, { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS });
+  return { view: buildCoordinationView(read.value), read };
+}
+
 export async function getCoordination(actor?: string): Promise<CoordinationRead> {
   const args = ["coordination", "--json"];
   const trimmed = (actor ?? "").trim();

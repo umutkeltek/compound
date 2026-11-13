@@ -37,8 +37,14 @@ await Bun.spawn([bin,"version"],{stdout:"ignore",stderr:"ignore"}).exited;
 const originalNow = Date.now;
 let clockOffset = 0;
 Date.now = () => originalNow() + clockOffset;
-const joinRefreshes = async () => Promise.all(
-  [...(globalThis.__compoundConsoleRunJson?.inflight.values() ?? [])].map(x => x.promise));
+// Today never waits for compound: its first render of a value shows it as
+// being read, and the read lands in the background. Settling joins every
+// queued and running read (not only those in flight at call time).
+const joinRefreshes = async () => {
+  await Promise.all([...(globalThis.__compoundConsoleRunJson?.inflight.values() ?? [])].map(x => x.promise));
+  const compound = await import("../src/lib/compound.ts");
+  await compound.settleProjectionReads();
+};
 
 try {
   const compound = await import("../src/lib/compound.ts");
@@ -54,15 +60,20 @@ try {
         createElement(SearchParamsContext.Provider,{value:new URLSearchParams()},
           await Memory({searchParams:Promise.resolve({})})))));
 
-  const renderHome = async () => renderToStaticMarkup(createElement(AppRouterContext.Provider,{value:router},
+  const renderHomeNow = async () => renderToStaticMarkup(createElement(AppRouterContext.Provider,{value:router},
     createElement(PathnameContext.Provider,{value:"/"},
       createElement(SearchParamsContext.Provider,{value:new URLSearchParams()},
         await Briefing()))));
+  // Render, let the background reads it queued land, render again.
+  const renderHome = async () => { await renderHomeNow(); await joinRefreshes(); return renderHomeNow(); };
 
   process.env.MEMORY_READ_SMOKE_MODE = "fail";
   const failed = await memory.loadProposedMemorySplit();
   assert.equal(failed.read?.status, "unreachable", "cold failed memory read must not be indistinguishable from live empty");
   assert(failed.read.error, "failed read retains its error");
+  const firstHome = await renderHomeNow();
+  assert.match(firstHome, /Reading memory for the first time/, "a value never read is shown as being read, not as zero");
+  assert.doesNotMatch(firstHome, /promoted · 0 awaiting · 0 parked/);
   const unavailableHome = await renderHome();
   assert.match(unavailableHome, /Memory unavailable/, "home must not turn failed memory reads into zero");
   assert.doesNotMatch(unavailableHome, /promoted · 0 awaiting · 0 parked/, "unknown counts must not become a zero summary");
@@ -72,6 +83,8 @@ try {
   assert.match(unavailable, /—/, "unavailable counts are unknown, not zero");
 
   process.env.MEMORY_READ_SMOKE_MODE = "empty";
+  // A failed read is due again only after max(25 s, 2 x its run time).
+  clockOffset += 26000;
   const empty = await memory.loadProposedMemorySplit();
   assert.equal(empty.read.status,"live");
   const emptyHome = await renderHome();

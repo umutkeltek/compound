@@ -201,10 +201,20 @@ action seam.
   "Envelope trace · intent → proof", vertical spine: 2px rail, 14px nodes (done=green fill,
   run=blue fill + beat, pending=hollow), each step = name + phase pill + description + mono meta.
   Footer: contextual governed acts — one primary, rest hairline.
-- **Freshness chip:** dot + mono label, `title`=source command. Fresh (<TTL): green `live · HH:MM:SS`.
-  Stale: amber `stale · 4m`. Unknown: faint. Every card showing projected data carries one.
+- **Freshness chip:** dot + mono label, `title`=source command. The label is always the plain age of
+  the copy (`updated 3 min ago`), plus `updating…` while a refresh runs. Green dot by default; amber
+  only when the copy is older than 10 minutes or the last refresh failed. Unknown: faint. Every card
+  showing projected data carries one.
+- **Read states (never wait, never pretend):** pages read through the non-blocking `readProjection`
+  (`lib/compound.ts`). A value with no copy yet renders as *loading* ("Reading … for the first time.
+  Last time it took about 2 minutes."), a failed read with no copy as *failed*, and a copy whose
+  refresh failed shows "Could not read …. Last good copy is from 10:42." above the last good value
+  (`kit/ReadState.tsx`). A read that has not landed is never rendered as 0, empty or a doctrine
+  empty state. While anything on a page is loading or updating, the page refreshes itself every
+  5 seconds (`PendingRefresh`); the read queue, not the timer, decides when compound runs.
 - **Empty state:** dashed hairline, `--page` bg, doctrine copy — never "No data"
-  ("Clean seam. Nothing waits on you." / "Propose-only holds the line…"). Optional single CTA.
+  ("Clean seam. Nothing waits on you." / "Propose-only holds the line…"), and only for a read that
+  landed and is genuinely empty. Optional single CTA.
 - **Nav item:** icon (15px, stroke 1.7, outline, currentColor) + label (13px) + right count pill
   (mono, tabular). Active: `--soft-2` bg + work-blue icon. **Only needs-you badges are amber; all
   other counts quiet slate.** Disabled/soon at 45% opacity.
@@ -441,9 +451,10 @@ the operator decision the duplicate would enable. If neither is clear, link inst
 ### 10.1 Progressive disclosure contract
 
 Today and Live support four presentation depths: **Glance → Understand → Investigate → Technical**.
-Depth is a local view preference persisted in the browser. It may hide or reveal presentation
-regions, but it MUST NOT change projection reads, source truth, ranking, policy, or action
-authority. Other surfaces keep their task-specific density until they have an equally strong
+Depth is a local view preference persisted in the browser (and mirrored into a cookie so the
+server can see it). It may hide or reveal presentation regions, but it MUST NOT change source
+truth, ranking, policy, or action authority. Its one effect on reads: a section hidden at the
+current depth (home doctor on Today, coordination on Live) does not run its read at all. Other surfaces keep their task-specific density until they have an equally strong
 progressive-disclosure model; a global depth switch that unpredictably hides working UI is worse
 than explicit depth on the two overview surfaces.
 

@@ -1,4 +1,4 @@
-import { arr, HEAVY_PROJECTION_TIMEOUT_MS, num, runProjection, str, type Json, type ProjectionRead } from "@/lib/compound";
+import { arr, HEAVY_PROJECTION_TIMEOUT_MS, type LiveRead, num, readProjection, runProjection, str, type Json, type ProjectionRead } from "@/lib/compound";
 import {
   normalizeOperatorCoordination,
   type OperatorCoordinationProjection,
@@ -175,6 +175,40 @@ export async function getAttentionProjection(opts?: { timeoutMs?: number }): Pro
 }> {
   const read = await runProjection(["attention", "--json"], { timeoutMs: opts?.timeoutMs ?? HEAVY_PROJECTION_TIMEOUT_MS });
   return { read, report: toAttentionReport(read.value) };
+}
+
+/**
+ * Non-blocking companion (lib/compound.ts `readProjection`): returns the
+ * cached report at once, or `loading`, and queues a refresh when due. The
+ * pages that must never wait for compound (Today, Decide, the sidebar) use it.
+ */
+export async function readAttention(): Promise<{ read: LiveRead; report: AttentionReport | null }> {
+  const read = await readProjection(["attention", "--json"], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS });
+  return { read, report: toAttentionReport(read.value) };
+}
+
+/**
+ * THE one definition of "waiting on you", used by the Today header, the
+ * sidebar badges and the Work header so they can never disagree. Units are
+ * named: `groups` are decision groups (one card each on Decide), `items` are
+ * the items inside them, `workItems` are the work items among them. Returns
+ * null when attention has not been read: unknown is never zero.
+ */
+export type WaitingOnYou = { groups: number; items: number; workItems: number };
+
+export function waitingOnYou(report: AttentionReport | null): WaitingOnYou | null {
+  if (!report) return null;
+  const needsYou = attentionNeedsYouGroups(report);
+  const items = report.counts.needs_you || needsYou.reduce((sum, group) => sum + group.count, 0);
+  return {
+    groups: report.counts.needs_you_groups || needsYou.length,
+    items,
+    workItems: needsYou.filter((group) => group.source === "workbench").reduce((sum, group) => sum + group.count, 0),
+  };
+}
+
+export function plural(n: number, one: string, many: string): string {
+  return `${n.toLocaleString("en-US")} ${n === 1 ? one : many}`;
 }
 
 /**

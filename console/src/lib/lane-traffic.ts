@@ -84,9 +84,9 @@ export type LaneTrafficReport = {
  *  "lane"), joins in account health where known. A provider seen only in
  *  traffic (no projection entry) or only in the projection (no recent
  *  traffic) still gets a row — never dropped for missing half the picture. */
-export async function buildLaneTraffic(recentLimit = 200): Promise<LaneTrafficReport> {
+export async function buildLaneTraffic(recentLimit = 200, opts?: { nonBlocking?: boolean }): Promise<LaneTrafficReport> {
   const [{ records }, accountProjection] = await Promise.all([
-    readRouteEvidence(recentLimit),
+    readRouteEvidence(recentLimit, opts),
     getAccountProjection(),
   ]);
 

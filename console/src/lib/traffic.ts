@@ -1,4 +1,4 @@
-import { getExecutors, type Json } from "@/lib/compound";
+import { type LiveRead, readExecutors } from "@/lib/compound";
 import { normalizeExecutorProjection } from "@/components/agents/executor-normalize";
 import {
   type ExecutorProjection,
@@ -52,7 +52,19 @@ export type TrafficReport = {
   needsMeCount: number;
   /** false => run-attempt door unreachable; board shows "execution detail unavailable". */
   runAttemptsPresent: boolean;
+  /**
+   * The executors read behind this report (getTraffic only; null from the
+   * pure builder). While it has no copy (`loading` / `unreachable`) every
+   * count above is UNKNOWN, not zero: callers must render the read state, not
+   * the numbers.
+   */
+  read: LiveRead | null;
 };
+
+/** True when the counts are real (an executors copy exists). */
+export function trafficKnown(report: TrafficReport): boolean {
+  return report.read === null || report.read.status === "live" || report.read.status === "stale";
+}
 
 /** Run-attempt statuses that are terminal (everything else is in flight). */
 const RUN_STATUS_TERMINAL = new Set(["succeeded", "failed", "cancelled", "canceled", "swept", "abandoned", "superseded"]);
@@ -136,11 +148,14 @@ export function buildTraffic(
     runningCount,
     needsMeCount,
     runAttemptsPresent: attempts !== null,
+    read: null,
   };
 }
 
+/** Never waits for compound: the executors read is the non-blocking
+ * `readExecutors` (a cached copy, or `loading`). */
 export async function getTraffic(): Promise<TrafficReport> {
-  const [executorsRaw, attempts] = await Promise.all([getExecutors(), getRunAttempts()]);
-  const projection = normalizeExecutorProjection(executorsRaw);
-  return buildTraffic(projection, attempts);
+  const [read, attempts] = await Promise.all([readExecutors(), getRunAttempts()]);
+  const projection = normalizeExecutorProjection(read.value);
+  return { ...buildTraffic(projection, attempts), read };
 }

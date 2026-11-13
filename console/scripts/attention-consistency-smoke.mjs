@@ -299,21 +299,35 @@ if (attentionKeys.length > 0) {
 }
 
 const reviewsPageURL = new URL("../src/app/reviews/page.tsx", import.meta.url).href;
+const compoundURL = new URL("../src/lib/compound.ts", import.meta.url).href;
+// Decide never waits for compound: the first render says attention is being
+// read; once the (failing) read lands, it says the read failed. Neither may
+// render an empty or stale Decide queue.
 const degradationProbe = `
   import ReviewsPage from ${JSON.stringify(reviewsPageURL)};
-  const root = await ReviewsPage({ searchParams: Promise.resolve({}) });
-  let degraded = false;
-  let queueCount = 0;
-  const visit = (node) => {
-    if (Array.isArray(node)) { node.forEach(visit); return; }
-    if (!node || typeof node !== "object") return;
-    if (node.type?.name === "FeedDegraded" && node.props?.label === "Decide") degraded = true;
-    if (node.type?.name === "DecideQueue") queueCount += 1;
-    visit(node.props?.children);
+  import { settleProjectionReads } from ${JSON.stringify(compoundURL)};
+  const scan = (root) => {
+    const seen = { loading: false, failed: false, queues: 0 };
+    const visit = (node) => {
+      if (Array.isArray(node)) { node.forEach(visit); return; }
+      if (!node || typeof node !== "object") return;
+      if (node.type?.name === "ReadNotice" && node.props?.label === "what waits on you") {
+        if (node.props.read?.status === "loading") seen.loading = true;
+        if (node.props.read?.status === "unreachable") seen.failed = true;
+      }
+      if (node.type?.name === "DecideQueue") seen.queues += 1;
+      visit(node.props?.children);
+    };
+    visit(root);
+    return seen;
   };
-  visit(root);
-  if (!degraded) throw new Error("unreachable Attention rendered as an empty Decide queue");
-  if (queueCount !== 0) throw new Error("unreachable Attention rendered a stale Decide queue");
+  const first = scan(await ReviewsPage({ searchParams: Promise.resolve({}) }));
+  if (!first.loading) throw new Error("a cold Attention read did not render as being read");
+  if (first.queues !== 0) throw new Error("a cold Attention read rendered a Decide queue");
+  await settleProjectionReads();
+  const after = scan(await ReviewsPage({ searchParams: Promise.resolve({}) }));
+  if (!after.failed) throw new Error("unreachable Attention rendered as an empty Decide queue");
+  if (after.queues !== 0) throw new Error("unreachable Attention rendered a stale Decide queue");
 `;
 execFileSync("bun", ["-e", degradationProbe], {
   cwd: fileURLToPath(new URL("../..", import.meta.url)),

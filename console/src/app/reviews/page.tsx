@@ -1,7 +1,8 @@
 import { DecideQueue } from "@/components/decide/DecideQueue";
-import { CheckIcon, ClockIcon, FeedDegraded, feedRenderModel, GavelIcon, PageHeader, SectionHeader } from "@/components/kit";
-import { attentionNeedsYouGroups, getAttentionProjection } from "@/lib/attention";
-import { arr, getReviews, HEAVY_PROJECTION_TIMEOUT_MS, num, str, type Json } from "@/lib/compound";
+import { CheckIcon, ClockIcon, GavelIcon, hasCopy, PageHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending, SectionHeader } from "@/components/kit";
+import { PendingRefresh } from "@/components/PendingRefresh";
+import { attentionNeedsYouGroups, readAttention, waitingOnYou } from "@/lib/attention";
+import { arr, HEAVY_PROJECTION_TIMEOUT_MS, num, readProjection, str, type Json } from "@/lib/compound";
 import { ago } from "@/lib/time";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
@@ -105,12 +106,16 @@ export default async function Decide({
 }: {
   searchParams: Promise<{ decision?: string | string[] }>;
 }) {
-  const [reviews, attentionProjection, params] = await Promise.all([
-    getReviews({ timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }),
-    getAttentionProjection({ timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }),
+  // Non-blocking reads: the page renders at once from the cached copies (or
+  // says they are being read) and never waits for compound.
+  const [reviewsRead, attentionProjection, params] = await Promise.all([
+    readProjection(["reviews", "--json"], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }),
+    readAttention(),
     searchParams,
   ]);
+  const reviews = reviewsRead.value;
   const { read: attentionRead, report: attention } = attentionProjection;
+  const waiting = waitingOnYou(attention);
   const itemByID = buildItemIndex(reviews);
   const mutationsEnabled = computeConsoleMutationReadiness(consoleMutationsEnabled()).ready;
   const initialSelectedKey = Array.isArray(params.decision) ? str(params.decision[0]) : str(params.decision);
@@ -130,7 +135,7 @@ export default async function Decide({
     itemByID,
     attention,
     (g) => sampleForGroup(g, itemByID),
-    attentionRead.status,
+    attentionRead.status === "loading" ? "unreachable" : attentionRead.status,
   );
   // Feature-detect a queue-level `systemic_blocker` reason the projection
   // may start carrying directly; DecideQueue also computes the
@@ -154,7 +159,9 @@ export default async function Decide({
   const filedByArea = [...filedByAreaMap.entries()].sort((a, b) => b[1] - a[1]);
 
   const empty = decideGroups.length === 0;
-  const decideRender = feedRenderModel(attentionRead.status, decideGroups.length > 0);
+  const attentionKnown = hasCopy(attentionRead);
+  const reviewsKnown = hasCopy(reviewsRead);
+  const pending = readsPending(attentionRead, reviewsRead);
   const initialGroup = initialSelectedKey
     ? decideGroups.find((group) => group.key === initialSelectedKey)
     : null;
@@ -162,7 +169,12 @@ export default async function Decide({
 
   return (
     <div className={`flex flex-col ${panelDetailOpen ? "gap-3" : "gap-6"}`}>
-      <PageHeader breadcrumb={panelDetailOpen ? undefined : "operate / decide"} title="Decide" />
+      <PendingRefresh pending={pending} stamp={Date.now()} />
+      <PageHeader
+        breadcrumb={panelDetailOpen ? undefined : "operate / decide"}
+        title="Decide"
+        right={<ReadChip read={attentionRead} />}
+      />
 
       <section className="flex flex-col gap-3">
         {panelDetailOpen ? null : (
@@ -170,15 +182,15 @@ export default async function Decide({
             tone="seam"
             icon={<GavelIcon />}
             label="Needs your decision"
+            sub={waiting && waiting.groups > 0
+              ? `${waiting.groups.toLocaleString("en-US")} decision ${waiting.groups === 1 ? "group" : "groups"} · ${waiting.items.toLocaleString("en-US")} ${waiting.items === 1 ? "item" : "items"}`
+              : undefined}
           />
         )}
 
-        {decideRender === "degraded" ? (
-          <FeedDegraded
-            label="Decide"
-            source="compound attention --json"
-            lastGoodAt={attentionRead.lastGoodAt}
-          />
+        {attentionKnown ? <ReadFailedBanner read={attentionRead} label="what waits on you" /> : null}
+        {!attentionKnown ? (
+          <ReadNotice read={attentionRead} label="what waits on you" />
         ) : empty ? (
           <p className="rounded-lg border border-dashed border-hair bg-page px-4 py-8 text-center text-sm text-muted">
             Nothing is ready for a decision right now.
@@ -213,11 +225,14 @@ export default async function Decide({
         <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 marker:hidden">
           <span className="inline-flex h-6 w-6 items-center justify-center rounded-sm bg-good-soft text-sm text-good"><CheckIcon /></span>
           <span className="flex-1 text-xs font-bold uppercase text-muted">Filed</span>
-          <span className="mono text-2xs tabular-nums text-faint">{filedTotal}</span>
+          {/* Unknown (reviews not read yet, or failed) is "…", never 0. */}
+          <span className="mono text-2xs tabular-nums text-faint">{reviewsKnown ? filedTotal : "…"}</span>
           <span aria-hidden className="text-sm text-faint transition-transform group-open:rotate-90">›</span>
         </summary>
         <div className="border-t border-hair px-4 py-3">
-          {filedByArea.length ? (
+          {!reviewsKnown ? (
+            <ReadNotice read={reviewsRead} label="filed reviews" />
+          ) : filedByArea.length ? (
             <div className="flex flex-wrap gap-2">
               {filedByArea.map(([area, count]) => (
                 <span
@@ -230,7 +245,7 @@ export default async function Decide({
               ))}
             </div>
           ) : (
-            <p className="text-xs text-faint">Nothing filed yet.</p>
+            <p className="text-xs text-faint">No filed reviews in the review queue.</p>
           )}
         </div>
       </details>

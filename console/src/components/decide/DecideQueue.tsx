@@ -1108,7 +1108,9 @@ export function DecideQueue({
   }
 
   const selected = visible.find((group) => group.key === selectedKey) ?? retained[selectedKey]?.group ?? visible[0] ?? null;
-  const liveMessage = selected ? `Selected decision: ${operatorText(selected.title)}` : "Nothing waits on you.";
+  // The queue only renders with groups, so "nothing selected" means the
+  // filter hides them all - never that nothing waits.
+  const liveMessage = selected ? `Selected decision: ${operatorText(selected.title)}` : "No decision matches this filter.";
   const selectedIdentity = selected ? decisionIdentity(selected) : "";
   const selectedRetained = selected ? retained[selected.key] : undefined;
   const panelGroups = groups.filter((group) => Boolean(group.panel));
@@ -1231,7 +1233,7 @@ export function DecideQueue({
               />
             </div>
           ) : (
-            <div className="rounded-lg border border-dashed border-hair bg-page px-4 py-10 text-center text-sm text-muted">Clean seam. Nothing waits on you.</div>
+            <div className="rounded-lg border border-dashed border-hair bg-page px-4 py-10 text-center text-sm text-muted">No decision matches this filter.</div>
           )}
         </div>
       </div>

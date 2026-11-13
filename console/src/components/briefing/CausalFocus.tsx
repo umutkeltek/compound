@@ -3,7 +3,11 @@ import Link from "next/link";
 import { FreshnessChip, StateBadge } from "@/components/kit";
 import type { AttentionGroup } from "@/lib/attention";
 
-export function CausalFocus({ top, openWork, activeLanes }: { top: AttentionGroup | null; openWork: number; activeLanes: number }) {
+/** `openWork` / `activeLanes` are null while their read has no copy: shown as
+ * "…" (being read), never as 0. */
+const countText = (n: number | null) => (n === null ? "…" : n.toLocaleString("en-US"));
+
+export function CausalFocus({ top, openWork, activeLanes }: { top: AttentionGroup | null; openWork: number | null; activeLanes: number | null }) {
   return (
     <section className="overflow-hidden rounded-xl border border-hair bg-panel shadow-sm">
       <header className="flex flex-wrap items-start justify-between gap-3 border-b border-hair px-4 py-3">
@@ -13,7 +17,7 @@ export function CausalFocus({ top, openWork, activeLanes }: { top: AttentionGrou
       <div className="grid gap-3 p-4 lg:grid-cols-[1fr_auto_1.35fr_auto_1fr] lg:items-stretch">
         <div className="rounded-lg border border-hair bg-soft px-3 py-3">
           <div className="text-2xs font-bold uppercase tracking-wide text-faint">System activity</div>
-          <div className="mt-3 grid grid-cols-2 gap-3"><div><div className="mono text-xl text-ink">{openWork}</div><div className="text-2xs text-faint">open work</div></div><div><div className="mono text-xl text-good">{activeLanes}</div><div className="text-2xs text-faint">active lanes</div></div></div>
+          <div className="mt-3 grid grid-cols-2 gap-3"><div><div className="mono text-xl text-ink" title={openWork === null ? "Open work is being read" : undefined}>{countText(openWork)}</div><div className="text-2xs text-faint">open work</div></div><div><div className="mono text-xl text-good" title={activeLanes === null ? "Lanes are being read" : undefined}>{countText(activeLanes)}</div><div className="text-2xs text-faint">active lanes</div></div></div>
           <p className="mt-3 text-xs leading-relaxed text-muted">Capacity is evidence of activity, not proof of outward progress.</p>
         </div>
         <div className="hidden items-center text-faint lg:flex" aria-hidden>→</div>

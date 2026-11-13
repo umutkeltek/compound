@@ -1,34 +1,45 @@
-import { Suspense } from "react";
 import { Nav } from "@/components/Nav";
 import { NavAppLinks, type NavApp } from "@/components/NavAppLinks";
 import { InstanceBadge } from "@/components/InstanceBadge";
-import { FreshnessChip } from "@/components/kit";
-import { attentionNeedsYouGroups, getAttention } from "@/lib/attention";
+import { PendingRefresh } from "@/components/PendingRefresh";
+import { ReadChip, readsPending } from "@/components/kit";
+import { readAttention, waitingOnYou } from "@/lib/attention";
 import { autonomyPosture } from "@/lib/briefing";
-import { runJson, str } from "@/lib/compound";
-import { appHue, appSlug, getGrowth } from "@/lib/growth";
+import { readProjection } from "@/lib/compound";
+import { appHue, appSlug, mapGrowthModel } from "@/lib/growth";
 
 /**
- * Server wrapper for the sidebar. Badge counts come from ONE attention
- * projection (`compound attention --json`) through the shared runJson TTL memo:
- * every "what needs you" consumer reads the same projection, so the sidebar
- * can never disagree with the briefing.
+ * Server wrapper for the sidebar. It never waits for compound: every read is
+ * the non-blocking `readProjection` (a cached copy at once, or "loading"),
+ * so the shell renders immediately on every page.
  *
- * - Decide badge = `counts.needs_you_groups` (system-wide, all sources).
- * - Work badge = needs-you groups sourced from the workbench.
+ * Badge counts come from the ONE "waiting on you" definition
+ * (`waitingOnYou` over `compound attention --json`), the same function the
+ * Today header and the Work header use:
+ * - Decide badge = decision groups waiting on you;
+ * - Work badge = work items waiting on you.
+ * Before attention has been read there is no badge (unknown is not zero).
  *
- * The Apps list reads `compound product growth --json`, which can be slow on a
- * cold cache; it streams in behind Suspense so the shell never waits for it.
+ * The Apps list reads `compound product growth --json` through the same
+ * cache key `getGrowth` uses, and maps it with growth's own mapper.
  */
+const GROWTH_ARGS = ["product", "growth", "--json"];
+
 async function NavApps() {
-  const growth = await getGrowth();
-  const model = growth.model;
+  const read = await readProjection(GROWTH_ARGS, { timeoutMs: 60_000 });
+  const model = read.value ? mapGrowthModel(read.value) : null;
   if (!model) {
     return (
       <NavAppLinks
         apps={[]}
         total={0}
-        note={growth.status === "unreachable" ? "App data not loaded yet." : "No apps with data."}
+        note={
+          read.status === "loading"
+            ? "Reading app data…"
+            : read.status === "unreachable"
+              ? "Could not read app data."
+              : "No apps with data."
+        }
       />
     );
   }
@@ -52,35 +63,32 @@ async function NavApps() {
   return <NavAppLinks apps={apps} total={apps.length} />;
 }
 
-function NavAppsFallback() {
-  return (
-    <div className="flex flex-col gap-1.5 px-2.5" aria-hidden>
-      <div className="pb-1 text-xs font-medium text-faint">Apps</div>
-      {[0, 1, 2, 3].map((i) => (
-        <div key={i} className="skeleton h-5" />
-      ))}
-    </div>
-  );
-}
-
 async function NavStatus() {
-  const [attention, policyAuthority] = await Promise.all([
-    getAttention(),
-    runJson(["policy", "operator-authority", "--json"]),
+  const [{ read: attentionRead }, policyRead] = await Promise.all([
+    readAttention(),
+    readProjection(["policy", "operator-authority", "--json"]),
   ]);
-  const autonomy = autonomyPosture(policyAuthority);
+  const autonomy = policyRead.value ? autonomyPosture(policyRead.value) : null;
   return (
     <div className="rounded-xl border border-hair bg-panel p-3 shadow-sm">
       <div className="text-2xs text-faint">Autonomy</div>
-      <div className="flex items-baseline gap-2">
-        <span className="text-xl font-semibold tracking-tight text-ink">{autonomy.level}</span>
-        <span className={`h-1.5 w-1.5 rounded-full ${autonomy.tone === "good" ? "bg-good" : "bg-seam"}`} aria-hidden />
-      </div>
-      <p className="mt-1 text-xs leading-snug text-muted" title="Kill switch: compound policy autonomy-halt · source: compound policy operator-authority --json">
-        {autonomy.detail}
-      </p>
+      {autonomy ? (
+        <>
+          <div className="flex items-baseline gap-2">
+            <span className="text-xl font-semibold tracking-tight text-ink">{autonomy.level}</span>
+            <span className={`h-1.5 w-1.5 rounded-full ${autonomy.tone === "good" ? "bg-good" : "bg-seam"}`} aria-hidden />
+          </div>
+          <p className="mt-1 text-xs leading-snug text-muted" title="Kill switch: compound policy autonomy-halt · source: compound policy operator-authority --json">
+            {autonomy.detail}
+          </p>
+        </>
+      ) : (
+        <p className="mt-1 text-xs leading-snug text-muted">
+          {policyRead.status === "unreachable" ? "Could not read the autonomy level." : "Reading the autonomy level…"}
+        </p>
+      )}
       <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-        <FreshnessChip generatedAt={str(attention?.generated_at) || undefined} source="compound attention --json" />
+        <ReadChip read={attentionRead} />
         <InstanceBadge />
       </div>
     </div>
@@ -88,22 +96,24 @@ async function NavStatus() {
 }
 
 export async function NavContainer({ variant = "desktop" }: { variant?: "desktop" | "mobile" }) {
-  const attention = await getAttention();
-  const decideCount = attention?.counts?.needs_you_groups ?? 0;
-  const workCount = attentionNeedsYouGroups(attention)
-    .filter((group) => group.source === "workbench")
-    .reduce((sum, group) => sum + group.count, 0);
+  const [{ read, report }, growthRead, policyRead] = await Promise.all([
+    readAttention(),
+    readProjection(GROWTH_ARGS, { timeoutMs: 60_000, enabled: false }),
+    readProjection(["policy", "operator-authority", "--json"], { enabled: false }),
+  ]);
+  const waiting = waitingOnYou(report);
   return (
-    <Nav
-      decideCount={decideCount}
-      workCount={workCount}
-      variant={variant}
-      apps={
-        <Suspense fallback={<NavAppsFallback />}>
-          <NavApps />
-        </Suspense>
-      }
-      status={<NavStatus />}
-    />
+    <>
+      <Nav
+        decideCount={waiting?.groups ?? null}
+        workCount={waiting?.workItems ?? null}
+        variant={variant}
+        apps={<NavApps />}
+        status={<NavStatus />}
+      />
+      {variant === "desktop" ? (
+        <PendingRefresh pending={readsPending(read, growthRead, policyRead)} stamp={Date.now()} />
+      ) : null}
+    </>
   );
 }
