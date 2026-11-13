@@ -70,6 +70,8 @@ console.log(JSON.stringify({ generated_at: "after-mutation", stamp: "post-invali
     process.env.COMPOUND_BIN = bin;
     process.env.COMPOUND_HOME = home;
     process.env.RUN_JSON_INVALIDATION_STATE = state;
+    // invalidateRunJsonCache() deletes the disk tier: keep it fixture-owned.
+    process.env.COMPOUND_CONSOLE_CACHE_DIR = join(scratch, "console-cache");
 
     const { invalidateRunJsonCache, runProjection } = await import("../src/lib/compound");
     invalidate = invalidateRunJsonCache;

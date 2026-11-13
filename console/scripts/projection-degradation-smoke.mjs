@@ -88,6 +88,9 @@ await chmod(bin, 0o755);
 process.env.COMPOUND_BIN = bin;
 process.env.COMPOUND_HOME = home;
 process.env.PROJECTION_SMOKE_STATE = state;
+// invalidateRunJsonCache() deletes the disk tier: point it at a fixture-owned
+// folder so the smoke never deletes the operator console's real cache.
+process.env.COMPOUND_CONSOLE_CACHE_DIR = join(state, "console-cache");
 
 try {
   // Pay the one-time OS cold-start tax on this brand-new executable at a

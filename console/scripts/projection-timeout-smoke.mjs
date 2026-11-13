@@ -27,6 +27,9 @@ await chmod(bin, 0o755);
 
 process.env.COMPOUND_BIN = bin;
 process.env.COMPOUND_HOME = join(scratch, "home");
+// invalidateRunJsonCache() deletes the disk tier: point it at a fixture-owned
+// folder so the smoke never deletes the operator console's real cache.
+process.env.COMPOUND_CONSOLE_CACHE_DIR = join(scratch, "console-cache");
 
 try {
   const diskProbe = installProjectionDiskProbe();

@@ -6,8 +6,11 @@ import { mock } from "bun:test";
 
 // Keep real functions before Bun replaces the module's live export bindings.
 const actual = { ...fs };
-const diskDir = join(tmpdir(), "compound-console-run-json");
-const isDiskFile = (path) => String(path).startsWith(`${diskDir}/`) && String(path).endsWith(".json");
+// Same folder rule as lib/compound.ts runJsonCacheDir(), read at call time so
+// a smoke that sets COMPOUND_CONSOLE_CACHE_DIR after importing this module
+// probes its own fixture folder.
+const diskDirNow = () => process.env.COMPOUND_CONSOLE_CACHE_DIR?.trim() || join(tmpdir(), "compound-console-run-json");
+const isDiskFile = (path) => String(path).startsWith(`${diskDirNow()}/`) && String(path).endsWith(".json");
 
 function barrier() {
   let release;
@@ -56,6 +59,7 @@ export function installProjectionDiskProbe() {
 async function waitForPersistedProbe(probe) {
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
+    const diskDir = diskDirNow();
     for (const name of await actual.readdir(diskDir).catch(() => [])) {
       if (!name.endsWith(".json")) continue;
       const entry = await actual.readFile(join(diskDir, name), "utf8").then(JSON.parse).catch(() => null);
