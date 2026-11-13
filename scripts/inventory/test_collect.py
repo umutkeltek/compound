@@ -1015,13 +1015,13 @@ class PlainFailureTextTests(unittest.TestCase):
                          "The search property listing tool is not installed on this computer, or the job cannot find it.")
 
     def test_tool_words_lose_home_paths_and_exception_classes(self):
-        err = ("Traceback (most recent call last):\nValueError: cannot open /home/example-user/.config/tool/settings.json "
-               "or /Users/example-user/Library/x")
+        err = ("Traceback (most recent call last):\nValueError: cannot open /home/example/.config/tool/settings.json "
+               "or /Users/example/Library/x")
         obs = observe([SC_ROW], FakeRunner([(["search-cli"], R(1, "", err))]))
         detail = source(obs, "search-example")["detail"]
         self.assertTrue(detail.startswith("The search property listing tool could not give the property list"), detail)
         self.assertTrue(detail.endswith("."))
-        for word in ("ValueError", "Traceback", "example-user", "/home/", "/Users/"):
+        for word in ("ValueError", "Traceback", "/example/", "/home/", "/Users/"):
             self.assertNotIn(word, detail)
         self.assertIn("~/.config/tool/settings.json", detail)
 
