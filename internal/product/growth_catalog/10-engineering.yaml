@@ -1,4 +1,54 @@
 areas:
+  - id: engineering_architecture
+    group: engineering
+    title: Technical design
+    question: Does the technical design fit what the product needs to do next?
+    measure: technical design
+    skills: [codebase-design]
+  - id: engineering_performance
+    group: engineering
+    title: Speed
+    question: Does the product feel fast on the devices people really use?
+    measure: speed
+    kinds:
+      website:
+        title: Page speed
+        question: Do pages load fast on a phone with a weak connection?
+        measure: page speed
+      web_app:
+        title: Page speed
+        question: Do screens load fast on a phone with a weak connection?
+        measure: page speed
+      api:
+        title: Response time
+        question: Do requests come back fast enough for the apps that call them?
+        measure: response time
+  # A phone app has no server health checks to put on file, so its form
+  # clears the base row's record rule and is judged by assessment.
+  - id: engineering_reliability
+    group: engineering
+    title: Staying up
+    question: Does the product stay up, and do we know at once when it goes down?
+    measure: uptime checks
+    evidence:
+      record: [deploy_healthchecks]
+    kinds:
+      ios_app:
+        title: Working through outages
+        question: Does the app keep working when the network drops or a service is down?
+        measure: how the app copes with outages
+        evidence: {}
+  - id: engineering_security
+    group: engineering
+    title: Security
+    question: Have we checked for security holes and fixed what we found?
+    measure: security checks
+    skills: [security-review]
+  - id: engineering_data_integrity
+    group: engineering
+    title: Backups and data safety
+    question: Could we get user data back after a mistake or an outage?
+    measure: backups and restore
   - id: engineering_quality
     group: engineering
     title: Testing and quality assurance
@@ -6,3 +56,45 @@ areas:
     measure: product quality and crashes
     branch: qa
     skills: [tdd, diagnosing-bugs]
+  - id: engineering_release
+    group: engineering
+    title: Shipping and rolling back
+    question: Can we ship a change safely and undo it fast if it breaks?
+    measure: release and rollback
+    branch: release
+    evidence:
+      record: [deploy_method, deploy_rollback]
+  - id: engineering_compatibility
+    group: engineering
+    title: Works on supported versions
+    question: Does it work on the device and software versions people really use?
+    measure: version support
+    kinds:
+      ios_app:
+        title: System versions
+        question: Does the app work on the phone models and system versions people use?
+        measure: system version support
+      website:
+        title: Browsers
+        question: Does the site work in the browsers people really use?
+        measure: browser support
+      web_app:
+        title: Browsers
+        question: Does the product work in the browsers people really use?
+        measure: browser support
+      api:
+        title: Older clients
+        question: Do changes keep working for callers on older versions?
+        measure: support for older clients
+        skills: [api-design]
+  - id: engineering_cost
+    group: engineering
+    title: Running costs
+    question: Do we know what it costs to run each month, and is it under control?
+    measure: running costs
+  - id: engineering_debt
+    group: engineering
+    title: Code health
+    question: Can we change the code without fear of breaking other parts?
+    measure: code health
+    skills: [code-review]

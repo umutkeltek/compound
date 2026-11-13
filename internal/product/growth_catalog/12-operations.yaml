@@ -4,8 +4,59 @@ areas:
     title: Unit economics and profitability
     question: Does each paid user earn back what it costs to get them?
     measure: unit economics
+    needs: [monetization_model]
     evidence:
       metrics: [app_store_connect_developer_proceeds_usd, ads_spend]
       companion: [app_store_connect_developer_proceeds_usd, ads_spend]
       source: App Store sales and ad revenue links
       custom: unit_economics
+  - id: operations_forecast
+    group: operations
+    title: Cash forecast
+    question: Do we know how much money comes in and goes out over the next few months?
+    measure: the cash forecast
+  - id: operations_compliance
+    group: operations
+    title: Privacy and legal rules
+    question: Do we follow the privacy and legal rules that apply where we sell?
+    measure: privacy and legal rules
+    evidence:
+      record: [privacy_posture]
+  - id: operations_ip
+    group: operations
+    title: Licenses and rights
+    question: Do we own or have a license for every font, image, code and name we use?
+    measure: licenses and rights
+  - id: operations_platform_risk
+    group: operations
+    title: Depending on others
+    question: Would the product survive if a key platform or supplier changed its rules?
+    measure: platform and supplier risk
+  - id: operations_automation
+    group: operations
+    title: Routine work
+    question: Do routine tasks run on their own instead of by hand?
+    measure: routine work
+  - id: operations_allocation
+    group: operations
+    title: Where time and money go
+    question: Do we put time and money where they pay back the most?
+    measure: where time and money go
+  - id: operations_incidents
+    group: operations
+    title: When things go wrong
+    question: When something breaks, do we know who acts and what to do?
+    measure: incident response
+    skills: [production-audit]
+  - id: operations_decision_rights
+    group: operations
+    title: Who decides
+    question: Is it clear who can approve releases, spending and big changes?
+    measure: decision rights
+  - id: operations_lifecycle
+    group: operations
+    title: Grow, keep or retire
+    question: Have we decided whether to grow, keep, change course or retire the product?
+    measure: the lifecycle decision
+    evidence:
+      record: [essence.stage]

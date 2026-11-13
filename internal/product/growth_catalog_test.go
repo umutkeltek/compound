@@ -409,3 +409,83 @@ func TestGrowthCatalogSeedRows(t *testing.T) {
 		}
 	}
 }
+
+// growthSeedAreas is the full seed catalog: ten areas per group.
+var growthSeedAreas = map[string][]string{
+	"opportunity": {"opportunity_problem", "opportunity_audience_segments", "opportunity_jobs", "opportunity_market_size",
+		"opportunity_willingness_to_pay", "opportunity_alternatives", "opportunity_competitors", "opportunity_competitor_pricing",
+		"opportunity_gaps", "opportunity_demand_validation"},
+	"strategy": {"strategy_vision", "strategy_value_proposition", "strategy_differentiation", "strategy_positioning",
+		"strategy_audience_priority", "strategy_business_model", "strategy_scope", "strategy_roadmap", "strategy_defensibility",
+		"strategy_fit"},
+	"brand": {"brand_name", "brand_mark", "brand_visual_identity", "brand_typography", "brand_voice", "brand_messaging",
+		"brand_creative_direction", "brand_guidelines", "brand_trust", "brand_recognition"},
+	"experience": {"experience_information_architecture", "experience_navigation", "experience_journeys", "experience_ui",
+		"experience_design_system", "experience_accessibility", "experience_platform_fit", "experience_states",
+		"experience_personalization", "experience_usability"},
+	"activation": {"activation_first_contact", "activation_onboarding", "activation_signup", "activation_permissions",
+		"activation_time_to_value", "activation_setup_completion", "activation_templates", "activation_feature_discovery",
+		"activation_criteria", "activation_first_success"},
+	"acquisition": {"acquisition_channels", "acquisition_search", "acquisition_listing", "acquisition_landing",
+		"acquisition_organic", "acquisition_paid", "acquisition_community", "acquisition_partnerships", "acquisition_launches",
+		"acquisition_attribution"},
+	"monetization": {"monetization_model", "monetization_pricing", "monetization_free_tier", "monetization_purchase_prompt",
+		"monetization_triggers", "monetization_checkout", "monetization_regional", "monetization_offers",
+		"monetization_billing_recovery", "monetization_price_tests"},
+	"retention": {"retention_repeat_use", "retention_recurring_value", "retention_lifecycle_messages", "retention_reengagement",
+		"retention_churn", "retention_offboarding", "retention_customer_success", "retention_expansion", "retention_referrals",
+		"retention_winback"},
+	"customer": {"customer_feedback", "customer_ratings", "customer_support", "customer_interviews", "customer_segments",
+		"customer_satisfaction", "customer_requests", "customer_reputation", "customer_complaints", "customer_roadmap_loop"},
+	"engineering": {"engineering_architecture", "engineering_performance", "engineering_reliability", "engineering_security",
+		"engineering_data_integrity", "engineering_quality", "engineering_release", "engineering_compatibility",
+		"engineering_cost", "engineering_debt"},
+	"analytics": {"analytics_objectives", "analytics_instrumentation", "analytics_funnel", "analytics_cohorts",
+		"analytics_experiment_design", "analytics_ab_tests", "analytics_validity", "analytics_causal", "analytics_memory",
+		"analytics_anomalies"},
+	"operations": {"operations_unit_economics", "operations_forecast", "operations_compliance", "operations_ip",
+		"operations_platform_risk", "operations_automation", "operations_allocation", "operations_incidents",
+		"operations_decision_rights", "operations_lifecycle"},
+}
+
+// The embedded catalog holds exactly the 120 seed areas, ten per group, and
+// every monetization area waits on the core promise and the audience.
+func TestGrowthCatalogSeedIDs(t *testing.T) {
+	cat, err := loadEmbeddedGrowthCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string][]string{}
+	for _, a := range cat.Areas {
+		got[a.Group] = append(got[a.Group], a.ID)
+	}
+	total := 0
+	for _, g := range cat.Groups {
+		want := append([]string{}, growthSeedAreas[g.ID]...)
+		have := append([]string{}, got[g.ID]...)
+		sort.Strings(want)
+		sort.Strings(have)
+		if len(want) != 10 || strings.Join(have, " ") != strings.Join(want, " ") {
+			t.Errorf("group %s areas = %v, want %v", g.ID, have, want)
+		}
+		total += len(have)
+	}
+	if len(cat.Groups) != len(growthSeedAreas) || total != 120 || len(cat.Areas) != 120 {
+		t.Fatalf("catalog holds %d groups and %d areas, want %d and 120", len(cat.Groups), len(cat.Areas), len(growthSeedAreas))
+	}
+	for _, id := range growthSeedAreas["monetization"] {
+		a, _ := cat.area(id)
+		if !containsString(a.Applies["objectives"], "revenue") || !containsString(a.Needs, "strategy_value_proposition") ||
+			!containsString(a.Needs, "opportunity_audience_segments") {
+			t.Errorf("monetization area %s = applies %v needs %v", id, a.Applies, a.Needs)
+		}
+	}
+	// A phone app has no server health checks to put on file.
+	rel, _ := cat.area("engineering_reliability")
+	if s := rel.spec("ios_app"); s.Kind != "ios_app" || len(s.record) != 0 || s.hasSpec {
+		t.Fatalf("the phone form of engineering_reliability = %+v", s)
+	}
+	if s := rel.spec("web_app"); strings.Join(s.record, ",") != "deploy_healthchecks" {
+		t.Fatalf("the base row of engineering_reliability = %+v", s)
+	}
+}

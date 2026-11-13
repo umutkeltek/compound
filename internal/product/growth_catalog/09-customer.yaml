@@ -20,3 +20,46 @@ areas:
           metrics: [app_store_connect_review_count, "*rating*"]
           companion: [app_store_connect_review_count, "*rating*"]
           source: App Store Connect reviews
+  - id: customer_support
+    group: customer
+    title: Support
+    question: Do users who ask for help get a useful answer within a day?
+    measure: customer support
+  - id: customer_interviews
+    group: customer
+    title: Talking with users
+    question: Do we talk with real users often and write down what we learn?
+    measure: talks with users
+    skills: [customer-research]
+  - id: customer_segments
+    group: customer
+    title: Groups of users who behave alike
+    question: Do we know which groups of users use the product differently, and why?
+    measure: groups of users
+  - id: customer_satisfaction
+    group: customer
+    title: Satisfaction
+    question: Do users say the product is worth the time or money they put in?
+    measure: satisfaction
+  - id: customer_requests
+    group: customer
+    title: Feature requests
+    question: Do we keep one list of what users ask for and how often they ask?
+    measure: feature requests
+    needs: [customer_feedback]
+  - id: customer_reputation
+    group: customer
+    title: Public reputation
+    question: Is what people say about the product in public mostly good?
+    measure: public reputation
+  - id: customer_complaints
+    group: customer
+    title: Complaints and refunds
+    question: Do we read every complaint and refund reason and fix the patterns?
+    measure: complaints and refund reasons
+  - id: customer_roadmap_loop
+    group: customer
+    title: Feedback shapes the plan
+    question: Does what users tell us change what we build next?
+    measure: how feedback shapes the plan
+    needs: [customer_requests, strategy_roadmap]
