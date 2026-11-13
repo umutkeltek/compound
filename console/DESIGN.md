@@ -212,9 +212,9 @@ action seam.
   (`kit/ReadState.tsx`). A read that has not landed is never rendered as 0, empty or a doctrine
   empty state. While anything on a page is loading or updating, the page refreshes itself every
   5 seconds (`PendingRefresh`); the read queue, not the timer, decides when compound runs.
-- **Empty state:** dashed hairline, `--page` bg, doctrine copy — never "No data"
-  ("Clean seam. Nothing waits on you." / "Propose-only holds the line…"), and only for a read that
-  landed and is genuinely empty. Optional single CTA.
+- **Empty state:** dashed hairline, `--page` bg, a plain sentence that says what is empty — never
+  "No data" and never a metaphor ("Nothing is on hold.", "Nothing needs you today."; see §11.2), and
+  only for a read that landed and is genuinely empty. Optional single CTA.
 - **Nav item:** icon (15px, stroke 1.7, outline, currentColor) + label (13px) + right count pill
   (mono, tabular). Active: `--soft-2` bg + work-blue icon. **Only needs-you badges are amber; all
   other counts quiet slate.** Disabled/soon at 45% opacity.
@@ -555,3 +555,37 @@ matrix and the pale red fill above.
   "Does not apply" and "Needs <area titles> first". Area ids appear only as small secondary mono
   text. A profile dimension that is not on file is a dashed "Not on file" chip, and the page says
   once what filling it in would change ("5 areas cannot be judged until the objective is on file").
+
+### 11.2 The four main pages answer one question each (2026-11-13)
+
+Today, Work, Decide and Live open with their question as the page title and the answer right under
+it, in one to three plain sentences. Everything else sits below and is quieter; deeper panels stay
+behind the depth control. These rules replace the §10 table's questions for these four pages and
+the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line…").
+
+| Page | Question | First answer |
+|---|---|---|
+| Today | What needs you today? | "N decisions wait for you, with M items in all", then at most five decisions in the attention order, each with what to do, why, and one way in. When nothing waits, it says so and "What the agents are doing" becomes the answer. |
+| Work | What is being worked on, and what is stuck? | Work items marked in progress out of open work, the split, what is stuck (picked up 7+ days ago and still open; on hold), and work items waiting for a decision. |
+| Decide | What is waiting for your decision? | How many decisions and items wait, and how many can be decided now. Those come first; the rest are one quieter "Not yet" list, with the reason said once when it is the same for all. |
+| Live | Who is working on what right now? | Agents holding work, the in-progress split and age, and a plain note when live run records are not visible, so "running" is the work record's word. |
+
+- **Words.** `lib/plain-words.ts` owns the names (decision, item, work item, agent, in progress,
+  on hold, waiting for a proof check, picked up, filed, watching), the plain area labels (an area
+  path like `source-control-cleanup/scr_….preimage` reads "Repository cleanup"; the id is small
+  secondary text), the plain reasons and next steps, and `BANNED_PHRASES`. The wired
+  work-legibility smoke runs `scripts/plain-pages-cases.mjs`, which renders the four pages against
+  a synthetic binary and fails on any banned phrase or raw area path in the visible text.
+- **Numbers.** `lib/counts.ts` holds one function per concept, with its unit in the label:
+  waiting for you (decisions, items, work items), open work items, in progress (`claimed`,
+  `running`/`in_progress`, `verifying`), picked up more than 7 days ago (from `claimed_at`: the
+  projections carry no "last changed" time for open work), on hold (`held`, `blocked`), agents
+  holding work, and decisions ready now. Pages and the sidebar call these, never their own count.
+- **Send only what is shown.** Decide sends the full detail of the open decision only
+  (`?decision=<key>` re-renders with that one's detail); filed is a count plus one row per kind
+  (`?filed=<kind>` opens its newest 100). Live's timeline gets its six rows, and the list of
+  agent-started sessions renders only at the Technical depth.
+- **Work views.** The board by state is the default; List, Stages, Flow, By agent and Work packets
+  are quieter text tabs beside it. Board columns: Suggested · Ready to start · Running or picked up
+  · On hold · Waiting for a proof check · Done; the two middle in-progress columns add up to the
+  "in progress" number.

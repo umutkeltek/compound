@@ -1,0 +1,246 @@
+// Plain-pages cases: render the real Today, Work, Decide and Live pages
+// against a synthetic compound binary and check what a person reads.
+//
+//  1. No banned system phrase (lib/plain-words.ts BANNED_PHRASES) and no raw
+//     area path used as a label appears in the visible text, while the reads
+//     are loading and after they land.
+//  2. Each page leads with its question, and the counts on every page come
+//     from one definition (lib/counts.ts): the same fixture gives the same
+//     "in progress" and "waiting" numbers on Today, Work, Decide and Live.
+//  3. A read that has not landed shows its read state, never a zero.
+//  4. Decide sends only the open decision's detail to the browser.
+//
+// Run as a child process by the wired work-legibility smoke (it owns its own
+// scratch home and cache folder, and moves the read layer's global state, so
+// it must not share a process with another smoke). Directly:
+//   bun scripts/plain-pages-cases.mjs
+
+import assert from "node:assert/strict";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { AppRouterContext } from "next/dist/shared/lib/app-router-context.shared-runtime.js";
+import { PathnameContext, SearchParamsContext } from "next/dist/shared/lib/hooks-client-context.shared-runtime.js";
+
+const scratch = await mkdtemp(join(tmpdir(), "compound-plain-pages-"));
+const bin = join(scratch, "compound-stub");
+
+// Synthetic home: 6 open work items. In progress = 4 (1 running, 1 picked up,
+// 2 waiting for a proof check); 2 of them picked up more than 7 days ago;
+// 1 on hold; 7 decisions wait, 13 items in all.
+await writeFile(bin, `#!/usr/bin/env bun
+const args = process.argv.slice(2).join(" ");
+const now = Date.now();
+const iso = (daysAgo) => new Date(now - daysAgo * 86400000).toISOString();
+const ns = (daysAgo) => String(BigInt(Math.round(now - daysAgo * 86400000)) * 1000000n);
+const work = [
+  { work_id: "work_fx_check_old", state: "verifying", owner: "codex", claimed_by: "codex", claimed_at: ns(10), success_predicate: "Fixture check waits for its proof", next_action: "attach the final verified candidate" },
+  { work_id: "work_fx_run_old", state: "running", owner: "codex", claimed_by: "codex", claimed_at: ns(9), success_predicate: "Fixture run is still going", next_action: "finish the run" },
+  { work_id: "work_fx_claimed", state: "claimed", owner: "codex", claimed_by: "codex", claimed_at: ns(2), success_predicate: "Fixture item picked up recently", next_action: "start it" },
+  { work_id: "work_fx_check_new", state: "verifying", owner: "claude_code", claimed_by: "claude_code", claimed_at: ns(1), success_predicate: "Fixture check from yesterday", next_action: "attach the final verified candidate" },
+  { work_id: "work_fx_held", state: "held", owner: "claude_code", claimed_by: "claude_code", claimed_at: ns(3), success_predicate: "Fixture item on hold", next_action: "resolve the hold" },
+  { work_id: "work_fx_ready", state: "ready", owner: "codex", success_predicate: "Fixture item ready to start", next_action: "claim before touching" },
+];
+const group = (key, area, count, extra = {}) => ({
+  key, area, band: "needs_you", source: "reviews", kind: "adjudicate", count,
+  operator_summary: "A new " + area.split("/")[0].replace(/-/g, " ") + " record needs your decision.",
+  operator_unlock: "Open it with compound reviews --area " + area + ".",
+  blast_radius: "local_reversible", reversibility: "reversible", leverage: 1,
+  oldest_created_at: iso(4), action: null,
+  terminal_reason: "the owner has not exposed a safe action for this decision group",
+  item_ids: Array.from({ length: count }, (_, i) => key + "-item-" + i),
+  freshness: { generated_at: iso(0), source: "compound attention --json" },
+  ...extra,
+});
+const groups = [
+  group("workbench:blocked-on-you", "workbench-blocked-on-you", 1, {
+    source: "workbench", kind: "gate_admit",
+    operator_summary: "1 open work item is blocked on operator review.",
+    operator_unlock: "Resolve the hold before executors can continue.",
+    blast_radius: "destructive", reversibility: "irreversible",
+    terminal_reason: "resolve the policy/source-control hold, then ready or cancel",
+    item_ids: ["work_fx_held"],
+  }),
+  group("source-control-cleanup|scr", "source-control-cleanup/scr_0a1b2c3d4e5f.preimage", 3),
+  group("launchd-repair|review", "launchd-repair", 4),
+  group("git-index-lock|review", "git-index-lock", 2),
+  group("bench|review", "bench", 1),
+  group("route-promotions|x", "route-promotions", 1, { terminal_reason: "actions are item-specific; no safe batch action exposed" }),
+  group("worktree-retirement|review", "worktree-retirement", 1),
+];
+const watching = { ...group("route-promotions|watch", "route-promotions", 2), band: "watching", operator_summary: "Not enough evidence yet. Still watching." };
+const reply = {
+  "attention --json": {
+    schema_version: "compound.attention.v0.1", generated_at: iso(0),
+    counts: { needs_you: 13, needs_you_groups: 7, actionable_now: 0, watching: 2, blocked_on_you: 1, fallback_groups: 0 },
+    top: groups[0], groups: [...groups, watching],
+    operator_attention: { schema_version: "compound.operator_attention.v0.1", revision: "r1", total: 0, items: [] },
+  },
+  "executors --json": {
+    schema_version: "compound.executors_projection.v0.1", generated_at: iso(0),
+    counts: { total: 4, open: 6, running: 4, ready: 1, needs_me: 1, assigned: 5, leases: 5 },
+    delegated_sessions: [], delegated_counts: { total: 0, running: 0, exited: 0, refused: 0, unknown: 0 },
+    executors: [
+      { id: "codex", label: "Codex", status: "available", running_count: 3, assigned_count: 3, needs_me_count: 0, lease_count: 3,
+        current_work: work.slice(0, 3).map((w) => ({ work_id: w.work_id, state: w.state, owner: w.owner, claimed_by: w.claimed_by, claimed_at: w.claimed_at, title: w.success_predicate, next_action: w.next_action })) },
+      { id: "claude_code", label: "Claude Code", status: "manual", running_count: 1, assigned_count: 2, needs_me_count: 1, lease_count: 2,
+        current_work: work.slice(3, 5).map((w) => ({ work_id: w.work_id, state: w.state, owner: w.owner, claimed_by: w.claimed_by, claimed_at: w.claimed_at, title: w.success_predicate, next_action: w.next_action })) },
+      { id: "local_lm", label: "Local model", status: "not_checked", running_count: 0, assigned_count: 0, needs_me_count: 0, lease_count: 0, current_work: [] },
+      { id: "unassigned", label: "Unassigned", status: "waiting", running_count: 0, assigned_count: 0, needs_me_count: 0, lease_count: 0, current_work: [] },
+    ],
+  },
+  "workbench --json": { generated_at: iso(0), counts: { open: 6, in_progress: 4 }, open: work, recent: [] },
+  "workbench --json --recent 500": { generated_at: iso(0), counts: { open: 6, in_progress: 4 }, open: work, recent: [] },
+  "reviews --json": {
+    schema_version: "compound.review_queue.v0.1", generated_at: iso(0), groups: [],
+    items: [
+      { id: "rev_fx_filed_1", area: "bench", band: "filed", status: "filed", operator_summary: "A filed bench record.", created_at: iso(5) },
+      { id: "rev_fx_filed_2", area: "bench", band: "filed", status: "filed", operator_summary: "Another filed bench record.", created_at: iso(6) },
+      { id: "rev_fx_filed_3", area: "source-control-cleanup/scr_99aa88bb.preimage", band: "filed", status: "filed", operator_summary: "A filed cleanup record.", created_at: iso(7) },
+    ],
+  },
+  "policy operator-authority --json": { generated_at: iso(0), autonomy_level: "L1", mode: "propose_only" },
+  "source connections --json": { schema_version: "compound.source_connections_projection.v0.2", generated_at: iso(0), counts: {}, connections: [] },
+  "director propose --dry-run --json": { generated_at: iso(0), proposals: [] },
+  "packets list --json": { schema_version: "compound.work.offered_packets.v0.1", counts: {}, items: [] },
+};
+if (args === "version") { console.log("synthetic"); process.exit(0); }
+const key = Object.keys(reply).find((k) => args === k) ?? (args.startsWith("memory candidates") ? "memory" : "");
+if (key === "memory") { console.log(JSON.stringify({ generated_at: iso(0), items: [], counts: { by_state: { promoted: 3, parked: 1, proposed: 1 } } })); process.exit(0); }
+console.log(JSON.stringify(key ? reply[key] : { generated_at: iso(0) }));
+`);
+await chmod(bin, 0o755);
+process.env.COMPOUND_BIN = bin;
+process.env.COMPOUND_HOME = join(scratch, "home");
+process.env.COMPOUND_CONSOLE_MUTATIONS = "0";
+process.env.COMPOUND_CONSOLE_CACHE_DIR = join(scratch, "cache");
+process.env.TMPDIR = scratch;
+
+const { BANNED_PHRASES, findBannedPhrases } = await import("../src/lib/plain-words.ts");
+const compound = await import("../src/lib/compound.ts");
+const { default: Today } = await import("../src/app/page.tsx");
+const { default: Work } = await import("../src/app/work/page.tsx");
+const { default: Decide } = await import("../src/app/reviews/page.tsx");
+const { default: Live } = await import("../src/app/live/page.tsx");
+
+const router = Object.fromEntries(["push", "replace", "refresh", "back", "forward", "prefetch"].map((k) => [k, () => {}]));
+const wrap = (path, element) =>
+  renderToStaticMarkup(
+    createElement(AppRouterContext.Provider, { value: router },
+      createElement(PathnameContext.Provider, { value: path },
+        createElement(SearchParamsContext.Provider, { value: new URLSearchParams() }, element))));
+
+const pages = {
+  Today: { path: "/", render: () => Today(), question: "What needs you today?" },
+  Work: { path: "/work", render: () => Work({ searchParams: Promise.resolve({}) }), question: "What is being worked on, and what is stuck?" },
+  Decide: { path: "/reviews", render: () => Decide({ searchParams: Promise.resolve({}) }), question: "What is waiting for your decision?" },
+  Live: { path: "/live", render: () => Live(), question: "Who is working on what right now?" },
+};
+
+/** What a person reads: text content only (no scripts, styles or attributes). */
+function visibleText(html) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/g, " ")
+    .replace(/<style[\s\S]*?<\/style>/g, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;|&#39;/g, "'")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/\s+/g, " ");
+}
+
+async function renderAll() {
+  const out = {};
+  for (const [name, page] of Object.entries(pages)) {
+    out[name] = visibleText(wrap(page.path, await page.render()));
+  }
+  return out;
+}
+
+function checkPlain(texts, when) {
+  assert.ok(BANNED_PHRASES.length >= 15, "the banned list must not be emptied");
+  for (const [name, text] of Object.entries(texts)) {
+    const hits = findBannedPhrases(text);
+    assert.deepEqual(hits, [], `${name} (${when}) shows system words: ${hits.join(", ")}`);
+    assert.ok(text.includes(pages[name].question), `${name} (${when}) must lead with its question`);
+  }
+}
+
+try {
+  // The banned list catches what it claims to (a red check, not a silent one).
+  assert.deepEqual(findBannedPhrases("Running · heartbeat-backed"), ["heartbeat-backed"]);
+  assert.equal(findBannedPhrases("source-control-cleanup/scr_4b6d91fd142c.preimage").length, 1, "a raw area path is caught");
+
+  // 1. Cold: nothing read yet. Every page says it is reading, never zero.
+  const cold = await renderAll();
+  checkPlain(cold, "loading");
+  assert.match(cold.Today, /Reading what waits for you for the first time/);
+  assert.doesNotMatch(cold.Today, /Nothing needs you today|\b0 decisions\b/, "an unread attention copy is not 'nothing'");
+  assert.match(cold.Work, /Reading work for the first time/);
+  assert.doesNotMatch(cold.Work, /\b0 work items are marked in progress/);
+  assert.match(cold.Decide, /Reading what waits for you for the first time/);
+  assert.match(cold.Live, /Reading who works on what for the first time/);
+
+  // 2. The reads land; render again.
+  await compound.settleProjectionReads();
+  const warm = await renderAll();
+  checkPlain(warm, "loaded");
+
+  // One definition per number: the same fixture, the same numbers everywhere.
+  for (const name of ["Today", "Work", "Live"]) {
+    assert.match(warm[name], /4 work items are marked in progress/, `${name}: in progress uses the shared definition`);
+  }
+  for (const name of ["Today", "Live"]) {
+    assert.match(warm[name], /1 running, 1 picked up but not started, 2 waiting for a proof check/, `${name}: in-progress split`);
+    assert.match(warm[name], /2 of them were picked up more than 7 days ago/, `${name}: age from claimed_at`);
+  }
+  assert.match(warm.Work, /Stuck: 2 of them were picked up more than 7 days ago and are still not finished; 1 work item is on hold/);
+  assert.match(warm.Today, /7 decisions wait for you, with 13 items in all/);
+  assert.match(warm.Decide, /7 decisions wait for you, with 13 items in all/);
+  assert.match(warm.Work, /1 work item waits for your decision/);
+  assert.match(warm.Live, /1 work item waits for your decision/);
+  assert.match(warm.Live, /2 agents hold 5 work items/, "agents count excludes the no-agent bucket and idle agents");
+
+  // Today: at most five decisions, then one link to the rest; plain words for areas and reasons.
+  assert.match(warm.Today, /2 more decisions on Decide/);
+  assert.match(warm.Today, /Repository cleanup/, "area path becomes its plain kind");
+  assert.match(warm.Today, /blocked on your review/, "system wording 'operator review' becomes 'your review'");
+  assert.match(warm.Today, /before agents can continue/, "system wording 'executors' becomes 'agents'");
+  assert.match(warm.Today, /There is no button for this kind of decision yet/);
+  assert.doesNotMatch(warm.Today, /compound reviews --area/, "a command is never the 'why'");
+
+  // Decide: filed is a count plus kinds, not one chip per item; reasons in plain words.
+  assert.match(warm.Decide, /Filed .*3 items/);
+  assert.match(warm.Decide, /Benchmark results/);
+  // The queue-wide reason, in plain words, said once above the list.
+  assert.match(warm.Decide, /Why none can be decided yet/);
+  assert.match(warm.Decide, /The approval record behind it is incomplete/);
+
+  // 4. Decide sends only the open decision's detail.
+  const page = await Decide({ searchParams: Promise.resolve({}) });
+  const queues = [];
+  const visit = (node) => {
+    if (Array.isArray(node)) return node.forEach(visit);
+    if (!node || typeof node !== "object") return;
+    if (node.type?.name === "DecideQueue") queues.push(node.props);
+    visit(node.props?.children);
+  };
+  visit(page);
+  assert.equal(queues.length, 1, "Decide renders one queue");
+  const [queue] = queues;
+  assert.equal(queue.groups.length, 7, "every decision is listed");
+  assert.deepEqual(queue.detailKeys, [queue.groups[0].key], "only the open decision carries detail");
+  for (const group of queue.groups.slice(1)) {
+    assert.equal(group.members.length, 0, `${group.key}: list-only rows carry no members`);
+    assert.equal(group.evidence.length, 0, `${group.key}: list-only rows carry no evidence`);
+  }
+
+  console.log(`plain-pages cases ok: 4 pages × 2 read states free of ${BANNED_PHRASES.length} banned phrases; shared counts agree; Decide sends one decision's detail`);
+} finally {
+  await compound.settleProjectionReads();
+  await rm(scratch, { recursive: true, force: true });
+}

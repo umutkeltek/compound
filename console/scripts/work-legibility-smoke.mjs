@@ -74,6 +74,22 @@ if (failures.length) {
 // smoke exits non-zero.
 await import("./waiting-and-owner-cases.mjs");
 
+// The four main pages in plain words (scripts/plain-pages-cases.mjs): render
+// Today, Work, Decide and Live against a synthetic binary and fail on any
+// banned system phrase, a count that differs between pages, or a zero shown
+// for a read that has not landed. It moves the read layer's global state and
+// owns its own scratch home and cache folder, so it runs as a child process.
+{
+  const { fileURLToPath } = await import("node:url");
+  const { spawnSync } = await import("node:child_process");
+  const cases = fileURLToPath(new URL("./plain-pages-cases.mjs", import.meta.url));
+  const run = spawnSync(process.execPath, [cases], { stdio: "inherit", env: process.env, timeout: 240_000 });
+  if (run.status !== 0) {
+    console.error(`work-legibility-smoke FAILED: plain-pages cases exited ${run.status ?? run.signal}`);
+    process.exit(1);
+  }
+}
+
 console.log(
   `work-legibility-smoke ok: ${prose.length} operator-prose strings CLI-free; ` +
     `${commands.length} command(s) live only in copy affordances`,

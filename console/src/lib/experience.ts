@@ -125,10 +125,13 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "Essentials",
     collapsible: false,
     items: [
-      { label: "Today", href: "/", icon: "home", description: "The few things worth your attention now." },
-      { label: "Work", href: "/work", icon: "board", match: ["/work/", "/flow"], badge: "work", description: "Every work item as a board, list, flow or timeline." },
-      { label: "Decide", href: "/reviews", icon: "gavel", badge: "decide", description: "Calls only you can make, with evidence." },
-      { label: "Live", href: "/live", icon: "pulse", description: "What is running right now." },
+      // Each description is the page's own question (lib/plain-words.ts names);
+      // the badges count with lib/counts.ts: Work = work items waiting for
+      // your decision, Decide = decisions waiting for you.
+      { label: "Today", href: "/", icon: "home", description: "What needs you today?" },
+      { label: "Work", href: "/work", icon: "board", match: ["/work/", "/flow"], badge: "work", description: "What is being worked on, and what is stuck?" },
+      { label: "Decide", href: "/reviews", icon: "gavel", badge: "decide", description: "What is waiting for your decision?" },
+      { label: "Live", href: "/live", icon: "pulse", description: "Who is working on what right now?" },
     ],
   },
   {
