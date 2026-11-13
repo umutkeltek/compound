@@ -141,8 +141,8 @@ func TestGrowthMergesSpellingVariantsAndAcceptsAliases(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The hyphen spelling carries more rows, but the registry id still wins.
-	rows := growthDaily("product:alpha-app", "app_store_connect_units", 5, 0, 2)
-	rows = append(rows, growthRow{product: "product:alpha_app", metric: "app_store_connect_units", date: growthDay(9), value: 1})
+	rows := growthDaily("product:alpha-app", growthSalesFirstDownloads, 5, 0, 2)
+	rows = append(rows, growthRow{product: "product:alpha_app", metric: growthSalesFirstDownloads, date: growthDay(9), value: 1})
 	writeGrowthSignals(t, home, rows...)
 
 	g := buildGrowthT(t, home, growthOpts())
@@ -674,12 +674,12 @@ func TestGrowthSingularCounts(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "hyp_1.json"), b, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	writeGrowthSignals(t, home, growthRow{product: "product:alpha", metric: "app_store_connect_units", date: growthDay(1), value: 1}, growthRow{product: "product:alpha", metric: "app_store_connect_developer_proceeds_usd", date: growthDay(1), value: 5})
+	writeGrowthSignals(t, home, growthRow{product: "product:alpha", metric: growthSalesFirstDownloads, date: growthDay(1), value: 1}, growthRow{product: "product:alpha", metric: "app_store_connect_developer_proceeds_usd", date: growthDay(1), value: 5})
 	app := buildGrowthT(t, home, growthOpts()).Apps[0]
 	if s := growthAudit(t, app, "analytics_experiment_design").Summary; !strings.Contains(s, "1 open hypothesis and 0 reviews") {
 		t.Fatalf("experiments summary = %q", s)
 	}
-	if s := growthAudit(t, app, "monetization_pricing").Summary; !strings.Contains(s, "on 1 unit in 30 days") {
+	if s := growthAudit(t, app, "monetization_pricing").Summary; !strings.Contains(s, "on 1 new download in the Sales report, 30 days") {
 		t.Fatalf("pricing summary = %q", s)
 	}
 }

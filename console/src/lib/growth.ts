@@ -20,7 +20,10 @@ export type KpiKey =
   | "web_impressions"
   | "ad_spend_usd"
   | "ad_conversions"
-  | "ad_cpa_usd";
+  | "ad_cpa_usd"
+  | "iap_units"
+  | "updates"
+  | "redownloads";
 export type SeriesKey = "proceeds_usd" | "units" | "web_clicks" | "ad_spend_usd" | "ad_conversions";
 
 export type Kpi = {
@@ -623,14 +626,17 @@ export const FOCUS_META: Record<string, { label: string; chip: string; meaning: 
 };
 
 export const KPI_META: Record<KpiKey, { label: string; hint: string }> = {
-  proceeds_usd: { label: "Proceeds", hint: "App Store developer proceeds" },
-  units: { label: "Units", hint: "App Store units (downloads + purchases)" },
-  first_time_downloads: { label: "First-time downloads", hint: "New installs" },
+  proceeds_usd: { label: "Proceeds", hint: "App Store developer proceeds (estimated in US dollars)" },
+  units: { label: "Downloads", hint: "New downloads in the Sales report (no redownloads, updates or in-app purchases)" },
+  first_time_downloads: { label: "First-time downloads", hint: "App Store analytics (noised)" },
   web_clicks: { label: "Web search clicks", hint: "Google Search Console clicks" },
   web_impressions: { label: "Web search impressions", hint: "Google Search Console impressions" },
   ad_spend_usd: { label: "Ad spend", hint: "Apple Search Ads spend" },
   ad_conversions: { label: "Ad installs", hint: "Apple Search Ads conversions" },
   ad_cpa_usd: { label: "Cost per install", hint: "Ad spend ÷ ad installs" },
+  iap_units: { label: "In-app purchases", hint: "In-app purchase units in the Sales report" },
+  updates: { label: "Updates", hint: "App updates in the Sales report" },
+  redownloads: { label: "Redownloads", hint: "Downloads by people who had the app before" },
 };
 
 /* ---------------- number formatting ---------------- */

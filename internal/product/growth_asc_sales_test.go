@@ -119,8 +119,13 @@ func TestGrowthReadsASCSalesSeriesPastTheLedger(t *testing.T) {
 	if kpi.Value == nil || *kpi.Value != 18 || kpi.DaysReported != 4 || kpi.LatestDate != growthDay(2) {
 		t.Fatalf("proceeds KPI = %+v, want 4+2+5+7=18 over 4 reported days, latest %s", kpi, growthDay(2))
 	}
-	if u := app.Kpis["units"]; u.Value == nil || *u.Value != 8 {
-		t.Fatalf("units KPI = %+v, want 1+3+4=8", u)
+	// This series predates download kinds: its "units" add downloads,
+	// updates and purchases together, so new downloads are not known.
+	if u := app.Kpis["units"]; u.HasData || u.Value != nil {
+		t.Fatalf("units KPI = %+v, want not known from a series without first_downloads", u)
+	}
+	if u := app.Kpis["iap_units"]; u.Value == nil || *u.Value != 3 {
+		t.Fatalf("in-app units KPI = %+v, want 1+1+1=3", u)
 	}
 
 	var purchases *GrowthFunnelStage
@@ -166,7 +171,7 @@ func TestGrowthASCSalesSkipsUnknownAndAmbiguousIDs(t *testing.T) {
 	}
 	for _, id := range []string{"product:alpha", "product:beta"} {
 		app := growthApp(t, g, id)
-		if v := growthPoint(t, app.Series["units"], growthDay(1)); v != nil {
+		if v := growthPoint(t, app.Series["proceeds_usd"], growthDay(1)); v != nil {
 			t.Fatalf("%s took a row from an ambiguous app id: %v", id, *v)
 		}
 	}

@@ -83,6 +83,10 @@ type GrowthKpi struct {
 	DaysReported int      `json:"days_reported"`
 	DaysInWindow int      `json:"days_in_window"`
 	Unit         string   `json:"unit"`
+	// Estimate marks a number that is not the source's own figure (proceeds
+	// in US dollars are converted by the collector); Note says how.
+	Estimate bool   `json:"estimate,omitempty"`
+	Note     string `json:"note,omitempty"`
 }
 
 type GrowthPoint struct {
@@ -226,8 +230,11 @@ type Growth struct {
 	Apps          []GrowthApp         `json:"apps"`
 }
 
-// GrowthKpiKeys lists the KPI keys in contract order.
-var GrowthKpiKeys = []string{"proceeds_usd", "units", "first_time_downloads", "web_clicks", "web_impressions", "ad_spend_usd", "ad_conversions", "ad_cpa_usd"}
+// GrowthKpiKeys lists the KPI keys in contract order. "units" is new
+// downloads from the Sales report (first-time downloads and paid first
+// purchases); redownloads, updates and in-app purchases have their own keys
+// and never count toward it. "first_time_downloads" is the analytics number.
+var GrowthKpiKeys = []string{"proceeds_usd", "units", "first_time_downloads", "web_clicks", "web_impressions", "ad_spend_usd", "ad_conversions", "ad_cpa_usd", "iap_units", "updates", "redownloads"}
 
 // GrowthSeriesKeys lists the series keys in contract order.
 var GrowthSeriesKeys = []string{"proceeds_usd", "units", "web_clicks", "ad_spend_usd", "ad_conversions"}
@@ -235,18 +242,29 @@ var GrowthSeriesKeys = []string{"proceeds_usd", "units", "web_clicks", "ad_spend
 var growthKpiUnit = map[string]string{
 	"proceeds_usd": "usd", "units": "count", "first_time_downloads": "count", "web_clicks": "count",
 	"web_impressions": "count", "ad_spend_usd": "usd", "ad_conversions": "count", "ad_cpa_usd": "usd",
+	"iap_units": "count", "updates": "count", "redownloads": "count",
 }
 
 // growthKpiMetric maps a KPI key to the daily metric that feeds it.
 var growthKpiMetric = map[string]string{
 	"proceeds_usd":         "app_store_connect_developer_proceeds_usd",
-	"units":                "app_store_connect_units",
+	"units":                growthSalesFirstDownloads,
 	"first_time_downloads": "app_store_connect_first_time_downloads",
 	"web_clicks":           "gsc_clicks",
 	"web_impressions":      "gsc_impressions",
 	"ad_spend_usd":         "ads_spend",
 	"ad_conversions":       "ads_conversions",
+	"iap_units":            "app_store_connect_iap_units",
+	"updates":              "app_store_connect_updates",
+	"redownloads":          "app_store_connect_redownloads",
 }
+
+// growthStoreKpis are the KPIs the Sales report feeds. Their window ends on
+// the report's newest final day (see growthStoreWindowEnd).
+var growthStoreKpis = map[string]bool{"proceeds_usd": true, "units": true, "iap_units": true, "updates": true, "redownloads": true}
+
+// growthProceedsNote says once why proceeds in US dollars are an estimate.
+const growthProceedsNote = "Estimate: the sales collector converts each currency to US dollars with a fixed rate table; Apple pays in each currency and its Finance report has no US dollar total."
 
 // Pseudo metrics synthesized from non-signal ledgers.
 const (
@@ -467,6 +485,10 @@ func BuildGrowth(homePath string, opts GrowthOptions) (Growth, error) {
 	if err != nil {
 		return Growth{}, err
 	}
+	salesDays, err := loadASCSalesDaysIndex(homePath)
+	if err != nil {
+		return Growth{}, err
+	}
 	ascAppIDs := growthASCAppIDs(signals, groups, resolve)
 	applyGrowthASCSales(ascSales, ascAppIDs, asOfStr)
 	ascFunnel, err := loadGrowthASCFunnelSeries(homePath)
@@ -603,7 +625,7 @@ func BuildGrowth(homePath string, opts GrowthOptions) (Growth, error) {
 		Groups:        append([]GrowthAreaGroup{}, cat.Groups...),
 		Areas:         cat.publicAreas(),
 	}
-	ctx := growthCtx{opts: opts, cat: cat}
+	ctx := growthCtx{opts: opts, cat: cat, storeEnd: growthStoreWindowEnd(ascSales, salesDays, opts.AsOf)}
 	type ranked struct {
 		app   GrowthApp
 		alloc GrowthAllocation
@@ -793,6 +815,9 @@ func growthHumanize(id string) string {
 type growthCtx struct {
 	opts GrowthOptions
 	cat  *growthAreaCatalog
+	// storeEnd is how many days before as-of the store KPI window ends: the
+	// Sales report's newest final day, or 0.
+	storeEnd int
 }
 
 type growthFacts struct {
@@ -863,17 +888,44 @@ func (c growthCtx) kpiFor(key string, daily map[string]map[string]float64) Growt
 		return k
 	}
 	m := daily[growthKpiMetric[key]]
-	v, d := c.sumRange(m, w-1, 0)
-	p, pd := c.sumRange(m, 2*w-1, w)
+	// A store KPI's window ends on the Sales report's newest final day, so a
+	// day Apple has not published (or may still correct) is neither counted
+	// nor read as a missing day; the previous window shifts the same way.
+	end := 0
+	if growthStoreKpis[key] {
+		end = c.storeEnd
+	}
+	v, d := c.sumRange(m, end+w-1, end)
+	p, pd := c.sumRange(m, end+2*w-1, end+w)
 	k.DaysReported = d
 	k.LatestDate = latestKey(m)
+	if end > 0 {
+		k.LatestDate = latestKeyUpTo(m, c.day(end))
+		if d > 0 {
+			k.LatestDate = c.day(end)
+		}
+	}
 	if d > 0 {
 		k.Value, k.HasData = growthPtr(v), true
 	}
 	if pd > 0 {
 		k.Previous = growthPtr(p)
 	}
+	if key == "proceeds_usd" {
+		k.Estimate, k.Note = true, growthProceedsNote
+	}
 	return k
+}
+
+// latestKeyUpTo is the newest date in m on or before last.
+func latestKeyUpTo(m map[string]float64, last string) string {
+	latest := ""
+	for d := range m {
+		if d <= last && d > latest {
+			latest = d
+		}
+	}
+	return latest
 }
 
 func (c growthCtx) kpis(daily map[string]map[string]float64) map[string]GrowthKpi {
@@ -969,7 +1021,7 @@ func growthDays(n int) string { return growthCount(float64(n), "day", "days") }
 func growthMetricSource(metric string) string {
 	switch {
 	case metric == "app_store_connect_developer_proceeds_usd", metric == "app_store_connect_units",
-		metric == "app_store_connect_iap_units", metric == "app_store_connect_app_units":
+		metric == "app_store_connect_iap_units", metric == "app_store_connect_app_units", metric == growthSalesFirstDownloads:
 		return "App Store Connect sales"
 	case strings.HasPrefix(metric, "app_store_"), strings.HasPrefix(metric, "app."):
 		return "App Store Connect analytics"
@@ -1133,7 +1185,7 @@ func (c growthCtx) buildApp(g *growthGroup) (GrowthApp, growthFacts) {
 			app.Freshness.Stale = true
 		}
 		if s.name == "app_store_connect" {
-			facts.salesLatest = latestKey(mergeDaily(g.daily[growthKpiMetric["proceeds_usd"]], g.daily[growthKpiMetric["units"]]))
+			facts.salesLatest = latestKey(mergeDaily(g.daily[growthKpiMetric["proceeds_usd"]], g.daily["app_store_connect_units"], g.daily[growthKpiMetric["units"]]))
 		}
 	}
 	if facts.salesLatest != "" {
@@ -1244,6 +1296,7 @@ func (c growthCtx) funnel(g *growthGroup, profile GrowthProfile) []GrowthFunnelS
 		fetch     func() (float64, string, bool)
 		noun      string
 	}
+	downloadsFrom := ""
 	defs := []def{
 		{"impressions", "App Store impressions", true, func() (float64, string, bool) {
 			if v, d, ok := c.latestPoint(g, []string{"app_store_connect_impressions"}); ok {
@@ -1255,6 +1308,13 @@ func (c growthCtx) funnel(g *growthGroup, profile GrowthProfile) []GrowthFunnelS
 			return c.latestPoint(g, []string{"app_store_connect_product_page_views"})
 		}, "product page views"},
 		{"first_time_downloads", "First-time downloads", true, func() (float64, string, bool) {
+			// The Sales report counts every new download exactly; analytics
+			// adds noise. Use Sales where it has the number.
+			if v, d, ok := c.windowOrLatest(g, growthSalesFirstDownloads); ok {
+				downloadsFrom = "Counted by the Sales report (exact)."
+				return v, d, ok
+			}
+			downloadsFrom = "Counted by App Store analytics (noised; the Sales report has no download kinds for this app)."
 			if v, d, ok := c.windowOrLatest(g, "app_store_connect_first_time_downloads"); ok {
 				return v, d, ok
 			}
@@ -1304,6 +1364,9 @@ func (c growthCtx) funnel(g *growthGroup, profile GrowthProfile) []GrowthFunnelS
 		} else {
 			st.Status = GrowthMeasured
 			st.Note = fmt.Sprintf("%s, latest data %s.", growthCount(v, strings.TrimSuffix(d.noun, "s"), d.noun), date)
+		}
+		if d.id == "first_time_downloads" && downloadsFrom != "" {
+			st.Note += " " + downloadsFrom
 		}
 		out = append(out, st)
 	}
@@ -1546,7 +1609,7 @@ func (c growthCtx) summary(g *growthGroup, spec growthAreaSpec, status, missing 
 	case "pricing", "unit_economics":
 		p, u := app.Kpis["proceeds_usd"], app.Kpis["units"]
 		if p.HasData && u.HasData && *u.Value > 0 {
-			s := fmt.Sprintf("%s per unit (%s proceeds on %s in %s).", growthUSD(*p.Value / *u.Value), growthUSD(*p.Value), growthCount(*u.Value, "unit", "units"), growthDays(c.opts.WindowDays))
+			s := fmt.Sprintf("%s per new download (%s proceeds on %s in the Sales report, %s).", growthUSD(*p.Value / *u.Value), growthUSD(*p.Value), growthCount(*u.Value, "new download", "new downloads"), growthDays(c.opts.WindowDays))
 			if missing != "" {
 				s += " " + missing
 			}
@@ -1572,6 +1635,11 @@ func (c growthCtx) summary(g *growthGroup, spec growthAreaSpec, status, missing 
 	}
 	if status == GrowthPartial && missing != "" {
 		s += " " + missing
+	}
+	// Analytics downloads are noised; where the Sales report has the exact
+	// count, say which number to trust.
+	if k := app.Kpis["units"]; k.HasData && growthMatchAny(spec.patterns, "app_store_connect_first_time_downloads") {
+		s += fmt.Sprintf(" Downloads use the Sales report: %s in %s.", growthCount(*k.Value, "new download", "new downloads"), growthDays(c.opts.WindowDays))
 	}
 	switch spec.custom {
 	case "funnel":
