@@ -689,13 +689,14 @@ export function markRunJsonCacheOutOfDate(): void {
  *    behind it when it is due;
  *  - a failed or timed-out read keeps the last good value and records the
  *    failure (when, why) - it never becomes zero, empty or "clean".
- * One queue runs those reads: at most 2 heavy reads at a time (plus one lane for
- * sub-second reads, so a 0.1 s policy read never waits two minutes behind
- * them); the same read is never started twice (an exec already running for the
- * key, from either path, is joined); and a read is due again no sooner than
- * max(25 s, 2 x its last run time).
+ * One queue runs those reads: at most 2 `compound` child processes at a time
+ * in total; the same read is never started twice (an exec already running for
+ * the key, from either path, is joined); and a read is due again no sooner
+ * than max(25 s, 2 x its last run time). Order: values nobody has yet before
+ * refreshes, and quick reads before heavy ones, so a cold page fills its
+ * sub-second reads first instead of waiting two minutes behind heavy ones.
  */
-export const READ_QUEUE_LIMITS: Readonly<Record<ReadLane, number>> = { heavy: 2, light: 1 };
+export const READ_QUEUE_LIMIT = 2;
 const READ_MIN_GAP_MS = 25_000;
 /** A read that took at least this long joins the heavy lane. */
 const READ_HEAVY_RUN_MS = 10_000;
@@ -754,24 +755,37 @@ function readIsDue(key: string, entry: RunJsonCacheEntry | null, now: number): b
   return now - lastAttemptAt >= readRefreshGapMs(entry.lastRunMs);
 }
 
+function activeReads(): number {
+  return runJsonGlobals.active.heavy + runJsonGlobals.active.light;
+}
+
+/** Claim one of the 2 slots for work outside the queue (the version check).
+ * Returns a release function, or null when every slot is busy. */
+function claimReadSlot(lane: ReadLane): (() => void) | null {
+  if (activeReads() >= READ_QUEUE_LIMIT) return null;
+  runJsonGlobals.active[lane] += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    runJsonGlobals.active[lane] = Math.max(0, runJsonGlobals.active[lane] - 1);
+    pumpReadQueue();
+  };
+}
+
+function jobRank(job: ReadJob): number {
+  return (job.missing ? 0 : 2) + (job.lane === "light" ? 0 : 1);
+}
+
 function pumpReadQueue(): void {
-  const { queue, queued, active } = runJsonGlobals;
-  for (let i = 0; i < queue.length; ) {
-    const job = queue[i];
-    if (active[job.lane] >= READ_QUEUE_LIMITS[job.lane]) {
-      i += 1;
-      continue;
-    }
-    queue.splice(i, 1);
+  const { queue, queued } = runJsonGlobals;
+  while (queue.length > 0 && activeReads() < READ_QUEUE_LIMIT) {
+    const job = queue.shift()!;
     queued.delete(job.key);
     // Never start the same read twice: a blocking caller may have started it.
     if (runJsonInflight.has(job.key)) continue;
-    active[job.lane] += 1;
-    const finished = () => {
-      active[job.lane] = Math.max(0, active[job.lane] - 1);
-      pumpReadQueue();
-    };
-    startRunJsonInflight(job.key, job.args, job.timeoutMs).then(finished, finished);
+    const release = claimReadSlot(job.lane)!;
+    startRunJsonInflight(job.key, job.args, job.timeoutMs).then(release, release);
   }
 }
 
@@ -780,8 +794,9 @@ function enqueueRead(key: string, args: string[], timeoutMs: number, entry: RunJ
   if (queued.has(key) || runJsonInflight.has(key)) return;
   const missing = !entry || entry.storedAt === null;
   const job: ReadJob = { key, args, timeoutMs, lane: readLane(entry, timeoutMs), missing };
-  // A value nobody has yet goes ahead of refreshes of values people can see.
-  const at = missing ? queue.findIndex((queuedJob) => !queuedJob.missing) : -1;
+  // Stable priority insert: missing before refresh, quick before heavy.
+  const rank = jobRank(job);
+  const at = queue.findIndex((queuedJob) => jobRank(queuedJob) > rank);
   if (at >= 0) queue.splice(at, 0, job);
   else queue.push(job);
   queued.add(key);
@@ -956,10 +971,16 @@ export async function getInstalledBinaryFreshness(): Promise<InstalledBinaryFres
   const known = runJsonGlobals.binaryFreshness;
   if (known && Date.now() - known.storedAt < RUN_JSON_TTL_MS) return known.value;
   if (!runJsonGlobals.binaryFreshnessRefreshing) {
-    runJsonGlobals.binaryFreshnessRefreshing = true;
-    void checkInstalledBinaryFreshness().finally(() => {
-      runJsonGlobals.binaryFreshnessRefreshing = false;
-    });
+    // `compound version` is a compound child too: it takes one of the read
+    // queue's 2 slots, or waits for a later render when both are busy.
+    const release = claimReadSlot("light");
+    if (release) {
+      runJsonGlobals.binaryFreshnessRefreshing = true;
+      void checkInstalledBinaryFreshness().finally(() => {
+        runJsonGlobals.binaryFreshnessRefreshing = false;
+        release();
+      });
+    }
   }
   return known?.value ?? {
     status: "unknown",

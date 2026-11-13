@@ -70,7 +70,9 @@ try {
   await api.runProjection(["alpha", "--json"], { timeoutMs: HEAVY }); // a blocking caller joins it
   for (const name of ["beta", "gamma", "delta", "epsilon"]) await api.readProjection([name, "--json"], { timeoutMs: HEAVY });
   const snapshot = api.readQueueSnapshot();
-  assert.ok(snapshot.active.heavy <= 2, `heavy lane over its limit: ${JSON.stringify(snapshot)}`);
+  assert.ok(snapshot.active.heavy + snapshot.active.light <= 2, `queue over its 2-process limit: ${JSON.stringify(snapshot)}`);
+  // Quick reads go first: a light read queued behind heavy ones starts at the next free slot.
+  await api.readProjection(["quick", "--json"]);
   await api.settleProjectionReads();
   assert.equal(await runsOf("alpha"), 1, "the same read must run once, not once per caller");
   const peak = Number(await Bun.file(join(state, "peak")).text());
@@ -154,7 +156,7 @@ try {
   assert.equal(otherRead.value, null, "a value read for one home must never be served for another");
   await other.settleProjectionReads();
 
-  console.log("read-queue-smoke ok: non-blocking loading, <=2 heavy reads, one run per read, due gap, failure keeps last good, out-of-date mark, home-keyed cache");
+  console.log("read-queue-smoke ok: non-blocking loading, <=2 compound reads at once, one run per read, due gap, failure keeps last good, out-of-date mark, home-keyed cache");
 } finally {
   await rm(scratch, { recursive: true, force: true });
 }
