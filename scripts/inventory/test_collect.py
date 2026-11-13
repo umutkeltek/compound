@@ -53,6 +53,11 @@ def observe(rows, runner=None, http=None, only=None, env=None):
                            only=only, timeout_s=5, env=env or {})
 
 
+def same_bytes(obs):
+    """The file as bytes, with the one field that measures wall time (duration_ms) set to 0."""
+    return json.dumps(dict(obs, sources=[dict(s, duration_ms=0) for s in obs["sources"]]))
+
+
 def by_kind(obs, kind):
     return [r for r in obs["resources"] if r["kind"] == kind]
 
@@ -742,7 +747,7 @@ class EdgesFileTests(unittest.TestCase):
         self.assertEqual([d["label"] for d in report["likely_duplicates"]], ["Example server (old name)"])
 
     def test_same_input_same_bytes(self):
-        self.assertEqual(json.dumps(self.observe()), json.dumps(self.observe()))
+        self.assertEqual(same_bytes(self.observe()), same_bytes(self.observe()))
 
     def test_same_as_targets_in_a_files_own_words(self):
         same_as_id = sys.modules["compound_inventory_readers.edges_file"].same_as_id
@@ -834,6 +839,116 @@ class DeclaredTests(unittest.TestCase):
         detail = source(obs, "declared-example")["detail"]
         self.assertTrue(detail.startswith("Declared 3 nodes, 2 links and 3 facts; left out: "
                                           "2 without by, on or evidence, 1 links from an id that is not a node of the file"), detail)
+
+
+FAKE_VALUES = ("FAKE-VALUE-NEVER-IN-OUTPUT-1", "FAKE-VALUE-NEVER-IN-OUTPUT-2", "FAKE-VALUE-NEVER-IN-OUTPUT-3",
+               "FAKE-VALUE-NEVER-IN-OUTPUT-4", "FAKE-VALUE-NEVER-IN-OUTPUT-5", "FAKE-VALUE-NEVER-IN-OUTPUT-6", "ABCDE12345")
+APP_FILES = {
+    ".env": f"API_KEY={FAKE_VALUES[0]}\nexport STRIPE_SECRET_KEY: {FAKE_VALUES[1]}\n# a comment\n",
+    "wrangler.toml": ('name = "app-one-api"\nroutes = [{ pattern = "api.app-one.example/*" }]\n'
+                      'kv_namespaces = [{ binding = "CACHE", id = "kv-id" }]\n'
+                      'r2_buckets = [{ binding = "FILES", bucket_name = "app-one-files" }]\n'
+                      f'[vars]\nSECRET_TOKEN = "{FAKE_VALUES[2]}"\n'),
+    "docker-compose.yml": ("services:\n  web:\n    image: registry.example/web:1\n    environment:\n"
+                           f"      DB_PASSWORD: {FAKE_VALUES[3]}\n      - DATABASE_URL=postgres://user:{FAKE_VALUES[4]}@db/app\n"
+                           "    labels:\n      - \"traefik.http.routers.web.rule=Host(`www.app-one.example`)\"\n"
+                           "  db:\n    image: postgres:16\nvolumes:\n  data: {}\n"),
+    ".github/workflows/deploy.yml": ("name: Deploy site\non: push\njobs:\n  deploy:\n    runs-on: ubuntu-latest\n"
+                                     "    env:\n      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}\n"
+                                     f"      HARDCODED: {FAKE_VALUES[5]}\n    steps:\n      - run: npx wrangler deploy\n"),
+    "package.json": json.dumps({"dependencies": {"posthog-js": "1.0.0", "stripe": "1.0.0"}}),
+    "App/App.xcodeproj/project.pbxproj": (f"PRODUCT_BUNDLE_IDENTIFIER = com.example.appone;\nDEVELOPMENT_TEAM = {FAKE_VALUES[6]};\n"
+                                          "PRODUCT_BUNDLE_IDENTIFIER = com.example.appone.widget;\n"),
+    "App/App.entitlements": ('<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict>'
+                             "<key>com.apple.developer.healthkit</key><true/>"
+                             "<key>com.apple.developer.icloud-container-identifiers</key>"
+                             "<array><string>iCloud.com.example.appone</string></array></dict></plist>\n"),
+    "tests/test_billing.py": "import stripe\n",
+}
+
+
+class RepoScanTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="inventory-repo-scan-test-")
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / "products"
+        self.app, self.site = self.root / "app-one", self.root / "site-two"
+        for name, text in APP_FILES.items():
+            (self.app / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.app / name).write_text(text)
+        (self.site / "node_modules" / "dep" / ".git").mkdir(parents=True)  # skipped folder
+        (self.site / "CNAME").write_text("www.site-two.example\n")
+        (self.app / ".git").mkdir()
+        (self.site / ".git").mkdir()
+        products = [{"product_id": "product:app_one", "surfaces": [f"file://{self.app}/App", "${HOME}/elsewhere"]}]
+        self.runner = FakeRunner([
+            (["app-one", "ls-files"], R(0, "\0".join(sorted(APP_FILES)) + "\0", "")),
+            (["app-one", "remote"], R(0, "origin\tgit@git.example:Owner/App-One.git (fetch)\n"
+                                         "origin\tgit@git.example:Owner/App-One.git (push)\n", "")),
+            (["app-one", "log"], R(0, "2031-03-01T10:00:00+00:00\n", "")),
+            (["site-two", "ls-files"], R(0, "CNAME\0", "")), (["site-two", "remote"], R(0, "", "")),
+            (["site-two", "log"], R(0, "2031-02-01T00:00:00Z\n", "")),
+            (["product-cli"], R(0, json.dumps(products), ""))])
+        self.row = {"id": "repos-example", "provider": "repo_scan", "roots": [str(self.root)],
+                    "product_command": ["product-cli", "where", "--json"]}
+
+    def observe(self):
+        return observe([self.row], self.runner)
+
+    def test_a_fake_secret_value_appears_nowhere_in_the_output(self):
+        text = json.dumps(self.observe())
+        for value in FAKE_VALUES:
+            self.assertNotIn(value, text)
+        self.assertNotIn("kv-id", text)
+
+    def test_git_is_only_asked_locally(self):
+        self.observe()
+        git = [" ".join(c) for c, _, _ in self.runner.calls if c[0] == "git"]
+        self.assertEqual(len(git), 6)
+        for call in git:
+            self.assertRegex(call, r" (ls-files -z|remote -v|log -1 --format=%cI)$")
+
+    def test_repos_products_and_links(self):
+        obs = self.observe()
+        res = {r["id"]: r for r in obs["resources"]}
+        repo, local = res["repo:git.example/owner/app-one"], res["repo:local/products-site-two"]
+        self.assertEqual((repo["facts"]["has_remote"]["value"], repo["facts"]["last_commit"]["value"]), (True, "2031-03-01"))
+        self.assertEqual(local["facts"]["has_remote"]["value"], False)
+        product = res["product:app_one"]
+        links = {(l["rel"], l["to"]) for l in product["links"]}
+        worker = "repo_scan:deployment:" + collect.short_hash("deployment:cloudflare-worker/app-one-api")
+        compose = "repo_scan:deployment:" + collect.short_hash("deployment:compose/web")
+        self.assertTrue({("code_in", repo["id"]), ("deployed_on", worker), ("deployed_on", compose),
+                         ("sold_through", "store_app:apple/com.example.appone")} <= links, links)
+        self.assertIn(("uses", "repo_scan:datastore:" + collect.short_hash("datastore:postgres-container/products-app-one")), links)
+        names = {res[to]["label"] for rel, to in links if rel == "uses"}
+        self.assertTrue({"Stripe", "PostHog"} <= names, names)
+        self.assertNotIn("store_app:apple/com.example.appone.widget", res)
+        self.assertEqual({l["to"] for l in res[worker]["links"] if l["rel"] == "serves"}, {"hostname:api.app-one.example"})
+        self.assertEqual(len([l for l in res[worker]["links"] if l["rel"] == "uses"]), 2)  # KV and R2
+        self.assertEqual(res[worker]["facts"]["live"]["value"], "not_known")
+        self.assertEqual({l["to"] for l in res[compose]["links"]}, {"hostname:www.app-one.example"})
+        app = res["store_app:apple/com.example.appone"]
+        self.assertEqual({res[l["to"]]["label"] for l in app["links"] if l["rel"] == "uses"},
+                         {"Apple HealthKit", "CloudKit container iCloud.com.example.appone"})
+        self.assertEqual([res[l["to"]]["kind"] for l in repo["links"] if l["rel"] == "built_by"], ["external_service"])
+        self.assertEqual(repo["facts"]["secret_names"]["value"], 1)
+        self.assertIn("DB_PASSWORD", repo["facts"]["env_names"]["detail"])
+        pages = [l for l in local["links"] if l["rel"] == "deployed_on"]  # no product: the repo holds it
+        self.assertEqual(len(pages), 1)
+        self.assertEqual(res[pages[0]["to"]]["links"][0]["to"], "hostname:www.site-two.example")
+        self.assertIn("Read 2 of 2 repositories; 1 belong to a known product", source(obs, "repos-example")["detail"])
+
+    def test_same_input_same_bytes(self):
+        self.assertEqual(same_bytes(self.observe()), same_bytes(self.observe()))
+
+    def test_the_persons_product_map_wins(self):
+        obs = observe([dict(self.row, product_map={"products/site-two": ["product:site_two"], "products/app-one": "product:other"})],
+                      self.runner)
+        res = {r["id"]: r for r in obs["resources"]}
+        self.assertIn("product:site_two", res)
+        self.assertIn("product:other", res)
+        self.assertNotIn("product:app_one", res)
 
 
 class MergeTests(unittest.TestCase):

@@ -96,6 +96,7 @@ person's own name for the source) and a `provider` (the reader to use). Common o
 | `json_file` | numbers another tool already publishes in a local `.json` or `.jsonl` file, by JSON path | one `plan` per `plans[]` entry (or per group) |
 | `edges_file` | a nodes-and-links JSON file another tool or a one-off scout wrote, read through `kind_map`, `relation_map` and `same_as` in the row | one resource per kept node, with its links |
 | `declared` | a private file of nodes, links and facts a person or an agent states, each with `by`, `on` and `evidence` | its nodes, with links and facts of confidence `declared` |
+| `repo_scan` | local git repositories under `roots`: `git ls-files`, `git remote -v`, `git log -1` (never a fetch), and only configuration files | `repo`, `product`, `deployment`, `datastore`, `external_service`, `store_app`, `hostname`, with their links |
 
 Paths such as `balance_infos[0].total_balance` or `providers.example.used` step into objects
 by name and into lists by index (`[-1]` is the last item).
@@ -150,6 +151,21 @@ Notes on what each reader cannot see:
   the same run: when they disagree, the detail names the fact and the resource, and the observed
   value is kept; a declared fact fills one nobody observed, with who, when and evidence in its
   detail. Write only what a person or a written record actually says; never a guess.
+- `repo_scan`: finds repositories (a folder with `.git`) under `roots`, `max_depth` deep
+  (default 3), skipping dependency and build folders. Per repository: `has_remote` and
+  `last_commit` from local git; site and function config (wrangler routes and bindings, amplify,
+  fly, vercel, netlify, a GitHub Pages `CNAME`, Caddyfile), compose services (public host rules,
+  datastore images), CI workflows (`built_by`), Xcode bundle ids (`store_app`, `sold_through`) and
+  entitlements, StoreKit files, and package manifests matched against a list of public services.
+  Env files, compose environments and CI files are read as NAMES only: every line is cut at the
+  first `=` or `:` before anything is kept, and the names are counted in `env_names` and
+  `secret_names`. A repository belongs to a product through the row's `product_map` (repository
+  path -> product id, or a list) or its `product_command` (prints products with `product_id` and
+  `surfaces`; the deepest repository holding a surface path belongs to that product); the
+  product then holds `code_in` and the product's own links, otherwise the repository does. A
+  deployment found in a file says `live: not_known`: a file shows how it deploys, not whether it
+  is live. Ids are `<vendor>:<kind>:<hash of a natural key>` (`deployment:cloudflare-worker/<name>`,
+  `datastore:r2/<bucket>`, …), so an `edges_file` row with the same `vendor` and keys merges.
 
 Fact names must be lowercase letters, digits and `_`; the collector drops any other name and
 says so in the source detail, so one bad row cannot make Compound refuse the whole file.
