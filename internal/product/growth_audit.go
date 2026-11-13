@@ -2,6 +2,7 @@ package product
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -85,12 +86,15 @@ func (c growthCtx) auditArea(g *growthGroup, app GrowthApp, area growthAreaDef, 
 	}
 	a.Skills = []string{}
 	for _, s := range specs {
-		if s.Kind != "" || len(specs) > 1 {
-			a.Forms = append(a.Forms, s.Title)
-		}
 		a.Skills = appendUnique(a.Skills, s.Skills...)
 	}
-	c.combineForms(&a, results)
+	results = g.foldForms(results)
+	for _, r := range results {
+		if r.spec.Kind != "" || len(specs) > 1 {
+			a.Forms = append(a.Forms, r.spec.Title)
+		}
+	}
+	c.combineForms(&a, results, len(specs) > 1)
 	return a
 }
 
@@ -264,8 +268,106 @@ func (c growthCtx) evalAssessment(g *growthGroup, area growthAreaDef, spec growt
 	return r, true
 }
 
-// combineForms folds the per-form verdicts into the area's one status.
-func (c growthCtx) combineForms(a *GrowthAudit, results []growthFormResult) {
+// foldForms drops the forms that add nothing to the area's verdict.
+//
+// Two forms that rest on the same rows and read the same (status and
+// summary) are one form, and the more specific one keeps it: a kind's own
+// form over the base row, else the first in profile order. This is the
+// phone app and website case for paid advertising: when every ad row is an
+// Apple Search Ads row, the base row (the website's form) and the app form
+// read the same rows under two metric names.
+//
+// The base row standing in for a kind without a form is not a missing form
+// when it is blind while a kind form has evidence, unless the base row has
+// an evidence rule of its own (metrics, a custom evaluator or facts on file)
+// that data no kind form reads could meet.
+func (g *growthGroup) foldForms(results []growthFormResult) []growthFormResult {
+	if len(results) < 2 {
+		return results
+	}
+	keys := make([]string, len(results))
+	kindInputs := []string{}
+	kindEvidence := false
+	for i, r := range results {
+		keys[i] = g.dataKey(r)
+		if r.spec.Kind != "" {
+			kindInputs = appendUnique(kindInputs, r.spec.Inputs...)
+			kindEvidence = kindEvidence || r.status != GrowthBlind
+		}
+	}
+	drop := make([]bool, len(results))
+	for i, r := range results {
+		if r.spec.Kind == "" && r.status == GrowthBlind && kindEvidence && !r.spec.ruleBeyond(kindInputs) {
+			drop[i] = true
+			continue
+		}
+		if r.status == GrowthBlind {
+			continue
+		}
+		for j, o := range results {
+			if j == i || drop[j] || o.status != r.status || o.summary != r.summary || keys[j] != keys[i] {
+				continue
+			}
+			oKind, rKind := o.spec.Kind != "", r.spec.Kind != ""
+			if (oKind && !rKind) || (oKind == rKind && j < i) {
+				drop[i] = true
+				break
+			}
+		}
+	}
+	out := make([]growthFormResult, 0, len(results))
+	for i, r := range results {
+		if !drop[i] {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// dataKey names the rows a form result rests on. A metric with rows is keyed
+// by its dates and values, not its name, so two names for the same rows
+// compare equal; other evidence is keyed by its name, count and date.
+func (g *growthGroup) dataKey(r growthFormResult) string {
+	parts := make([]string, 0, len(r.evidence)+1)
+	for _, e := range r.evidence {
+		var points []string
+		for d, v := range g.daily[e.Metric] {
+			points = append(points, fmt.Sprintf("%s=%g", d, v))
+		}
+		for d, pv := range g.ranges[e.Metric] {
+			points = append(points, fmt.Sprintf("%s~%g", d, pv.v))
+		}
+		if len(points) == 0 {
+			parts = append(parts, fmt.Sprintf("%s:%d:%s", e.Metric, e.Rows, e.LatestDate))
+			continue
+		}
+		sort.Strings(points)
+		parts = append(parts, strings.Join(points, ","))
+	}
+	if r.basis == GrowthBasisRecord {
+		parts = append(parts, "record:"+strings.Join(r.spec.record, ","))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "|")
+}
+
+// ruleBeyond reports whether the form has an evidence rule that data outside
+// inputs could meet.
+func (s growthAreaSpec) ruleBeyond(inputs []string) bool {
+	if len(s.patterns)+len(s.capped)+len(s.companion) == 0 && s.custom == "" && len(s.record) == 0 {
+		return false
+	}
+	for _, in := range s.Inputs {
+		if !containsString(inputs, in) {
+			return true
+		}
+	}
+	return false
+}
+
+// combineForms folds the per-form verdicts into the area's one status. When
+// the area has several forms, each summary part names its form.
+func (c growthCtx) combineForms(a *GrowthAudit, results []growthFormResult, labeled bool) {
 	counts := map[string]int{}
 	bases := map[string]bool{}
 	for _, r := range results {
@@ -294,6 +396,9 @@ func (c growthCtx) combineForms(a *GrowthAudit, results []growthFormResult) {
 	if n == 1 {
 		r := results[0]
 		a.Status, a.Summary, a.NextMove = r.status, r.summary, r.nextMove
+		if labeled {
+			a.Summary = r.spec.Title + ": " + r.summary
+		}
 		a.gap = growthGapKind(r)
 		return
 	}
