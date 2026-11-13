@@ -5,37 +5,27 @@ import { normalizeExecutorProjection } from "@/components/agents/executor-normal
 import { CoordinationBoard, type ExecDetail } from "@/components/coordination/CoordinationBoard";
 import { LiveHarnessCanvas, type LiveLane } from "@/components/live/LiveHarnessCanvas";
 import { LiveOperationsTimeline } from "@/components/live/LiveOperationsTimeline";
-import { PageHeader, PulseIcon, ReadChip, ReadFailedBanner, ReadNotice, readsPending, SectionHeader, StatusChip } from "@/components/kit";
+import { PulseIcon, QuestionHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending, SectionHeader, StatusChip } from "@/components/kit";
 import { PendingRefresh } from "@/components/PendingRefresh";
-import { readAttention, waitingOnYou } from "@/lib/attention";
+import { readAttention } from "@/lib/attention";
+import { arr, type Json } from "@/lib/compound";
 import { readCoordination } from "@/lib/coordination";
+import { countAgents, countInProgress, describeAgents, describeInProgress, unit, waitingOnYou } from "@/lib/counts";
 import { depthShows, requestDepth } from "@/lib/depth";
-import { getTraffic, trafficKnown } from "@/lib/traffic";
+import { getTraffic, newestInFlight, trafficKnown } from "@/lib/traffic";
 
 export const dynamic = "force-dynamic";
-
-/** `value` null = not read yet: shown as "…", never 0. */
-function Metric({ label, value, note, tone = "ink" }: { label: string; value: number | null; note: string; tone?: "ink" | "good" | "seam" }) {
-  const color = value === null ? "text-faint" : tone === "good" ? "text-good" : tone === "seam" ? "text-seam" : "text-ink";
-  return (
-    <div className="rounded-lg border border-hair bg-panel px-3 py-2.5 shadow-sm">
-      <div className="section-label">{label}</div>
-      <div className={`mono mt-1 text-xl tabular-nums ${color}`}>{value === null ? "…" : value.toLocaleString("en-US")}</div>
-      <div className="mt-0.5 text-2xs text-faint">{note}</div>
-    </div>
-  );
-}
 
 async function LiveCoordination({ execDetail, runAttemptsPresent }: { execDetail: Record<string, ExecDetail>; runAttemptsPresent: boolean }) {
   const { view, read } = await readCoordination();
   return (
     <section data-depth-min="technical" className="flex flex-col gap-3">
-      <SectionHeader tone="route" icon={<PulseIcon />} label="Coordination" sub="me · others · waiting-on" right={<ReadChip read={read} />} />
+      <SectionHeader tone="route" icon={<PulseIcon />} label="Who waits on whom" sub="this session · other sessions · what each waits for" right={<ReadChip read={read} />} />
       {read.status === "loading" || read.status === "unreachable" ? (
-        <ReadNotice read={read} label="coordination" />
+        <ReadNotice read={read} label="who waits on whom" />
       ) : (
         <>
-          <ReadFailedBanner read={read} label="coordination" />
+          <ReadFailedBanner read={read} label="who waits on whom" />
           <CoordinationBoard
             view={view}
             doorStatus={read.status}
@@ -49,12 +39,18 @@ async function LiveCoordination({ execDetail, runAttemptsPresent }: { execDetail
   );
 }
 
+/**
+ * Live answers one question first: "Who is working on what right now?" The
+ * answer is built from the executors read with the shared definitions
+ * (lib/counts.ts): agents holding work, work items marked in progress and
+ * their split, and how many were picked up more than a week ago. It says
+ * plainly when the console cannot see live run records, so "running" is the
+ * work record's word, not proof an agent is busy this minute.
+ */
 export default async function LivePage() {
   // Non-blocking: getTraffic reads the cached executors copy (or "loading").
   // The coordination section shows only at the Technical depth; its read is
   // skipped entirely when hidden.
-  // "Waiting on you" uses the ONE definition (lib/attention.ts waitingOnYou)
-  // the sidebar, Today and Work use; attention is already cached for the sidebar.
   const [traffic, depth, attentionLive] = await Promise.all([getTraffic(), requestDepth(), readAttention()]);
   const waiting = waitingOnYou(attentionLive.report);
   const showCoordination = depthShows(depth, "technical");
@@ -99,71 +95,94 @@ export default async function LivePage() {
     }
   }
 
+  // One definition per number (lib/counts.ts), the same Today and Work use.
+  // In-progress counts take the raw executors rows: they carry `claimed_at`.
+  const rawWork: Json[] = known
+    ? arr(executorsRead.value?.executors).flatMap((row: Json) => arr(row.current_work))
+    : [];
+  const agents = known && projection ? countAgents(projection.executors) : null;
+  const inProgress = known ? countInProgress(rawWork, Date.now()) : null;
+  const progress = inProgress ? describeInProgress(inProgress) : null;
+
+  // The browser gets only the six rows the timeline shows, not every item.
+  const newest = newestInFlight(traffic, 6);
   const delegatedRunning = projection?.delegatedCounts.running ?? 0;
   const pending = readsPending(executorsRead, attentionLive.read);
+
+  const answer = !known || !agents || !progress ? (
+    <ReadNotice read={executorsRead} label="who works on what" />
+  ) : (
+    <div className="flex flex-col gap-1.5">
+      <p>{describeAgents(agents)}</p>
+      <p className="text-base text-muted">
+        <span className="text-ink">{progress.headline}</span>
+        {progress.detail ? <>: {progress.detail}</> : "."}
+      </p>
+      {progress.age ? <p className="text-base text-seam">{progress.age}</p> : null}
+      {!traffic.runAttemptsPresent ? (
+        <p className="text-sm text-muted">
+          This page cannot see the live run records, so it cannot tell which of these an agent is running this minute.
+          &quot;Running&quot; is what the work record says.
+        </p>
+      ) : null}
+      {waiting && waiting.workItems > 0 ? (
+        <p className="text-sm text-muted">
+          {unit(waiting.workItems, "work item")} {waiting.workItems === 1 ? "waits" : "wait"} for your decision.{" "}
+          <Link href="/reviews" className="font-semibold text-work hover:underline">Open Decide →</Link>
+        </p>
+      ) : null}
+    </div>
+  );
+
   return (
     <div className="console-stage flex flex-col gap-6">
       <PendingRefresh pending={pending} stamp={Date.now()} />
-      <PageHeader
-        breadcrumb="live / overview"
-        title="Live"
+      <QuestionHeader
+        name="Live"
+        question="Who is working on what right now?"
+        answer={answer}
         right={
-          <div className="flex items-center gap-2">
-            {known ? (
-              <StatusChip tone={traffic.runningCount > 0 ? "good" : "muted"} label={traffic.runningCount > 0 ? "activity now" : "quiet now"} pulse={traffic.runningCount > 0} />
-            ) : null}
+          <>
             <ReadChip read={executorsRead} />
-          </div>
+            <Link href="/traffic" className="text-xs font-semibold text-work hover:underline">Who waits on whom →</Link>
+          </>
         }
       />
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <p className="max-w-2xl text-sm leading-relaxed text-muted">
-          See which harness owns each unit of work, what is genuinely active, and where the system is waiting. Motion
-          appears only when heartbeat or transition evidence says something is moving.
-        </p>
-        <Link href="/traffic" className="text-xs font-semibold text-work hover:underline">Open coordination detail</Link>
-      </div>
 
-      {known ? <ReadFailedBanner read={executorsRead} label="the harness projection" /> : null}
-
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Metric label="Harnesses" value={known ? traffic.lanes.length : null} note="projected lanes" />
-        <Metric label="Running" value={known ? traffic.runningCount : null} note="heartbeat-backed" tone="good" />
-        <Metric label="In flight" value={known ? traffic.inFlightCount : null} note="work assignments" />
-        <Metric label="Waiting on you" value={waiting ? waiting.workItems : null} note="work items" tone="seam" />
-      </div>
+      {known ? <ReadFailedBanner read={executorsRead} label="who works on what" /> : null}
 
       <section data-depth-min="understand" className="flex flex-col gap-3">
         <SectionHeader
           tone="work"
           icon={<PulseIcon />}
-          label="Harness workfield"
-          sub="ownership → active WorkEnvelope → next seam"
-          right={<span className="mono text-2xs text-faint">{traffic.runAttemptsPresent ? "RunAttempt joined" : "execution detail unavailable"}</span>}
+          label="Who holds what"
+          sub="each agent and its two most active work items · pick one for details"
         />
-        {known ? <LiveHarnessCanvas lanes={lanes} /> : <ReadNotice read={executorsRead} label="the harness projection" />}
+        {known ? <LiveHarnessCanvas lanes={lanes} /> : <ReadNotice read={executorsRead} label="who holds what" />}
       </section>
 
       <section data-depth-min="investigate" className="flex flex-col gap-3">
         <SectionHeader
           tone="work"
           icon={<PulseIcon />}
-          label="Operations evidence"
-          sub="observed → executing → current seam · motion requires live evidence"
+          label="Latest work steps"
+          sub="newest first · when each was last seen and what comes next"
         />
-        {known ? <LiveOperationsTimeline report={traffic} /> : <ReadNotice read={executorsRead} label="operations evidence" />}
+        {known ? <LiveOperationsTimeline report={newest.report} total={newest.total} /> : <ReadNotice read={executorsRead} label="the latest work steps" />}
       </section>
 
       {showCoordination ? (
         <LiveCoordination execDetail={execDetail} runAttemptsPresent={traffic.runAttemptsPresent} />
       ) : null}
 
-      {projection ? (
+      {/* Technical depth only, like coordination: the list holds every session
+       * ever started (hundreds), so it is not rendered while hidden. */}
+      {projection && showCoordination ? (
         <div data-depth-min="technical" className="flex flex-col gap-3">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <div className="section-label">Supervised delegated sessions</div>
-              <p className="mt-1 text-xs text-muted">Exact session and RunAttempt identity; prompt content never reaches this projection.</p>
+              <div className="section-label">Sessions started by agents</div>
+              <p className="mt-1 text-xs text-muted">Each session and its run id. What was asked is never shown here.</p>
             </div>
             <StatusChip tone={delegatedRunning > 0 ? "good" : "muted"} label={`${delegatedRunning} running`} />
           </div>

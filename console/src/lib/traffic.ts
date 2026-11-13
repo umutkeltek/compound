@@ -152,6 +152,31 @@ export function buildTraffic(
   };
 }
 
+/**
+ * The newest `limit` in-flight items across all lanes (by last heartbeat, else
+ * run start), as a report a client component can take: no `read` (that holds
+ * the whole executors copy) and no other items. `total` is every in-flight
+ * item, so "showing 6 of 534" stays exact. Sending all items to the browser
+ * to show six of them is what made Live several megabytes.
+ */
+export function newestInFlight(report: TrafficReport, limit: number): { report: TrafficReport; total: number } {
+  const rows = report.lanes
+    .flatMap((lane) => lane.inFlight.map((work) => ({ agentId: lane.agentId, work })))
+    .sort((a, b) => (b.work.lastHeartbeatAt || b.work.startedAt).localeCompare(a.work.lastHeartbeatAt || a.work.startedAt));
+  const keep = new Set(rows.slice(0, limit).map((row) => `${row.agentId}:${row.work.workId}`));
+  return {
+    total: rows.length,
+    report: {
+      ...report,
+      read: null,
+      lanes: report.lanes.map((lane) => ({
+        ...lane,
+        inFlight: lane.inFlight.filter((work) => keep.has(`${lane.agentId}:${work.workId}`)),
+      })),
+    },
+  };
+}
+
 /** Never waits for compound: the executors read is the non-blocking
  * `readExecutors` (a cached copy, or `loading`). */
 export async function getTraffic(): Promise<TrafficReport> {
