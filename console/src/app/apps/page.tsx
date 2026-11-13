@@ -206,7 +206,7 @@ export default async function PortfolioPage() {
                 <th className="py-2 pr-3 text-right font-medium">Proceeds</th>
                 <th className="py-2 pr-3 text-right font-medium">Units</th>
                 <th className="py-2 pr-3 text-right font-medium">Web clicks</th>
-                <th className="py-2 pr-3 font-medium">Growth areas covered</th>
+                <th className="py-2 pr-3 font-medium" title="Growth areas by status: measured, partly measured, out of date, no data yet, not on file">What we know</th>
                 <th className="py-2 font-medium">Data</th>
               </tr>
             </thead>
