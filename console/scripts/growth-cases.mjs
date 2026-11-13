@@ -1,5 +1,7 @@
-// Growth read-model smoke: maps a synthetic compound.product_growth.v0.2
-// payload and checks the words the pages build from it. Run: bun scripts/growth-smoke.mjs
+// Growth read-model cases: map a synthetic compound.product_growth.v0.2
+// payload and check the words the pages build from it. The wired
+// console-ads-smoke (scripts/ads-smoke.mjs) imports this module, so a failing
+// case fails that gate. Alone: bun scripts/growth-cases.mjs
 import assert from "node:assert/strict";
 
 import { countStatuses, mapGrowthModel, unknownGates, STATUS_META } from "../src/lib/growth.ts";
@@ -67,7 +69,20 @@ const payload = {
       coverage: { measured: 0, partial: 0, stale: 0, blind: 1, not_applicable: 0, unknown: 2, deferred: 0, score: 0 },
       hypotheses: { open: 0, reviewed: 0 },
       next_moves: [
-        { area_id: "", kind: "set_profile", title: "Write the product profile", why: "2 areas cannot be judged.", unblocks: 0, blocked_by: [], branch: "strategy", skills: [], brief: "compound product import <product.yaml>" },
+        { area_id: "", area_ids: [], kind: "set_profile", title: "Write the product profile", why: "2 areas cannot be judged.", unblocks: 0, blocked_by: [], branch: "strategy", skills: [], brief: "compound product import <product.yaml>" },
+        {
+          area_id: "monetization_model",
+          area_ids: ["monetization_model", "monetization_pricing"],
+          kind: "refresh_data",
+          title: "Refresh App Store Connect sales",
+          why: "The data stopped between 2025-12-01 and 2025-12-10. 2 areas use it: Model, Pricing.",
+          unblocks: 0,
+          blocked_by: [],
+          branch: "experiment",
+          skills: [],
+          brief: "compound product growth --product product:sample-app --area monetization_model",
+        },
+        { area_id: "strategy_value_proposition", kind: "assess", title: "Assess: Promise", why: "?", unblocks: 0, blocked_by: [], branch: "strategy", skills: [], brief: "b" },
       ],
     },
   ],
@@ -82,6 +97,12 @@ assert.deepEqual(model.areas[1].applies, { objectives: ["revenue"] });
 const app = model.apps[0];
 assert.equal(app.nextMoves[0].kind, "set_profile");
 assert.equal(app.nextMoves[0].areaId, "");
+assert.deepEqual(app.nextMoves[0].areaIds, []);
+// A folded refresh names every area it covers; area_id stays the first.
+assert.deepEqual(app.nextMoves[1].areaIds, ["monetization_model", "monetization_pricing"]);
+assert.equal(app.nextMoves[1].areaId, "monetization_model");
+// A CLI without area_ids still yields the one area.
+assert.deepEqual(app.nextMoves[2].areaIds, ["strategy_value_proposition"]);
 assert.deepEqual(app.profile.unknown, ["kinds", "audiences", "revenue_models", "objectives", "stage"]);
 
 // Only dimensions that really gate an area are named, and the count is the rows that are not on file.
@@ -102,4 +123,4 @@ assert.equal(STATUS_META.blind.label, "No data yet");
 assert.equal(mapGrowthModel({ ...payload, schema_version: "compound.product_growth.v0.1" }), null);
 assert.equal(mapGrowthModel({ schema_version: "something.else" }), null);
 
-console.log("growth smoke ok: v0.2 maps, profile sentence names only gating dimensions, unknown statuses stay gaps, v0.1 refused");
+console.log("growth cases ok: v0.2 maps, folded moves keep every area, profile sentence names only gating dimensions, unknown statuses stay gaps, v0.1 refused");

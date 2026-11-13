@@ -14,3 +14,6 @@ if (!result.ok) {
 }
 console.log("ads smoke ok: the ads panel never renders a ratio, delta, or currency the rows cannot back");
 await import("./ads-consumer-smoke.tsx");
+// The growth pages' read-model cases ride this wired gate: a failed assert
+// rejects the import and the smoke exits non-zero.
+await import("./growth-cases.mjs");
