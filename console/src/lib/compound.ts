@@ -116,6 +116,19 @@ export function compoundFailure(error: unknown): CompoundRunFailure {
   };
 }
 
+/** Why a read failed, in words: a timeout says so (node only reports
+ * "Command failed"), otherwise the exit code and the first stderr line. */
+export function readFailureReason(error: unknown, timeoutMs: number): string {
+  const err = error as { killed?: boolean; signal?: string | null; code?: unknown; stderr?: unknown; message?: unknown };
+  if (err?.killed && (err.signal === "SIGTERM" || err.signal === "SIGKILL")) {
+    return `timed out after ${Math.round(timeoutMs / 1000)} s`;
+  }
+  const stderr = typeof err?.stderr === "string" ? err.stderr.split("\n").find((line) => line.trim()) ?? "" : "";
+  if (typeof err?.code === "number") return `exited with code ${err.code}${stderr ? `: ${stderr.trim()}` : ""}`;
+  if (typeof err?.code === "string") return `${err.code}${stderr ? `: ${stderr.trim()}` : ""}`;
+  return compoundFailure(error).message;
+}
+
 async function execRunJson(args: string[], timeoutMs: number): Promise<Json | null> {
   const { stdout } = await exec(COMPOUND_BIN, args, {
     env: consoleChildEnv({ COMPOUND_HOME }),
@@ -514,7 +527,7 @@ function startRunJsonInflight(
   const startedAt = Date.now();
   const promise = execRunJson(args, timeoutMs)
     .then((value) => commitRunJsonSuccess(key, value, startedGeneration, startedAt))
-    .catch((error) => commitRunJsonFailure(key, compoundFailure(error).message, startedGeneration, startedAt))
+    .catch((error) => commitRunJsonFailure(key, readFailureReason(error, timeoutMs), startedGeneration, startedAt))
     .finally(() => {
       if (runJsonInflight.get(key)?.token === token) runJsonInflight.delete(key);
     });
@@ -886,7 +899,7 @@ export async function runProjectionFresh(args: string[], opts?: { timeoutMs?: nu
       elapsedMs: Date.now() - startedAt,
     };
   } catch (error) {
-    const message = compoundFailure(error).message;
+    const message = readFailureReason(error, opts?.timeoutMs ?? DEFAULT_RUN_JSON_TIMEOUT_MS);
     commitRunJsonFailure(key, message, startedGeneration, startedAt);
     return { status: "unreachable", value: null, generatedAt: null, lastGoodAt: null, error: message, elapsedMs: Date.now() - startedAt };
   }
