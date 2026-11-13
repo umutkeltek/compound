@@ -1,4 +1,31 @@
 areas:
+  - id: experience_information_architecture
+    group: experience
+    title: How things are organized
+    question: Can users guess where to find what they need?
+    measure: how things are organized
+    kinds:
+      api:
+        title: Endpoint layout
+        question: Are endpoints named and grouped so developers can guess the right one?
+        measure: endpoint layout
+        skills: [api-design]
+      dev_tool:
+        title: Command layout
+        question: Can users guess the right command without reading the docs?
+        measure: command layout
+  - id: experience_navigation
+    group: experience
+    title: Moving around
+    question: Can users move between the main screens without getting lost?
+    measure: navigation
+    needs: [experience_information_architecture]
+    kinds:
+      api:
+        title: Consistent requests
+        question: Do paging, filters and sign-in work the same way on every endpoint?
+        measure: request consistency
+        skills: [api-design]
   - id: experience_journeys
     group: experience
     title: Core user journeys and task flows
@@ -7,3 +34,79 @@ areas:
     evidence:
       metrics: ["posthog_*"]
       source: PostHog events
+  - id: experience_ui
+    group: experience
+    title: Screen design
+    question: Does each screen make the most important thing obvious?
+    measure: screen design
+    branch: ui
+  - id: experience_design_system
+    group: experience
+    title: Shared parts and styles
+    question: Do screens reuse the same buttons, colors and spacing?
+    measure: shared parts and styles
+    branch: ui
+    kinds:
+      api:
+        title: Client libraries
+        question: Do the client libraries feel natural in each language they support?
+        measure: client libraries
+        skills: [api-design]
+  - id: experience_accessibility
+    group: experience
+    title: Access for everyone
+    question: Can people who use a screen reader or large text use every main feature?
+    measure: accessibility
+  - id: experience_platform_fit
+    group: experience
+    title: Fits the device
+    question: Does it look and work right on every screen size and device it supports?
+    measure: device fit
+    kinds:
+      ios_app:
+        title: Feels at home on the phone
+        question: Does the app behave the way phone users already expect?
+        measure: platform habits
+      website:
+        title: Works on phones
+        question: Does the site work as well on a phone as on a computer?
+        measure: phone layout
+      web_app:
+        title: Works on phones
+        question: Does the product work as well on a phone as on a computer?
+        measure: phone layout
+  - id: experience_states
+    group: experience
+    title: Empty, loading and error screens
+    question: Do empty, loading and error screens tell users what to do next?
+    measure: empty, loading and error screens
+    kinds:
+      api:
+        title: Error responses
+        question: Do errors tell developers what went wrong and how to fix it?
+        measure: error responses
+        skills: [error-handling, api-design]
+      dev_tool:
+        title: Error messages
+        question: Do error messages say what went wrong and what to do next?
+        measure: error messages
+        skills: [error-handling]
+  - id: experience_personalization
+    group: experience
+    title: Personal settings
+    question: Can users adjust the product to fit the way they work?
+    measure: personal settings
+  - id: experience_usability
+    group: experience
+    title: Watching people use it
+    question: Have we watched real people try the main tasks and fixed what tripped them?
+    measure: ease of use
+    kinds:
+      api:
+        title: Documentation
+        question: Can a developer finish a common task using only the docs?
+        measure: the documentation
+      dev_tool:
+        title: Documentation
+        question: Can a user finish a common task using only the docs?
+        measure: the documentation

@@ -1,4 +1,54 @@
 areas:
+  - id: brand_name
+    group: brand
+    title: Product name
+    question: Is the name easy to say, spell and remember?
+    measure: the product name
+  - id: brand_mark
+    group: brand
+    title: Logo and icon
+    question: Is the logo easy to spot and still clear at small sizes?
+    measure: the logo and icon
+    kinds:
+      ios_app:
+        title: App icon
+        question: Does the app icon stand out in store search and on the home screen?
+        measure: the app icon
+  - id: brand_visual_identity
+    group: brand
+    title: Colors and visual style
+    question: Do colors and visual style look the same everywhere the product shows up?
+    measure: visual identity
+  - id: brand_typography
+    group: brand
+    title: Fonts and graphic style
+    question: Do fonts and graphic details follow one clear style?
+    measure: fonts and graphic style
+  - id: brand_voice
+    group: brand
+    title: Voice and tone
+    question: Does all the writing sound like it comes from one clear voice?
+    measure: brand voice
+    skills: [copywriting]
+  - id: brand_messaging
+    group: brand
+    title: Main message
+    question: Does every place the product shows up tell the same main message?
+    measure: the main message
+    needs: [strategy_value_proposition]
+    skills: [copywriting]
+  - id: brand_creative_direction
+    group: brand
+    title: Art direction
+    question: Do images and videos follow one clear creative direction?
+    measure: creative direction
+  - id: brand_guidelines
+    group: brand
+    title: Written brand rules
+    question: Are the brand rules written down so anyone can follow them?
+    measure: brand rules
+    evidence:
+      record: [taste.standards]
   - id: brand_trust
     group: brand
     title: Trust signals and social proof
@@ -12,3 +62,8 @@ areas:
           metrics: [app_store_connect_review_count, "*rating*"]
           companion: [app_store_connect_review_count, "*rating*"]
           source: App Store Connect reviews
+  - id: brand_recognition
+    group: brand
+    title: Recognition
+    question: Would a user know the product from a screenshot without its name?
+    measure: brand recognition
