@@ -26,6 +26,14 @@ func inventorySnapshotLine(s InventorySnapshotStatus, what string) []string {
 	return lines
 }
 
+// inventoryPlural is "1 thing" or "N things".
+func inventoryPlural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
+}
+
 // inventoryOrderedCounts renders counts with the largest first, then by name.
 func inventoryOrderedCounts(counts map[string]int) string {
 	keys := make([]string, 0, len(counts))
@@ -86,9 +94,10 @@ func FormatInventoryGraphText(p InventoryGraphProjection) string {
 			outside++
 		}
 	}
-	notKnown := fmt.Sprintf("Not known: %d unknown products, %d things a link names but no source lists", products, outside)
+	notKnown := fmt.Sprintf("Not known: %s, %s a link names but no source lists", inventoryPlural(products, "unknown product", "unknown products"),
+		inventoryPlural(outside, "thing", "things"))
 	if p.UnknownRelations > 0 {
-		notKnown += fmt.Sprintf(", %d links with a relation the kinds do not know", p.UnknownRelations)
+		notKnown += ", " + inventoryPlural(p.UnknownRelations, "link", "links") + " with a relation the kinds do not know"
 	}
 	add("%s.", notKnown)
 	for i, u := range p.Unresolved {
@@ -96,7 +105,7 @@ func FormatInventoryGraphText(p InventoryGraphProjection) string {
 			add("  ... and %d more; --json lists them", len(p.Unresolved)-i)
 			break
 		}
-		add("  %s, named by %d links", inventoryNodeName(u.Label, u.Ref, "", u.Kind), u.Links)
+		add("  %s, named by %s", inventoryNodeName(u.Label, u.Ref, "", u.Kind), inventoryPlural(u.Links, "link", "links"))
 	}
 	if p.Filter.Kind == "" && p.Filter.Rel == "" {
 		add("`compound system graph --kind K` or `--rel R` lists the links; `compound system depends X` and `compound system impact X` walk them.")
@@ -167,10 +176,16 @@ func FormatInventoryWalkText(p InventoryWalkProjection) string {
 	switch p.Status {
 	case InventoryWalkAmbiguous:
 		add("%s:", inventoryClean(p.Notice, 160))
+		tails := map[string]bool{}
 		for _, c := range p.Candidates {
 			add("  %s", inventoryNodeName(c.Label, c.Resource, c.Kind, c.Unknown))
+			tails[MaskInventoryID(c.Resource)] = true
 		}
-		add("Ask again with the masked id (for example `…%s`) or the full id from --json.", strings.TrimPrefix(MaskInventoryID(p.Candidates[0].Resource), "…"))
+		if len(tails) == len(p.Candidates) {
+			add("Ask again with the masked id (for example `%s`) or the full id from --json.", MaskInventoryID(p.Candidates[0].Resource))
+		} else {
+			add("Their masked ids are alike: ask again with the full id from --json.")
+		}
 		return strings.Join(lines, "\n") + "\n"
 	case InventoryWalkNotFound:
 		add("%s.", inventoryClean(p.Notice, 160))
@@ -178,7 +193,8 @@ func FormatInventoryWalkText(p InventoryWalkProjection) string {
 	}
 	start := inventoryNodeName(p.Start.Label, p.Start.Resource, p.Start.Kind, p.Start.Unknown)
 	if what == "Impact" {
-		add("What depends on %s: %d things, %d of them products.", start, len(p.Steps), p.Products)
+		add("What depends on %s: %s, %d of them %s.", start, inventoryPlural(len(p.Steps), "thing", "things"), p.Products,
+			map[bool]string{true: "a product", false: "products"}[p.Products == 1])
 		for _, s := range p.Steps {
 			add("  %s · %s %s%s", inventoryNodeName(s.Label, s.Resource, s.Kind, s.Unknown),
 				inventoryClean(s.RelTitle, inventoryTextLabelMax), inventoryResourceName(s.ViaLabel, s.Via), inventoryStepTags(s))
@@ -188,7 +204,8 @@ func FormatInventoryWalkText(p InventoryWalkProjection) string {
 		if p.RoutesFollowed {
 			how += ", and route links from a hostname"
 		}
-		add("What %s cannot work without: %d things, up to %d links deep (%s).", start, len(p.Steps), p.DepthLimit, how)
+		add("What %s cannot work without: %s, up to %s deep (%s).", start, inventoryPlural(len(p.Steps), "thing", "things"),
+			inventoryPlural(p.DepthLimit, "link", "links"), how)
 		children := map[string][]InventoryGraphStep{}
 		for _, s := range p.Steps {
 			children[s.Via] = append(children[s.Via], s)

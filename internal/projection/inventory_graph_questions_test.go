@@ -116,7 +116,7 @@ func TestInventorySharedPiecesAndUnknownProductRow(t *testing.T) {
 			rows = append(rows, a)
 		}
 	}
-	if len(rows) != 1 || !strings.Contains(rows[0].Why, "1 product references are not Compound products and are shown as unknown product: ghost-app") {
+	if len(rows) != 1 || rows[0].Why != "1 product reference is not a Compound product and is shown as an unknown product: ghost-app" {
 		t.Fatalf("unknown product attention = %+v", rows)
 	}
 	// Without the identity owner, every product reference is unknown: still one row.
@@ -144,7 +144,7 @@ func TestInventorySharedPiecesAndUnknownProductRow(t *testing.T) {
 	if lines := strings.Count(text[start:end], "\n"); lines > 8 {
 		t.Fatalf("shared and questions take %d lines, at most 8:\n%s", lines, text[start:end])
 	}
-	for _, want := range []string{"  lab-node …e:n1 (host): 8 dependents, 2 products", "Questions: 6 (", "`compound system inventory --questions` lists them.", "  - unknown products: 1 product references"} {
+	for _, want := range []string{"  lab-node …e:n1 (host): 8 dependents, 2 products", "Questions: 6 (", "`compound system inventory --questions` lists them.", "  - unknown products: 1 product reference is not"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("text missing %q:\n%s", want, text)
 		}

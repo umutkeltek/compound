@@ -203,7 +203,10 @@ func (g *inventoryGraph) unknownProductsAttention() *InventoryAttention {
 	if len(shown) > inventoryUnknownProductNames {
 		shown = shown[:inventoryUnknownProductNames]
 	}
-	why := fmt.Sprintf("%d product references are not Compound products and are shown as unknown product: %s", len(names), strings.Join(shown, ", "))
+	why := fmt.Sprintf("%d product references are not Compound products and are shown as unknown products: %s", len(names), strings.Join(shown, ", "))
+	if len(names) == 1 {
+		why = "1 product reference is not a Compound product and is shown as an unknown product: " + names[0]
+	}
 	if len(names) > len(shown) {
 		why += fmt.Sprintf(" and %d more (`compound system graph` lists them)", len(names)-len(shown))
 	}

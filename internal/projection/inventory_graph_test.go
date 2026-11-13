@@ -75,7 +75,7 @@ func TestInventoryGraphCountsAndUnresolved(t *testing.T) {
 		t.Fatal("unknown --kind must be refused")
 	}
 	text := FormatInventoryGraphText(byKind)
-	for _, want := range []string{"Things: 18 (", "Not known: 1 unknown products, 0 things", "ghost-app …-app (unknown product), named by 1 links", "Links with kind identity: 3.", "signs in with ops login …ogin (identity)"} {
+	for _, want := range []string{"Things: 18 (", "Not known: 1 unknown product, 0 things", "ghost-app …-app (unknown product), named by 1 link\n", "Links with kind identity: 3.", "signs in with ops login …ogin (identity)"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("graph text missing %q:\n%s", want, text)
 		}
@@ -291,8 +291,13 @@ func TestInventoryWalkAmbiguousAndNotFound(t *testing.T) {
 		t.Fatalf("ambiguous = %+v", p)
 	}
 	text := FormatInventoryWalkText(p)
-	if !strings.Contains(text, "2 things match") || !strings.Contains(text, "web-ct …r:db (container)") {
+	if !strings.Contains(text, "2 things match") || !strings.Contains(text, "web-ct …r:db (container)") || !strings.Contains(text, "for example `…r:db`") {
 		t.Fatalf("ambiguous text:\n%s", text)
+	}
+	// Two masked ids that look alike are no help: the text says to use the full id.
+	alike := impactOf(t, home, "…:web")
+	if alike.Status != InventoryWalkAmbiguous || !strings.Contains(FormatInventoryWalkText(alike), "Their masked ids are alike: ask again with the full id from --json.") {
+		t.Fatalf("alike masked ids:\n%s", FormatInventoryWalkText(alike))
 	}
 	// The masked id the text shows is enough to ask again.
 	if again := dependsOn(t, home, "…r:db", 0); again.Status != InventoryWalkOK || again.Start.Resource != gfDBCt {
