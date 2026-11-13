@@ -1,4 +1,12 @@
 areas:
+  - id: acquisition_channels
+    group: acquisition
+    title: Where to find users
+    question: Have we picked the few channels most likely to reach our users?
+    measure: channel choice
+    skills: [product-marketing]
+    evidence:
+      record: [channels]
   - id: acquisition_search
     group: acquisition
     title: Search discoverability
@@ -47,6 +55,16 @@ areas:
           companion: [app_store_connect_product_page_views, app_store_connect_first_time_downloads]
           source: App Store Connect analytics
         skills: [aso, app-store-screenshots]
+      website:
+        title: Directory listings
+        question: Is the site listed where people look for sites like it?
+        measure: directory listings
+        skills: [directory-submissions]
+      web_app:
+        title: Directory listings
+        question: Is the product listed where people look for tools like it?
+        measure: directory listings
+        skills: [directory-submissions]
   - id: acquisition_landing
     group: acquisition
     title: Landing pages and website conversion
@@ -70,7 +88,7 @@ areas:
     title: Paid advertising and campaigns
     question: Does paid advertising bring in users at a fair price?
     measure: paid advertising
-    needs: [operations_unit_economics]
+    needs: [operations_unit_economics, acquisition_attribution]
     evidence:
       metrics: [ads_spend]
       source: ads import
@@ -84,3 +102,36 @@ areas:
           metrics: [apple_search_ads_spend]
           source: Apple Search Ads import
           custom: search_ads
+  - id: acquisition_community
+    group: acquisition
+    title: Community
+    question: Is there a place where users talk with us and with each other?
+    measure: community
+    kinds:
+      api:
+        title: Developer community
+        question: Do developers get help and share their work in a community we take part in?
+        measure: developer community
+      dev_tool:
+        title: Developer community
+        question: Do developers get help and share their work in a community we take part in?
+        measure: developer community
+  - id: acquisition_partnerships
+    group: acquisition
+    title: Partners and integrations
+    question: Do partners, affiliates or integrations bring us new users?
+    measure: partnerships
+  - id: acquisition_launches
+    group: acquisition
+    title: Launches and press
+    question: Do launches and press bring a clear jump in new users?
+    measure: launches and press
+    skills: [launch, directory-submissions]
+  - id: acquisition_attribution
+    group: acquisition
+    title: Where new users come from
+    question: Do we know which channel brought each new user, and what it cost?
+    measure: where new users come from
+    evidence:
+      capped: [ads_conversions]
+      source: ads import

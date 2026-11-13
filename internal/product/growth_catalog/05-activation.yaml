@@ -1,4 +1,10 @@
 areas:
+  - id: activation_first_contact
+    group: activation
+    title: First impression
+    question: Do new users understand what the product does within the first minute?
+    measure: the first impression
+    skills: [copywriting]
   - id: activation_onboarding
     group: activation
     title: Onboarding and guided setup
@@ -9,6 +15,28 @@ areas:
     evidence:
       metrics: ["posthog_*"]
       source: PostHog events
+  - id: activation_signup
+    group: activation
+    title: Sign-up and sign-in
+    question: Can new users create an account and sign in without trouble?
+    measure: sign-up and sign-in
+    needs: [experience_journeys]
+    skills: [signup]
+    evidence:
+      capped: ["posthog_*signup*"]
+      source: PostHog sign-up events
+  - id: activation_permissions
+    group: activation
+    title: Permission requests
+    question: Do users say yes when the product asks for access it needs?
+    measure: permission requests
+    needs: [experience_journeys]
+    kinds:
+      api:
+        title: Getting an access key
+        question: Can a developer get an access key and make a first call in minutes?
+        measure: access key setup
+        skills: [api-design]
   - id: activation_time_to_value
     group: activation
     title: Time to first value
@@ -18,6 +46,31 @@ areas:
     evidence:
       metrics: ["posthog_*"]
       source: PostHog events
+  - id: activation_setup_completion
+    group: activation
+    title: Finishing setup
+    question: Do new users finish setup?
+    measure: setup completion
+    needs: [experience_journeys]
+    skills: [onboarding]
+    evidence:
+      metrics: ["posthog_*onboarding*"]
+      source: PostHog onboarding events
+  - id: activation_templates
+    group: activation
+    title: Examples and sample data
+    question: Can new users start from an example instead of a blank page?
+    measure: examples and sample data
+    needs: [experience_journeys]
+    kinds:
+      api:
+        title: Code samples
+        question: Can a developer copy a working example and run it right away?
+        measure: code samples
+      dev_tool:
+        title: Code samples
+        question: Can a user copy a working example and run it right away?
+        measure: code samples
   - id: activation_feature_discovery
     group: activation
     title: Feature discovery and education
@@ -27,3 +80,18 @@ areas:
     evidence:
       metrics: ["posthog_*"]
       source: PostHog events
+  - id: activation_criteria
+    group: activation
+    title: What counts as active
+    question: Have we named the first action that shows a new user got real value?
+    measure: what counts as active
+    evidence:
+      metrics: ["posthog_*activation*"]
+      source: PostHog activation events
+  - id: activation_first_success
+    group: activation
+    title: First win
+    question: Do new users get a clear sign that they did it right?
+    measure: first-success feedback
+    needs: [experience_journeys]
+    skills: [onboarding]
