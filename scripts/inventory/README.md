@@ -106,11 +106,17 @@ says so in the source detail, so one bad row cannot make Compound refuse the who
 
 ## Adding a provider
 
-A reader is one function in `collect.py` registered by provider name, plus one row in the
-sources file. It calls tools only through `ctx.run` (or `ctx.http_get`), so tests can replace
-them:
+A reader is one module in `readers/` (for example `readers/example_cli.py`) holding one
+function registered by provider name, plus one row in the sources file. Every module in
+`readers/` whose name does not start with `_` is loaded on start, so adding a reader changes no
+shared file. The shared pieces (`run`, `http_get`, `Context`, `SourceError`, the registry and the
+parsing helpers) live in `readers/_base.py`; `collect.py` runs the readers and writes the file.
+A reader calls tools only through `ctx.run` (or `ctx.http_get`), so tests can replace them:
 
 ```python
+from ._base import SourceError, clip, parse_json, reader, short_hash
+
+
 @reader("example_cli")
 def read_example_cli(ctx):
     result = ctx.run(["example-cli", "projects", "list", "--json"])
