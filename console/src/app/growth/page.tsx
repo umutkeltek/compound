@@ -102,14 +102,15 @@ export default async function GrowthPage({ searchParams }: { searchParams: Promi
   const dark = groupStats.flatMap((g) => g.dark);
   const darkGroups = groupStats.filter((g) => g.areas.length > 0 && knownOf(g.total) === 0 && judgedOf(g.total) > 0).map((g) => g.group.title);
 
+  const num = (v: number) => v.toLocaleString("en-US");
+  const partly = knownOf(total) - total.measured;
   const answer = [
-    `Across ${apps.length} ${apps.length === 1 ? "app" : "apps"}, ${judgedOf(total)} areas apply. ${knownOf(total)} have some data and ${total.measured} ${total.measured === 1 ? "is" : "are"} fully measured.`,
-    darkGroups.length
-      ? `${joinWords(darkGroups)} ${darkGroups.length === 1 ? "has" : "have"} no data in any app.`
-      : dark.length
-        ? `${dark.length} ${dark.length === 1 ? "area has" : "areas have"} no data in any app.`
-        : "",
-    total.unknown ? `${total.unknown} more cannot be judged until the product profiles say more.` : "",
+    dark.length
+      ? `${num(dark.length)} of ${num(model.areas.length)} areas have no data in any app.`
+      : `Every area has data in at least one app.`,
+    darkGroups.length ? `${joinWords(darkGroups)} ${darkGroups.length === 1 ? "has" : "have"} none at all.` : "",
+    `Across ${apps.length} ${apps.length === 1 ? "app" : "apps"}, ${num(total.measured)} app areas are fully measured${partly ? ` and ${num(partly)} more have partial or old data` : ""}.`,
+    total.unknown ? `${num(total.unknown)} more cannot be judged until the product profiles say more.` : "",
   ]
     .filter(Boolean)
     .join(" ");
