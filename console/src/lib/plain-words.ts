@@ -149,6 +149,21 @@ export function areaDetail(area: string): string {
   return at >= 0 ? area.slice(at + 1) : "";
 }
 
+const REACH: Record<string, string> = {
+  read: "Only reads; changes nothing",
+  local_reversible: "This machine only",
+  external_side_effect: "Something outside this machine",
+  public: "Something the public can see",
+  destructive: "Deletes or destroys something",
+  financial: "Money",
+  security: "Security settings or secrets",
+};
+
+/** What a decision can touch if acted on (the system's blast-radius id), in plain words. */
+export function plainReach(blastRadius: string): string {
+  return REACH[blastRadius] ?? (blastRadius ? sentence(blastRadius.replace(/_/g, " ")) : "Not stated");
+}
+
 /* ---------- reasons and next steps ---------- */
 
 const REASON_PLAIN: Array<[RegExp, string]> = [
@@ -173,6 +188,35 @@ export function plainReason(reason: string): string {
   if (!trimmed) return "";
   for (const [pattern, plain] of REASON_PLAIN) if (pattern.test(trimmed)) return plain;
   return sentence(blockedReasonPlain(trimmed));
+}
+
+const DECISION_STATE_PLAIN: Record<string, string> = {
+  "Owner evidence not live": "Paused while the list refreshes",
+  "Projection detail not aligned": "Details still loading",
+  "Authority unavailable": "No approval record",
+  "Action adapter unavailable": "No button yet",
+  "Needs context": "Read it first",
+};
+
+/** A Decide card's state label in plain words ("Owner evidence not live" → "Paused while the list refreshes"). */
+export function plainDecisionState(label: string): string {
+  return DECISION_STATE_PLAIN[label] ?? label;
+}
+
+const NEXT_STEP_PLAIN: Array<[RegExp, string]> = [
+  [/^Refresh current owner evidence before acting\.?$/, "Wait for the next read of the list; the buttons come back then."],
+  [/^Wait for (?:the )?owner projection to emit (?:a )?complete current authority bundle\.?$/, "Wait until the system records a complete approval for it."],
+  [/^Use the manual owner command below, or wait for (?:the )?owner to expose (?:a )?governed workflow\.?$/, "Run the command below yourself, or wait until the system offers a button for it."],
+  [/^Use (?:the )?owner surface (?:after it |that )?exposes an authority-bound adapter\.?$/, "Answer it where the system offers a button for it, once it does."],
+  [/^Park or dismiss this review with a reason; (?:the )?underlying authority stays unchanged\.?$/, "Set it aside or dismiss it, with a reason; nothing else changes."],
+  [/^Refresh until Attention membership and Reviews claim detail align\.?$/, "The details are still loading; look again in a moment."],
+];
+
+/** A Decide card's "what unblocks it" line in plain words; unknown text passes through. */
+export function plainNextStep(text: string): string {
+  const trimmed = (text || "").trim();
+  for (const [pattern, plain] of NEXT_STEP_PLAIN) if (pattern.test(trimmed)) return plain;
+  return trimmed;
 }
 
 /**

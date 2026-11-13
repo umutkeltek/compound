@@ -4,8 +4,11 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { Button, FreshnessChip, StateBadge } from "@/components/kit";
 import type { DecideAct, DecideGroup, PanelReview } from "@/lib/decide-model";
-import { blockedReasonPlain } from "@/lib/glossary";
+import { plainDecisionState, plainReason } from "@/lib/plain-words";
 import { GovernedAct } from "./GovernedAct";
+
+/** The system's reason in plain words (lib/plain-words.ts owns the mapping). */
+const blockedReasonPlain = plainReason;
 
 type StageStatus = "done" | "current" | "ready" | "blocked" | "unknown" | "absent";
 
@@ -411,7 +414,7 @@ export function PanelProofContinuity({
             </p>
           ) : null}
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <StateBadge state={group.face.state} label={group.face.stateLabel} />
+            <StateBadge state={group.face.state} label={plainDecisionState(group.face.stateLabel)} />
             <FreshnessChip
               generatedAt={group.face.freshness.generatedAt}
               source={group.face.freshness.source}

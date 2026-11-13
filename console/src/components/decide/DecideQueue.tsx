@@ -20,8 +20,18 @@ import type { DecideBrief, DecideBriefOption, DecideDomain, DecideGroup, DecideM
 import type { DecisionEffectKind } from "@/lib/decision-registry";
 import { buildEnumerableActionRequest, decideActIdentity, RATIONALE_REQUIRED_MESSAGE } from "@/lib/governed-action-client";
 import { OPERATOR_INPUTS } from "@/lib/operator-inputs";
-import { blockedReasonPlain, ownerUnavailableMessage } from "@/lib/glossary";
+import { ownerUnavailableMessage } from "@/lib/glossary";
+import { plainArea, plainDecisionState, plainNextStep, plainReach, plainReason, plainText } from "@/lib/plain-words";
 import { GovernedAct, type ExecuteResult } from "./GovernedAct";
+
+/** Decide's two lists, in plain words (the split itself is decide-members' face-state rule). */
+const SECTION_COPY: Record<"act_now" | "needs_context", { label: string; description: string }> = {
+  act_now: { label: "You can decide these now", description: "Each one has a button ready." },
+  needs_context: { label: "Not yet", description: "Open one to read it. Each row says why it has to wait." },
+};
+
+/** The system's reason in plain words (lib/plain-words.ts owns the mapping). */
+const blockedReasonPlain = plainReason;
 import { PanelProofContinuity } from "./PanelProofContinuity";
 
 /* Domain hue is accent-only (glyph tile + dot); the needs-you seam is amber. */
@@ -35,9 +45,11 @@ const DOMAIN_TILE: Record<DecideDomain, string> = {
 };
 
 function operatorText(value: string): string {
-  return value
-    .replace(/\bclaude_code\b/gi, "Claude Code")
-    .replace(/\bswitchback_api\b/gi, "Switchback API");
+  return plainText(
+    value
+      .replace(/\bclaude_code\b/gi, "Claude Code")
+      .replace(/\bswitchback_api\b/gi, "Switchback API"),
+  );
 }
 
 function actorLabel(value: string): string {
@@ -571,7 +583,7 @@ function DecisionRow({
       <GlyphTile domain={group.domain} glyph={group.glyph} />
       <span className="min-w-0">
         <span className="flex items-center justify-between gap-2">
-          <span className="truncate text-2xs font-bold uppercase text-faint" title={group.areaPlain}>{group.areaLabel}</span>
+          <span className="truncate text-2xs font-bold uppercase text-faint" title={`${group.areaPlain} (${group.area})`}>{plainArea(group.area || group.areaLabel)}</span>
           <time
             dateTime={group.face.proposedAt || undefined}
             title={group.face.proposedAtLabel || "Proposal time unavailable"}
@@ -588,22 +600,18 @@ function DecisionRow({
           {operatorText(group.objectText || group.title)}
         </span>
         <span className="mt-2 flex flex-wrap items-center gap-2">
-          <StateBadge state={group.face.state} label={group.face.stateLabel} />
-          {group.face.primaryAction ? (
-            <span className="min-w-0 truncate text-2xs font-semibold text-muted" title={group.face.primaryAction.label}>
-              Next · {group.face.primaryAction.label}
-            </span>
-          ) : demoteBlockedStamp ? (
-            <span className="min-w-0 truncate text-2xs text-faint" title={blockedReasonPlain(group.face.unavailableReason)}>
-              Blocked · see banner above
-            </span>
-          ) : (
-            <span className="min-w-0 truncate text-2xs text-seam" title={blockedReasonPlain(group.face.unavailableReason)}>
-              Can't act yet · {blockedReasonPlain(group.face.unavailableReason)}
-            </span>
-          )}
+          <StateBadge state={group.face.state} label={plainDecisionState(group.face.stateLabel)} />
           {group.count > 1 ? <span className="mono text-2xs text-faint">{group.count} items</span> : null}
         </span>
+        {group.face.primaryAction ? (
+          <span className="mt-1.5 block truncate text-2xs font-semibold text-muted" title={group.face.primaryAction.label}>
+            Next: {group.face.primaryAction.label}
+          </span>
+        ) : demoteBlockedStamp ? null : (
+          <span className="mt-1.5 block text-2xs leading-snug text-muted">
+            Why not yet: {blockedReasonPlain(group.face.unavailableReason) || "the system gives no reason."}
+          </span>
+        )}
       </span>
     </button>
   );
@@ -639,13 +647,13 @@ function EvidencePanel({ group }: { group: DecideGroup }) {
       <div className="flex flex-wrap items-center gap-3 rounded-md bg-soft px-3 py-2">
         <code className="mono text-2xs text-faint" title={group.sampleId}>{group.sampleId}</code>
         <span className="inline-flex items-center gap-1.5">
-          <span className="text-faint">Queue refreshed</span>
+          <span className="text-faint">List read</span>
           <FreshnessChip generatedAt={group.face.freshness.generatedAt} source={group.face.freshness.source} />
         </span>
       </div>
       {group.evidence.length ? rows : (
         <p className="rounded-md border border-dashed border-hair px-3 py-6 text-center text-xs text-muted">
-          No additional evidence references are projected for this decision.
+          No other evidence is attached to this decision.
         </p>
       )}
     </div>
@@ -671,10 +679,10 @@ function HistoryPanel({ group }: { group: DecideGroup }) {
           <span aria-hidden className="mt-1 h-2 w-2 rounded-full bg-work" />
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs font-semibold text-ink">Current owner projection</span>
-              <StateBadge state={group.face.state} label={group.face.stateLabel} />
+              <span className="text-xs font-semibold text-ink">Where it stands now</span>
+              <StateBadge state={group.face.state} label={plainDecisionState(group.face.stateLabel)} />
             </div>
-            <p className="mt-1 text-xs text-muted">No later receipt or transition is claimed by this face.</p>
+            <p className="mt-1 text-xs text-muted">Nothing has been done with it since it was raised.</p>
           </div>
         </li>
       </ol>
@@ -702,9 +710,9 @@ function ComparePanel({ group }: { group: DecideGroup }) {
   return (
     <div className="grid gap-4">
       <div>
-        <div className="text-2xs font-bold uppercase tracking-wide text-faint">Decision comparison</div>
+        <div className="text-2xs font-bold uppercase tracking-wide text-faint">Your choices</div>
         <p className="mt-1 text-xs leading-relaxed text-muted">
-          Known owner-projected consequences are shown verbatim. Missing consequences stay unknown.
+          What each choice does, in the system&apos;s own words. Where it says nothing, the result is unknown.
         </p>
       </div>
       {preparedOptions.length ? (
@@ -713,8 +721,8 @@ function ComparePanel({ group }: { group: DecideGroup }) {
             const recommended = group.brief?.recommendation.option === option.value;
             return <div key={option.value} className={`rounded-lg border px-3 py-3 ${recommended ? "border-good-line bg-good-soft/45" : "border-hair bg-soft"}`}>
               <div className="flex items-center justify-between gap-2"><div className="text-sm font-semibold text-ink">{option.label || option.value}</div>{recommended ? <span className="rounded-pill bg-good-soft px-2 py-0.5 text-2xs font-semibold text-good">prepared recommendation</span> : null}</div>
-              <div className="mt-3"><div className="section-label">If chosen</div><p className="mt-1 text-xs leading-relaxed text-ink">{option.consequenceApprove || "Consequence not projected by the owner."}</p></div>
-              <div className="mt-3"><div className="section-label">If not chosen</div><p className="mt-1 text-xs leading-relaxed text-muted">{option.consequenceHold || "Consequence not projected by the owner."}</p></div>
+              <div className="mt-3"><div className="section-label">If chosen</div><p className="mt-1 text-xs leading-relaxed text-ink">{option.consequenceApprove || "The system does not say."}</p></div>
+              <div className="mt-3"><div className="section-label">If not chosen</div><p className="mt-1 text-xs leading-relaxed text-muted">{option.consequenceHold || "The system does not say."}</p></div>
             </div>;
           })}
         </div>
@@ -722,15 +730,15 @@ function ComparePanel({ group }: { group: DecideGroup }) {
         <div className="grid gap-3 md:grid-cols-2">
           {genericPaths.map((path) => <div key={path.key} className={`rounded-xl border px-4 py-4 ${path.tone === "good" ? "border-good-line bg-good-soft/45" : "border-memory-line bg-memory-soft/45"}`}>
             <div className={`text-md font-semibold ${path.tone === "good" ? "text-good" : "text-memory"}`}>{path.label}</div>
-            <div className="mt-3 section-label">Projected consequence</div>
-            <p className="mt-1 text-sm leading-relaxed text-ink">{path.consequence || "Consequence not projected by the owner."}</p>
+            <div className="mt-3 section-label">What happens</div>
+            <p className="mt-1 text-sm leading-relaxed text-ink">{path.consequence || "The system does not say."}</p>
           </div>)}
         </div>
       )}
       <div className="grid gap-3 sm:grid-cols-3">
-        <div className="rounded-md border border-hair bg-panel px-3 py-2"><div className="section-label">Blast radius</div><div className="mt-1 text-xs font-semibold capitalize text-ink">{group.blastRadius?.replace(/_/g, " ") || "not projected"}</div></div>
-        <div className="rounded-md border border-hair bg-panel px-3 py-2"><div className="section-label">Reversibility</div><div className="mt-1 text-xs font-semibold capitalize text-ink">{group.reversibility || "not projected"}</div></div>
-        <div className="rounded-md border border-hair bg-panel px-3 py-2"><div className="section-label">Evidence</div><div className="mono mt-1 text-xs text-ink">{group.evidence.length} refs</div></div>
+        <div className="rounded-md border border-hair bg-panel px-3 py-2"><div className="section-label">What it can touch</div><div className="mt-1 text-xs font-semibold text-ink" title={group.blastRadius || undefined}>{plainReach(group.blastRadius ?? "")}</div></div>
+        <div className="rounded-md border border-hair bg-panel px-3 py-2"><div className="section-label">Can it be undone?</div><div className="mt-1 text-xs font-semibold text-ink">{group.reversibility === "reversible" ? "Yes" : group.reversibility === "irreversible" ? "No" : "Not stated"}</div></div>
+        <div className="rounded-md border border-hair bg-panel px-3 py-2"><div className="section-label">Evidence</div><div className="mono mt-1 text-xs text-ink">{group.evidence.length} {group.evidence.length === 1 ? "record" : "records"}</div></div>
       </div>
       {group.brief?.recommendation.rationale ? <div className="rounded-md border border-hair bg-page px-3 py-2.5"><div className="section-label">Prepared rationale</div><p className="mt-1 text-xs leading-relaxed text-muted">{group.brief.recommendation.rationale}</p></div> : null}
     </div>
@@ -779,14 +787,14 @@ function DecisionDetail({
             <GlyphTile domain={group.domain} glyph={group.glyph} />
             <div className="min-w-0 text-2xs font-bold uppercase text-faint">{group.face.kind}</div>
           </div>
-          <StateBadge state={group.face.state} label={group.face.stateLabel} />
+          <StateBadge state={group.face.state} label={plainDecisionState(group.face.stateLabel)} />
         </div>
 
         {/* 1. WHAT is being decided — the full object text, quoted, first and
          * visually primary. Never gated behind a tab: this must read in the
          * first three seconds regardless of which tab happens to be open. */}
         <blockquote className="mt-3 max-w-read border-l-2 border-work-line pl-3 text-lg font-semibold leading-snug text-ink">
-          {group.objectText || "No proposal text is available from the owner projection yet."}
+          {group.objectText ? operatorText(group.objectText) : "The system has not written down what this decision is about yet."}
         </blockquote>
         {group.title && group.title !== group.objectText ? (
           <p className="mt-1 max-w-read text-xs font-medium text-muted">{operatorText(group.title)}</p>
@@ -814,14 +822,14 @@ function DecisionDetail({
               </p>
             ) : (
               <p className="mt-1 text-sm leading-relaxed text-seam">
-                {blockedReasonPlain(group.face.unavailableReason) || "No governed action is available yet."}
+                {blockedReasonPlain(group.face.unavailableReason) || "There is no button for this yet."}
               </p>
             )}
           </div>
 
           <div className="rounded-md border border-hair bg-soft px-3 py-2.5">
-            <div className="text-2xs font-bold uppercase tracking-wide text-faint">Why now</div>
-            <p className="mt-1 max-w-read text-sm leading-relaxed text-ink">{group.face.whyNow}</p>
+            <div className="text-2xs font-bold uppercase tracking-wide text-faint">Why it matters</div>
+            <p className="mt-1 max-w-read text-sm leading-relaxed text-ink">{operatorText(group.face.whyNow)}</p>
           </div>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-2xs text-faint">
@@ -835,7 +843,7 @@ function DecisionDetail({
           </span>
           <span className="inline-flex items-center gap-1.5"><span>Owner</span><strong className="font-semibold text-muted">{group.face.owner}</strong></span>
           <span className="inline-flex items-center gap-1.5">
-            <span>Queue refreshed</span>
+            <span>List read</span>
             <FreshnessChip generatedAt={group.face.freshness.generatedAt} source={group.face.freshness.source} />
           </span>
           {group.face.confidence ? <span className="tabular-nums">{group.face.confidence.label}</span> : null}
@@ -858,7 +866,7 @@ function DecisionDetail({
         <TabsContent value="summary">
           <section className="border-t border-hair px-4 py-4">
             {group.body ? <p className="max-w-read text-sm leading-relaxed text-muted">{group.body}</p> : (
-              <p className="text-sm leading-relaxed text-muted">This decision is waiting at the owner boundary shown above.</p>
+              <p className="text-sm leading-relaxed text-muted">This decision is waiting for you. The system wrote no longer summary.</p>
             )}
             {group.consequences ? <ConsequencePair approve={group.consequences.approve} hold={group.consequences.hold} /> : null}
             {group.brief ? (
@@ -881,8 +889,8 @@ function DecisionDetail({
           <section className="border-t border-hair bg-soft/60 px-4 py-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div>
-                <div className="text-2xs font-bold uppercase tracking-wide text-faint">Primary action</div>
-                <div className="mt-0.5 text-sm font-semibold text-ink">{group.face.primaryAction?.label || "No governed owner action yet"}</div>
+                <div className="text-2xs font-bold uppercase tracking-wide text-faint">What you can do</div>
+                <div className="mt-0.5 text-sm font-semibold text-ink">{group.face.primaryAction?.label || "No button for this yet"}</div>
                 {group.face.primaryAction?.description ? (
                   <p className="mt-1 max-w-read text-xs leading-relaxed text-muted">{group.face.primaryAction.description}</p>
                 ) : null}
@@ -895,7 +903,7 @@ function DecisionDetail({
                   <p className="text-sm font-semibold text-seam">
                     {group.reviewResolutionItemId ? ownerUnavailableMessage(group.area) : blockedReasonPlain(group.face.unavailableReason)}
                   </p>
-                  <p className="mt-1 text-xs leading-relaxed text-muted">{group.face.unblockPath}</p>
+                  <p className="mt-1 text-xs leading-relaxed text-muted">{plainNextStep(group.face.unblockPath)}</p>
                 </div>
                 {reviewResolutionActs.map((resolutionAct) => (
                   <GovernedAct
@@ -907,7 +915,7 @@ function DecisionDetail({
                 ))}
                 {!group.authorityBound ? (
                   <details className="text-xs text-muted">
-                    <summary className="cursor-pointer font-semibold">Manual owner command</summary>
+                    <summary className="cursor-pointer font-semibold">Command to do it yourself</summary>
                     <div className="mt-2"><CopyCmd cmd={act.command} compact /></div>
                     {act.reason ? <p className="mt-2 leading-relaxed text-faint">{act.reason}</p> : null}
                   </details>
@@ -978,12 +986,20 @@ export function decisionSelectionHref(pathname: string, currentSearch: string, d
 
 export function DecideQueue({
   groups,
+  detailKeys,
   mutationsEnabled,
   keyboardShortcuts = true,
   initialSelectedKey = "",
   systemicBlockerReason = null,
 }: {
   groups: DecideGroup[];
+  /**
+   * Keys of the groups sent WITH their detail (members, evidence, prepared
+   * analysis). The page sends only the open decision's detail; opening
+   * another one updates `?decision=` and the server sends that one's detail.
+   * Omitted = every group carries its detail.
+   */
+  detailKeys?: string[];
   mutationsEnabled: boolean;
   keyboardShortcuts?: boolean;
   initialSelectedKey?: string;
@@ -1114,8 +1130,12 @@ export function DecideQueue({
   const selectedIdentity = selected ? decisionIdentity(selected) : "";
   const selectedRetained = selected ? retained[selected.key] : undefined;
   const panelGroups = groups.filter((group) => Boolean(group.panel));
+  // A group sent without its detail shows "Opening…" until the server sends
+  // it (selecting it already replaced `?decision=`, which re-renders the page).
+  const detailSet = detailKeys ? new Set(detailKeys) : null;
+  const selectedHasDetail = !selected || !detailSet || detailSet.has(selected.key) || Boolean(retained[selected.key]);
 
-  if (selected?.panel) {
+  if (selected?.panel && selectedHasDetail) {
     return (
       <PanelProofContinuity
         group={selected}
@@ -1146,7 +1166,7 @@ export function DecideQueue({
       {systemicBlocker ? (
         <div role="status" className="rounded-lg border border-seam-line bg-seam-soft px-4 py-3">
           <div className="text-sm font-semibold text-seam">
-            {systemicBlocker.totalCount - systemicBlocker.blockedCount} of {systemicBlocker.totalCount} decidable
+            Why {systemicBlocker.blockedCount === systemicBlocker.totalCount ? "none" : `${systemicBlocker.blockedCount} of ${systemicBlocker.totalCount}`} can be decided yet
           </div>
           <p className="mt-1 text-xs leading-relaxed text-muted">{blockedReasonPlain(systemicBlocker.reason)}</p>
         </div>
@@ -1170,15 +1190,15 @@ export function DecideQueue({
           {visible.length ? readinessSections.map((section) => (
             <section
               key={section.key}
-              aria-label={section.key === "act_now" ? "Act now decisions" : "Needs context decisions"}
+              aria-label={SECTION_COPY[section.key].label}
               className="border-b border-hair last:border-b-0"
             >
-              <div className={`px-3 py-2.5 ${section.key === "act_now" ? "bg-work-soft" : "bg-seam-soft"}`}>
+              <div className={`px-3 py-2.5 ${section.key === "act_now" ? "bg-good-soft" : "bg-soft"}`}>
                 <div className="flex items-center justify-between gap-2">
-                  <h3 className="text-xs font-bold uppercase tracking-wide text-ink">{section.label}</h3>
+                  <h3 className={`text-xs font-bold uppercase tracking-wide ${section.key === "act_now" ? "text-good" : "text-muted"}`}>{SECTION_COPY[section.key].label}</h3>
                   <span className="mono rounded-pill border border-hair bg-panel px-2 py-0.5 text-2xs text-muted">{section.groups.length}</span>
                 </div>
-                <p className="mt-0.5 text-2xs text-muted">{section.description}</p>
+                <p className="mt-0.5 text-2xs text-muted">{SECTION_COPY[section.key].description}</p>
               </div>
               {section.groups.map((group) => {
                 const index = visibleIndexByKey.get(group.key) ?? 0;
@@ -1215,6 +1235,13 @@ export function DecideQueue({
                 <span aria-hidden>↑</span>
                 All decisions
               </button>
+              {!selectedHasDetail ? (
+                <div role="status" className="rounded-xl border border-hair bg-panel px-4 py-6">
+                  <div className="text-2xs font-bold uppercase text-faint">{plainArea(selected.area || selected.areaLabel)}</div>
+                  <p className="mt-2 text-lg font-semibold leading-snug text-ink">{operatorText(selected.objectText || selected.title)}</p>
+                  <p className="mt-3 text-sm text-muted">Opening this decision…</p>
+                </div>
+              ) : (
               <DecisionDetail
                 key={selectedIdentity}
                 group={selected}
@@ -1231,6 +1258,7 @@ export function DecideQueue({
                   [selected.key]: { group: selected, result, identity: selectedIdentity },
                 }))}
               />
+              )}
             </div>
           ) : (
             <div className="rounded-lg border border-dashed border-hair bg-page px-4 py-10 text-center text-sm text-muted">No decision matches this filter.</div>
