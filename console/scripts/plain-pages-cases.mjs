@@ -349,9 +349,12 @@ try {
   assert.doesNotMatch(opened, /Checking…/);
   assert.match(
     opened,
-    /The approval record is incomplete: each item has its own action; there is no single action for all of them/,
+    /Each item has its own action\. Open it to decide them one by one\./,
     "the opened decision shows its real standing from its own read",
   );
+  assert.doesNotMatch(opened, /approval record is incomplete: each item/, "one action per item is not an incomplete record");
+  // The answer counts it apart: no button / incomplete record / item by item.
+  assert.match(opened, /6 have no button for their kind of decision yet and 1 is decided item by item/);
   assert.deepEqual(findBannedPhrases(opened), []);
   await scopedEvidenceCases();
 

@@ -1123,6 +1123,11 @@ function standingKind(args: {
     safeBatchAction(group) ||
     memberIDs.some((id) => arr(itemByID.get(id)?.actions).length > 0),
   );
+  if (offersAction && /^actions are item-specific/i.test(terminal)) {
+    // The tool offers an action per item and none for the group: the group
+    // is decided item by item, which is not an incomplete approval record.
+    return { kind: "item_by_item", reason: terminal };
+  }
   return offersAction
     ? { kind: "incomplete", reason: terminal || "No complete current owner authority bundle is available." }
     : { kind: "no_button", reason: terminal };

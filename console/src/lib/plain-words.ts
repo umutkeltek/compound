@@ -230,7 +230,7 @@ export function plainNextStep(text: string): string {
  * the standing and its age on the server and sends them as data.
  */
 export type DecisionStanding = {
-  kind: "ready" | "no_button" | "incomplete" | "held" | "other";
+  kind: "ready" | "no_button" | "incomplete" | "item_by_item" | "held" | "other";
   /** the tool's own reason, as written (shown through `plainToolReason`) */
   reason: string;
   /** the evidence is inside the live window, so the gate may show a button */
@@ -273,6 +273,10 @@ export function standingLine(s: DecisionStanding): { text: string; tone: "good" 
         : { text: `Could be decided at the last check; open it to check again${age}`, tone: "good" };
     case "no_button":
       return { text: `No button exists for this kind of decision yet${age}`, tone: "muted" };
+    case "item_by_item":
+      // Nothing is incomplete here: the tool offers one action per item and
+      // none for the group, so the group is decided one item at a time.
+      return { text: `Each item has its own action. Open it to decide them one by one.${age}`, tone: "muted" };
     case "incomplete": {
       const why = plainToolReason(s.reason);
       return { text: `The approval record is incomplete${why ? `: ${why.replace(/\.$/, "")}` : ""}${age}`, tone: "seam" };

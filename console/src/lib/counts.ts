@@ -240,6 +240,8 @@ export type DecisionCount = {
     noButton: number;
     /** an action exists but its approval record is incomplete */
     incomplete: number;
+    /** each item has its own action and the group has none: decided item by item */
+    itemByItem: number;
     /** the approval rules hold it */
     held: number;
     /** any other reason (details still loading, one review per repository) */
@@ -261,7 +263,7 @@ export function countDecisions(
   let items = 0;
   let readyNow = 0;
   let checkedEarlier = 0;
-  const found = { decidable: 0, noButton: 0, incomplete: 0, held: 0, other: 0 };
+  const found = { decidable: 0, noButton: 0, incomplete: 0, itemByItem: 0, held: 0, other: 0 };
   for (const group of groups) {
     items += group.count;
     if (group.face.state === "ready") readyNow += 1;
@@ -269,6 +271,7 @@ export function countDecisions(
     if (kind === "ready") found.decidable += 1;
     else if (kind === "no_button") found.noButton += 1;
     else if (kind === "incomplete") found.incomplete += 1;
+    else if (kind === "item_by_item") found.itemByItem += 1;
     else if (kind === "held") found.held += 1;
     else found.other += 1;
     if (group.standing && !group.standing.live) checkedEarlier += 1;

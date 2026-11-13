@@ -96,6 +96,7 @@ function standingSentence(counted: DecisionCount, listAgeMs: number | null): str
     waitingOnTheCheck ? `${n(waitingOnTheCheck)} could be decided when last checked` : "",
     counted.found.noButton ? `${n(counted.found.noButton)} ${has(counted.found.noButton)} no button for their kind of decision yet` : "",
     counted.found.incomplete ? `${n(counted.found.incomplete)} ${has(counted.found.incomplete)} an incomplete approval record` : "",
+    counted.found.itemByItem ? `${n(counted.found.itemByItem)} ${is(counted.found.itemByItem)} decided item by item` : "",
     counted.found.held ? `${n(counted.found.held)} ${is(counted.found.held)} held by the approval rules` : "",
     counted.found.other ? `${n(counted.found.other)} wait for another reason, said on the row` : "",
   ].filter(Boolean);
