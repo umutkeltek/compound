@@ -339,7 +339,8 @@ def read_pve(ctx):
         if status == "running":
             facts["cpu_pct"] = ctx.fact(round(100.0 * float(r.get("cpu") or 0), 1), PCT)
             memory = pct(r.get("mem"), r.get("maxmem"))
-            facts["memory_pct"] = (ctx.fact(memory, PCT) if memory is not None
+            seen_by = "as the hypervisor sees it; can include the guest's cache" if r.get("type") == "qemu" else ""
+            facts["memory_pct"] = (ctx.fact(memory, PCT, seen_by) if memory is not None
                                    else ctx.unknown("not_supported", "no memory size reported", PCT))
             if r.get("type") == "lxc":
                 disk = pct(r.get("disk"), r.get("maxdisk"))
