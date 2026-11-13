@@ -1135,8 +1135,10 @@ export function DecideQueue({
   const detailSet = detailKeys ? new Set(detailKeys) : null;
   const selectedHasDetail = !selected || !detailSet || detailSet.has(selected.key) || Boolean(retained[selected.key]);
 
-  if (selected?.panel && selectedHasDetail) {
-    return (
+  // A selected Panel group gets the proof-continuity treatment once its
+  // detail is here; until then the queue below shows "Opening…".
+  if (selected?.panel) {
+    if (selectedHasDetail) return (
       <PanelProofContinuity
         group={selected}
         panelGroups={panelGroups}
@@ -1166,7 +1168,9 @@ export function DecideQueue({
       {systemicBlocker ? (
         <div role="status" className="rounded-lg border border-seam-line bg-seam-soft px-4 py-3">
           <div className="text-sm font-semibold text-seam">
-            Why {systemicBlocker.blockedCount === systemicBlocker.totalCount ? "none" : `${systemicBlocker.blockedCount} of ${systemicBlocker.totalCount}`} can be decided yet
+            {systemicBlocker.totalCount - systemicBlocker.blockedCount === 0
+              ? "Why none can be decided yet"
+              : `Why ${systemicBlocker.blockedCount} of ${systemicBlocker.totalCount} cannot be decided yet`}
           </div>
           <p className="mt-1 text-xs leading-relaxed text-muted">{blockedReasonPlain(systemicBlocker.reason)}</p>
         </div>

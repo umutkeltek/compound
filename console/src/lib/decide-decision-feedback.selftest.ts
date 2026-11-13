@@ -241,10 +241,12 @@ export function runDecideDecisionFeedbackSelfTest(): SelfTestResult {
     const src = read("components/decide/DecideQueue.tsx");
     if (!/decideReadinessSections\(visible\)/.test(src)) {
       fail("DecideQueue does not group the visible queue from the server-owned face state");
-    } else if (!/Act now/.test(src) || !/Needs context/.test(src)) {
+    } else if (!/You can decide these now/.test(src) || !/Not yet/.test(src)) {
+      // Plain words (console DESIGN §11.2): "Act now" → "You can decide these now",
+      // "Needs context" → "Not yet". The split itself is unchanged.
       fail("DecideQueue is missing the two explicit readiness group labels");
     } else {
-      pass("DecideQueue groups the queue into Act now and Needs context from the face state");
+      pass("DecideQueue groups the queue into 'You can decide these now' and 'Not yet' from the face state");
     }
 
     for (const tab of ["Summary", "Action", "History", "Evidence"]) {
@@ -252,7 +254,8 @@ export function runDecideDecisionFeedbackSelfTest(): SelfTestResult {
         fail(`Decision face is missing its ${tab} tab`);
       }
     }
-    if (!/StateBadge state=\{group\.face\.state\} label=\{group\.face\.stateLabel\}/.test(src)) {
+    // The face's own state label, shown through the plain-words mapping.
+    if (!/StateBadge state=\{group\.face\.state\} label=\{plainDecisionState\(group\.face\.stateLabel\)\}/.test(src)) {
       fail("Decision face does not render the shared state vocabulary from group.face");
     } else if (!/Owner<\/span>[\s\S]*group\.face\.owner/.test(src)) {
       fail("Decision face does not expose the human owner before technical evidence");
