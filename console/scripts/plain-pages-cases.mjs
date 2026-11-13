@@ -39,7 +39,7 @@ const work = [
   { work_id: "work_fx_check_old", state: "verifying", owner: "codex", claimed_by: "codex", claimed_at: ns(10), success_predicate: "Fixture check waits for its proof", next_action: "attach the final verified candidate" },
   { work_id: "work_fx_run_old", state: "running", owner: "codex", claimed_by: "codex", claimed_at: ns(9), success_predicate: "Fixture run is still going", next_action: "finish the run" },
   { work_id: "work_fx_claimed", state: "claimed", owner: "codex", claimed_by: "codex", claimed_at: ns(2), success_predicate: "Fixture item picked up recently", next_action: "start it" },
-  { work_id: "work_fx_check_new", state: "verifying", owner: "claude_code", claimed_by: "claude_code", claimed_at: ns(1), success_predicate: "Fixture check from yesterday", next_action: "attach the final verified candidate" },
+  { work_id: "work_fx_check_new", state: "verifying", owner: "claude_code", claimed_by: "claude_code:fixture-lane", claimed_at: ns(1), success_predicate: "Fixture check from yesterday", next_action: "attach the final verified candidate as commit:<full-sha>" },
   { work_id: "work_fx_held", state: "held", owner: "claude_code", claimed_by: "claude_code", claimed_at: ns(3), success_predicate: "Fixture item on hold", next_action: "resolve the hold" },
   { work_id: "work_fx_ready", state: "ready", owner: "codex", success_predicate: "Fixture item ready to start", next_action: "claim before touching" },
 ];
@@ -301,6 +301,11 @@ try {
   assert.match(warm.Work, /1 work item waits for your decision/);
   assert.match(warm.Live, /1 work item waits for your decision/);
   assert.match(warm.Live, /2 agents hold 5 work items/, "agents count excludes the no-agent bucket and idle agents");
+  // Work cards: the owner's agent named as Live names it, the lane id small;
+  // the tool's next-step instruction in plain words.
+  assert.match(warm.Work, /Claude Code claude_code:fixture-lane/, "a card names its agent, with the lane as small text");
+  assert.match(warm.Work, /Record the final checked commit for it\./);
+  assert.doesNotMatch(warm.Work, /commit:<full-sha>/, "a raw next-step instruction never reaches a card");
 
   // Today: at most five decisions, then one link to the rest; plain words for areas and reasons.
   assert.match(warm.Today, /2 more decisions on Decide/);

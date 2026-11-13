@@ -40,13 +40,13 @@ function ownerLabel(owner: string): string {
   return owner.split(":")[0].replace(/_/g, " ");
 }
 
-function OwnerAvatar({ owner }: { owner: string }) {
+function OwnerAvatar({ owner, name = "" }: { owner: string; name?: string }) {
   const tone = hashToneFor(owner || "unassigned");
-  const letter = (ownerLabel(owner).charAt(0) || "?").toUpperCase();
+  const letter = ((name || ownerLabel(owner)).charAt(0) || "?").toUpperCase();
   return (
     <span
       className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-2xs font-bold text-panel ${owner ? TONE_FILL[tone] : "bg-faint"}`}
-      title={owner || "Unassigned"}
+      title={name ? `${name} · ${owner}` : owner || "Unassigned"}
       aria-hidden
     >
       {letter}
@@ -130,7 +130,9 @@ export function WorkBoardCard({
       ) : owner ? (
         <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted">
           <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${TONE_FILL[hashToneFor(owner)]}`} aria-hidden />
-          <span className="truncate" title={owner}>{owner}</span>
+          {/* The agent's name, as Live names it; the lane id stays small. */}
+          <span className="shrink-0 font-medium text-ink" title={owner}>{card.agentName || owner}</span>
+          {card.agentName && card.lane ? <span className="mono min-w-0 truncate text-2xs text-faint" title={card.lane}>{card.lane}</span> : null}
         </div>
       ) : null}
 
@@ -153,7 +155,7 @@ export function WorkBoardCard({
       />
 
       <div className="mt-1 flex items-center gap-2 border-t border-hair-2 pt-2.5">
-        <OwnerAvatar owner={owner} />
+        <OwnerAvatar owner={owner} name={card.agentName} />
         {card.displayId && !compact ? (
           <span className="min-w-0 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
             <IdRef id={card.displayId} kind={card.traceable ? "work" : "plan"} plain truncate />

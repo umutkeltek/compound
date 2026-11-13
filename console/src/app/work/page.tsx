@@ -7,12 +7,12 @@ import { WorkLenses } from "@/components/work/WorkLenses";
 import { readAttention } from "@/lib/attention";
 import { arr, DIRECTOR_PROPOSE_ARGS, HEAVY_PROJECTION_TIMEOUT_MS, readProjection, str } from "@/lib/compound";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
-import { countInProgress, countOnHold, countOpenWork, describeInProgress, STALE_AFTER_DAYS, unit, waitingOnYou } from "@/lib/counts";
+import { countInProgress, countOnHold, countOpenWork, describeInProgress, STALE_AFTER_DAYS, UNASSIGNED_AGENT_ID, unit, waitingOnYou } from "@/lib/counts";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { buildLaneTraffic } from "@/lib/lane-traffic";
 import { getTraffic } from "@/lib/traffic";
 import { isWorkId } from "@/lib/work-id";
-import { buildBoard, buildOffered, buildPipeline } from "@/lib/work-pipeline";
+import { buildBoard, buildOffered, buildPipeline, nameCardOwners } from "@/lib/work-pipeline";
 import { buildWorkLensItems, groupWorkLensItems } from "@/lib/work-views";
 import type { WorkLensKey } from "@/components/work/WorkLenses";
 
@@ -66,7 +66,12 @@ export default async function WorkPage({
     }
     return stage;
   });
-  const columns = buildBoard(open, recent);
+  // Card owners named as Live names agents (executors projection labels); the
+  // "unassigned" bucket is not an agent, so it never names an owned card.
+  const agentLanes = traffic.lanes.filter((lane) => lane.agentId !== UNASSIGNED_AGENT_ID);
+  const agentNames = new Map(agentLanes.map((lane) => [lane.agentId, lane.agentLabel] as const));
+  const agentByWork = new Map(agentLanes.flatMap((lane) => lane.inFlight.map((work) => [work.workId, lane.agentLabel] as const)));
+  const columns = nameCardOwners(buildBoard(open, recent), agentByWork, agentNames);
   const offered = buildOffered(arr(packetsRead.value?.items));
 
   const initialTrace = isWorkId(str(trace)) ? str(trace) : null;

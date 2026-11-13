@@ -3,6 +3,30 @@ import { ago } from "@/lib/time";
 import { type StateTone, toneForState } from "@/components/kit/StateBadge";
 import { WORK_TRANSITIONS, workOptionsFor } from "@/lib/decision-registry";
 import { shortText, workId } from "@/lib/work-data";
+import { agentNameFor, plainWorkStep } from "@/lib/plain-words";
+
+/**
+ * Name each card's owner the way Live names agents: the executor lane that
+ * reports the work item (`byWork`: work id → agent name) wins, else the
+ * owner id's agent (`names`: agent id → name, from the executors projection),
+ * else the owner id as written. The full owner/lane id stays as small text.
+ */
+export function nameCardOwners(
+  columns: BoardColumnModel[],
+  byWork: ReadonlyMap<string, string>,
+  names: ReadonlyMap<string, string>,
+): BoardColumnModel[] {
+  return columns.map((column) => ({
+    ...column,
+    cards: column.cards.map((card) => {
+      if (!card.subtitle) return card;
+      const joined = card.workId ? byWork.get(card.workId) : undefined;
+      if (joined) return { ...card, agentName: joined, lane: card.subtitle };
+      const named = agentNameFor(card.subtitle, names);
+      return { ...card, agentName: named.name, lane: named.lane };
+    }),
+  }));
+}
 
 /*
  * Pipeline lens data model — maps the live workbench / suggestion / source
@@ -88,6 +112,10 @@ export type BoardCard = {
   progress: StageProgress;
   /** canonical surface (e.g. `product:<id>`), so the board can show which app a card belongs to. */
   surface: string;
+  /** the owner's agent, named as Live names agents ("Claude Code"); set by `nameCardOwners` */
+  agentName?: string;
+  /** the full owner/lane id, small text beside the agent name ("" when the name is the whole id) */
+  lane?: string;
 };
 
 export type RailNode = "empty" | "filled" | "seat" | "done" | "run";
@@ -196,7 +224,9 @@ function workCard(item: Json, note = "", progress?: StageProgress): BoardCard {
     tone: toneForState(state),
     ageLabel: age ? ago(age) : "",
     moveType: str(item.move_type),
-    note: note || shortText(str(item.next_action) || str(item.desired_outcome), 150),
+    // The tool's next-step instruction in plain words (lib/plain-words.ts); an
+    // unknown instruction is shown as written.
+    note: note || shortText(plainWorkStep(str(item.next_action)) || str(item.desired_outcome), 150),
     traceable: Boolean(id),
     running: state === "running",
     progress: progress ?? stageProgressForState(state),
@@ -238,7 +268,7 @@ function admissionCard(ap: Json): BoardCard {
     tone: toneForState(state),
     ageLabel: str(ap.age) || (ap.generated_at ? ago(ap.generated_at) : ""),
     moveType: "",
-    note: stale ? "stale plan - revalidate before adding" : shortText(str(ap.next_action), 96),
+    note: stale ? "stale plan - revalidate before adding" : shortText(plainWorkStep(str(ap.next_action)), 96),
     traceable: Boolean(id),
     running: false,
     progress: stageProgressForState(state),
