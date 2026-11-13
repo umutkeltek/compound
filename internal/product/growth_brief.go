@@ -132,9 +132,9 @@ func BuildGrowthArea(homePath string, opts GrowthOptions) (GrowthAreaBrief, erro
 	return b, nil
 }
 
-// dependents lists, in catalog order, the areas that need id directly or
-// through other areas.
-func (c *growthAreaCatalog) dependents(id string) []string {
+// dependents lists, in catalog order, the areas that need any of ids directly
+// or through other areas. An area in ids that needs another one is listed.
+func (c *growthAreaCatalog) dependents(ids ...string) []string {
 	seen := map[string]bool{}
 	changed := true
 	for changed {
@@ -144,7 +144,7 @@ func (c *growthAreaCatalog) dependents(id string) []string {
 				continue
 			}
 			for _, n := range a.Needs {
-				if n == id || seen[n] {
+				if containsString(ids, n) || seen[n] {
 					seen[a.ID] = true
 					changed = true
 					break

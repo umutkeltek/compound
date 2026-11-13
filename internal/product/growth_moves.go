@@ -104,16 +104,51 @@ func (c growthCtx) nextMoves(g *growthGroup, app GrowthApp) []GrowthNextMove {
 		return why
 	}
 
-	// 1. Data that stopped.
+	// 1. Data that stopped: one move per stopped source, pointing at the first
+	// area (in catalog order) that reads it. An area stale on something with
+	// no source (an old assessment) keeps its own move. Stale data can always
+	// be refreshed, so a refresh move waits on nothing.
+	sourceAreas := map[string][]GrowthAudit{}
+	for _, a := range app.Audit {
+		if a.Status == GrowthStale && !a.assessment && len(a.stale) > 0 {
+			key := growthStaleName(a.stale)
+			sourceAreas[key] = append(sourceAreas[key], a)
+		}
+	}
+	refreshed := map[string]bool{}
 	for _, a := range ordered {
 		if a.Status != GrowthStale {
 			continue
 		}
-		title := "Refresh data for " + a.Title
-		if a.assessment {
-			title = "Assess " + a.Title + " again"
+		if a.assessment || len(a.stale) == 0 {
+			title := "Refresh data for " + a.Title
+			if a.assessment {
+				title = "Assess " + a.Title + " again"
+			}
+			m := move(a, "refresh_data", title, gapWhy(a))
+			m.BlockedBy = []string{}
+			add(m)
+			continue
 		}
-		add(move(a, "refresh_data", title, gapWhy(a)))
+		key := growthStaleName(a.stale)
+		if refreshed[key] {
+			continue
+		}
+		refreshed[key] = true
+		areas := sourceAreas[key]
+		ids := make([]string, 0, len(areas))
+		for _, x := range areas {
+			ids = append(ids, x.AreaID)
+		}
+		m := move(areas[0], "refresh_data", "Refresh "+key, growthRefreshWhy(areas))
+		m.Unblocks = 0
+		for _, id := range c.cat.dependents(ids...) {
+			if growthApplies(status[id]) {
+				m.Unblocks++
+			}
+		}
+		m.BlockedBy = []string{}
+		add(m)
 	}
 	// 2. The profile, when a missing dimension hides whether areas apply.
 	if m, ok := c.setProfileMove(app); ok {
@@ -164,6 +199,38 @@ func (c growthCtx) nextMoves(g *growthGroup, app GrowthApp) []GrowthNextMove {
 		out = []GrowthNextMove{}
 	}
 	return out
+}
+
+// growthStaleName names the stopped sources of one area, as its next move
+// names them.
+func growthStaleName(stale []growthStaleSource) string {
+	names := make([]string, 0, len(stale))
+	for _, s := range stale {
+		names = append(names, s.source)
+	}
+	return strings.Join(names, " and ")
+}
+
+// growthRefreshWhy says when a stopped source last sent data (the oldest date
+// across the areas that read it) and names up to three of those areas.
+func growthRefreshWhy(areas []GrowthAudit) string {
+	oldest := ""
+	titles := make([]string, 0, 3)
+	for i, a := range areas {
+		for _, s := range a.stale {
+			if oldest == "" || s.date < oldest {
+				oldest = s.date
+			}
+		}
+		if i < 3 {
+			titles = append(titles, a.Title)
+		}
+	}
+	list := strings.Join(titles, ", ")
+	if rest := len(areas) - len(titles); rest > 0 {
+		list += fmt.Sprintf(" and %d more", rest)
+	}
+	return fmt.Sprintf("The last data is from %s. %s it: %s.", oldest, growthCount(float64(len(areas)), "area uses", "areas use"), list)
 }
 
 // setProfileMove asks for the profile dimensions that leave areas unknown.

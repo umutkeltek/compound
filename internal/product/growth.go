@@ -139,8 +139,9 @@ type GrowthAudit struct {
 	Branch    string           `json:"branch"`
 	Skills    []string         `json:"skills"`
 
-	gap        string // next-move kind for a gap: connect_data, record_answer or assess
-	assessment bool   // the status rests on a learned-fact assessment
+	gap        string              // next-move kind for a gap: connect_data, record_answer or assess
+	assessment bool                // the status rests on a learned-fact assessment
+	stale      []growthStaleSource // the sources that stopped, when the status is stale on data
 }
 
 type GrowthCoverage struct {
@@ -1345,6 +1346,7 @@ type growthFormResult struct {
 	summary  string
 	nextMove string
 	evidence []GrowthEvidence
+	stale    []growthStaleSource // the sources that stopped, for a stale metric verdict
 }
 
 // evalMetrics runs the metric and custom evaluators for one form. ok is false
@@ -1412,6 +1414,9 @@ func (c growthCtx) evalMetrics(g *growthGroup, app GrowthApp, spec growthAreaSpe
 	r := growthFormResult{spec: spec, status: status, basis: "metric", evidence: a.Evidence}
 	if status == GrowthBlind {
 		r.basis = "none"
+	}
+	if status == GrowthStale {
+		r.stale = staleSources(staleEv)
 	}
 	r.summary = c.summary(g, spec, status, missing, all, latest, staleEv, app)
 	r.nextMove = c.nextMove(g, spec, status, missing, latest, staleEv)

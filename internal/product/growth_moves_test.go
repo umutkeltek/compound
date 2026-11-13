@@ -71,3 +71,63 @@ func TestGrowthUnblocksCountsOnlyApplicableAreas(t *testing.T) {
 		t.Fatalf("brief unblocks = %+v", b.Unblocks)
 	}
 }
+
+// Three areas read App Store Connect sales and one reads Search Console. Sales
+// three waits on an open gap; Beta one and Beta two wait on stale areas.
+const growthRefreshAreas = `areas:
+  - {id: alpha_sales_one, group: alpha, title: Sales one, question: "Sales one?", measure: sales one, evidence: {metrics: [app_store_connect_units], source: App Store Connect sales}}
+  - {id: alpha_sales_two, group: alpha, title: Sales two, question: "Sales two?", measure: sales two, evidence: {metrics: [app_store_connect_units], source: App Store Connect sales}}
+  - {id: alpha_sales_three, group: alpha, title: Sales three, question: "Sales three?", measure: sales three, needs: [beta_four], evidence: {metrics: [app_store_connect_developer_proceeds_usd], source: App Store Connect sales}}
+  - {id: alpha_search, group: alpha, title: Search, question: "Search?", measure: search, evidence: {metrics: ["gsc_*"], source: Search Console}}
+  - {id: beta_one, group: beta, title: Beta one, question: "Beta one?", measure: beta one, needs: [alpha_sales_two]}
+  - {id: beta_two, group: beta, title: Beta two, question: "Beta two?", measure: beta two, needs: [alpha_search]}
+  - {id: beta_three, group: beta, title: Beta three, question: "Beta three?", measure: beta three}
+  - {id: beta_four, group: beta, title: Beta four, question: "Beta four?", measure: beta four}
+`
+
+// One stopped source is one action: stale areas that name the same source
+// fold into one refresh move, and the freed slots go to the next moves.
+func TestGrowthRefreshMovesFoldBySource(t *testing.T) {
+	cat, err := buildTestGrowthCatalog(t, growthTestCore, growthRefreshAreas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	rows := growthDaily("product:alpha", "app_store_connect_units", 40, 30, 1)
+	rows = append(rows, growthDaily("product:alpha", "app_store_connect_developer_proceeds_usd", 50, 40, 2)...)
+	rows = append(rows, growthDaily("product:alpha", "gsc_clicks", 30, 20, 3)...)
+	writeGrowthSignals(t, home, rows...)
+	o := growthOpts()
+	o.catalog = cat
+	app := buildGrowthT(t, home, o).Apps[0]
+	for _, id := range []string{"alpha_sales_one", "alpha_sales_two", "alpha_sales_three", "alpha_search"} {
+		if s := growthAudit(t, app, id).Status; s != GrowthStale {
+			t.Fatalf("%s = %s, want stale", id, s)
+		}
+	}
+	moves := app.NextMoves
+	if len(moves) != growthMaxMoves {
+		t.Fatalf("moves = %+v", moves)
+	}
+	sales, search := moves[0], moves[1]
+	wantWhy := "The last data is from " + growthDay(40) + ". 3 areas use it: Sales one, Sales two, Sales three."
+	if sales.Kind != "refresh_data" || sales.Title != "Refresh App Store Connect sales" || sales.Why != wantWhy {
+		t.Fatalf("sales move = %+v\nwant why %q", sales, wantWhy)
+	}
+	if sales.AreaID != "alpha_sales_one" || sales.Brief != growthBrief("product:alpha", "alpha_sales_one") || sales.Branch != "research" ||
+		sales.Unblocks != 1 || len(sales.BlockedBy) != 0 || sales.BlockedBy == nil {
+		t.Fatalf("sales move must point at its first area, count beta_one once and wait on nothing: %+v", sales)
+	}
+	if search.Kind != "refresh_data" || search.Title != "Refresh Search Console" || search.AreaID != "alpha_search" || search.Unblocks != 1 ||
+		search.Why != "The last data is from "+growthDay(20)+". 1 area uses it: Search." {
+		t.Fatalf("search move = %+v", search)
+	}
+	for _, m := range moves[2:] {
+		if m.Kind == "refresh_data" {
+			t.Fatalf("one stopped source must be one move, got %+v", moves)
+		}
+	}
+	if moves[2].AreaID != "beta_four" {
+		t.Fatalf("the freed slots go to the next moves in order: %+v", moves[2:])
+	}
+}

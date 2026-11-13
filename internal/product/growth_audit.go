@@ -400,6 +400,9 @@ func (c growthCtx) combineForms(a *GrowthAudit, results []growthFormResult, labe
 			a.Summary = r.spec.Title + ": " + r.summary
 		}
 		a.gap = growthGapKind(r)
+		if a.Status == GrowthStale {
+			a.stale = growthStaleOf(results)
+		}
 		return
 	}
 	switch {
@@ -409,6 +412,7 @@ func (c growthCtx) combineForms(a *GrowthAudit, results []growthFormResult, labe
 		a.Status = GrowthBlind
 	case counts[GrowthStale] == n:
 		a.Status = GrowthStale
+		a.stale = growthStaleOf(results)
 	default:
 		a.Status = GrowthPartial
 	}
@@ -430,6 +434,28 @@ func (c growthCtx) combineForms(a *GrowthAudit, results []growthFormResult, labe
 		parts = append(parts, r.spec.Title+": "+r.summary)
 	}
 	a.Summary = strings.Join(parts, " ")
+}
+
+// growthStaleOf names the sources behind a stale area, newest date per
+// source, in source order. It is empty when any form is stale on something
+// with no source (an old assessment), so that area keeps its own move.
+func growthStaleOf(results []growthFormResult) []growthStaleSource {
+	by := map[string]string{}
+	for _, r := range results {
+		if len(r.stale) == 0 {
+			return nil
+		}
+		for _, s := range r.stale {
+			if s.date > by[s.source] {
+				by[s.source] = s.date
+			}
+		}
+	}
+	out := make([]growthStaleSource, 0, len(by))
+	for _, src := range growthSortedKeys(by) {
+		out = append(out, growthStaleSource{src, by[src]})
+	}
+	return out
 }
 
 // growthGapKind is the next-move kind that closes a form's gap.
