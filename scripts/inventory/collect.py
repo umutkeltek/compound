@@ -750,7 +750,8 @@ def read_json_file(ctx):
     for spec in ctx.require("plans"):
         label, vendor = spec.get("label") or ctx.id, spec.get("vendor") or ctx.vendor
         max_age = spec.get("max_age_hours")
-        for key, item in pick_entries(doc, spec):
+        entries = pick_entries(doc, spec)
+        for key, item in entries:
             sampled = None
             if item is not None and spec.get("observed_at_path"):
                 sampled = parse_time(json_path(item, spec["observed_at_path"]))
@@ -778,7 +779,7 @@ def read_json_file(ctx):
                     if unit == "time" and parse_time(value):
                         value = iso(parse_time(value))
                     facts[name] = ctx.fact(value, unit, observed_at=observed)
-            suffix = f" …{short_hash(key)[-4:]}" if key else ""
+            suffix = f" #{short_hash(key)[-4:]}" if key and len(entries) > 1 else ""  # tell groups apart
             resources.append(ctx.resource(f"{vendor}:plan:{short_hash(ctx.row.get('id_key') or ctx.id, label, key)}",
                                           "plan", label + suffix, facts=facts, provider=vendor,
                                           places=spec.get("places")))

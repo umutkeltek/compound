@@ -95,7 +95,8 @@ Notes on what each reader cannot see:
   does not give (`null`) is `not_supported`, never 0. Only `https://` URLs are accepted.
 - `json_file`: each `plans[]` entry picks either one object (`at`) or the last entry that
   matches `match` in a list (`items_path`, or the whole `.jsonl` file); `group_by` makes one
-  plan per group (labelled with a short hash of the group key, never the key itself).
+  plan per group (when there is more than one, each label ends in `#` and a short hash of
+  the group key, never the key itself).
   `facts` maps a fact name to a path (or `{"path", "unit"}`). With `observed_at_path` each
   fact carries the entry's own time; with `max_age_hours` an older entry is reported as
   `failed` with its age instead of an outdated number.

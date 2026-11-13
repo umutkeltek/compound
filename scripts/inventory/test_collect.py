@@ -555,6 +555,8 @@ class JsonFileTests(unittest.TestCase):
         self.assertEqual(plans[1]["facts"]["resets_at"]["value"],
                          (CLOCK + timedelta(days=3, hours=-3)).strftime("%Y-%m-%dT%H:%M:%SZ"))
         self.assertTrue(all(p["provider"] == "example_ai" for p in plans))
+        self.assertEqual(len({p["label"] for p in plans}), 2)  # two groups get told apart
+        self.assertTrue(all(p["label"].startswith("Example seat, weekly #") for p in plans))
         self.assertNotIn("seat-a", json.dumps(obs))
         self.assertIn("2 facts dropped", source(obs, "seats-example")["detail"])  # one bad name per plan
         self.assertTrue(all("Bad-Name" not in p["facts"] for p in plans))
