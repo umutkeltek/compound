@@ -8,8 +8,10 @@ import {
 import {
   arr,
   compoundFailure,
+  HEAVY_PROJECTION_TIMEOUT_MS,
   type Json,
   markRunJsonCacheOutOfDate,
+  readProjection,
   reviewItems,
   runCompound,
   runJsonFresh,
@@ -488,18 +490,13 @@ async function resolveItem(spec: DecisionAreaSpec, itemId: string): Promise<Json
     return reviewItems(data).find((it) => str(it.id) === itemId) ?? null;
   }
   if (spec.source === "workbench") {
-    const data = await runJson(["workbench", "--json"]);
-    const open = arr(data?.open);
-    const admissionPreviews = arr(data?.admission_previews);
-    return (
-      open.find((it) => str(it.work_id) === itemId || str(it.id) === itemId) ??
-      admissionPreviews.find((it) => str(it.work_id) === itemId || str(it.id) === itemId) ??
-      null
-    ) as Json | null;
+    return resolveWorkItem(itemId);
   }
   if (spec.area === "memory-adjudicate") {
-    const workbench = await runJson(["workbench", "--json"]);
-    for (const work of arr(workbench?.open)) {
+    // Review cards exist only in the workbench output (about two minutes to
+    // build). The click reads them from the page's cached workbench copy; the
+    // `memory adjudicate` command itself re-validates the candidate.
+    for (const work of await cachedWorkbenchOpen()) {
       for (const card of arr(work.review_cards)) {
         if (str(card.kind) === "memory_candidate_adjudication" && str(card.candidate_id) === itemId) {
           return { ...card, id: itemId } as Json;
@@ -512,8 +509,79 @@ async function resolveItem(spec: DecisionAreaSpec, itemId: string): Promise<Json
   return null;
 }
 
+const TERMINAL_WORK_STATES = new Set(["completed", "failed", "cancelled"]);
+
+/** The page's cached workbench copies (never runs compound). */
+async function cachedWorkbenches(): Promise<Json[]> {
+  const reads = await Promise.all([
+    readProjection(["workbench", "--json"], { enabled: false }),
+    readProjection(["workbench", "--json", "--recent", "500"], { enabled: false }),
+  ]);
+  return reads.map((read) => read.value).filter((value): value is Json => value !== null);
+}
+
+async function cachedWorkbenchOpen(): Promise<Json[]> {
+  for (const workbench of await cachedWorkbenches()) {
+    const open = arr(workbench.open);
+    if (open.length) return open;
+  }
+  return [];
+}
+
+async function cachedWorkbenchItem(itemId: string): Promise<Json | null> {
+  const matches = (it: Json) => str(it.work_id) === itemId || str(it.id) === itemId;
+  for (const workbench of await cachedWorkbenches()) {
+    const found = arr(workbench.open).find(matches) ?? arr(workbench.admission_previews).find(matches);
+    if (found) return found as Json;
+  }
+  return null;
+}
+
+/** Who holds the work now: the actor of its latest claim transition. */
+function latestClaimant(work: Json): string {
+  let by = "";
+  for (const step of arr(work.lifecycle)) {
+    if (str(step.to) === "claimed" && str(step.by)) by = str(step.by);
+  }
+  return by;
+}
+
+/**
+ * One work item, cheaply and fresh: `compound work show <id> --json` (under a
+ * second) instead of the whole `workbench --json` (about two minutes, which
+ * the old 15 s limit always cut off, so the click failed as "not found").
+ *
+ * - Envelope fields (id, state, owner, success_predicate, canonical_surface)
+ *   come from `work show`; the claimant comes from its lifecycle.
+ * - `next_action` / `desired_outcome` exist only in the workbench output, so
+ *   they come from the page's CACHED workbench copy (display text only).
+ * - A closed item does not resolve (the old lookup only searched open work).
+ * - An admission preview is not an envelope yet: it resolves from the cached
+ *   workbench copy, as does an envelope when `work show` fails. The command
+ *   the click runs (`work advance` / `work continue`) re-validates state.
+ */
+export async function resolveWorkItem(itemId: string): Promise<Json | null> {
+  const [work, cached] = await Promise.all([runJson(["work", "show", itemId, "--json"]), cachedWorkbenchItem(itemId)]);
+  if (work && str(work.id) === itemId) {
+    if (TERMINAL_WORK_STATES.has(str(work.state))) return null;
+    return {
+      ...(cached ?? {}),
+      ...work,
+      work_id: itemId,
+      claimed_by: latestClaimant(work) || str(cached?.claimed_by),
+      resolved_from: cached ? "work show + cached workbench text" : "work show",
+    };
+  }
+  return cached ? { ...cached, resolved_from: "cached workbench" } : null;
+}
+
+/**
+ * `dispatch_next` exists only in the full workbench output. Dispatch binds
+ * the click to the CURRENT target, so this read stays fresh and gets the
+ * heavy budget (about two minutes): the old 15 s limit always failed.
+ */
 async function currentDispatchTarget(): Promise<Json | null> {
-  const data = await runJson(["workbench", "--json"]);
+  const data = await runJson(["workbench", "--json"], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS });
   const next = (data?.dispatch_next ?? {}) as Json;
   if (!next.can_run) return null;
   return next;
