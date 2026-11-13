@@ -1,7 +1,66 @@
 areas:
+  - id: opportunity_problem
+    group: opportunity
+    title: The problem it solves
+    question: Can we name the problem the product solves in one plain sentence?
+    measure: the problem it solves
+    skills: [customer-research]
+    evidence:
+      record: [essence.problem]
+  - id: opportunity_audience_segments
+    group: opportunity
+    title: Who it is for
+    question: Do we know which people have this problem the most?
+    measure: the target audience
+    skills: [customer-research]
+    evidence:
+      record: [essence.audience]
+  - id: opportunity_jobs
+    group: opportunity
+    title: The job people need done
+    question: Do we know what people are trying to get done when they reach for it?
+    measure: the job people need done
+    skills: [customer-research]
+  - id: opportunity_market_size
+    group: opportunity
+    title: How many people could use it
+    question: Do we know roughly how many people have this problem and could find us?
+    measure: market size
+  - id: opportunity_willingness_to_pay
+    group: opportunity
+    title: Will people pay
+    question: Do we have signs that people would pay to solve this problem?
+    measure: willingness to pay
+    skills: [pricing]
+  - id: opportunity_alternatives
+    group: opportunity
+    title: What people use today
+    question: Do we know what people use today instead of this product?
+    measure: existing alternatives
+    skills: [competitor-profiling]
   - id: opportunity_competitors
     group: opportunity
     title: Competitor discovery and monitoring
     question: Do we know what rival products do that changes our odds?
     measure: competitors
     skills: [competitor-profiling, competitors]
+  - id: opportunity_competitor_pricing
+    group: opportunity
+    title: Rival features and prices
+    question: Do we know what rival products offer and what they charge?
+    measure: rival features and prices
+    needs: [opportunity_competitors]
+    skills: [competitor-profiling]
+  - id: opportunity_gaps
+    group: opportunity
+    title: Needs nobody meets
+    question: Have we found a need that current products leave unmet?
+    measure: unmet needs
+    needs: [opportunity_alternatives]
+    skills: [customer-research]
+  - id: opportunity_demand_validation
+    group: opportunity
+    title: Proof of demand
+    question: Have real people signed up, paid or asked for it before we built more?
+    measure: demand tests
+    needs: [opportunity_problem]

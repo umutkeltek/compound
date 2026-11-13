@@ -299,3 +299,113 @@ func TestGrowthCatalogBrokenOverlayServesEmbedded(t *testing.T) {
 		})
 	}
 }
+
+// growthSeedFormKinds are the kinds a catalog area may give its own form: the
+// kinds where one question can mean a different thing.
+var growthSeedFormKinds = map[string]bool{"ios_app": true, "website": true, "web_app": true, "api": true, "dev_tool": true}
+
+// growthJargon are words an owner who does not program should never meet in
+// an area question.
+var growthJargon = map[string]bool{
+	"instrument": true, "instrumented": true, "instrumentation": true, "taxonomy": true, "cohort": true, "cohorts": true,
+	"kpi": true, "kpis": true, "metric": true, "metrics": true, "funnel": true, "conversion": true, "churn": true,
+	"onboarding": true, "activation": true, "monetization": true, "segment": true, "segments": true,
+	"attribution": true, "ux": true, "ui": true, "sdk": true,
+}
+
+// growthStoredPredicates lists every fact predicate a fully filled product
+// contract stores, so a record rule can only name a fact that exists.
+func growthStoredPredicates(t *testing.T) map[string]bool {
+	t.Helper()
+	p := Product{
+		ID: "product:seed", Name: "Seed", Positioning: "a", PrivacyPosture: "b", Channels: []string{"c"},
+		Essence: Essence{
+			Audience: "d", Problem: "e", Value: "f", Goal: Goal{IncomeTargetUSDMonth: 1, Horizon: "g"},
+			Constraints: []string{"h"}, AntiGoals: []string{"i"}, Stage: "j",
+		},
+		TasteProfile: TasteProfile{Standards: []string{"k"}, RedLines: []string{"l"}},
+		Deployment:   Deployment{Place: "m", Method: "n", Rollback: "o", Healthchecks: []string{"p"}},
+		Profile: ProductProfile{
+			Kinds: []string{"web_app"}, Audiences: []string{"consumer"}, RevenueModels: []string{"none"}, Objectives: []string{"adoption"},
+		},
+	}
+	out := map[string]bool{}
+	for _, c := range productClaims(Bundle{Product: p}, "ev_seed", "seed.yaml") {
+		out[c.Predicate] = true
+	}
+	if !out["essence.audience"] || !out["profile.objectives"] || !out["deploy_healthchecks"] || !out["taste.standards"] {
+		t.Fatalf("a full product stores too few predicates: %v", out)
+	}
+	return out
+}
+
+// growthNeedsDepth is the longest chain of needs below an area, in steps.
+func growthNeedsDepth(cat *growthAreaCatalog, id string, memo map[string]int) int {
+	if d, ok := memo[id]; ok {
+		return d
+	}
+	a, _ := cat.area(id)
+	depth := 0
+	for _, n := range a.Needs {
+		if d := growthNeedsDepth(cat, n, memo) + 1; d > depth {
+			depth = d
+		}
+	}
+	memo[id] = depth
+	return depth
+}
+
+func growthCheckWording(t *testing.T, where, title, question string) {
+	t.Helper()
+	if strings.TrimSpace(title) == "" || strings.Contains(title, "?") || len([]rune(title)) > 50 {
+		t.Errorf("%s title %q must be a short label", where, title)
+	}
+	if !strings.HasSuffix(question, "?") || len([]rune(question)) >= 90 {
+		t.Errorf("%s question %q must end in ? and stay under 90 characters", where, question)
+	}
+	for _, w := range strings.Fields(strings.ToLower(question)) {
+		if growthJargon[strings.Trim(w, "?,.")] {
+			t.Errorf("%s question %q uses the jargon word %q", where, question, w)
+		}
+	}
+}
+
+// Every catalog row follows the writing rule, names only facts a product
+// contract stores, keeps the needs graph shallow and gives forms only to kinds
+// where the question changes.
+func TestGrowthCatalogSeedRows(t *testing.T) {
+	cat, err := loadEmbeddedGrowthCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := growthStoredPredicates(t)
+	memo := map[string]int{}
+	for _, a := range cat.Areas {
+		growthCheckWording(t, a.ID, a.Title, a.Question)
+		records := append([]string{}, a.Evidence.Record...)
+		for kind, f := range a.Kinds {
+			if !growthSeedFormKinds[kind] {
+				t.Errorf("area %s has a form for %s; forms are only for %v", a.ID, kind, growthSeedFormKinds)
+			}
+			title, question := f.Title, f.Question
+			if title == "" {
+				title = a.Title
+			}
+			if question == "" {
+				question = a.Question
+			}
+			growthCheckWording(t, a.ID+"."+kind, title, question)
+			if f.Evidence != nil {
+				records = append(records, f.Evidence.Record...)
+			}
+		}
+		for _, p := range records {
+			if !stored[p] {
+				t.Errorf("area %s records %q, which no product contract stores", a.ID, p)
+			}
+		}
+		if d := growthNeedsDepth(cat, a.ID, memo); d > 3 {
+			t.Errorf("area %s sits %d needs deep; the limit is 3", a.ID, d)
+		}
+	}
+}

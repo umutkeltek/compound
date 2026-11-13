@@ -1,1 +1,68 @@
-areas: []
+areas:
+  - id: strategy_vision
+    group: strategy
+    title: Goal and time frame
+    question: Do we know what success looks like for the product, and by when?
+    measure: the product goal
+    evidence:
+      record: [essence.goal.income_target_usd_month, essence.goal.horizon]
+  - id: strategy_value_proposition
+    group: strategy
+    title: The core promise
+    question: Can we say in one sentence what users get from the product?
+    measure: the core promise
+    skills: [product-marketing]
+    evidence:
+      record: [essence.value]
+  - id: strategy_differentiation
+    group: strategy
+    title: What makes it different
+    question: Do we know why someone would pick it over the alternatives?
+    measure: what makes it different
+    needs: [opportunity_alternatives]
+    skills: [product-marketing]
+  - id: strategy_positioning
+    group: strategy
+    title: Category and positioning
+    question: Is it clear what kind of product this is and where it fits?
+    measure: positioning
+    skills: [product-marketing]
+    evidence:
+      record: [positioning]
+  - id: strategy_audience_priority
+    group: strategy
+    title: Who comes first
+    question: Have we picked the one group of users to serve first?
+    measure: audience priority
+    needs: [opportunity_audience_segments]
+  - id: strategy_business_model
+    group: strategy
+    title: How it makes money
+    question: Have we chosen how the product makes money, or decided it will not?
+    measure: the business model
+    skills: [pricing]
+    evidence:
+      record: [profile.revenue_models]
+  - id: strategy_scope
+    group: strategy
+    title: What it will not do
+    question: Have we written down what the product will not do?
+    measure: product scope
+    evidence:
+      record: [essence.anti_goals, essence.constraints]
+  - id: strategy_roadmap
+    group: strategy
+    title: What to build next
+    question: Is there a short, ranked list of what to build next?
+    measure: the roadmap
+  - id: strategy_defensibility
+    group: strategy
+    title: Reasons to stay
+    question: Would users lose something real if they switched to a rival?
+    measure: switching costs
+  - id: strategy_fit
+    group: strategy
+    title: How much users need it
+    question: Would many users be very disappointed if the product went away?
+    measure: product and market fit
+    skills: [customer-research]
