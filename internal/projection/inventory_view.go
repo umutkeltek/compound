@@ -79,6 +79,7 @@ type InventorySummary struct {
 	ByProvider    map[string]int `json:"by_provider"`
 	FactsKnown    int            `json:"facts_known"`
 	FactsNotKnown int            `json:"facts_not_known"`
+	Carried       int            `json:"carried"`
 }
 
 // InventoryAttention is one thing to look at: a stale or missing snapshot, a
@@ -110,6 +111,8 @@ type InventoryChangeRef struct {
 	ResourceID string `json:"resource_id"`
 	Kind       string `json:"kind"`
 	Label      string `json:"label"`
+	// Reason is set when refresh dropped a carried resource.
+	Reason string `json:"reason,omitempty"`
 }
 
 // InventoryFactChange is one fact whose value or state changed.
@@ -125,15 +128,19 @@ type InventoryFactChange struct {
 
 // InventoryResourceView is one resource with every fact its kind declares.
 type InventoryResourceView struct {
-	ID       string              `json:"id"`
-	Kind     string              `json:"kind"`
-	Provider string              `json:"provider"`
-	Label    string              `json:"label"`
-	Parent   string              `json:"parent"`
-	Children int                 `json:"children"`
-	Places   []string            `json:"places"`
-	Links    []InventoryLink     `json:"links"`
-	Facts    []InventoryFactView `json:"facts"`
+	ID       string          `json:"id"`
+	Kind     string          `json:"kind"`
+	Provider string          `json:"provider"`
+	Label    string          `json:"label"`
+	Parent   string          `json:"parent"`
+	Children int             `json:"children"`
+	Places   []string        `json:"places"`
+	Links    []InventoryLink `json:"links"`
+	// Carried is true when the resource is shown from the last good read
+	// (LastObservedAt) of a source that did not answer this time.
+	Carried        bool                `json:"carried"`
+	LastObservedAt string              `json:"last_observed_at"`
+	Facts          []InventoryFactView `json:"facts"`
 }
 
 // InventoryFactView is one fact as shown. Value is nil unless State is "ok".
@@ -202,6 +209,32 @@ func BuildInventory(home string, q InventoryQuery, now time.Time) (InventoryProj
 		p.Attention = append(p.Attention, InventoryAttention{Kind: "snapshot", Title: "Inventory snapshot", Why: p.Snapshot.Notice})
 	}
 
+	// Carried resources per source, and the oldest last good read among them.
+	carriedBySource := map[string]int{}
+	carriedSince := map[string]time.Time{}
+	for _, r := range obs.Resources {
+		if !r.Carried {
+			continue
+		}
+		carriedBySource[r.Source]++
+		if at, err := time.Parse(time.RFC3339, r.LastObservedAt); err == nil {
+			if old, ok := carriedSince[r.Source]; !ok || at.Before(old) {
+				carriedSince[r.Source] = at
+			}
+		}
+	}
+	carriedNote := func(source string) string {
+		n := carriedBySource[source]
+		if n == 0 {
+			return ""
+		}
+		note := fmt.Sprintf("; %d resources shown from the last good read", n)
+		if at, ok := carriedSince[source]; ok {
+			note += ", " + humanInventoryAge(math.Max(0, now.Sub(at).Hours())) + " ago"
+		}
+		return note
+	}
+
 	sourceAt := map[string]string{}
 	for _, s := range obs.Sources {
 		sourceAt[s.ID] = s.ObservedAt
@@ -212,10 +245,10 @@ func BuildInventory(home string, q InventoryQuery, now time.Time) (InventoryProj
 		switch s.State {
 		case "failed":
 			p.Attention = append(p.Attention, InventoryAttention{Label: s.ID, Kind: "source", Title: "Source " + s.ID,
-				Why: "source failed" + inventoryDetailSuffix(s.Detail), rank: 1})
+				Why: "source failed" + inventoryDetailSuffix(s.Detail) + carriedNote(s.ID), rank: 1})
 		case "needs_sign_in":
 			p.Attention = append(p.Attention, InventoryAttention{Label: s.ID, Kind: "source", Title: "Source " + s.ID,
-				Why: "source needs sign-in" + inventoryDetailSuffix(s.Detail), rank: 2})
+				Why: "source needs sign-in" + inventoryDetailSuffix(s.Detail) + carriedNote(s.ID), rank: 2})
 		}
 	}
 
@@ -239,7 +272,11 @@ func BuildInventory(home string, q InventoryQuery, now time.Time) (InventoryProj
 		view := InventoryResourceView{
 			ID: r.ID, Kind: r.Kind, Provider: r.Provider, Label: r.Label, Parent: r.Parent,
 			Children: children[r.ID], Places: nonNilStrings(r.Places), Links: r.Links,
+			Carried: r.Carried, LastObservedAt: r.LastObservedAt,
 			Facts: inventoryFactViews(kind, r.Facts, fallbackAt),
+		}
+		if r.Carried {
+			p.Summary.Carried++
 		}
 		if view.Links == nil {
 			view.Links = []InventoryLink{}
@@ -296,7 +333,7 @@ func BuildInventory(home string, q InventoryQuery, now time.Time) (InventoryProj
 	prev, err := LoadPreviousInventorySnapshot(home)
 	switch {
 	case err == nil:
-		p.Changes = diffInventory(kinds, inventoryFilter(prev.Observation.Resources, q), current)
+		p.Changes = diffInventory(inventoryFilter(prev.Observation.Resources, q), current, snap.Dropped)
 		p.Changes.PreviousObservedAt = prev.Observation.ObservedAt
 	case errors.Is(err, os.ErrNotExist):
 		p.Changes.Note = "no previous import to compare with"
@@ -406,8 +443,14 @@ func inventoryNumber(value any) (float64, bool) {
 
 // diffInventory reports added and removed resources and, for resources in
 // both, facts whose state or value changed (observed_at alone is not a change).
-func diffInventory(kinds InventoryKindSet, before, after []InventoryObservedResource) InventoryChanges {
+// A carried resource is never added or removed; a removed resource that refresh
+// dropped carries the drop reason.
+func diffInventory(before, after []InventoryObservedResource, dropped []InventoryChangeRef) InventoryChanges {
 	ch := InventoryChanges{Added: []InventoryChangeRef{}, Removed: []InventoryChangeRef{}, FactChanges: []InventoryFactChange{}}
+	reasons := map[string]string{}
+	for _, d := range dropped {
+		reasons[d.ResourceID] = d.Reason
+	}
 	prev := map[string]InventoryObservedResource{}
 	for _, r := range before {
 		prev[r.ID] = r
@@ -417,7 +460,9 @@ func diffInventory(kinds InventoryKindSet, before, after []InventoryObservedReso
 		next[r.ID] = true
 		old, existed := prev[r.ID]
 		if !existed {
-			ch.Added = append(ch.Added, InventoryChangeRef{ResourceID: r.ID, Kind: r.Kind, Label: r.Label})
+			if !r.Carried {
+				ch.Added = append(ch.Added, InventoryChangeRef{ResourceID: r.ID, Kind: r.Kind, Label: r.Label})
+			}
 			continue
 		}
 		names := map[string]bool{}
@@ -445,7 +490,7 @@ func diffInventory(kinds InventoryKindSet, before, after []InventoryObservedReso
 	}
 	for _, r := range before {
 		if !next[r.ID] {
-			ch.Removed = append(ch.Removed, InventoryChangeRef{ResourceID: r.ID, Kind: r.Kind, Label: r.Label})
+			ch.Removed = append(ch.Removed, InventoryChangeRef{ResourceID: r.ID, Kind: r.Kind, Label: r.Label, Reason: reasons[r.ID]})
 		}
 	}
 	return ch

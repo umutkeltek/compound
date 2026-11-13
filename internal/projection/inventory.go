@@ -89,6 +89,11 @@ type InventoryObservedResource struct {
 	Places   []string                         `json:"places"`
 	Links    []InventoryLink                  `json:"links"`
 	Facts    map[string]InventoryObservedFact `json:"facts"`
+	// Carried and LastObservedAt are set by refresh, never by a collector: a
+	// carried resource is shown from the last good read of a source that did
+	// not answer this time, with its facts unchanged.
+	Carried        bool   `json:"carried,omitempty"`
+	LastObservedAt string `json:"last_observed_at,omitempty"`
 }
 
 // InventoryLink relates a resource to another resource or place.
@@ -113,12 +118,21 @@ type InventorySnapshot struct {
 	SchemaVersion string               `json:"schema_version"`
 	ImportedAt    string               `json:"imported_at"`
 	Observation   InventoryObservation `json:"observation"`
+	// Dropped lists carried resources this refresh stopped carrying, with why.
+	Dropped []InventoryChangeRef `json:"dropped,omitempty"`
 }
+
+// DefaultInventoryCarryMaxAge is how long a resource of a source that does not
+// answer is carried from its last good read before refresh drops it.
+const DefaultInventoryCarryMaxAge = 7 * 24 * time.Hour
 
 // InventoryRefreshOptions tune refresh.
 type InventoryRefreshOptions struct {
 	// AllowOlder imports an observation older than the stored snapshot.
 	AllowOlder bool
+	// CarryMaxAge bounds how old a carried resource's last good read may be;
+	// zero means DefaultInventoryCarryMaxAge.
+	CarryMaxAge time.Duration
 }
 
 // InventoryRefreshResult reports one import.
@@ -133,8 +147,12 @@ type InventoryRefreshResult struct {
 	ByKind             map[string]int `json:"by_kind"`
 	Sources            int            `json:"sources"`
 	SourcesByState     map[string]int `json:"sources_by_state"`
-	OverlayError       string         `json:"overlay_error,omitempty"`
-	Notes              []string       `json:"notes,omitempty"`
+	// Carried counts resources kept from the last good read of a source
+	// that did not answer; Dropped lists the ones no longer carried.
+	Carried      int                  `json:"carried"`
+	Dropped      []InventoryChangeRef `json:"dropped"`
+	OverlayError string               `json:"overlay_error,omitempty"`
+	Notes        []string             `json:"notes,omitempty"`
 }
 
 // InventorySnapshotPath is the stored snapshot under a Compound home.
@@ -237,6 +255,9 @@ func ValidateInventoryObservation(obs InventoryObservation, kinds InventoryKindS
 		}
 		if !sources[r.Source] {
 			add("%s: source %q is not listed in sources", where, r.Source)
+		}
+		if r.Carried || r.LastObservedAt != "" {
+			add("%s: carried and last_observed_at are set by refresh, never by a collector", where)
 		}
 		if r.Parent != "" && (!ids[r.Parent] || r.Parent == r.ID) {
 			add("%s: parent %s is not another resource in this file", where, MaskInventoryID(r.Parent))
@@ -363,14 +384,11 @@ func RefreshInventory(home string, data []byte, opts InventoryRefreshOptions, no
 		ImportedAt:     now.UTC().Format(time.RFC3339),
 		ObservedAt:     obs.ObservedAt,
 		SnapshotPath:   InventorySnapshotPath(home),
-		Resources:      len(obs.Resources),
 		ByKind:         map[string]int{},
 		Sources:        len(obs.Sources),
 		SourcesByState: map[string]int{},
+		Dropped:        []InventoryChangeRef{},
 		OverlayError:   kinds.OverlayError,
-	}
-	for _, r := range obs.Resources {
-		result.ByKind[r.Kind]++
 	}
 	for _, s := range obs.Sources {
 		result.SourcesByState[s.State]++
@@ -384,20 +402,93 @@ func RefreshInventory(home string, data []byte, opts InventoryRefreshOptions, no
 		}
 		result.PreviousKept = true
 		result.PreviousObservedAt = stored.Observation.ObservedAt
+		maxAge := opts.CarryMaxAge
+		if maxAge <= 0 {
+			maxAge = DefaultInventoryCarryMaxAge
+		}
+		carried, dropped := carryInventoryResources(stored.Observation, obs, maxAge, now)
+		obs.Resources = append(obs.Resources, carried...)
+		result.Carried = len(carried)
+		result.Dropped = append(result.Dropped, dropped...)
 	case errors.Is(err, os.ErrNotExist):
 	default:
 		result.PreviousKept = true
-		result.Notes = append(result.Notes, "the stored snapshot could not be read and is kept as previous.json: "+err.Error())
+		result.Notes = append(result.Notes, "the stored snapshot could not be read and is kept as previous.json; nothing was carried from it: "+err.Error())
+	}
+	result.Resources = len(obs.Resources)
+	for _, r := range obs.Resources {
+		result.ByKind[r.Kind]++
 	}
 	snap := InventorySnapshot{
 		SchemaVersion: InventorySnapshotSchemaVersion,
 		ImportedAt:    result.ImportedAt,
 		Observation:   obs,
+		Dropped:       result.Dropped,
 	}
 	if err := writeInventorySnapshot(home, snap); err != nil {
 		return InventoryRefreshResult{}, err
 	}
 	return result, nil
+}
+
+// carryInventoryResources keeps the resources of a source that did not answer
+// this time. A source whose new row has a state other than ok or skipped gets
+// its resources from the stored snapshot carried forward unchanged (facts and
+// their observed_at as they were), marked carried, with last_observed_at set
+// to the last good read. A resource the new observation already lists (by id)
+// is never carried, so a recovered source replaces its carried rows. A skipped
+// source (turned off by the user) carries nothing. A carried resource whose
+// last good read is older than maxAge is dropped and reported with a reason.
+func carryInventoryResources(stored, next InventoryObservation, maxAge time.Duration, now time.Time) ([]InventoryObservedResource, []InventoryChangeRef) {
+	carrySources := map[string]bool{}
+	for _, s := range next.Sources {
+		if s.State != "ok" && s.State != "skipped" {
+			carrySources[s.ID] = true
+		}
+	}
+	if len(carrySources) == 0 {
+		return nil, nil
+	}
+	present := map[string]bool{}
+	for _, r := range next.Resources {
+		present[r.ID] = true
+	}
+	storedSourceAt := map[string]string{}
+	for _, s := range stored.Sources {
+		storedSourceAt[s.ID] = s.ObservedAt
+	}
+	var carried []InventoryObservedResource
+	var dropped []InventoryChangeRef
+	for _, r := range stored.Resources {
+		if !carrySources[r.Source] || present[r.ID] {
+			continue
+		}
+		last := r.LastObservedAt
+		if !r.Carried || last == "" {
+			last = storedSourceAt[r.Source]
+			if last == "" {
+				last = stored.ObservedAt
+			}
+		}
+		if lastAt, err := time.Parse(time.RFC3339, last); err == nil && now.Sub(lastAt) > maxAge {
+			dropped = append(dropped, InventoryChangeRef{ResourceID: r.ID, Kind: r.Kind, Label: r.Label,
+				Reason: "not seen for " + inventoryDays(maxAge)})
+			continue
+		}
+		r.Carried = true
+		r.LastObservedAt = last
+		present[r.ID] = true
+		carried = append(carried, r)
+	}
+	return carried, dropped
+}
+
+func inventoryDays(d time.Duration) string {
+	days := d.Hours() / 24
+	if days == 1 {
+		return "1 day"
+	}
+	return formatInventoryNumber(days) + " days"
 }
 
 // RefreshInventoryFile reads the collector's observation file (size-capped)
@@ -424,6 +515,12 @@ func FormatInventoryRefresh(r InventoryRefreshResult) string {
 	fmt.Fprintf(&b, "  snapshot: %s\n", r.SnapshotPath)
 	if r.PreviousObservedAt != "" {
 		fmt.Fprintf(&b, "  previous snapshot kept (observed %s)\n", r.PreviousObservedAt)
+	}
+	if r.Carried > 0 {
+		fmt.Fprintf(&b, "  %d resources kept from the last good read of a source that did not answer\n", r.Carried)
+	}
+	if len(r.Dropped) > 0 {
+		fmt.Fprintf(&b, "  %d carried resources dropped: %s\n", len(r.Dropped), r.Dropped[0].Reason)
 	}
 	if r.OverlayError != "" {
 		fmt.Fprintf(&b, "  kinds overlay ignored: %s\n", r.OverlayError)

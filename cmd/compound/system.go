@@ -191,7 +191,7 @@ func cmdSystem(args []string) {
 }
 
 const systemInventoryUsage = "usage: compound system inventory [--json] [--kind K] [--provider P] [--stale-hours N]\n" +
-	"       compound system inventory refresh --collector-json FILE [--allow-older] [--json]"
+	"       compound system inventory refresh --collector-json FILE [--allow-older] [--carry-days N (default 7)] [--json]"
 
 // cmdSystemInventory is the thin CLI face of the read-only system inventory
 // (internal/projection/inventory*.go). It makes no external call.
@@ -263,6 +263,18 @@ func cmdSystemInventoryRefresh(args []string) {
 				os.Exit(2)
 			}
 			file = args[i+1]
+			i++
+		case "--carry-days":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, systemInventoryUsage)
+				os.Exit(2)
+			}
+			days, err := strconv.ParseFloat(args[i+1], 64)
+			if err != nil || days <= 0 {
+				fmt.Fprintln(os.Stderr, "system inventory refresh: --carry-days must be a positive number")
+				os.Exit(2)
+			}
+			opts.CarryMaxAge = time.Duration(days * 24 * float64(time.Hour))
 			i++
 		default:
 			fmt.Fprintln(os.Stderr, systemInventoryUsage)
