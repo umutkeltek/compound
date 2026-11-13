@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"compound/internal/home"
@@ -12,7 +13,7 @@ import (
 
 func cmdSystem(args []string) {
 	if len(args) == 0 || hasFlag(args, "--help") || hasFlag(args, "-h") {
-		fmt.Fprintln(os.Stderr, "usage: compound system <status|map|stats|memory-graph|lineage|status-surface> [--json]")
+		fmt.Fprintln(os.Stderr, "usage: compound system <status|map|stats|memory-graph|lineage|status-surface|inventory> [--json]")
 		if len(args) == 0 {
 			os.Exit(2)
 		}
@@ -181,8 +182,67 @@ func cmdSystem(args []string) {
 		fmt.Printf("- steps: %d\n", len(report.Steps))
 	case "status-surface":
 		cmdSystemStatusSurface(args[1:])
+	case "inventory":
+		cmdSystemInventory(args[1:])
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound system <status|map|stats|memory-graph|lineage|status-surface> [--json]")
+		fmt.Fprintln(os.Stderr, "usage: compound system <status|map|stats|memory-graph|lineage|status-surface|inventory> [--json]")
 		os.Exit(2)
 	}
+}
+
+const systemInventoryUsage = "usage: compound system inventory [--json] [--kind K] [--provider P] [--stale-hours N]\n" +
+	"       compound system inventory refresh --collector-json FILE [--allow-older] [--json]"
+
+// cmdSystemInventory is the thin CLI face of the read-only system inventory
+// (internal/projection/inventory*.go). It makes no external call.
+func cmdSystemInventory(args []string) {
+	if len(args) > 0 && args[0] == "refresh" {
+		cmdSystemInventoryRefresh(args[1:])
+		return
+	}
+	fmt.Fprintln(os.Stderr, systemInventoryUsage)
+	os.Exit(2)
+}
+
+func cmdSystemInventoryRefresh(args []string) {
+	var file string
+	var jsonOut bool
+	var opts projection.InventoryRefreshOptions
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			jsonOut = true
+		case "--allow-older":
+			opts.AllowOlder = true
+		case "--collector-json":
+			if i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" {
+				fmt.Fprintln(os.Stderr, systemInventoryUsage)
+				os.Exit(2)
+			}
+			file = args[i+1]
+			i++
+		default:
+			fmt.Fprintln(os.Stderr, systemInventoryUsage)
+			os.Exit(2)
+		}
+	}
+	if file == "" {
+		fmt.Fprintln(os.Stderr, systemInventoryUsage)
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	result, err := projection.RefreshInventoryFile(homePath, file, opts, time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "system inventory refresh:", err)
+		os.Exit(1)
+	}
+	if jsonOut {
+		printJSON(result)
+		return
+	}
+	fmt.Print(projection.FormatInventoryRefresh(result))
 }

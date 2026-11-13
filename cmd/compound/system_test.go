@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/projection"
 )
@@ -87,6 +89,53 @@ func TestSystemMemoryGraphAndLineageJSONCommands(t *testing.T) {
 	}
 	if lineage.SchemaVersion != projection.LineageSchemaVersion || !lineage.Found || len(lineage.Steps) < 2 {
 		t.Fatalf("lineage = %+v", lineage)
+	}
+}
+
+// cmdInventoryLongID is a long fake id: CLI text may show only its last four characters.
+const cmdInventoryLongID = "aws:account:9c1f7e3b5a2d4c6e8f0a1b3c5d7e9f2a4c6e8b0d1f3a5c7e9b2d4f6a8c0e2wq4"
+
+func cmdInventoryObservation(observedAt time.Time) string {
+	at := observedAt.UTC().Format(time.RFC3339)
+	return `{"schema_version":"compound.system_inventory_observation.v0.1","observed_at":"` + at + `",
+ "collector":{"name":"example-collector","version":"0.0.1"},
+ "sources":[{"id":"cloud","provider":"aws","state":"ok","detail":"","observed_at":"` + at + `","duration_ms":10},
+            {"id":"dns","provider":"dnsco","state":"needs_sign_in","detail":"token expired","observed_at":"` + at + `","duration_ms":5}],
+ "resources":[
+  {"id":"` + cmdInventoryLongID + `","kind":"account","provider":"aws","label":"Example account","parent":"","source":"cloud","places":[],"links":[],
+   "facts":{"identity_ok":{"value":true,"unit":"bool","state":"ok","detail":"","observed_at":"` + at + `"},
+            "resources":{"value":7,"unit":"count","state":"ok","detail":"","observed_at":"` + at + `"},
+            "credit_left":{"value":null,"unit":"usd","state":"needs_owner","detail":"owner only","observed_at":"` + at + `"}}},
+  {"id":"node:example-1","kind":"host","provider":"examplehv","label":"lab-node","parent":"","source":"cloud","places":[],"links":[],
+   "facts":{"disk_pct":{"value":91,"unit":"pct","state":"ok","detail":"","observed_at":"` + at + `"}}}
+ ]}`
+}
+
+func TestSystemInventoryRefreshCommandStoresSnapshot(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	file := filepath.Join(t.TempDir(), "observation.json")
+	observedAt := time.Now().Add(-time.Hour)
+	writeCmdTestFile(t, file, cmdInventoryObservation(observedAt))
+
+	out := captureStdout(t, func() {
+		cmdSystem([]string{"inventory", "refresh", "--collector-json", file, "--json"})
+	})
+	var res projection.InventoryRefreshResult
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("parse refresh json: %v\n%s", err, out)
+	}
+	if res.SchemaVersion != projection.InventoryRefreshSchemaVersion || res.Resources != 2 || res.Sources != 2 {
+		t.Fatalf("refresh result = %+v", res)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "observed", "inventory", "snapshot.json")); err != nil {
+		t.Fatalf("snapshot not stored: %v", err)
+	}
+	text := captureStdout(t, func() {
+		cmdSystem([]string{"inventory", "refresh", "--collector-json", file})
+	})
+	if !strings.Contains(text, "inventory imported: 2 resources") || !strings.Contains(text, "previous snapshot kept") {
+		t.Fatalf("refresh text = %q", text)
 	}
 }
 
