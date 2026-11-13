@@ -179,7 +179,13 @@ func RecordWorkBinding(homePath string, in RecordWorkBindingInput, now time.Time
 // they bound. Any corrupt member, fork, head digest drift, or path drift fails
 // closed.
 func LoadCurrentWorkBinding(homePath string, target WorkBindingTarget) (*ReviewWorkBinding, error) {
-	head, digest, err := loadWorkBindingHead(homePath, target)
+	return loadCurrentWorkBinding(homePath, target, filepath.Glob)
+}
+
+// loadCurrentWorkBinding is LoadCurrentWorkBinding with the binding-file glob
+// injected, so the queue can answer it from one directory listing per call.
+func loadCurrentWorkBinding(homePath string, target WorkBindingTarget, glob func(string) ([]string, error)) (*ReviewWorkBinding, error) {
+	head, digest, err := loadWorkBindingHead(homePath, target, glob)
 	if err != nil || head == nil {
 		return head, err
 	}
@@ -196,17 +202,17 @@ func LoadCurrentWorkBinding(homePath string, target WorkBindingTarget) (*ReviewW
 // Queue authority must use LoadCurrentWorkBinding and remain fail closed until
 // the superseding head exists.
 func LoadWorkBindingHead(homePath string, target WorkBindingTarget) (*ReviewWorkBinding, error) {
-	head, _, err := loadWorkBindingHead(homePath, target)
+	head, _, err := loadWorkBindingHead(homePath, target, filepath.Glob)
 	return head, err
 }
 
-func loadWorkBindingHead(homePath string, target WorkBindingTarget) (*ReviewWorkBinding, string, error) {
+func loadWorkBindingHead(homePath string, target WorkBindingTarget, glob func(string) ([]string, error)) (*ReviewWorkBinding, string, error) {
 	normalized, reviewRel, digest, err := normalizeWorkBindingTarget(homePath, target)
 	if err != nil {
 		return nil, "", err
 	}
 	pattern := strings.TrimSuffix(normalized.CoreReviewPath, ".json") + ".work-binding.*.json"
-	paths, err := filepath.Glob(pattern)
+	paths, err := glob(pattern)
 	if err != nil {
 		return nil, "", fmt.Errorf("scan review work bindings: %w", err)
 	}

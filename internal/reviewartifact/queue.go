@@ -220,6 +220,13 @@ type DecisionCardChoice struct {
 // Queue scans COMPOUND_HOME/reviews for review artifacts. It never mutates
 // artifacts, owner files, ledgers, or promotion state.
 func Queue(homePath string, opt QueueOptions, now time.Time) (QueueReport, error) {
+	return queue(homePath, opt, now, newQueueDirListing())
+}
+
+// queue builds the report. A nil listing re-reads a directory for every item
+// that asks (the reference path the same-output tests compare against);
+// Queue passes a fresh per-call listing so each review directory is read once.
+func queue(homePath string, opt QueueOptions, now time.Time, listing *queueDirListing) (QueueReport, error) {
 	homePath = strings.TrimSpace(homePath)
 	if homePath == "" {
 		return QueueReport{}, fmt.Errorf("COMPOUND_HOME required")
@@ -258,7 +265,7 @@ func Queue(homePath string, opt QueueOptions, now time.Time) (QueueReport, error
 		if !coreReviewJSON(path) {
 			return nil
 		}
-		item, err := queueItem(root, path)
+		item, err := queueItemWith(root, path, listing)
 		if warning, skip := skippedMalformedArtifact(err, opt.Area); skip {
 			if warning != "" {
 				report.Warnings = append(report.Warnings, warning)
@@ -840,12 +847,12 @@ func itemNeedsReviewCard(item QueueItem) bool {
 	return item.Status == "review_required" || item.Readiness == "needs_review"
 }
 
-func queueItem(root, path string) (QueueItem, error) {
+func queueItemWith(root, path string, listing *queueDirListing) (QueueItem, error) {
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
 		return QueueItem{}, err
 	}
-	item, err := queueItemForRel(path, filepath.ToSlash(rel))
+	item, err := queueItemForRelWith(path, filepath.ToSlash(rel), listing)
 	if err != nil {
 		return QueueItem{}, err
 	}
@@ -853,9 +860,9 @@ func queueItem(root, path string) (QueueItem, error) {
 		return item, nil
 	}
 	homePath := filepath.Dir(root)
-	binding, bindingErr := LoadCurrentWorkBinding(homePath, WorkBindingTarget{
+	binding, bindingErr := loadCurrentWorkBinding(homePath, WorkBindingTarget{
 		Area: item.Area, ReviewID: item.ID, CoreReviewPath: path,
-	})
+	}, listing.glob)
 	if bindingErr != nil {
 		item.WorkBindingError = bindingErr.Error()
 		item.Warnings = append(item.Warnings, "owner-work binding invalid: "+bindingErr.Error())
@@ -866,6 +873,10 @@ func queueItem(root, path string) (QueueItem, error) {
 }
 
 func queueItemForRel(path, rel string) (QueueItem, error) {
+	return queueItemForRelWith(path, rel, nil)
+}
+
+func queueItemForRelWith(path, rel string, listing *queueDirListing) (QueueItem, error) {
 	area := filepath.ToSlash(filepath.Dir(rel))
 	if area == "." {
 		area = ""
@@ -954,7 +965,7 @@ func queueItemForRel(path, rel string) (QueueItem, error) {
 	} else if err != nil && !os.IsNotExist(err) {
 		return QueueItem{}, err
 	}
-	extras, err := queueExtraPaths(filepath.Dir(path), stem, path, item.MarkdownPath)
+	extras, err := queueExtraPaths(listing, filepath.Dir(path), stem, path, item.MarkdownPath)
 	if err != nil {
 		return QueueItem{}, err
 	}
@@ -1103,8 +1114,8 @@ func coreReviewJSON(path string) bool {
 	return true
 }
 
-func queueExtraPaths(dir, stem, jsonPath, mdPath string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
+func queueExtraPaths(listing *queueDirListing, dir, stem, jsonPath, mdPath string) ([]string, error) {
+	entries, err := listing.readDir(dir)
 	if err != nil {
 		return nil, err
 	}
