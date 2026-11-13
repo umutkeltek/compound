@@ -4,6 +4,7 @@ import {
   FOCUS_META,
   KPI_META,
   STATUS_META,
+  STATUS_ORDER,
   appHue,
   barClass,
   appSlug,
@@ -11,6 +12,7 @@ import {
   kpiDelta,
   kpiLowerIsBetter,
   shortDate,
+  type Coverage,
   type GrowthApp,
   type GrowthStatus,
   type Kpi,
@@ -102,7 +104,7 @@ export function GrowthStatusChip({ status, label }: { status: GrowthStatus; labe
   return (
     <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-md border px-1.5 py-0.5 text-2xs font-medium ${meta.chip}`} title={meta.meaning}>
       <span className={`h-1.5 w-1.5 rounded-full ${meta.dot}`} aria-hidden />
-      {label ?? meta.short}
+      {label ?? meta.label}
     </span>
   );
 }
@@ -117,33 +119,57 @@ export function FocusChip({ focus }: { focus: string }) {
   );
 }
 
-/** Stacked bar of the 25 areas by status for one app (measured · partial · stale · blind · n/a). */
+export function coverageCounts(coverage: Coverage): Record<GrowthStatus, number> {
+  return {
+    measured: coverage.measured,
+    partial: coverage.partial,
+    stale: coverage.stale,
+    blind: coverage.blind,
+    unknown: coverage.unknown,
+    deferred: coverage.deferred,
+    not_applicable: coverage.notApplicable,
+  };
+}
+
+/**
+ * Thin stacked bar of areas by status. "Does not apply" is left out: it is not
+ * a gap. Segments keep the display order, so the known part always sits on the
+ * left and the calm gaps fill the rest.
+ */
+export function StatusMixBar({ counts, className = "h-2" }: { counts: Record<GrowthStatus, number>; className?: string }) {
+  const parts = STATUS_ORDER.filter((st) => st !== "not_applicable" && counts[st] > 0);
+  const total = parts.reduce((sum, st) => sum + counts[st], 0);
+  const label = parts.map((st) => `${counts[st]} ${STATUS_META[st].label.toLowerCase()}`).join(", ") || "nothing applies";
+  return (
+    <div className={`flex w-full gap-px overflow-hidden rounded-pill ${total ? "" : "border border-dashed border-hair"} ${className}`} role="img" aria-label={label} title={label}>
+      {parts.map((st) => (
+        <span key={st} className={barClass(st)} style={{ width: `${(counts[st] / total) * 100}%` }} />
+      ))}
+    </div>
+  );
+}
+
+export function StatusLegend({ counts, statuses }: { counts?: Record<GrowthStatus, number>; statuses?: GrowthStatus[] }) {
+  const list = (statuses ?? STATUS_ORDER).filter((st) => !counts || counts[st] > 0);
+  return (
+    <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-2xs text-muted">
+      {list.map((st) => (
+        <span key={st} className="inline-flex items-center gap-1" title={STATUS_META[st].meaning}>
+          <span className={`inline-block h-2.5 w-3.5 rounded-xs ${STATUS_META[st].fill || "border border-hair-2"}`} aria-hidden />
+          {counts ? <span className="tabular-nums">{counts[st]}</span> : null} {STATUS_META[st].label.toLowerCase()}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** Stacked bar of one app's areas by status, optionally with a count legend. */
 export function CoverageBar({ coverage, showLegend = false }: { coverage: GrowthApp["coverage"]; showLegend?: boolean }) {
-  const parts: { status: GrowthStatus; count: number }[] = [
-    { status: "measured", count: coverage.measured },
-    { status: "partial", count: coverage.partial },
-    { status: "stale", count: coverage.stale },
-    { status: "blind", count: coverage.blind },
-    { status: "not_applicable", count: coverage.notApplicable },
-  ];
-  const total = parts.reduce((sum, p) => sum + p.count, 0) || 1;
+  const counts = coverageCounts(coverage);
   return (
     <div className="flex min-w-0 flex-col gap-1.5">
-      <div className="flex h-2 w-full gap-0.5 overflow-hidden rounded-pill" role="img" aria-label={parts.map((p) => `${p.count} ${STATUS_META[p.status].label.toLowerCase()}`).join(", ")}>
-        {parts.filter((p) => p.count > 0).map((p) => (
-          <span key={p.status} className={barClass(p.status)} style={{ width: `${(p.count / total) * 100}%` }} />
-        ))}
-      </div>
-      {showLegend ? (
-        <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-2xs text-muted">
-          {parts.filter((p) => p.count > 0).map((p) => (
-            <span key={p.status} className="inline-flex items-center gap-1">
-              <span className={`h-1.5 w-1.5 rounded-full ${STATUS_META[p.status].dot}`} aria-hidden />
-              {p.count} {STATUS_META[p.status].label.toLowerCase()}
-            </span>
-          ))}
-        </div>
-      ) : null}
+      <StatusMixBar counts={counts} />
+      {showLegend ? <StatusLegend counts={counts} /> : null}
     </div>
   );
 }
@@ -192,7 +218,7 @@ export function DegradedGrowth({ status, error }: { status: string; error: strin
     <div className="rounded-2xl border border-seam-line bg-seam-soft p-5 text-sm text-seam">
       <div className="font-semibold">App growth data could not be loaded{status === "stale" ? " (showing nothing rather than a stale guess)" : ""}.</div>
       <p className="mt-1 text-muted">
-        This page reads <code className="mono">compound product growth --json</code>. If the installed <code className="mono">compound</code> is older than this console, rebuild it onto your PATH.
+        This page reads <code className="mono">compound product growth --json</code> (schema v0.2). If the installed <code className="mono">compound</code> is older than this console, rebuild it onto your PATH.
         {error ? <span className="mt-1 block text-xs text-faint">{error.slice(0, 240)}</span> : null}
       </p>
     </div>

@@ -1,20 +1,13 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
-import { CopyCmd } from "@/components/CopyCmd";
 import { FreshnessChip, HeaderStat, PageHeader } from "@/components/kit";
 import { DivergingBars, Legend, LineChart } from "@/components/charts/Charts";
-import {
-  AppGlyph,
-  CoverageBar,
-  DegradedGrowth,
-  FocusChip,
-  GrowthStatusChip,
-  KpiTile,
-  Panel,
-} from "@/components/growth/GrowthKit";
+import { GroupAudit, NextMoves, ProfileRow, makeLookup } from "@/components/growth/AppGrowth";
+import { AppGlyph, DegradedGrowth, FocusChip, KpiTile, Panel, StatusLegend, coverageCounts } from "@/components/growth/GrowthKit";
+import { OpenOnHash } from "@/components/growth/OpenOnHash";
 import { arr, getWorkbench, str } from "@/lib/compound";
-import { findApp, formatValue, getGrowth, shortDate, STATUS_META, type FunnelStep } from "@/lib/growth";
+import { findApp, formatValue, getGrowth, shortDate, STATUS_META, valueLabel, type FunnelStep } from "@/lib/growth";
 import { ago } from "@/lib/time";
 
 export const dynamic = "force-dynamic";
@@ -27,8 +20,6 @@ const SOURCE_LABEL: Record<string, string> = {
   ga4: "Google Analytics",
 };
 
-const KIND_LABEL: Record<string, string> = { ios_app: "iOS app", web: "Website", unknown: "Kind unknown" };
-
 function FunnelStrip({ steps }: { steps: FunnelStep[] }) {
   const firstBlind = steps.findIndex((s) => s.status === "blind");
   return (
@@ -36,20 +27,20 @@ function FunnelStrip({ steps }: { steps: FunnelStep[] }) {
       <ol className="flex min-w-max items-stretch gap-2">
         {steps.map((step, i) => {
           const meta = STATUS_META[step.status] ?? STATUS_META.blind;
-          const blind = step.status === "blind" || step.status === "not_applicable";
+          const gap = step.status === "blind" || step.status === "not_applicable" || step.status === "unknown";
           return (
             <li key={step.id} className="flex items-stretch gap-2">
               {i === firstBlind && firstBlind > 0 ? (
                 <div className="flex w-6 flex-col items-center justify-center" title="Measurement stops here">
-                  <span className="h-full w-px border-l border-dashed border-crit" />
+                  <span className="h-full w-px border-l border-dashed border-faint" />
                 </div>
               ) : null}
-              <div className={`flex w-44 flex-col gap-1.5 rounded-xl border p-3 ${blind ? "border-dashed border-hair bg-soft" : "border-hair bg-panel"}`}>
+              <div className={`flex w-44 flex-col gap-1.5 rounded-xl border p-3 ${gap ? "border-dashed border-hair bg-soft" : "border-hair bg-panel"}`}>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-medium text-muted">{i + 1}. {step.label}</span>
                   <span className={`h-2 w-2 shrink-0 rounded-full ${meta.dot}`} title={meta.label} aria-label={meta.label} />
                 </div>
-                <div className={`text-xl font-semibold tabular-nums ${blind ? "text-faint" : "text-ink"}`}>
+                <div className={`text-xl font-semibold tabular-nums ${gap ? "text-faint" : "text-ink"}`}>
                   {step.value == null ? "—" : formatValue(step.value, step.id.includes("conversion") ? "ratio" : "count")}
                 </div>
                 <div className="text-2xs leading-snug text-muted">{step.note}</div>
@@ -64,9 +55,9 @@ function FunnelStrip({ steps }: { steps: FunnelStep[] }) {
 }
 
 /**
- * One app's growth picture: who it is for, what is measured, where the funnel
- * goes dark, the 25-area audit and the work already moving on it. Every
- * number is from `compound product growth --json --product <id>`.
+ * One app: what to do next and why (the hero), what the product is, then
+ * the 12 groups of areas, then the numbers and the work already moving.
+ * Every status, count and order is from `compound product growth --json`.
  */
 export default async function AppPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
@@ -83,14 +74,18 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
   const app = findApp(model, slug);
   if (!app) notFound();
 
+  const look = makeLookup(app, model.areas);
   const allocation = model.portfolio.allocation.find((row) => row.productId === app.productId);
   const hasAds = (app.series.ad_spend_usd ?? []).some((p) => p.value != null);
   const hasWeb = (app.series.web_clicks ?? []).some((p) => p.value != null);
   const hasSales = (app.series.proceeds_usd ?? []).some((p) => p.value != null);
-  const applicable = app.coverage.measured + app.coverage.partial + app.coverage.stale + app.coverage.blind;
+  const hasSources = app.freshness.sources.length > 0;
+  const judged = app.coverage.measured + app.coverage.partial + app.coverage.stale + app.coverage.blind;
+  const kinds = app.profile.kinds.values.map(valueLabel);
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-8">
+      <OpenOnHash />
       <PageHeader
         breadcrumb={`growth / apps / ${app.name}`}
         title={
@@ -101,181 +96,127 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
         }
         stats={
           <>
-            <span className="text-muted">{KIND_LABEL[app.kind] ?? app.kind}</span>
-            {allocation ? <span className="inline-flex items-center gap-1.5">Rank <span className="font-semibold text-ink">#{allocation.rank}</span> <FocusChip focus={allocation.focus} /></span> : null}
-            <HeaderStat value={`${app.coverage.measured} of ${applicable}`} label="areas measured" />
-            <HeaderStat value={app.coverage.blind} label="blind" tone={app.coverage.blind ? "crit" : undefined} />
-            <HeaderStat value={app.hypotheses.open} label={app.hypotheses.open === 1 ? "open hypothesis" : "open hypotheses"} />
+            <span className="text-muted">{kinds.length ? kinds.join(" and ") : "Kind not on file"}</span>
+            {allocation ? (
+              <span className="inline-flex items-center gap-1.5" title={allocation.reason}>
+                Rank <span className="font-semibold text-ink tabular-nums">#{allocation.rank}</span> <FocusChip focus={allocation.focus} />
+              </span>
+            ) : null}
+            <HeaderStat value={`${app.coverage.measured} of ${judged}`} label="areas measured" />
+            {app.hypotheses.open ? <HeaderStat value={app.hypotheses.open} label={app.hypotheses.open === 1 ? "open hypothesis" : "open hypotheses"} /> : null}
           </>
         }
-        right={
-          <>
-            <FreshnessChip generatedAt={model.generatedAt} source={`compound product growth --product ${app.productId} --json`} />
-            <CopyCmd cmd={`compound product growth --product ${app.productId}`} compact />
-          </>
-        }
+        right={<FreshnessChip generatedAt={model.generatedAt} source={`compound product growth --product ${app.productId} --json`} />}
       />
 
-      {allocation ? (
-        <p className="max-w-4xl text-md text-ink">
-          {allocation.reason}
-        </p>
-      ) : null}
-
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-xs text-faint">Data sources</span>
-        {app.freshness.sources.length ? (
-          app.freshness.sources.map((source) => (
-            <span
-              key={source.source}
-              className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs ${source.stale ? "border-seam-line bg-seam-soft text-seam" : "border-hair bg-panel text-muted"}`}
-              title={`${source.latestDate} · ${source.daysSince} days ago`}
-            >
-              <span className={`h-1.5 w-1.5 rounded-full ${source.stale ? "bg-seam" : "bg-good"}`} aria-hidden />
-              <span className="font-medium text-ink">{SOURCE_LABEL[source.source] ?? source.source}</span>
-              {source.stale ? `stopped ${shortDate(source.latestDate)}` : `current to ${shortDate(source.latestDate)}`}
-            </span>
-          ))
-        ) : (
-          <span className="text-xs text-muted">None connected.</span>
-        )}
-        {app.aliases.length ? <span className="text-2xs text-faint">Also recorded as {app.aliases.join(", ")}</span> : null}
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-        <Panel title="Next moves" subtitle="Earliest broken stage first" className="xl:col-span-2">
-          {app.nextMoves.length ? (
-            <ol className="flex flex-col gap-3">
-              {app.nextMoves.map((move, i) => (
-                <li key={`${move.areaId}-${i}`} className="flex gap-3">
-                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-strong text-xs font-semibold text-panel">{i + 1}</span>
-                  <div className="min-w-0">
-                    <a href={`#area-${move.areaId}`} className="font-medium text-ink hover:underline">{move.title}</a>
-                    <p className="text-sm text-muted">{move.why}</p>
-                  </div>
-                </li>
-              ))}
-            </ol>
-          ) : (
-            <p className="text-sm text-faint">No open move. Every applicable area is measured.</p>
-          )}
-        </Panel>
-        <Panel title="Who it is for">
-          {app.essence ? (
-            <dl className="flex flex-col gap-3 text-sm">
-              {[
-                ["Audience", app.essence.audience],
-                ["Problem", app.essence.problem],
-                ["Value", app.essence.value],
-              ].filter(([, v]) => v).map(([k, v]) => (
-                <div key={k}>
-                  <dt className="text-xs text-faint">{k}</dt>
-                  <dd className="line-clamp-4 text-ink" title={v}>{v}</dd>
-                </div>
-              ))}
-            </dl>
-          ) : (
-            <p className="text-sm text-muted">
-              No positioning recorded. Without a named audience and problem, growth work has no target.{" "}
-              <span className="text-faint">Record one with compound product essence.</span>
-            </p>
-          )}
-        </Panel>
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <KpiTile kpiKey="proceeds_usd" kpi={app.kpis.proceeds_usd} color="var(--viz-1)" />
-        <KpiTile kpiKey="units" kpi={app.kpis.units} color="var(--viz-2)" />
-        <KpiTile kpiKey="web_clicks" kpi={app.kpis.web_clicks} color="var(--cap-fg)" />
-        {hasAds ? (
-          <KpiTile kpiKey="ad_cpa_usd" kpi={app.kpis.ad_cpa_usd} color="var(--memory-fg)" />
-        ) : (
-          <KpiTile kpiKey="first_time_downloads" kpi={app.kpis.first_time_downloads} color="var(--memory-fg)" />
-        )}
-      </div>
-
-      <Panel title="Funnel" subtitle="From being seen to paying again. A dashed card means nothing measures that step; the red line marks where measurement stops.">
-        <FunnelStrip steps={app.funnel} />
-      </Panel>
-
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-        {hasSales || hasAds ? (
-          <Panel
-            title="Money in and out"
-            subtitle="Proceeds per day above the line, ad spend below · USD"
-            right={<Legend items={[{ label: "Proceeds", color: "var(--viz-1)" }, { label: "Ad spend", color: "var(--viz-2)" }]} />}
-          >
-            <DivergingBars
-              up={app.series.proceeds_usd ?? []}
-              down={app.series.ad_spend_usd ?? []}
-              upLabel="Proceeds"
-              downLabel="Ad spend"
-              unit="usd"
-            />
-          </Panel>
-        ) : null}
-        <Panel
-          title="Downloads and purchases"
-          subtitle={hasAds ? "App Store units per day next to Apple Search Ads conversions (which also count re-downloads)" : "App Store units per day"}
-          right={hasAds ? <Legend items={[{ label: "App Store units", color: "var(--viz-2)" }, { label: "Ad conversions", color: "var(--viz-1)" }]} /> : undefined}
-        >
-          <LineChart
-            unit="count"
-            empty="No App Store units recorded for this app."
-            series={[
-              { key: "units", label: "App Store units", color: "var(--viz-2)", points: app.series.units ?? [] },
-              ...(hasAds ? [{ key: "ads", label: "Ad conversions", color: "var(--viz-1)", points: app.series.ad_conversions ?? [] }] : []),
-            ]}
-          />
-        </Panel>
-        {hasWeb ? (
-          <Panel title="Web search clicks" subtitle="Google Search Console clicks per day">
-            <LineChart unit="count" series={[{ key: "clicks", label: "Web search clicks", color: "var(--viz-2)", points: app.series.web_clicks ?? [] }]} />
-          </Panel>
-        ) : null}
-      </div>
-
-      <Panel
-        title="Growth audit"
-        subtitle="25 areas. Each says what the evidence shows today and the one move that would improve what we know."
-        right={<div className="w-64"><CoverageBar coverage={app.coverage} showLegend /></div>}
-      >
-        <div className="flex flex-col gap-6">
-          {model.stages.map((stage) => {
-            const areas = model.areas.filter((a) => a.stage === stage.id);
-            return (
-              <section key={stage.id}>
-                <div className="mb-2 flex items-baseline gap-2">
-                  <h3 className="text-md font-semibold text-ink">{stage.title}</h3>
-                  <span className="text-sm text-muted">{stage.question}</span>
-                </div>
-                <div className="divide-y divide-hair-2 rounded-xl border border-hair">
-                  {areas.map((area) => {
-                    const row = app.audit.find((r) => r.areaId === area.id);
-                    const status = row?.status ?? "blind";
-                    return (
-                      <div key={area.id} id={`area-${area.id}`} className="grid scroll-mt-24 grid-cols-1 gap-2 p-3 target:bg-work-soft md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] md:gap-6">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="tabular-nums text-faint">{area.number}</span>
-                            <span className="font-medium text-ink">{area.title}</span>
-                            <GrowthStatusChip status={status} />
-                          </div>
-                          <p className="mt-0.5 text-xs text-muted">{area.question}</p>
-                        </div>
-                        <div className="min-w-0 text-sm">
-                          <p className="text-ink">{row?.summary || "No evidence recorded."}</p>
-                          {row?.nextMove && status !== "not_applicable" ? <p className="mt-0.5 text-muted">→ {row.nextMove}</p> : null}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </section>
-            );
-          })}
+      <section className="flex flex-col gap-3" aria-labelledby="next-question">
+        <div>
+          <h2 id="next-question" className="text-hero font-semibold tracking-tight text-ink">
+            What should I do next for {app.name}, and why?
+          </h2>
+          <p className="mt-1 max-w-3xl text-sm text-muted">
+            {app.nextMoves.length
+              ? "In this order. Out-of-date data comes first, then the gaps that unblock the most other areas."
+              : "Nothing is open right now."}
+          </p>
         </div>
-      </Panel>
+        <NextMoves app={app} look={look} />
+      </section>
+
+      <ProfileRow app={app} areas={model.areas} groups={model.groups} />
+
+      <section className="flex flex-col gap-3" aria-labelledby="groups-title">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 id="groups-title" className="text-md font-semibold text-ink">
+              All {model.groups.length} groups, {model.areas.length} areas
+            </h2>
+            <p className="text-sm text-muted">Groups with a next move are open. Open any other to see what we know there.</p>
+          </div>
+          <StatusLegend counts={coverageCounts(app.coverage)} />
+        </div>
+        <GroupAudit app={app} groups={model.groups} areas={model.areas} look={look} />
+      </section>
+
+      <section className="flex flex-col gap-4" aria-labelledby="numbers-title">
+        <div className="flex flex-wrap items-baseline justify-between gap-3">
+          <h2 id="numbers-title" className="text-md font-semibold text-ink">Numbers</h2>
+          {allocation ? <p className="max-w-3xl text-sm text-muted">{allocation.reason}</p> : null}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-faint">Data sources</span>
+          {hasSources ? (
+            app.freshness.sources.map((source) => (
+              <span
+                key={source.source}
+                className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs ${source.stale ? "border-seam-line bg-seam-soft text-seam" : "border-hair bg-panel text-muted"}`}
+                title={`${source.latestDate} · ${source.daysSince} days ago`}
+              >
+                <span className={`h-1.5 w-1.5 rounded-full ${source.stale ? "bg-seam" : "bg-good"}`} aria-hidden />
+                <span className="font-medium text-ink">{SOURCE_LABEL[source.source] ?? source.source}</span>
+                {source.stale ? `stopped ${shortDate(source.latestDate)}` : `current to ${shortDate(source.latestDate)}`}
+              </span>
+            ))
+          ) : (
+            <span className="text-xs text-muted">None reports for this app yet.</span>
+          )}
+          {app.aliases.length ? <span className="text-2xs text-faint">Also recorded as {app.aliases.join(", ")}</span> : null}
+        </div>
+
+        {hasSources ? (
+          <>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <KpiTile kpiKey="proceeds_usd" kpi={app.kpis.proceeds_usd} color="var(--viz-1)" />
+              <KpiTile kpiKey="units" kpi={app.kpis.units} color="var(--viz-2)" />
+              <KpiTile kpiKey="web_clicks" kpi={app.kpis.web_clicks} color="var(--cap-fg)" />
+              {hasAds ? (
+                <KpiTile kpiKey="ad_cpa_usd" kpi={app.kpis.ad_cpa_usd} color="var(--memory-fg)" />
+              ) : (
+                <KpiTile kpiKey="first_time_downloads" kpi={app.kpis.first_time_downloads} color="var(--memory-fg)" />
+              )}
+            </div>
+
+            <Panel title="Funnel" subtitle="From being seen to paying again. A dashed card means nothing measures that step yet.">
+              <FunnelStrip steps={app.funnel} />
+            </Panel>
+
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+              {hasSales || hasAds ? (
+                <Panel
+                  title="Money in and out"
+                  subtitle="Proceeds per day above the line, ad spend below · USD"
+                  right={<Legend items={[{ label: "Proceeds", color: "var(--viz-1)" }, { label: "Ad spend", color: "var(--viz-2)" }]} />}
+                >
+                  <DivergingBars up={app.series.proceeds_usd ?? []} down={app.series.ad_spend_usd ?? []} upLabel="Proceeds" downLabel="Ad spend" unit="usd" />
+                </Panel>
+              ) : null}
+              <Panel
+                title="Downloads and purchases"
+                subtitle={hasAds ? "App Store units per day next to Apple Search Ads conversions (which also count re-downloads)" : "App Store units per day"}
+                right={hasAds ? <Legend items={[{ label: "App Store units", color: "var(--viz-2)" }, { label: "Ad conversions", color: "var(--viz-1)" }]} /> : undefined}
+              >
+                <LineChart
+                  unit="count"
+                  empty="No App Store units recorded for this app."
+                  series={[
+                    { key: "units", label: "App Store units", color: "var(--viz-2)", points: app.series.units ?? [] },
+                    ...(hasAds ? [{ key: "ads", label: "Ad conversions", color: "var(--viz-1)", points: app.series.ad_conversions ?? [] }] : []),
+                  ]}
+                />
+              </Panel>
+              {hasWeb ? (
+                <Panel title="Web search clicks" subtitle="Google Search Console clicks per day">
+                  <LineChart unit="count" series={[{ key: "clicks", label: "Web search clicks", color: "var(--viz-2)", points: app.series.web_clicks ?? [] }]} />
+                </Panel>
+              ) : null}
+            </div>
+          </>
+        ) : (
+          <p className="rounded-xl border border-dashed border-hair bg-page px-4 py-3 text-sm text-muted">
+            No numbers yet. Sales, downloads and traffic appear here once a data source reports for this app.
+          </p>
+        )}
+      </section>
 
       <Suspense
         fallback={
@@ -289,6 +230,10 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
       >
         <AppWork ids={[app.productId, ...app.aliases]} />
       </Suspense>
+
+      <p className="text-xs text-faint">
+        {model.boundary}. Catalog: {model.catalog.areas} areas in {model.catalog.groups} groups.
+      </p>
     </div>
   );
 }

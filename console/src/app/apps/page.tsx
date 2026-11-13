@@ -10,7 +10,7 @@ import {
   Panel,
   ShareBars,
 } from "@/components/growth/GrowthKit";
-import { appHue, appSlug, formatKpi, formatValue, getGrowth, shortDate, type GrowthApp, type SeriesPoint } from "@/lib/growth";
+import { appHue, appSlug, formatKpi, formatValue, getGrowth, shortDate, valueLabel, type GrowthApp, type SeriesPoint } from "@/lib/growth";
 
 export const dynamic = "force-dynamic";
 
@@ -91,7 +91,7 @@ export default async function PortfolioPage() {
           <>
             <FreshnessChip generatedAt={model.generatedAt} source="compound product growth --json" />
             <Link href="/growth" className="inline-flex items-center gap-1.5 rounded-lg border border-strong bg-strong px-3.5 py-2 text-sm font-medium text-panel shadow-sm hover:bg-ink">
-              Growth audit →
+              Growth by group →
             </Link>
           </>
         }
@@ -216,7 +216,7 @@ export default async function PortfolioPage() {
                   <td className="py-2.5 pr-3">
                     <div className="flex items-center gap-2">
                       <AppLink app={app} />
-                      <span className="text-2xs text-faint">{app.kind === "ios_app" ? "iOS" : app.kind === "web" ? "Web" : ""}</span>
+                      <span className="text-2xs text-faint">{app.kind === "unknown" ? "" : valueLabel(app.kind)}</span>
                     </div>
                   </td>
                   <td className="py-2.5 pr-3 text-right tabular-nums">{formatKpi(app.kpis.proceeds_usd)}</td>

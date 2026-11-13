@@ -1,168 +1,300 @@
 import Link from "next/link";
 import { FreshnessChip, HeaderStat, PageHeader } from "@/components/kit";
-import { AppGlyph, DegradedGrowth, GrowthStatusChip, Panel } from "@/components/growth/GrowthKit";
-import { STATUS_META, appSlug, barClass, getGrowth, type GrowthStatus } from "@/lib/growth";
+import { AppGlyph, DegradedGrowth, StatusLegend, StatusMixBar } from "@/components/growth/GrowthKit";
+import {
+  STATUS_META,
+  appSlug,
+  countStatuses,
+  getGrowth,
+  hasEvidence,
+  joinWords,
+  type AuditRow,
+  type GrowthApp,
+  type GrowthArea,
+  type GrowthStatus,
+} from "@/lib/growth";
 
 export const dynamic = "force-dynamic";
 
-const ORDER: GrowthStatus[] = ["measured", "partial", "stale", "blind", "not_applicable"];
+type Counts = Record<GrowthStatus, number>;
+
+const judgedOf = (c: Counts) => c.measured + c.partial + c.stale + c.blind;
+const knownOf = (c: Counts) => c.measured + c.partial + c.stale;
+
+function sumCounts(list: Counts[]): Counts {
+  const out = countStatuses([]);
+  for (const c of list) for (const key of Object.keys(out) as GrowthStatus[]) out[key] += c[key];
+  return out;
+}
+
+/** An app is in the grid when any source reports for it or any area has evidence (a record on file counts). */
+function hasAnyEvidence(app: GrowthApp): boolean {
+  return app.freshness.sources.length > 0 || app.audit.some((row) => hasEvidence(row.status));
+}
+
+function cellTitle(app: GrowthApp, title: string, row: AuditRow | undefined, move: boolean): string {
+  const status = row?.status ?? "blind";
+  const text = row?.summary || row?.reason || STATUS_META[status].meaning;
+  return `${app.name} · ${row?.title || title}: ${STATUS_META[status].label}. ${text}${move ? " This is one of its next moves." : ""}`;
+}
 
 /**
- * Growth audit — the 25 areas that decide whether an app becomes a business,
- * checked for every app against the evidence Compound actually holds. A cell
- * says what is known (measured / partial / stale) or that nothing measures it
- * (blind). It never scores quality it cannot see.
+ * Growth — where the portfolio has no data, group by group. Rows are the
+ * catalog's groups and columns are apps; one group at a time opens into its
+ * areas (`?group=<id>`), so the full areas × apps grid is never drawn at once.
+ * Every status comes from `compound product growth --json`.
  */
-export default async function GrowthAuditPage() {
+export default async function GrowthPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+  const params = await searchParams;
   const growth = await getGrowth();
   const model = growth.model;
   if (!model) {
     return (
       <div className="flex flex-col gap-6">
-        <PageHeader title="Growth audit" />
+        <PageHeader title="Growth" />
         <DegradedGrowth status={growth.status} error={growth.error} />
       </div>
     );
   }
 
+  const openGroup = typeof params.group === "string" && model.groups.some((g) => g.id === params.group) ? params.group : "";
   const rank = new Map(model.portfolio.allocation.map((row) => [row.productId, row.rank]));
-  // Registered apps with no source at all would only add columns of "blind"; count them, don't chart them.
-  const apps = [...model.apps]
-    .filter((app) => app.freshness.sources.length > 0)
-    .sort((a, b) => (rank.get(a.productId) ?? 999) - (rank.get(b.productId) ?? 999));
-  const noDataCount = model.apps.length - apps.length;
-  const cell = new Map<string, { status: GrowthStatus; summary: string; nextMove: string }>();
-  for (const app of apps) for (const row of app.audit) cell.set(`${app.productId}|${row.areaId}`, row);
+  const byRank = (a: GrowthApp, b: GrowthApp) => (rank.get(a.productId) ?? 999) - (rank.get(b.productId) ?? 999) || a.name.localeCompare(b.name);
+  const apps = model.apps.filter(hasAnyEvidence).sort(byRank);
+  const noData = model.apps.filter((app) => !hasAnyEvidence(app)).sort(byRank);
 
-  const totals: Record<GrowthStatus, number> = { measured: 0, partial: 0, stale: 0, blind: 0, not_applicable: 0 };
-  for (const app of apps) for (const row of app.audit) totals[row.status] = (totals[row.status] ?? 0) + 1;
-  const applicable = totals.measured + totals.partial + totals.stale + totals.blind;
+  const rows = new Map<string, AuditRow>();
+  for (const app of apps) for (const row of app.audit) rows.set(`${app.productId}|${row.areaId}`, row);
+  const rowOf = (app: GrowthApp, areaId: string) => rows.get(`${app.productId}|${areaId}`);
+  const moves = new Set<string>();
+  for (const app of apps) for (const move of app.nextMoves) if (move.areaId) moves.add(`${app.productId}|${move.areaId}`);
+  const isMove = (app: GrowthApp, areaId: string) => moves.has(`${app.productId}|${areaId}`);
 
-  const blindEverywhere = model.areas.filter((area) => {
-    const rows = apps.map((app) => cell.get(`${app.productId}|${area.id}`)?.status).filter((s) => s && s !== "not_applicable");
-    return rows.length > 0 && rows.every((s) => s === "blind");
+  const areasOf = (groupId: string) => model.areas.filter((a) => a.group === groupId);
+  const cellCounts = (app: GrowthApp, areas: GrowthArea[]) =>
+    countStatuses(areas.map((a) => rowOf(app, a.id)).filter((r): r is AuditRow => Boolean(r)));
+  /** An area no app has any evidence for, while at least one app could measure it. */
+  const isDark = (area: GrowthArea) => {
+    const statuses = apps.map((app) => rowOf(app, area.id)?.status ?? "blind");
+    return !statuses.some(hasEvidence) && statuses.includes("blind");
+  };
+
+  const groupStats = model.groups.map((group) => {
+    const areas = areasOf(group.id);
+    const perApp = apps.map((app) => cellCounts(app, areas));
+    const total = sumCounts(perApp);
+    return { group, areas, perApp, total, dark: areas.filter(isDark) };
   });
+  const total = sumCounts(groupStats.map((g) => g.total));
+  const dark = groupStats.flatMap((g) => g.dark);
+  const darkGroups = groupStats.filter((g) => g.areas.length > 0 && knownOf(g.total) === 0 && judgedOf(g.total) > 0).map((g) => g.group.title);
+  const emptyGroups = groupStats.filter((g) => g.areas.length === 0).length;
+
+  const answer = [
+    `Across ${apps.length} ${apps.length === 1 ? "app" : "apps"}, ${knownOf(total)} of ${judgedOf(total)} checks have any data, and ${total.measured} ${total.measured === 1 ? "is" : "are"} fully measured.`,
+    darkGroups.length
+      ? `${joinWords(darkGroups)} ${darkGroups.length === 1 ? "has" : "have"} no data in any app.`
+      : dark.length
+        ? `${dark.length} ${dark.length === 1 ? "area has" : "areas have"} no data in any app.`
+        : "",
+    total.unknown ? `${total.unknown} more cannot be judged until the product profiles say more.` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-8">
       <PageHeader
         breadcrumb="growth / audit"
-        title="Growth audit"
+        title="Growth"
         stats={
           <>
+            <HeaderStat value={model.groups.length} label="groups" />
             <HeaderStat value={model.areas.length} label="areas" />
-            <HeaderStat value={apps.length} label={noDataCount ? `apps with data (${noDataCount} more have none)` : "apps"} />
-            <HeaderStat value={applicable ? `${Math.round((totals.measured / applicable) * 100)}%` : "—"} label="of checks measured" />
-            <HeaderStat value={blindEverywhere.length} label="areas blind in every app" tone={blindEverywhere.length ? "crit" : undefined} />
+            <HeaderStat value={apps.length} label={noData.length ? `apps with data · ${noData.length} without` : "apps"} />
           </>
         }
         right={<FreshnessChip generatedAt={model.generatedAt} source="compound product growth --json" />}
       />
 
-      {blindEverywhere.length ? (
-        <div className="rounded-2xl border border-crit-line bg-crit-soft p-5">
-          <div className="text-md font-semibold text-crit">
-            {blindEverywhere.length} of {model.areas.length} areas are blind in every app.
-          </div>
-          <p className="mt-1 max-w-3xl text-sm text-muted">
-            Nothing measures what happens after install, so Compound cannot tell a weak product page from a weak onboarding or a weak paywall. Measuring
-            inside one app, in a way that keeps its privacy promise (on-device counts, opt-in feedback, or a handful of user interviews), would light up most
-            of these at once.
+      <section className="flex flex-col gap-2" aria-labelledby="growth-question">
+        <h2 id="growth-question" className="text-hero font-semibold tracking-tight text-ink">
+          Where are we blind across the apps, group by group?
+        </h2>
+        <p className="max-w-4xl text-md text-ink">{answer}</p>
+        <p className="max-w-4xl text-sm text-muted">
+          Each cell is one app in one group: the bar shows what we know there, the number counts areas fully measured out of those that apply. Open a group to see its areas.
+        </p>
+      </section>
+
+      {model.catalog.overlayError ? (
+        <div className="rounded-2xl border border-seam-line bg-seam-soft px-5 py-4 text-sm">
+          <div className="font-semibold text-seam">The private catalog file could not be read, so this page uses the built-in catalog.</div>
+          <p className="mt-1 text-muted">
+            {model.catalog.overlay ? <code className="mono text-xs">{model.catalog.overlay}</code> : null} {model.catalog.overlayError}
           </p>
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            {blindEverywhere.map((area) => (
-              <span key={area.id} className="rounded-md border border-crit-line bg-panel px-2 py-0.5 text-xs text-ink">
-                {area.number}. {area.title}
-              </span>
-            ))}
-          </div>
         </div>
       ) : null}
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
-        {model.stages.map((stage) => {
-          const areaIds = new Set(model.areas.filter((a) => a.stage === stage.id).map((a) => a.id));
-          const counts: Record<GrowthStatus, number> = { measured: 0, partial: 0, stale: 0, blind: 0, not_applicable: 0 };
-          for (const app of apps) for (const row of app.audit) if (areaIds.has(row.areaId)) counts[row.status] += 1;
-          const total = ORDER.reduce((sum, s) => sum + (s === "not_applicable" ? 0 : counts[s]), 0) || 1;
-          return (
-            <div key={stage.id} className="flex flex-col gap-3 rounded-2xl border border-hair bg-panel p-4">
-              <div>
-                <div className="text-md font-semibold text-ink">{stage.title}</div>
-                <div className="text-xs text-muted">{stage.question}</div>
-              </div>
-              <div className="flex h-2 gap-0.5 overflow-hidden rounded-pill">
-                {ORDER.filter((s) => s !== "not_applicable" && counts[s] > 0).map((s) => (
-                  <span key={s} className={barClass(s)} style={{ width: `${(counts[s] / total) * 100}%` }} />
-                ))}
-              </div>
-              <div className="text-xs text-muted">
-                <span className="font-semibold text-ink tabular-nums">{Math.round((counts.measured / total) * 100)}%</span> measured ·{" "}
-                <span className="tabular-nums">{counts.blind}</span> blind
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <Panel
-        title="Every area, every app"
-        subtitle="Hover a cell for what the evidence says; open an app for the full audit and its next moves."
-        right={
-          <div className="flex flex-wrap gap-1.5">
-            {ORDER.map((s) => <GrowthStatusChip key={s} status={s} />)}
-          </div>
-        }
-      >
+      <section className="min-w-0 rounded-2xl border border-hair bg-panel p-5">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <StatusLegend statuses={["measured", "partial", "stale", "blind", "unknown", "deferred", "not_applicable"]} />
+          <span className="inline-flex items-center gap-1.5 text-2xs text-muted">
+            <span className="h-1.5 w-1.5 rounded-full bg-ink" aria-hidden /> a next move for that app
+          </span>
+        </div>
         <div className="board-scroll overflow-x-auto">
           <table className="border-separate border-spacing-0 text-left text-sm">
             <thead>
               <tr>
-                <th className="sticky left-0 z-10 min-w-64 bg-panel pb-2 pr-4 text-xs font-medium text-faint">Area</th>
+                <th className="sticky left-0 z-10 min-w-60 bg-panel pb-2 pr-4 align-bottom text-xs font-medium text-faint">Group</th>
                 {apps.map((app) => (
-                  <th key={app.productId} className="px-1 pb-2 align-bottom">
-                    <Link href={`/apps/${appSlug(app.productId)}`} className="flex w-9 flex-col items-center gap-1.5 text-faint hover:text-ink" title={app.name}>
-                      <span className="max-h-24 truncate text-xs font-medium [writing-mode:vertical-rl] rotate-180">{app.name}</span>
+                  <th key={app.productId} className="px-0.5 pb-2 align-bottom">
+                    <Link href={`/apps/${appSlug(app.productId)}`} className="mx-auto flex w-10 flex-col items-center gap-1.5 text-faint hover:text-ink" title={app.name}>
+                      <span className="max-h-28 truncate text-xs font-medium [writing-mode:vertical-rl] rotate-180">{app.name}</span>
                       <AppGlyph productId={app.productId} name={app.name} size="sm" />
                     </Link>
                   </th>
                 ))}
+                <th className="pb-2 pl-4 align-bottom text-xs font-medium text-faint">No data in any app</th>
               </tr>
             </thead>
-            {model.stages.map((stage) => (
-              <tbody key={stage.id}>
-                <tr>
-                  <td colSpan={apps.length + 1} className="sticky left-0 bg-panel pb-1.5 pt-4 text-xs font-semibold uppercase tracking-wide text-faint">
-                    {stage.title}
-                  </td>
-                </tr>
-                {model.areas.filter((a) => a.stage === stage.id).map((area) => (
-                  <tr key={area.id} className="group">
-                    <td className="sticky left-0 z-10 border-t border-hair-2 bg-panel py-1.5 pr-4 group-hover:bg-soft" title={area.question}>
-                      <span className="mr-2 tabular-nums text-faint">{area.number}</span>
-                      <span className="text-ink">{area.title}</span>
-                    </td>
-                    {apps.map((app) => {
-                      const row = cell.get(`${app.productId}|${area.id}`);
-                      const status = row?.status ?? "blind";
+            <tbody>
+              {groupStats.map(({ group, areas, perApp, dark: groupDark }) => {
+                const open = group.id === openGroup;
+                return [
+                  <tr key={group.id} id={`g-${group.id}`} className={`group/row scroll-mt-24 ${open ? "bg-soft" : ""}`}>
+                    <th scope="row" className={`sticky left-0 z-10 border-t border-hair-2 py-2 pr-4 text-left font-normal ${open ? "bg-soft" : "bg-panel group-hover/row:bg-soft"}`}>
+                      <Link
+                        href={open ? "/growth" : `/growth?group=${group.id}#g-${group.id}`}
+                        scroll={false}
+                        className="flex items-baseline gap-2 text-ink hover:underline"
+                        aria-expanded={open}
+                        title={group.question}
+                      >
+                        <span className={`inline-block w-3 shrink-0 text-faint transition-transform ${open ? "rotate-90" : ""}`} aria-hidden>
+                          ›
+                        </span>
+                        <span className="font-semibold">{group.title}</span>
+                        <span className="text-2xs text-faint tabular-nums">{areas.length}</span>
+                      </Link>
+                      <p className="max-w-56 truncate pl-5 text-2xs text-muted">{group.question}</p>
+                    </th>
+                    {apps.map((app, i) => {
+                      const counts = perApp[i];
+                      const judged = judgedOf(counts);
+                      const groupMove = areas.some((a) => isMove(app, a.id));
                       return (
-                        <td key={app.productId} className="border-t border-hair-2 px-1 py-1.5 text-center group-hover:bg-soft">
+                        <td key={app.productId} className={`border-t border-hair-2 px-0.5 py-2 align-middle ${open ? "" : "group-hover/row:bg-soft"}`}>
                           <Link
-                            href={`/apps/${appSlug(app.productId)}#area-${area.id}`}
-                            className={`mx-auto block h-5 w-7 rounded-md ${STATUS_META[status].fill}`}
-                            title={`${app.name} · ${area.title}: ${STATUS_META[status].label}. ${row?.summary ?? ""}`}
-                            aria-label={`${app.name}, ${area.title}: ${STATUS_META[status].label}`}
-                          />
+                            href={`/apps/${appSlug(app.productId)}#group-${group.id}`}
+                            className="relative mx-auto flex w-10 flex-col items-center gap-1 rounded-md px-1 py-0.5 hover:bg-soft-2"
+                            title={`${app.name} · ${group.title}: ${counts.measured} of ${judged} measured, ${knownOf(counts)} with any data${counts.unknown ? `, ${counts.unknown} not on file` : ""}.${groupMove ? " Holds a next move." : ""}`}
+                          >
+                            {areas.length ? <StatusMixBar counts={counts} className="h-1.5" /> : <span className="h-1.5" />}
+                            <span className={`text-2xs tabular-nums ${counts.measured ? "font-semibold text-ink" : "text-faint"}`}>
+                              {judged ? `${counts.measured}/${judged}` : "—"}
+                            </span>
+                            {groupMove ? <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-ink" aria-label="holds a next move" /> : null}
+                          </Link>
                         </td>
                       );
                     })}
-                  </tr>
-                ))}
-              </tbody>
-            ))}
+                    <td className={`border-t border-hair-2 py-2 pl-4 text-xs tabular-nums ${groupDark.length ? "text-muted" : "text-faint"}`}>
+                      {areas.length ? `${groupDark.length} of ${areas.length}` : "No areas yet"}
+                    </td>
+                  </tr>,
+                  ...(open
+                    ? areas.map((area) => (
+                        <tr key={area.id} className="bg-soft/60">
+                          <th scope="row" className="sticky left-0 z-10 border-t border-hair-2 bg-soft py-1.5 pl-5 pr-4 text-left font-normal">
+                            <span className="block max-w-56 truncate text-sm text-ink" title={area.question}>
+                              {area.title}
+                            </span>
+                            <span className="mono block text-2xs text-faint">{area.id}</span>
+                          </th>
+                          {apps.map((app) => {
+                            const row = rowOf(app, area.id);
+                            const status = row?.status ?? "blind";
+                            const move = isMove(app, area.id);
+                            return (
+                              <td key={app.productId} className="border-t border-hair-2 px-0.5 py-1.5">
+                                <Link
+                                  href={`/apps/${appSlug(app.productId)}#area-${area.id}`}
+                                  className={`mx-auto flex h-4 w-7 items-center justify-center rounded-xs ${STATUS_META[status].fill || "border border-hair-2"} ${move ? "ring-1 ring-ink" : ""}`}
+                                  title={cellTitle(app, area.title, row, move)}
+                                  aria-label={`${app.name}, ${row?.title || area.title}: ${STATUS_META[status].label}${move ? ", next move" : ""}`}
+                                >
+                                  {move ? <span className="h-1.5 w-1.5 rounded-full bg-ink" aria-hidden /> : null}
+                                </Link>
+                              </td>
+                            );
+                          })}
+                          <td className="border-t border-hair-2 py-1.5 pl-4 text-2xs text-faint">{groupDark.includes(area) ? "No data in any app" : ""}</td>
+                        </tr>
+                      ))
+                    : []),
+                ];
+              })}
+            </tbody>
           </table>
         </div>
-      </Panel>
+        {emptyGroups ? (
+          <p className="mt-3 text-xs text-faint">
+            {emptyGroups} {emptyGroups === 1 ? "group has" : "groups have"} no areas in the catalog yet.
+          </p>
+        ) : null}
+      </section>
+
+      {dark.length ? (
+        <details className="group rounded-2xl border border-hair bg-panel p-5">
+          <summary className="flex cursor-pointer list-none flex-wrap items-baseline gap-x-2 gap-y-1">
+            <span className="inline-block w-3 text-faint transition-transform group-open:rotate-90" aria-hidden>
+              ›
+            </span>
+            <span className="font-semibold text-ink">
+              {dark.length} of {model.areas.length} areas have no data in any app.
+            </span>
+            <span className="text-sm text-muted">Open to see them by group.</span>
+          </summary>
+          <div className="mt-4 grid grid-cols-1 gap-x-6 gap-y-4 pl-5 md:grid-cols-2 xl:grid-cols-3">
+            {groupStats
+              .filter((g) => g.dark.length)
+              .map((g) => (
+                <div key={g.group.id}>
+                  <div className="text-sm font-medium text-ink">
+                    {g.group.title} <span className="text-xs font-normal text-faint tabular-nums">{g.dark.length} of {g.areas.length}</span>
+                  </div>
+                  <ul className="mt-1 flex flex-col gap-0.5 text-sm text-muted">
+                    {g.dark.map((area) => (
+                      <li key={area.id} title={area.question}>
+                        {area.title}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+          </div>
+        </details>
+      ) : null}
+
+      {noData.length ? (
+        <p className="text-sm text-muted">
+          <span className="font-medium text-ink">
+            {noData.length} {noData.length === 1 ? "app has" : "apps have"} no data at all
+          </span>{" "}
+          and {noData.length === 1 ? "is" : "are"} left out of the grid:{" "}
+          {noData.map((app, i) => (
+            <span key={app.productId}>
+              {i ? ", " : ""}
+              <Link href={`/apps/${appSlug(app.productId)}`} className="hover:underline">
+                {app.name}
+              </Link>
+            </span>
+          ))}
+          .
+        </p>
+      ) : null}
 
       <p className="text-xs text-faint">{model.boundary}</p>
     </div>
