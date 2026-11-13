@@ -201,6 +201,30 @@ func TestInventoryDependsCycleEndsAndDepthLimitHolds(t *testing.T) {
 	}
 }
 
+func TestInventoryDependsAnAccountItUsesIsAlsoWhatItRestsOn(t *testing.T) {
+	data := graphFixture(t, inventoryT0, func(obs *InventoryObservation) {
+		dep := findGraphResource(*obs, gfDeploy)
+		dep.Links = append(dep.Links, gfLink("uses", gfAccountID, ""))
+	})
+	home := t.TempDir()
+	if _, err := RefreshInventory(home, data, InventoryRefreshOptions{}, inventoryT0); err != nil {
+		t.Fatal(err)
+	}
+	p := dependsOn(t, home, gfDeploy, 0)
+	var rest *InventoryGraphStep
+	for i := range p.RestsOn {
+		if p.RestsOn[i].Resource == gfAccountID {
+			rest = &p.RestsOn[i]
+		}
+	}
+	if rest == nil || rest.Via != gfDeploy || rest.RelTitle != "uses" || rest.PathConfidence != "observed" {
+		t.Fatalf("an account the walk reached must rest on the link it came by: %+v", rest)
+	}
+	if text := FormatInventoryWalkText(p); !strings.Contains(text, "Example account …k8m4 (account) · uses, from web-deploy …:web\n") {
+		t.Fatalf("rests-on line:\n%s", text)
+	}
+}
+
 func TestInventoryDependsFollowsRoutesFromAHostname(t *testing.T) {
 	home := graphImported(t, inventoryT0)
 	p := dependsOn(t, home, "app.shop.example", 0)

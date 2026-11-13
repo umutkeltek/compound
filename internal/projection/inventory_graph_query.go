@@ -321,6 +321,9 @@ func BuildInventoryDepends(home string, q InventoryDependsQuery, now time.Time) 
 		if nid == id || (h.depth == 0 && !inventoryAccessKinds[g.nodes[nid].Kind]) {
 			continue
 		}
+		if h.depth == 0 {
+			h = hits[nid] // an account the walk itself reached: show the link it came by
+		}
 		p.RestsOn = append(p.RestsOn, g.step(nid, h))
 	}
 	sort.SliceStable(p.RestsOn, func(i, j int) bool { return g.less(p.RestsOn[i], p.RestsOn[j], false, false) })
