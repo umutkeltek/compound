@@ -526,3 +526,28 @@ These deviations from §1–§10 follow from them.
 - **Blind is soft.** In the audit matrix and on coverage bars, a blind area is a pale red fill. When
   most of the portfolio is blind, the few measured cells must stand out, and the absence must stay
   visible without shouting.
+
+### 11.1 Growth catalog pages (2026-11-13)
+
+The growth read moved to `compound.product_growth.v0.2`: a catalog of areas in 12 groups, a product
+profile that decides which areas apply, and ranked next moves. These rules replace the 25-area
+matrix and the pale red fill above.
+
+- **One question first.** `/apps/[slug]` opens with "What should I do next for <app>, and why?" and
+  the next moves (at most five, in the CLI's order). Each move says what to do, why in one line,
+  what it unblocks by name, and has a copy button for its brief command. `/growth` opens with "Where
+  are we blind across the apps, group by group?" and a two- or three-sentence answer computed from
+  the projection. Everything else sits below and is quieter.
+- **Never the full grid.** `/growth` draws 12 group rows × apps. One group opens at a time
+  (`?group=<id>`) into its areas × apps. The app page shows the 12 groups as closed `<details>`;
+  only groups holding a next move start open. `#group-<id>` and `#area-<id>` anchors open their
+  section on load.
+- **Gaps are background.** "No data yet" is a pale neutral fill, the calmest filled state. "Not on
+  file" is a dashed outline or hatch, "Set aside" a hatch on soft, "Does not apply" is left empty.
+  Measured (green), out of date (amber) and the next-move mark (an ink dot or ring) are the only
+  strong marks. A group cell prints a number only where something is measured; "0 of 5" would read
+  as a zero.
+- **Words.** Labels say "No data yet", "Partly measured", "Out of date", "Not on file", "Set aside",
+  "Does not apply" and "Needs <area titles> first". Area ids appear only as small secondary mono
+  text. A profile dimension that is not on file is a dashed "Not on file" chip, and the page says
+  once what filling it in would change ("5 areas cannot be judged until the objective is on file").
