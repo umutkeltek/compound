@@ -38,6 +38,9 @@ type InventoryQuery struct {
 	Kind       string
 	Provider   string
 	StaleHours float64
+	// Products resolves product references (the CLI passes Compound's product
+	// identity owner); nil leaves every product reference unknown.
+	Products InventoryProductResolver
 }
 
 // InventoryProjection is compound.system_inventory.v0.1.
@@ -53,7 +56,13 @@ type InventoryProjection struct {
 	Summary       InventorySummary        `json:"summary"`
 	Attention     []InventoryAttention    `json:"attention"`
 	Changes       InventoryChanges        `json:"changes"`
-	Resources     []InventoryResourceView `json:"resources"`
+	// Shared lists the pieces several things depend on (top 15, products
+	// first); Questions lists what is not known and the declared line that
+	// settles it. Both come from the graph over the whole snapshot, narrowed by
+	// the kind and provider filter.
+	Shared    []InventoryShared       `json:"shared"`
+	Questions []InventoryQuestion     `json:"questions"`
+	Resources []InventoryResourceView `json:"resources"`
 }
 
 // InventorySnapshotStatus says how old the stored snapshot is.
@@ -198,6 +207,8 @@ func BuildInventory(home string, q InventoryQuery, now time.Time) (InventoryProj
 		Summary:       InventorySummary{ByKind: map[string]int{}, ByProvider: map[string]int{}},
 		Attention:     []InventoryAttention{},
 		Changes:       emptyInventoryChanges(),
+		Shared:        []InventoryShared{},
+		Questions:     []InventoryQuestion{},
 		Resources:     []InventoryResourceView{},
 	}
 	snap, err := LoadInventorySnapshot(home)
@@ -331,6 +342,7 @@ func BuildInventory(home string, q InventoryQuery, now time.Time) (InventoryProj
 		p.Summary.ByProvider[r.Provider]++
 		p.Resources = append(p.Resources, view)
 	}
+	p.addGraphFindings(buildInventoryGraph(obs, kinds, q.Products), q)
 	sort.SliceStable(p.Resources, func(i, j int) bool {
 		a, b := p.Resources[i], p.Resources[j]
 		if kindOrder[a.Kind] != kindOrder[b.Kind] {

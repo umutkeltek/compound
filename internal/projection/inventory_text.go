@@ -66,7 +66,7 @@ func FormatInventoryText(p InventoryProjection) string {
 	} else {
 		add("Needs attention (%d):", len(attention))
 		for _, a := range attention { // never collapsed
-			if a.Kind == "source" {
+			if a.Kind == "source" || a.ResourceID == "" {
 				add("  - %s: %s", inventoryClean(a.Label, inventoryTextLabelMax), inventoryClean(a.Why, 160))
 				continue
 			}
@@ -120,6 +120,7 @@ func FormatInventoryText(p InventoryProjection) string {
 	} else if p.Changes.Note != "" {
 		add("Changes: %s.", p.Changes.Note)
 	}
+	lines = append(lines, formatInventoryGraphLines(p)...)
 
 	if len(p.Resources) == 0 {
 		add("Resources: none match.")

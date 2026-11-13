@@ -319,7 +319,7 @@ func systemProductResolver(homePath string) projection.InventoryProductResolver 
 	}
 }
 
-const systemInventoryUsage = "usage: compound system inventory [--json] [--kind K] [--provider P] [--stale-hours N]\n" +
+const systemInventoryUsage = "usage: compound system inventory [--json] [--questions] [--kind K] [--provider P] [--stale-hours N]\n" +
 	"       compound system inventory refresh --collector-json FILE [--allow-older] [--carry-days N (default 7)] [--json]"
 
 // cmdSystemInventory is the thin CLI face of the read-only system inventory
@@ -330,11 +330,13 @@ func cmdSystemInventory(args []string) {
 		return
 	}
 	query := projection.InventoryQuery{StaleHours: projection.DefaultInventoryStaleHours}
-	var jsonOut bool
+	var jsonOut, questionsOut bool
 	for i := 0; i < len(args); i++ {
 		switch flag := args[i]; flag {
 		case "--json":
 			jsonOut = true
+		case "--questions":
+			questionsOut = true
 		case "--kind", "--provider", "--stale-hours":
 			if i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" {
 				fmt.Fprintln(os.Stderr, systemInventoryUsage)
@@ -364,16 +366,20 @@ func cmdSystemInventory(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
 	}
+	query.Products = systemProductResolver(homePath)
 	report, err := projection.BuildInventory(homePath, query, time.Now())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "system inventory:", err)
 		os.Exit(1)
 	}
-	if jsonOut {
+	switch {
+	case jsonOut:
 		printJSON(report)
-		return
+	case questionsOut:
+		fmt.Print(projection.FormatInventoryQuestionsText(report))
+	default:
+		fmt.Print(projection.FormatInventoryText(report))
 	}
-	fmt.Print(projection.FormatInventoryText(report))
 }
 
 func cmdSystemInventoryRefresh(args []string) {

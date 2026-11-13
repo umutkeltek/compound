@@ -241,6 +241,17 @@ func TestSystemGraphDependsImpactResolveProductsThroughTheIdentityOwner(t *testi
 	if strings.Contains(graphText+text, cmdInventoryLongID[12:]) || !strings.Contains(graphText, "Links with kind datastore: 3.") {
 		t.Fatalf("graph text:\n%s", graphText)
 	}
+	questions := captureStdout(t, func() { cmdSystem([]string{"inventory", "--questions"}) })
+	if !strings.Contains(questions, "Questions (1):") || !strings.Contains(questions, "Is shared-db backed up?") || strings.Contains(questions, cmdInventoryLongID[12:]) {
+		t.Fatalf("inventory --questions:\n%s", questions)
+	}
+	var inv projection.InventoryProjection
+	if err := json.Unmarshal([]byte(captureStdout(t, func() { cmdSystem([]string{"inventory", "--json"}) })), &inv); err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.Shared) != 2 || inv.Shared[0].Resource != "host:db-box" || inv.Shared[0].Products != 2 || len(inv.Questions) != 1 {
+		t.Fatalf("inventory shared %+v questions %+v", inv.Shared, inv.Questions)
+	}
 }
 
 func writeCmdTestFile(t *testing.T, path, body string) {
