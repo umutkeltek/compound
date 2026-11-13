@@ -542,6 +542,10 @@ matrix and the pale red fill above.
   (`?group=<id>`) into its areas × apps. The app page shows the 12 groups as closed `<details>`;
   only groups holding a next move start open. `#group-<id>` and `#area-<id>` anchors open their
   section on load.
+- **A move marks every area it covers.** A folded refresh (one stopped source, several areas)
+  carries all of them in `area_ids`: each covered area gets the "Next move N" badge and the grid
+  dot, and each group holding one starts open. Its meta line says "3 areas" instead of the first
+  area's pipeline and id, which would speak for all of them.
 - **Gaps are background.** "No data yet" is a pale neutral fill, the calmest filled state. "Not on
   file" is a dashed outline or hatch, "Set aside" a hatch on soft, "Does not apply" is left empty.
   Measured (green), out of date (amber) and the next-move mark (an ink dot or ring) are the only

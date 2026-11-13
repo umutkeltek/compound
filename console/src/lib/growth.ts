@@ -99,6 +99,8 @@ export type NextMoveKind =
 export type NextMove = {
   /** Empty for the one set_profile move. */
   areaId: string;
+  /** Every area the move covers, in catalog order: one for most moves, several for a folded refresh, none for set_profile. */
+  areaIds: string[];
   kind: NextMoveKind | string;
   title: string;
   why: string;
@@ -277,8 +279,12 @@ function mapAudit(x: unknown): AuditRow {
 
 function mapNextMove(x: unknown): NextMove {
   const r = rec(x);
+  const areaId = s(r.area_id);
+  const areaIds = strs(r.area_ids);
   return {
-    areaId: s(r.area_id),
+    areaId,
+    // A CLI without area_ids still names its one area.
+    areaIds: areaIds.length ? areaIds : areaId ? [areaId] : [],
     kind: s(r.kind),
     title: s(r.title),
     why: s(r.why),

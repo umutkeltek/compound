@@ -80,7 +80,8 @@ export default async function GrowthPage({ searchParams }: { searchParams: Promi
   for (const app of apps) for (const row of app.audit) rows.set(`${app.productId}|${row.areaId}`, row);
   const rowOf = (app: GrowthApp, areaId: string) => rows.get(`${app.productId}|${areaId}`);
   const moves = new Set<string>();
-  for (const app of apps) for (const move of app.nextMoves) if (move.areaId) moves.add(`${app.productId}|${move.areaId}`);
+  // A folded refresh covers several areas; each of them gets the dot.
+  for (const app of apps) for (const move of app.nextMoves) for (const id of move.areaIds) moves.add(`${app.productId}|${id}`);
   const isMove = (app: GrowthApp, areaId: string) => moves.has(`${app.productId}|${areaId}`);
 
   const areasOf = (groupId: string) => model.areas.filter((a) => a.group === groupId);

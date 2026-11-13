@@ -65,11 +65,16 @@ function Dot() {
 
 function MoveMeta({ move }: { move: NextMove }) {
   // The kind is not repeated here: the CLI's titles already lead with it
-  // ("Refresh data for …", "Record the answer for …"). It stays on the number badge's tooltip.
+  // ("Connect data: …", "Record the answer: …"). It stays on the number badge's tooltip.
   const parts: ReactNode[] = [];
-  if (move.branch) parts.push(<span key="branch">Pipeline: {branchLabel(move.branch)}</span>);
-  if (move.skills.length) parts.push(<span key="skills">Skills that can help: {move.skills.join(", ")}</span>);
-  if (move.areaId) parts.push(<a key="area" href={`#area-${move.areaId}`} className="mono hover:text-ink hover:underline">{move.areaId}</a>);
+  if (move.areaIds.length > 1) {
+    // A folded refresh covers several areas: its first area's pipeline and id would speak for all of them.
+    parts.push(<span key="areas">{move.areaIds.length} areas</span>);
+  } else {
+    if (move.branch) parts.push(<span key="branch">Pipeline: {branchLabel(move.branch)}</span>);
+    if (move.skills.length) parts.push(<span key="skills">Skills that can help: {move.skills.join(", ")}</span>);
+    if (move.areaId) parts.push(<a key="area" href={`#area-${move.areaId}`} className="mono hover:text-ink hover:underline">{move.areaId}</a>);
+  }
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-2xs text-faint">
       {parts.map((p, i) => (
@@ -322,20 +327,21 @@ function GroupRows({ areas, look, moveRank }: { areas: GrowthArea[]; look: Looku
   );
 }
 
-/** The 12 groups as closed sections; a group holding a next move starts open. */
+/** The 12 groups as closed sections; a group holding an area a next move covers starts open. */
 export function GroupAudit({ app, groups, areas, look }: { app: GrowthApp; groups: GrowthGroup[]; areas: GrowthArea[]; look: Lookup }) {
+  // Every area a move covers carries its rank: a folded refresh marks all of its areas, not only the first.
   const moveRank = new Map<string, number>();
   app.nextMoves.slice(0, 5).forEach((m, i) => {
-    if (m.areaId && !moveRank.has(m.areaId)) moveRank.set(m.areaId, i + 1);
+    for (const id of m.areaIds) if (!moveRank.has(id)) moveRank.set(id, i + 1);
   });
-  const moveAreas = new Set(moveRank.keys());
   return (
     <div className="flex flex-col gap-2">
       {groups.map((group) => {
         const groupAreas = areas.filter((a) => a.group === group.id);
         const rows = groupAreas.map((a) => look.rowById.get(a.id)).filter((r): r is AuditRow => Boolean(r));
         const counts = countStatuses(rows);
-        const moves = groupAreas.filter((a) => moveAreas.has(a.id)).length;
+        // Count moves, not areas: one folded refresh with two areas here is one move.
+        const moves = new Set(groupAreas.filter((a) => moveRank.has(a.id)).map((a) => moveRank.get(a.id))).size;
         return (
           <details key={group.id} id={`group-${group.id}`} open={moves > 0} className="group scroll-mt-24 rounded-xl border border-hair bg-panel target:border-work-line">
             <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-4 gap-y-1.5 px-4 py-3 hover:bg-soft">
