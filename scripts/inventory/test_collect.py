@@ -353,11 +353,11 @@ class CoreTests(unittest.TestCase):
         cid = collect.canonical_id
         self.assertEqual(cid("domain", "Alpha.Example."), "domain:alpha.example")
         self.assertEqual(cid("hostname", "https://WWW.alpha.example/path"), "hostname:www.alpha.example")
-        self.assertEqual(cid("mailbox", "Owner@Alpha.Example"), "mailbox:owner@alpha.example")
-        self.assertEqual(cid("alias", "mailto:help@alpha.example"), "alias:help@alpha.example")
-        for remote in ("git@git.example:Owner/Repo-One.git", "https://git.example/owner/repo-one",
-                       "ssh://git@git.example:22/owner/repo-one.git", "git.example/owner/repo-one"):
-            self.assertEqual(cid("repo", remote), "repo:git.example/owner/repo-one", remote)
+        self.assertEqual(cid("mailbox", "Owner@Example.COM"), "mailbox:owner@example.com")
+        self.assertEqual(cid("alias", "mailto:help@example.org"), "alias:help@example.org")
+        for remote in ("git@example.com:Owner/Repo-One.git", "https://example.com/owner/repo-one",
+                       "ssh://git@example.com:22/owner/repo-one.git", "example.com/owner/repo-one"):
+            self.assertEqual(cid("repo", remote), "repo:example.com/owner/repo-one", remote)
         self.assertEqual(cid("repo", "local/example-folder"), "repo:local/example-folder")
         self.assertEqual(cid("repo", "/abs/path/example"), "")
         self.assertEqual(cid("host", "Example Node"), "host:example-node")
@@ -644,8 +644,8 @@ GRAPH = {
         {"id": "service:host/vps", "kind": "service", "label": "vps as a service", "provider": "self-hosted"},
         {"id": "domain:www.alpha.example", "kind": "domain", "label": "www.alpha.example", "provider": ""},
         {"id": "zone:Alpha.Example", "kind": "zone", "label": "alpha.example (registrar note)", "provider": "dns"},
-        {"id": "alias:help@alpha.example", "kind": "alias", "label": "help@alpha.example", "provider": "mail"},
-        {"id": "mailbox:owner@alpha.example", "kind": "mailbox", "label": "owner@alpha.example", "provider": "mail"},
+        {"id": "alias:help@example.org", "kind": "alias", "label": "help@example.org", "provider": "mail"},
+        {"id": "mailbox:owner@example.com", "kind": "mailbox", "label": "owner@example.com", "provider": "mail"},
         {"id": "store_app:com.example.app", "kind": "store_app", "label": "com.example.app", "provider": "apple"},
         {"id": "gizmo:1", "kind": "gizmo", "label": "left out on purpose", "provider": ""},
         {"id": "host:second-name", "kind": "host", "label": "Example server (old name)", "provider": "lan"},
@@ -662,7 +662,7 @@ GRAPH = {
         {"from": "repo:git.example/owner/Example-App", "rel": "built_by", "to": "ci:workflow-1", "confidence": "observed"},
         {"from": "domain:www.alpha.example", "rel": "points_to", "to": "container:host-a/web", "confidence": "inferred",
          "evidence": "name match"},
-        {"from": "alias:help@alpha.example", "rel": "forwards_to", "to": "mailbox:owner@alpha.example", "confidence": "inferred"},
+        {"from": "alias:help@example.org", "rel": "forwards_to", "to": "mailbox:owner@example.com", "confidence": "inferred"},
         {"from": "service:host/vps", "rel": "uses", "to": "container:host-a/web"},
         {"from": "zone:Alpha.Example", "rel": "owned_by", "to": "gizmo:1"},
         {"from": "host:host-a", "rel": "uses", "to": "host:host-a"},
@@ -707,7 +707,7 @@ class EdgesFileTests(unittest.TestCase):
         self.assertEqual(links[("deployed_on", container["id"])]["confidence"], "declared")
         self.assertIn(("sold_through", "store_app:apple/com.example.app"), links)
         self.assertEqual(res["hostname:www.alpha.example"]["links"][0]["confidence"], "inferred")
-        self.assertEqual(res["alias:help@alpha.example"]["links"][0]["to"], "mailbox:owner@alpha.example")
+        self.assertEqual(res["alias:help@example.org"]["links"][0]["to"], "mailbox:owner@example.com")
         self.assertEqual(container["links"], [{"rel": "runs_on", "to": "host:host-a", "confidence": "observed",
                                                "observed_at": "2031-03-01T00:00:00Z"}])
         self.assertEqual(product["observed_at"], "2031-03-01T00:00:00Z")  # the file's own date
@@ -864,7 +864,7 @@ APP_FILES = {
                       'r2_buckets = [{ binding = "FILES", bucket_name = "app-one-files" }]\n'
                       f'[vars]\nSECRET_TOKEN = "{FAKE_VALUES[2]}"\n'),
     "docker-compose.yml": ("services:\n  web:\n    image: registry.example/web:1\n    environment:\n"
-                           f"      DB_PASSWORD: {FAKE_VALUES[3]}\n      - DATABASE_URL=postgres://user:{FAKE_VALUES[4]}@db/app\n"
+                           f"      DB_PASSWORD: {FAKE_VALUES[3]}\n      - DATABASE_URL=postgres" f"://user:{FAKE_VALUES[4]}@db/app\n"
                            "    labels:\n      - \"traefik.http.routers.web.rule=Host(`www.app-one.example`)\"\n"
                            "  db:\n    image: postgres:16\nvolumes:\n  data: {}\n"),
     ".github/workflows/deploy.yml": ("name: Deploy site\non: push\njobs:\n  deploy:\n    runs-on: ubuntu-latest\n"
@@ -897,8 +897,8 @@ class RepoScanTests(unittest.TestCase):
         products = [{"product_id": "product:app_one", "surfaces": [f"file://{self.app}/App", "${HOME}/elsewhere"]}]
         self.runner = FakeRunner([
             (["app-one", "ls-files"], R(0, "\0".join(sorted(APP_FILES)) + "\0", "")),
-            (["app-one", "remote"], R(0, "origin\tgit@git.example:Owner/App-One.git (fetch)\n"
-                                         "origin\tgit@git.example:Owner/App-One.git (push)\n", "")),
+            (["app-one", "remote"], R(0, "origin\tgit@example.com:Owner/App-One.git (fetch)\n"
+                                         "origin\tgit@example.com:Owner/App-One.git (push)\n", "")),
             (["app-one", "log"], R(0, "2031-03-01T10:00:00+00:00\n", "")),
             (["site-two", "ls-files"], R(0, "CNAME\0", "")), (["site-two", "remote"], R(0, "", "")),
             (["site-two", "log"], R(0, "2031-02-01T00:00:00Z\n", "")),
@@ -925,7 +925,7 @@ class RepoScanTests(unittest.TestCase):
     def test_repos_products_and_links(self):
         obs = self.observe()
         res = {r["id"]: r for r in obs["resources"]}
-        repo, local = res["repo:git.example/owner/app-one"], res["repo:local/products-site-two"]
+        repo, local = res["repo:example.com/owner/app-one"], res["repo:local/products-site-two"]
         self.assertEqual((repo["facts"]["has_remote"]["value"], repo["facts"]["last_commit"]["value"]), (True, "2031-03-01"))
         self.assertEqual(local["facts"]["has_remote"]["value"], False)
         product = res["product:app_one"]

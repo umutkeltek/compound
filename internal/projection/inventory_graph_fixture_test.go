@@ -25,7 +25,7 @@ const (
 	gfDomain    = "domain:shop.example"
 	gfIdentity  = "identity:ops-login"
 	gfVault     = "vault:store:ops"
-	gfMailbox   = "mailbox:ops@shop.example"
+	gfMailbox   = "mailbox:ops@example.com"
 	gfRepo      = "repo:local/shop"
 	gfBackup    = "backup:target:nas"
 	gfPay       = "external:service:pay"
@@ -92,7 +92,7 @@ func graphObservation(at time.Time) InventoryObservation {
 			res(gfDomain, "domain", "dnsco", "shop.example", "dns", gfLink("owned_by", gfAccountID, "")),
 			res(gfAccountID, "account", "aws", "Example account", "logins", gfLink("signs_in_with", gfIdentity, "")),
 			identity, vault,
-			res(gfMailbox, "mailbox", "mailco", "ops@shop.example", "logins"),
+			res(gfMailbox, "mailbox", "mailco", "ops@example.com", "logins"),
 			repo, backup,
 			res(gfPay, "external_service", "payco", "Pay service", "repos", gfLink("owned_by", gfGhost, "inferred")),
 			res(gfStoreApp, "store_app", "apple", "Shop app listing", "repos"),
