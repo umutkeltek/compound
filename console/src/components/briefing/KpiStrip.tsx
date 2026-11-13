@@ -1,8 +1,9 @@
 import type { ReactNode } from "react";
 
 import { Panel } from "@/components/briefing/primitives";
-import { DeltaPill } from "@/components/kit";
+import { DeltaPill, plainAge } from "@/components/kit";
 import { memoryBriefingNotice, type AutonomyPosture, type MemoryBriefing } from "@/lib/briefing";
+import { plainAutonomy } from "@/lib/plain-words";
 
 /**
  * The week in three numbers (DESIGN.md §3 KPI stat): changes that reached the
@@ -13,11 +14,10 @@ import { memoryBriefingNotice, type AutonomyPosture, type MemoryBriefing } from 
  * spend read exists, and a tile that can only say "not wired" is noise.
  */
 
-/** "Nov 13, 07:52" for an ISO time; the raw value stays in `dateTime`. */
-function plainClock(iso: string): string {
-  const at = new Date(iso);
-  if (Number.isNaN(at.getTime())) return iso;
-  return at.toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+/** "12 min ago" for an ISO time, in the age format every read chip uses; the raw value stays in `dateTime`. */
+function readAge(iso: string): string {
+  const at = new Date(iso).getTime();
+  return Number.isNaN(at) ? "at an unknown time" : plainAge(Math.max(0, Date.now() - at));
 }
 
 type StackSeg = { value: number; className: string; label: string };
@@ -63,6 +63,29 @@ function KpiTile({
       </span>
       <span className="mt-1 text-xs leading-snug text-muted">{sub}</span>
       {children}
+    </Panel>
+  );
+}
+
+/**
+ * What the autonomy level lets agents do without asking, in one plain
+ * sentence (lib/plain-words.ts `plainAutonomy`); the level itself is small.
+ * An unknown level shows the system's own posture and gloss as written.
+ */
+function AutonomyTile({ autonomy }: { autonomy: AutonomyPosture }) {
+  // Without imported operator authority, policy fails closed whatever the level says.
+  const sentence = autonomy.installed ? plainAutonomy(autonomy.level) : "";
+  return (
+    <Panel className="flex flex-col px-5 py-4">
+      <span className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-faint">
+        <span className={`h-1.5 w-1.5 rounded-full ${autonomy.tone === "good" ? "bg-good" : "bg-seam"}`} aria-hidden />
+        Autonomy
+        <span className="mono rounded-sm border border-hair px-1 py-px text-2xs font-semibold normal-case tracking-normal text-muted" title={autonomy.posture}>
+          {autonomy.level}
+        </span>
+      </span>
+      <span className="mt-2 text-sm font-semibold leading-snug text-strong">{sentence || autonomy.posture}</span>
+      {sentence ? null : <span className="mt-1 text-2xs leading-snug text-faint">{autonomy.detail}</span>}
     </Panel>
   );
 }
@@ -134,21 +157,14 @@ export function KpiStrip({
         {mind.observation === "stale" && mind.totals ? (
           <span className="mt-2 text-xs text-seam">
             {memoryBriefingNotice(mind)}
-            {mind.lastGoodAt ? <span className="block">Last successful read: <time dateTime={mind.lastGoodAt}>{plainClock(mind.lastGoodAt)}</time></span> : null}
+            {mind.lastGoodAt ? <span className="block">Last read <time dateTime={mind.lastGoodAt}>{readAge(mind.lastGoodAt)}</time></span> : null}
           </span>
         ) : null}
       </KpiTile>
       {!autonomy ? (
         <KpiTile label="Autonomy" dot="bg-faint" value={<span className="text-faint">…</span>} sub={autonomyNote} />
       ) : (
-      <KpiTile
-        label="Autonomy"
-        dot={autonomy.tone === "good" ? "bg-good" : "bg-seam"}
-        value={autonomy.level}
-        sub={<span title={autonomy.detail}>{autonomy.posture}</span>}
-      >
-        <span className="mt-3 text-2xs leading-snug text-faint">{autonomy.detail}</span>
-      </KpiTile>
+      <AutonomyTile autonomy={autonomy} />
       )}
 
     </div>

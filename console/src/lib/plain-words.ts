@@ -246,6 +246,7 @@ const TOOL_REASON_PLAIN: Array<[RegExp, string]> = [
   [/^owner-work authority stamp blocked/i, "the tool that raised it has not recorded what the action would do and who may approve it."],
   [/^actions are item-specific/i, "each item has its own action; there is no single action for all of them."],
   [/^owner has not exposed a safe action/i, "the tool offers no safe action for it."],
+  [/^resolve (?:the )?policy\/source-control hold/i, "each held work item needs you to let it continue, start it again, or cancel it."],
   [/^The owner authority bundle is not current/i, "it is out of date."],
   [/^No complete current owner authority bundle/i, "no complete approval record came with it."],
 ];
@@ -343,6 +344,20 @@ export function productTitle(text: string, nameOf: (productId: string) => string
   const match = /^(product:[\w.-]+)\b/.exec(text || "");
   if (!match) return { text: text || "", id: "" };
   return { text: `${nameOf(match[1])}${text.slice(match[1].length)}`, id: match[1] };
+}
+
+/**
+ * The agent behind an owner or lane id ("claude_code:subtract-lessons"), named
+ * the way Live names agents: the executors projection's label for that agent
+ * id ("Claude Code"). `names` maps agent id → label. The full id comes back
+ * as `lane` for small text. An id no agent matches keeps its own text.
+ */
+export function agentNameFor(owner: string, names: ReadonlyMap<string, string>): { name: string; lane: string } {
+  const raw = (owner || "").trim();
+  if (!raw) return { name: "", lane: "" };
+  const head = raw.split(/[:/]/)[0];
+  const name = names.get(raw) ?? names.get(head) ?? "";
+  return name ? { name, lane: raw === head ? "" : raw } : { name: raw, lane: "" };
 }
 
 const AUTONOMY_PLAIN: Record<string, string> = {

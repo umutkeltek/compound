@@ -7,7 +7,8 @@ import type { HeadlineActDescriptor } from "@/lib/briefing";
 import { humanAge, isOld } from "@/lib/briefing";
 import { unit } from "@/lib/counts";
 import { headlineActIdentity } from "@/lib/governed-action-client";
-import { areaDetail, plainArea, plainReason, plainText, plainWhy } from "@/lib/plain-words";
+import { humanizeProductId } from "@/lib/app-identity";
+import { areaDetail, plainArea, plainReason, plainText, plainWhy, productTitle } from "@/lib/plain-words";
 
 const DOT: Record<ReturnType<typeof domainForArea>, string> = {
   work: "bg-work",
@@ -17,9 +18,14 @@ const DOT: Record<ReturnType<typeof domainForArea>, string> = {
   product: "bg-product",
 };
 
-/** The owner's own one-line summary of what the decision asks. */
-function whatToDo(group: AttentionGroup): string {
-  return plainText(group.operator_summary || "") || "Open it to see what it asks.";
+/**
+ * The owner's own one-line summary of what the decision asks. A summary that
+ * starts with a product id leads with the product's name instead (named the
+ * way the apps pages name it); the id comes back apart for small text.
+ */
+function whatToDo(group: AttentionGroup): { text: string; id: string } {
+  const titled = productTitle(plainText(group.operator_summary || ""), humanizeProductId);
+  return titled.text ? titled : { text: "Open it to see what it asks.", id: "" };
 }
 
 /**
@@ -52,6 +58,7 @@ export function NeedsYouList({
           const blocked = !group.action ? plainReason(group.terminal_reason) : "";
           const age = humanAge(group.oldest_created_at);
           const detail = areaDetail(group.area);
+          const what = whatToDo(group);
           const href = `/reviews?decision=${encodeURIComponent(group.key)}`;
           return (
             <li key={group.key || index} className="flex flex-col gap-2 px-4 py-3.5 sm:flex-row sm:items-start sm:gap-4">
@@ -71,8 +78,9 @@ export function NeedsYouList({
                   {age ? <span className={isOld(group.oldest_created_at) ? "text-seam" : ""}>waiting {age}</span> : null}
                   {group.reversibility === "irreversible" ? <span className="text-seam">cannot be undone</span> : null}
                   {detail ? <span className="mono truncate" title={group.area} style={{ maxWidth: "24ch" }}>{detail}</span> : null}
+                  {what.id ? <span className="mono truncate" title={what.id} style={{ maxWidth: "24ch" }}>{what.id}</span> : null}
                 </div>
-                <p className="mt-1 text-md font-semibold leading-snug text-strong">{whatToDo(group)}</p>
+                <p className="mt-1 text-md font-semibold leading-snug text-strong">{what.text}</p>
                 {why ? <p className="mt-0.5 text-sm leading-snug text-muted">Why: {why}</p> : null}
                 {blocked ? <p className="mt-0.5 text-xs leading-snug text-faint">{blocked}</p> : null}
               </div>

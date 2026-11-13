@@ -32,6 +32,7 @@ import { countAgents, countInProgress, waitingOnYou } from "@/lib/counts";
 import { depthShows, requestDepth } from "@/lib/depth";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { moveTypeGroup, summarizeMoveTypeMix } from "@/lib/move-mix";
+import { agentNameFor } from "@/lib/plain-words";
 import { latestProofBackedChange } from "@/representation";
 
 export const dynamic = "force-dynamic";
@@ -106,6 +107,8 @@ export default async function Briefing() {
   // Agents and in-progress work: one definition each (lib/counts.ts). Unknown is null, never 0.
   const executors = hasCopy(executorsRead) ? normalizeExecutorProjection(executorsRead.value) : null;
   const agents = executors ? countAgents(executors.executors) : null;
+  // Agent id → name, as Live names agents (the executors projection's labels).
+  const agentNames = new Map((executors?.executors ?? []).map((row) => [row.id, row.label] as const));
   const workbenchKnown = hasCopy(workbenchRead);
   const open = arr(workbench?.open);
   const inProgress = workbenchKnown ? countInProgress(open, now.getTime()) : null;
@@ -190,7 +193,11 @@ export default async function Briefing() {
           worldDelta={workbenchKnown && worldChange.covered ? worldChange.delta : null}
         />
         <Gate read={workbenchRead} label="the last finished change">
-          <LatestMoment moment={compounded} read={feed(workbenchRead)} />
+          <LatestMoment
+            moment={compounded}
+            read={feed(workbenchRead)}
+            agentName={compounded ? agentNameFor(compounded.producer, agentNames).name : ""}
+          />
         </Gate>
       </section>
 

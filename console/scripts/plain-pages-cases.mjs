@@ -109,7 +109,7 @@ const reply = {
     items: [{ id: "route-promotions|x-item-0", area: "route-promotions", band: "needs_you", status: "review_required", operator_summary: "Promote the fixture route?", created_at: iso(4),
       actions: [{ id: "route_promotion_record", label: "Record the promotion", argv: ["compound", "route", "promotion-record", "--id", "fx"], requires_review: true }] }],
   },
-  "policy operator-authority --json": { generated_at: iso(0), autonomy_level: "L1", mode: "propose_only" },
+  "policy operator-authority --json": { generated_at: iso(0), installed: true, autonomy_level: "L1", mode: "propose_only" },
   "source connections --json": { schema_version: "compound.source_connections_projection.v0.2", generated_at: iso(0), counts: {}, connections: [] },
   "director propose --dry-run --json": { generated_at: iso(0), proposals: [] },
   "packets list --json": { schema_version: "compound.work.offered_packets.v0.1", counts: {}, items: [] },
@@ -133,7 +133,8 @@ const { default: Work } = await import("../src/app/work/page.tsx");
 const { default: Decide } = await import("../src/app/reviews/page.tsx");
 const { default: Live } = await import("../src/app/live/page.tsx");
 const { buildDecideGroups } = await import("../src/lib/decide-model.ts");
-const { standingLine } = await import("../src/lib/plain-words.ts");
+const { agentNameFor, plainWhy, plainWorkStep, productTitle, standingLine } = await import("../src/lib/plain-words.ts");
+const { humanizeProductId } = await import("../src/lib/app-identity.ts");
 
 /**
  * A complete, current, allowed owner action for one review item (the
@@ -307,6 +308,18 @@ try {
   assert.match(warm.Today, /blocked on your review/, "system wording 'operator review' becomes 'your review'");
   assert.match(warm.Today, /Why: Agents cannot go on until you lift the hold\./, "a known 'why' line reads in plain words");
   assert.doesNotMatch(warm.Today, /executors can continue/, "system wording never reaches the why line");
+  // This week: the autonomy level in one plain sentence, the level itself small.
+  assert.match(warm.Today, /Autonomy L1 Agents suggest changes and ask you before they change files on this machine\./);
+  assert.doesNotMatch(warm.Today, /propose only|self-authorizes/);
+  // A title that starts with a product id leads with the product's name; the id is small text.
+  const titled = productTitle("product:fixture-app has a product hypothesis.", humanizeProductId);
+  assert.deepEqual(titled, { text: "Fixture App has a product hypothesis.", id: "product:fixture-app" });
+  assert.deepEqual(productTitle("A plain title.", humanizeProductId), { text: "A plain title.", id: "" });
+  // Unknown tool text is shown as written, never hidden.
+  assert.equal(plainWorkStep("an instruction nobody mapped"), "an instruction nobody mapped");
+  assert.equal(plainWhy("a reason nobody mapped"), "A reason nobody mapped.");
+  assert.deepEqual(agentNameFor("claude_code:lane-x", new Map([["claude_code", "Claude Code"]])), { name: "Claude Code", lane: "claude_code:lane-x" });
+  assert.deepEqual(agentNameFor("someone:else", new Map([["claude_code", "Claude Code"]])), { name: "someone:else", lane: "" });
   assert.match(warm.Today, /There is no button for this kind of decision yet/);
   assert.doesNotMatch(warm.Today, /compound reviews --area/, "a command is never the 'why'");
 
