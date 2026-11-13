@@ -2,6 +2,7 @@ package product
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -113,6 +114,13 @@ func validateProfile(p ProductProfile) error {
 	for i, d := range p.Deferred {
 		if !profileAreaRE.MatchString(strings.TrimSpace(d.Area)) || strings.TrimSpace(d.Reason) == "" {
 			return fmt.Errorf("profile deferred[%d] needs an area id (or group id) and a reason", i)
+		}
+		if area := strings.TrimSpace(d.Area); !cat.hasAreaOrGroup(area) {
+			msg := fmt.Sprintf("profile deferred[%d] area %q is not a growth area or group id", i, area)
+			if near := cat.nearIDs(area, true); len(near) > 0 {
+				msg += "; did you mean " + strings.Join(near, ", ") + "?"
+			}
+			return errors.New(msg)
 		}
 		if u := strings.TrimSpace(d.Until); u != "" {
 			if _, err := time.Parse("2006-01-02", u); err != nil {

@@ -766,6 +766,33 @@ func TestGrowthProfileRejectsUndeclaredValues(t *testing.T) {
 	}
 }
 
+// A set-aside entry must name a catalog area or group; a typo would
+// otherwise be ignored without a word. The error suggests the nearest id.
+func TestGrowthProfileRejectsUnknownDeferral(t *testing.T) {
+	for _, tc := range []struct{ area, near string }{
+		{"monetisation", "monetization"},
+		{"acquisition_payd", "acquisition_paid"},
+	} {
+		b := registryBundle("product:bad", "Bad")
+		b.Product.Profile = ProductProfile{Deferred: []ProfileDeferral{{Area: tc.area, Reason: "later"}}}
+		err := Validate(b)
+		if err == nil || !strings.Contains(err.Error(), `"`+tc.area+`"`) || !strings.Contains(err.Error(), "did you mean "+tc.near) {
+			t.Fatalf("deferral %q: err = %v, want a suggestion of %s", tc.area, err, tc.near)
+		}
+	}
+	for _, area := range []string{"monetization", "acquisition_paid"} {
+		b := registryBundle("product:good", "Good")
+		b.Product.Profile = ProductProfile{Deferred: []ProfileDeferral{{Area: area, Reason: "later"}}}
+		if err := Validate(b); err != nil {
+			t.Fatalf("deferral %q: %v", area, err)
+		}
+	}
+	// A contract without a profile imports exactly as before.
+	if err := Validate(registryBundle("product:plain", "Plain")); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestGrowthProfileInference(t *testing.T) {
 	home := t.TempDir()
 	rows := growthDaily("product:both", "app_store_connect_developer_proceeds_usd", 3, 0, 2)

@@ -162,21 +162,40 @@ func (c *growthAreaCatalog) dependents(id string) []string {
 }
 
 // nearAreas suggests up to three area ids close to a mistyped one.
-func (c *growthAreaCatalog) nearAreas(q string) []string {
+func (c *growthAreaCatalog) nearAreas(q string) []string { return c.nearIDs(q, false) }
+
+// hasAreaOrGroup reports whether id names a catalog area or group.
+func (c *growthAreaCatalog) hasAreaOrGroup(id string) bool {
+	_, area := c.byID[id]
+	_, group := c.groupIdx[id]
+	return area || group
+}
+
+// nearIDs suggests up to three area ids close to a mistyped one, and group
+// ids too when groups is set.
+func (c *growthAreaCatalog) nearIDs(q string, groups bool) []string {
 	q = strings.ToLower(strings.TrimSpace(q))
 	type cand struct {
 		id   string
 		dist int
 	}
 	var cands []cand
-	for _, a := range c.Areas {
-		d := min(growthEditDistance(q, a.ID), growthEditDistance(q, strings.TrimPrefix(a.ID, a.Group+"_")))
-		if q != "" && (strings.Contains(a.ID, q) || strings.HasSuffix(a.ID, "_"+q)) {
+	consider := func(id, short string) {
+		d := min(growthEditDistance(q, id), growthEditDistance(q, short))
+		if q != "" && (strings.Contains(id, q) || strings.HasSuffix(id, "_"+q)) {
 			d = 0
 		}
 		if d <= 3 {
-			cands = append(cands, cand{a.ID, d})
+			cands = append(cands, cand{id, d})
 		}
+	}
+	if groups {
+		for _, g := range c.Groups {
+			consider(g.ID, g.ID)
+		}
+	}
+	for _, a := range c.Areas {
+		consider(a.ID, strings.TrimPrefix(a.ID, a.Group+"_"))
 	}
 	sort.SliceStable(cands, func(i, j int) bool { return cands[i].dist < cands[j].dist })
 	var out []string
