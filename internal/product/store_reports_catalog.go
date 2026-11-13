@@ -461,6 +461,9 @@ func validateStoreReport(r StoreReport, growthCat *growthAreaCatalog) error {
 		if len(f.Globs) == 0 {
 			return fmt.Errorf("capture.files needs at least one glob")
 		}
+		if r.Grain == "week" {
+			return fmt.Errorf("capture.files needs grain day, month or fiscal_month")
+		}
 		for _, g := range f.Globs {
 			if err := validateStoreReportPath("capture.files.globs", g); err != nil {
 				return err

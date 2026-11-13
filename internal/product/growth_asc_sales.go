@@ -159,37 +159,6 @@ func growthStoreWindowEnd(rows []growthSalesRow, index []ascSalesDayIndexRow, as
 	return age
 }
 
-// growthASCAppIDs maps an App Store app id to the groups whose ledger rows
-// cite it ("asc:app:<id>") or whose registry identifiers name it.
-func growthASCAppIDs(signals []Signal, groups []*growthGroup, resolve func(string) *growthGroup) map[string]map[*growthGroup]bool {
-	out := map[string]map[*growthGroup]bool{}
-	add := func(id string, g *growthGroup) {
-		if out[id] == nil {
-			out[id] = map[*growthGroup]bool{}
-		}
-		out[id][g] = true
-	}
-	for _, s := range signals {
-		for _, ref := range s.EvidenceRefs {
-			m := growthASCAppRefRE.FindStringSubmatch(strings.TrimSpace(ref))
-			if m == nil {
-				continue
-			}
-			if g := resolve(s.ProductID); g != nil {
-				add(m[1], g)
-			}
-		}
-	}
-	for _, g := range groups {
-		for token := range g.tokens {
-			if token != "" && strings.Trim(token, "0123456789") == "" {
-				add(token, g)
-			}
-		}
-	}
-	return out
-}
-
 // applyGrowthASCSales folds series rows into the groups' periodic signals.
 // Only an app id that maps to exactly one app is used; an unknown or
 // ambiguous id is skipped rather than guessed. The series is the source the

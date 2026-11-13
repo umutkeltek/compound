@@ -194,6 +194,9 @@ type GrowthApp struct {
 	Coverage   GrowthCoverage           `json:"coverage"`
 	Hypotheses GrowthHypotheses         `json:"hypotheses"`
 	NextMoves  []GrowthNextMove         `json:"next_moves"`
+	// Reports is the store report coverage for the app's linked store app
+	// ids, from the fast path only (file names and the two series).
+	Reports GrowthAppReports `json:"reports"`
 }
 
 type GrowthAllocation struct {
@@ -335,6 +338,7 @@ type growthGroup struct {
 	profile         ProductProfile  // declared profile facts
 	profileDeclared map[string]bool // dimensions with a declared value
 	subscriptionIDs bool            // subscription product ids are on file
+	releaseAppIDs   []string        // App Store app ids the release identity names
 	learned         []LearnedFact   // learned facts across the group's ids
 	claims          map[string]string
 
@@ -391,37 +395,60 @@ func BuildGrowth(homePath string, opts GrowthOptions) (Growth, error) {
 	if err := opts.Validate(); err != nil {
 		return Growth{}, err
 	}
+	w, err := loadGrowthWorld(homePath, opts)
+	if err != nil {
+		return Growth{}, err
+	}
+	return w.build(opts), nil
+}
+
+// growthWorld is what the growth projection and the store report view both
+// resolve from the home: the catalogs, the product groups with their daily
+// signals, the store app identity and what the store captures hold.
+type growthWorld struct {
+	cat       *growthAreaCatalog
+	all       []*growthGroup // every product group
+	groups    []*growthGroup // after the --product filter
+	identity  map[string][]storeAppClaim
+	ascSales  []growthSalesRow
+	salesDays []ascSalesDayIndexRow
+	stores    *storeReportScan
+	fast      []StoreReportCheck // fast checks, run once
+}
+
+// loadGrowthWorld reads the home once. opts must be normalized.
+func loadGrowthWorld(homePath string, opts GrowthOptions) (*growthWorld, error) {
 	cat := opts.catalog
 	if cat == nil {
 		loaded, err := loadGrowthCatalog(homePath)
 		if err != nil {
-			return Growth{}, fmt.Errorf("growth catalog: %w", err)
+			return nil, fmt.Errorf("growth catalog: %w", err)
 		}
 		cat = loaded
 	}
 	store, err := mem.OpenScan(homePath)
 	if err != nil {
-		return Growth{}, err
+		return nil, err
 	}
 	idx, err := loadWhereIndex(store)
 	if err != nil {
-		return Growth{}, err
+		return nil, err
 	}
 	signals, err := loadSignals(homePath)
 	if err != nil {
-		return Growth{}, err
+		return nil, err
 	}
 	adRows, err := LoadAdRows(homePath)
 	if err != nil {
-		return Growth{}, err
+		return nil, err
 	}
 	hyps, err := loadHypotheses(homePath)
 	if err != nil {
-		return Growth{}, err
+		return nil, err
 	}
 	reviews, err := loadReviews(homePath)
 	if err != nil {
-		return Growth{}, err
+		return nil, err
 	}
 	drafts, _ := ListContentDrafts(homePath, "")
 
@@ -447,6 +474,25 @@ func BuildGrowth(homePath string, opts GrowthOptions) (Growth, error) {
 		groups = append(groups, g)
 		byID[strings.ToLower(id)] = g
 		return g
+	}
+	// lookup finds a known group without adding one, for sources that may
+	// name a product Compound does not know.
+	lookup := func(id string) *growthGroup {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return nil
+		}
+		if g := byID[strings.ToLower(id)]; g != nil {
+			return g
+		}
+		if key := identityKey(id); key != "" {
+			for _, g := range groups {
+				if g.tokens[key] {
+					return g
+				}
+			}
+		}
+		return nil
 	}
 
 	asOfStr := growthDayStr(opts.AsOf)
@@ -483,17 +529,21 @@ func BuildGrowth(homePath string, opts GrowthOptions) (Growth, error) {
 
 	ascSales, err := loadGrowthASCSalesSeries(homePath)
 	if err != nil {
-		return Growth{}, err
+		return nil, err
 	}
 	salesDays, err := loadASCSalesDaysIndex(homePath)
 	if err != nil {
-		return Growth{}, err
+		return nil, err
 	}
-	ascAppIDs := growthASCAppIDs(signals, groups, resolve)
+	identity, err := storeAppIdentity(homePath, signals, groups, resolve, lookup)
+	if err != nil {
+		return nil, err
+	}
+	ascAppIDs := storeAppGroups(identity)
 	applyGrowthASCSales(ascSales, ascAppIDs, asOfStr)
 	ascFunnel, err := loadGrowthASCFunnelSeries(homePath)
 	if err != nil {
-		return Growth{}, err
+		return nil, err
 	}
 	applyGrowthASCFunnel(ascFunnel, ascAppIDs, asOfStr)
 
@@ -593,6 +643,7 @@ func BuildGrowth(homePath string, opts GrowthOptions) (Growth, error) {
 		}
 	}
 
+	all := groups
 	if opts.ProductID != "" {
 		var picked []*growthGroup
 		q := strings.ToLower(opts.ProductID)
@@ -603,14 +654,23 @@ func BuildGrowth(homePath string, opts GrowthOptions) (Growth, error) {
 			}
 		}
 		if len(picked) == 0 {
-			return Growth{}, fmt.Errorf("no product matches %q", opts.ProductID)
+			return nil, fmt.Errorf("no product matches %q", opts.ProductID)
 		}
 		if len(picked) > 1 {
-			return Growth{}, fmt.Errorf("%q names more than one product", opts.ProductID)
+			return nil, fmt.Errorf("%q names more than one product", opts.ProductID)
 		}
 		groups = picked
 	}
+	stores, err := scanStoreReports(homePath, opts.AsOf)
+	if err != nil {
+		return nil, err
+	}
+	return &growthWorld{cat: cat, all: all, groups: groups, identity: identity, ascSales: ascSales, salesDays: salesDays, stores: stores}, nil
+}
 
+// build turns what the home holds into the growth projection.
+func (w *growthWorld) build(opts GrowthOptions) Growth {
+	cat, groups, asOfStr := w.cat, w.groups, growthDayStr(opts.AsOf)
 	out := Growth{
 		SchemaVersion: GrowthSchemaVersion,
 		GeneratedAt:   opts.Now.Format(time.RFC3339),
@@ -625,7 +685,7 @@ func BuildGrowth(homePath string, opts GrowthOptions) (Growth, error) {
 		Groups:        append([]GrowthAreaGroup{}, cat.Groups...),
 		Areas:         cat.publicAreas(),
 	}
-	ctx := growthCtx{opts: opts, cat: cat, storeEnd: growthStoreWindowEnd(ascSales, salesDays, opts.AsOf)}
+	ctx := growthCtx{opts: opts, cat: cat, storeEnd: growthStoreWindowEnd(w.ascSales, w.salesDays, opts.AsOf), world: w}
 	type ranked struct {
 		app   GrowthApp
 		alloc GrowthAllocation
@@ -684,7 +744,7 @@ func BuildGrowth(homePath string, opts GrowthOptions) (Growth, error) {
 	out.Portfolio.AppCount = len(out.Apps)
 	out.Portfolio.Totals = ctx.kpis(portfolioDaily)
 	out.Portfolio.Series = ctx.series(portfolioDaily)
-	return out, nil
+	return out
 }
 
 func newGrowthGroup(i int) *growthGroup {
@@ -739,6 +799,9 @@ func growthGroups(idx *whereIndex) ([]*growthGroup, map[string]*growthGroup) {
 			}
 			if c, ok := idx.claim(e.Slug, "release_subscription_ids"); ok && strings.TrimSpace(c.Object) != "" {
 				g.subscriptionIDs = true
+			}
+			if c, ok := idx.claim(e.Slug, "release_app_store_connect_app_id"); ok && strings.TrimSpace(c.Object) != "" {
+				g.releaseAppIDs = appendUnique(g.releaseAppIDs, strings.TrimSpace(c.Object))
 			}
 			if e.CreatedAt != "" || len(e.Aliases) > 0 || len(e.Identifiers) > 0 {
 				g.registered[e.Slug] = true
@@ -818,6 +881,8 @@ type growthCtx struct {
 	// storeEnd is how many days before as-of the store KPI window ends: the
 	// Sales report's newest final day, or 0.
 	storeEnd int
+	// world gives store report coverage per app; nil in briefs.
+	world *growthWorld
 }
 
 type growthFacts struct {
@@ -1210,6 +1275,10 @@ func (c growthCtx) buildApp(g *growthGroup) (GrowthApp, growthFacts) {
 	}
 	app.Coverage = growthCoverage(app.Audit)
 	app.NextMoves = c.nextMoves(g, app)
+	app.Reports = GrowthAppReports{Command: storeReportsCommand(app.ProductID)}
+	if c.world != nil {
+		app.Reports = c.world.appReportCounts(g, app.ProductID)
+	}
 	return app, facts
 }
 

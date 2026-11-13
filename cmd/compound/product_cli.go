@@ -63,7 +63,7 @@ import (
 )
 
 func productUsage() string {
-	return "usage: compound product authority [--json] | import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml> [--dry-run]|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--asc-funnel-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--asc-acquisition <tsv> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric first_time_downloads|paid_first_time_downloads|organic_first_time_downloads|paid_download_share]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>]|--posthog-report <json> --product <id> --project <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | growth [--product <id> [--area <area_id>]] [--json] [--as-of YYYY-MM-DD] [--window <days>] [--series-days <days>] [--stale-days <days>] [--assess-days <days>] | " + product.AdsUsage() + " | " + product.WhereUsage() + " | " + product.EssenceUsage() + " | canonical-metrics <json> --product <id> | change-stream <candidates.md> | content-draft record --product <id> --platform <" + strings.Join(product.ContentDraftPlatforms(), "|") + "> [--text <body>] [--voice-pack <ref>] [--evidence <ref,ref>] [--generate <generator> --generate-prompt <text> [--generate-param k=v]... [--generate-alt <text>]] (--ttl <dur>|--expires <rfc3339>) | content-draft list [--product <id>] [--json] | content-draft park|operationalize|reject <draft_id> | content-queue plan [--json]|content-queue apply --review <review.yaml> [--json] | hypothesis-plan --candidate <candidate_id> [--target <file>] | hypothesis-approve <candidate_id> --expected-effect <sentence> [--metrics <m1,m2>] [--window <span>] [--reviewed-by <actor>] | observation-verdict-plan --verdict <panel-verdict.json> [--target <file>] | observation-verdict-review <review.yaml> | review-plan --hypothesis <hypothesis_id> --signal <signal_id> [--target <file>] | action-plan --product <product_id> --card <card_id> [--target <file>] | action-work-plan --reviewed <reviewed.json> --actor <actor> [--json] | source-issue-plan --product <product_id> --issue <issue_id> [--target <file>] | outbound-dry-run-plan --reviewed-receipt <reviewed.json> [--target <file>] | release-plan --product <id> --change <summary> --candidate <ref> --rollback <text> --metric <post-release-metric> [--action-card <id>] [--evidence <ref>] | release-work-plan --reviewed <reviewed.json> --actor <actor> [--json] | release-observe --reviewed <reviewed.json> --execution <receipt_id> --signal <signal_id> [--json] | review <review.yaml> --reviewed-by <actor> | action-review <review.yaml> | source-issue-review <review.yaml> | outbound-dry-run-review <review.yaml> | release-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
+	return "usage: compound product authority [--json] | import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml> [--dry-run]|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--asc-funnel-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--asc-acquisition <tsv> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric first_time_downloads|paid_first_time_downloads|organic_first_time_downloads|paid_download_share]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>]|--posthog-report <json> --product <id> --project <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | growth [--product <id> [--area <area_id>]] [--json] [--as-of YYYY-MM-DD] [--window <days>] [--series-days <days>] [--stale-days <days>] [--assess-days <days>] | reports [--product <id>] [--check] [--json] [--days <n>] [--as-of YYYY-MM-DD] | " + product.AdsUsage() + " | " + product.WhereUsage() + " | " + product.EssenceUsage() + " | canonical-metrics <json> --product <id> | change-stream <candidates.md> | content-draft record --product <id> --platform <" + strings.Join(product.ContentDraftPlatforms(), "|") + "> [--text <body>] [--voice-pack <ref>] [--evidence <ref,ref>] [--generate <generator> --generate-prompt <text> [--generate-param k=v]... [--generate-alt <text>]] (--ttl <dur>|--expires <rfc3339>) | content-draft list [--product <id>] [--json] | content-draft park|operationalize|reject <draft_id> | content-queue plan [--json]|content-queue apply --review <review.yaml> [--json] | hypothesis-plan --candidate <candidate_id> [--target <file>] | hypothesis-approve <candidate_id> --expected-effect <sentence> [--metrics <m1,m2>] [--window <span>] [--reviewed-by <actor>] | observation-verdict-plan --verdict <panel-verdict.json> [--target <file>] | observation-verdict-review <review.yaml> | review-plan --hypothesis <hypothesis_id> --signal <signal_id> [--target <file>] | action-plan --product <product_id> --card <card_id> [--target <file>] | action-work-plan --reviewed <reviewed.json> --actor <actor> [--json] | source-issue-plan --product <product_id> --issue <issue_id> [--target <file>] | outbound-dry-run-plan --reviewed-receipt <reviewed.json> [--target <file>] | release-plan --product <id> --change <summary> --candidate <ref> --rollback <text> --metric <post-release-metric> [--action-card <id>] [--evidence <ref>] | release-work-plan --reviewed <reviewed.json> --actor <actor> [--json] | release-observe --reviewed <reviewed.json> --execution <receipt_id> --signal <signal_id> [--json] | review <review.yaml> --reviewed-by <actor> | action-review <review.yaml> | source-issue-review <review.yaml> | outbound-dry-run-review <review.yaml> | release-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
 }
 
 func loadProductSignalArg(args []string) (product.SignalDocument, string, error) {
@@ -179,6 +179,10 @@ func cmdProduct(args []string) {
 		// Read-only projection: resolve the home without opening (and so
 		// scaffolding) the memory store.
 		cmdProductGrowth(args[1:])
+		return
+	}
+	if args[0] == "reports" {
+		cmdProductReports(args[1:])
 		return
 	}
 	store, homePath := openMemStore()
@@ -1328,6 +1332,80 @@ func parseProductGrowthArgs(args []string, now time.Time) (product.GrowthOptions
 	}
 	if opts.Area != "" && opts.ProductID == "" {
 		return opts, false, fmt.Errorf("--area requires --product")
+	}
+	return opts, asJSON, nil
+}
+
+const productReportsUsage = "usage: compound product reports [--product <id>] [--check] [--json] [--days <n>] [--as-of YYYY-MM-DD]"
+
+// cmdProductReports is the read-only store report view; the logic lives in
+// internal/product.
+func cmdProductReports(args []string) {
+	opts, asJSON, err := parseProductReportsArgs(args, time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "product reports:", err)
+		fmt.Fprintln(os.Stderr, productReportsUsage)
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run compound home init)")
+		os.Exit(1)
+	}
+	model, err := product.BuildStoreReports(homePath, opts)
+	if err == nil {
+		err = model.Validate()
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "product reports:", err)
+		os.Exit(1)
+	}
+	if asJSON {
+		b, err := json.MarshalIndent(model, "", "  ")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product reports:", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(b))
+		return
+	}
+	product.RenderStoreReportsText(os.Stdout, model)
+}
+
+func parseProductReportsArgs(args []string, now time.Time) (product.StoreReportsOptions, bool, error) {
+	opts := product.StoreReportsOptions{Now: now}
+	asJSON := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			asJSON = true
+		case "--check":
+			opts.Check = true
+		case "--product":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "--") {
+				return opts, false, fmt.Errorf("--product requires an id")
+			}
+			opts.ProductID = args[i+1]
+			i++
+		case "--as-of":
+			if i+1 >= len(args) {
+				return opts, false, fmt.Errorf("--as-of requires YYYY-MM-DD")
+			}
+			t, err := time.Parse("2006-01-02", args[i+1])
+			if err != nil {
+				return opts, false, fmt.Errorf("--as-of requires YYYY-MM-DD")
+			}
+			opts.AsOf = t
+			i++
+		case "--days":
+			v, err := parsePositiveIntFlag(args, &i, "--days")
+			if err != nil {
+				return opts, false, err
+			}
+			opts.Days = v
+		default:
+			return opts, false, fmt.Errorf("unknown argument %q", args[i])
+		}
 	}
 	return opts, asJSON, nil
 }
