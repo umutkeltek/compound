@@ -197,8 +197,8 @@ func cmdSystem(args []string) {
 }
 
 const systemGraphUsage = "usage: compound system graph [--json] [--kind K] [--rel R]\n" +
-	"       compound system depends <id | unique label | product id> [--depth N (default 6)] [--json]\n" +
-	"       compound system impact <id | unique label | product id> [--json]"
+	"       compound system depends <id | unique label | product id> [--depth N (default 6)] [--all] [--json]\n" +
+	"       compound system impact <id | unique label | product id> [--all] [--json]"
 
 // cmdSystemGraph is the thin CLI face of the system graph over the inventory
 // snapshot (internal/projection/inventory_graph*.go). It makes no external
@@ -206,6 +206,7 @@ const systemGraphUsage = "usage: compound system graph [--json] [--kind K] [--re
 // names nothing, or a missing snapshot, exits 1.
 func cmdSystemGraph(verb string, args []string) {
 	var jsonOut bool
+	var textOpts projection.InventoryTextOptions
 	var target, kind, rel string
 	depth := projection.DefaultInventoryDependsDepth
 	for i := 0; i < len(args); i++ {
@@ -214,6 +215,8 @@ func cmdSystemGraph(verb string, args []string) {
 		switch {
 		case flag == "--json":
 			jsonOut = true
+		case flag == "--all" && verb != "graph":
+			textOpts.All = true
 		case valued && (i+1 >= len(args) || strings.TrimSpace(args[i+1]) == ""):
 			fmt.Fprintln(os.Stderr, systemGraphUsage)
 			os.Exit(2)
@@ -274,7 +277,7 @@ func cmdSystemGraph(verb string, args []string) {
 	if jsonOut {
 		printJSON(report)
 	} else {
-		fmt.Print(projection.FormatInventoryWalkText(report))
+		fmt.Print(projection.FormatInventoryWalkTextWith(report, textOpts))
 	}
 	switch report.Status {
 	case projection.InventoryWalkAmbiguous:
@@ -319,7 +322,7 @@ func systemProductResolver(homePath string) projection.InventoryProductResolver 
 	}
 }
 
-const systemInventoryUsage = "usage: compound system inventory [--json] [--questions] [--kind K] [--provider P] [--stale-hours N]\n" +
+const systemInventoryUsage = "usage: compound system inventory [--json] [--questions [--all]] [--kind K] [--provider P] [--stale-hours N]\n" +
 	"       compound system inventory refresh --collector-json FILE [--allow-older] [--carry-days N (default 7)] [--json]"
 
 // cmdSystemInventory is the thin CLI face of the read-only system inventory
@@ -331,12 +334,15 @@ func cmdSystemInventory(args []string) {
 	}
 	query := projection.InventoryQuery{StaleHours: projection.DefaultInventoryStaleHours}
 	var jsonOut, questionsOut bool
+	var textOpts projection.InventoryTextOptions
 	for i := 0; i < len(args); i++ {
 		switch flag := args[i]; flag {
 		case "--json":
 			jsonOut = true
 		case "--questions":
 			questionsOut = true
+		case "--all":
+			textOpts.All = true
 		case "--kind", "--provider", "--stale-hours":
 			if i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" {
 				fmt.Fprintln(os.Stderr, systemInventoryUsage)
@@ -376,7 +382,7 @@ func cmdSystemInventory(args []string) {
 	case jsonOut:
 		printJSON(report)
 	case questionsOut:
-		fmt.Print(projection.FormatInventoryQuestionsText(report))
+		fmt.Print(projection.FormatInventoryQuestionsTextWith(report, textOpts))
 	default:
 		fmt.Print(projection.FormatInventoryText(report))
 	}

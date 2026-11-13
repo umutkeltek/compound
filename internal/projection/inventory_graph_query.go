@@ -186,7 +186,13 @@ type InventoryWalkProjection struct {
 	DepthLimit     int                  `json:"depth_limit,omitempty"`
 	RoutesFollowed bool                 `json:"routes_followed,omitempty"`
 	Steps          []InventoryGraphStep `json:"steps"`
-	RestsOn        []InventoryGraphStep `json:"rests_on"`
+	// Code is where its code is (code_in links from the start and from what
+	// the walk reached). Addresses are the hostnames that serve it (serves
+	// links, and route links from a hostname into what the walk reached), each
+	// followed by the first thing its route leads to. Both are depends only.
+	Code      []InventoryGraphStep `json:"code,omitempty"`
+	Addresses []InventoryGraphStep `json:"addresses,omitempty"`
+	RestsOn   []InventoryGraphStep `json:"rests_on"`
 	// Impact only: how many of the dependents are products.
 	Products int `json:"products"`
 	// NotKnown lists where the answer stops at "not known".
@@ -312,6 +318,30 @@ func BuildInventoryDepends(home string, q InventoryDependsQuery, now time.Time) 
 	}
 	sort.SliceStable(p.Steps, func(i, j int) bool { return g.less(p.Steps[i], p.Steps[j], true, false) })
 
+	// Where its code is and which addresses serve it. Both, and the domain each
+	// address belongs to, also seed what it rests on: a domain or a service an
+	// address leads to is owned by an account.
+	origin := map[string]walkHit{}
+	for nid, h := range hits {
+		origin[nid] = h
+	}
+	code, addresses, domains := g.codeAndAddresses(hits)
+	for _, extra := range []map[string]walkHit{code, addresses, domains} {
+		for nid, h := range extra {
+			if _, seen := origin[nid]; !seen {
+				origin[nid], starts[nid] = h, h.conf
+			}
+		}
+	}
+	for nid, h := range code {
+		p.Code = append(p.Code, g.step(nid, h))
+	}
+	for nid, h := range addresses {
+		p.Addresses = append(p.Addresses, g.step(nid, h))
+	}
+	sort.SliceStable(p.Code, func(i, j int) bool { return g.less(p.Code[i], p.Code[j], false, false) })
+	sort.SliceStable(p.Addresses, func(i, j int) bool { return g.less(p.Addresses[i], p.Addresses[j], true, false) })
+
 	// What it rests on: identity links, and any link to an account, identity
 	// or secret store, from everything reached, as far as they go.
 	access := g.walk(starts, func(e *inventoryEdge) bool {
@@ -322,7 +352,7 @@ func BuildInventoryDepends(home string, q InventoryDependsQuery, now time.Time) 
 			continue
 		}
 		if h.depth == 0 {
-			h = hits[nid] // an account the walk itself reached: show the link it came by
+			h = origin[nid] // an account the walk itself reached: show the link it came by
 		}
 		p.RestsOn = append(p.RestsOn, g.step(nid, h))
 	}
@@ -334,6 +364,9 @@ func BuildInventoryDepends(home string, q InventoryDependsQuery, now time.Time) 
 	for _, s := range p.Steps {
 		reached = append(reached, s.Resource)
 	}
+	for _, s := range p.Addresses {
+		reached = append(reached, s.Resource)
+	}
 	for _, nid := range reached {
 		n := g.nodes[nid]
 		if why := n.unknownWhy(); why != "" {
@@ -343,7 +376,7 @@ func BuildInventoryDepends(home string, q InventoryDependsQuery, now time.Time) 
 		for _, why := range g.notKnownFacts(n) {
 			p.NotKnown = append(p.NotKnown, InventoryGraphNotKnown{Resource: nid, Kind: n.Kind, Label: n.Label, Why: why})
 		}
-		if hits[nid].depth == q.Depth {
+		if h, walked := hits[nid]; walked && h.depth == q.Depth {
 			for _, e := range g.out[nid] {
 				if _, seen := hits[e.To]; follow(e) && !seen {
 					p.NotKnown = append(p.NotKnown, InventoryGraphNotKnown{Resource: nid, Kind: n.Kind, Label: n.Label,

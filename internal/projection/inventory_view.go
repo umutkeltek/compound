@@ -59,10 +59,14 @@ type InventoryProjection struct {
 	// Shared lists the pieces several things depend on (top 15, products
 	// first); Questions lists what is not known and the declared line that
 	// settles it. Both come from the graph over the whole snapshot, narrowed by
-	// the kind and provider filter.
-	Shared    []InventoryShared       `json:"shared"`
-	Questions []InventoryQuestion     `json:"questions"`
-	Resources []InventoryResourceView `json:"resources"`
+	// the kind and provider filter. Questions are ranked by how many products
+	// and things depend on what they are about. CoverageGaps are facts no
+	// reader reports for any thing of a kind: one line each, not one question
+	// per thing.
+	Shared       []InventoryShared       `json:"shared"`
+	Questions    []InventoryQuestion     `json:"questions"`
+	CoverageGaps []InventoryCoverageGap  `json:"coverage_gaps"`
+	Resources    []InventoryResourceView `json:"resources"`
 }
 
 // InventorySnapshotStatus says how old the stored snapshot is.
@@ -209,6 +213,7 @@ func BuildInventory(home string, q InventoryQuery, now time.Time) (InventoryProj
 		Changes:       emptyInventoryChanges(),
 		Shared:        []InventoryShared{},
 		Questions:     []InventoryQuestion{},
+		CoverageGaps:  []InventoryCoverageGap{},
 		Resources:     []InventoryResourceView{},
 	}
 	snap, err := LoadInventorySnapshot(home)

@@ -27,6 +27,20 @@ func questionKinds(p InventoryProjection) map[string]string {
 	return out
 }
 
+// reportedElsewhere adds a second identity (an account signs in with it) and
+// a second datastore that report recovery_on_file and backed_up, so those
+// facts are collected for their kinds and stay questions, not coverage gaps.
+func reportedElsewhere(obs *InventoryObservation) {
+	other := InventoryObservedResource{ID: "identity:other-login", Kind: "identity", Provider: "logins", Label: "other login",
+		Source: "logins", Places: []string{}, Facts: map[string]InventoryObservedFact{
+			"second_factor_on_file": gfOK(true), "recovery_on_file": gfOK(true)}}
+	store := InventoryObservedResource{ID: "pg:datastore:other", Kind: "datastore", Provider: "pg", Label: "other-db",
+		Source: "lab", Places: []string{}, Facts: map[string]InventoryObservedFact{"backed_up": gfOK(true)}}
+	obs.Resources = append(obs.Resources, other, store)
+	account := findGraphResource(*obs, gfAccountID)
+	account.Links = append(account.Links, gfLink("signs_in_with", "identity:other-login", ""))
+}
+
 func TestInventoryQuestionsEachKindAppearsAndDisappearsWhenOnFile(t *testing.T) {
 	// A second deployment for the shop product, so whether each is live matters.
 	twoDeployments := func(obs *InventoryObservation) {
@@ -35,6 +49,7 @@ func TestInventoryQuestionsEachKindAppearsAndDisappearsWhenOnFile(t *testing.T) 
 		obs.Resources = append(obs.Resources, second)
 		shop := findGraphResource(*obs, gfShop)
 		shop.Links = append(shop.Links, gfLink("deployed_on", "deploy:site:api", ""))
+		reportedElsewhere(obs)
 	}
 	p := inventoryWithGraph(t, twoDeployments)
 	want := map[string]string{
@@ -87,6 +102,7 @@ func TestInventoryQuestionsEachKindAppearsAndDisappearsWhenOnFile(t *testing.T) 
 	// A fact on file as no keeps the identity and backup questions, and a
 	// datastore that says no is a warning, not a question.
 	no := inventoryWithGraph(t, func(obs *InventoryObservation) {
+		reportedElsewhere(obs)
 		findGraphResource(*obs, gfIdentity).Facts["recovery_on_file"] = gfOK(false)
 		findGraphResource(*obs, gfDB).Facts["backed_up"] = gfOK(false)
 	})
@@ -98,7 +114,10 @@ func TestInventoryQuestionsEachKindAppearsAndDisappearsWhenOnFile(t *testing.T) 
 
 func TestInventorySharedPiecesAndUnknownProductRow(t *testing.T) {
 	p := inventoryWithGraph(t, nil)
-	if len(p.Shared) == 0 || p.Shared[0].Resource != gfHost || p.Shared[0].Dependents != 8 || p.Shared[0].Products != 2 {
+	// The account owns the host and the domain: what it owns stops when it goes,
+	// so it is the most shared piece, then the host.
+	if len(p.Shared) < 2 || p.Shared[0].Resource != gfAccountID || p.Shared[0].Dependents != 10 || p.Shared[0].Products != 2 ||
+		p.Shared[1].Resource != gfHost || p.Shared[1].Dependents != 8 || p.Shared[1].Products != 2 {
 		t.Fatalf("shared = %+v", p.Shared)
 	}
 	for i := 1; i < len(p.Shared); i++ {
@@ -144,13 +163,13 @@ func TestInventorySharedPiecesAndUnknownProductRow(t *testing.T) {
 	if lines := strings.Count(text[start:end], "\n"); lines > 8 {
 		t.Fatalf("shared and questions take %d lines, at most 8:\n%s", lines, text[start:end])
 	}
-	for _, want := range []string{"  lab-node …e:n1 (host): 8 dependents, 2 products", "Questions: 6 (", "`compound system inventory --questions` lists them.", "  - unknown products: 1 product reference is not"} {
+	for _, want := range []string{"  lab-node …e:n1 (host): 8 dependents, 2 products", "Questions: 4 (", "; 2 facts no reader reports (datastore.backed_up 1, identity.recovery_on_file 1)", "`compound system inventory --questions` lists them.", "  - unknown products: 1 product reference is not"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("text missing %q:\n%s", want, text)
 		}
 	}
 	questions := FormatInventoryQuestionsText(p)
-	if !strings.Contains(questions, "Questions (6):") || !strings.Contains(questions, "  - Is main-db backed up? (…main, datastore.backed_up): whether it is backed up is not known.") {
+	if !strings.Contains(questions, "Questions (4), the ones most products and things depend on first") || !strings.Contains(questions, "  - No reader reports whether datastores are backed up: 1 datastore (datastore.backed_up).") {
 		t.Fatalf("questions text:\n%s", questions)
 	}
 	// Filtered by kind, only that kind's questions and shared pieces remain.
@@ -160,7 +179,7 @@ func TestInventorySharedPiecesAndUnknownProductRow(t *testing.T) {
 			t.Fatalf("--kind identity question = %+v", q)
 		}
 	}
-	if len(byKind.Questions) != 2 || len(byKind.Shared) != 0 {
+	if len(byKind.Questions) != 1 || len(byKind.CoverageGaps) != 1 || len(byKind.Shared) != 0 {
 		t.Fatalf("--kind identity: %d questions, shared %+v", len(byKind.Questions), byKind.Shared)
 	}
 }

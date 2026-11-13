@@ -66,8 +66,18 @@ type inventoryNode struct {
 	Members        []string
 	Carried        bool
 	LastObservedAt string
-	Facts          map[string]InventoryObservedFact
+	// ObservedAt is when a source last really saw it (v0.2, optional): the
+	// oldest any of its resources gives, since a scout file carries older
+	// evidence than the snapshot.
+	ObservedAt string
+	Facts      map[string]InventoryObservedFact
 }
+
+// inventoryRelOwnedBy is the ownership relation: a domain, service or host
+// owned by an account. Its meaning is other, so a depends walk leaves it to
+// "rests on"; an impact walk follows it backwards, since what an account owns
+// stops when the account goes.
+const inventoryRelOwnedBy = "owned_by"
 
 type inventoryEdge struct {
 	From, Rel, To string
@@ -88,6 +98,8 @@ type inventoryGraph struct {
 	resourceNode     map[string]string
 	unknownRelations int
 	resolve          func(string) (string, bool)
+	// impactCache holds impactCounts per node: dependents, products.
+	impactCache map[string][2]int
 }
 
 // buildInventoryGraph reads an observation as nodes and links. Product
@@ -133,6 +145,9 @@ func buildInventoryGraph(obs InventoryObservation, kinds InventoryKindSet, resol
 			g.nodes[id] = n
 		}
 		n.Members = append(n.Members, r.ID)
+		if r.ObservedAt != "" && (n.ObservedAt == "" || r.ObservedAt < n.ObservedAt) {
+			n.ObservedAt = r.ObservedAt
+		}
 		if r.Carried {
 			n.Carried = true
 			if n.LastObservedAt == "" || r.LastObservedAt < n.LastObservedAt {
@@ -150,7 +165,13 @@ func buildInventoryGraph(obs InventoryObservation, kinds InventoryKindSet, resol
 		from := g.resourceNode[r.ID]
 		links := r.Links
 		if r.Parent != "" {
-			links = append([]InventoryLink{{Rel: "runs_on", To: r.Parent, Evidence: InventoryRelParent}}, links...)
+			// A parent is what a thing runs on, except an account: a domain or a
+			// site whose parent is an account is owned by it, it does not run on it.
+			rel := "runs_on"
+			if p := g.nodes[g.resourceNode[r.Parent]]; p != nil && p.Kind == "account" {
+				rel = inventoryRelOwnedBy
+			}
+			links = append([]InventoryLink{{Rel: rel, To: r.Parent, Evidence: InventoryRelParent}}, links...)
 		}
 		for _, l := range links {
 			rel := l.Rel
@@ -327,7 +348,67 @@ func (g *inventoryGraph) dependsFollow(routes bool) func(*inventoryEdge) bool {
 }
 
 func (g *inventoryGraph) impactFollow(e *inventoryEdge) bool {
-	return e.Meaning == InventoryMeaningDepends || e.Meaning == InventoryMeaningRoute
+	return e.Meaning == InventoryMeaningDepends || e.Meaning == InventoryMeaningRoute || e.Rel == inventoryRelOwnedBy
+}
+
+// codeAndAddresses looks around the things a depends walk reached: where the
+// code is (code_in links), which hostnames serve them (serves links, and
+// route links from a hostname into them) with the first thing each address
+// leads to, and the domain each address belongs to. Each is reached once, by
+// its surest and then shortest link; a path is as sure as its weakest link.
+func (g *inventoryGraph) codeAndAddresses(hits map[string]walkHit) (code, addresses, domains map[string]walkHit) {
+	code, addresses, domains = map[string]walkHit{}, map[string]walkHit{}, map[string]walkHit{}
+	offer := func(into map[string]walkHit, id string, from walkHit, e *inventoryEdge) {
+		if _, inWalk := hits[id]; inWalk {
+			return
+		}
+		h := walkHit{depth: from.depth + 1, conf: min(from.conf, inventoryConfidenceRank(e.Confidence)), via: e}
+		if prev, ok := into[id]; ok && (prev.conf > h.conf || prev.conf == h.conf && prev.depth <= h.depth) {
+			return
+		}
+		into[id] = h
+	}
+	isAddress := func(id string) bool { k := g.nodes[id].Kind; return k == "hostname" || k == "domain" }
+	reached := make([]string, 0, len(hits))
+	for id := range hits {
+		reached = append(reached, id)
+	}
+	sort.Strings(reached)
+	for _, id := range reached {
+		h := hits[id]
+		for _, e := range g.out[id] {
+			switch {
+			case e.Rel == "code_in":
+				offer(code, e.To, h, e)
+			case e.Rel == "serves" && isAddress(e.To):
+				offer(addresses, e.To, h, e)
+			}
+		}
+		for _, e := range g.in[id] {
+			if e.Meaning == InventoryMeaningRoute && isAddress(e.From) {
+				offer(addresses, e.From, h, e)
+			}
+		}
+	}
+	names := make([]string, 0, len(addresses))
+	for id := range addresses {
+		names = append(names, id)
+	}
+	sort.Strings(names)
+	for _, a := range names {
+		h := addresses[a]
+		for _, e := range g.out[a] {
+			switch {
+			case e.Meaning == InventoryMeaningRoute:
+				if _, already := addresses[e.To]; !already {
+					offer(addresses, e.To, h, e)
+				}
+			case e.Rel == inventoryRelOwnedBy && g.nodes[e.To].Kind == "domain":
+				offer(domains, e.To, h, e)
+			}
+		}
+	}
+	return code, addresses, domains
 }
 
 // impact is everything that depends on id, each counted once.
@@ -349,16 +430,25 @@ type InventoryGraphStep struct {
 	// Via is the thing this step was reached from; Rel is the link between
 	// them, read from the dependent side ("depends on" for depends, "is
 	// depended on" for impact).
-	Via            string   `json:"via"`
-	ViaLabel       string   `json:"via_label"`
-	Rel            string   `json:"rel"`
-	RelTitle       string   `json:"rel_title"`
-	LinkConfidence string   `json:"link_confidence"`
-	PathConfidence string   `json:"path_confidence"`
-	Evidence       string   `json:"evidence"`
-	Carried        bool     `json:"carried"`
-	LastObservedAt string   `json:"last_observed_at,omitempty"`
-	Warnings       []string `json:"warnings"`
+	Via            string `json:"via"`
+	ViaLabel       string `json:"via_label"`
+	Rel            string `json:"rel"`
+	RelTitle       string `json:"rel_title"`
+	LinkConfidence string `json:"link_confidence"`
+	PathConfidence string `json:"path_confidence"`
+	Evidence       string `json:"evidence"`
+	Carried        bool   `json:"carried"`
+	LastObservedAt string `json:"last_observed_at,omitempty"`
+	// ObservedAt is when a source last really saw the thing, when it says so
+	// (older than the snapshot for second-hand evidence).
+	ObservedAt string `json:"observed_at,omitempty"`
+	// StoreKind is a secret store's kind (vault, keychain, key_file, ...),
+	// never what it holds.
+	StoreKind string   `json:"store_kind,omitempty"`
+	Warnings  []string `json:"warnings"`
+	// viaIsTarget: the link runs from this step to Via (an address reached
+	// by its route into the walk, or any impact step), not from Via to it.
+	viaIsTarget bool
 }
 
 // InventoryGraphNotKnown is a place where an answer stops at "not known".
@@ -374,7 +464,10 @@ func (g *inventoryGraph) step(id string, h walkHit) InventoryGraphStep {
 	s := InventoryGraphStep{
 		Resource: id, Kind: n.Kind, Label: n.Label, Unknown: n.Unknown, Depth: h.depth,
 		PathConfidence: inventoryConfidenceName(h.conf), Carried: n.Carried, LastObservedAt: n.LastObservedAt,
-		Warnings: g.warnings(n),
+		ObservedAt: n.ObservedAt, Warnings: g.warnings(n),
+	}
+	if v, known := n.factIs("store_kind"); known && n.Kind == "secret_store" {
+		s.StoreKind = inventoryClean(fmt.Sprint(v), 40)
 	}
 	if h.via != nil {
 		s.Rel, s.LinkConfidence, s.Evidence = h.via.Rel, h.via.Confidence, h.via.Evidence
@@ -384,7 +477,7 @@ func (g *inventoryGraph) step(id string, h walkHit) InventoryGraphStep {
 		}
 		s.Via = h.via.From
 		if s.Via == id {
-			s.Via = h.via.To
+			s.Via, s.viaIsTarget = h.via.To, true
 		}
 		s.ViaLabel = g.nodes[s.Via].Label
 	}

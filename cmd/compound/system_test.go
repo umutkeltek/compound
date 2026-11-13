@@ -231,6 +231,10 @@ func TestSystemGraphDependsImpactResolveProductsThroughTheIdentityOwner(t *testi
 	if deps.Status != "ok" || deps.Start.Resource != "product:sample-shop" || len(deps.Steps) != 2 || deps.Steps[1].PathConfidence != "declared" {
 		t.Fatalf("depends = %+v steps %+v", deps.Start, deps.Steps)
 	}
+	if all := captureStdout(t, func() { cmdSystem([]string{"depends", "sample-shop", "--all"}) }); !strings.Contains(all, "Needs: data stores (1):") ||
+		strings.Contains(all, cmdInventoryLongID[12:]) {
+		t.Fatalf("depends --all text:\n%s", all)
+	}
 	text := captureStdout(t, func() { cmdSystem([]string{"impact", "db-box"}) })
 	for _, want := range []string{"What depends on db-box …-box (host): 3 things, 2 of them products.", "Ghost thing …hing (unknown product)", "Sample shop …shop (product)"} {
 		if !strings.Contains(text, want) {
@@ -241,15 +245,17 @@ func TestSystemGraphDependsImpactResolveProductsThroughTheIdentityOwner(t *testi
 	if strings.Contains(graphText+text, cmdInventoryLongID[12:]) || !strings.Contains(graphText, "Links with kind datastore: 3.") {
 		t.Fatalf("graph text:\n%s", graphText)
 	}
-	questions := captureStdout(t, func() { cmdSystem([]string{"inventory", "--questions"}) })
-	if !strings.Contains(questions, "Questions (1):") || !strings.Contains(questions, "Is shared-db backed up?") || strings.Contains(questions, cmdInventoryLongID[12:]) {
+	// No datastore reports backed_up: one coverage gap, not a question per datastore.
+	questions := captureStdout(t, func() { cmdSystem([]string{"inventory", "--questions", "--all"}) })
+	if !strings.Contains(questions, "No reader reports whether datastores are backed up: 1 datastore (datastore.backed_up).") ||
+		strings.Contains(questions, "Is shared-db backed up?") || strings.Contains(questions, cmdInventoryLongID[12:]) {
 		t.Fatalf("inventory --questions:\n%s", questions)
 	}
 	var inv projection.InventoryProjection
 	if err := json.Unmarshal([]byte(captureStdout(t, func() { cmdSystem([]string{"inventory", "--json"}) })), &inv); err != nil {
 		t.Fatal(err)
 	}
-	if len(inv.Shared) != 2 || inv.Shared[0].Resource != "host:db-box" || inv.Shared[0].Products != 2 || len(inv.Questions) != 1 {
+	if len(inv.Shared) != 2 || inv.Shared[0].Resource != "host:db-box" || inv.Shared[0].Products != 2 || len(inv.Questions) != 0 || len(inv.CoverageGaps) != 1 {
 		t.Fatalf("inventory shared %+v questions %+v", inv.Shared, inv.Questions)
 	}
 }

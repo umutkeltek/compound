@@ -111,21 +111,29 @@ func TestInventoryDependsWalksDependsLinksAndEndsWithWhatItRestsOn(t *testing.T)
 	if strings.Join(rests, ",") != "account,mailbox,identity,secret_store" {
 		t.Fatalf("rests on = %v (%+v)", rests, p.RestsOn)
 	}
-	if acct, _ := walkStep(p, gfAccountID); acct.PathConfidence != "declared" || acct.Via != gfHost || acct.RelTitle != "owned by" {
+	// The account owns the host (declared) and the domain of the address that
+	// serves the shop (observed): it rests on the surer one.
+	if acct, _ := walkStep(p, gfAccountID); acct.PathConfidence != "observed" || acct.Via != gfDomain || acct.RelTitle != "owned by" {
 		t.Fatalf("account step = %+v", acct)
 	}
-	if len(p.NotKnown) != 1 || p.NotKnown[0].Resource != gfDeploy || p.NotKnown[0].Why != "Live not known" {
+	if len(p.NotKnown) != 2 || p.NotKnown[0].Resource != gfDeploy || p.NotKnown[0].Why != "Live not known" ||
+		p.NotKnown[1].Resource != gfHostname || p.NotKnown[1].Why != "Traced not known" {
 		t.Fatalf("not known = %+v", p.NotKnown)
 	}
 	text := FormatInventoryWalkText(p)
 	for _, want := range []string{
 		"What Shop app …-app (product) cannot work without: 8 things, up to 6 links deep",
+		"Parts and where they run (",
 		"\n  deployed on web-deploy …:web (deployment)\n",
-		"\n    uses main-db …main (datastore)\n",
-		"uses Pay service …:pay (external_service) · link declared",
-		"Rests on (accounts, identities, secret stores and their routes):",
-		"Example account …k8m4 (account) · owned by, from lab-node …e:n1 · link declared",
-		"Not known (1):\n  web-deploy …:web: Live not known",
+		"Needs: data stores (1):\n  main-db …main (datastore) · web-deploy …:web uses it\n",
+		"Needs: outside services (1):\n  Pay service (declared)\n",
+		"Addresses that serve it (1):\n  app.shop.example …mple (hostname) · routes to web-ct …:web\n",
+		"Code (1):\n  shop …shop (repo) · Has a remote is no\n",
+		"Rests on (4): accounts, sign-in identities, and where their secrets are kept (store kind and entry name only):",
+		"  Example account …k8m4 (account) · shop.example …mple owned by it\n    signs in with ops login …ogin (identity)\n",
+		"secret kept in ops vault …:ops (secret_store: vault)",
+		"Not known (2):\n  web-deploy …:web: Live not known\n  app.shop.example …mple: Traced not known\n",
+		"Seen: the snapshot was observed 2031-03-04 10:00 UTC.\n",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("depends text missing %q:\n%s", want, text)
@@ -220,7 +228,7 @@ func TestInventoryDependsAnAccountItUsesIsAlsoWhatItRestsOn(t *testing.T) {
 	if rest == nil || rest.Via != gfDeploy || rest.RelTitle != "uses" || rest.PathConfidence != "observed" {
 		t.Fatalf("an account the walk reached must rest on the link it came by: %+v", rest)
 	}
-	if text := FormatInventoryWalkText(p); !strings.Contains(text, "Example account …k8m4 (account) · uses, from web-deploy …:web\n") {
+	if text := FormatInventoryWalkText(p); !strings.Contains(text, "\n  uses Example account …k8m4 (account)\n    signs in with ops login …ogin (identity)\n") {
 		t.Fatalf("rests-on line:\n%s", text)
 	}
 }
