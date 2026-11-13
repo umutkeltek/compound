@@ -21,7 +21,8 @@ export function nameCardOwners(
     cards: column.cards.map((card) => {
       if (!card.subtitle) return card;
       const joined = card.workId ? byWork.get(card.workId) : undefined;
-      if (joined) return { ...card, agentName: joined, lane: card.subtitle };
+      // The lane id adds something only when it names more than the agent ("claude_code:<lane>").
+      if (joined) return { ...card, agentName: joined, lane: /[:/]/.test(card.subtitle) ? card.subtitle : "" };
       const named = agentNameFor(card.subtitle, names);
       return { ...card, agentName: named.name, lane: named.lane };
     }),
