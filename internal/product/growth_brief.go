@@ -238,10 +238,10 @@ func RenderGrowthAreaText(w io.Writer, b GrowthAreaBrief) {
 		fmt.Fprintf(w, "forms: %s\n", strings.Join(b.Area.Forms, "; "))
 	}
 	if len(b.Needs) > 0 {
-		fmt.Fprintf(w, "needs first: %s\n", growthRefs(b.Needs))
+		fmt.Fprintf(w, "needs first: %s\n", growthRefs(b.Needs, 0))
 	}
 	if len(b.Unblocks) > 0 {
-		fmt.Fprintf(w, "unblocks: %s\n", growthRefs(b.Unblocks))
+		fmt.Fprintf(w, "unblocks: %s\n", growthRefs(b.Unblocks, growthBriefMaxRefs))
 	}
 	skills := "none"
 	if len(b.Area.Skills) > 0 {
@@ -252,12 +252,25 @@ func RenderGrowthAreaText(w io.Writer, b GrowthAreaBrief) {
 	fmt.Fprintf(w, "record: %s\n", b.Record)
 }
 
-func growthRefs(refs []GrowthAreaRef) string {
-	parts := make([]string, 0, len(refs))
-	for _, r := range refs {
+// growthBriefMaxRefs caps the areas the text brief names on its unblocks line.
+const growthBriefMaxRefs = 4
+
+// growthRefs lists refs as "title (status)". Past limit, when limit is above
+// zero, it counts the rest instead of naming them.
+func growthRefs(refs []GrowthAreaRef, limit int) string {
+	shown := refs
+	if limit > 0 && len(refs) > limit {
+		shown = refs[:limit]
+	}
+	parts := make([]string, 0, len(shown))
+	for _, r := range shown {
 		parts = append(parts, fmt.Sprintf("%s (%s)", r.Title, r.Status))
 	}
-	return strings.Join(parts, ", ")
+	s := strings.Join(parts, ", ")
+	if rest := len(refs) - len(shown); rest > 0 {
+		s += fmt.Sprintf(" and %d more", rest)
+	}
+	return s
 }
 
 // RenderGrowthText prints the whole projection: one line per app with its

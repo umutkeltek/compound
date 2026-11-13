@@ -1125,3 +1125,35 @@ func TestGrowthAreaBrief(t *testing.T) {
 		t.Fatalf("--area without --product must be a usage error: %v", err)
 	}
 }
+
+// The text brief names at most four of the areas an area unblocks, then
+// counts the rest.
+func TestGrowthAreaTextCapsUnblocks(t *testing.T) {
+	refs := func(n int) []GrowthAreaRef {
+		out := []GrowthAreaRef{}
+		for i := 1; i <= n; i++ {
+			out = append(out, GrowthAreaRef{AreaID: fmt.Sprintf("alpha_%d", i), Title: fmt.Sprintf("Area %d", i), Status: GrowthBlind})
+		}
+		return out
+	}
+	line := func(n int) string {
+		var text strings.Builder
+		RenderGrowthAreaText(&text, GrowthAreaBrief{Unblocks: refs(n)})
+		for _, l := range strings.Split(text.String(), "\n") {
+			if strings.HasPrefix(l, "unblocks: ") {
+				return l
+			}
+		}
+		return ""
+	}
+	four := "unblocks: Area 1 (blind), Area 2 (blind), Area 3 (blind), Area 4 (blind)"
+	if got := line(13); got != four+" and 9 more" {
+		t.Fatalf("13 areas: %q", got)
+	}
+	if got := line(5); got != four+" and 1 more" {
+		t.Fatalf("5 areas: %q", got)
+	}
+	if got := line(4); got != four {
+		t.Fatalf("4 areas: %q", got)
+	}
+}
