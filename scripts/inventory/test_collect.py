@@ -21,7 +21,7 @@ collect = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(collect)
 
 CLOCK = datetime(2031, 4, 5, 6, 7, 8, tzinfo=timezone.utc)
-ACCOUNT = "210987654321"
+ACCOUNT = "000000004321"
 R = collect.Result
 
 
@@ -187,7 +187,7 @@ class PveTests(unittest.TestCase):
         self.assertEqual(len(set(first)), len(first))
 
     def test_rejected_key_is_needs_sign_in(self):
-        obs = self.observe(R(255, "", "user@pve.example: Permission denied (publickey)."))
+        obs = self.observe(R(255, "", "pve.example: Permission denied (publickey)."))
         self.assertEqual(source(obs, "pve-example")["state"], "needs_sign_in")
 
     def test_timeout_is_failed_with_the_reason(self):
@@ -206,8 +206,8 @@ LINUX_STATUS = "\n".join([
     "MemFree:          500000 kB",
     "MemAvailable:    2000000 kB",
     "@@stat",
-    "cpu  1000 0 1000 8000 0 0 0 0 0 0",
-    "cpu  1100 0 1100 8700 100 0 0 0 0 0",
+    "cpu  500 0 500 4000 0 0 0 0 0 0",
+    "cpu  550 0 550 4350 50 0 0 0 0 0",
     "@@end",
 ]) + "\n"
 MAC_STATUS = "\n".join([
@@ -231,7 +231,7 @@ class SshHostTests(unittest.TestCase):
         facts = host["facts"]
         self.assertEqual(facts["disk_pct"]["value"], 81.0)
         self.assertEqual(facts["memory_pct"]["value"], 75.0)
-        self.assertEqual(facts["cpu_pct"]["value"], 20.0)  # 200 busy of 1000 ticks; iowait counts as idle
+        self.assertEqual(facts["cpu_pct"]["value"], 20.0)  # 100 busy of 500 ticks; iowait counts as idle
         self.assertEqual(facts["uptime_days"]["value"], 46)
         self.assertEqual(facts["load_1m"]["value"], 0.42)
         self.assertEqual(host["label"], "Example server")
