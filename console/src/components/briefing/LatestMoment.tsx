@@ -19,11 +19,14 @@ export function LatestMoment({
   moment,
   read,
   agentName = "",
+  agentLane = "",
 }: {
   moment: ProofBackedChange | null;
   read: { status: FeedProjectionStatus; lastGoodAt: string | null };
   /** the recording agent's name, named the way Live names agents ("" = show the recorded id) */
   agentName?: string;
+  /** the full owner/lane id when it says more than the agent ("" = nothing to add) */
+  agentLane?: string;
 }) {
   if (read.status === "unreachable") {
     return (
@@ -67,10 +70,10 @@ export function LatestMoment({
         <div className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs text-muted">
           <span>
             Recorded by <strong className="font-semibold text-ink">{who}</strong>
-            {agentName && agentName !== moment.producer ? <span className="mono ml-1.5 text-2xs text-faint">{moment.producer}</span> : null}
+            {agentName && agentLane ? <span className="mono ml-1.5 text-2xs text-faint">{agentLane}</span> : null}
             {when ? <> · <time dateTime={moment.occurredAt}>{when}</time></> : null}
           </span>
-          {lastGood ? <span className="text-faint">last read {lastGood}; could not refresh</span> : null}
+          {lastGood ? <span className="text-faint">last read {lastGood}</span> : null}
         </div>
       </div>
 

@@ -118,6 +118,7 @@ export default async function Briefing() {
   const stages = pipelineStages(workbench);
   const recent = arr(workbench?.recent);
   const compounded = latestProofBackedChange(recent);
+  const producer = compounded ? agentNameFor(compounded.producer, agentNames) : { name: "", lane: "" };
 
   // Changes that reached the world (7-day move mix) + an honest week-over-week delta.
   const mix = summarizeMoveTypeMix(recent);
@@ -196,7 +197,8 @@ export default async function Briefing() {
           <LatestMoment
             moment={compounded}
             read={feed(workbenchRead)}
-            agentName={compounded ? agentNameFor(compounded.producer, agentNames).name : ""}
+            agentName={producer.name}
+            agentLane={producer.lane}
           />
         </Gate>
       </section>
