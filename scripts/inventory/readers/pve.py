@@ -9,12 +9,12 @@ from ._base import PCT, SourceError, parse_json, pct, reader, short_hash, ssh_cm
 def read_pve(ctx):
     """PVE cluster: `pvesh get /cluster/resources` over ssh -> one `host` per node, one `guest` per VM
     or container."""
-    result = ctx.run(ssh_cmd(ctx, "pvesh get /cluster/resources --output-format json"))
+    result = ctx.run(ssh_cmd(ctx, "pvesh get /cluster/resources --output-format json"), what="the virtualization host")
     if result.code != 0:
         raise ssh_error(result)
     rows = parse_json(result.out, "cluster resources")
     if not isinstance(rows, list):
-        raise SourceError("failed", "cluster resources: expected a list")
+        raise SourceError("failed", "The cluster listing could not be read: it is not in the expected format.")
     key = ctx.row.get("id_key") or ctx.row["ssh_alias"]
     node_labels = ctx.row.get("node_labels") or {}
     nodes = [r for r in rows if r.get("type") == "node"]
@@ -75,5 +75,5 @@ def read_pve(ctx):
         hosts.append(ctx.resource(host_ids[node], "host", label, facts=facts,
                                   places=ctx.row.get("places") if len(nodes) == 1 else None))
     if templates:
-        ctx.detail = f"{templates} templates not listed"
+        ctx.detail = f"{templates} templates are not listed."
     return hosts + guests

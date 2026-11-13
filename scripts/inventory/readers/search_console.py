@@ -14,13 +14,13 @@ def site_host(url):
 @reader("search_console")
 def read_search_console(ctx):
     """Search properties through the command the row names -> `site`s under one `account`."""
-    data = run_json(ctx, ctx.require("command"), "property list")
+    data = run_json(ctx, ctx.require("command"), "property list", "the search property listing tool")
     if isinstance(data, dict):
         entries = data.get("siteEntry") or data.get("sites") or data.get("properties") or []
     elif isinstance(data, list):
         entries = data
     else:
-        raise SourceError("failed", "property list: expected an object or a list")
+        raise SourceError("failed", "The property list could not be read: it is not in the expected format.")
     account = f"{ctx.vendor}:account:{short_hash(ctx.row.get('id_key') or ctx.id)}"
     sites = []
     for entry in entries:

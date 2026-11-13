@@ -22,12 +22,35 @@ Result = collections.namedtuple("Result", "code out err")
 
 
 class SourceError(Exception):
-    """A source could not be read. `state` is a source state, `detail` is plain words."""
+    """A source could not be read. `state` is a source state, `detail` is one plain sentence a
+    person who does not program understands: never an exception class, a command line or a
+    home path."""
 
     def __init__(self, state, detail):
         super().__init__(detail)
         self.state = state if state in SOURCE_STATES else "failed"
         self.detail = detail
+
+
+def seconds_text(seconds):
+    return f"{seconds:g} second" + ("" if seconds == 1 else "s")
+
+
+class ToolProblem(SourceError):
+    """The run door could not get an answer from a tool: `problem` is `timeout`, `missing` or
+    `not_started`. `Context.run(cmd, what=...)` turns it into a sentence about what the tool is for."""
+
+    TEXT = {"timeout": "did not answer within {seconds}",
+            "missing": "is not installed on this computer, or the job cannot find it",
+            "not_started": "could not be started"}
+
+    def __init__(self, problem, tool, seconds=0):
+        self.problem, self.tool, self.seconds = problem, tool, seconds
+        super().__init__("failed", self.text(f"the {tool} command"))
+
+    def text(self, what):
+        words = self.TEXT[self.problem].format(seconds=seconds_text(self.seconds))
+        return f"{what[:1].upper()}{what[1:]} {words}."
 
 
 # --- helpers ------------------------------------------------------------------------------
@@ -49,6 +72,33 @@ def clip(text):
     line = lines[-1] if lines else ""
     line = mask_ids(line)
     return line if len(line) <= DETAIL_MAX else line[: DETAIL_MAX - 1] + "…"
+
+
+_HOME_PATH = re.compile(r"(?:/Users|/home|/root(?=/))/?[^/\s'\"]*")
+_EXCEPTION_CLASS = re.compile(r"\(?\b[A-Z][A-Za-z0-9]*(?:Error|Exception|Expired)\b\)?:?")
+
+
+def scrub(text):
+    """One masked line with home paths shown as `~` and exception class names removed."""
+    line = _EXCEPTION_CLASS.sub("", _HOME_PATH.sub("~", clip(text)))
+    return re.sub(r"\s{2,}", " ", line).strip(" ;:,")
+
+
+def sentence(text):
+    """`text` as one plain sentence: scrubbed, first letter upper case, ending in a full stop."""
+    line = scrub(text)
+    if not line:
+        return ""
+    line = line[0].upper() + line[1:]
+    if line[-1] not in ".!?…":
+        line += "."
+    return line if len(line) <= DETAIL_MAX else line[: DETAIL_MAX - 1] + "…"
+
+
+def tool_said(err):
+    """` (it said: …)` with the last line of a tool's error output, scrubbed; "" when empty."""
+    words = scrub(err)[:120]
+    return f" (it said: {words})" if words else ""
 
 
 def short_hash(*parts):
@@ -141,7 +191,7 @@ def parse_json(text, what):
     try:
         return json.loads(text)
     except (TypeError, ValueError):
-        raise SourceError("failed", f"{what}: the output is not JSON")
+        raise SourceError("failed", f"The {what} could not be read: it is not in the expected format.")
 
 
 def proxies_from_env(env):
@@ -163,11 +213,11 @@ def run(cmd, timeout, env=None):
         done = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True,
                               errors="replace", timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
-        raise SourceError("failed", f"{tool} timed out after {timeout:g} s")
+        raise ToolProblem("timeout", tool, timeout)
     except FileNotFoundError:
-        raise SourceError("failed", f"{tool} is not installed or not on PATH")
-    except OSError as exc:
-        raise SourceError("failed", f"{tool} could not start ({type(exc).__name__})")
+        raise ToolProblem("missing", tool)
+    except OSError:
+        raise ToolProblem("not_started", tool)
     return Result(done.returncode, done.stdout, done.stderr)
 
 
@@ -182,11 +232,13 @@ def http_get(url, headers, timeout, env=None):
     except urllib.error.HTTPError as exc:
         return exc.code, b""
     except urllib.error.URLError as exc:
-        raise SourceError("failed", f"request failed ({type(exc.reason).__name__})")
+        if isinstance(exc.reason, TimeoutError):
+            raise SourceError("failed", f"The endpoint did not answer within {seconds_text(timeout)}.")
+        raise SourceError("failed", "The endpoint could not be reached.")
     except TimeoutError:
-        raise SourceError("failed", f"request timed out after {timeout:g} s")
-    except OSError as exc:
-        raise SourceError("failed", f"request failed ({type(exc).__name__})")
+        raise SourceError("failed", f"The endpoint did not answer within {seconds_text(timeout)}.")
+    except OSError:
+        raise SourceError("failed", "The request to the endpoint could not be sent.")
 
 
 # --- per-source context ---------------------------------------------------------------------
@@ -213,11 +265,18 @@ class Context:
     def require(self, key):
         value = self.row.get(key)
         if value in (None, "", []):
-            raise SourceError("failed", f"the sources row has no '{key}'")
+            raise SourceError("failed", f"The sources file row for this source has no '{key}' setting.")
         return value
 
-    def run(self, cmd):
-        return self._runner(list(cmd), self.timeout, self.env)
+    def run(self, cmd, what=""):
+        """Run through the door. `what` names the tool by its purpose ("the DNS listing tool"), so
+        a timeout or a missing tool reads as a plain sentence about it."""
+        try:
+            return self._runner(list(cmd), self.timeout, self.env)
+        except ToolProblem as exc:
+            if what:
+                raise SourceError(exc.state, exc.text(what))
+            raise
 
     def http_get(self, url, headers):
         return self._http(url, headers, self.timeout, self.env)
@@ -263,17 +322,17 @@ def ssh_error(result):
     err = result.err or ""
     if result.code == 255:
         if "Permission denied" in err:
-            return SourceError("needs_sign_in", "the ssh key was not accepted")
+            return SourceError("needs_sign_in", "The host did not accept the ssh key.")
         if "Host key verification failed" in err or "IDENTIFICATION HAS CHANGED" in err:
-            return SourceError("needs_owner", "the host key is not trusted; confirm it by hand once")
+            return SourceError("needs_owner", "This computer does not trust the host's key yet; confirm it by hand once.")
         if "Could not resolve" in err:
-            return SourceError("failed", "the host name does not resolve")
+            return SourceError("failed", "The host name could not be found.")
         if re.search(r"timed out|No route|refused|unreachable", err, re.I):
-            return SourceError("failed", "the host did not answer")
-        return SourceError("failed", f"ssh failed: {clip(err)}")
+            return SourceError("failed", "The host did not answer.")
+        return SourceError("failed", f"The ssh connection to the host failed{tool_said(err)}.")
     if re.search(r"permission check failed|permission denied", err, re.I):
-        return SourceError("needs_owner", f"the remote command was refused: {clip(err)}")
-    return SourceError("failed", f"the remote command failed (exit {result.code}): {clip(err)}")
+        return SourceError("needs_owner", f"The host refused the read-only status command{tool_said(err)}.")
+    return SourceError("failed", f"The read-only status command on the host failed{tool_said(err)}.")
 
 
 # --- shared parsing ---------------------------------------------------------------------------
@@ -314,12 +373,13 @@ def as_number(value):
     return None
 
 
-def run_json(ctx, cmd, what):
-    """Run a listing command and parse its JSON. Only stderr goes into an error detail."""
-    result = ctx.run(cmd)
+def run_json(ctx, cmd, what, tool):
+    """Run a listing command and parse its JSON. `what` names the answer ("zone list"), `tool`
+    the tool by its purpose ("the DNS listing tool"). Only stderr goes into an error detail."""
+    result = ctx.run(cmd, what=tool)
     if result.code != 0:
         err = result.err or ""
         if re.search(r"log ?in|sign ?in|unauthori[sz]ed|not authenticated|credentials|expired|token", err, re.I):
-            raise SourceError("needs_sign_in", f"{what}: the tool is not signed in ({clip(err)})")
-        raise SourceError("failed", f"{what} failed (exit {result.code})" + (f": {clip(err)}" if err.strip() else ""))
+            raise SourceError("needs_sign_in", f"{tool[:1].upper()}{tool[1:]} is not signed in; sign in again{tool_said(err)}.")
+        raise SourceError("failed", f"{tool[:1].upper()}{tool[1:]} could not give the {what}{tool_said(err)}.")
     return parse_json(result.out, what)

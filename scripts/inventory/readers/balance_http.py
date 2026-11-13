@@ -10,17 +10,17 @@ def read_token(ctx):
     if env_name:
         token = (ctx.env.get(env_name) or "").strip()
         if not token:
-            raise SourceError("needs_sign_in", f"the environment variable {env_name} is not set")
+            raise SourceError("needs_sign_in", f"The environment variable {env_name}, which should hold the token, is not set.")
     elif command:
-        result = ctx.run(command)
+        result = ctx.run(command, what="the token command")
         lines = (result.out or "").strip().splitlines()
         if result.code != 0 or not lines:
-            raise SourceError("needs_sign_in", f"the token command gave no token (exit {result.code})")
+            raise SourceError("needs_sign_in", "The token command gave no token; sign in to the password manager again.")
         token = lines[0].strip()
     else:
-        raise SourceError("failed", "the sources row names neither token_env nor token_command")
+        raise SourceError("failed", "The sources file row names neither a token variable (token_env) nor a token command (token_command).")
     if any(ch.isspace() or ord(ch) < 32 for ch in token):
-        raise SourceError("needs_sign_in", "the token has an unexpected shape")
+        raise SourceError("needs_sign_in", "The token has an unexpected shape.")
     return token
 
 
@@ -29,7 +29,7 @@ def read_balance_http(ctx):
     """A free GET balance endpoint -> one `plan` with `balance` read at `balance_path`."""
     url = str(ctx.require("url"))
     if not url.startswith("https://"):
-        raise SourceError("failed", "the url must start with https://")
+        raise SourceError("failed", "The address in the sources file must start with https://.")
     balance_path = ctx.require("balance_path")
     token = read_token(ctx)
     scheme = ctx.row.get("auth_scheme", "Bearer")
@@ -39,15 +39,15 @@ def read_balance_http(ctx):
         status, body = ctx.http_get(url, headers)
     except SourceError:
         raise
-    except Exception as exc:  # never let an exception message (which may quote a header) through
-        raise SourceError("failed", f"request failed ({type(exc).__name__})")
+    except Exception:  # never let an exception message (which may quote a header) through
+        raise SourceError("failed", "The request to the endpoint could not be sent.")
     finally:
         token = headers = None
     if status in (401, 403):
-        raise SourceError("needs_sign_in", f"the endpoint refused the token (HTTP {status})")
+        raise SourceError("needs_sign_in", f"The endpoint refused the token (HTTP {status}); sign in again.")
     if status != 200:
-        raise SourceError("failed", f"the endpoint answered HTTP {status}")
-    data = parse_json((body or b"").decode("utf-8", "replace"), "balance")
+        raise SourceError("failed", f"The endpoint answered with an error (HTTP {status}).")
+    data = parse_json((body or b"").decode("utf-8", "replace"), "balance answer")
     unit = str(ctx.row.get("unit") or "")
     if ctx.row.get("unit_path"):
         found = json_path(data, ctx.row["unit_path"])

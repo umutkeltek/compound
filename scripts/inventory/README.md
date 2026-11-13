@@ -36,6 +36,11 @@ its owner only (mode 0600), through a temporary file and a rename.
 - **Unknown is an answer.** A fact that could not be read has `value: null` and a state —
   `needs_sign_in`, `needs_owner`, `costs_money`, `not_supported` or `failed` — with a plain
   detail. A missing number is never written as 0. A fact with state `ok` always has a value.
+- **Plain failure text.** A source's `detail` is one plain sentence a person who does not
+  program understands ("The DNS listing tool did not answer within 20 seconds."): never an
+  exception class, a command line or a home path. When a tool's own words help, they follow
+  "it said:", cut to one line, with home paths shown as `~`. A reader names each tool by its
+  purpose: `ctx.run(cmd, what="the DNS listing tool")`.
 - **Names stay private.** The sources file holds the person's own labels, profile names and
   host aliases, so it lives under `COMPOUND_HOME`, never in a repository. Real account ids
   are hashed into resource ids (`sha256`, first 12 hex); only the last 4 characters are kept,

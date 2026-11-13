@@ -40,7 +40,7 @@ def cpu_busy_pct(stat_lines):
 @reader("ssh_host")
 def read_ssh_host(ctx):
     """`uptime`, `df -P /`, and memory and CPU where /proc offers a simple read: one `host`."""
-    result = ctx.run(ssh_cmd(ctx, REMOTE_STATUS))
+    result = ctx.run(ssh_cmd(ctx, REMOTE_STATUS), what="the server")
     if result.code != 0 and "@@end" not in (result.out or ""):
         raise ssh_error(result)
     sec = split_sections(result.out or "")

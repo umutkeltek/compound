@@ -4,7 +4,9 @@ their `account`; optionally links each domain to its search property."""
 import collections
 import re
 
-from ._base import FACT_STATES, SourceError, canonical_id, clip, reader, run_json, short_hash
+from ._base import FACT_STATES, SourceError, canonical_id, reader, run_json, short_hash, tool_said
+
+TOOL = "the DNS listing tool"
 
 _CF_AUTH_CODES = {9103, 9106, 9107, 9109, 10000, 10001}
 
@@ -14,8 +16,8 @@ def cloudflare_error(data, what):
     first = errors[0] if isinstance(errors[0], dict) else {"message": str(errors[0])}
     code, message = first.get("code"), str(first.get("message") or "no message")
     if code in _CF_AUTH_CODES or re.search(r"auth|token", message, re.I):
-        return SourceError("needs_sign_in", f"{what}: the token was refused ({clip(message)})")
-    return SourceError("failed", f"{what}: {clip(message)}")
+        return SourceError("needs_sign_in", f"The DNS provider refused the token for the {what}; sign in again{tool_said(message)}.")
+    return SourceError("failed", f"The DNS provider answered the {what} with an error{tool_said(message)}.")
 
 
 @reader("cloudflare")
@@ -26,16 +28,16 @@ def read_cloudflare(ctx):
     max_pages = int(ctx.row.get("max_pages") or 10)
     zones, page, pages = [], 1, 1
     while page <= min(pages, max_pages):
-        data = run_json(ctx, [part.replace("{page}", str(page)) for part in template], "zone list")
+        data = run_json(ctx, [part.replace("{page}", str(page)) for part in template], "zone list", TOOL)
         if not isinstance(data, dict):
-            raise SourceError("failed", "zone list: expected an object")
+            raise SourceError("failed", "The zone list could not be read: it is not in the expected format.")
         if data.get("success") is False:
             raise cloudflare_error(data, "zone list")
         zones.extend(z for z in (data.get("result") or []) if isinstance(z, dict))
         pages = int((data.get("result_info") or {}).get("total_pages") or 1) if paged else 1
         page += 1
     if pages > max_pages:
-        ctx.detail = f"capped at {max_pages} pages of zones"
+        ctx.detail = f"Only the first {max_pages} pages of zones were read; more exist."
     labels = ctx.row.get("account_labels") or {}
     by_account = collections.OrderedDict()
     for zone in zones:

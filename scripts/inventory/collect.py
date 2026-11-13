@@ -53,7 +53,7 @@ _base = _load_readers()
 READERS, reader, Context, SourceError, Result = _base.READERS, _base.reader, _base.Context, _base.SourceError, _base.Result
 run, http_get, utc_now = _base.run, _base.http_get, _base.utc_now
 clip, mask_ids, short_hash, iso, parse_time = _base.clip, _base.mask_ids, _base.short_hash, _base.iso, _base.parse_time
-proxies_from_env = _base.proxies_from_env
+proxies_from_env, sentence, ToolProblem = _base.proxies_from_env, _base.sentence, _base.ToolProblem
 SOURCE_STATES, FACT_STATES, DETAIL_MAX = _base.SOURCE_STATES, _base.FACT_STATES, _base.DETAIL_MAX
 LINK_CONFIDENCE, canonical_id, repo_ref = _base.LINK_CONFIDENCE, _base.canonical_id, _base.repo_ref
 
@@ -140,14 +140,15 @@ def collect(doc, runner=run, http=http_get, now=utc_now, only=None, timeout_s=20
                  "observed_at": run_started, "duration_ms": 0}
         results[sid] = entry
         if row.get("enabled", True) is False:
-            entry["state"], entry["detail"] = "skipped", str(row.get("note") or "disabled in the sources file")
+            entry["state"], entry["detail"] = "skipped", str(row.get("note") or "Turned off in the sources file.")
             continue
         if only and sid != only:
-            entry["state"], entry["detail"] = "skipped", "not selected by --only"
+            entry["state"], entry["detail"] = "skipped", "Not read this run: another single source was asked for."
             continue
         fn = READERS.get(row["provider"])
         if fn is None:
-            entry["state"], entry["detail"] = "not_supported", f"no reader for provider '{row['provider']}'"
+            entry["state"], entry["detail"] = "not_supported", \
+                f"This collector has no reader for the provider '{row['provider']}'."
             continue
         started = time.monotonic()
         try:
@@ -157,17 +158,17 @@ def collect(doc, runner=run, http=http_get, now=utc_now, only=None, timeout_s=20
             entry["state"], entry["detail"] = ctx.state, ctx.detail
         except SourceError as exc:
             entry["state"], entry["detail"] = exc.state, exc.detail
-        except Exception as exc:  # a reader bug must not stop the other sources
-            entry["state"], entry["detail"] = "failed", f"reader error ({type(exc).__name__}): {clip(exc)}"
+        except Exception:  # a reader bug must not stop the other sources
+            entry["state"], entry["detail"] = "failed", "The reader for this source stopped on an unexpected error."
         entry["duration_ms"] = int((time.monotonic() - started) * 1000)
     for sid in order:
         ctx = results[sid]["ctx"]
         for hook in (ctx.after if ctx else []):
             try:
                 hook(results)
-            except Exception as exc:
+            except Exception:
                 results[sid]["detail"] = (results[sid]["detail"] + "; " if results[sid]["detail"] else "") + \
-                    f"link step error ({type(exc).__name__})"
+                    "the step that links this source to another one stopped on an unexpected error"
     seen, resources, sources = {}, [], []
     for sid in order:
         entry = results[sid]
@@ -180,14 +181,13 @@ def collect(doc, runner=run, http=http_get, now=utc_now, only=None, timeout_s=20
             clean, bad_names = normalize_resource(res, entry["observed_at"])
             resources.append(clean)
             dropped += bad_names
-        detail = entry["detail"]
+        parts = [entry["detail"].rstrip(". ")] if entry["detail"] else []
         if dupes:
-            detail = (detail + "; " if detail else "") + f"{dupes} already reported by another source"
+            parts.append(f"{dupes} already reported by another source")
         if dropped:
-            detail = (detail + "; " if detail else "") + \
-                f"{dropped} facts dropped: a fact name must be lowercase letters, digits and _"
+            parts.append(f"{dropped} facts dropped: a fact name must be lowercase letters, digits and _")
         sources.append({"id": sid, "provider": entry["row"]["provider"], "state": entry["state"],
-                        "detail": detail[:DETAIL_MAX], "observed_at": entry["observed_at"],
+                        "detail": sentence("; ".join(parts)), "observed_at": entry["observed_at"],
                         "duration_ms": entry["duration_ms"]})
     for res in resources:  # a parent must be another resource in this file
         if res["parent"] and res["parent"] not in seen:

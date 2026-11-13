@@ -12,9 +12,9 @@ def read_document(path, fmt):
         with open(path, encoding="utf-8") as handle:
             text = handle.read()
     except FileNotFoundError:
-        raise SourceError("failed", "the file does not exist")
+        raise SourceError("failed", "The file does not exist.")
     except OSError as exc:
-        raise SourceError("failed", f"the file cannot be read ({type(exc).__name__})")
+        raise SourceError("failed", "The file cannot be read.")
     if fmt != "jsonl":
         return parse_json(text, "file")
     rows = []

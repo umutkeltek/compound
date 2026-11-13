@@ -10,6 +10,7 @@ import io
 import json
 import os
 import stat
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -191,9 +192,9 @@ class PveTests(unittest.TestCase):
         self.assertEqual(source(obs, "pve-example")["state"], "needs_sign_in")
 
     def test_timeout_is_failed_with_the_reason(self):
-        obs = self.observe(collect.SourceError("failed", "ssh timed out after 5 s"))
+        obs = self.observe(collect.ToolProblem("timeout", "ssh", 5))
         self.assertEqual(source(obs, "pve-example")["state"], "failed")
-        self.assertIn("timed out", source(obs, "pve-example")["detail"])
+        self.assertEqual(source(obs, "pve-example")["detail"], "The virtualization host did not answer within 5 seconds.")
 
 
 LINUX_STATUS = "\n".join([
@@ -248,7 +249,7 @@ class SshHostTests(unittest.TestCase):
     def test_unreachable_host_is_failed(self):
         obs = self.observe(R(255, "", "ssh: connect to host vps.example port 22: Operation timed out"))
         self.assertEqual(source(obs, "vps-example")["state"], "failed")
-        self.assertEqual(source(obs, "vps-example")["detail"], "the host did not answer")
+        self.assertEqual(source(obs, "vps-example")["detail"], "The host did not answer.")
         self.assertEqual(obs["resources"], [])
 
 
@@ -282,7 +283,8 @@ class CoreTests(unittest.TestCase):
         finally:
             del collect.READERS["broken_example"]
         self.assertEqual(source(obs, "b")["state"], "failed")
-        self.assertIn("ZeroDivisionError", source(obs, "b")["detail"])
+        self.assertEqual(source(obs, "b")["detail"], "The reader for this source stopped on an unexpected error.")
+        self.assertNotIn("ZeroDivision", json.dumps(obs))
         self.assertEqual(source(obs, "vps-example")["state"], "ok")
 
     def test_disabled_unknown_and_not_selected_sources(self):
@@ -291,7 +293,7 @@ class CoreTests(unittest.TestCase):
                 dict(AWS_ROW)]
         obs = observe(rows, AwsTests().runner(), only="u")
         self.assertEqual(source(obs, "vps-example")["state"], "skipped")
-        self.assertEqual(source(obs, "vps-example")["detail"], "did not answer on the last check")
+        self.assertEqual(source(obs, "vps-example")["detail"], "Did not answer on the last check.")
         self.assertEqual(source(obs, "u")["state"], "not_supported")
         self.assertEqual(source(obs, "aws-example")["state"], "skipped")
         self.assertEqual(obs["resources"], [])
@@ -459,7 +461,7 @@ class CloudflareAndSearchTests(unittest.TestCase):
     def test_page_cap(self):
         obs = observe([dict(CF_ROW, max_pages=1, search_console_source="")], self.runner())
         self.assertEqual(len(by_kind(obs, "domain")), 2)
-        self.assertIn("capped at 1 pages", source(obs, "dns-example")["detail"])
+        self.assertEqual(source(obs, "dns-example")["detail"], "Only the first 1 pages of zones were read; more exist.")
 
     def test_sites_and_their_account(self):
         obs = observe([SC_ROW], self.runner())
@@ -623,7 +625,46 @@ class JsonFileTests(unittest.TestCase):
         self.assertEqual(plan["facts"]["accounts_total"]["value"], 5)
         self.assertEqual(plan["facts"]["absent"]["state"], "not_supported")
         self.assertEqual(source(obs, "gone")["state"], "failed")
-        self.assertEqual(source(obs, "gone")["detail"], "the file does not exist")
+        self.assertEqual(source(obs, "gone")["detail"], "The file does not exist.")
+
+
+class PlainFailureTextTests(unittest.TestCase):
+    """A source's detail is one plain sentence: never an exception class, a command line or a home path."""
+
+    def test_a_real_timeout_names_the_tool_by_its_purpose(self):
+        # the real run door, a real child process that outlives its time limit
+        row = dict(CF_ROW, search_console_source="", timeout_s=0.3,
+                   command=[sys.executable, "-c", "import time; time.sleep(5)"])
+        obs = collect.collect({"sources": [row]}, runner=collect.run, now=now, timeout_s=5, env={})
+        detail = source(obs, "dns-example")["detail"]
+        self.assertEqual(source(obs, "dns-example")["state"], "failed")
+        self.assertEqual(detail, "The DNS listing tool did not answer within 0.3 seconds.")
+        for word in ("Timeout", "Expired", "sleep", "-c", os.path.basename(sys.executable)):
+            self.assertNotIn(word, detail)
+
+    def test_a_missing_tool_is_a_sentence(self):
+        row = dict(SC_ROW, command=["example-tool-that-is-not-installed", "list"])
+        obs = collect.collect({"sources": [row]}, runner=collect.run, now=now, timeout_s=5, env={"PATH": "/nonexistent"})
+        self.assertEqual(source(obs, "search-example")["detail"],
+                         "The search property listing tool is not installed on this computer, or the job cannot find it.")
+
+    def test_tool_words_lose_home_paths_and_exception_classes(self):
+        err = ("Traceback (most recent call last):\nValueError: cannot open /home/example-user/.config/tool/settings.json "
+               "or /Users/example-user/Library/x")
+        obs = observe([SC_ROW], FakeRunner([(["search-cli"], R(1, "", err))]))
+        detail = source(obs, "search-example")["detail"]
+        self.assertTrue(detail.startswith("The search property listing tool could not give the property list"), detail)
+        self.assertTrue(detail.endswith("."))
+        for word in ("ValueError", "Traceback", "example-user", "/home/", "/Users/"):
+            self.assertNotIn(word, detail)
+        self.assertIn("~/.config/tool/settings.json", detail)
+
+    def test_every_source_detail_is_one_sentence(self):
+        rows = [dict(SSH_ROW, enabled=False), {"id": "u", "provider": "no_such_reader"}, PVE_ROW]
+        obs = observe(rows, FakeRunner([(["pve.example"], R(255, "", "pve.example: Permission denied (publickey)."))]))
+        for src in obs["sources"]:
+            self.assertRegex(src["detail"], r"^[A-Z0-9].*[.]$", src["id"])
+            self.assertNotIn("\n", src["detail"])
 
 
 class MainTests(unittest.TestCase):
