@@ -74,6 +74,30 @@
      "facts": {"window_used_pct": "usedPercent", "resets_at": "resetsAt"}
     }
    ]
+  },
+  {
+   "id": "graph-example-scout",
+   "provider": "edges_file",
+   "vendor": "scout",
+   "path": "~/example-notes/infrastructure-edges.json",
+   "kind_map": {"host": "host", "container": "container", "hostname": "hostname", "ci": "external_service", "note": null},
+   "relation_map": {"runs_on": "runs_on", "routes_to": "routes_to", "uses": "uses", "mentions": null},
+   "same_as": {"host:example-vps": "ssh:host:0123456789ab"}
+  },
+  {
+   "id": "graph-example-declared",
+   "provider": "declared",
+   "path": "~/.compound/config/inventory-declared.json"
+  },
+  {
+   "id": "graph-example-repos",
+   "provider": "repo_scan",
+   "vendor": "scout",
+   "roots": ["~/example-projects"],
+   "relative_to": "~",
+   "max_depth": 3,
+   "product_command": ["example-product-cli", "where", "--all", "--json"],
+   "product_map": {"example-projects/example-app": "product:example_app"}
   }
  ]
 }
