@@ -90,13 +90,13 @@ function UnblockLine({ move, look }: { move: NextMove; look: Lookup }) {
     );
   }
   if (move.unblocks <= 0 || !move.areaId) return null;
-  const names = dependents(move.areaId, look);
+  const names = dependents(move.areaId, look).map((id) => areaTitle(id, look));
+  // Name them when the list is short and matches the CLI's count; otherwise name three and count the rest.
+  const shown = names.length === move.unblocks ? (names.length <= 4 ? names : [...names.slice(0, 3), `${names.length - 3} more`]) : [];
   return (
-    <p className="text-sm text-ink">
+    <p className="text-sm text-ink" title={names.length === move.unblocks ? names.join(", ") : undefined}>
       <span className="font-medium">Unblocks </span>
-      {names.length === move.unblocks
-        ? `${joinWords(names.map((id) => areaTitle(id, look)))}.`
-        : `${move.unblocks} other ${move.unblocks === 1 ? "area" : "areas"}.`}
+      {shown.length ? `${joinWords(shown)}.` : `${move.unblocks} other ${move.unblocks === 1 ? "area" : "areas"}.`}
     </p>
   );
 }
