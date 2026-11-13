@@ -24,7 +24,11 @@ import json
 import os
 import plistlib
 import re
-import tomllib
+
+try:  # Python 3.11+; without it TOML files are skipped and every other reader still loads
+    import tomllib
+except ImportError:  # pragma: no cover
+    tomllib = None
 
 from ._base import SourceError, canonical_id, parse_json, provider_token, reader, short_hash
 
@@ -79,6 +83,12 @@ ENTITLEMENTS = (("healthkit", "external_service:apple-healthkit", "Apple HealthK
                 ("weatherkit", "external_service:apple-weatherkit", "Apple WeatherKit"),
                 ("aps-environment", "external_service:apple-apns", "Apple Push Notification service"),
                 ("applesignin", "external_service:sign-in-with-apple", "Sign in with Apple"))
+
+
+def toml_loads(text):
+    if tomllib is None:
+        raise ValueError("TOML needs Python 3.11 or newer")
+    return tomllib.loads(text)
 
 
 def slug(text):
@@ -372,7 +382,7 @@ def serve(scan, did, host, where):
 def read_config(scan, holders, repo, rel, name, base, text, where, found, secret_names, env_names, apps):
     if base in ("wrangler.toml", "wrangler.json", "wrangler.jsonc"):
         try:
-            conf = tomllib.loads(text) if base.endswith(".toml") else json.loads(strip_jsonc(text))
+            conf = toml_loads(text) if base.endswith(".toml") else json.loads(strip_jsonc(text))
         except ValueError:
             return
         kind = "cloudflare-pages" if conf.get("pages_build_output_dir") else "cloudflare-worker"
@@ -486,7 +496,7 @@ def read_manifest(base, text, where, found):
             packages += list((doc.get(section) or {}) if isinstance(doc, dict) else [])
     elif base == "pyproject.toml":
         try:
-            doc = tomllib.loads(text)
+            doc = toml_loads(text)
         except ValueError:
             return
         deps = list((doc.get("project") or {}).get("dependencies") or [])
