@@ -100,6 +100,13 @@ func ReviewAreaSurface(area string) string {
 // returned QueueReport is read-only -- callers consume it as a
 // projection, never mutate it.
 func Build(homePath string, opts Options) (reviewartifact.QueueReport, error) {
+	return build(homePath, opts, true)
+}
+
+// build assembles the report. memoWork is the production path: each work
+// envelope the authority stamp reads is read once per stamping pass. false is
+// the reference path (one store read per lookup) kept for same-output tests.
+func build(homePath string, opts Options, memoWork bool) (reviewartifact.QueueReport, error) {
 	now := opts.Now
 	if now.IsZero() {
 		now = time.Now()
@@ -158,12 +165,12 @@ func Build(homePath string, opts Options) (reviewartifact.QueueReport, error) {
 	routeevidence.AnnotateRouteOutcomeQueue(&report)
 	sourceobs.AnnotateObservationVerdictQueue(&report)
 	rqLog("annotators_done", t0)
-	if err := StampReviewActionAuthority(homePath, &report, now); err != nil {
+	if err := stampReviewActionAuthority(homePath, &report, now, memoWork); err != nil {
 		return reviewartifact.QueueReport{}, err
 	}
 	rqLog("stamp_authority", t0)
 	reviewartifact.Recount(&report)
-	if err := StampReviewGroupActionAuthority(homePath, &report, now); err != nil {
+	if err := stampReviewGroupActionAuthority(homePath, &report, now, memoWork); err != nil {
 		return reviewartifact.QueueReport{}, err
 	}
 	rqLog("group_authority", t0)
@@ -173,6 +180,10 @@ func Build(homePath string, opts Options) (reviewartifact.QueueReport, error) {
 }
 
 func StampReviewActionAuthority(homePath string, report *reviewartifact.QueueReport, now time.Time) error {
+	return stampReviewActionAuthority(homePath, report, now, true)
+}
+
+func stampReviewActionAuthority(homePath string, report *reviewartifact.QueueReport, now time.Time, memoWork bool) error {
 	if report == nil {
 		return fmt.Errorf("review authority report required")
 	}
@@ -193,10 +204,11 @@ func StampReviewActionAuthority(homePath string, report *reviewartifact.QueueRep
 	// OpenReadOnly: the queue report is assembled by reads only (Get +
 	// policy.EvaluateAuthority), so stamping authority must not materialize
 	// work/ or events/ as a side effect of building the report.
-	workStore, err := work.OpenReadOnly(homePath)
+	store, err := work.OpenReadOnly(homePath)
 	if err != nil {
 		return fmt.Errorf("open work store for review authority: %w", err)
 	}
+	workStore := newReviewWorkReader(store, memoWork)
 
 	for itemIndex := range report.Items {
 		item := &report.Items[itemIndex]
@@ -236,6 +248,10 @@ func StampReviewActionAuthority(homePath string, report *reviewartifact.QueueRep
 // Domain group summaries (notably panel verdicts) synthesize their action only
 // while Recount builds Groups, so item stamping alone can never reach them.
 func StampReviewGroupActionAuthority(homePath string, report *reviewartifact.QueueReport, now time.Time) error {
+	return stampReviewGroupActionAuthority(homePath, report, now, true)
+}
+
+func stampReviewGroupActionAuthority(homePath string, report *reviewartifact.QueueReport, now time.Time, memoWork bool) error {
 	if report == nil {
 		return fmt.Errorf("review authority report required")
 	}
@@ -244,10 +260,11 @@ func StampReviewGroupActionAuthority(homePath string, report *reviewartifact.Que
 		return fmt.Errorf("load current policy for review group authority: %w", err)
 	}
 	// OpenReadOnly: read-only assembly, same contract as StampReviewActionAuthority above.
-	workStore, err := work.OpenReadOnly(homePath)
+	store, err := work.OpenReadOnly(homePath)
 	if err != nil {
 		return fmt.Errorf("open work store for review group authority: %w", err)
 	}
+	workStore := newReviewWorkReader(store, memoWork)
 	for groupIndex := range report.Groups {
 		group := &report.Groups[groupIndex]
 		action := group.SafeBatchAction
@@ -293,7 +310,7 @@ func ResolveReviewWorkAuthority(homePath string, item reviewartifact.QueueItem) 
 	return resolved, nil
 }
 
-func resolveReviewWorkAuthority(homePath string, workStore *work.Store, item reviewartifact.QueueItem) (ReviewWorkAuthority, bool, error) {
+func resolveReviewWorkAuthority(homePath string, workStore reviewWorkReader, item reviewartifact.QueueItem) (ReviewWorkAuthority, bool, error) {
 	if strings.TrimSpace(item.WorkBindingError) != "" {
 		return ReviewWorkAuthority{}, true, fmt.Errorf("review %s/%s owner-work binding invalid: %s", item.Area, item.ID, item.WorkBindingError)
 	}
@@ -382,7 +399,7 @@ func validateReviewSourceRun(homePath string, item reviewartifact.QueueItem, bin
 	return nil
 }
 
-func loadReviewAreaFallback(workStore *work.Store, area, workID string) (envelope.WorkEnvelope, error) {
+func loadReviewAreaFallback(workStore reviewWorkReader, area, workID string) (envelope.WorkEnvelope, error) {
 	workID = strings.TrimSpace(workID)
 	if workID == "" {
 		return envelope.WorkEnvelope{}, fmt.Errorf("review area %s has no explicit fallback work", area)
@@ -411,7 +428,7 @@ type resolvedActionAuthority struct {
 	EvidenceRefs   []string
 }
 
-func resolveReviewGroupAuthority(homePath string, workStore *work.Store, group reviewartifact.QueueGroup, items []reviewartifact.QueueItem) (resolvedActionAuthority, bool, error) {
+func resolveReviewGroupAuthority(homePath string, workStore reviewWorkReader, group reviewartifact.QueueGroup, items []reviewartifact.QueueItem) (resolvedActionAuthority, bool, error) {
 	memberIDs := make(map[string]bool, len(group.ItemIDs))
 	for _, id := range group.ItemIDs {
 		memberIDs[id] = true
@@ -524,7 +541,7 @@ func reboundReviewActionID(actionID string, intent envelope.ActionIntent, bindin
 	return "act_" + reviewartifact.Digest12(strings.Join([]string{actionID, string(body), strings.Join(ids, "\x00")}, "\x00"))
 }
 
-func stampReviewAction(action *reviewartifact.Action, workStore *work.Store, cfg policy.Config, policySource string, now time.Time) error {
+func stampReviewAction(action *reviewartifact.Action, workStore reviewWorkReader, cfg policy.Config, policySource string, now time.Time) error {
 	if action == nil || action.ActionIntent == nil || action.AuthorityContext == nil {
 		return fmt.Errorf("complete producer ActionIntent and AuthorityContext required")
 	}
