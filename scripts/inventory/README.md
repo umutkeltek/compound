@@ -132,9 +132,11 @@ Notes on what each reader cannot see:
 - `edges_file`: the file is `{"observed_at"?, "nodes": [{id, kind, label, provider}], "edges":
   [{from, rel, to, confidence?, evidence?}]}`. `kind_map` and `relation_map` translate the file's
   words into inventory kinds and relations (`null` leaves one out on purpose); `same_as` maps a
-  node id to the id another reader emits for the same thing. Ids become canonical; a node of kind
-  `product` becomes `product:<product id>` and carries the product's own links. Every other node
-  gets `<provider>:<kind>:<hash>`. `observed_at` on each resource and link is the file's own date
+  node id to the id another reader emits for the same thing (or to a node id in a file's own
+  words, `<kind>:…`). Ids become canonical; a node of kind `product` becomes
+  `product:<product id>` and carries the product's own links. Every other node gets
+  `<row vendor>:<kind>:<hash of its id in the file>`, so rows with the same `vendor` that use the
+  same node id give one resource. `observed_at` on each resource and link is the file's own date
   (its `observed_at`, else its modification time); confidence is carried through. A kind or
   relation the maps do not cover, a link whose end was not kept, and a link to itself are counted
   in the source detail, never dropped silently; with `report_path` a private report (mode 0600)

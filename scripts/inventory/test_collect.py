@@ -697,7 +697,7 @@ class EdgesFileTests(unittest.TestCase):
         self.assertEqual(product["kind"], "product")
         links = {(l["rel"], l["to"]): l for l in product["links"]}
         container = next(r for r in obs["resources"] if r["kind"] == "container")
-        self.assertTrue(container["id"].startswith("docker:container:"))
+        self.assertEqual(container["id"], "edges_file:container:" + collect.short_hash("container:host-a/web"))
         self.assertEqual(links[("code_in", "repo:git.example/owner/example-app")]["evidence"], "example/README.md")
         self.assertEqual(links[("deployed_on", container["id"])]["confidence"], "declared")
         self.assertIn(("sold_through", "store_app:apple/com.example.app"), links)
@@ -743,6 +743,13 @@ class EdgesFileTests(unittest.TestCase):
 
     def test_same_input_same_bytes(self):
         self.assertEqual(json.dumps(self.observe()), json.dumps(self.observe()))
+
+    def test_same_as_targets_in_a_files_own_words(self):
+        same_as_id = sys.modules["compound_inventory_readers.edges_file"].same_as_id
+        self.assertEqual(same_as_id("container:host-a/web", "scout"), "scout:container:" + collect.short_hash("container:host-a/web"))
+        self.assertEqual(same_as_id("host:Host A", "scout"), "host:host-a")
+        self.assertEqual(same_as_id("ssh:host:0123456789ab", "scout"), "ssh:host:0123456789ab")
+        self.assertEqual(same_as_id(None, "scout"), "")
 
     def test_missing_or_misshapen_file(self):
         self.path.write_text(json.dumps({"nodes": {}}))

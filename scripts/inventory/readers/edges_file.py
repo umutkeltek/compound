@@ -6,12 +6,13 @@ confidence?, evidence?}]}. The sources row says how to read it:
   path          the file
   kind_map      the file's kind -> an inventory kind (null: left out on purpose)
   relation_map  the file's relation -> an inventory relation (null: left out on purpose)
-  same_as       the file's node id -> the id another reader emits for the same thing
+  same_as       the file's node id -> the id another reader emits for the same thing (an id in
+                a file's own words, `<kind>:…`, is turned into the id that file's node gets)
   report_path   optional: a private JSON report (mode 0600) of what was left out, merged or looks
                 like a duplicate, with labels, for the person who tunes the maps
 
 Ids become canonical (domain:, hostname:, repo:, …; product:<id> for kind product); every other
-node gets `<provider>:<kind>:<hash of its id in the file>`. `observed_at` is the file's own date
+node gets `<row vendor>:<kind>:<hash of its id in the file>`. `observed_at` is the file's own date
 (its `observed_at` field, else the file's modification time). Confidence is carried through.
 Nothing is dropped silently: a kind or relation the maps do not cover, and a link whose end was
 not kept, is counted in the source detail and listed in the report.
@@ -23,7 +24,7 @@ import os
 import re
 from datetime import datetime, timezone
 
-from ._base import (CANONICAL_KINDS, PRODUCT_PREFIX, SourceError, canonical_id, iso, parse_time,
+from ._base import (CANONICAL_KINDS, KINDS, PRODUCT_PREFIX, SourceError, canonical_id, iso, parse_time,
                     provider_token, reader, short_hash)
 
 
@@ -45,7 +46,9 @@ def read_graph(path):
 
 
 def node_id(kind, scout_id, node, vendor):
-    """The inventory id for one node of the file, or "" when it cannot have one."""
+    """The inventory id for one node of the file, or "" when it cannot have one. A node without a
+    canonical form gets `<row vendor>:<kind>:<hash of its id in the file>`, so two files that use
+    the same node id (and rows with the same `vendor`) give the same resource."""
     rest = scout_id.split(":", 1)[1] if ":" in scout_id else scout_id
     if kind == "product":
         return canonical_id("product", rest.strip())
@@ -53,7 +56,15 @@ def node_id(kind, scout_id, node, vendor):
         if kind == "store_app" and "/" not in rest:
             rest = f"{provider_token(node.get('provider'), 'unknown')}/{rest}"
         return canonical_id(kind, rest)
-    return f"{provider_token(node.get('provider'), vendor)}:{kind}:{short_hash(scout_id)}"
+    return f"{provider_token(vendor, 'edges_file')}:{kind}:{short_hash(scout_id)}"
+
+
+def same_as_id(value, vendor):
+    """A `same_as` target: an id in a file's own words (`<kind>:…` with an inventory kind) is
+    turned into the id that file's node gets; anything else is an inventory id, used as it is."""
+    value = str(value or "").strip()
+    kind = value.split(":", 1)[0]
+    return node_id(kind, value, {}, vendor) if kind in KINDS and ":" in value else value
 
 
 def label_key(kind, label):
@@ -84,7 +95,7 @@ def read_edges_file(ctx):
         if target is None:
             stats["nodes_left_out"] += 1
             continue
-        rid = str(same_as.get(scout_id) or "") or node_id(target, scout_id, node, ctx.vendor)
+        rid = same_as_id(same_as.get(scout_id), ctx.vendor) or node_id(target, scout_id, node, ctx.vendor)
         if not rid or (rid.startswith(PRODUCT_PREFIX) != (target == "product")):
             stats["nodes_without_usable_id"] += 1
             continue
