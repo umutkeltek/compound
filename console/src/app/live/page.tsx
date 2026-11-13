@@ -7,6 +7,7 @@ import { LiveHarnessCanvas, type LiveLane } from "@/components/live/LiveHarnessC
 import { LiveOperationsTimeline } from "@/components/live/LiveOperationsTimeline";
 import { PageHeader, PulseIcon, ReadChip, ReadFailedBanner, ReadNotice, readsPending, SectionHeader, StatusChip } from "@/components/kit";
 import { PendingRefresh } from "@/components/PendingRefresh";
+import { readAttention, waitingOnYou } from "@/lib/attention";
 import { readCoordination } from "@/lib/coordination";
 import { depthShows, requestDepth } from "@/lib/depth";
 import { getTraffic, trafficKnown } from "@/lib/traffic";
@@ -52,7 +53,10 @@ export default async function LivePage() {
   // Non-blocking: getTraffic reads the cached executors copy (or "loading").
   // The coordination section shows only at the Technical depth; its read is
   // skipped entirely when hidden.
-  const [traffic, depth] = await Promise.all([getTraffic(), requestDepth()]);
+  // "Waiting on you" uses the ONE definition (lib/attention.ts waitingOnYou)
+  // the sidebar, Today and Work use; attention is already cached for the sidebar.
+  const [traffic, depth, attentionLive] = await Promise.all([getTraffic(), requestDepth(), readAttention()]);
+  const waiting = waitingOnYou(attentionLive.report);
   const showCoordination = depthShows(depth, "technical");
   const executorsRead = traffic.read!;
   const known = trafficKnown(traffic);
@@ -96,7 +100,7 @@ export default async function LivePage() {
   }
 
   const delegatedRunning = projection?.delegatedCounts.running ?? 0;
-  const pending = readsPending(executorsRead);
+  const pending = readsPending(executorsRead, attentionLive.read);
   return (
     <div className="console-stage flex flex-col gap-6">
       <PendingRefresh pending={pending} stamp={Date.now()} />
@@ -126,7 +130,7 @@ export default async function LivePage() {
         <Metric label="Harnesses" value={known ? traffic.lanes.length : null} note="projected lanes" />
         <Metric label="Running" value={known ? traffic.runningCount : null} note="heartbeat-backed" tone="good" />
         <Metric label="In flight" value={known ? traffic.inFlightCount : null} note="work assignments" />
-        <Metric label="Waiting on you" value={known ? traffic.needsMeCount : null} note="paused at a seam" tone="seam" />
+        <Metric label="Waiting on you" value={waiting ? waiting.workItems : null} note="work items" tone="seam" />
       </div>
 
       <section data-depth-min="understand" className="flex flex-col gap-3">
