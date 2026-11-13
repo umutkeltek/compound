@@ -13,6 +13,13 @@ import { memoryBriefingNotice, type AutonomyPosture, type MemoryBriefing } from 
  * spend read exists, and a tile that can only say "not wired" is noise.
  */
 
+/** "Nov 13, 07:52" for an ISO time; the raw value stays in `dateTime`. */
+function plainClock(iso: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return iso;
+  return at.toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
 type StackSeg = { value: number; className: string; label: string };
 
 function StackBar({ segments }: { segments: StackSeg[] }) {
@@ -127,7 +134,7 @@ export function KpiStrip({
         {mind.observation === "stale" && mind.totals ? (
           <span className="mt-2 text-xs text-seam">
             {memoryBriefingNotice(mind)}
-            {mind.lastGoodAt ? <span className="block">Last successful read: <time dateTime={mind.lastGoodAt}>{mind.lastGoodAt}</time></span> : null}
+            {mind.lastGoodAt ? <span className="block">Last successful read: <time dateTime={mind.lastGoodAt}>{plainClock(mind.lastGoodAt)}</time></span> : null}
           </span>
         ) : null}
       </KpiTile>
