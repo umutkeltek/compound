@@ -40,6 +40,7 @@ const PREEXISTING_NON_BRIEFING_ARGV = new Set(
     ["policy", "release-goal-holds-authority", "--json"],
     ["policy", "standing-grants-authority", "--json"],
     ["product", "authority", "--json"],
+    ["product", "growth", "--json"],
     ["product", "loops", "--json"],
     ["reviews", "--json"],
     ["route", "evidence-authority", "--json"],
