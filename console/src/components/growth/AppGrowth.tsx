@@ -8,6 +8,7 @@ import {
   STATUS_META,
   branchLabel,
   countStatuses,
+  hasEvidence,
   isJudged,
   joinWords,
   unknownGates,
@@ -32,8 +33,9 @@ export function makeLookup(app: GrowthApp, areas: GrowthArea[]): Lookup {
   return { areaById: new Map(areas.map((a) => [a.id, a])), rowById: new Map(app.audit.map((r) => [r.areaId, r])) };
 }
 
+/** An area's title for this app, in quotes: titles contain "and", so a bare list of them is ambiguous. */
 function areaTitle(id: string, look: Lookup): string {
-  return look.rowById.get(id)?.title || look.areaById.get(id)?.title || id;
+  return `“${look.rowById.get(id)?.title || look.areaById.get(id)?.title || id}”`;
 }
 
 /**
@@ -282,6 +284,40 @@ function AreaRow({ row, area, look, moveRank }: { row: AuditRow | undefined; are
   );
 }
 
+/**
+ * One group's areas. Areas with any data, and areas that hold a next move,
+ * come first. The rest (no data yet, not on file, set aside, does not apply)
+ * fold into one quiet line that opens on demand, so an open group never
+ * becomes a wall of gaps. A group with nothing but gaps shows them directly.
+ */
+function GroupRows({ areas, look, moveRank }: { areas: GrowthArea[]; look: Lookup; moveRank: Map<string, number> }) {
+  const statusOf = (a: GrowthArea) => look.rowById.get(a.id)?.status ?? "blind";
+  const lead = areas.filter((a) => moveRank.has(a.id) || hasEvidence(statusOf(a)));
+  const quiet = areas.filter((a) => !lead.includes(a));
+  const row = (area: GrowthArea) => <AreaRow key={area.id} row={look.rowById.get(area.id)} area={area} look={look} moveRank={moveRank.get(area.id) ?? 0} />;
+  if (!lead.length || quiet.length <= 1) {
+    return <ul className="divide-y divide-hair-2 border-t border-hair">{areas.map(row)}</ul>;
+  }
+  const counts = countStatuses(quiet.map((a) => ({ status: statusOf(a) })));
+  const label = (["blind", "unknown", "deferred", "not_applicable"] as const)
+    .filter((st) => counts[st] > 0)
+    .map((st) => `${counts[st]} ${STATUS_META[st].label.toLowerCase()}`)
+    .join(" · ");
+  return (
+    <div className="border-t border-hair">
+      <ul className="divide-y divide-hair-2">{lead.map(row)}</ul>
+      <details className="group/quiet border-t border-hair-2">
+        <summary className="flex cursor-pointer list-none items-baseline gap-2 px-4 py-2.5 text-sm hover:bg-soft">
+          <span className="inline-block w-3 shrink-0 text-faint transition-transform group-open/quiet:rotate-90" aria-hidden>›</span>
+          <span className="shrink-0 text-muted">{quiet.length} more: {label}</span>
+          <span className="hidden min-w-0 truncate text-xs text-faint md:inline">{quiet.map((a) => look.rowById.get(a.id)?.title || a.title).join(", ")}</span>
+        </summary>
+        <ul className="divide-y divide-hair-2 border-t border-hair-2">{quiet.map(row)}</ul>
+      </details>
+    </div>
+  );
+}
+
 /** The 12 groups as closed sections; a group holding a next move starts open. */
 export function GroupAudit({ app, groups, areas, look }: { app: GrowthApp; groups: GrowthGroup[]; areas: GrowthArea[]; look: Lookup }) {
   const moveRank = new Map<string, number>();
@@ -316,11 +352,7 @@ export function GroupAudit({ app, groups, areas, look }: { app: GrowthApp; group
               </span>
             </summary>
             {groupAreas.length ? (
-              <ul className="divide-y divide-hair-2 border-t border-hair">
-                {groupAreas.map((area) => (
-                  <AreaRow key={area.id} row={look.rowById.get(area.id)} area={area} look={look} moveRank={moveRank.get(area.id) ?? 0} />
-                ))}
-              </ul>
+              <GroupRows areas={groupAreas} look={look} moveRank={moveRank} />
             ) : (
               <p className="border-t border-hair px-4 py-3 text-sm text-faint">The catalog has no areas in this group yet.</p>
             )}
