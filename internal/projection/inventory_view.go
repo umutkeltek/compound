@@ -213,14 +213,8 @@ func BuildInventory(home string, q InventoryQuery, now time.Time) (InventoryProj
 	}
 
 	obs := snap.Observation
-	observedAt, _ := time.Parse(time.RFC3339, obs.ObservedAt)
-	age := math.Max(0, now.Sub(observedAt).Hours())
-	ageRounded := math.Round(age*10) / 10
-	p.Snapshot = InventorySnapshotStatus{State: "fresh", ObservedAt: obs.ObservedAt, ImportedAt: snap.ImportedAt, AgeHours: &ageRounded}
-	if age > q.StaleHours {
-		p.Snapshot.State = "stale"
-		p.Snapshot.Notice = fmt.Sprintf("The inventory was observed %s ago, more than %s hours: values may be out of date; %s.",
-			humanInventoryAge(age), strconv.FormatFloat(q.StaleHours, 'f', -1, 64), inventoryRefreshHint)
+	p.Snapshot = inventorySnapshotState(snap, now, q.StaleHours)
+	if p.Snapshot.State == "stale" {
 		p.Attention = append(p.Attention, InventoryAttention{Kind: "snapshot", Title: "Inventory snapshot", Why: p.Snapshot.Notice})
 	}
 
