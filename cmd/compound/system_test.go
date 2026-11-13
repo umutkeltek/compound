@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/mem"
+	"compound/internal/product"
 	"compound/internal/projection"
 )
 
@@ -173,6 +175,71 @@ func TestSystemInventoryReadCommand(t *testing.T) {
 	}
 	if strings.Contains(text, cmdInventoryLongID) || !strings.Contains(text, "…"+cmdInventoryLongID[len(cmdInventoryLongID)-4:]) {
 		t.Fatalf("text must show only the masked id:\n%s", text)
+	}
+}
+
+// cmdGraphObservation is a v0.2 observation: a product spelled with an
+// underscore (the ledger knows it with a hyphen) and a product the ledger
+// does not know, both using a datastore on a host.
+func cmdGraphObservation(observedAt time.Time) string {
+	at := observedAt.UTC().Format(time.RFC3339)
+	return `{"schema_version":"compound.system_inventory_observation.v0.2","observed_at":"` + at + `",
+"collector":{"name":"example-collector","version":"0.0.2"},
+"sources":[{"id":"scan","provider":"repo_scan","state":"ok","detail":"","observed_at":"` + at + `","duration_ms":3}],
+"resources":[
+{"id":"product:sample_shop","kind":"product","provider":"compound","label":"Sample shop","parent":"","source":"scan","places":[],"facts":{},
+ "links":[{"rel":"uses","to":"pg:datastore:` + cmdInventoryLongID[12:] + `","confidence":"declared","evidence":"config/db.yaml"}]},
+{"id":"product:ghost-thing","kind":"product","provider":"compound","label":"Ghost thing","parent":"","source":"scan","places":[],"facts":{},
+ "links":[{"rel":"uses","to":"pg:datastore:` + cmdInventoryLongID[12:] + `"}]},
+{"id":"pg:datastore:` + cmdInventoryLongID[12:] + `","kind":"datastore","provider":"pg","label":"shared-db","parent":"","source":"scan","places":[],"facts":{},
+ "links":[{"rel":"runs_on","to":"host:db-box"}]},
+{"id":"host:db-box","kind":"host","provider":"examplehv","label":"db-box","parent":"","source":"scan","places":[],"links":[],"facts":{}}
+]}`
+}
+
+func TestSystemGraphDependsImpactResolveProductsThroughTheIdentityOwner(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle := product.Bundle{SchemaVersion: product.SchemaVersion, Product: product.Product{
+		ID: "product:sample-shop", Name: "Sample shop", Channels: []string{"web"}, Positioning: "fixture", PrivacyPosture: "unknown",
+		Surfaces: []product.Surface{{ID: "site", Kind: "web", Ref: "https://shop.example"}},
+	}, EvidenceRefs: []string{"fixture:sample"}}
+	if _, err := product.Apply(homePath, store, bundle, "sample.yaml", time.Now()); err != nil {
+		t.Fatalf("apply product: %v", err)
+	}
+	file := filepath.Join(t.TempDir(), "observation.json")
+	writeCmdTestFile(t, file, cmdGraphObservation(time.Now().Add(-time.Hour)))
+	captureStdout(t, func() { cmdSystem([]string{"inventory", "refresh", "--collector-json", file}) })
+
+	var graph projection.InventoryGraphProjection
+	if err := json.Unmarshal([]byte(captureStdout(t, func() { cmdSystem([]string{"graph", "--json"}) })), &graph); err != nil {
+		t.Fatal(err)
+	}
+	// The underscore spelling resolved to the ledger's product; the unknown
+	// one is kept and named.
+	if graph.NodesByKind["product"] != 1 || len(graph.Unresolved) != 1 || graph.Unresolved[0].Ref != "product:ghost-thing" {
+		t.Fatalf("graph = %+v unresolved %+v", graph.NodesByKind, graph.Unresolved)
+	}
+	var deps projection.InventoryWalkProjection
+	if err := json.Unmarshal([]byte(captureStdout(t, func() { cmdSystem([]string{"depends", "sample-shop", "--json"}) })), &deps); err != nil {
+		t.Fatal(err)
+	}
+	if deps.Status != "ok" || deps.Start.Resource != "product:sample-shop" || len(deps.Steps) != 2 || deps.Steps[1].PathConfidence != "declared" {
+		t.Fatalf("depends = %+v steps %+v", deps.Start, deps.Steps)
+	}
+	text := captureStdout(t, func() { cmdSystem([]string{"impact", "db-box"}) })
+	for _, want := range []string{"What depends on db-box …-box (host): 3 things, 2 of them products.", "Ghost thing …hing (unknown product)", "Sample shop …shop (product)"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("impact text missing %q:\n%s", want, text)
+		}
+	}
+	graphText := captureStdout(t, func() { cmdSystem([]string{"graph", "--kind", "datastore"}) })
+	if strings.Contains(graphText+text, cmdInventoryLongID[12:]) || !strings.Contains(graphText, "Links with kind datastore: 3.") {
+		t.Fatalf("graph text:\n%s", graphText)
 	}
 }
 

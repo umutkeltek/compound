@@ -8,12 +8,16 @@ import (
 	"time"
 
 	"compound/internal/home"
+	"compound/internal/mem"
+	"compound/internal/product"
 	"compound/internal/projection"
 )
 
+const systemUsage = "usage: compound system <status|map|stats|memory-graph|lineage|status-surface|inventory|graph|depends|impact> [--json]"
+
 func cmdSystem(args []string) {
 	if len(args) == 0 || hasFlag(args, "--help") || hasFlag(args, "-h") {
-		fmt.Fprintln(os.Stderr, "usage: compound system <status|map|stats|memory-graph|lineage|status-surface|inventory> [--json]")
+		fmt.Fprintln(os.Stderr, systemUsage)
 		if len(args) == 0 {
 			os.Exit(2)
 		}
@@ -184,9 +188,134 @@ func cmdSystem(args []string) {
 		cmdSystemStatusSurface(args[1:])
 	case "inventory":
 		cmdSystemInventory(args[1:])
+	case "graph", "depends", "impact":
+		cmdSystemGraph(args[0], args[1:])
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound system <status|map|stats|memory-graph|lineage|status-surface|inventory> [--json]")
+		fmt.Fprintln(os.Stderr, systemUsage)
 		os.Exit(2)
+	}
+}
+
+const systemGraphUsage = "usage: compound system graph [--json] [--kind K] [--rel R]\n" +
+	"       compound system depends <id | unique label | product id> [--depth N (default 6)] [--json]\n" +
+	"       compound system impact <id | unique label | product id> [--json]"
+
+// cmdSystemGraph is the thin CLI face of the system graph over the inventory
+// snapshot (internal/projection/inventory_graph*.go). It makes no external
+// call. An ambiguous target lists its candidates and exits 2; a target that
+// names nothing, or a missing snapshot, exits 1.
+func cmdSystemGraph(verb string, args []string) {
+	var jsonOut bool
+	var target, kind, rel string
+	depth := projection.DefaultInventoryDependsDepth
+	for i := 0; i < len(args); i++ {
+		flag := args[i]
+		valued := (flag == "--kind" || flag == "--rel") && verb == "graph" || flag == "--depth" && verb == "depends"
+		switch {
+		case flag == "--json":
+			jsonOut = true
+		case valued && (i+1 >= len(args) || strings.TrimSpace(args[i+1]) == ""):
+			fmt.Fprintln(os.Stderr, systemGraphUsage)
+			os.Exit(2)
+		case valued && flag == "--depth":
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n <= 0 {
+				fmt.Fprintln(os.Stderr, "system depends: --depth must be a positive integer")
+				os.Exit(2)
+			}
+			depth = n
+		case valued && flag == "--kind":
+			i++
+			kind = args[i]
+		case valued:
+			i++
+			rel = args[i]
+		case verb != "graph" && target == "" && !strings.HasPrefix(flag, "--") && strings.TrimSpace(flag) != "":
+			target = flag
+		default:
+			fmt.Fprintln(os.Stderr, systemGraphUsage)
+			os.Exit(2)
+		}
+	}
+	if verb != "graph" && target == "" {
+		fmt.Fprintln(os.Stderr, systemGraphUsage)
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	products, now := systemProductResolver(homePath), time.Now()
+	if verb == "graph" {
+		report, err := projection.BuildInventoryGraph(homePath, projection.InventoryGraphQuery{Kind: kind, Rel: rel, Products: products}, now)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "system graph:", err)
+			os.Exit(1)
+		}
+		if jsonOut {
+			printJSON(report)
+		} else {
+			fmt.Print(projection.FormatInventoryGraphText(report))
+		}
+		return
+	}
+	var report projection.InventoryWalkProjection
+	if verb == "depends" {
+		report, err = projection.BuildInventoryDepends(homePath, projection.InventoryDependsQuery{Target: target, Depth: depth, Products: products}, now)
+	} else {
+		report, err = projection.BuildInventoryImpact(homePath, target, products, now)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "system "+verb+":", err)
+		os.Exit(1)
+	}
+	if jsonOut {
+		printJSON(report)
+	} else {
+		fmt.Print(projection.FormatInventoryWalkText(report))
+	}
+	switch report.Status {
+	case projection.InventoryWalkAmbiguous:
+		os.Exit(2)
+	case projection.InventoryWalkNotFound, projection.InventoryWalkMissing:
+		os.Exit(1)
+	}
+}
+
+// systemProductResolver resolves inventory product references through the
+// owner of product identity (product.WhereAll / product.Where: separators,
+// renames, aliases and app identifiers fold to one product), read without
+// scaffolding the home. A home with no product ledger resolves nothing, and
+// the graph then shows every product reference as an unknown product.
+func systemProductResolver(homePath string) projection.InventoryProductResolver {
+	var store *mem.Store
+	var members map[string]string
+	return func(ref string) (string, bool) {
+		if members == nil {
+			members = map[string]string{}
+			if s, err := mem.OpenScan(homePath); err == nil {
+				store = s
+				all, _ := product.WhereAll(store)
+				for _, r := range all {
+					for _, m := range r.Members {
+						members[m] = r.ProductID
+					}
+				}
+			}
+		}
+		if id, ok := members[ref]; ok {
+			return id, true
+		}
+		if store == nil {
+			return "", false
+		}
+		r, err := product.Where(store, strings.TrimPrefix(ref, projection.InventoryProductPrefix))
+		if err != nil || r.Status == product.WhereUnresolved || r.Status == product.WhereAmbiguous || r.ProductID == "" {
+			return "", false
+		}
+		return r.ProductID, true
 	}
 }
 
