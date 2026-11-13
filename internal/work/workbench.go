@@ -301,6 +301,22 @@ type RunObservationSummary struct {
 }
 
 func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport, error) {
+	return s.workbench(now, opts, workbenchFastPath)
+}
+
+// workbenchBuildMode selects how the work view reaches its rows. Production
+// always takes the fast path. The reference path is the pre-optimization
+// algorithm (resolve every run file before the recent limit); it stays
+// reachable only so same-output tests can prove the fast path returns a
+// byte-identical projection on the same home.
+type workbenchBuildMode int
+
+const (
+	workbenchFastPath workbenchBuildMode = iota
+	workbenchReferencePath
+)
+
+func (s *Store) workbench(now time.Time, opts WorkbenchOptions, mode workbenchBuildMode) (WorkbenchReport, error) {
 	if opts.RecentLimit <= 0 {
 		opts.RecentLimit = 5
 	}
@@ -435,14 +451,14 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 		report.Open = append(report.Open, item)
 	}
 	wbLogStage("item_loop", time.Now())
-	runs, warnings := s.workbenchDispatchStepRuns(opts.RecentLimit, archiveIndex)
+	runs, warnings := s.workbenchDispatchStepRuns(opts.RecentLimit, archiveIndex, mode)
 	wbLogStage("dispatch_step_runs", time.Now())
 	report.DispatchStepRuns = runs
 	report.Counts.DispatchStepRuns = len(runs)
 	for _, warning := range warnings {
 		report.Integrity = append(report.Integrity, warning)
 	}
-	continueRuns, continueWarnings := s.workbenchContinueRuns(opts.RecentLimit, archiveIndex)
+	continueRuns, continueWarnings := s.workbenchContinueRuns(opts.RecentLimit, archiveIndex, mode)
 	wbLogStage("continue_runs", time.Now())
 	report.ContinueRuns = continueRuns
 	report.Counts.ContinueRuns = len(continueRuns)
@@ -1886,7 +1902,18 @@ func reviewartifactOrDash(s string) string {
 	return s
 }
 
-func (s *Store) workbenchDispatchStepRuns(limit int, archiveIndex []home.OperationalArchiveEntry) ([]DispatchStepRunSummary, []string) {
+func (s *Store) workbenchDispatchStepRuns(limit int, archiveIndex []home.OperationalArchiveEntry, mode workbenchBuildMode) ([]DispatchStepRunSummary, []string) {
+	return s.workbenchDispatchStepRunsWith(limit, mode, func(summary DispatchStepRunSummary) DispatchStepRunSummary {
+		return s.resolveDispatchStepRunSummary(summary, archiveIndex)
+	})
+}
+
+// workbenchDispatchStepRunsWith reads every run file (each unreadable one still
+// earns its integrity warning) but resolves only the rows the recent limit
+// keeps. Resolution reads the referenced WorkEnvelopes and never changes the
+// sort keys (generated_at, id), so the kept rows and their order are the same
+// as resolving every file first; the reference path still does that.
+func (s *Store) workbenchDispatchStepRunsWith(limit int, mode workbenchBuildMode, resolve func(DispatchStepRunSummary) DispatchStepRunSummary) ([]DispatchStepRunSummary, []string) {
 	dir := filepath.Join(s.home, "dispatch-step-runs")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -1925,7 +1952,9 @@ func (s *Store) workbenchDispatchStepRuns(limit int, archiveIndex []home.Operati
 				summary.StepWorkIDs = append(summary.StepWorkIDs, step.WorkID)
 			}
 		}
-		summary = s.resolveDispatchStepRunSummary(summary, archiveIndex)
+		if mode == workbenchReferencePath {
+			summary = resolve(summary)
+		}
 		out = append(out, summary)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -1937,10 +1966,25 @@ func (s *Store) workbenchDispatchStepRuns(limit int, archiveIndex []home.Operati
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}
+	if mode != workbenchReferencePath {
+		for i := range out {
+			out[i] = resolve(out[i])
+		}
+	}
 	return out, warnings
 }
 
-func (s *Store) workbenchContinueRuns(limit int, archiveIndex []home.OperationalArchiveEntry) ([]ContinueRunSummary, []string) {
+func (s *Store) workbenchContinueRuns(limit int, archiveIndex []home.OperationalArchiveEntry, mode workbenchBuildMode) ([]ContinueRunSummary, []string) {
+	return s.workbenchContinueRunsWith(limit, mode, func(summary ContinueRunSummary) ContinueRunSummary {
+		return s.resolveContinueRunSummary(summary, archiveIndex)
+	})
+}
+
+// workbenchContinueRunsWith mirrors workbenchDispatchStepRunsWith: every file
+// is read so unreadable ones keep their warnings, and only the kept rows are
+// resolved. On a live home this skips one WorkEnvelope read per referenced
+// work of every older waiting run.
+func (s *Store) workbenchContinueRunsWith(limit int, mode workbenchBuildMode, resolve func(ContinueRunSummary) ContinueRunSummary) ([]ContinueRunSummary, []string) {
 	dir := filepath.Join(s.home, "continue-runs")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -1979,7 +2023,9 @@ func (s *Store) workbenchContinueRuns(limit int, archiveIndex []home.Operational
 				summary.StepWorkIDs = append(summary.StepWorkIDs, step.WorkID)
 			}
 		}
-		summary = s.resolveContinueRunSummary(summary, archiveIndex)
+		if mode == workbenchReferencePath {
+			summary = resolve(summary)
+		}
 		out = append(out, summary)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -1990,6 +2036,11 @@ func (s *Store) workbenchContinueRuns(limit int, archiveIndex []home.Operational
 	})
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
+	}
+	if mode != workbenchReferencePath {
+		for i := range out {
+			out[i] = resolve(out[i])
+		}
 	}
 	return out, warnings
 }
