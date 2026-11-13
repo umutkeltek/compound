@@ -14,22 +14,22 @@ import (
 )
 
 // A synthetic store account, as-of growthAsOf (2026-11-12):
-//   - app 9000000001 (product:example-app, sku EXAMPLE_SKU) has one update
+//   - app 900000001 (product:example-app, sku EXAMPLE_SKU) has one update
 //     every day from offset 74 to offset 1, except offset 20 (never
 //     captured: a gap) and offset 30 (Apple answered "no sales");
-//   - its in-app purchase 9100000001 sells on 08-30, 09-25, 09-26 and 10-10;
+//   - its in-app purchase 910000001 sells on 08-30, 09-25, 09-26 and 10-10;
 //     the series files the 09-25 sale under the purchase's own id;
-//   - app 9000000002 (product:second-app) has free first downloads on offsets
+//   - app 900000002 (product:second-app) has free first downloads on offsets
 //     6..4 and a paid download in EUR on 10-05;
-//   - app 9000000004 sells with no product; 9000000005 is claimed by two
-//     products; the private map names 9000000003 for an unregistered product.
+//   - app 900000004 sells with no product; 900000005 is claimed by two
+//     products; the private map names 900000003 for an unregistered product.
 type fxSale struct {
 	day, appleID, parent, sku, ptype, currency string
 	units, proceeds                            float64
 }
 
 const (
-	fxApp1, fxApp2, fxIAP, fxOrphan = "9000000001", "9000000002", "9100000001", "9000000004"
+	fxApp1, fxApp2, fxIAP, fxOrphan = "900000001", "900000002", "910000001", "900000004"
 	fxSalesRun                      = "private/metrics/raw/asc-sales-backfill/2026-11-12"
 )
 
@@ -143,10 +143,10 @@ func storeFixtureHome(t *testing.T) string {
 	writeASCLedger(t, home,
 		ascLedgerSignal("sig_1", "product:example-app", fxApp1, "app_store_connect_review_count", growthDay(200), 1),
 		ascLedgerSignal("sig_2", "product:second-app", fxApp2, "app_store_connect_review_count", growthDay(200), 1),
-		ascLedgerSignal("sig_3", "product:example-app", "9000000005", "app_store_connect_review_count", growthDay(201), 1),
-		ascLedgerSignal("sig_4", "product:second-app", "9000000005", "app_store_connect_review_count", growthDay(201), 1),
+		ascLedgerSignal("sig_3", "product:example-app", "900000005", "app_store_connect_review_count", growthDay(201), 1),
+		ascLedgerSignal("sig_4", "product:second-app", "900000005", "app_store_connect_review_count", growthDay(201), 1),
 	)
-	writeHomeFile(t, home, filepath.FromSlash(StoreAppsMapRel), `{"apps":[{"asc_app_id":9000000001,"product_id":"product:example-app"},{"asc_app_id":"9000000003","product_id":"product:not-registered"}]}`)
+	writeHomeFile(t, home, filepath.FromSlash(StoreAppsMapRel), `{"apps":[{"asc_app_id":900000001,"product_id":"product:example-app"},{"asc_app_id":"900000003","product_id":"product:not-registered"}]}`)
 	sales := fxSales()
 	writeFxRawSales(t, home, sales)
 	writeASCSeries(t, home, fxSeriesFromRaw(sales)...)
@@ -324,10 +324,10 @@ func TestStoreReportsIdentity(t *testing.T) {
 	if a := link[fxOrphan]; a.Status != "no_product" || !containsString(id.AppsWithoutProduct, fxOrphan) {
 		t.Fatalf("app id with no product = %+v", a)
 	}
-	if a := link["9000000003"]; a.Status != "no_product" || !equalStrings(a.Claims, []string{"product:not-registered"}) {
+	if a := link["900000003"]; a.Status != "no_product" || !equalStrings(a.Claims, []string{"product:not-registered"}) {
 		t.Fatalf("private map entry for an unknown product = %+v", a)
 	}
-	if a := link["9000000005"]; a.Status != "conflict" || !equalStrings(a.Claims, []string{"product:example-app", "product:second-app"}) || !equalStrings(id.Conflicts, []string{"9000000005"}) {
+	if a := link["900000005"]; a.Status != "conflict" || !equalStrings(a.Claims, []string{"product:example-app", "product:second-app"}) || !equalStrings(id.Conflicts, []string{"900000005"}) {
 		t.Fatalf("conflict = %+v (conflicts %v)", a, id.Conflicts)
 	}
 	if !equalStrings(id.ProductsWithoutApp, []string{"product:waiting-app"}) {

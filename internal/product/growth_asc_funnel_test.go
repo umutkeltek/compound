@@ -61,22 +61,22 @@ func writeASCFunnelSeries(t *testing.T, home string, lines ...string) {
 // without cell state, and an app and day listed twice all stay missing.
 func TestGrowthASCFunnelOnlyObservedCellsCount(t *testing.T) {
 	home := t.TempDir()
-	legacy, _ := json.Marshal(map[string]any{"asc_app_id": "9000000001", "date": growthDay(4), "impressions": 400})
+	legacy, _ := json.Marshal(map[string]any{"asc_app_id": "900000001", "date": growthDay(4), "impressions": 400})
 	writeASCFunnelSeries(t, home,
-		ascFunnelLine("9000000001", growthDay(2), map[string]float64{"impressions": 50}, map[string]float64{"product_page_views": 7}),
-		ascFunnelLine("9000000001", growthDay(3), nil, map[string]float64{"impressions": 70}),
+		ascFunnelLine("900000001", growthDay(2), map[string]float64{"impressions": 50}, map[string]float64{"product_page_views": 7}),
+		ascFunnelLine("900000001", growthDay(3), nil, map[string]float64{"impressions": 70}),
 		string(legacy),
-		ascFunnelLine("9000000001", growthDay(5), map[string]float64{"impressions": 11}, nil),
-		ascFunnelLine("9000000001", growthDay(5), map[string]float64{"impressions": 12}, nil),
+		ascFunnelLine("900000001", growthDay(5), map[string]float64{"impressions": 11}, nil),
+		ascFunnelLine("900000001", growthDay(5), map[string]float64{"impressions": 12}, nil),
 		"not json",
-		ascFunnelLine("9000000001", growthDay(-1), map[string]float64{"impressions": 99}, nil), // after as-of
+		ascFunnelLine("900000001", growthDay(-1), map[string]float64{"impressions": 99}, nil), // after as-of
 	)
 	points, err := loadGrowthASCFunnelSeries(home)
 	if err != nil {
 		t.Fatal(err)
 	}
 	g := newGrowthGroup(0)
-	applyGrowthASCFunnel(points, map[string]map[*growthGroup]bool{"9000000001": {g: true}}, growthDay(0))
+	applyGrowthASCFunnel(points, map[string]map[*growthGroup]bool{"900000001": {g: true}}, growthDay(0))
 	impr := g.signals["app_store_connect_impressions"]
 	if len(impr) != 1 || impr[growthDay(2)].v != 50 {
 		t.Fatalf("impressions = %+v, want only the observed 50 on %s", impr, growthDay(2))
@@ -86,7 +86,7 @@ func TestGrowthASCFunnelOnlyObservedCellsCount(t *testing.T) {
 	}
 	// An app id that maps to no app, or to two, takes nothing.
 	other, second := newGrowthGroup(1), newGrowthGroup(2)
-	applyGrowthASCFunnel(points, map[string]map[*growthGroup]bool{"9000000001": {other: true, second: true}}, growthDay(0))
+	applyGrowthASCFunnel(points, map[string]map[*growthGroup]bool{"900000001": {other: true, second: true}}, growthDay(0))
 	if len(other.signals) != 0 || len(second.signals) != 0 {
 		t.Fatal("an ambiguous app id must not feed either app")
 	}
@@ -103,7 +103,7 @@ func TestGrowthASCFunnelTurnsStaleAnalyticsAreasMeasured(t *testing.T) {
 	var ledger []Signal
 	for _, metric := range []string{"app_store_connect_impressions", "app_store_connect_product_page_views", "app_store_connect_first_time_downloads"} {
 		for off := 28; off >= 25; off-- {
-			ledger = append(ledger, ascLedgerSignal("sig_"+metric+growthDay(off), "product:example-app", "9000000001", metric, growthDay(off), 1))
+			ledger = append(ledger, ascLedgerSignal("sig_"+metric+growthDay(off), "product:example-app", "900000001", metric, growthDay(off), 1))
 		}
 	}
 	writeASCLedger(t, home, ledger...)
@@ -115,12 +115,12 @@ func TestGrowthASCFunnelTurnsStaleAnalyticsAreasMeasured(t *testing.T) {
 		}
 	}
 
-	lines := []string{ascFunnelLine("9000000001", growthDay(25), map[string]float64{"impressions": 99, "product_page_views": 99, "first_time_downloads": 99}, nil)}
+	lines := []string{ascFunnelLine("900000001", growthDay(25), map[string]float64{"impressions": 99, "product_page_views": 99, "first_time_downloads": 99}, nil)}
 	for off := 10; off >= 3; off-- {
-		lines = append(lines, ascFunnelLine("9000000001", growthDay(off), map[string]float64{"impressions": 40, "product_page_views": 9, "first_time_downloads": 2}, nil))
+		lines = append(lines, ascFunnelLine("900000001", growthDay(off), map[string]float64{"impressions": 40, "product_page_views": 9, "first_time_downloads": 2}, nil))
 	}
 	// A fresher day whose downloads cell is not observed must not count.
-	lines = append(lines, ascFunnelLine("9000000001", growthDay(2), map[string]float64{"impressions": 40}, map[string]float64{"first_time_downloads": 500}))
+	lines = append(lines, ascFunnelLine("900000001", growthDay(2), map[string]float64{"impressions": 40}, map[string]float64{"first_time_downloads": 500}))
 	writeASCFunnelSeries(t, home, lines...)
 
 	after := growthApp(t, buildGrowthT(t, home, growthOpts()), "product:example-app")

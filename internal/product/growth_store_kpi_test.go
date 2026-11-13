@@ -50,10 +50,10 @@ func registerExampleApps(t *testing.T, home string, ids map[string]string, extra
 // gives "not known", never a sum of the other kinds.
 func TestGrowthUnitsCountNewDownloadsOnly(t *testing.T) {
 	home := t.TempDir()
-	registerExampleApps(t, home, map[string]string{"product:example-app": "9000000001", "product:older-app": "9000000002"})
+	registerExampleApps(t, home, map[string]string{"product:example-app": "900000001", "product:older-app": "900000002"})
 	writeASCSeries(t, home,
-		salesKindsLine("9000000001", growthDay(2), 5, 2, 40, 3, 9.5, nil),
-		ascSeriesLine("9000000002", growthDay(2), 4, 50, 47, 3), // older series row: no download kinds
+		salesKindsLine("900000001", growthDay(2), 5, 2, 40, 3, 9.5, nil),
+		ascSeriesLine("900000002", growthDay(2), 4, 50, 47, 3), // older series row: no download kinds
 	)
 	g := buildGrowthT(t, home, growthOpts())
 	app := growthApp(t, g, "product:example-app")
@@ -95,9 +95,9 @@ func TestGrowthStoreKpisEndOnNewestFinalDay(t *testing.T) {
 	home := t.TempDir()
 	var clicks []Signal
 	for off := 2; off >= 0; off-- {
-		clicks = append(clicks, ascLedgerSignal("sig_click"+growthDay(off), "product:example-app", "9000000001", "gsc_clicks", growthDay(off), 1))
+		clicks = append(clicks, ascLedgerSignal("sig_click"+growthDay(off), "product:example-app", "900000001", "gsc_clicks", growthDay(off), 1))
 	}
-	registerExampleApps(t, home, map[string]string{"product:example-app": "9000000001"}, clicks...)
+	registerExampleApps(t, home, map[string]string{"product:example-app": "900000001"}, clicks...)
 	yes, no := true, false
 	var lines []string
 	for off := 70; off >= 0; off-- {
@@ -108,7 +108,7 @@ func TestGrowthStoreKpisEndOnNewestFinalDay(t *testing.T) {
 		case off >= 60 && off <= 62:
 			v = 10
 		}
-		lines = append(lines, salesKindsLine("9000000001", growthDay(off), v, 0, 0, 0, v, final))
+		lines = append(lines, salesKindsLine("900000001", growthDay(off), v, 0, 0, 0, v, final))
 	}
 	writeASCSeries(t, home, lines...)
 
@@ -133,7 +133,7 @@ func TestGrowthStoreKpisEndOnNewestFinalDay(t *testing.T) {
 		if off >= 6 {
 			final = &yes
 		}
-		lines = append(lines, salesKindsLine("9000000001", growthDay(off), 1, 0, 0, 0, 1, final))
+		lines = append(lines, salesKindsLine("900000001", growthDay(off), 1, 0, 0, 0, 1, final))
 	}
 	writeASCSeries(t, home, lines...)
 	u = growthApp(t, buildGrowthT(t, home, growthOpts()), "product:example-app").Kpis["units"]
@@ -142,7 +142,7 @@ func TestGrowthStoreKpisEndOnNewestFinalDay(t *testing.T) {
 	}
 
 	// A no-sales day in the days index is final too, even with no series row.
-	writeASCSeries(t, home, salesKindsLine("9000000001", growthDay(6), 1, 0, 0, 0, 1, &yes))
+	writeASCSeries(t, home, salesKindsLine("900000001", growthDay(6), 1, 0, 0, 0, 1, &yes))
 	writeASCDaysIndex(t, home, `{"date":"`+growthDay(4)+`","status":"no_sales","final":true}`, `{"date":"`+growthDay(1)+`","status":"reported","final":false}`)
 	u = growthApp(t, buildGrowthT(t, home, growthOpts()), "product:example-app").Kpis["units"]
 	if u.LatestDate != growthDay(4) || *u.Value != 1 || u.DaysReported != 1 {

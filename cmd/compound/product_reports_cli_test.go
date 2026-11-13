@@ -41,12 +41,12 @@ func TestProductReportsCLIJSONAndText(t *testing.T) {
 		}
 	}
 	ref, _ := json.Marshal(product.Signal{ID: "sig_ref", ProductID: "product:example-app", MetricName: "app_store_connect_review_count", After: 1,
-		Window: "daily snapshot 2026-06-01", ObservedAt: "2026-06-01T00:00:00Z", EvidenceRefs: []string{"asc:app:9000000001"}})
+		Window: "daily snapshot 2026-06-01", ObservedAt: "2026-06-01T00:00:00Z", EvidenceRefs: []string{"asc:app:900000001"}})
 	write("ledger/product-signals.jsonl", string(ref)+"\n")
 	var series strings.Builder
 	for i := 3; i < 20; i++ {
 		day := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC).AddDate(0, 0, -i).Format("2006-01-02")
-		fmt.Fprintf(&series, `{"date":%q,"apple_identifier":"9000000001","units":3,"first_downloads":1,"updates":2,"redownloads":0,"iap_units":0,"other_units":0,"developer_proceeds_usd":0,"final":true}`+"\n", day)
+		fmt.Fprintf(&series, `{"date":%q,"apple_identifier":"900000001","units":3,"first_downloads":1,"updates":2,"redownloads":0,"iap_units":0,"other_units":0,"developer_proceeds_usd":0,"final":true}`+"\n", day)
 	}
 	write("private/metrics/raw/asc-sales-backfill/daily-app-series.jsonl", series.String())
 
@@ -72,7 +72,7 @@ func TestProductReportsCLIJSONAndText(t *testing.T) {
 		t.Fatalf("model = %+v", m)
 	}
 	text := run("--as-of", "2026-11-12", "--product", "example-app")
-	if !strings.Contains(text, "# store reports (as of 2026-11-12, 60-day window)") || !strings.Contains(text, "Example App [product:example-app] app 9000000001") || !strings.Contains(text, "raw checks not run") {
+	if !strings.Contains(text, "# store reports (as of 2026-11-12, 60-day window)") || !strings.Contains(text, "Example App [product:example-app] app 900000001") || !strings.Contains(text, "raw checks not run") {
 		t.Fatalf("text = %s", text)
 	}
 	cmd := exec.Command(binary, "product", "reports", "--nope")
