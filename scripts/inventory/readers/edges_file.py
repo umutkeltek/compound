@@ -109,6 +109,7 @@ def read_edges_file(ctx):
                            provider=str(node.get("provider") or "") or ctx.vendor)
         res["observed_at"] = observed_at
         res["_secondhand"] = True  # older evidence: a resource this run reads itself keeps its kind and label
+        res["_stands_in"] = scout_id in same_as  # and the resource it stands for keeps them too
         resources[rid] = res
     for edge in doc["edges"]:
         edge = edge if isinstance(edge, dict) else {}

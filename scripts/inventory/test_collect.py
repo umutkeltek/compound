@@ -749,6 +749,20 @@ class EdgesFileTests(unittest.TestCase):
     def test_same_input_same_bytes(self):
         self.assertEqual(same_bytes(self.observe()), same_bytes(self.observe()))
 
+    def test_a_stand_in_never_replaces_the_node_it_stands_for(self):
+        other = self.dir / "other.json"
+        other.write_text(json.dumps({"nodes": [{"id": "host:host-b", "kind": "host", "label": "host b", "provider": "lan"}],
+                                     "edges": []}))
+        graph = {"nodes": [{"id": "service:host/b", "kind": "service", "label": "b as a service", "provider": ""},
+                           {"id": "product:example_app", "kind": "product", "label": "example app", "provider": ""}],
+                 "edges": [{"from": "product:example_app", "rel": "calls", "to": "service:host/b"}]}
+        self.path.write_text(json.dumps(graph))
+        rows = [dict(self.row, same_as={"service:host/b": "host:host-b"}, report_path=None),  # listed first
+                dict(GRAPH_MAPS, id="other-graph", provider="edges_file", path=str(other))]
+        res = {r["id"]: r for r in observe(rows)["resources"]}
+        self.assertEqual((res["host:host-b"]["kind"], res["host:host-b"]["label"]), ("host", "host b"))
+        self.assertEqual(res["product:example_app"]["links"][0]["to"], "host:host-b")
+
     def test_same_as_targets_in_a_files_own_words(self):
         same_as_id = sys.modules["compound_inventory_readers.edges_file"].same_as_id
         self.assertEqual(same_as_id("container:host-a/web", "scout"), "scout:container:" + collect.short_hash("container:host-a/web"))

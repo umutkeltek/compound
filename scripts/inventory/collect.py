@@ -201,15 +201,19 @@ COUNT_WORDS = (
     ("self_link", "{n} links to their own resource dropped"),
 )
 SOURCE_DETAIL_MAX = 300
-TIER_OBSERVED, TIER_SECONDHAND, TIER_DECLARED = 0, 1, 2
+TIER_OBSERVED, TIER_SECONDHAND, TIER_STANDS_IN, TIER_DECLARED = 0, 1, 2, 3
 
 
 def tier(res):
-    """What this run read itself first, then older evidence a file carries (`_secondhand`), then
-    what a person declared (`_declared`): the first resource with an id is the base the others
-    merge into, so a live reading keeps its kind, label, source and facts."""
+    """What this run read itself first, then older evidence a file carries (`_secondhand`), then a
+    file's stand-in for another source's resource (`_stands_in`, from `same_as`), then what a
+    person declared (`_declared`): the first resource with an id is the base the others merge
+    into, so a live reading keeps its kind, label, source and facts, and a stand-in never
+    replaces the resource it stands for."""
     if res.get("_declared"):
         return TIER_DECLARED
+    if res.get("_stands_in"):
+        return TIER_STANDS_IN
     return TIER_SECONDHAND if res.get("_secondhand") else TIER_OBSERVED
 
 
