@@ -250,7 +250,7 @@ const STAGE_COPY: Record<string, { label: string; tooltip: string; empty: string
   signal: {
     label: "Signal",
     tooltip: "Where new information enters — connected sources and their freshness.",
-    empty: "No sources wired yet.",
+    empty: "No sources connected yet.",
   },
   propose: {
     label: "Suggest",
@@ -264,12 +264,12 @@ const STAGE_COPY: Record<string, { label: string; tooltip: string; empty: string
   },
   claim: {
     label: "Start",
-    tooltip: "An executor starts under a lease, so two agents never collide.",
-    empty: "Nothing waiting for an executor.",
+    tooltip: "An agent picks the work up and holds it, so two agents never work on the same thing.",
+    empty: "Nothing waiting for an agent.",
   },
   execute: {
     label: "Run",
-    tooltip: "Rented executors do the work inside policy. Every mutation needs a PolicyDecision.",
+    tooltip: "Agents do the work inside the rules. Every change needs a recorded permission.",
     empty: "Nothing running right now.",
   },
   receipt: {
@@ -280,7 +280,7 @@ const STAGE_COPY: Record<string, { label: string; tooltip: string; empty: string
   learn: {
     label: "Learn",
     tooltip: "The write-back: outcomes become memory, rules, and skill-fitness that change the next run.",
-    empty: "No recent write-backs. audit_only counts for nothing.",
+    empty: "Nothing learned from recent work yet.",
   },
 };
 
@@ -367,11 +367,15 @@ export function buildPipeline(
 export function buildBoard(open: Json[], recent: Json[]): BoardColumnModel[] {
   const byStates = (states: string[]) => open.filter((w) => states.includes(str(w.state)));
   const columns: { key: string; label: string; description: string; tone: StateTone; states: string[]; empty: string }[] = [
-    { key: "inbox", label: "Suggested", description: "Proposed work waiting to be admitted.", tone: "draft", states: ["proposed", "admitted"], empty: "Nothing suggested." },
-    { key: "ready", label: "Ready", description: "Waiting for an executor to start.", tone: "queued", states: ["ready"], empty: "Nothing ready to start." },
-    { key: "running", label: "In progress", description: "Claimed or running.", tone: "live", states: ["claimed", "in_progress", "running"], empty: "Nothing running." },
-    { key: "needs-me", label: "Needs you", description: "Blocked or held on your decision.", tone: "seam", states: ["blocked", "held"], empty: "Clean seam. Nothing waits on you." },
-    { key: "review", label: "In review", description: "Finished running; proof is being checked.", tone: "live", states: ["verifying"], empty: "Nothing being verified." },
+    // Column names follow lib/plain-words.ts. "In progress" (lib/counts.ts) is
+    // the two middle columns together: running or picked up, plus waiting for
+    // a proof check. "On hold" is held or blocked work; "waiting for your
+    // decision" is a different, larger set (it also holds suggested work).
+    { key: "inbox", label: "Suggested", description: "Proposed work waiting to be accepted.", tone: "draft", states: ["proposed", "admitted"], empty: "Nothing suggested." },
+    { key: "ready", label: "Ready to start", description: "Waiting for an agent to pick it up.", tone: "queued", states: ["ready"], empty: "Nothing ready to start." },
+    { key: "running", label: "Running or picked up", description: "In progress: an agent picked it up; it may not have started.", tone: "live", states: ["claimed", "in_progress", "running"], empty: "Nothing running." },
+    { key: "needs-me", label: "On hold", description: "Stopped until you decide what happens next.", tone: "seam", states: ["blocked", "held"], empty: "Nothing is on hold." },
+    { key: "review", label: "Waiting for a proof check", description: "In progress: the agent says it is done; the proof is not accepted yet.", tone: "live", states: ["verifying"], empty: "Nothing waits for a proof check." },
   ];
   const board: BoardColumnModel[] = columns.map((col) => ({
     key: col.key,

@@ -7,6 +7,7 @@ import { hashToneFor, TONE_FILL } from "@/components/kit/tone";
 import type { StateTone } from "@/components/kit/StateBadge";
 import type { BoardCard } from "@/lib/work-pipeline";
 import { appHue, humanizeProductId } from "@/lib/app-identity";
+import { plainState } from "@/lib/plain-words";
 
 /**
  * One work card (DESIGN.md §3 work-card, restyled to the operator's board
@@ -63,11 +64,18 @@ export function WorkBoardCard({
   compact?: boolean;
 }) {
   const interactive = card.traceable;
-  const chip = card.state === "verifying"
-    ? { label: "In review", cls: "border-route-line bg-route-soft text-route" }
-    : STATE_CHIP[card.tone] ?? STATE_CHIP.queued;
+  // The chip names the card's real state in plain words (lib/plain-words.ts):
+  // a claimed card says "Picked up, not started", never "Running".
+  const toneChip = card.state === "verifying"
+    ? { label: "", cls: "border-route-line bg-route-soft text-route" }
+    : card.state === "claimed"
+      ? { label: "", cls: "border-hair bg-soft text-muted" }
+      : STATE_CHIP[card.tone] ?? STATE_CHIP.queued;
+  const chip = { cls: toneChip.cls, label: card.state ? plainState(card.state) : toneChip.label };
   const app = card.surface.startsWith("product:") ? card.surface : "";
-  const stateWord = STATE_WORD[card.state];
+  // The chip already carries the exact state; the old second state tag
+  // (STATE_WORD) only repeated it in system words.
+  const stateWord = card.state ? "" : STATE_WORD[card.state] ?? "";
   const owner = card.subtitle;
   const overdue = card.tone === "seam" && /(\d+)\s*d/.test(card.ageLabel) && Number(card.ageLabel.match(/(\d+)\s*d/)?.[1]) >= 7;
 

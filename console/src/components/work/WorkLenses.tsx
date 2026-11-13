@@ -38,6 +38,11 @@ const TAB_CLASS =
   "inline-flex shrink-0 items-center gap-1.5 rounded-md border border-transparent px-3 py-1.5 text-sm font-medium text-muted transition-colors hover:text-ink " +
   "data-[state=active]:border-hair data-[state=active]:bg-panel data-[state=active]:text-ink data-[state=active]:shadow-sm";
 
+/** The other views: quieter text tabs after the one default view. */
+const ALT_TAB_CLASS =
+  "inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-faint transition-colors hover:text-ink " +
+  "data-[state=active]:bg-soft data-[state=active]:text-ink";
+
 export function WorkLenses({
   stages,
   columns,
@@ -107,33 +112,41 @@ export function WorkLenses({
         setLens(next);
         replaceParams({ lens: next });
       }} className="flex min-w-0 flex-col gap-4">
-        <Tabs.List className="inline-flex w-full max-w-full items-center gap-0.5 overflow-x-auto rounded-lg border border-hair bg-soft p-0.5 sm:w-fit">
-          <Tabs.Trigger value="board" className={TAB_CLASS}>
-            <BoardIcon size={14} />
-            Board
-            <span className="tabular-nums text-faint">{openCount}</span>
-          </Tabs.Trigger>
-          <Tabs.Trigger value="table" className={TAB_CLASS}>
-            <ListIcon size={14} />
+        {/* One default view (the board by state) and quieter alternates over
+         * the same work items. Every view stays one click away. */}
+        <Tabs.List
+          aria-label="Ways to view the work"
+          className="flex w-full max-w-full flex-wrap items-center gap-x-1 gap-y-2 overflow-x-auto"
+        >
+          <span className="inline-flex rounded-lg border border-hair bg-soft p-0.5">
+            <Tabs.Trigger value="board" className={TAB_CLASS}>
+              <BoardIcon size={14} />
+              By state
+              <span className="tabular-nums text-faint">{openCount}</span>
+            </Tabs.Trigger>
+          </span>
+          <span className="ml-2 text-2xs font-semibold uppercase tracking-wide text-faint">Other views</span>
+          <Tabs.Trigger value="table" className={ALT_TAB_CLASS}>
+            <ListIcon size={12} />
             List
-            <span className="tabular-nums text-faint">{items.length}</span>
+            <span className="tabular-nums">{items.length}</span>
           </Tabs.Trigger>
-          <Tabs.Trigger value="pipeline" className={TAB_CLASS}>
-            <TimelineIcon size={14} />
-            Pipeline
+          <Tabs.Trigger value="pipeline" className={ALT_TAB_CLASS}>
+            <TimelineIcon size={12} />
+            Stages
           </Tabs.Trigger>
-          <Tabs.Trigger value="flow" className={TAB_CLASS}>
-            <RouteIcon size={14} />
+          <Tabs.Trigger value="flow" className={ALT_TAB_CLASS}>
+            <RouteIcon size={12} />
             Flow
           </Tabs.Trigger>
-          <Tabs.Trigger value="space" className={TAB_CLASS}>
-            <LayersIcon size={14} />
-            Space
+          <Tabs.Trigger value="space" className={ALT_TAB_CLASS}>
+            <LayersIcon size={12} />
+            By agent
           </Tabs.Trigger>
-          <Tabs.Trigger value="offered" className={TAB_CLASS}>
-            <InboxIcon size={14} />
-            Packets
-            <span className="tabular-nums text-faint">{offered.length}</span>
+          <Tabs.Trigger value="offered" className={ALT_TAB_CLASS}>
+            <InboxIcon size={12} />
+            Work packets
+            <span className="tabular-nums">{offered.length}</span>
           </Tabs.Trigger>
         </Tabs.List>
 
@@ -159,8 +172,8 @@ export function WorkLenses({
 
       <section data-depth-min="investigate" className="mt-2 flex min-w-0 flex-col gap-3">
         <div>
-          <div className="section-label">Activity context</div>
-          <p className="mt-1 text-xs text-muted">Recent transitions and route traffic stay available as supporting evidence, below the selected work lens.</p>
+          <div className="section-label">Recent activity</div>
+          <p className="mt-1 text-xs text-muted">The latest recorded changes and which model lanes carried the work, for context.</p>
         </div>
         <div className="grid min-w-0 gap-4 lg:grid-cols-[3fr_2fr]">
           <TransitionsTicker onOpenTrace={openTrace} />

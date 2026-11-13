@@ -1,10 +1,13 @@
-import { HeaderStat, hasCopy, PageHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending, aboutDuration } from "@/components/kit";
+import Link from "next/link";
+
+import { hasCopy, QuestionHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending, aboutDuration } from "@/components/kit";
 import { CopyActionButton } from "@/components/CopyCmd";
 import { PendingRefresh } from "@/components/PendingRefresh";
 import { WorkLenses } from "@/components/work/WorkLenses";
-import { readAttention, waitingOnYou } from "@/lib/attention";
+import { readAttention } from "@/lib/attention";
 import { arr, DIRECTOR_PROPOSE_ARGS, HEAVY_PROJECTION_TIMEOUT_MS, readProjection, str } from "@/lib/compound";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
+import { countInProgress, countOnHold, countOpenWork, describeInProgress, STALE_AFTER_DAYS, unit, waitingOnYou } from "@/lib/counts";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { buildLaneTraffic } from "@/lib/lane-traffic";
 import { getTraffic } from "@/lib/traffic";
@@ -15,9 +18,15 @@ import type { WorkLensKey } from "@/components/work/WorkLenses";
 
 export const dynamic = "force-dynamic";
 
+/** What "New work" copies: the command that creates a work item. */
+const NEW_WORK_COMMAND = 'compound work create --owner <owner> --predicate "<what done looks like>"';
+
 /**
- * Work — "Where is every unit of work in its lifecycle, and what can I move?"
- * The default Board lens answers who owns each active item and what moves next.
+ * Work answers one question first: "What is being worked on, and what is
+ * stuck?" The answer counts with the shared definitions (lib/counts.ts): open
+ * work items, how many are marked in progress and how that splits, and what
+ * is stuck (picked up more than a week ago and still open, or on hold). The
+ * board by state is the default view; the other views sit beside it, quieter.
  * Every read is non-blocking (`readProjection`): the page renders at once from
  * cached copies, or says what is still being read; it never waits for compound.
  */
@@ -27,7 +36,6 @@ export default async function WorkPage({
   searchParams: Promise<{ trace?: string; lens?: string }>;
 }) {
   const { trace, lens } = await searchParams;
-
   const [workbenchRead, sourcesRead, suggestionsRead, packetsRead, laneTraffic, traffic, attentionLive] = await Promise.all([
     readProjection(["workbench", "--json"], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }),
     readProjection(["source", "connections", "--json"]),
@@ -67,36 +75,56 @@ export default async function WorkPage({
   const groups = groupWorkLensItems(items, traffic);
   const allowedLenses = new Set<WorkLensKey>(["pipeline", "table", "flow", "space", "board", "offered"]);
   const defaultLens = allowedLenses.has(lens as WorkLensKey) ? lens as WorkLensKey : "board";
-  const count = (key: string) => columns.find((column) => column.key === key)?.cards.length ?? 0;
   const workbenchKnown = hasCopy(workbenchRead);
-  // "Waiting on you" has ONE definition (lib/attention.ts waitingOnYou), shared
-  // with the sidebar badge and Today. Work shows its work-item count.
+  // One definition per number (lib/counts.ts), shared with Today, Live and the sidebar.
   const waiting = waitingOnYou(attentionLive.report);
+  const inProgress = workbenchKnown ? countInProgress(open, Date.now()) : null;
+  const progress = inProgress ? describeInProgress(inProgress) : null;
+  const onHold = workbenchKnown ? countOnHold(open) : null;
   const pending = readsPending(workbenchRead, sourcesRead, suggestionsRead, packetsRead, traffic.read, attentionLive.read);
+
+  const stuck = [
+    inProgress?.pickedUpOver7Days
+      ? `${inProgress.pickedUpOver7Days.toLocaleString("en-US")} of them were picked up more than ${STALE_AFTER_DAYS} days ago and are still not finished`
+      : "",
+    onHold ? `${unit(onHold, "work item")} ${onHold === 1 ? "is" : "are"} on hold` : "",
+  ].filter(Boolean);
+
+  const answer = !workbenchKnown || !inProgress || !progress ? (
+    <ReadNotice read={workbenchRead} label="work" />
+  ) : (
+    <div className="flex flex-col gap-1.5">
+      <p>
+        <strong className="font-semibold">{progress.headline}</strong>, out of {unit(countOpenWork(open), "open work item")}.
+      </p>
+      {progress.detail ? <p className="text-sm text-muted">{progress.detail}</p> : null}
+      {stuck.length ? (
+        <p className="text-base text-seam">Stuck: {stuck.join("; ")}.</p>
+      ) : inProgress.total > 0 && inProgress.pickedUpOver7Days === null ? (
+        <p className="text-sm text-muted">{progress.age}</p>
+      ) : (
+        <p className="text-base text-good">Nothing looks stuck.</p>
+      )}
+      {waiting && waiting.workItems > 0 ? (
+        <p className="text-sm text-muted">
+          {unit(waiting.workItems, "work item")} {waiting.workItems === 1 ? "waits" : "wait"} for your decision.{" "}
+          <Link href="/reviews" className="font-semibold text-work hover:underline">Open Decide →</Link>
+        </p>
+      ) : null}
+    </div>
+  );
 
   return (
     <div className="console-stage flex flex-col gap-6">
       <PendingRefresh pending={pending} stamp={Date.now()} />
-      <PageHeader
-        breadcrumb="operate / work"
-        title="Work"
-        stats={
-          workbenchKnown ? (
-            <>
-              <HeaderStat value={open.length} label="open" />
-              {waiting ? (
-                <HeaderStat value={waiting.workItems} label={waiting.workItems === 1 ? "work item waits on you" : "work items wait on you"} tone={waiting.workItems ? "seam" : undefined} />
-              ) : null}
-              <HeaderStat value={count("running")} label="in progress" />
-              <HeaderStat value={count("review")} label="in review" />
-              <HeaderStat value={count("ready")} label="ready" />
-            </>
-          ) : null
-        }
+      <QuestionHeader
+        name="Work"
+        question="What is being worked on, and what is stuck?"
+        answer={answer}
         right={
           <>
             <ReadChip read={workbenchRead} />
-            <CopyActionButton cmd={'compound work create --owner <owner> --predicate "<what done looks like>"'} label="New work" />
+            <CopyActionButton cmd={NEW_WORK_COMMAND} label="Copy the command to create work" copiedLabel="Command copied: paste it in a terminal" />
           </>
         }
       />
@@ -117,9 +145,7 @@ export default async function WorkPage({
             mutationsReady={mutationsReady}
           />
         </>
-      ) : (
-        <ReadNotice read={workbenchRead} label="work" />
-      )}
+      ) : null}
     </div>
   );
 }
