@@ -85,8 +85,11 @@ door above. Unmapped apps are reported, never dropped silently.
 bun tools/apple_ads_daily.ts \
   --config "${COMPOUND_HOME:-$HOME/.compound}/private/asc-products.json" \
   --org <org-id> --days 14 --account <ad-account-id> --apply --json
-# or hand it a report you already produced / a custom asc command:
-#   --report-json report.json      |   --asc-command 'asc ads v5 reports campaigns --file payload.json --org <org> --output json'
+# or hand it a report you already produced / a custom asc command. A v1 report has no
+# campaign names or app ids, so pass the campaign list (`asc ads campaigns find`) with it:
+#   --report-json report.json --campaigns-json campaigns.json
+#   --asc-command 'asc ads reports apps campaigns --file report.json --ad-account <ad-account-id> --output json' --campaigns-json campaigns.json
+# (`asc ads v5` was removed in asc 6.0.0; Apple turns off the v5 API on 2027-01-26.)
 ```
 
 With `--org --days` the tool builds the report request itself (`DAILY`, UTC,
