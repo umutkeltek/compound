@@ -753,6 +753,82 @@ class EdgesFileTests(unittest.TestCase):
         self.assertEqual(source(obs, "graph-example")["detail"], "The nodes-and-links file does not exist.")
 
 
+SSH_ID = "ssh:host:" + collect.short_hash("vps.example")
+DECLARED = {
+    "schema_version": "compound.system_inventory_declared.v0.1",
+    "nodes": [
+        {"id": SSH_ID, "kind": "host", "label": "a person's name for the server", "by": "operator", "on": "2031-03-02",
+         "evidence": "hosting invoice"},
+        {"id": "example:identity:deploy-key", "kind": "identity", "label": "deploy key (name only)", "by": "agent",
+         "on": "2031-03-02", "evidence": "ssh config IdentityFile line"},
+        {"id": "hostname:WWW.Beta.Example", "kind": "hostname", "label": "www.beta.example", "by": "operator",
+         "on": "2031-03-02", "evidence": "registrar page"},
+        {"id": "example:identity:no-evidence", "kind": "identity", "label": "unsupported", "by": "agent", "on": "2031-03-02"},
+    ],
+    "links": [
+        {"from": SSH_ID, "rel": "reached_through", "to": "example:identity:deploy-key", "by": "agent", "on": "2031-03-02",
+         "evidence": "ssh config Host block"},
+        {"from": "hostname:WWW.Beta.Example", "rel": "points_to", "to": SSH_ID, "by": "operator", "on": "2031-03-02",
+         "evidence": "dns record list"},
+        {"from": "example:nobody", "rel": "uses", "to": SSH_ID, "by": "agent", "on": "2031-03-02", "evidence": "x"},
+    ],
+    "facts": [
+        {"resource": SSH_ID, "name": "status", "value": "down", "by": "operator", "on": "2031-03-02", "evidence": "a note"},
+        {"resource": SSH_ID, "name": "uptime_days", "value": 46, "unit": "days", "by": "operator", "on": "2031-03-02",
+         "evidence": "a note"},
+        {"resource": SSH_ID, "name": "off_host_backup", "value": True, "unit": "bool", "by": "operator",
+         "on": "2031-03-02", "evidence": "backup provider page"},
+        {"resource": "example:identity:deploy-key", "name": "second_factor_on_file", "value": False, "unit": "bool",
+         "by": "agent", "on": "2031-03-02"},
+    ],
+}
+
+
+class DeclaredTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="inventory-declared-test-")
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "declared.json"
+        self.path.write_text(json.dumps(DECLARED))
+        self.row = {"id": "declared-example", "provider": "declared", "path": str(self.path)}
+
+    def observe(self):
+        # the declared row comes FIRST: what this run observed still wins
+        return observe([self.row, SSH_ROW], FakeRunner([(["vps.example"], R(0, LINUX_STATUS, ""))]))
+
+    def test_declared_never_overwrites_observed_and_says_where_they_disagree(self):
+        obs = self.observe()
+        host = next(r for r in obs["resources"] if r["id"] == SSH_ID)
+        self.assertEqual((host["label"], host["source"]), ("Example server", "vps-example"))
+        self.assertEqual(host["facts"]["status"]["value"], "up")
+        self.assertEqual(host["facts"]["uptime_days"]["value"], 46)  # agrees: kept as observed
+        filled = host["facts"]["off_host_backup"]
+        self.assertEqual((filled["value"], filled["observed_at"]), (True, "2031-03-02T00:00:00Z"))
+        self.assertIn("declared by operator on 2031-03-02: backup provider page", filled["detail"])
+        detail = source(obs, "declared-example")["detail"]
+        self.assertIn("1 declared facts disagree with what was observed, observed kept "
+                      "(first: status of Example server)", detail)
+
+    def test_declared_links_and_nodes_carry_confidence_declared(self):
+        obs = self.observe()
+        res = {r["id"]: r for r in obs["resources"]}
+        link = res[SSH_ID]["links"][0]
+        self.assertEqual((link["rel"], link["to"], link["confidence"], link["evidence"]),
+                         ("reached_through", "example:identity:deploy-key", "declared", "ssh config Host block"))
+        self.assertEqual(res["hostname:www.beta.example"]["links"][0]["to"], SSH_ID)  # canonical id
+        self.assertEqual(res["example:identity:deploy-key"]["observed_at"], "2031-03-02T00:00:00Z")
+
+    def test_an_entry_without_who_when_or_evidence_is_left_out_and_counted(self):
+        obs = self.observe()
+        ids = {r["id"] for r in obs["resources"]}
+        self.assertNotIn("example:identity:no-evidence", ids)
+        facts = next(r for r in obs["resources"] if r["id"] == "example:identity:deploy-key")["facts"]
+        self.assertNotIn("second_factor_on_file", facts)
+        detail = source(obs, "declared-example")["detail"]
+        self.assertTrue(detail.startswith("Declared 3 nodes, 2 links and 3 facts; left out: "
+                                          "2 without by, on or evidence, 1 links from an id that is not a node of the file"), detail)
+
+
 class MergeTests(unittest.TestCase):
     def run_reader(self, fn, rows=None):
         collect.READERS["merge_example"] = fn

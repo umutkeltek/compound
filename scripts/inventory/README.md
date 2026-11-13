@@ -95,6 +95,7 @@ person's own name for the source) and a `provider` (the reader to use). Common o
 | `balance_http` | one free HTTPS GET; the token comes from `token_env` (an environment variable name) or `token_command` (a command that prints it); the balance is read at `balance_path`, the unit from `unit` or `unit_path`, an end date from `ends_on_path` | one `plan` |
 | `json_file` | numbers another tool already publishes in a local `.json` or `.jsonl` file, by JSON path | one `plan` per `plans[]` entry (or per group) |
 | `edges_file` | a nodes-and-links JSON file another tool or a one-off scout wrote, read through `kind_map`, `relation_map` and `same_as` in the row | one resource per kept node, with its links |
+| `declared` | a private file of nodes, links and facts a person or an agent states, each with `by`, `on` and `evidence` | its nodes, with links and facts of confidence `declared` |
 
 Paths such as `balance_infos[0].total_balance` or `providers.example.used` step into objects
 by name and into lists by index (`[-1]` is the last item).
@@ -138,6 +139,15 @@ Notes on what each reader cannot see:
   relation the maps do not cover, a link whose end was not kept, and a link to itself are counted
   in the source detail, never dropped silently; with `report_path` a private report (mode 0600)
   names them, with resources that share kind and label under another id (likely duplicates).
+- `declared`: the file (row `path`; keep it mode 0600 under `COMPOUND_HOME`, never in a
+  repository) is `{"schema_version": "compound.system_inventory_declared.v0.1", "nodes": [{id,
+  kind, label, by, on, evidence}], "links": [{from, rel, to, by, on, evidence}], "facts":
+  [{resource, name, value, unit, by, on, evidence}]}`. An entry without who (`by`), when (`on`)
+  and from what (`evidence`, a pointer, never a value) is left out and counted; so is a link or
+  fact on an id that is not a node of the file. A declared fact never overwrites one observed in
+  the same run: when they disagree, the detail names the fact and the resource, and the observed
+  value is kept; a declared fact fills one nobody observed, with who, when and evidence in its
+  detail. Write only what a person or a written record actually says; never a guess.
 
 Fact names must be lowercase letters, digits and `_`; the collector drops any other name and
 says so in the source detail, so one bad row cannot make Compound refuse the whole file.

@@ -178,8 +178,8 @@ def collect(doc, runner=run, http=http_get, now=utc_now, only=None, timeout_s=20
         parts = [entry["detail"].rstrip(". ")] if entry["detail"] else []
         parts += [words.format(n=count[key]) for key, words in COUNT_WORDS if count[key]]
         if disagreements[sid]:
-            parts.append(f"{len(disagreements[sid])} declared facts disagree with what was observed and the "
-                         f"observed values are kept (first: {disagreements[sid][0]})")
+            parts.append(f"{len(disagreements[sid])} declared facts disagree with what was observed, "
+                         f"observed kept (first: {disagreements[sid][0]})")
         sources.append({"id": sid, "provider": entry["row"]["provider"], "state": entry["state"],
                         "detail": sentence("; ".join(parts), SOURCE_DETAIL_MAX), "observed_at": entry["observed_at"],
                         "duration_ms": entry["duration_ms"]})
