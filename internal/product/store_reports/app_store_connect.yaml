@@ -1,0 +1,411 @@
+# Store report catalog: App Store Connect.
+#
+# One row per report a store publishes. Each row says what the report
+# answers, when the store publishes it, how exact its numbers are, where its
+# capture lands under the Compound home, and which growth KPIs and areas it
+# can feed. Collectors outside Compound write the captures; Compound only
+# reads, checks and shows them. A report nobody captures stays in the list
+# with `capture: none`, so "not captured" is visible instead of silent.
+#
+# A second store is a new provider value and new rows, not new code.
+# Paths are relative to the Compound home. An operator overlay at
+# config/store-reports.yaml merges by id.
+schema_version: compound.store_report_catalog.v0.1
+reports:
+  # ---------------------------------------------------------------- sales
+  - id: asc_sales_summary_daily
+    provider: app_store_connect
+    family: sales
+    title: Sales Summary (daily)
+    question: How many new downloads, redownloads, updates and in-app purchases did each app have each day, and what did they earn?
+    grain: day
+    published_after:
+      text: The next day by about 8am Pacific; Apple can still correct a day for two more days.
+      lag_days: 2
+    kept_for: 1 year (daily files)
+    exactness: exact
+    exactness_note: Every sale and download row as Apple counts it; proceeds are in each sale's own currency.
+    capture:
+      series:
+        path: private/metrics/raw/asc-sales-backfill/daily-app-series.jsonl
+        app_field: apple_identifier
+        day_field: date
+        day_scope: account
+        days_index: private/metrics/raw/asc-sales-backfill/daily-days-index.jsonl
+      files:
+        globs:
+          - private/metrics/raw/asc-sales-backfill/*/sales-*.tsv
+          - private/metrics/raw/asc-sales-backfill/*/sales-*.no-sales.json
+        period_pattern: 'sales-(\d{4}-\d{2}-\d{2})\.(?:tsv|no-sales\.json)$'
+    feeds:
+      kpis: [proceeds_usd, units]
+      areas: [monetization_pricing, monetization_free_tier, operations_unit_economics]
+  - id: asc_sales_summary_monthly
+    provider: app_store_connect
+    family: sales
+    title: Sales Summary (monthly)
+    question: The same counts as the daily summary, rolled up per calendar month.
+    grain: month
+    published_after:
+      text: About five days after the month ends.
+      lag_days: 5
+    kept_for: 1 year
+    exactness: exact
+    exactness_note: Same rows as the daily files, summed by Apple per month.
+    capture: none
+    feeds:
+      kpis: []
+      areas: []
+  - id: asc_subscription_daily
+    provider: app_store_connect
+    family: sales
+    title: Subscription report
+    question: How many active subscriptions, trials and offers does each subscription have each day?
+    grain: day
+    published_after:
+      text: The next day.
+      lag_days: 1
+    kept_for: 1 year
+    exactness: exact
+    exactness_note: Apple's own daily state of every subscription.
+    capture: none
+    feeds:
+      kpis: []
+      areas: [monetization_offers, retention_churn]
+  - id: asc_subscription_event_daily
+    provider: app_store_connect
+    family: sales
+    title: Subscription event report
+    question: Which subscription events happened each day (starts, renewals, cancellations, upgrades)?
+    grain: day
+    published_after:
+      text: The next day.
+      lag_days: 1
+    kept_for: 1 year
+    exactness: exact
+    exactness_note: Apple's own event counts per subscription and day.
+    capture: none
+    feeds:
+      kpis: []
+      areas: [retention_churn, monetization_billing_recovery]
+  - id: asc_subscriber_daily
+    provider: app_store_connect
+    family: sales
+    title: Subscriber report
+    question: Which subscriber made each subscription sale or refund, by an anonymous subscriber id?
+    grain: day
+    published_after:
+      text: The next day.
+      lag_days: 1
+    kept_for: 1 year
+    exactness: exact
+    exactness_note: One row per subscription transaction, with an anonymous subscriber id.
+    capture: none
+    feeds:
+      kpis: []
+      areas: [retention_churn]
+  - id: asc_pre_order_daily
+    provider: app_store_connect
+    family: sales
+    title: Pre-order report
+    question: How many pre-orders did each app have each day, and how many were cancelled?
+    grain: day
+    published_after:
+      text: The next day.
+      lag_days: 1
+    kept_for: 1 year
+    exactness: exact
+    exactness_note: Apple's own pre-order counts.
+    capture: none
+    feeds:
+      kpis: []
+      areas: []
+  - id: asc_offer_code_redemption_daily
+    provider: app_store_connect
+    family: sales
+    title: Subscription offer code redemption report
+    question: How many offer codes were redeemed each day, per offer?
+    grain: day
+    published_after:
+      text: The next day.
+      lag_days: 1
+    kept_for: 1 year
+    exactness: exact
+    exactness_note: Apple's own redemption counts per offer.
+    capture: none
+    feeds:
+      kpis: []
+      areas: [monetization_offers]
+  - id: asc_win_back_eligibility_daily
+    provider: app_store_connect
+    family: sales
+    title: Win-back offer eligibility report
+    question: How many lapsed subscribers could get each win-back offer each day?
+    grain: day
+    published_after:
+      text: The next day.
+      lag_days: 1
+    kept_for: 1 year
+    exactness: exact
+    exactness_note: Apple's own eligibility counts per offer.
+    capture: none
+    feeds:
+      kpis: []
+      areas: [retention_winback]
+  # -------------------------------------------------------------- finance
+  - id: asc_finance_financial_monthly
+    provider: app_store_connect
+    family: finance
+    title: Financial report
+    question: What did Apple settle for each app and currency in each Apple fiscal month?
+    grain: fiscal_month
+    published_after:
+      text: About a week after the Apple fiscal month ends.
+      lag_days: 7
+    kept_for: Several years
+    exactness: exact
+    exactness_note: The money Apple pays out, per currency; a sale in a month's last days can land in the next month's report.
+    capture:
+      files:
+        globs:
+          - private/metrics/raw/asc-finance/*/financial-*.txt.gz
+        period_pattern: 'financial-(\d{4}-\d{2})\.txt\.gz$'
+    feeds:
+      kpis: []
+      areas: [operations_unit_economics]
+  - id: asc_finance_detail_monthly
+    provider: app_store_connect
+    family: finance
+    title: Finance detail report
+    question: Which sales did each payment include, with the settlement date of each?
+    grain: fiscal_month
+    published_after:
+      text: About a week after the Apple fiscal month ends.
+      lag_days: 7
+    kept_for: Several years
+    exactness: exact
+    exactness_note: One row per settled sale, so the lag between a sale and its payment is visible.
+    capture: none
+    feeds:
+      kpis: []
+      areas: []
+  # ------------------------------------------------------------ analytics
+  - id: asc_analytics_discovery_engagement
+    provider: app_store_connect
+    family: analytics
+    title: App Store Discovery and Engagement
+    question: How many people saw each app in the store and opened its product page?
+    grain: day
+    published_after:
+      text: Usually two to three days later, once Apple has processed the day.
+      lag_days: 3
+    kept_for: 35 days per report instance at Apple
+    exactness: noised
+    exactness_note: Apple adds small random noise and leaves out values under 5 users or devices; close, not exact.
+    capture:
+      series:
+        path: private/metrics/raw/asc-funnel/daily-app-series.jsonl
+        app_field: asc_app_id
+        day_field: date
+        day_scope: app
+        cells: [impressions, product_page_views]
+    feeds:
+      kpis: []
+      areas: [acquisition_search, acquisition_listing]
+  - id: asc_analytics_downloads
+    provider: app_store_connect
+    family: analytics
+    title: App Downloads
+    question: How many first-time downloads, redownloads and updates did each app have, by source?
+    grain: day
+    published_after:
+      text: Usually two to three days later, once Apple has processed the day.
+      lag_days: 3
+    kept_for: 35 days per report instance at Apple
+    exactness: noised
+    exactness_note: Apple adds small random noise and leaves out values under 5 users or devices; the Sales report has the exact count.
+    capture:
+      series:
+        path: private/metrics/raw/asc-funnel/daily-app-series.jsonl
+        app_field: asc_app_id
+        day_field: date
+        day_scope: app
+        cells: [first_time_downloads]
+    feeds:
+      kpis: [first_time_downloads]
+      areas: [acquisition_listing]
+  - id: asc_analytics_purchases
+    provider: app_store_connect
+    family: analytics
+    title: App Store Purchases
+    question: How many people paid, and for what, by source and territory?
+    grain: day
+    published_after:
+      text: Usually two to three days later, once Apple has processed the day.
+      lag_days: 3
+    kept_for: 35 days per report instance at Apple
+    exactness: noised
+    exactness_note: Apple adds noise to paying users and purchases and computes sales and proceeds from the noised counts.
+    capture:
+      series:
+        path: private/metrics/raw/asc-funnel/daily-app-series.jsonl
+        app_field: asc_app_id
+        day_field: date
+        day_scope: app
+        cells: [proceeds_usd]
+    feeds:
+      kpis: []
+      areas: []
+  - id: asc_analytics_web_preview
+    provider: app_store_connect
+    family: analytics
+    title: App Store Web Preview Engagement
+    question: How many people saw each app's product page on the web?
+    grain: day
+    published_after:
+      text: Usually two to three days later, once Apple has processed the day.
+      lag_days: 3
+    kept_for: 35 days per report instance at Apple
+    exactness: noised
+    exactness_note: Apple adds small random noise and leaves out values under 5 users or devices.
+    capture:
+      series:
+        path: private/metrics/raw/asc-funnel/daily-app-series.jsonl
+        app_field: asc_app_id
+        day_field: date
+        day_scope: app
+        cells: [web_preview_page_views]
+    feeds:
+      kpis: []
+      areas: []
+  - id: asc_analytics_sessions
+    provider: app_store_connect
+    family: analytics
+    title: App Sessions
+    question: How often do people open each app, and for how long?
+    grain: day
+    published_after:
+      text: Usually two to three days later, once Apple has processed the day.
+      lag_days: 3
+    kept_for: 35 days per report instance at Apple
+    exactness: opt_in_sample
+    exactness_note: Only from people who agreed to share data with developers; not made under 5 users.
+    capture: none
+    feeds:
+      kpis: []
+      areas: [retention_repeat_use]
+  - id: asc_analytics_installs_deletions
+    provider: app_store_connect
+    family: analytics
+    title: App Store Installation and Deletion
+    question: How many installs and deletions did each app have?
+    grain: day
+    published_after:
+      text: Usually two to three days later, once Apple has processed the day.
+      lag_days: 3
+    kept_for: 35 days per report instance at Apple
+    exactness: opt_in_sample
+    exactness_note: Only from people who agreed to share data with developers; noised.
+    capture: none
+    feeds:
+      kpis: []
+      areas: [retention_churn]
+  - id: asc_analytics_subscription_state
+    provider: app_store_connect
+    family: analytics
+    title: App Store Subscription State and Events
+    question: How many subscriptions are active, and which subscription events happened, by source?
+    grain: day
+    published_after:
+      text: Usually two to three days later, once Apple has processed the day.
+      lag_days: 3
+    kept_for: 35 days per report instance at Apple
+    exactness: noised
+    exactness_note: Apple adds small random noise and leaves out values under 5 users or devices.
+    capture: none
+    feeds:
+      kpis: []
+      areas: [retention_churn]
+  - id: asc_analytics_crashes
+    provider: app_store_connect
+    family: analytics
+    title: App Crashes
+    question: How often does each app crash, by version and device?
+    grain: day
+    published_after:
+      text: Usually two to three days later, once Apple has processed the day.
+      lag_days: 3
+    kept_for: 35 days per report instance at Apple
+    exactness: opt_in_sample
+    exactness_note: Only from people who agreed to share data with developers.
+    capture: none
+    feeds:
+      kpis: []
+      areas: [engineering_reliability]
+  # ----------------------------------------------------------------- ads
+  - id: asc_ad_attribution_conversions
+    provider: app_store_connect
+    family: ads
+    title: AdAttributionKit conversions
+    question: Which ad impressions led to installs and re-engagements?
+    grain: day
+    published_after:
+      text: Usually two to three days later, once Apple has processed the day.
+      lag_days: 3
+    kept_for: 35 days per report instance at Apple
+    exactness: thresholded
+    exactness_note: Conversions under Apple's privacy threshold are left out.
+    capture: none
+    feeds:
+      kpis: []
+      areas: [acquisition_paid, acquisition_attribution]
+  # ------------------------------------------------------------- reviews
+  - id: asc_customer_reviews
+    provider: app_store_connect
+    family: reviews
+    title: Customer reviews
+    question: What do people write about each app, and has the developer answered?
+    grain: day
+    published_after:
+      text: Within minutes of the review.
+      lag_days: 0
+    kept_for: As long as the review stays in the store
+    exactness: exact
+    exactness_note: Every written review Apple shows, with its rating.
+    capture: none
+    feeds:
+      kpis: []
+      areas: [customer_feedback, customer_ratings]
+  - id: asc_ratings_summary
+    provider: app_store_connect
+    family: reviews
+    title: Ratings summary
+    question: What is each app's average rating and rating count, per territory?
+    grain: day
+    published_after:
+      text: Within a day.
+      lag_days: 1
+    kept_for: Current value only
+    exactness: exact
+    exactness_note: Apple's current average and count; history only exists if someone captures it daily.
+    capture: none
+    feeds:
+      kpis: []
+      areas: [customer_ratings, brand_trust]
+  # --------------------------------------------------------- performance
+  - id: asc_performance_metrics
+    provider: app_store_connect
+    family: performance
+    title: Power and performance metrics
+    question: How fast does each app launch, how much battery and memory does it use, and how often does it hang?
+    grain: week
+    published_after:
+      text: Weekly, once enough devices report a version.
+      lag_days: 7
+    kept_for: Recent app versions
+    exactness: opt_in_sample
+    exactness_note: From devices that share diagnostics; not made for versions with too few devices.
+    capture: none
+    feeds:
+      kpis: []
+      areas: [engineering_performance]
