@@ -1,0 +1,37 @@
+{
+ "schema_version": "compound.system_inventory_sources.v0.1",
+ "sources": [
+  {
+   "id": "aws-example-prod",
+   "provider": "aws",
+   "label": "Example production account",
+   "profile": "example-prod",
+   "region": "eu-example-1",
+   "max_resources": 2000,
+   "timeout_s": 60,
+   "places": ["aws"]
+  },
+  {
+   "id": "aws-example-old",
+   "provider": "aws",
+   "enabled": false,
+   "note": "the sign-in expired on the last check; enable after signing in again",
+   "label": "Example old account",
+   "profile": "example-old"
+  },
+  {
+   "id": "pve-example",
+   "provider": "pve",
+   "label": "Example virtualization node",
+   "ssh_alias": "pve.example",
+   "timeout_s": 30
+  },
+  {
+   "id": "vps-example",
+   "provider": "ssh_host",
+   "label": "Example rented server",
+   "ssh_alias": "vps.example",
+   "places": ["example_vps"]
+  }
+ ]
+}
