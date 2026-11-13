@@ -368,6 +368,24 @@ func TestInventoryGraphTextMasksIDsAndIsDeterministic(t *testing.T) {
 	for _, text := range first[3:] {
 		check("text", text)
 	}
+	// No full id of any thing appears in any text output, the inventory view
+	// and its questions included.
+	inv, _ := BuildInventory(home, InventoryQuery{Products: gfResolver}, inventoryT0)
+	g, _ := BuildInventoryGraph(home, InventoryGraphQuery{Rel: "owned_by", Products: gfResolver}, inventoryT0)
+	texts := append([]string{FormatInventoryText(inv), FormatInventoryQuestionsText(inv), FormatInventoryGraphText(g)}, first[3:]...)
+	for _, h := range []string{gfHost, gfDB, gfWebCt, gfDBCt} {
+		texts = append(texts, FormatInventoryWalkText(dependsOn(t, home, h, 0)), FormatInventoryWalkText(impactOf(t, home, h)))
+	}
+	for _, r := range graphObservation(inventoryT0).Resources {
+		for _, text := range texts {
+			if strings.Contains(text, r.ID) {
+				t.Fatalf("text shows the full id %s:\n%s", r.ID, text)
+			}
+		}
+	}
+	for _, text := range texts {
+		check("text", text)
+	}
 	for n := 0; n < 3; n++ {
 		again := render()
 		for i := range first {
