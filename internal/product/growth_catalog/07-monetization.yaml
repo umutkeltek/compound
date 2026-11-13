@@ -1,10 +1,21 @@
 areas:
+  - id: monetization_model
+    group: monetization
+    title: Ways it earns money
+    question: Do we know every way the product earns money today?
+    measure: revenue streams
+    applies: {objectives: [revenue]}
+    needs: [strategy_value_proposition, opportunity_audience_segments]
+    skills: [pricing]
+    evidence:
+      record: [profile.revenue_models]
   - id: monetization_pricing
     group: monetization
     title: Pricing and packaging
     question: Is the price right for what the product gives?
     measure: pricing
     applies: {objectives: [revenue]}
+    needs: [strategy_value_proposition, opportunity_audience_segments]
     skills: [pricing]
     evidence:
       capped: [app_store_connect_developer_proceeds_usd, app_store_connect_units]
@@ -17,6 +28,7 @@ areas:
     question: Do trials and free versions convert people who hesitate?
     measure: trials and offers
     applies: {objectives: [revenue]}
+    needs: [strategy_value_proposition, opportunity_audience_segments]
     skills: [pricing]
     kinds:
       ios_app:
@@ -31,7 +43,7 @@ areas:
     question: Does the purchase prompt explain the offer clearly?
     measure: paywall design
     applies: {objectives: [revenue]}
-    needs: [analytics_funnel]
+    needs: [strategy_value_proposition, opportunity_audience_segments, analytics_funnel]
     skills: [paywalls]
     evidence:
       metrics: ["posthog_*paywall*"]
@@ -43,16 +55,49 @@ areas:
     question: Is the offer shown at the moment users want more?
     measure: paywall triggers
     applies: {objectives: [revenue]}
-    needs: [analytics_funnel]
+    needs: [strategy_value_proposition, opportunity_audience_segments, analytics_funnel]
     skills: [paywalls]
     evidence:
       metrics: ["posthog_*paywall*"]
       source: PostHog paywall events
       paywall: true
+  - id: monetization_checkout
+    group: monetization
+    title: Checkout and payment
+    question: Can people pay in a few steps without dropping out?
+    measure: checkout
+    applies: {objectives: [revenue]}
+    needs: [strategy_value_proposition, opportunity_audience_segments]
+    skills: [cro]
+  - id: monetization_regional
+    group: monetization
+    title: Prices by country
+    question: Are prices set sensibly for each country and currency we sell in?
+    measure: prices by country
+    applies: {objectives: [revenue]}
+    needs: [strategy_value_proposition, opportunity_audience_segments]
+    skills: [pricing]
+  - id: monetization_offers
+    group: monetization
+    title: Discounts and promotions
+    question: Do discounts bring in new buyers without teaching people to wait for a sale?
+    measure: discounts and promotions
+    applies: {objectives: [revenue]}
+    needs: [strategy_value_proposition, opportunity_audience_segments]
+    skills: [pricing]
   - id: monetization_billing_recovery
     group: monetization
     title: Billing, refunds and payment recovery
     question: Do we win back payments that fail or get refunded?
     measure: refunds and failed payments
     applies: {objectives: [revenue]}
+    needs: [strategy_value_proposition, opportunity_audience_segments]
     skills: [churn-prevention]
+  - id: monetization_price_tests
+    group: monetization
+    title: Price tests
+    question: Do we test prices and plans and keep the one that earns more?
+    measure: price tests
+    applies: {objectives: [revenue]}
+    needs: [strategy_value_proposition, opportunity_audience_segments, analytics_funnel]
+    skills: [pricing]

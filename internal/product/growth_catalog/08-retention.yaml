@@ -4,6 +4,7 @@ areas:
     title: Retention and repeat use
     question: Do users still use the product weeks later?
     measure: retention
+    needs: [activation_criteria]
     evidence:
       metrics: ["posthog_*retention*", "posthog_*churn*"]
       capped: [app_store_connect_redownloads]
@@ -16,6 +17,12 @@ areas:
     evidence:
       metrics: ["posthog_*"]
       source: PostHog events
+  - id: retention_lifecycle_messages
+    group: retention
+    title: Messages over time
+    question: Do users get a useful message at each stage, and not too many?
+    measure: lifecycle messages
+    skills: [emails]
   - id: retention_reengagement
     group: retention
     title: Notifications and re-engagement
@@ -25,3 +32,40 @@ areas:
     evidence:
       metrics: ["posthog_*"]
       source: PostHog events
+  - id: retention_churn
+    group: retention
+    title: Spotting users who drift away
+    question: Do we notice when users start to drift away, before they are gone?
+    measure: early signs of leaving
+    needs: [activation_criteria]
+    skills: [churn-prevention]
+    evidence:
+      metrics: ["posthog_*churn*"]
+      source: PostHog churn events
+  - id: retention_offboarding
+    group: retention
+    title: Cancelling and leaving
+    question: Is leaving easy, and do we learn why people leave?
+    measure: cancelling and leaving
+    skills: [churn-prevention]
+  - id: retention_customer_success
+    group: retention
+    title: Help after the first week
+    question: Do users keep learning new ways to get value after the first week?
+    measure: ongoing help
+  - id: retention_expansion
+    group: retention
+    title: Upgrades for current users
+    question: Do happy users move to a bigger plan or buy more?
+    measure: upgrades and add-ons
+  - id: retention_referrals
+    group: retention
+    title: Referrals and sharing
+    question: Do users bring in other people by sharing or inviting them?
+    measure: referrals and sharing
+  - id: retention_winback
+    group: retention
+    title: Winning back past users
+    question: Do we try to win back people who cancelled or left for good?
+    measure: win-back
+    skills: [emails]

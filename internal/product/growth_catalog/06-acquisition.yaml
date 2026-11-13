@@ -132,6 +132,7 @@ areas:
     title: Where new users come from
     question: Do we know which channel brought each new user, and what it cost?
     measure: where new users come from
+    needs: [analytics_instrumentation]
     evidence:
       capped: [ads_conversions]
       source: ads import

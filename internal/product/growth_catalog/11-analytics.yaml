@@ -1,11 +1,34 @@
 areas:
+  - id: analytics_objectives
+    group: analytics
+    title: What success means
+    question: Do we know which result counts as success for the product?
+    measure: success measures
+    evidence:
+      record: [profile.objectives]
+  - id: analytics_instrumentation
+    group: analytics
+    title: Tracking key actions
+    question: Do we record the key actions users take, under clear names?
+    measure: tracking of key actions
+    needs: [experience_journeys]
+    evidence:
+      capped: ["posthog_*", "ga4_*"]
+      source: PostHog or Google Analytics events
   - id: analytics_funnel
     group: analytics
     title: Funnel and journey analytics
     question: Can we follow a user from first view to purchase?
     measure: the funnel
+    needs: [experience_journeys]
     evidence:
       custom: funnel
+  - id: analytics_cohorts
+    group: analytics
+    title: Comparing groups over time
+    question: Can we compare users who joined at different times?
+    measure: groups of users over time
+    needs: [activation_criteria]
   - id: analytics_experiment_design
     group: analytics
     title: Experiment design and hypothesis tracking
@@ -14,3 +37,34 @@ areas:
     branch: experiment
     evidence:
       custom: experiments
+  - id: analytics_ab_tests
+    group: analytics
+    title: Side-by-side tests
+    question: Can we show two versions to different users and compare the results?
+    measure: side-by-side tests
+    needs: [analytics_instrumentation]
+    branch: experiment
+  - id: analytics_validity
+    group: analytics
+    title: Trustworthy results
+    question: Do we wait for enough data before we trust a test result?
+    measure: how far results can be trusted
+    needs: [analytics_instrumentation]
+  - id: analytics_causal
+    group: analytics
+    title: Real effect of a change
+    question: Can we tell if a change caused a result and did not just come before it?
+    measure: the real effect of changes
+    needs: [analytics_instrumentation]
+  - id: analytics_memory
+    group: analytics
+    title: Lessons from past tests
+    question: Can anyone look up what past tests found?
+    measure: past test results
+    needs: [analytics_experiment_design]
+    branch: learning
+  - id: analytics_anomalies
+    group: analytics
+    title: Alerts on sudden changes
+    question: Do we get told when a key number suddenly jumps or drops?
+    measure: alerts on sudden changes
