@@ -255,7 +255,7 @@ class SshHostTests(unittest.TestCase):
 class CoreTests(unittest.TestCase):
     def test_observation_shape_and_injected_clock(self):
         obs = observe([AWS_ROW], AwsTests().runner())
-        self.assertEqual(obs["schema_version"], "compound.system_inventory_observation.v0.1")
+        self.assertEqual(obs["schema_version"], "compound.system_inventory_observation.v0.2")
         self.assertEqual(obs["observed_at"], "2031-04-05T06:07:08Z")
         self.assertEqual(obs["collector"]["name"], "compound-inventory-collect")
         src = obs["sources"][0]
@@ -342,6 +342,43 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(collect.mask_ids(f"arn:aws:iam::{ACCOUNT}:user/x"), "arn:aws:iam::…4321:user/x")
         self.assertEqual(collect.mask_ids("ResourceGroupsTaggingAPI"), "ResourceGroupsTaggingAPI")
 
+    def test_canonical_ids(self):
+        cid = collect.canonical_id
+        self.assertEqual(cid("domain", "Alpha.Example."), "domain:alpha.example")
+        self.assertEqual(cid("hostname", "https://WWW.alpha.example/path"), "hostname:www.alpha.example")
+        self.assertEqual(cid("mailbox", "Owner@Alpha.Example"), "mailbox:owner@alpha.example")
+        self.assertEqual(cid("alias", "mailto:help@alpha.example"), "alias:help@alpha.example")
+        for remote in ("git@git.example:Owner/Repo-One.git", "https://git.example/owner/repo-one",
+                       "ssh://git@git.example:22/owner/repo-one.git", "git.example/owner/repo-one"):
+            self.assertEqual(cid("repo", remote), "repo:git.example/owner/repo-one", remote)
+        self.assertEqual(cid("repo", "local/example-folder"), "repo:local/example-folder")
+        self.assertEqual(cid("repo", "/abs/path/example"), "")
+        self.assertEqual(cid("host", "Example Node"), "host:example-node")
+        self.assertEqual(cid("store_app", "Apple/com.example.App"), "store_app:apple/com.example.App")
+        self.assertEqual(cid("container", "anything"), "")
+        self.assertEqual(cid("domain", ""), "")
+
+    def test_links_carry_confidence_and_never_claim_more_than_known(self):
+        def linking(ctx):
+            res = ctx.resource("x:1", "app", "Example app", links=[
+                {"rel": "uses", "to": "x:2"},
+                {"rel": "uses", "to": "x:3", "confidence": "inferred", "evidence": "config/example.toml"},
+                {"rel": "uses", "to": "x:4", "confidence": "certain"},
+                {"rel": "", "to": "x:5"}])
+            res["observed_at"] = "2031-04-01T00:00:00+00:00"
+            return [res]
+        collect.READERS["linking_example"] = linking
+        try:
+            obs = observe([{"id": "l", "provider": "linking_example"}])
+        finally:
+            del collect.READERS["linking_example"]
+        (res,) = obs["resources"]
+        self.assertEqual(res["links"], [
+            {"rel": "uses", "to": "x:2", "confidence": "observed"},
+            {"rel": "uses", "to": "x:3", "confidence": "inferred", "evidence": "config/example.toml"},
+            {"rel": "uses", "to": "x:4", "confidence": "inferred"}])
+        self.assertEqual(res["observed_at"], "2031-04-01T00:00:00Z")
+
     def test_proxies_come_only_from_the_given_env(self):
         self.assertEqual(collect.proxies_from_env({"HTTPS_PROXY": "http://p.example:1", "NO_PROXY": "x"}),
                          {"https": "http://p.example:1"})
@@ -386,6 +423,8 @@ class CloudflareAndSearchTests(unittest.TestCase):
         self.assertEqual(domains["alpha.example"]["parent"], accounts["Example DNS account"]["id"])
         self.assertIsNone(domains["alpha.example"]["facts"]["renews_on"]["value"])
         self.assertNotIn(ACCT_A, json.dumps(obs))
+        # a zone is addressed by its name: the canonical id other readers emit for the same domain
+        self.assertEqual(domains["alpha.example"]["id"], "domain:alpha.example")
 
     def test_search_property_by_exact_host_only(self):
         obs = observe([CF_ROW, SC_ROW], self.runner())
@@ -393,7 +432,8 @@ class CloudflareAndSearchTests(unittest.TestCase):
         sites = {s["label"]: s for s in by_kind(obs, "site")}
         alpha = domains["alpha.example"]
         self.assertIs(alpha["facts"]["has_search_property"]["value"], True)
-        self.assertEqual(alpha["links"], [{"rel": "search_property", "to": sites["sc-domain:alpha.example"]["id"]}])
+        self.assertEqual(alpha["links"], [{"rel": "search_property", "to": sites["sc-domain:alpha.example"]["id"],
+                                           "confidence": "observed"}])
         # www.beta.example is not beta.example: no match by guessing
         self.assertIs(domains["beta.example"]["facts"]["has_search_property"]["value"], False)
         self.assertIs(domains["gamma.example"]["facts"]["has_search_property"]["value"], False)

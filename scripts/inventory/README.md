@@ -41,6 +41,28 @@ its owner only (mode 0600), through a temporary file and a rename.
   are hashed into resource ids (`sha256`, first 12 hex); only the last 4 characters are kept,
   as the `account_tail` fact.
 
+## Links and ids (observation file v0.2)
+
+The file is `compound.system_inventory_observation.v0.2`. Each resource may carry `links`, each
+`{rel, to, confidence, evidence, observed_at}`:
+
+- `rel` is a relation from Compound's inventory kinds file (`runs_on`, `uses`, `serves`, …).
+- `to` is another resource id in the same file, or `product:<product id>` for a Compound product.
+- `confidence` is `observed` (a command or config file shows it now), `declared` (a person or a
+  written record says it) or `inferred` (concluded from a name or a match; `evidence` says from
+  what). A value the contract does not know is written as `inferred`, never as more.
+- `evidence` is a short pointer (a repository-relative file, a command name), never a value.
+- `observed_at` (also allowed on a resource) is when it was really seen, for sources that carry
+  older evidence; without it the source's own time counts.
+
+Things addressed by a name get a canonical id, so two readers that see the same thing emit the
+same id: `domain:<name>`, `hostname:<fqdn>`, `mailbox:<address>`, `alias:<address>`,
+`repo:<host>/<owner>/<name>` (or `repo:local/<folder name>` without a remote),
+`host:<label>`, `store_app:<store>/<app id>`. Everything else keeps `<provider>:<kind>:<opaque>`,
+with real ids hashed. Domains moved to `domain:<name>` in v0.2 (they were
+`cloudflare:zone:<hash>`), so the first import after the change shows each domain once as
+removed and added.
+
 ## Sources file
 
 `sources.example.json` shows the shape with made-up names. Every row has an `id` (unique, the

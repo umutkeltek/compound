@@ -83,6 +83,60 @@ def pct(part, whole):
     return round(100.0 * part / whole, 1) if whole > 0 else None
 
 
+# --- links and canonical ids (observation contract v0.2) -------------------------------------
+
+# How sure a link is: a command or config file shows it now | a person or a written record says
+# it | concluded from a name or a match. Weakest last.
+LINK_CONFIDENCE = ("observed", "declared", "inferred")
+# Kinds whose things are addressed by a name: two readers that see the same thing emit the same id.
+CANONICAL_KINDS = ("domain", "hostname", "mailbox", "alias", "repo", "host", "store_app")
+_SCP_REMOTE = re.compile(r"^[\w.-]+@([\w.-]+):(.+)$")
+_URL_REMOTE = re.compile(r"^[a-z][a-z0-9+.-]*://(?:[^/@]+@)?([\w.-]+)(?::\d+)?/(.+)$", re.I)
+
+
+def repo_ref(remote):
+    """`<host>/<owner>/<name>` (lowercase, no `.git`) from a git remote URL or an already short
+    form; "" when it is a local path or cannot be read."""
+    text = str(remote or "").strip()
+    match = _SCP_REMOTE.match(text) or _URL_REMOTE.match(text)
+    if match:
+        host, path = match.group(1), match.group(2)
+    elif "://" not in text and not text.startswith(("/", ".", "~")) and text.count("/") >= 2:
+        host, path = text.split("/", 1)
+    else:
+        return ""
+    path = re.sub(r"\.git/?$", "", path.strip("/"))
+    if not host or not path:
+        return ""
+    return f"{host}/{path}".lower()
+
+
+def canonical_id(kind, name):
+    """The canonical id for a thing addressed by a name, or "" when `kind` has none or `name` is
+    empty: `domain:<name>`, `hostname:<fqdn>`, `mailbox:<address>`, `alias:<address>`,
+    `repo:<host>/<owner>/<name>` (or `repo:local/<folder>`), `host:<label>`, `store_app:<store>/<app id>`."""
+    text = str(name or "").strip()
+    if kind in ("domain", "hostname"):
+        text = text.lower().rstrip(".")
+        text = re.sub(r"^[a-z][a-z0-9+.-]*://", "", text).split("/", 1)[0].split(":", 1)[0]
+    elif kind in ("mailbox", "alias"):
+        text = text.lower()
+        text = text[len("mailto:"):] if text.startswith("mailto:") else text
+    elif kind == "repo":
+        if text.lower().startswith("local/"):
+            text = "local/" + text[len("local/"):].strip("/")
+        else:
+            text = repo_ref(text)
+    elif kind == "host":
+        text = re.sub(r"\s+", "-", text.lower())
+    elif kind == "store_app":
+        store, _, app = text.partition("/")
+        text = f"{store.lower()}/{app}" if store and app else ""
+    else:
+        return ""
+    return f"{kind}:{text}" if text else ""
+
+
 def parse_json(text, what):
     try:
         return json.loads(text)

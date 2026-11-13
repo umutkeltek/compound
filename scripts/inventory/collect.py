@@ -55,10 +55,11 @@ run, http_get, utc_now = _base.run, _base.http_get, _base.utc_now
 clip, mask_ids, short_hash, iso, parse_time = _base.clip, _base.mask_ids, _base.short_hash, _base.iso, _base.parse_time
 proxies_from_env = _base.proxies_from_env
 SOURCE_STATES, FACT_STATES, DETAIL_MAX = _base.SOURCE_STATES, _base.FACT_STATES, _base.DETAIL_MAX
+LINK_CONFIDENCE, canonical_id, repo_ref = _base.LINK_CONFIDENCE, _base.canonical_id, _base.repo_ref
 
-OBSERVATION_SCHEMA = "compound.system_inventory_observation.v0.1"
+OBSERVATION_SCHEMA = "compound.system_inventory_observation.v0.2"
 SOURCES_SCHEMA = "compound.system_inventory_sources.v0.1"
-COLLECTOR = {"name": "compound-inventory-collect", "version": "0.1.0"}
+COLLECTOR = {"name": "compound-inventory-collect", "version": "0.2.0"}
 EXIT_OK, EXIT_WRITE, EXIT_USAGE = 0, 1, 2
 
 
@@ -89,6 +90,26 @@ def normalize_fact(fact, fallback_time):
 FACT_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
+def normalize_link(link):
+    """`{rel, to, confidence[, evidence][, observed_at]}`, or None when rel or to is missing.
+    A confidence the contract does not know becomes the weakest one, `inferred`: a link never
+    claims more than its reader knew. `evidence` is a short pointer (a file, a command name)."""
+    if not isinstance(link, dict):
+        return None
+    rel, to = str(link.get("rel") or "").strip(), str(link.get("to") or "").strip()
+    if not rel or not to:
+        return None
+    confidence = link.get("confidence") or "observed"
+    out = {"rel": rel, "to": to, "confidence": confidence if confidence in LINK_CONFIDENCE else "inferred"}
+    evidence = clip(link.get("evidence") or "")
+    if evidence:
+        out["evidence"] = evidence
+    observed = parse_time(link.get("observed_at"))
+    if observed:
+        out["observed_at"] = iso(observed)
+    return out
+
+
 def normalize_resource(res, fallback_time):
     """Only the contract's fields, in their types. Returns (resource, number of facts dropped
     because their name is not lowercase letters, digits and _)."""
@@ -96,9 +117,11 @@ def normalize_resource(res, fallback_time):
     out["label"] = out["label"] or out["id"]
     if out["parent"] == out["id"]:
         out["parent"] = ""
+    observed = parse_time(res.get("observed_at"))
+    if observed:  # only for sources that carry older evidence; otherwise the source's time counts
+        out["observed_at"] = iso(observed)
     out["places"] = [str(p) for p in (res.get("places") or []) if str(p or "").strip()]
-    out["links"] = [{"rel": str(l.get("rel")), "to": str(l.get("to"))} for l in (res.get("links") or [])
-                    if isinstance(l, dict) and str(l.get("rel") or "").strip() and str(l.get("to") or "").strip()]
+    out["links"] = [link for link in (normalize_link(l) for l in (res.get("links") or [])) if link]
     facts = res.get("facts") or {}
     out["facts"] = {name: normalize_fact(f, fallback_time) for name, f in facts.items()
                     if isinstance(name, str) and FACT_NAME.match(name)}

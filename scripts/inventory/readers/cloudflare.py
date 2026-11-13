@@ -4,7 +4,7 @@ their `account`; optionally links each domain to its search property."""
 import collections
 import re
 
-from ._base import FACT_STATES, SourceError, clip, reader, run_json, short_hash
+from ._base import FACT_STATES, SourceError, canonical_id, clip, reader, run_json, short_hash
 
 _CF_AUTH_CODES = {9103, 9106, 9107, 9109, 10000, 10001}
 
@@ -57,7 +57,8 @@ def read_cloudflare(ctx):
                 "status": ctx.fact(str(zone.get("status") or "unknown")),
                 "renews_on": ctx.unknown("not_supported", "the zone list has no renewal date", "date"),
             }
-            domain = ctx.resource(f"cloudflare:zone:{short_hash(zone.get('id') or name)}", "domain", name or "zone",
+            rid = canonical_id("domain", name) or f"cloudflare:zone:{short_hash(zone.get('id') or name)}"
+            domain = ctx.resource(rid, "domain", name or "zone",
                                   parent=parent, facts=facts, places=[name] if name else None)
             domain["_host"] = name.lower()
             domains.append(domain)
