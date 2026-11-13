@@ -63,6 +63,13 @@ person's own name for the source) and a `provider` (the reader to use). Common o
 | `aws` | `aws sts get-caller-identity`, then `aws resourcegroupstaggingapi get-resources` (free, capped by `max_resources`) in `region` or the profile's default region | one `account` per row (`profile`) |
 | `pve` | a PVE virtualization cluster: `ssh <ssh_alias> pvesh get /cluster/resources --output-format json` | one `host` per node, one `guest` per virtual machine or container |
 | `ssh_host` | `ssh <ssh_alias>` running `uptime`, `df -P /`, and `/proc/meminfo` and `/proc/stat` where they exist | one `host` |
+| `cloudflare` | the zone list, through the `command` the row names (the person's own API wrapper); `{page}` in the command pages through `result_info.total_pages`, up to `max_pages` | one `domain` per zone, under one `account` per account id |
+| `search_console` | the property list, through the `command` the row names | one `site` per property, under one `account` for the row |
+| `balance_http` | one free HTTPS GET; the token comes from `token_env` (an environment variable name) or `token_command` (a command that prints it); the balance is read at `balance_path`, the unit from `unit` or `unit_path`, an end date from `ends_on_path` | one `plan` |
+| `json_file` | numbers another tool already publishes in a local `.json` or `.jsonl` file, by JSON path | one `plan` per `plans[]` entry (or per group) |
+
+Paths such as `balance_infos[0].total_balance` or `providers.example.used` step into objects
+by name and into lists by index (`[-1]` is the last item).
 
 Notes on what each reader cannot see:
 
@@ -75,6 +82,26 @@ Notes on what each reader cannot see:
 - `ssh_host`: CPU is measured as busy time over one second from `/proc/stat`; memory counts
   reclaimable cache as free. A host without `/proc` (for example macOS) reports those two as
   `not_supported`.
+- `cloudflare`: the zone list has no renewal date, so `renews_on` is `not_supported`. When
+  the row names a `search_console_source`, `has_search_property` is set by exact host match
+  only (`sc-domain:example.com` or `https://example.com/` match the zone `example.com`;
+  `https://www.example.com/` does not), and a `search_property` link points at the site. If
+  that source failed, the fact carries its state; if it was skipped, the fact is left out.
+  `account_labels` maps the last 4 characters of an account id to the person's label.
+- `search_console`: `last_data_day` needs a search analytics query, which is not run.
+- `balance_http`: the token lives only in memory for the one request. It is never written to
+  the observation file, a log or an error detail; an error raised while sending the request
+  is reported by its type only. HTTP 401 or 403 is `needs_sign_in`. A balance the endpoint
+  does not give (`null`) is `not_supported`, never 0. Only `https://` URLs are accepted.
+- `json_file`: each `plans[]` entry picks either one object (`at`) or the last entry that
+  matches `match` in a list (`items_path`, or the whole `.jsonl` file); `group_by` makes one
+  plan per group (labelled with a short hash of the group key, never the key itself).
+  `facts` maps a fact name to a path (or `{"path", "unit"}`). With `observed_at_path` each
+  fact carries the entry's own time; with `max_age_hours` an older entry is reported as
+  `failed` with its age instead of an outdated number.
+
+Fact names must be lowercase letters, digits and `_`; the collector drops any other name and
+says so in the source detail, so one bad row cannot make Compound refuse the whole file.
 
 ## Adding a provider
 

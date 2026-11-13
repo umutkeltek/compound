@@ -348,6 +348,242 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(collect.proxies_from_env({}), {})
 
 
+def zone(zid, name, account, plan="Free Example"):
+    return {"id": zid, "name": name, "status": "active", "plan": {"name": plan},
+            "account": {"id": account, "name": "synthetic"}}
+
+
+ACCT_A, ACCT_B = "aaaa0000aaaa0000aaaa0000aaaa1111", "bbbb0000bbbb0000bbbb0000bbbb2222"
+CF_PAGE_1 = R(0, json.dumps({"success": True, "result": [zone("z1", "alpha.example", ACCT_A),
+                                                          zone("z2", "beta.example", ACCT_A)],
+                             "result_info": {"page": 1, "total_pages": 2}}), "")
+CF_PAGE_2 = R(0, json.dumps({"success": True, "result": [zone("z3", "gamma.example", ACCT_B, "Pro Example")],
+                             "result_info": {"page": 2, "total_pages": 2}}), "")
+CF_ROW = {"id": "dns-example", "provider": "cloudflare", "search_console_source": "search-example",
+          "command": ["dns-cli", "api", "GET", "/zones?per_page=2&page={page}"],
+          "account_labels": {"1111": "Example DNS account"}}
+SC_LIST = R(0, json.dumps({"siteEntry": [
+    {"siteUrl": "sc-domain:alpha.example", "permissionLevel": "siteOwner"},
+    {"siteUrl": "https://www.beta.example/", "permissionLevel": "siteFullUser"},
+    {"siteUrl": "https://delta.example/", "permissionLevel": "siteUnverifiedUser"}]}), "")
+SC_ROW = {"id": "search-example", "provider": "search_console", "label": "Example search account",
+          "command": ["search-cli", "sites", "list", "--json"]}
+
+
+class CloudflareAndSearchTests(unittest.TestCase):
+    def runner(self, search=SC_LIST):
+        return FakeRunner([(["dns-cli", "page=1"], CF_PAGE_1), (["dns-cli", "page=2"], CF_PAGE_2),
+                           (["search-cli"], search)])
+
+    def test_zones_from_every_page_under_their_accounts(self):
+        obs = observe([CF_ROW, SC_ROW], self.runner())
+        domains = {d["label"]: d for d in by_kind(obs, "domain")}
+        self.assertEqual(sorted(domains), ["alpha.example", "beta.example", "gamma.example"])
+        accounts = {a["label"]: a for a in by_kind(obs, "account") if a["source"] == "dns-example"}
+        self.assertEqual(sorted(accounts), ["Cloudflare account …2222", "Example DNS account"])
+        self.assertEqual(accounts["Example DNS account"]["facts"]["resources"]["value"], 2)
+        self.assertEqual(domains["gamma.example"]["facts"]["plan"]["value"], "Pro Example")
+        self.assertEqual(domains["alpha.example"]["parent"], accounts["Example DNS account"]["id"])
+        self.assertIsNone(domains["alpha.example"]["facts"]["renews_on"]["value"])
+        self.assertNotIn(ACCT_A, json.dumps(obs))
+
+    def test_search_property_by_exact_host_only(self):
+        obs = observe([CF_ROW, SC_ROW], self.runner())
+        domains = {d["label"]: d for d in by_kind(obs, "domain")}
+        sites = {s["label"]: s for s in by_kind(obs, "site")}
+        alpha = domains["alpha.example"]
+        self.assertIs(alpha["facts"]["has_search_property"]["value"], True)
+        self.assertEqual(alpha["links"], [{"rel": "search_property", "to": sites["sc-domain:alpha.example"]["id"]}])
+        # www.beta.example is not beta.example: no match by guessing
+        self.assertIs(domains["beta.example"]["facts"]["has_search_property"]["value"], False)
+        self.assertIs(domains["gamma.example"]["facts"]["has_search_property"]["value"], False)
+
+    def test_search_source_that_failed_makes_the_fact_unknown(self):
+        failed = R(1, "", "error: not logged in, run the login command")
+        obs = observe([CF_ROW, SC_ROW], self.runner(search=failed))
+        self.assertEqual(source(obs, "search-example")["state"], "needs_sign_in")
+        for domain in by_kind(obs, "domain"):
+            fact = domain["facts"]["has_search_property"]
+            self.assertEqual((fact["state"], fact["value"]), ("needs_sign_in", None))
+
+    def test_skipped_search_source_leaves_the_fact_unreported(self):
+        obs = observe([CF_ROW, dict(SC_ROW, enabled=False)], self.runner())
+        for domain in by_kind(obs, "domain"):
+            self.assertNotIn("has_search_property", domain["facts"])
+
+    def test_refused_token_is_needs_sign_in(self):
+        refused = R(0, json.dumps({"success": False, "errors": [{"code": 10000, "message": "Authentication error"}]}), "")
+        obs = observe([CF_ROW], FakeRunner([(["dns-cli"], refused)]))
+        self.assertEqual(source(obs, "dns-example")["state"], "needs_sign_in")
+
+    def test_page_cap(self):
+        obs = observe([dict(CF_ROW, max_pages=1, search_console_source="")], self.runner())
+        self.assertEqual(len(by_kind(obs, "domain")), 2)
+        self.assertIn("capped at 1 pages", source(obs, "dns-example")["detail"])
+
+    def test_sites_and_their_account(self):
+        obs = observe([SC_ROW], self.runner())
+        sites = {s["label"]: s for s in by_kind(obs, "site")}
+        self.assertIs(sites["sc-domain:alpha.example"]["facts"]["verified"]["value"], True)
+        self.assertIs(sites["https://delta.example/"]["facts"]["verified"]["value"], False)
+        self.assertEqual(sites["https://delta.example/"]["facts"]["last_data_day"]["state"], "not_supported")
+        (owner,) = by_kind(obs, "account")
+        self.assertEqual(owner["label"], "Example search account")
+        self.assertEqual(owner["facts"]["resources"]["value"], 3)
+        self.assertTrue(all(s["parent"] == owner["id"] for s in sites.values()))
+
+
+TOKEN = "tok-SYNTHETIC-0123456789-abcdef"
+BAL_ROW = {"id": "credit-example", "provider": "balance_http", "vendor": "example_models",
+           "label": "Example prepaid credit", "url": "https://api.example/v1/balance",
+           "token_env": "EXAMPLE_API_KEY", "balance_path": "balance_infos[0].total_balance",
+           "unit_path": "balance_infos[0].currency",
+           "env_unset": ["HTTPS_PROXY", "https_proxy"]}
+BAL_ENV = {"EXAMPLE_API_KEY": TOKEN, "HTTPS_PROXY": "http://proxy.example:3128", "PATH": "/usr/bin"}
+
+
+class FakeHttp:
+    def __init__(self, status=200, doc=None, error=None):
+        self.status, self.doc, self.error, self.calls = status, doc, error, []
+
+    def __call__(self, url, headers, timeout, env=None):
+        self.calls.append({"url": url, "headers": dict(headers), "timeout": timeout, "env": dict(env or {})})
+        if self.error:
+            raise self.error
+        return self.status, json.dumps(self.doc or {}).encode()
+
+
+BAL_DOC = {"is_available": True, "balance_infos": [{"currency": "USD", "total_balance": "12.50"}]}
+
+
+class BalanceHttpTests(unittest.TestCase):
+    def test_balance_is_read_and_the_token_is_never_written(self):
+        http = FakeHttp(doc=BAL_DOC)
+        obs = observe([BAL_ROW], http=http, env=BAL_ENV)
+        (plan,) = by_kind(obs, "plan")
+        self.assertEqual(plan["facts"]["balance"]["value"], 12.5)
+        self.assertEqual(plan["facts"]["balance"]["unit"], "usd")
+        self.assertEqual(plan["provider"], "example_models")
+        self.assertEqual(plan["facts"]["ends_on"]["state"], "not_supported")
+        self.assertEqual(http.calls[0]["headers"]["Authorization"], f"Bearer {TOKEN}")
+        self.assertNotIn(TOKEN, json.dumps(obs))
+
+    def test_proxy_variables_are_dropped_for_this_source_only(self):
+        http = FakeHttp(doc=BAL_DOC)
+        observe([BAL_ROW], http=http, env=BAL_ENV)
+        observe([dict(BAL_ROW, env_unset=[])], http=http, env=BAL_ENV)
+        self.assertNotIn("HTTPS_PROXY", http.calls[0]["env"])
+        self.assertIn("HTTPS_PROXY", http.calls[1]["env"])
+
+    def test_missing_token_is_needs_sign_in(self):
+        http = FakeHttp(doc=BAL_DOC)
+        obs = observe([BAL_ROW], http=http, env={"PATH": "/usr/bin"})
+        self.assertEqual(source(obs, "credit-example")["state"], "needs_sign_in")
+        self.assertIn("EXAMPLE_API_KEY", source(obs, "credit-example")["detail"])
+        self.assertEqual(http.calls, [])
+
+    def test_refused_token_is_needs_sign_in(self):
+        obs = observe([BAL_ROW], http=FakeHttp(status=401), env=BAL_ENV)
+        self.assertEqual(source(obs, "credit-example")["state"], "needs_sign_in")
+
+    def test_an_error_that_quotes_the_token_never_reaches_the_file(self):
+        letters_only = "tokSYNTHETICletters"  # no digit, so id masking alone would not hide it
+        http = FakeHttp(error=ValueError(f"Invalid header value b'Bearer {letters_only}'"))
+        obs = observe([BAL_ROW], http=http, env=dict(BAL_ENV, EXAMPLE_API_KEY=letters_only))
+        self.assertEqual(source(obs, "credit-example")["state"], "failed")
+        self.assertNotIn("SYNTHETIC", json.dumps(obs))
+
+    def test_token_command(self):
+        runner = FakeRunner([(["vault-cli", "read"], R(0, TOKEN + "\n", ""))])
+        row = dict(BAL_ROW, token_env=None, token_command=["vault-cli", "read", "example"])
+        http = FakeHttp(doc=BAL_DOC)
+        obs = observe([row], runner=runner, http=http, env=BAL_ENV)
+        self.assertEqual(by_kind(obs, "plan")[0]["facts"]["balance"]["value"], 12.5)
+        self.assertNotIn(TOKEN, json.dumps(obs))
+        failing = FakeRunner([(["vault-cli"], R(1, "", f"cannot read {TOKEN}"))])
+        obs = observe([row], runner=failing, http=http, env=BAL_ENV)
+        self.assertEqual(source(obs, "credit-example")["state"], "needs_sign_in")
+        self.assertNotIn(TOKEN, json.dumps(obs))
+
+    def test_null_balance_is_not_known_never_zero(self):
+        doc = {"data": {"limit_remaining": None, "usage": 0}}
+        row = dict(BAL_ROW, balance_path="data.limit_remaining", unit_path=None, unit="usd")
+        plan = by_kind(observe([row], http=FakeHttp(doc=doc), env=BAL_ENV), "plan")[0]
+        self.assertEqual((plan["facts"]["balance"]["state"], plan["facts"]["balance"]["value"]),
+                         ("not_supported", None))
+
+    def test_plain_http_is_refused(self):
+        obs = observe([dict(BAL_ROW, url="http://api.example/v1/balance")], http=FakeHttp(doc=BAL_DOC), env=BAL_ENV)
+        self.assertEqual(source(obs, "credit-example")["state"], "failed")
+
+
+def seat_rows(start):
+    rows = []
+    for hour, account, used in ((0, "seat-a", 40), (1, "seat-b", 70), (2, "seat-a", 95)):
+        rows.append({"provider": "example_ai", "windowKind": "weekly", "accountKey": account,
+                     "usedPercent": used, "sampledAt": (start + timedelta(hours=hour)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                     "resetsAt": (start + timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%S+00:00")})
+    rows.append({"provider": "other_ai", "windowKind": "weekly", "accountKey": "seat-c", "usedPercent": 1,
+                 "sampledAt": start.strftime("%Y-%m-%dT%H:%M:%SZ")})
+    return rows
+
+
+class JsonFileTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="inventory-json-file-test-")
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+
+    def seats(self, start, max_age=None):
+        path = self.dir / "usage.jsonl"
+        path.write_text("\n".join(json.dumps(r) for r in seat_rows(start)) + "\nnot json\n")
+        spec = {"label": "Example seat, weekly", "vendor": "example_ai",
+                "match": {"provider": "example_ai", "windowKind": "weekly"}, "group_by": "accountKey",
+                "observed_at_path": "sampledAt",
+                "facts": {"window_used_pct": "usedPercent", "resets_at": "resetsAt", "Bad-Name": "usedPercent"}}
+        if max_age:
+            spec["max_age_hours"] = max_age
+        return observe([{"id": "seats-example", "provider": "json_file", "path": str(path), "plans": [spec]}])
+
+    def test_latest_entry_per_group(self):
+        obs = self.seats(CLOCK - timedelta(hours=3))
+        plans = sorted(by_kind(obs, "plan"), key=lambda p: p["facts"]["window_used_pct"]["value"])
+        self.assertEqual([p["facts"]["window_used_pct"]["value"] for p in plans], [70, 95])
+        self.assertEqual(plans[1]["facts"]["window_used_pct"]["unit"], "pct")
+        self.assertEqual(plans[1]["facts"]["window_used_pct"]["observed_at"],
+                         (CLOCK - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        self.assertEqual(plans[1]["facts"]["resets_at"]["value"],
+                         (CLOCK + timedelta(days=3, hours=-3)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        self.assertTrue(all(p["provider"] == "example_ai" for p in plans))
+        self.assertNotIn("seat-a", json.dumps(obs))
+        self.assertIn("2 facts dropped", source(obs, "seats-example")["detail"])  # one bad name per plan
+        self.assertTrue(all("Bad-Name" not in p["facts"] for p in plans))
+
+    def test_old_samples_are_not_shown_as_current(self):
+        obs = self.seats(CLOCK - timedelta(days=11), max_age=48)
+        for plan in by_kind(obs, "plan"):
+            fact = plan["facts"]["window_used_pct"]
+            self.assertEqual((fact["state"], fact["value"]), ("failed", None))
+            self.assertIn("limit 48 h", fact["detail"])
+
+    def test_object_path_and_missing_file(self):
+        path = self.dir / "projection.json"
+        path.write_text(json.dumps({"providers": {"example_ai": {"healthy": 4, "total": 5,
+                                                                 "imported_at": "2031-04-05T01:00:00Z"}}}))
+        spec = {"label": "Example seats", "at": "providers.example_ai", "observed_at_path": "imported_at",
+                "facts": {"accounts_healthy": {"path": "healthy", "unit": "count"}, "accounts_total": "total",
+                          "absent": "nope"}}
+        rows = [{"id": "proj", "provider": "json_file", "path": str(path), "plans": [spec]},
+                {"id": "gone", "provider": "json_file", "path": str(self.dir / "missing.json"), "plans": [spec]}]
+        obs = observe(rows)
+        (plan,) = by_kind(obs, "plan")
+        self.assertEqual(plan["facts"]["accounts_healthy"]["value"], 4)
+        self.assertEqual(plan["facts"]["accounts_total"]["value"], 5)
+        self.assertEqual(plan["facts"]["absent"]["state"], "not_supported")
+        self.assertEqual(source(obs, "gone")["state"], "failed")
+        self.assertEqual(source(obs, "gone")["detail"], "the file does not exist")
+
+
 class MainTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="inventory-collect-test-")

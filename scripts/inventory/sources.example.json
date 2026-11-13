@@ -32,6 +32,48 @@
    "label": "Example rented server",
    "ssh_alias": "vps.example",
    "places": ["example_vps"]
+  },
+  {
+   "id": "dns-example",
+   "provider": "cloudflare",
+   "command": ["example-dns-cli", "api", "GET", "/zones?per_page=50&page={page}"],
+   "account_labels": {"a1b2": "Example DNS account"},
+   "search_console_source": "search-example",
+   "max_pages": 10
+  },
+  {
+   "id": "search-example",
+   "provider": "search_console",
+   "label": "Example search account",
+   "command": ["example-search-cli", "sites", "list", "--account", "owner@example.invalid", "--json"]
+  },
+  {
+   "id": "credit-example",
+   "provider": "balance_http",
+   "vendor": "example_models",
+   "label": "Example prepaid model credit",
+   "url": "https://api.example/v1/balance",
+   "token_env": "EXAMPLE_API_KEY",
+   "balance_path": "balance_infos[0].total_balance",
+   "unit_path": "balance_infos[0].currency",
+   "env_unset": ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ALL_PROXY", "all_proxy"],
+   "timeout_s": 15
+  },
+  {
+   "id": "seats-example",
+   "provider": "json_file",
+   "path": "~/example-usage/usage-history.jsonl",
+   "plans": [
+    {
+     "label": "Example assistant seat, weekly window",
+     "vendor": "example_ai",
+     "match": {"provider": "example_ai", "windowKind": "weekly"},
+     "group_by": "accountKey",
+     "observed_at_path": "sampledAt",
+     "max_age_hours": 48,
+     "facts": {"window_used_pct": "usedPercent", "resets_at": "resetsAt"}
+    }
+   ]
   }
  ]
 }

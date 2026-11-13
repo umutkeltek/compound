@@ -27,6 +27,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
@@ -36,6 +37,7 @@ COLLECTOR = {"name": "compound-inventory-collect", "version": "0.1.0"}
 SOURCE_STATES = ("ok", "failed", "needs_sign_in", "needs_owner", "costs_money", "not_supported", "skipped")
 FACT_STATES = ("ok", "needs_sign_in", "needs_owner", "costs_money", "not_supported", "failed")
 DETAIL_MAX = 200
+PCT = "pct"  # the unit name the inventory kinds file uses for percentages
 EXIT_OK, EXIT_WRITE, EXIT_USAGE = 0, 1, 2
 
 Result = collections.namedtuple("Result", "code out err")
@@ -254,12 +256,12 @@ def read_aws(ctx):
     region = region or "us-east-1"
     cap = int(ctx.row.get("max_resources") or 2000)
     facts = {
-        "identity_ok": ctx.fact(True),
+        "identity_ok": ctx.fact(True, "bool"),
         "account_tail": ctx.fact(account[-4:]),
         "region": ctx.fact(region),
         "cost_month_to_date": ctx.unknown("costs_money", "Cost Explorer charges per request; not called", "usd"),
         "credit_left": ctx.unknown("needs_owner", "credits are shown only in the billing console", "usd"),
-        "credit_ends": ctx.unknown("needs_owner", "credit end dates are shown only in the billing console"),
+        "credit_ends": ctx.unknown("needs_owner", "credit end dates are shown only in the billing console", "date"),
     }
     listing = ctx.run(base + ["--region", region, "resourcegroupstaggingapi", "get-resources",
                               "--max-items", str(cap)])
@@ -335,17 +337,17 @@ def read_pve(ctx):
             running[r.get("node")] += 1
         facts = {"status": ctx.fact(status), "guest_type": ctx.fact(r.get("type"))}
         if status == "running":
-            facts["cpu_pct"] = ctx.fact(round(100.0 * float(r.get("cpu") or 0), 1), "%")
+            facts["cpu_pct"] = ctx.fact(round(100.0 * float(r.get("cpu") or 0), 1), PCT)
             memory = pct(r.get("mem"), r.get("maxmem"))
-            facts["memory_pct"] = (ctx.fact(memory, "%") if memory is not None
-                                   else ctx.unknown("not_supported", "no memory size reported", "%"))
+            facts["memory_pct"] = (ctx.fact(memory, PCT) if memory is not None
+                                   else ctx.unknown("not_supported", "no memory size reported", PCT))
             if r.get("type") == "lxc":
                 disk = pct(r.get("disk"), r.get("maxdisk"))
-                facts["disk_pct"] = (ctx.fact(disk, "%") if disk is not None
-                                     else ctx.unknown("not_supported", "no disk size reported", "%"))
+                facts["disk_pct"] = (ctx.fact(disk, PCT) if disk is not None
+                                     else ctx.unknown("not_supported", "no disk size reported", PCT))
             else:
                 facts["disk_pct"] = ctx.unknown(
-                    "not_supported", "the hypervisor does not see disk use inside a virtual machine; read it on the guest", "%")
+                    "not_supported", "the hypervisor does not see disk use inside a virtual machine; read it on the guest", PCT)
         name = str(r.get("name") or f"{r.get('type')} {r.get('vmid')}")
         parent = host_ids.get(r.get("node"), "")
         guests.append(ctx.resource(f"pve:guest:{short_hash(key, r.get('type'), r.get('vmid'))}", "guest",
@@ -362,17 +364,17 @@ def read_pve(ctx):
         status = str(r.get("status") or "unknown")
         facts = {"status": ctx.fact(status), "guests_running": ctx.fact(running[node], "count")}
         if status == "online":
-            facts["cpu_pct"] = ctx.fact(round(100.0 * float(r.get("cpu") or 0), 1), "%")
-            facts["memory_pct"] = ctx.fact(pct(r.get("mem"), r.get("maxmem")), "%")
-            facts["disk_pct"] = ctx.fact(pct(r.get("disk"), r.get("maxdisk")), "%", "root disk")
+            facts["cpu_pct"] = ctx.fact(round(100.0 * float(r.get("cpu") or 0), 1), PCT)
+            facts["memory_pct"] = ctx.fact(pct(r.get("mem"), r.get("maxmem")), PCT)
+            facts["disk_pct"] = ctx.fact(pct(r.get("disk"), r.get("maxdisk")), PCT, "root disk")
             facts["cpus"] = ctx.fact(r.get("maxcpu"), "count")
             facts["memory_gib"] = ctx.fact(round(float(r.get("maxmem") or 0) / 2 ** 30, 1), "GiB")
             if storages[node]:
-                facts["storage_max_pct"] = ctx.fact(max(storages[node]), "%",
+                facts["storage_max_pct"] = ctx.fact(max(storages[node]), PCT,
                                                     f"highest of {len(storages[node])} storages")
         else:
             for name in ("cpu_pct", "memory_pct", "disk_pct"):
-                facts[name] = ctx.unknown("failed", f"the node is {status}", "%")
+                facts[name] = ctx.unknown("failed", f"the node is {status}", PCT)
         label = node_labels.get(node) or (ctx.row.get("label") if len(nodes) == 1 else "") or str(node)
         hosts.append(ctx.resource(host_ids[node], "host", label, facts=facts,
                                   places=ctx.row.get("places") if len(nodes) == 1 else None))
@@ -432,30 +434,354 @@ def read_ssh_host(ctx):
     df_rows = [line.split() for line in sec.get("df", []) if line.strip()]
     if len(df_rows) >= 2 and len(df_rows[-1]) >= 5 and df_rows[-1][4].endswith("%"):
         row = df_rows[-1]
-        facts["disk_pct"] = ctx.fact(float(row[4].rstrip("%")), "%", "root file system")
+        facts["disk_pct"] = ctx.fact(float(row[4].rstrip("%")), PCT, "root file system")
         try:
             facts["disk_gib"] = ctx.fact(round(int(row[1]) * 1024 / 2 ** 30, 1), "GiB")
         except ValueError:
             pass
     else:
-        facts["disk_pct"] = ctx.unknown("failed", "df gave no usable line", "%")
+        facts["disk_pct"] = ctx.unknown("failed", "df gave no usable line", PCT)
     mem = {}
     for line in sec.get("mem", []):
         match = re.match(r"(\w+):\s+(\d+)\s*kB", line)
         if match:
             mem[match.group(1)] = int(match.group(2))
     if mem.get("MemTotal") and "MemAvailable" in mem:
-        facts["memory_pct"] = ctx.fact(pct(mem["MemTotal"] - mem["MemAvailable"], mem["MemTotal"]), "%",
+        facts["memory_pct"] = ctx.fact(pct(mem["MemTotal"] - mem["MemAvailable"], mem["MemTotal"]), PCT,
                                        "used, not counting reclaimable cache")
         facts["memory_gib"] = ctx.fact(round(mem["MemTotal"] / 2 ** 20, 1), "GiB")
     else:
-        facts["memory_pct"] = ctx.unknown("not_supported", "the host has no simple memory read (/proc/meminfo)", "%")
+        facts["memory_pct"] = ctx.unknown("not_supported", "the host has no simple memory read (/proc/meminfo)", PCT)
     busy = cpu_busy_pct(sec.get("stat", []))
-    facts["cpu_pct"] = (ctx.fact(busy, "%", "busy over one second") if busy is not None
-                        else ctx.unknown("not_supported", "the host has no simple CPU read (/proc/stat)", "%"))
+    facts["cpu_pct"] = (ctx.fact(busy, PCT, "busy over one second") if busy is not None
+                        else ctx.unknown("not_supported", "the host has no simple CPU read (/proc/stat)", PCT))
     key = ctx.row.get("id_key") or ctx.row["ssh_alias"]
     label = ctx.row.get("label") or ctx.row["ssh_alias"]
     return [ctx.resource(f"ssh:host:{short_hash(key)}", "host", label, facts=facts, places=ctx.row.get("places"))]
+
+
+# --- shared parsing for the readers below ----------------------------------------------------
+
+MISSING = object()
+_PATH_PART = re.compile(r"([^.\[\]]+)|\[(-?\d+)\]")
+DEFAULT_UNITS = {"window_used_pct": PCT, "resets_at": "time", "ends_on": "date", "credit_ends": "date",
+                 "identity_ok": "bool", "verified": "bool", "has_search_property": "bool"}
+
+
+def json_path(doc, path):
+    """`a.b[0].c` lookup; MISSING when any step is absent. `[-1]` is the last item."""
+    cur = doc
+    for name, index in _PATH_PART.findall(str(path)):
+        if name:
+            if not isinstance(cur, dict) or name not in cur:
+                return MISSING
+            cur = cur[name]
+        else:
+            i = int(index)
+            if not isinstance(cur, list) or not -len(cur) <= i < len(cur):
+                return MISSING
+            cur = cur[i]
+    return cur
+
+
+def as_number(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return value if math.isfinite(value) else None
+    if isinstance(value, str):
+        try:
+            number = float(value.strip())
+        except ValueError:
+            return None
+        return number if math.isfinite(number) else None
+    return None
+
+
+def run_json(ctx, cmd, what):
+    """Run a listing command and parse its JSON. Only stderr goes into an error detail."""
+    result = ctx.run(cmd)
+    if result.code != 0:
+        err = result.err or ""
+        if re.search(r"log ?in|sign ?in|unauthori[sz]ed|not authenticated|credentials|expired|token", err, re.I):
+            raise SourceError("needs_sign_in", f"{what}: the tool is not signed in ({clip(err)})")
+        raise SourceError("failed", f"{what} failed (exit {result.code})" + (f": {clip(err)}" if err.strip() else ""))
+    return parse_json(result.out, what)
+
+
+# --- readers: cloudflare, search_console ------------------------------------------------------
+
+_CF_AUTH_CODES = {9103, 9106, 9107, 9109, 10000, 10001}
+
+
+def cloudflare_error(data, what):
+    errors = data.get("errors") or [{}]
+    first = errors[0] if isinstance(errors[0], dict) else {"message": str(errors[0])}
+    code, message = first.get("code"), str(first.get("message") or "no message")
+    if code in _CF_AUTH_CODES or re.search(r"auth|token", message, re.I):
+        return SourceError("needs_sign_in", f"{what}: the token was refused ({clip(message)})")
+    return SourceError("failed", f"{what}: {clip(message)}")
+
+
+@reader("cloudflare")
+def read_cloudflare(ctx):
+    """Zones with their plan, through the command the row names -> `domain`s under their `account`."""
+    template = [str(part) for part in ctx.require("command")]
+    paged = any("{page}" in part for part in template)
+    max_pages = int(ctx.row.get("max_pages") or 10)
+    zones, page, pages = [], 1, 1
+    while page <= min(pages, max_pages):
+        data = run_json(ctx, [part.replace("{page}", str(page)) for part in template], "zone list")
+        if not isinstance(data, dict):
+            raise SourceError("failed", "zone list: expected an object")
+        if data.get("success") is False:
+            raise cloudflare_error(data, "zone list")
+        zones.extend(z for z in (data.get("result") or []) if isinstance(z, dict))
+        pages = int((data.get("result_info") or {}).get("total_pages") or 1) if paged else 1
+        page += 1
+    if pages > max_pages:
+        ctx.detail = f"capped at {max_pages} pages of zones"
+    labels = ctx.row.get("account_labels") or {}
+    by_account = collections.OrderedDict()
+    for zone in zones:
+        by_account.setdefault(str((zone.get("account") or {}).get("id") or ""), []).append(zone)
+    resources, domains = [], []
+    for account, account_zones in by_account.items():
+        parent = ""
+        if account:
+            parent = f"cloudflare:account:{short_hash(account)}"
+            resources.append(ctx.resource(parent, "account", labels.get(account[-4:]) or f"Cloudflare account …{account[-4:]}",
+                                          facts={"identity_ok": ctx.fact(True, "bool"),
+                                                 "account_tail": ctx.fact(account[-4:]),
+                                                 "resources": ctx.fact(len(account_zones), "count", "zones")}))
+        for zone in account_zones:
+            name = str(zone.get("name") or "")
+            plan = (zone.get("plan") or {}).get("name")
+            facts = {
+                "plan": ctx.fact(plan) if plan else ctx.unknown("not_supported", "the zone list has no plan"),
+                "status": ctx.fact(str(zone.get("status") or "unknown")),
+                "renews_on": ctx.unknown("not_supported", "the zone list has no renewal date", "date"),
+            }
+            domain = ctx.resource(f"cloudflare:zone:{short_hash(zone.get('id') or name)}", "domain", name or "zone",
+                                  parent=parent, facts=facts, places=[name] if name else None)
+            domain["_host"] = name.lower()
+            domains.append(domain)
+    search_source = ctx.row.get("search_console_source")
+    if search_source:
+        ctx.after.append(lambda results: link_search_properties(ctx, results, search_source, domains))
+    return resources + domains
+
+
+def link_search_properties(ctx, results, search_source, domains):
+    """Set `has_search_property` by exact host match against the named search source's sites."""
+    entry = results.get(search_source)
+    if entry is not None and entry["state"] == "skipped":
+        return  # not read this run: leave the fact unreported
+    if entry is None or entry["state"] != "ok":
+        state = entry["state"] if entry is not None and entry["state"] in FACT_STATES else "failed"
+        detail = (f"no source '{search_source}' in the sources file" if entry is None
+                  else f"the search source '{search_source}' did not answer ({entry['state']})")
+        for domain in domains:
+            domain["facts"]["has_search_property"] = ctx.unknown(state, detail, "bool")
+        return
+    sites = {r["_host"]: r["id"] for r in entry["resources"] if r.get("_host")}
+    for domain in domains:
+        site = sites.get(domain["_host"])
+        domain["facts"]["has_search_property"] = ctx.fact(site is not None, "bool", "exact host match")
+        if site:
+            domain["links"].append({"rel": "search_property", "to": site})
+
+
+def site_host(url):
+    if url.startswith("sc-domain:"):
+        return url[len("sc-domain:"):].strip().lower()
+    return (urllib.parse.urlsplit(url).hostname or "").lower()
+
+
+@reader("search_console")
+def read_search_console(ctx):
+    """Search properties through the command the row names -> `site`s under one `account`."""
+    data = run_json(ctx, ctx.require("command"), "property list")
+    if isinstance(data, dict):
+        entries = data.get("siteEntry") or data.get("sites") or data.get("properties") or []
+    elif isinstance(data, list):
+        entries = data
+    else:
+        raise SourceError("failed", "property list: expected an object or a list")
+    account = f"{ctx.vendor}:account:{short_hash(ctx.row.get('id_key') or ctx.id)}"
+    sites = []
+    for entry in entries:
+        url = str((entry or {}).get("siteUrl") or (entry or {}).get("site_url") or "") if isinstance(entry, dict) else ""
+        if not url:
+            continue
+        level = str(entry.get("permissionLevel") or "")
+        facts = {
+            "verified": (ctx.fact(level != "siteUnverifiedUser", "bool", f"permission: {level}") if level
+                         else ctx.unknown("not_supported", "the listing has no permission level", "bool")),
+            "last_data_day": ctx.unknown("not_supported", "needs a search analytics query; not run", "date"),
+        }
+        if level:
+            facts["permission"] = ctx.fact(level)
+        site = ctx.resource(f"{ctx.vendor}:site:{short_hash(url)}", "site", url, parent=account, facts=facts)
+        site["_host"] = site_host(url)
+        sites.append(site)
+    owner = ctx.resource(account, "account", ctx.row.get("label") or ctx.id, places=ctx.row.get("places"),
+                         facts={"identity_ok": ctx.fact(True, "bool"),
+                                "resources": ctx.fact(len(sites), "count", "search properties")})
+    return [owner] + sites
+
+
+# --- readers: balance_http, json_file ----------------------------------------------------------
+
+def read_token(ctx):
+    """The token for one request, from the named environment variable or command. Never stored."""
+    env_name, command = ctx.row.get("token_env"), ctx.row.get("token_command")
+    if env_name:
+        token = (ctx.env.get(env_name) or "").strip()
+        if not token:
+            raise SourceError("needs_sign_in", f"the environment variable {env_name} is not set")
+    elif command:
+        result = ctx.run(command)
+        lines = (result.out or "").strip().splitlines()
+        if result.code != 0 or not lines:
+            raise SourceError("needs_sign_in", f"the token command gave no token (exit {result.code})")
+        token = lines[0].strip()
+    else:
+        raise SourceError("failed", "the sources row names neither token_env nor token_command")
+    if any(ch.isspace() or ord(ch) < 32 for ch in token):
+        raise SourceError("needs_sign_in", "the token has an unexpected shape")
+    return token
+
+
+@reader("balance_http")
+def read_balance_http(ctx):
+    """A free GET balance endpoint -> one `plan` with `balance` read at `balance_path`."""
+    url = str(ctx.require("url"))
+    if not url.startswith("https://"):
+        raise SourceError("failed", "the url must start with https://")
+    balance_path = ctx.require("balance_path")
+    token = read_token(ctx)
+    scheme = ctx.row.get("auth_scheme", "Bearer")
+    headers = {"Accept": "application/json",
+               ctx.row.get("auth_header") or "Authorization": f"{scheme} {token}" if scheme else token}
+    try:
+        status, body = ctx.http_get(url, headers)
+    except SourceError:
+        raise
+    except Exception as exc:  # never let an exception message (which may quote a header) through
+        raise SourceError("failed", f"request failed ({type(exc).__name__})")
+    finally:
+        token = headers = None
+    if status in (401, 403):
+        raise SourceError("needs_sign_in", f"the endpoint refused the token (HTTP {status})")
+    if status != 200:
+        raise SourceError("failed", f"the endpoint answered HTTP {status}")
+    data = parse_json((body or b"").decode("utf-8", "replace"), "balance")
+    unit = str(ctx.row.get("unit") or "")
+    if ctx.row.get("unit_path"):
+        found = json_path(data, ctx.row["unit_path"])
+        if isinstance(found, str) and found.strip():
+            unit = found.strip().lower()
+    value = json_path(data, balance_path)
+    number = as_number(value)
+    if value is MISSING or value is None:
+        balance = ctx.unknown("not_supported", f"the endpoint gave no value at {balance_path}", unit)
+    elif number is None:
+        balance = ctx.unknown("failed", f"the value at {balance_path} is not a number", unit)
+    else:
+        balance = ctx.fact(number, unit)
+    ends_path = ctx.row.get("ends_on_path")
+    ends = json_path(data, ends_path) if ends_path else MISSING
+    if ends is MISSING or ends is None or isinstance(ends, (dict, list)):
+        ends_on = ctx.unknown("not_supported", "the endpoint gives no end date", "date")
+    else:
+        ends_on = ctx.fact(str(ends), "date")
+    return [ctx.resource(f"{ctx.vendor}:plan:{short_hash(ctx.row.get('id_key') or ctx.id)}", "plan",
+                         ctx.row.get("label") or ctx.id, facts={"balance": balance, "ends_on": ends_on},
+                         places=ctx.row.get("places"))]
+
+
+def read_document(path, fmt):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+    except FileNotFoundError:
+        raise SourceError("failed", "the file does not exist")
+    except OSError as exc:
+        raise SourceError("failed", f"the file cannot be read ({type(exc).__name__})")
+    if fmt != "jsonl":
+        return parse_json(text, "file")
+    rows = []
+    for line in text.splitlines():
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            continue
+    return rows
+
+
+def pick_entries(doc, spec):
+    """[(group key, entry or None)] for one plan spec: `at`, or `match` (+ `group_by`) over items."""
+    if spec.get("at"):
+        found = json_path(doc, spec["at"])
+        return [("", found if isinstance(found, dict) else None)]
+    items = json_path(doc, spec["items_path"]) if spec.get("items_path") else doc
+    match = spec.get("match") or {}
+    chosen = [it for it in (items if isinstance(items, list) else [])
+              if isinstance(it, dict) and all(json_path(it, k) == v for k, v in match.items())]
+    if not spec.get("group_by"):
+        return [("", chosen[-1] if chosen else None)]
+    latest = collections.OrderedDict()
+    for item in chosen:  # the file is in time order: the last entry per group wins
+        key = json_path(item, spec["group_by"])
+        if key is not MISSING and key is not None:
+            latest[str(key)] = item
+    return list(latest.items()) or [("", None)]
+
+
+@reader("json_file")
+def read_json_file(ctx):
+    """Numbers another tool already publishes in a local JSON or JSONL file -> `plan`s."""
+    path = os.path.expanduser(str(ctx.require("path")))
+    fmt = ctx.row.get("format") or ("jsonl" if path.endswith(".jsonl") else "json")
+    doc = read_document(path, fmt)
+    resources = []
+    for spec in ctx.require("plans"):
+        label, vendor = spec.get("label") or ctx.id, spec.get("vendor") or ctx.vendor
+        max_age = spec.get("max_age_hours")
+        for key, item in pick_entries(doc, spec):
+            sampled = None
+            if item is not None and spec.get("observed_at_path"):
+                sampled = parse_time(json_path(item, spec["observed_at_path"]))
+            observed = iso(sampled) if sampled else None
+            too_old = ""
+            if sampled and max_age:
+                age = (ctx.now() - sampled).total_seconds() / 3600
+                if age > float(max_age):
+                    too_old = f"the newest entry is {age:.0f} h old (limit {float(max_age):g} h)"
+            facts = {}
+            for name, fspec in (spec.get("facts") or {}).items():
+                fpath = fspec if isinstance(fspec, str) else fspec.get("path")
+                unit = DEFAULT_UNITS.get(name, "") if isinstance(fspec, str) else \
+                    fspec.get("unit", DEFAULT_UNITS.get(name, ""))
+                value = json_path(item, fpath) if item is not None else MISSING
+                if item is None:
+                    facts[name] = ctx.unknown("failed", "no matching entry in the file", unit)
+                elif too_old:
+                    facts[name] = ctx.unknown("failed", too_old, unit)
+                elif value is MISSING or value is None:
+                    facts[name] = ctx.unknown("not_supported", f"the entry has no value at {fpath}", unit)
+                elif isinstance(value, (dict, list)):
+                    facts[name] = ctx.unknown("failed", f"the value at {fpath} is not a single value", unit)
+                else:
+                    if unit == "time" and parse_time(value):
+                        value = iso(parse_time(value))
+                    facts[name] = ctx.fact(value, unit, observed_at=observed)
+            suffix = f" …{short_hash(key)[-4:]}" if key else ""
+            resources.append(ctx.resource(f"{vendor}:plan:{short_hash(ctx.row.get('id_key') or ctx.id, label, key)}",
+                                          "plan", label + suffix, facts=facts, provider=vendor,
+                                          places=spec.get("places")))
+    return resources
 
 
 # --- the core -------------------------------------------------------------------------------
@@ -477,18 +803,28 @@ def normalize_fact(fact, fallback_time):
         state, value, detail = "failed", None, "the reader returned a number that is not finite"
     elif not isinstance(value, (bool, int, float, str)):
         state, value, detail = "failed", None, "the reader returned a value that is not a number, text or yes/no"
+    observed = parse_time(fact.get("observed_at"))
     return {"value": value, "unit": str(fact.get("unit") or ""), "state": state,
-            "detail": detail[:DETAIL_MAX], "observed_at": fact.get("observed_at") or fallback_time}
+            "detail": detail[:DETAIL_MAX], "observed_at": iso(observed) if observed else fallback_time}
+
+
+FACT_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 def normalize_resource(res, fallback_time):
-    out = {key: res.get(key) for key in ("id", "kind", "provider", "label", "parent", "source")}
-    out["parent"] = out["parent"] or ""
-    out["label"] = str(out["label"] or out["id"])
-    out["places"] = [str(p) for p in (res.get("places") or [])]
-    out["links"] = [{"rel": str(l.get("rel")), "to": str(l.get("to"))} for l in (res.get("links") or [])]
-    out["facts"] = {name: normalize_fact(f, fallback_time) for name, f in (res.get("facts") or {}).items()}
-    return out
+    """Only the contract's fields, in their types. Returns (resource, number of facts dropped
+    because their name is not lowercase letters, digits and _)."""
+    out = {key: str(res.get(key) or "") for key in ("id", "kind", "provider", "label", "parent", "source")}
+    out["label"] = out["label"] or out["id"]
+    if out["parent"] == out["id"]:
+        out["parent"] = ""
+    out["places"] = [str(p) for p in (res.get("places") or []) if str(p or "").strip()]
+    out["links"] = [{"rel": str(l.get("rel")), "to": str(l.get("to"))} for l in (res.get("links") or [])
+                    if isinstance(l, dict) and str(l.get("rel") or "").strip() and str(l.get("to") or "").strip()]
+    facts = res.get("facts") or {}
+    out["facts"] = {name: normalize_fact(f, fallback_time) for name, f in facts.items()
+                    if isinstance(name, str) and FACT_NAME.match(name)}
+    return out, len(facts) - len(out["facts"])
 
 
 def collect(doc, runner=run, http=http_get, now=utc_now, only=None, timeout_s=20.0, env=None):
@@ -534,19 +870,27 @@ def collect(doc, runner=run, http=http_get, now=utc_now, only=None, timeout_s=20
     seen, resources, sources = {}, [], []
     for sid in order:
         entry = results[sid]
-        dupes = 0
+        dupes = dropped = 0
         for res in entry["resources"]:
-            if res.get("id") in seen:
+            if not res.get("id") or res.get("id") in seen:
                 dupes += 1
                 continue
             seen[res.get("id")] = sid
-            resources.append(normalize_resource(res, entry["observed_at"]))
+            clean, bad_names = normalize_resource(res, entry["observed_at"])
+            resources.append(clean)
+            dropped += bad_names
         detail = entry["detail"]
         if dupes:
             detail = (detail + "; " if detail else "") + f"{dupes} already reported by another source"
+        if dropped:
+            detail = (detail + "; " if detail else "") + \
+                f"{dropped} facts dropped: a fact name must be lowercase letters, digits and _"
         sources.append({"id": sid, "provider": entry["row"]["provider"], "state": entry["state"],
                         "detail": detail[:DETAIL_MAX], "observed_at": entry["observed_at"],
                         "duration_ms": entry["duration_ms"]})
+    for res in resources:  # a parent must be another resource in this file
+        if res["parent"] and res["parent"] not in seen:
+            res["parent"] = ""
     return {"schema_version": OBSERVATION_SCHEMA, "observed_at": run_started, "collector": dict(COLLECTOR),
             "sources": sources, "resources": resources}
 
