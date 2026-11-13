@@ -10,6 +10,7 @@ package projection
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -345,33 +346,88 @@ func TestInventoryFalsifierTextShowsOnlyMaskedIDs(t *testing.T) {
 	}
 }
 
-func TestInventoryFalsifierTextStaysNearFortyLines(t *testing.T) {
-	data := mutateInventoryFixture(t, inventoryT0, func(doc map[string]any) {
-		resources := doc["resources"].([]any)
-		for i := 0; i < 30; i++ {
-			resources = append(resources, map[string]any{
-				"id": "dnsco:zone:z" + string(rune('a'+i%26)) + string(rune('a'+i/26)), "kind": "domain", "provider": "dnsco",
-				"label": "site" + string(rune('a'+i%26)) + string(rune('a'+i/26)) + ".example", "parent": "", "source": "dns",
-				"places": []any{}, "links": []any{}, "facts": map[string]any{},
-			})
+func inventoryTextLinesWithPrefix(text, prefix string) int {
+	n := 0
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			n++
 		}
-		doc["resources"] = resources
-	})
+	}
+	return n
+}
+
+func TestInventoryFalsifierTextCollapsesBigGroupsNeverAttention(t *testing.T) {
+	// 20 guests in one kind-and-provider group: the 2 in the fixture plus 18.
+	// Five more warn (memory 99 > 95), twelve have a failed fact.
+	withGuests := func(at time.Time) []byte {
+		return mutateInventoryFixture(t, at, func(doc map[string]any) {
+			stamp := inventoryT0.Format(time.RFC3339)
+			resources := doc["resources"].([]any)
+			for i := 0; i < 18; i++ {
+				mem := map[string]any{"value": 50, "unit": "pct", "state": "ok", "detail": "", "observed_at": stamp}
+				switch {
+				case i < 5:
+					mem["value"] = 99
+				case i < 17:
+					mem = map[string]any{"value": nil, "unit": "pct", "state": "failed", "detail": "agent timeout", "observed_at": stamp}
+				}
+				resources = append(resources, map[string]any{
+					"id": fmt.Sprintf("examplehv:vm:%d", 200+i), "kind": "guest", "provider": "examplehv",
+					"label": fmt.Sprintf("vm-%02d", i), "parent": "examplehv:node:example-node-1", "source": "lab",
+					"places": []any{}, "links": []any{},
+					"facts": map[string]any{
+						"status":     map[string]any{"value": "running", "unit": "", "state": "ok", "detail": "", "observed_at": stamp},
+						"memory_pct": mem,
+					},
+				})
+			}
+			doc["resources"] = resources
+		})
+	}
 	home := t.TempDir()
-	if _, err := RefreshInventory(home, data, InventoryRefreshOptions{}, inventoryT0); err != nil {
+	refreshInventoryAt(t, home, withGuests(inventoryT0), InventoryRefreshOptions{}, inventoryT0)
+	// The lab source then fails, so the whole group is carried.
+	t1 := inventoryT0.Add(time.Hour)
+	failed := mutateInventoryFixture(t, t1, inventorySourceDown("lab", "failed"))
+	refreshInventoryAt(t, home, failed, InventoryRefreshOptions{}, t1)
+
+	p, err := BuildInventory(home, InventoryQuery{}, t1)
+	if err != nil {
 		t.Fatal(err)
 	}
-	p, _ := BuildInventory(home, InventoryQuery{}, inventoryT0)
 	text := FormatInventoryText(p)
-	if n := strings.Count(text, "\n"); n > 42 {
-		t.Fatalf("text is %d lines:\n%s", n, text)
+	want := "  guest · examplehv: 20 resources, 6 with a warning, 20 from the last good read; `compound system inventory --kind guest` lists them"
+	if !strings.Contains(text, want+"\n") {
+		t.Fatalf("collapsed group line missing:\n%s", text)
 	}
-	if !strings.Contains(text, "more: compound system inventory --kind domain --provider dnsco") {
-		t.Fatalf("a capped group must say how to see the rest:\n%s", text)
+	if n := inventoryTextLinesWithPrefix(text, "    vm-") + inventoryTextLinesWithPrefix(text, "    app-vm"); n != 0 {
+		t.Fatalf("a collapsed group must not list its resources (%d listed):\n%s", n, text)
 	}
-	filtered, _ := BuildInventory(home, InventoryQuery{Kind: "domain"}, inventoryT0)
-	if got := strings.Count(FormatInventoryText(filtered), "\n    site"); got != 30 {
-		t.Fatalf("--kind domain must list every domain, got %d", got)
+	if !strings.Contains(text, "\n    lab-node …de-1: ") {
+		t.Fatalf("a group of six or fewer is listed in full:\n%s", text)
+	}
+	// Attention rows are never collapsed: every failed fact and warning shows.
+	if got := strings.Count(text, "Memory used failed: agent timeout"); got != 12 {
+		t.Fatalf("failed fact rows = %d, want 12:\n%s", got, text)
+	}
+	attention := 0
+	for _, a := range p.Attention {
+		if a.Kind != "snapshot" {
+			attention++
+		}
+	}
+	if got := inventoryTextLinesWithPrefix(text, "  - "); got != attention || attention < 19 {
+		t.Fatalf("attention lines = %d, rows = %d:\n%s", got, attention, text)
+	}
+
+	byProvider, _ := BuildInventory(home, InventoryQuery{Provider: "examplehv"}, t1)
+	if !strings.Contains(FormatInventoryText(byProvider), want) {
+		t.Fatal("--provider without --kind still collapses a big group")
+	}
+	byKind, _ := BuildInventory(home, InventoryQuery{Kind: "guest"}, t1)
+	listed := FormatInventoryText(byKind)
+	if n := inventoryTextLinesWithPrefix(listed, "    vm-") + inventoryTextLinesWithPrefix(listed, "    app-vm") + inventoryTextLinesWithPrefix(listed, "    collector-ct"); n != 20 {
+		t.Fatalf("--kind guest must list all 20 guests, got %d:\n%s", n, listed)
 	}
 }
 

@@ -10,19 +10,21 @@ import (
 )
 
 const (
-	inventoryTextLineBudget   = 40
-	inventoryTextAttentionMax = 10
-	inventoryTextValueMax     = 40
-	inventoryTextLabelMax     = 60
+	// inventoryTextGroupMax is the largest kind-and-provider group listed one
+	// line per resource when no --kind filter is given.
+	inventoryTextGroupMax = 6
+	inventoryTextValueMax = 40
+	inventoryTextLabelMax = 60
 )
 
 // FormatInventoryText renders the projection for a person, in plain words:
-// the snapshot age line, what needs attention, the sources, one line per kind,
-// the changes since the previous import, then resources grouped by kind and
-// provider with the facts that are known. Ids are masked to their last four
-// characters. A fact that is not known never shows a value. Without a
-// --kind/--provider filter the output stays near 40 lines; a group that does
-// not fit says how to see the rest.
+// the snapshot age line, what needs attention (every row, never collapsed),
+// the sources, one line per kind, the changes since the previous import, then
+// resources grouped by kind and provider with the facts that are known. Ids
+// are masked to their last four characters. A fact that is not known never
+// shows a value. Without --kind, a group of more than six resources is one
+// summary line that says how to list it, which keeps a real snapshot near 40
+// lines.
 func FormatInventoryText(p InventoryProjection) string {
 	var lines []string
 	add := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
@@ -63,11 +65,7 @@ func FormatInventoryText(p InventoryProjection) string {
 		add("Needs attention: nothing.")
 	} else {
 		add("Needs attention (%d):", len(attention))
-		for i, a := range attention {
-			if i == inventoryTextAttentionMax {
-				add("  - ... and %d more (see --json)", len(attention)-i)
-				break
-			}
+		for _, a := range attention { // never collapsed
 			if a.Kind == "source" {
 				add("  - %s: %s", inventoryClean(a.Label, inventoryTextLabelMax), inventoryClean(a.Why, 160))
 				continue
@@ -138,25 +136,28 @@ func FormatInventoryText(p InventoryProjection) string {
 		}
 		groups[len(groups)-1].items = append(groups[len(groups)-1].items, r)
 	}
-	limit := 0 // 0 = no cap
-	filtered := p.Filter.Kind != "" || p.Filter.Provider != ""
-	budget := inventoryTextLineBudget - len(lines)
-	if budget < 8 {
-		budget = 8
-	}
-	if !filtered && len(p.Resources)+len(groups) > budget {
-		limit = (budget - 2*len(groups)) / len(groups)
-		if limit < 1 {
-			limit = 1
-		}
-	}
 	for _, g := range groups {
-		add("  %s · %s (%d)", g.kind, g.provider, len(g.items))
-		for i, r := range g.items {
-			if limit > 0 && i == limit {
-				add("    ... %d more: compound system inventory --kind %s --provider %s", len(g.items)-i, g.kind, g.provider)
-				break
+		// Without --kind, a group of more than six resources is one line:
+		// how many, how many warn, how many are carried, and how to list them.
+		if p.Filter.Kind == "" && len(g.items) > inventoryTextGroupMax {
+			warned, carried := 0, 0
+			for _, r := range g.items {
+				if r.Carried {
+					carried++
+				}
+				for _, f := range r.Facts {
+					if f.Warn {
+						warned++
+						break
+					}
+				}
 			}
+			add("  %s · %s: %d resources, %d with a warning, %d from the last good read; `compound system inventory --kind %s` lists them",
+				g.kind, g.provider, len(g.items), warned, carried, g.kind)
+			continue
+		}
+		add("  %s · %s (%d)", g.kind, g.provider, len(g.items))
+		for _, r := range g.items {
 			add("    %s", inventoryResourceLine(r, generated))
 		}
 	}
