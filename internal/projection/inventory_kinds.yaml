@@ -1,0 +1,70 @@
+# System inventory kinds (compound.system_inventory_kinds.v0.1).
+#
+# Kinds are data: a new kind or fact is a new row here (or in the optional
+# overlay COMPOUND_HOME/config/inventory-kinds.yaml, merged by id), never new
+# code. Each fact names its group (identity | use | cost | credit | limit) and
+# may carry a warning threshold: warn_at plus warn_when (above | below).
+# A collector may report facts a kind does not list; the reader keeps them
+# and shows them as "other".
+schema_version: compound.system_inventory_kinds.v0.1
+kinds:
+  - id: account
+    title: Account
+    question: Does the sign-in work, what does the account hold, and what does it cost?
+    facts:
+      - {name: identity_ok, title: Sign-in works, unit: bool, group: identity}
+      - {name: resources, title: Resources, unit: count, group: use}
+      - {name: cost_month_to_date, title: Cost this month, unit: "", group: cost}
+      - {name: credit_left, title: Credit left, unit: "", group: credit}
+      - {name: credit_ends, title: Credit ends, unit: date, group: credit}
+      - {name: sign_in_expires, title: Sign-in expires, unit: date, group: identity}
+  - id: host
+    title: Host
+    question: Is the machine healthy, how full is it, and what does it cost?
+    facts:
+      - {name: cpu_pct, title: CPU used, unit: pct, group: use, warn_at: 90, warn_when: above}
+      - {name: memory_pct, title: Memory used, unit: pct, group: use, warn_at: 90, warn_when: above}
+      - {name: disk_pct, title: Disk used, unit: pct, group: use, warn_at: 80, warn_when: above}
+      - {name: guests_running, title: Guests running, unit: count, group: use}
+      - {name: cost_month, title: Cost per month, unit: "", group: cost}
+  - id: guest
+    title: Guest
+    question: Is the virtual machine or container running, and how full is it?
+    facts:
+      - {name: status, title: Status, unit: "", group: use}
+      - {name: cpu_pct, title: CPU used, unit: pct, group: use}
+      - {name: memory_pct, title: Memory used, unit: pct, group: use, warn_at: 95, warn_when: above}
+      - {name: disk_pct, title: Disk used, unit: pct, group: use, warn_at: 80, warn_when: above}
+  - id: service
+    title: Service
+    question: Is the service up and healthy?
+    facts:
+      - {name: status, title: Status, unit: "", group: use}
+      - {name: health, title: Health, unit: "", group: use}
+  - id: domain
+    title: Domain
+    question: Which plan is the domain on, when does it renew, and is it in search?
+    facts:
+      - {name: plan, title: Plan, unit: "", group: cost}
+      - {name: renews_on, title: Renews on, unit: date, group: cost}
+      - {name: has_search_property, title: Has a search property, unit: bool, group: identity}
+  - id: site
+    title: Site
+    question: Is the search or analytics property verified, and how recent is its data?
+    facts:
+      - {name: verified, title: Verified, unit: bool, group: identity}
+      - {name: last_data_day, title: Last data day, unit: date, group: use}
+  - id: app
+    title: App
+    question: What state is the app in?
+    facts:
+      - {name: status, title: Status, unit: "", group: use}
+  - id: plan
+    title: Plan
+    question: What is left on the paid plan, seat or prepaid balance, and when does it reset or end?
+    facts:
+      - {name: balance, title: Balance, unit: "", group: credit}
+      - {name: window_used_pct, title: Window used, unit: pct, group: limit, warn_at: 90, warn_when: above}
+      - {name: resets_at, title: Resets at, unit: time, group: limit}
+      - {name: ends_on, title: Ends on, unit: date, group: credit}
+      - {name: cost_month, title: Cost per month, unit: "", group: cost}
