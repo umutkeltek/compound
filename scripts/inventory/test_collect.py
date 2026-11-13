@@ -993,6 +993,63 @@ class MergeTests(unittest.TestCase):
                       "1 links dropped: relation not in the inventory kinds file"):
             self.assertIn(words, detail)
 
+    def test_a_datastore_technology_used_by_many_is_one_instance_per_user(self):
+        # "Postgres" named by three repos (one also in another source) is a technology, not one
+        # database; the one on a host is one instance and stays shared, as does an outside service.
+        def reader(ctx):
+            return [ctx.resource("scan:datastore:pg", "datastore", "Postgres"),
+                    ctx.resource("lab:datastore:db1", "datastore", "postgres on db-box", links=[
+                        {"rel": "runs_on", "to": "lab:host:db-box"}]),
+                    ctx.resource("lab:host:db-box", "host", "db-box"),
+                    ctx.resource("scan:external_service:pay", "external_service", "Pay service"),
+                    ctx.resource("repo:example.com/o/one", "repo", "one", links=[
+                        {"rel": "uses", "to": "scan:datastore:pg", "evidence": "one/.env.example"},
+                        {"rel": "uses", "to": "lab:datastore:db1"},
+                        {"rel": "uses", "to": "scan:external_service:pay"}]),
+                    ctx.resource("repo:example.com/o/two", "repo", "two", links=[
+                        {"rel": "uses", "to": "scan:datastore:pg", "confidence": "inferred"},
+                        {"rel": "uses", "to": "lab:datastore:db1"},
+                        {"rel": "uses", "to": "scan:external_service:pay"}]),
+                    ctx.resource("repo:example.com/o/three", "repo", "three", links=[
+                        {"rel": "uses", "to": "scan:datastore:pg"}]),
+                    ctx.resource("repo:example.com/o/one", "repo", "one again", links=[
+                        {"rel": "uses", "to": "scan:datastore:pg"}])]
+        obs = self.run_reader(reader)
+        res = {r["id"]: r for r in obs["resources"]}
+        self.assertNotIn("scan:datastore:pg", res)  # nothing else names the technology node
+        users = ("repo:example.com/o/one", "repo:example.com/o/two", "repo:example.com/o/three")
+        instances = {u: "scan:datastore:pg@" + collect.short_hash(u) for u in users}
+        for user, iid in instances.items():
+            inst = res[iid]
+            self.assertEqual((inst["kind"], inst["label"]), ("datastore", "Postgres (instance not known)"))
+            self.assertEqual((inst["facts"]["instance"]["value"], inst["facts"]["instance"]["state"]), ("not_known", "ok"))
+            pointing = [r["id"] for r in obs["resources"] for l in r["links"] if l["to"] == iid]
+            self.assertEqual(pointing, [user], iid)
+        one = {(l["rel"], l["to"]): l for l in res[users[0]]["links"]}
+        self.assertEqual(one[("uses", instances[users[0]])]["evidence"], "one/.env.example")
+        self.assertEqual(res[users[1]]["links"][0]["confidence"], "inferred")  # repointed, nothing else changed
+        for shared in ("lab:datastore:db1", "scan:external_service:pay"):
+            self.assertEqual(sum(1 for r in obs["resources"] for l in r["links"] if l["to"] == shared), 2, shared)
+            self.assertNotIn("instance", res[shared]["facts"])
+        self.assertEqual(sum(1 for r in obs["resources"] if r["kind"] == "datastore"), 4)
+
+    def test_a_datastore_used_by_one_or_still_named_otherwise_keeps_its_node(self):
+        def reader(ctx):
+            return [ctx.resource("scan:datastore:solo", "datastore", "SQLite"),
+                    ctx.resource("scan:datastore:pg", "datastore", "Postgres"),
+                    ctx.resource("app:service:a", "service", "a", links=[
+                        {"rel": "uses", "to": "scan:datastore:solo"}, {"rel": "uses", "to": "scan:datastore:pg"}]),
+                    ctx.resource("app:service:b", "service", "b", links=[{"rel": "uses", "to": "scan:datastore:pg"}]),
+                    ctx.resource("backup:target:t", "backup_target", "nightly", links=[
+                        {"rel": "backs_up_to", "to": "scan:datastore:pg"}])]
+        obs = self.run_reader(reader)
+        res = {r["id"]: r for r in obs["resources"]}
+        self.assertEqual(res["app:service:a"]["links"][0]["to"], "scan:datastore:solo")  # one user: unchanged
+        self.assertNotIn("instance", res["scan:datastore:solo"]["facts"])
+        self.assertIn("scan:datastore:pg", res)  # another relation still names it
+        self.assertEqual(res["backup:target:t"]["links"][0]["to"], "scan:datastore:pg")
+        self.assertEqual(res["app:service:b"]["links"][0]["to"], "scan:datastore:pg@" + collect.short_hash("app:service:b"))
+
 
 class PlainFailureTextTests(unittest.TestCase):
     """A source's detail is one plain sentence: never an exception class, a command line or a home path."""

@@ -20,6 +20,7 @@ Exit codes: 0 the observation file was written (failed sources are data, not err
 
 import argparse
 import collections
+import copy
 import importlib.util
 import json
 import math
@@ -186,6 +187,7 @@ def collect(doc, runner=run, http=http_get, now=utc_now, only=None, timeout_s=20
     for res in resources:  # a parent must be another resource in this file
         if res["parent"] and res["parent"] not in by_id:
             res["parent"] = ""
+    resources = split_technology_datastores(resources, run_started)
     return {"schema_version": OBSERVATION_SCHEMA, "observed_at": run_started, "collector": dict(COLLECTOR),
             "sources": sources, "resources": resources}
 
@@ -281,6 +283,60 @@ def merge_all(results, order):
             elif rank == TIER_DECLARED and (have["state"], have["value"]) != (fact["state"], fact["value"]):
                 disagreements[sid].append(f"{name} of {base['label']}")
     return resources, counts, disagreements
+
+
+# Links that say where a datastore is: on a host or a container, in a deployment, in an account.
+LOCATION_RELS = ("runs_on", "deployed_on", "owned_by")
+NOT_KNOWN = "not_known"  # the value a fact holds when a person or reader says it is not known
+
+
+def split_technology_datastores(resources, observed_at):
+    """A datastore with no location (no parent, no runs_on / deployed_on / owned_by link) that more
+    than one resource `uses` is a technology name ("Postgres"), not one database: each user has
+    its own instance, and one shared node would claim that everything using it depends on the
+    same thing. Each user gets its own resource `<id>@<hash of the user's id>`, labelled
+    "<technology> (instance not known)" with the fact `instance: not_known`, and its `uses` link
+    points there. The technology node goes when nothing else links to it. A datastore with a
+    location is one instance and stays shared. Runs once, after every source has merged."""
+    users = collections.defaultdict(list)
+    for res in resources:
+        for link in res["links"]:
+            if link["rel"] == "uses" and link["to"] != res["id"] and res["id"] not in users[link["to"]]:
+                users[link["to"]].append(res["id"])
+    technology = {}
+    for res in resources:
+        if res["kind"] != "datastore" or res["parent"] or len(users.get(res["id"], ())) < 2:
+            continue
+        if any(link["rel"] in LOCATION_RELS for link in res["links"]):
+            continue
+        technology[res["id"]] = res
+    if not technology:
+        return resources
+    still_named = set()
+    for res in resources:
+        for link in res["links"]:
+            if link["to"] in technology:
+                if link["rel"] == "uses":
+                    link["to"] = f"{link['to']}@{short_hash(res['id'])}"
+                else:
+                    still_named.add(link["to"])
+    out = []
+    for res in resources:
+        tech = technology.get(res["id"])
+        if tech is None:
+            out.append(res)
+            continue
+        if res["id"] in still_named:
+            out.append(res)
+        for user in users[res["id"]]:
+            instance = copy.deepcopy(tech)
+            instance["id"] = f"{tech['id']}@{short_hash(user)}"
+            instance["label"] = f"{tech['label']} (instance not known)"
+            instance["facts"]["instance"] = {"value": NOT_KNOWN, "unit": "", "state": "ok",
+                                             "detail": "a technology name: which instance this user has is not known",
+                                             "observed_at": tech.get("observed_at") or observed_at}
+            out.append(instance)
+    return out
 
 
 def load_sources(path):

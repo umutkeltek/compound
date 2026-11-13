@@ -180,6 +180,13 @@ resource or link whose kind or relation Compound's inventory kinds file does not
 and counted, because Compound refuses a whole file over one; `readers/_base.py` keeps the list,
 so a new kind or relation goes into the kinds file and there.
 
+After the merge, a `datastore` with no location (no `parent`, no `runs_on`, `deployed_on` or
+`owned_by` link) that more than one resource `uses` is a technology name ("Postgres"), not one
+database. Each user gets its own resource, `<id>@<hash of the user's id>`, labelled
+"<technology> (instance not known)" with the fact `instance: not_known`, and its `uses` link
+points there; the technology resource is kept only while another relation still names it. A
+datastore with a location is one instance and stays shared, and so does an outside service.
+
 ## Adding a provider
 
 A reader is one module in `readers/` (for example `readers/example_cli.py`) holding one
