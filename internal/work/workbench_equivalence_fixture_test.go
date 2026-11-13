@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"compound/internal/home"
 )
 
 // workViewFixture names the rows the same-output fixture plants, so tests can
@@ -16,6 +18,23 @@ type workViewFixture struct {
 	ContinueRuns   int
 	DispatchRuns   int
 	ResolvableRuns int
+	ArchivedPacket string
+}
+
+// newEquivalenceStore opens a store over an initialized home, which archiving
+// requires.
+func newEquivalenceStore(t *testing.T) *Store {
+	t.Helper()
+	homePath := filepath.Join(t.TempDir(), ".compound")
+	if err := home.Init(homePath, "test", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.advanceClock = func(logical time.Time) time.Time { return logical }
+	return s
 }
 
 // buildWorkViewEquivalenceFixture plants a home with every work state the work
@@ -45,13 +64,25 @@ func buildWorkViewEquivalenceFixture(t *testing.T, s *Store, at time.Time) workV
 	}
 	base := at.Add(-72 * time.Hour)
 
+	// Active-packet rows: a live one, and a newer one that is closed and
+	// archived, so the active-packet proof must find its newest candidate
+	// among archived works.
+	packetLive, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "equivalence live packet work", CanonicalSurface: DefaultActivePacketSurface}, base.Add(-10*time.Hour))
+	must(err)
+	packetArchived, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "equivalence archived packet work", CanonicalSurface: DefaultActivePacketSurface}, base.Add(-9*time.Hour))
+	must(err)
+	closeWorkbenchTestWork(t, s, packetArchived.ID, base.Add(-8*time.Hour), "equivalence archived packet close")
+	_, err = home.ArchiveOperationalHistory(s.home, home.OperationalArchiveOptions{Kinds: []string{"work"}}, base.Add(-7*time.Hour))
+	must(err)
+	fx.ArchivedPacket = packetArchived.ID
+
 	// Open rows, one per state the view distinguishes.
 	ready := create("equivalence ready work", "", base)
 	readyTwo := create("equivalence second ready work", "", base.Add(time.Minute))
 	proposed := create("equivalence proposed work", "proposed", base.Add(2*time.Minute))
 	held := create("equivalence held work", "held", base.Add(3*time.Minute))
 	claimed := create("equivalence claimed work", "", base.Add(4*time.Minute))
-	_, err := s.Claim(claimed, "codex", base.Add(5*time.Minute))
+	_, err = s.Claim(claimed, "codex", base.Add(5*time.Minute))
 	must(err)
 	running := create("equivalence running work", "", base.Add(6*time.Minute))
 	_, err = s.Claim(running, "claude", base.Add(7*time.Minute))
@@ -72,7 +103,7 @@ func buildWorkViewEquivalenceFixture(t *testing.T, s *Store, at time.Time) workV
 	must(err)
 	_, err = s.Advance(blocked, AdvanceInput{To: "blocked"}, base.Add(16*time.Minute))
 	must(err)
-	fx.Open = []string{ready, readyTwo, proposed, held, claimed, running, verifying, blocked}
+	fx.Open = []string{packetLive.ID, ready, readyTwo, proposed, held, claimed, running, verifying, blocked}
 
 	// Closed-but-not-archived rows: completed at spread-out times (some out of
 	// creation order, so recency is not ID order), one failed, one cancelled.

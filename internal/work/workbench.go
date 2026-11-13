@@ -465,7 +465,7 @@ func (s *Store) workbench(now time.Time, opts WorkbenchOptions, mode workbenchBu
 	for _, warning := range continueWarnings {
 		report.Integrity = append(report.Integrity, warning)
 	}
-	activePacket, activeWarnings := s.workbenchActivePacketProof(now, opts.ActivePacketSurface, opts.ActivePacketExpectedEvidenceRef)
+	activePacket, activeWarnings := s.workbenchActivePacketProof(now, opts.ActivePacketSurface, opts.ActivePacketExpectedEvidenceRef, works, opts.IncludeArchived, eventsByWork, mode)
 	wbLogStage("active_packet_proof", time.Now())
 	report.ActivePacketProof = activePacket
 	for _, warning := range activeWarnings {
@@ -503,8 +503,41 @@ func (s *Store) workbench(now time.Time, opts WorkbenchOptions, mode workbenchBu
 	return report, nil
 }
 
-func (s *Store) workbenchActivePacketProof(now time.Time, surface, expectedPacketEvidenceRef string) (*ActivePacketProofReport, []string) {
-	proof, err := s.ActivePacketProof(now, surface, expectedPacketEvidenceRef)
+// workbenchActivePacketProof answers the active-packet proof. The fast path
+// reuses the work list and event log this build already loaded instead of
+// re-reading every work file and the whole event log: the build's list is
+// list(includeArchived), so only archived works are read when it excludes
+// them, appended in ListWithArchived's order; and the build's events for one
+// work are the same lines, in log order, that eventsFor decodes from the same
+// log, because both decode every line strictly.
+func (s *Store) workbenchActivePacketProof(now time.Time, surface, expectedPacketEvidenceRef string, works []envelope.WorkEnvelope, worksIncludeArchived bool, eventsByWork map[string][]Event, mode workbenchBuildMode) (*ActivePacketProofReport, []string) {
+	var proof ActivePacketProofReport
+	var err error
+	if mode == workbenchReferencePath {
+		proof, err = s.ActivePacketProof(now, surface, expectedPacketEvidenceRef)
+	} else {
+		listWorks := func() ([]envelope.WorkEnvelope, error) {
+			if worksIncludeArchived {
+				return works, nil
+			}
+			// list() returns before reading archived works when work/work is
+			// absent; ListWithArchived inherits that, so this must too.
+			if _, statErr := os.Stat(filepath.Join(s.home, "work/work")); os.IsNotExist(statErr) {
+				return nil, nil
+			}
+			archived, _, archivedErr := s.archivedWorks()
+			if archivedErr != nil {
+				return nil, archivedErr
+			}
+			all := make([]envelope.WorkEnvelope, 0, len(works)+len(archived))
+			all = append(all, works...)
+			return append(all, archived...), nil
+		}
+		eventsFor := func(workID string) ([]Event, error) {
+			return eventsByWork[workID], nil
+		}
+		proof, err = s.activePacketProofFrom(now, surface, listWorks, eventsFor, expectedPacketEvidenceRef)
+	}
 	if err != nil {
 		return nil, []string{"active-packet-proof unreadable: " + err.Error()}
 	}

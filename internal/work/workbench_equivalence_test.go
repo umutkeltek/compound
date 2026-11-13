@@ -17,7 +17,7 @@ import (
 
 func TestWorkbenchFastPathMatchesReferenceProjection(t *testing.T) {
 	t.Parallel()
-	s := newStore(t)
+	s := newEquivalenceStore(t)
 	fx := buildWorkViewEquivalenceFixture(t, s, fixedNow)
 	cases := []WorkbenchOptions{
 		{},
@@ -27,6 +27,7 @@ func TestWorkbenchFastPathMatchesReferenceProjection(t *testing.T) {
 		{RecentLimit: 1000},
 		{RecentLimit: 5, Actor: "codex"},
 		{RecentLimit: 8, Actor: "claude"},
+		{RecentLimit: 5, IncludeArchived: true},
 	}
 	for _, opts := range cases {
 		name := fmt.Sprintf("recent=%d/actor=%s", opts.RecentLimit, opts.Actor)
@@ -69,9 +70,16 @@ func TestWorkbenchFastPathMatchesReferenceProjection(t *testing.T) {
 			t.Fatalf("integrity lost %q: %q", want, wide.Integrity)
 		}
 	}
+	readsBefore := s.eventLogReadCount()
 	narrow, err := s.workbench(fixedNow, WorkbenchOptions{}, workbenchFastPath)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if reads := s.eventLogReadCount() - readsBefore; reads != 1 {
+		t.Fatalf("fast build read the event log %d times, want 1 (the active-packet proof reuses it)", reads)
+	}
+	if narrow.ActivePacketProof == nil || narrow.ActivePacketProof.WorkID != fx.ArchivedPacket {
+		t.Fatalf("active packet proof must select the newest, archived packet work %s: %+v", fx.ArchivedPacket, narrow.ActivePacketProof)
 	}
 	if !continueRunsHaveStatus(narrow.ContinueRuns, "resolved") || !continueRunsHaveStatus(narrow.ContinueRuns, "waiting") {
 		t.Fatalf("default view must keep both resolved and waiting runs: %+v", narrow.ContinueRuns)
@@ -83,7 +91,7 @@ func TestWorkbenchFastPathMatchesReferenceProjection(t *testing.T) {
 // their referenced WorkEnvelopes are never opened.
 func TestWorkbenchResolvesOnlyKeptRunFiles(t *testing.T) {
 	t.Parallel()
-	s := newStore(t)
+	s := newEquivalenceStore(t)
 	fx := buildWorkViewEquivalenceFixture(t, s, fixedNow)
 	for _, limit := range []int{1, 5, 8} {
 		var fastResolved, refResolved int

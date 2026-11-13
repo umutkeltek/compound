@@ -42,6 +42,14 @@ type ActivePacketProofReport struct {
 }
 
 func (s *Store) ActivePacketProof(now time.Time, surface string, expectedPacketEvidenceRef ...string) (ActivePacketProofReport, error) {
+	return s.activePacketProofFrom(now, surface, s.ListWithArchived, s.eventsFor, expectedPacketEvidenceRef...)
+}
+
+// activePacketProofFrom is ActivePacketProof over injected reads, so the work
+// view can answer it from the work list and event log it already loaded
+// instead of reading both again. listWorks must return what ListWithArchived
+// returns and eventsFor what Store.eventsFor returns for the same home.
+func (s *Store) activePacketProofFrom(now time.Time, surface string, listWorks func() ([]envelope.WorkEnvelope, error), eventsFor func(string) ([]Event, error), expectedPacketEvidenceRef ...string) (ActivePacketProofReport, error) {
 	surface = strings.TrimSpace(surface)
 	if surface == "" {
 		surface = DefaultActivePacketSurface
@@ -63,7 +71,7 @@ func (s *Store) ActivePacketProof(now time.Time, surface string, expectedPacketE
 		ProofBoundary:             "WorkEnvelope -> ContextPack -> Receipt -> Transition; packet markdown is source evidence/fallback",
 	}
 
-	works, err := s.ListWithArchived()
+	works, err := listWorks()
 	if err != nil {
 		return report, err
 	}
@@ -85,7 +93,7 @@ func (s *Store) ActivePacketProof(now time.Time, surface string, expectedPacketE
 
 	w := candidates[0]
 	projection := WorkbenchReport{}
-	events, err := s.eventsFor(w.ID)
+	events, err := eventsFor(w.ID)
 	if err != nil {
 		return report, err
 	}
