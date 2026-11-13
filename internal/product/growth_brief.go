@@ -121,7 +121,7 @@ func BuildGrowthArea(homePath string, opts GrowthOptions) (GrowthAreaBrief, erro
 		b.Needs = append(b.Needs, ref(n))
 	}
 	for _, id := range cat.dependents(area.ID) {
-		if s := audit[id].Status; s != GrowthNotApplicable && s != GrowthDeferred {
+		if growthApplies(audit[id].Status) {
 			b.Unblocks = append(b.Unblocks, ref(id))
 		}
 	}

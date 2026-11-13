@@ -19,8 +19,19 @@ func growthBrief(productID, areaID string) string {
 	return fmt.Sprintf("compound product growth --product %s --area %s", productID, areaID)
 }
 
+// growthApplies reports whether an area status belongs to an area that
+// applies to the product and is judged: measured, partial, stale or blind.
+// Unknown, not-applicable and set-aside areas do not.
+func growthApplies(status string) bool {
+	switch status {
+	case GrowthMeasured, GrowthPartial, GrowthStale, GrowthBlind:
+		return true
+	}
+	return false
+}
+
 // unblocks counts, per area, the areas that need it directly or through
-// other areas, leaving out areas that do not apply or are set aside.
+// other areas, counting only the areas that apply to the product.
 func (c *growthAreaCatalog) unblocks(status map[string]string) map[string]int {
 	dependents := map[string][]string{}
 	for _, a := range c.Areas {
@@ -42,7 +53,7 @@ func (c *growthAreaCatalog) unblocks(status map[string]string) map[string]int {
 			queue = append(queue, dependents[id]...)
 		}
 		for id := range seen {
-			if s := status[id]; s != GrowthNotApplicable && s != GrowthDeferred {
+			if growthApplies(status[id]) {
 				out[a.ID]++
 			}
 		}

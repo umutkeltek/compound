@@ -356,9 +356,35 @@ func TestGrowthAuditStatuses(t *testing.T) {
 		t.Fatalf("next_moves = %+v", web.NextMoves)
 	}
 	// No revenue on file hides whether monetization applies, so the profile
-	// comes first; then the open gap most other areas need.
-	if web.NextMoves[0].Kind != "set_profile" || web.NextMoves[1].AreaID != "experience_journeys" || web.NextMoves[1].Unblocks == 0 {
-		t.Fatalf("first moves = %+v", web.NextMoves)
+	// comes first; then the open gap that the most applicable areas need,
+	// worked out here from the product's own audit and the catalog's needs so
+	// a catalog edit does not move the expectation.
+	cat, err := loadEmbeddedGrowthCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := map[string]string{}
+	for _, a := range web.Audit {
+		status[a.AreaID] = a.Status
+	}
+	wantID, wantN := "", -1
+	for _, a := range web.Audit {
+		if (a.Status != GrowthBlind && a.Status != GrowthPartial) || len(a.BlockedBy) > 0 {
+			continue
+		}
+		n := 0
+		for _, id := range cat.dependents(a.AreaID) {
+			switch status[id] {
+			case GrowthMeasured, GrowthPartial, GrowthStale, GrowthBlind:
+				n++
+			}
+		}
+		if n > wantN {
+			wantID, wantN = a.AreaID, n
+		}
+	}
+	if web.NextMoves[0].Kind != "set_profile" || web.NextMoves[1].AreaID != wantID || web.NextMoves[1].Unblocks != wantN || wantN <= 0 {
+		t.Fatalf("first moves = %+v, want set_profile, then %s unblocking %d", web.NextMoves, wantID, wantN)
 	}
 }
 
