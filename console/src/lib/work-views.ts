@@ -35,6 +35,22 @@ function titleFor(item: Json): string {
   return str(item.success_predicate) || str(item.desired_outcome) || str(item.title) || workId(item) || "work item";
 }
 
+/** Claimant first (who holds it now), then the accountable owner. */
+function ownerOf(item: Json): string {
+  return str(item.claimed_by) || str(item.owner);
+}
+
+/** "claude:cf1" and "claude:cf2" share the "claude" lane; empty = unassigned. */
+function ownerLaneId(item: Json): string {
+  const owner = ownerOf(item);
+  return owner ? `owner:${owner.split(":")[0]}` : "unassigned";
+}
+
+function ownerLaneLabel(item: Json): string {
+  const owner = ownerOf(item);
+  return owner ? owner.split(":")[0] : "Unassigned";
+}
+
 function byWork(report: TrafficReport): Map<string, { laneId: string; laneLabel: string; work: TrafficWork }> {
   const out = new Map<string, { laneId: string; laneLabel: string; work: TrafficWork }>();
   for (const lane of report.lanes) {
@@ -56,12 +72,16 @@ export function buildWorkLensItems(open: Json[], traffic: TrafficReport): WorkLe
       workId: id,
       title: shortText(titleFor(item), 180),
       state: str(item.state) || "unknown",
-      owner: str(item.claimed_by) || str(item.owner) || "Unassigned",
+      owner: ownerOf(item) || "Unassigned",
       nextAction: shortText(str(item.next_action), 160),
       canonicalSurface: str(item.canonical_surface),
       ageLabel: age ? ago(age) : "age unavailable",
-      laneId: joined?.laneId ?? "unassigned",
-      laneLabel: joined?.laneLabel ?? "Unassigned",
+      // The lane is the executor lane that runs the item. When the executor
+      // join has no row for it (executors not read yet, or no lane runs it),
+      // fall back to the item's own claimant/owner: the data has owners, so
+      // "Unassigned" is only for an item that truly has neither.
+      laneId: joined?.laneId ?? ownerLaneId(item),
+      laneLabel: joined?.laneLabel ?? ownerLaneLabel(item),
       harness: run?.harness ?? "",
       harnessLabel: harnessDisplayName(run?.harness ?? ""),
       runStatus: run?.runStatus ?? "",
@@ -82,7 +102,16 @@ export function groupWorkLensItems(items: WorkLensItem[], traffic: TrafficReport
     items: items.filter((item) => item.laneId === lane.agentId),
   }));
   const assigned = new Set(groups.flatMap((group) => group.items.map((item) => item.workId)));
-  const unassigned = items.filter((item) => !assigned.has(item.workId));
-  if (unassigned.length) groups.push({ id: "unassigned", label: "Unassigned", status: "waiting", items: unassigned });
-  return groups.filter((group) => group.items.length > 0);
+  // Items no executor lane reports are grouped by their own owner (same
+  // fallback as the item's lane), and only items with no owner at all are
+  // "Unassigned".
+  const byOwner = new Map<string, WorkLensGroup>();
+  for (const item of items) {
+    if (assigned.has(item.workId)) continue;
+    const group = byOwner.get(item.laneId) ?? { id: item.laneId, label: item.laneLabel, status: "waiting", items: [] };
+    group.items.push(item);
+    byOwner.set(item.laneId, group);
+  }
+  const rest = [...byOwner.values()].sort((a, b) => (a.id === "unassigned" ? 1 : b.id === "unassigned" ? -1 : b.items.length - a.items.length));
+  return [...groups, ...rest].filter((group) => group.items.length > 0);
 }
