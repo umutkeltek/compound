@@ -94,6 +94,7 @@ person's own name for the source) and a `provider` (the reader to use). Common o
 | `search_console` | the property list, through the `command` the row names | one `site` per property, under one `account` for the row |
 | `balance_http` | one free HTTPS GET; the token comes from `token_env` (an environment variable name) or `token_command` (a command that prints it); the balance is read at `balance_path`, the unit from `unit` or `unit_path`, an end date from `ends_on_path` | one `plan` |
 | `json_file` | numbers another tool already publishes in a local `.json` or `.jsonl` file, by JSON path | one `plan` per `plans[]` entry (or per group) |
+| `edges_file` | a nodes-and-links JSON file another tool or a one-off scout wrote, read through `kind_map`, `relation_map` and `same_as` in the row | one resource per kept node, with its links |
 
 Paths such as `balance_infos[0].total_balance` or `providers.example.used` step into objects
 by name and into lists by index (`[-1]` is the last item).
@@ -127,9 +128,29 @@ Notes on what each reader cannot see:
   `facts` maps a fact name to a path (or `{"path", "unit"}`). With `observed_at_path` each
   fact carries the entry's own time; with `max_age_hours` an older entry is reported as
   `failed` with its age instead of an outdated number.
+- `edges_file`: the file is `{"observed_at"?, "nodes": [{id, kind, label, provider}], "edges":
+  [{from, rel, to, confidence?, evidence?}]}`. `kind_map` and `relation_map` translate the file's
+  words into inventory kinds and relations (`null` leaves one out on purpose); `same_as` maps a
+  node id to the id another reader emits for the same thing. Ids become canonical; a node of kind
+  `product` becomes `product:<product id>` and carries the product's own links. Every other node
+  gets `<provider>:<kind>:<hash>`. `observed_at` on each resource and link is the file's own date
+  (its `observed_at`, else its modification time); confidence is carried through. A kind or
+  relation the maps do not cover, a link whose end was not kept, and a link to itself are counted
+  in the source detail, never dropped silently; with `report_path` a private report (mode 0600)
+  names them, with resources that share kind and label under another id (likely duplicates).
 
 Fact names must be lowercase letters, digits and `_`; the collector drops any other name and
 says so in the source detail, so one bad row cannot make Compound refuse the whole file.
+
+## One resource per id: merging
+
+When two sources report the same id, the collector keeps one resource. What this run read
+itself is the base; older evidence from a file (`edges_file`) and declared statements
+(`declared`) merge into it: their links are added (one per relation and target, the strongest
+confidence wins), and their facts fill only what the base lacks or reported as not known. A
+resource or link whose kind or relation Compound's inventory kinds file does not serve is dropped
+and counted, because Compound refuses a whole file over one; `readers/_base.py` keeps the list,
+so a new kind or relation goes into the kinds file and there.
 
 ## Adding a provider
 

@@ -628,6 +628,160 @@ class JsonFileTests(unittest.TestCase):
         self.assertEqual(source(obs, "gone")["detail"], "The file does not exist.")
 
 
+GRAPH = {
+    "observed_at": "2031-03-01T00:00:00Z",
+    "nodes": [
+        {"id": "product:example_app", "kind": "product", "label": "example app", "provider": ""},
+        {"id": "repo:git.example/owner/Example-App", "kind": "repo", "label": "owner/Example-App", "provider": "git.example"},
+        {"id": "ci:workflow-1", "kind": "ci", "label": "build workflow", "provider": "ci"},
+        {"id": "container:host-a/web", "kind": "container", "label": "web (compose example)", "provider": "docker"},
+        {"id": "host:host-a", "kind": "host", "label": "host a", "provider": "lan"},
+        {"id": "service:host/vps", "kind": "service", "label": "vps as a service", "provider": "self-hosted"},
+        {"id": "domain:www.alpha.example", "kind": "domain", "label": "www.alpha.example", "provider": ""},
+        {"id": "zone:Alpha.Example", "kind": "zone", "label": "alpha.example (registrar note)", "provider": "dns"},
+        {"id": "alias:help@alpha.example", "kind": "alias", "label": "help@alpha.example", "provider": "mail"},
+        {"id": "mailbox:owner@alpha.example", "kind": "mailbox", "label": "owner@alpha.example", "provider": "mail"},
+        {"id": "store_app:com.example.app", "kind": "store_app", "label": "com.example.app", "provider": "apple"},
+        {"id": "gizmo:1", "kind": "gizmo", "label": "left out on purpose", "provider": ""},
+        {"id": "host:second-name", "kind": "host", "label": "Example server (old name)", "provider": "lan"},
+    ],
+    "edges": [
+        {"from": "product:example_app", "rel": "code_in", "to": "repo:git.example/owner/Example-App",
+         "confidence": "observed", "evidence": "example/README.md"},
+        {"from": "product:example_app", "rel": "deployed_on", "to": "container:host-a/web", "confidence": "declared",
+         "evidence": "a written deployment record"},
+        {"from": "product:example_app", "rel": "sold_through", "to": "store_app:com.example.app", "confidence": "observed"},
+        {"from": "product:example_app", "rel": "calls", "to": "service:host/vps", "confidence": "observed"},
+        {"from": "container:host-a/web", "rel": "runs_on", "to": "host:host-a", "confidence": "observed"},
+        {"from": "container:host-a/web", "rel": "mystery_rel", "to": "host:host-a", "confidence": "observed"},
+        {"from": "repo:git.example/owner/Example-App", "rel": "built_by", "to": "ci:workflow-1", "confidence": "observed"},
+        {"from": "domain:www.alpha.example", "rel": "points_to", "to": "container:host-a/web", "confidence": "inferred",
+         "evidence": "name match"},
+        {"from": "alias:help@alpha.example", "rel": "forwards_to", "to": "mailbox:owner@alpha.example", "confidence": "inferred"},
+        {"from": "service:host/vps", "rel": "uses", "to": "container:host-a/web"},
+        {"from": "zone:Alpha.Example", "rel": "owned_by", "to": "gizmo:1"},
+        {"from": "host:host-a", "rel": "uses", "to": "host:host-a"},
+    ],
+}
+GRAPH_MAPS = {
+    "kind_map": {"product": "product", "repo": "repo", "container": "container", "host": "host", "service": "service",
+                 "domain": "hostname", "zone": "domain", "alias": "alias", "mailbox": "mailbox", "store_app": "store_app",
+                 "gizmo": None},
+    "relation_map": {"code_in": "code_in", "deployed_on": "deployed_on", "sold_through": "sold_through", "calls": "calls",
+                     "runs_on": "runs_on", "built_by": "built_by", "points_to": "points_to", "forwards_to": "forwards_to",
+                     "uses": "uses", "owned_by": "owned_by"},
+}
+
+
+class EdgesFileTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="inventory-edges-file-test-")
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        self.path = self.dir / "graph.json"
+        self.path.write_text(json.dumps(GRAPH))
+        ssh_id = "ssh:host:" + collect.short_hash("vps.example")
+        self.row = dict(GRAPH_MAPS, id="graph-example", provider="edges_file", path=str(self.path),
+                        same_as={"service:host/vps": ssh_id}, report_path=str(self.dir / "report.json"))
+
+    def observe(self):
+        runner = FakeRunner([(["vps.example"], R(0, LINUX_STATUS, "")), (["dns-cli", "page=1"], CF_PAGE_1),
+                             (["dns-cli", "page=2"], CF_PAGE_2)])
+        # the graph row comes FIRST: an observed resource still wins over its stand-in
+        return observe([self.row, SSH_ROW, dict(CF_ROW, search_console_source="")], runner)
+
+    def test_nodes_become_resources_with_canonical_ids_and_typed_links(self):
+        obs = self.observe()
+        res = {r["id"]: r for r in obs["resources"]}
+        product = res["product:example_app"]
+        self.assertEqual(product["kind"], "product")
+        links = {(l["rel"], l["to"]): l for l in product["links"]}
+        container = next(r for r in obs["resources"] if r["kind"] == "container")
+        self.assertTrue(container["id"].startswith("docker:container:"))
+        self.assertEqual(links[("code_in", "repo:git.example/owner/example-app")]["evidence"], "example/README.md")
+        self.assertEqual(links[("deployed_on", container["id"])]["confidence"], "declared")
+        self.assertIn(("sold_through", "store_app:apple/com.example.app"), links)
+        self.assertEqual(res["hostname:www.alpha.example"]["links"][0]["confidence"], "inferred")
+        self.assertEqual(res["alias:help@alpha.example"]["links"][0]["to"], "mailbox:owner@alpha.example")
+        self.assertEqual(container["links"], [{"rel": "runs_on", "to": "host:host-a", "confidence": "observed",
+                                               "observed_at": "2031-03-01T00:00:00Z"}])
+        self.assertEqual(product["observed_at"], "2031-03-01T00:00:00Z")  # the file's own date
+        self.assertEqual(source(obs, "graph-example")["state"], "ok")
+
+    def test_same_as_and_canonical_ids_merge_with_other_readers(self):
+        obs = self.observe()
+        hosts = [r for r in obs["resources"] if r["id"] == "ssh:host:" + collect.short_hash("vps.example")]
+        self.assertEqual(len(hosts), 1)
+        (host,) = hosts
+        self.assertEqual((host["kind"], host["label"], host["source"]), ("host", "Example server", "vps-example"))
+        self.assertEqual([l["rel"] for l in host["links"]], ["uses"])  # the stand-in's link moved onto it
+        self.assertIn(("calls", host["id"]), {(l["rel"], l["to"]) for l in
+                                             next(r for r in obs["resources"] if r["id"] == "product:example_app")["links"]})
+        domains = [r for r in obs["resources"] if r["id"] == "domain:alpha.example"]
+        self.assertEqual(len(domains), 1)
+        self.assertEqual((domains[0]["label"], domains[0]["source"]), ("alpha.example", "dns-example"))
+        # the stand-in for the server and the zone both merged into what this run read itself
+        self.assertIn("2 already reported by another source, merged", source(obs, "graph-example")["detail"])
+
+    def test_nothing_is_dropped_silently(self):
+        obs = self.observe()
+        detail = source(obs, "graph-example")["detail"]
+        self.assertTrue(detail.startswith("Kept 11 of 13 nodes and 8 of 12 links; "), detail)
+        self.assertIn("kinds not in the map: ci 1", detail)
+        self.assertIn("relations not in the map: mystery_rel 1", detail)
+        self.assertIn("nodes left out by the map: 1", detail)
+        self.assertIn("links missing an end: 2", detail)  # built_by -> ci, owned_by -> gizmo
+        self.assertIn("links to themselves: 1", detail)
+        self.assertIn("same_as matches: 1", detail)
+        self.assertIn("likely duplicates: 1", detail)
+        self.assertTrue(detail.endswith(".") and len(detail) <= 300, detail)
+        report = json.loads((self.dir / "report.json").read_text())
+        self.assertEqual(stat.S_IMODE(os.stat(self.dir / "report.json").st_mode), 0o600)
+        self.assertEqual(report["kinds_not_in_map"], {"ci": 1})
+        self.assertEqual(report["relations_not_in_map"], {"mystery_rel": 1})
+        self.assertEqual([d["label"] for d in report["likely_duplicates"]], ["Example server (old name)"])
+
+    def test_same_input_same_bytes(self):
+        self.assertEqual(json.dumps(self.observe()), json.dumps(self.observe()))
+
+    def test_missing_or_misshapen_file(self):
+        self.path.write_text(json.dumps({"nodes": {}}))
+        obs = observe([self.row])
+        self.assertEqual(source(obs, "graph-example")["detail"],
+                         "The nodes-and-links file has no list of nodes and list of links.")
+        obs = observe([dict(self.row, path=str(self.dir / "absent.json"))])
+        self.assertEqual(source(obs, "graph-example")["detail"], "The nodes-and-links file does not exist.")
+
+
+class MergeTests(unittest.TestCase):
+    def run_reader(self, fn, rows=None):
+        collect.READERS["merge_example"] = fn
+        try:
+            return observe(rows or [{"id": "m", "provider": "merge_example"}])
+        finally:
+            del collect.READERS["merge_example"]
+
+    def test_strongest_link_wins_and_unknown_kinds_and_relations_are_counted(self):
+        def reader(ctx):
+            return [ctx.resource("x:1", "service", "one", links=[
+                        {"rel": "uses", "to": "x:2", "confidence": "inferred"},
+                        {"rel": "uses", "to": "x:2", "confidence": "observed"},
+                        {"rel": "invented_rel", "to": "x:2"}]),
+                    ctx.resource("x:2", "invented_kind", "two"),
+                    ctx.resource("product:p", "service", "wrong kind for a product id"),
+                    ctx.resource("x:1", "service", "one again", links=[{"rel": "calls", "to": "x:3"}])]
+        obs = self.run_reader(reader)
+        (res,) = obs["resources"]
+        self.assertEqual([(l["rel"], l["to"], l["confidence"]) for l in res["links"]],
+                         [("uses", "x:2", "observed"), ("calls", "x:3", "observed")])
+        detail = source(obs, "m")["detail"]
+        for words in ("1 already reported by another source, merged",
+                      "1 resources dropped: kind not in the inventory kinds file",
+                      "1 resources dropped: a product: id needs the kind product, and the other way round",
+                      "1 links dropped: relation not in the inventory kinds file"):
+            self.assertIn(words, detail)
+
+
 class PlainFailureTextTests(unittest.TestCase):
     """A source's detail is one plain sentence: never an exception class, a command line or a home path."""
 

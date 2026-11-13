@@ -56,6 +56,7 @@ clip, mask_ids, short_hash, iso, parse_time = _base.clip, _base.mask_ids, _base.
 proxies_from_env, sentence, ToolProblem = _base.proxies_from_env, _base.sentence, _base.ToolProblem
 SOURCE_STATES, FACT_STATES, DETAIL_MAX = _base.SOURCE_STATES, _base.FACT_STATES, _base.DETAIL_MAX
 LINK_CONFIDENCE, canonical_id, repo_ref = _base.LINK_CONFIDENCE, _base.canonical_id, _base.repo_ref
+KINDS, RELATIONS, PRODUCT_PREFIX = _base.KINDS, _base.RELATIONS, _base.PRODUCT_PREFIX
 
 OBSERVATION_SCHEMA = "compound.system_inventory_observation.v0.2"
 SOURCES_SCHEMA = "compound.system_inventory_sources.v0.1"
@@ -169,31 +170,113 @@ def collect(doc, runner=run, http=http_get, now=utc_now, only=None, timeout_s=20
             except Exception:
                 results[sid]["detail"] = (results[sid]["detail"] + "; " if results[sid]["detail"] else "") + \
                     "the step that links this source to another one stopped on an unexpected error"
-    seen, resources, sources = {}, [], []
+    resources, counts, disagreements = merge_all(results, order)
+    by_id = {res["id"] for res in resources}
+    sources = []
     for sid in order:
-        entry = results[sid]
-        dupes = dropped = 0
-        for res in entry["resources"]:
-            if not res.get("id") or res.get("id") in seen:
-                dupes += 1
-                continue
-            seen[res.get("id")] = sid
-            clean, bad_names = normalize_resource(res, entry["observed_at"])
-            resources.append(clean)
-            dropped += bad_names
+        entry, count = results[sid], counts[sid]
         parts = [entry["detail"].rstrip(". ")] if entry["detail"] else []
-        if dupes:
-            parts.append(f"{dupes} already reported by another source")
-        if dropped:
-            parts.append(f"{dropped} facts dropped: a fact name must be lowercase letters, digits and _")
+        parts += [words.format(n=count[key]) for key, words in COUNT_WORDS if count[key]]
+        if disagreements[sid]:
+            parts.append(f"{len(disagreements[sid])} declared facts disagree with what was observed and the "
+                         f"observed values are kept (first: {disagreements[sid][0]})")
         sources.append({"id": sid, "provider": entry["row"]["provider"], "state": entry["state"],
-                        "detail": sentence("; ".join(parts)), "observed_at": entry["observed_at"],
+                        "detail": sentence("; ".join(parts), SOURCE_DETAIL_MAX), "observed_at": entry["observed_at"],
                         "duration_ms": entry["duration_ms"]})
     for res in resources:  # a parent must be another resource in this file
-        if res["parent"] and res["parent"] not in seen:
+        if res["parent"] and res["parent"] not in by_id:
             res["parent"] = ""
     return {"schema_version": OBSERVATION_SCHEMA, "observed_at": run_started, "collector": dict(COLLECTOR),
             "sources": sources, "resources": resources}
+
+
+# What the merge step counts per source, in the words its detail uses.
+COUNT_WORDS = (
+    ("merged", "{n} already reported by another source, merged"),
+    ("no_id", "{n} resources without an id dropped"),
+    ("bad_fact_names", "{n} facts dropped: a fact name must be lowercase letters, digits and _"),
+    ("unknown_kind", "{n} resources dropped: kind not in the inventory kinds file"),
+    ("product_id", "{n} resources dropped: a product: id needs the kind product, and the other way round"),
+    ("unknown_rel", "{n} links dropped: relation not in the inventory kinds file"),
+    ("self_link", "{n} links to their own resource dropped"),
+)
+SOURCE_DETAIL_MAX = 300
+TIER_OBSERVED, TIER_SECONDHAND, TIER_DECLARED = 0, 1, 2
+
+
+def tier(res):
+    """What this run read itself first, then older evidence a file carries (`_secondhand`), then
+    what a person declared (`_declared`): the first resource with an id is the base the others
+    merge into, so a live reading keeps its kind, label, source and facts."""
+    if res.get("_declared"):
+        return TIER_DECLARED
+    return TIER_SECONDHAND if res.get("_secondhand") else TIER_OBSERVED
+
+
+def stronger(link, other):
+    return LINK_CONFIDENCE.index(link["confidence"]) < LINK_CONFIDENCE.index(other["confidence"])
+
+
+def add_links(target, links, count):
+    """Add links to a resource: one per (rel, to), the strongest confidence wins; a link with a
+    relation the kinds file does not serve, or to its own resource, is dropped and counted."""
+    index = {(l["rel"], l["to"]): i for i, l in enumerate(target["links"])}
+    for link in links:
+        if link["rel"] not in RELATIONS:
+            count["unknown_rel"] += 1
+        elif link["to"] == target["id"]:
+            count["self_link"] += 1
+        elif (link["rel"], link["to"]) not in index:
+            index[(link["rel"], link["to"])] = len(target["links"])
+            target["links"].append(link)
+        elif stronger(link, target["links"][index[(link["rel"], link["to"])]]):
+            target["links"][index[(link["rel"], link["to"])]] = link
+
+
+def merge_all(results, order):
+    """Normalize every source's resources and merge those with the same id into one resource.
+
+    A later resource with an id already present adds its links (strongest confidence per link),
+    places, a missing parent and the facts the base does not have. A declared fact never
+    overwrites one already present: when the two disagree, the declared source's detail says so."""
+    counts = {sid: collections.Counter() for sid in order}
+    disagreements = {sid: [] for sid in order}
+    pending = [(tier(res), n, sid, res) for n, (sid, res) in
+               enumerate((sid, res) for sid in order for res in results[sid]["resources"])]
+    pending.sort(key=lambda item: (item[0], item[1]))
+    by_id, resources = {}, []
+    for rank, _, sid, res in pending:
+        count = counts[sid]
+        if not res.get("id"):
+            count["no_id"] += 1
+            continue
+        clean, bad_names = normalize_resource(res, results[sid]["observed_at"])
+        count["bad_fact_names"] += bad_names
+        if clean["kind"] not in KINDS:
+            count["unknown_kind"] += 1
+            continue
+        is_product_id = clean["id"].startswith(PRODUCT_PREFIX) and len(clean["id"]) > len(PRODUCT_PREFIX)
+        if (clean["kind"] == "product") != is_product_id or clean["id"] == PRODUCT_PREFIX:
+            count["product_id"] += 1
+            continue
+        links, clean["links"] = clean["links"], []
+        base = by_id.get(clean["id"])
+        if base is None:
+            add_links(clean, links, count)
+            by_id[clean["id"]] = clean
+            resources.append(clean)
+            continue
+        count["merged"] += 1
+        add_links(base, links, count)
+        base["places"] += [p for p in clean["places"] if p not in base["places"]]
+        base["parent"] = base["parent"] or clean["parent"]
+        for name, fact in clean["facts"].items():
+            have = base["facts"].get(name)
+            if have is None or (rank == TIER_DECLARED and have["state"] != "ok" and fact["state"] == "ok"):
+                base["facts"][name] = fact  # nothing was observed, or it was observed as not known
+            elif rank == TIER_DECLARED and (have["state"], have["value"]) != (fact["state"], fact["value"]):
+                disagreements[sid].append(f"{name} of {base['label']}")
+    return resources, counts, disagreements
 
 
 def load_sources(path):

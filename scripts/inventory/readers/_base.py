@@ -66,33 +66,33 @@ def mask_ids(text):
     return _LONG_TOKEN.sub(repl, text)
 
 
-def clip(text):
-    """One masked line of at most DETAIL_MAX characters, for a source or fact detail."""
+def clip(text, limit=DETAIL_MAX):
+    """One masked line of at most `limit` characters, for a source or fact detail."""
     lines = [line.strip() for line in str(text).splitlines() if line.strip()]
     line = lines[-1] if lines else ""
     line = mask_ids(line)
-    return line if len(line) <= DETAIL_MAX else line[: DETAIL_MAX - 1] + "…"
+    return line if len(line) <= limit else line[: limit - 1] + "…"
 
 
 _HOME_PATH = re.compile(r"(?:/Users|/home|/root(?=/))/?[^/\s'\"]*")
 _EXCEPTION_CLASS = re.compile(r"\(?\b[A-Z][A-Za-z0-9]*(?:Error|Exception|Expired)\b\)?:?")
 
 
-def scrub(text):
+def scrub(text, limit=DETAIL_MAX):
     """One masked line with home paths shown as `~` and exception class names removed."""
-    line = _EXCEPTION_CLASS.sub("", _HOME_PATH.sub("~", clip(text)))
+    line = _EXCEPTION_CLASS.sub("", _HOME_PATH.sub("~", clip(text, limit)))
     return re.sub(r"\s{2,}", " ", line).strip(" ;:,")
 
 
-def sentence(text):
+def sentence(text, limit=DETAIL_MAX):
     """`text` as one plain sentence: scrubbed, first letter upper case, ending in a full stop."""
-    line = scrub(text)
+    line = scrub(text, limit)
     if not line:
         return ""
     line = line[0].upper() + line[1:]
     if line[-1] not in ".!?…":
         line += "."
-    return line if len(line) <= DETAIL_MAX else line[: DETAIL_MAX - 1] + "…"
+    return line if len(line) <= limit else line[: limit - 1] + "…"
 
 
 def tool_said(err):
@@ -138,6 +138,16 @@ def pct(part, whole):
 # How sure a link is: a command or config file shows it now | a person or a written record says
 # it | concluded from a name or a match. Weakest last.
 LINK_CONFIDENCE = ("observed", "declared", "inferred")
+# The kinds and relations Compound's inventory kinds file serves (v0.2). Compound refuses a whole
+# observation file over one unknown kind or relation, so the collector drops and counts such a
+# resource or link instead. A new kind or relation goes into the kinds file AND here.
+KINDS = ("account", "host", "guest", "service", "domain", "site", "app", "plan", "product", "repo",
+         "deployment", "container", "hostname", "datastore", "external_service", "store_app", "mailbox",
+         "alias", "identity", "secret_store", "tunnel", "backup_target")
+RELATIONS = ("runs_on", "deployed_on", "uses", "calls", "sold_through", "routes_to", "points_to", "serves",
+             "forwards_to", "signs_in_with", "secret_kept_in", "recovers_through", "reached_through",
+             "backs_up_to", "code_in", "built_by", "owned_by", "search_property", "parent")
+PRODUCT_PREFIX = "product:"  # a Compound product: kind `product`, id `product:<product id>`
 # Kinds whose things are addressed by a name: two readers that see the same thing emit the same id.
 CANONICAL_KINDS = ("domain", "hostname", "mailbox", "alias", "repo", "host", "store_app")
 _SCP_REMOTE = re.compile(r"^[\w.-]+@([\w.-]+):(.+)$")
@@ -164,7 +174,8 @@ def repo_ref(remote):
 def canonical_id(kind, name):
     """The canonical id for a thing addressed by a name, or "" when `kind` has none or `name` is
     empty: `domain:<name>`, `hostname:<fqdn>`, `mailbox:<address>`, `alias:<address>`,
-    `repo:<host>/<owner>/<name>` (or `repo:local/<folder>`), `host:<label>`, `store_app:<store>/<app id>`."""
+    `repo:<host>/<owner>/<name>` (or `repo:local/<folder>`), `host:<label>`, `store_app:<store>/<app id>`,
+    and `product:<product id>` for a Compound product."""
     text = str(name or "").strip()
     if kind in ("domain", "hostname"):
         text = text.lower().rstrip(".")
@@ -182,9 +193,17 @@ def canonical_id(kind, name):
     elif kind == "store_app":
         store, _, app = text.partition("/")
         text = f"{store.lower()}/{app}" if store and app else ""
+    elif kind == "product":
+        text = text[len(PRODUCT_PREFIX):] if text.startswith(PRODUCT_PREFIX) else text
     else:
         return ""
     return f"{kind}:{text}" if text else ""
+
+
+def provider_token(text, fallback):
+    """A provider name usable inside an id: lowercase letters, digits, `_` and `-`."""
+    token = re.sub(r"[^a-z0-9_-]+", "-", str(text or "").lower()).strip("-")
+    return token or fallback
 
 
 def parse_json(text, what):
