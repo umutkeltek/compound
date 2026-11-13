@@ -126,6 +126,81 @@ Then add `{"id": "example-projects", "provider": "example_cli", "label": "…"}`
 file and a test with fake output in `test_collect.py`. The resource `kind` must exist in
 Compound's inventory kinds file; facts it does not list are kept and shown under "other".
 
+## Running it every day (prepared, not installed)
+
+Nothing here is installed by the repository. This is a generic example a person can copy.
+Save it as an executable file, for example `inventory-daily`, and set `INVENTORY_REPO` (or
+edit `REPO`) to the folder that holds this repository:
+
+```sh
+#!/bin/sh
+# inventory-daily: collect, then import into Compound. Safe to run with nobody present.
+# Exit: 0 imported | 75 another run holds the lock | 142 the collector hit the time limit
+#       1 or 2 the collector failed (nothing imported) | other: the import failed.
+set -u
+: "${COMPOUND_HOME:=$HOME/.compound}"
+export COMPOUND_HOME
+REPO="${INVENTORY_REPO:-/path/to/compound}"                # holds scripts/inventory/collect.py
+SOURCES="${INVENTORY_SOURCES:-$COMPOUND_HOME/config/inventory-sources.json}"
+COMPOUND_BIN="${COMPOUND_BIN:-compound}"
+OBS="${TMPDIR:-/tmp}/compound-inventory-observation.json"  # written mode 0600, replaced each run
+LOG="$COMPOUND_HOME/logs/inventory-daily.log"
+LOCKFILE="$COMPOUND_HOME/locks/inventory-daily.lock"
+LIMIT_S="${INVENTORY_LIMIT_S:-900}"                        # whole collection; each command has its own timeout too
+stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+mkdir -p "$COMPOUND_HOME/logs" "$COMPOUND_HOME/locks" || exit 1
+
+if [ "${INVENTORY_DAILY_LOCKED:-}" != 1 ]; then            # take the lock without waiting, run again inside it
+  case "$(uname -s)" in
+    Darwin|*BSD) INVENTORY_DAILY_LOCKED=1 lockf -s -t 0 "$LOCKFILE" "$0" ;;
+    *)           INVENTORY_DAILY_LOCKED=1 flock -n -E 75 "$LOCKFILE" "$0" ;;
+  esac
+  code=$?
+  [ "$code" -eq 75 ] && echo "$(stamp) skipped: another run holds the lock" >>"$LOG"
+  exit "$code"
+fi
+
+{
+  echo "$(stamp) start"
+  perl -e 'alarm shift; exec @ARGV or die "cannot start: $!\n"' "$LIMIT_S" \
+    python3 -I "$REPO/scripts/inventory/collect.py" --sources "$SOURCES" --out "$OBS" --verbose
+  code=$?
+  if [ "$code" -eq 0 ]; then
+    "$COMPOUND_BIN" system inventory refresh --collector-json "$OBS"
+    code=$?
+  fi
+  echo "$(stamp) end exit=$code"
+  exit "$code"
+} >>"$LOG" 2>&1
+```
+
+Why it is safe unattended: the lock is taken without waiting, so a second run exits 75 at once
+instead of piling up; every command runs without a terminal or stdin, `ssh` runs in batch
+mode, and each command has its own timeout, with `perl`'s alarm as the limit for the whole
+collection; a failed collection imports nothing; every run appends a start line, the
+collector's one-line-per-source report and an end line with the exit code to the log.
+Compound refuses an observation older than the one it holds, so a late run cannot replace a
+newer snapshot.
+
+What a person must install to run it daily:
+
+1. Python 3 (standard library only), `perl`, and `lockf` (macOS, BSD) or `flock` (Linux).
+   These ship with macOS and most Linux systems.
+2. The `compound` binary on the job's `PATH` (or `COMPOUND_BIN` set to its full path), for
+   the import.
+3. Every tool the sources file names, signed in so it works without a prompt: for example
+   `aws` profiles with a valid sign-in, an ssh key the job can use without a passphrase
+   prompt (an agent socket or a key file), and the DNS and search wrappers.
+4. A scheduler entry, which is the part that installs anything:
+   - macOS: a LaunchAgent in `~/Library/LaunchAgents/` with `ProgramArguments` set to the
+     script, `StartCalendarInterval` set to a daily time, and `EnvironmentVariables` giving a
+     `PATH` that includes the tools' folders (launchd starts with a minimal `PATH` and does
+     not read the shell profile); load it with `launchctl bootstrap gui/$(id -u) <plist>`.
+   - Linux: a systemd user timer, or a cron line such as `15 6 * * * /path/to/inventory-daily`.
+5. Tokens for `balance_http` sources: a scheduled job does not read the shell profile, so a
+   `token_env` variable is usually not set there. Use `token_command` with a password
+   manager command that works unattended. Never write a token into the job definition.
+
 ## Tests
 
 ```sh
