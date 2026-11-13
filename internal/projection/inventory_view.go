@@ -103,7 +103,19 @@ type InventoryChanges struct {
 	Added              []InventoryChangeRef  `json:"added"`
 	Removed            []InventoryChangeRef  `json:"removed"`
 	FactChanges        []InventoryFactChange `json:"fact_changes"`
+	LinksAdded         []InventoryLinkChange `json:"links_added"`
+	LinksRemoved       []InventoryLinkChange `json:"links_removed"`
 	Note               string                `json:"note,omitempty"`
+}
+
+// InventoryLinkChange is one link (resource, relation, target) that appeared
+// or disappeared since the previous import. A parent counts as a runs_on link.
+type InventoryLinkChange struct {
+	ResourceID string `json:"resource_id"`
+	Label      string `json:"label"`
+	Rel        string `json:"rel"`
+	To         string `json:"to"`
+	Confidence string `json:"confidence"`
 }
 
 // InventoryChangeRef names an added or removed resource.
@@ -136,6 +148,9 @@ type InventoryResourceView struct {
 	Children int             `json:"children"`
 	Places   []string        `json:"places"`
 	Links    []InventoryLink `json:"links"`
+	// ObservedAt is when the resource was last really seen, when its source
+	// says so (older evidence); "" means as of its source's read.
+	ObservedAt string `json:"observed_at"`
 	// Carried is true when the resource is shown from the last good read
 	// (LastObservedAt) of a source that did not answer this time.
 	Carried        bool                `json:"carried"`
@@ -182,7 +197,7 @@ func BuildInventory(home string, q InventoryQuery, now time.Time) (InventoryProj
 		Sources:       []InventorySource{},
 		Summary:       InventorySummary{ByKind: map[string]int{}, ByProvider: map[string]int{}},
 		Attention:     []InventoryAttention{},
-		Changes:       InventoryChanges{Added: []InventoryChangeRef{}, Removed: []InventoryChangeRef{}, FactChanges: []InventoryFactChange{}},
+		Changes:       emptyInventoryChanges(),
 		Resources:     []InventoryResourceView{},
 	}
 	snap, err := LoadInventorySnapshot(home)
@@ -265,14 +280,17 @@ func BuildInventory(home string, q InventoryQuery, now time.Time) (InventoryProj
 	current := inventoryFilter(obs.Resources, q)
 	for _, r := range current {
 		kind, _ := kinds.Kind(r.Kind)
-		fallbackAt := sourceAt[r.Source]
+		fallbackAt := r.ObservedAt
+		if fallbackAt == "" {
+			fallbackAt = sourceAt[r.Source]
+		}
 		if fallbackAt == "" {
 			fallbackAt = obs.ObservedAt
 		}
 		view := InventoryResourceView{
 			ID: r.ID, Kind: r.Kind, Provider: r.Provider, Label: r.Label, Parent: r.Parent,
 			Children: children[r.ID], Places: nonNilStrings(r.Places), Links: r.Links,
-			Carried: r.Carried, LastObservedAt: r.LastObservedAt,
+			ObservedAt: r.ObservedAt, Carried: r.Carried, LastObservedAt: r.LastObservedAt,
 			Facts: inventoryFactViews(kind, r.Facts, fallbackAt),
 		}
 		if r.Carried {
@@ -289,11 +307,13 @@ func BuildInventory(home string, q InventoryQuery, now time.Time) (InventoryProj
 			}
 			if f.Warn {
 				spec, _ := kind.Fact(f.Name)
+				why := f.Title + " is " + formatInventoryValue(f.Value, f.Unit)
+				if spec.WarnAt != nil {
+					why += fmt.Sprintf(", %s %s", spec.WarnWhen, formatInventoryValue(*spec.WarnAt, f.Unit))
+				}
 				p.Attention = append(p.Attention, InventoryAttention{
 					ResourceID: r.ID, Label: r.Label, Kind: r.Kind, Fact: f.Name, Title: f.Title,
-					Value: f.Value, Unit: f.Unit,
-					Why: fmt.Sprintf("%s is %s, %s %s", f.Title, formatInventoryValue(f.Value, f.Unit),
-						spec.WarnWhen, formatInventoryValue(*spec.WarnAt, f.Unit)),
+					Value: f.Value, Unit: f.Unit, Why: why,
 					rank: 3, past: inventoryPastThreshold(f.Value, spec),
 				})
 			}
@@ -414,8 +434,15 @@ func inventoryFactView(name, title, group, unit string, f InventoryObservedFact,
 }
 
 // inventoryPastThreshold returns how far (relative) an ok numeric value is
-// past its kind's threshold, or 0 when it is not past it.
+// past its kind's threshold, or 0 when it is not past it. Under the boolean
+// rule is_false, a value of no is 1 past (and yes, or not a bool, is 0).
 func inventoryPastThreshold(value any, spec InventoryFactSpec) float64 {
+	if spec.WarnWhen == inventoryWarnIsFalse {
+		if b, ok := value.(bool); ok && !b {
+			return 1
+		}
+		return 0
+	}
 	if spec.WarnAt == nil {
 		return 0
 	}
@@ -460,7 +487,8 @@ func inventoryNumber(value any) (float64, bool) {
 // A carried resource is never added or removed; a removed resource that refresh
 // dropped carries the drop reason.
 func diffInventory(before, after []InventoryObservedResource, dropped []InventoryChangeRef) InventoryChanges {
-	ch := InventoryChanges{Added: []InventoryChangeRef{}, Removed: []InventoryChangeRef{}, FactChanges: []InventoryFactChange{}}
+	ch := emptyInventoryChanges()
+	ch.LinksAdded, ch.LinksRemoved = diffInventoryLinks(before, after)
 	reasons := map[string]string{}
 	for _, d := range dropped {
 		reasons[d.ResourceID] = d.Reason
@@ -508,6 +536,59 @@ func diffInventory(before, after []InventoryObservedResource, dropped []Inventor
 		}
 	}
 	return ch
+}
+
+func emptyInventoryChanges() InventoryChanges {
+	return InventoryChanges{Added: []InventoryChangeRef{}, Removed: []InventoryChangeRef{}, FactChanges: []InventoryFactChange{},
+		LinksAdded: []InventoryLinkChange{}, LinksRemoved: []InventoryLinkChange{}}
+}
+
+// diffInventoryLinks compares the (resource, relation, target) links of two
+// snapshots; a parent counts as a runs_on link and the same link twice counts
+// once. A carried resource keeps its links, so carrying changes none.
+func diffInventoryLinks(before, after []InventoryObservedResource) (added, removed []InventoryLinkChange) {
+	keyed := func(resources []InventoryObservedResource) (map[string]InventoryLinkChange, []string) {
+		out := map[string]InventoryLinkChange{}
+		var keys []string
+		for _, r := range resources {
+			links := r.Links
+			if r.Parent != "" {
+				links = append([]InventoryLink{{Rel: "runs_on", To: r.Parent}}, links...)
+			}
+			for _, l := range links {
+				rel := l.Rel
+				if rel == InventoryRelParent {
+					rel = "runs_on"
+				}
+				key := r.ID + "\x00" + rel + "\x00" + l.To
+				if old, seen := out[key]; seen {
+					if inventoryConfidenceRank(l.Confidence) > inventoryConfidenceRank(old.Confidence) {
+						old.Confidence = InventoryLinkConfidence(l)
+						out[key] = old
+					}
+					continue
+				}
+				out[key] = InventoryLinkChange{ResourceID: r.ID, Label: r.Label, Rel: rel, To: l.To, Confidence: InventoryLinkConfidence(l)}
+				keys = append(keys, key)
+			}
+		}
+		sort.Strings(keys)
+		return out, keys
+	}
+	prev, prevKeys := keyed(before)
+	next, nextKeys := keyed(after)
+	added, removed = []InventoryLinkChange{}, []InventoryLinkChange{}
+	for _, k := range nextKeys {
+		if _, ok := prev[k]; !ok {
+			added = append(added, next[k])
+		}
+	}
+	for _, k := range prevKeys {
+		if _, ok := next[k]; !ok {
+			removed = append(removed, prev[k])
+		}
+	}
+	return added, removed
 }
 
 func inventoryDiffSide(facts map[string]InventoryObservedFact, name string) (any, string) {

@@ -5,7 +5,7 @@ package projection
 //
 // Compound only reads. A collector outside the core binary runs the user's
 // own signed-in, read-only listing tools and writes one observation file
-// (compound.system_inventory_observation.v0.1). `compound system inventory
+// (compound.system_inventory_observation.v0.2; v0.1 still imports). `compound system inventory
 // refresh --collector-json FILE` validates it against the contract and the
 // kinds, and stores it under COMPOUND_HOME/observed/inventory/ (snapshot.json,
 // with the one before kept as previous.json). The same evidence rules as the
@@ -27,7 +27,10 @@ import (
 
 const (
 	// InventoryObservationSchemaVersion names the collector's observation file.
-	InventoryObservationSchemaVersion = "compound.system_inventory_observation.v0.1"
+	// v0.2 adds typed links (confidence, evidence, observed_at), resource
+	// observed_at and product references; a v0.1 file still imports.
+	InventoryObservationSchemaVersion = "compound.system_inventory_observation.v0.2"
+	inventoryObservationSchemaV01     = "compound.system_inventory_observation.v0.1"
 	// InventorySnapshotSchemaVersion names the stored snapshot (observation + imported_at).
 	InventorySnapshotSchemaVersion = "compound.system_inventory_snapshot.v0.1"
 	// InventoryRefreshSchemaVersion names the refresh command's JSON result.
@@ -39,7 +42,21 @@ const (
 	maxInventoryBytes        = 32 << 20
 	maxInventoryProblems     = 20
 	inventoryFactNotReported = "not_reported"
+	maxInventoryEvidence     = 200
 )
+
+// Link confidence: observed (a command or config file shows it now), declared
+// (a person or a written record says it), inferred (concluded from a name or a
+// match). A link without one is observed.
+const (
+	InventoryConfidenceObserved = "observed"
+	InventoryConfidenceDeclared = "declared"
+	InventoryConfidenceInferred = "inferred"
+)
+
+// InventoryProductPrefix starts a product reference: a link to a Compound
+// product, or the id of a product resource that carries the product's links.
+const InventoryProductPrefix = "product:"
 
 // Source states a collector may report.
 var inventorySourceStates = map[string]bool{
@@ -89,6 +106,9 @@ type InventoryObservedResource struct {
 	Places   []string                         `json:"places"`
 	Links    []InventoryLink                  `json:"links"`
 	Facts    map[string]InventoryObservedFact `json:"facts"`
+	// ObservedAt (v0.2, optional) is when the resource was last really seen,
+	// for a source that carries older evidence.
+	ObservedAt string `json:"observed_at,omitempty"`
 	// Carried and LastObservedAt are set by refresh, never by a collector: a
 	// carried resource is shown from the last good read of a source that did
 	// not answer this time, with its facts unchanged.
@@ -96,10 +116,36 @@ type InventoryObservedResource struct {
 	LastObservedAt string `json:"last_observed_at,omitempty"`
 }
 
-// InventoryLink relates a resource to another resource or place.
+// InventoryLink relates a resource to another resource (v0.2: a resource in
+// the same file or a product:<id> reference; v0.1 also allowed a place).
+// Confidence, Evidence and ObservedAt are v0.2; Evidence is a short pointer
+// (a repo-relative file, a command name), never a value.
 type InventoryLink struct {
-	Rel string `json:"rel"`
-	To  string `json:"to"`
+	Rel        string `json:"rel"`
+	To         string `json:"to"`
+	Confidence string `json:"confidence,omitempty"`
+	Evidence   string `json:"evidence,omitempty"`
+	ObservedAt string `json:"observed_at,omitempty"`
+}
+
+// InventoryLinkConfidence is the link's confidence, observed when missing.
+func InventoryLinkConfidence(l InventoryLink) string {
+	if l.Confidence == "" {
+		return InventoryConfidenceObserved
+	}
+	return l.Confidence
+}
+
+func inventoryConfidenceRank(c string) int {
+	switch c {
+	case InventoryConfidenceObserved, "":
+		return 3
+	case InventoryConfidenceDeclared:
+		return 2
+	case InventoryConfidenceInferred:
+		return 1
+	}
+	return 0
 }
 
 // InventoryObservedFact is one fact with how and when it was read. Value is a
@@ -200,8 +246,9 @@ func ValidateInventoryObservation(obs InventoryObservation, kinds InventoryKindS
 	add := func(format string, args ...any) {
 		problems = append(problems, fmt.Sprintf(format, args...))
 	}
-	if obs.SchemaVersion != InventoryObservationSchemaVersion {
-		add("schema_version %q is not %q", obs.SchemaVersion, InventoryObservationSchemaVersion)
+	v01 := obs.SchemaVersion == inventoryObservationSchemaV01
+	if obs.SchemaVersion != InventoryObservationSchemaVersion && !v01 {
+		add("schema_version %q is not %q (or %q)", obs.SchemaVersion, InventoryObservationSchemaVersion, inventoryObservationSchemaV01)
 	}
 	if _, err := time.Parse(time.RFC3339, obs.ObservedAt); err != nil {
 		add("observed_at %q is not an RFC 3339 time", obs.ObservedAt)
@@ -267,9 +314,52 @@ func ValidateInventoryObservation(obs InventoryObservation, kinds InventoryKindS
 				add("%s: empty place", where)
 			}
 		}
+		isProduct := strings.HasPrefix(r.ID, InventoryProductPrefix)
+		if isProduct != (r.Kind == "product") {
+			add("%s: a product resource has kind product and an id that starts with %q", where, InventoryProductPrefix)
+		}
+		if r.ObservedAt != "" {
+			if v01 {
+				add("%s: observed_at needs schema_version %q", where, InventoryObservationSchemaVersion)
+			} else if _, err := time.Parse(time.RFC3339, r.ObservedAt); err != nil {
+				add("%s: observed_at %q is not an RFC 3339 time", where, r.ObservedAt)
+			}
+		}
 		for _, l := range r.Links {
 			if strings.TrimSpace(l.Rel) == "" || strings.TrimSpace(l.To) == "" {
 				add("%s: a link needs rel and to", where)
+				continue
+			}
+			if v01 {
+				// v0.1 links stay loose (a place, any rel), so an old file still imports.
+				if l.Confidence != "" || l.Evidence != "" || l.ObservedAt != "" {
+					add("%s: link confidence, evidence and observed_at need schema_version %q", where, InventoryObservationSchemaVersion)
+				}
+				continue
+			}
+			lw := fmt.Sprintf("%s link %s", where, l.Rel)
+			if _, known := kinds.Relation(l.Rel); !known {
+				add("%s: unknown relation %q (nearest: %s)", lw, l.Rel, kinds.NearestRelation(l.Rel))
+			}
+			// A target not in this file is allowed: a source that did not answer
+			// gets its resources back only by carry-forward. Refresh counts such
+			// links and the graph shows them as not in the inventory.
+			switch {
+			case l.To == r.ID:
+				add("%s: a link points at its own resource", lw)
+			case l.To == InventoryProductPrefix:
+				add("%s: product reference has no id", lw)
+			}
+			if inventoryConfidenceRank(l.Confidence) == 0 {
+				add("%s: unknown confidence %q (want observed, declared or inferred)", lw, l.Confidence)
+			}
+			if len([]rune(l.Evidence)) > maxInventoryEvidence {
+				add("%s: evidence is longer than %d characters (a pointer, never a value)", lw, maxInventoryEvidence)
+			}
+			if l.ObservedAt != "" {
+				if _, err := time.Parse(time.RFC3339, l.ObservedAt); err != nil {
+					add("%s: observed_at %q is not an RFC 3339 time", lw, l.ObservedAt)
+				}
 			}
 		}
 		for _, name := range sortedFactNames(r.Facts) {
@@ -419,6 +509,9 @@ func RefreshInventory(home string, data []byte, opts InventoryRefreshOptions, no
 	for _, r := range obs.Resources {
 		result.ByKind[r.Kind]++
 	}
+	if n := inventoryLinksOutside(obs.Resources); n > 0 {
+		result.Notes = append(result.Notes, fmt.Sprintf("%d links point at a resource that is not in the inventory; they are kept and shown as not known", n))
+	}
 	snap := InventorySnapshot{
 		SchemaVersion: InventorySnapshotSchemaVersion,
 		ImportedAt:    result.ImportedAt,
@@ -481,6 +574,24 @@ func carryInventoryResources(stored, next InventoryObservation, maxAge time.Dura
 		carried = append(carried, r)
 	}
 	return carried, dropped
+}
+
+// inventoryLinksOutside counts links whose target is neither a resource in
+// the list nor a product reference.
+func inventoryLinksOutside(resources []InventoryObservedResource) int {
+	ids := map[string]bool{}
+	for _, r := range resources {
+		ids[r.ID] = true
+	}
+	n := 0
+	for _, r := range resources {
+		for _, l := range r.Links {
+			if !ids[l.To] && !strings.HasPrefix(l.To, InventoryProductPrefix) {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 func inventoryDays(d time.Duration) string {

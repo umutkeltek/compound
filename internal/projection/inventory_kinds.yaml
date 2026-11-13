@@ -1,12 +1,37 @@
-# System inventory kinds (compound.system_inventory_kinds.v0.1).
+# System inventory kinds (compound.system_inventory_kinds.v0.2).
 #
-# Kinds are data: a new kind or fact is a new row here (or in the optional
-# overlay COMPOUND_HOME/config/inventory-kinds.yaml, merged by id), never new
-# code. Each fact names its group (identity | use | cost | credit | limit) and
-# may carry a warning threshold: warn_at plus warn_when (above | below).
+# Kinds and relations are data: a new kind, fact or relation is a new row here
+# (or in the optional overlay COMPOUND_HOME/config/inventory-kinds.yaml, merged
+# by id), never new code. Each fact names its group (identity | use | cost |
+# credit | limit) and may carry a warning rule: warn_at plus warn_when (above |
+# below), or warn_when: is_false alone for a yes/no fact that should be yes.
 # A collector may report facts a kind does not list; the reader keeps them
 # and shows them as "other".
-schema_version: compound.system_inventory_kinds.v0.1
+#
+# Each relation says how it reads both ways and what it means for the graph:
+# depends (the source cannot work without the target), contains, route,
+# identity (a sign-in, a secret store, a recovery or access route), backup or
+# other. A resource's parent counts as runs_on.
+schema_version: compound.system_inventory_kinds.v0.2
+relations:
+  - {id: runs_on, title: runs on, inverse_title: hosts, meaning: depends}
+  - {id: deployed_on, title: deployed on, inverse_title: carries the deployment of, meaning: depends}
+  - {id: uses, title: uses, inverse_title: used by, meaning: depends}
+  - {id: calls, title: calls, inverse_title: called by, meaning: depends}
+  - {id: sold_through, title: sold through, inverse_title: sells, meaning: depends}
+  - {id: routes_to, title: routes to, inverse_title: receives traffic from, meaning: route}
+  - {id: points_to, title: points to, inverse_title: pointed at by, meaning: route}
+  - {id: serves, title: serves, inverse_title: served by, meaning: route}
+  - {id: forwards_to, title: forwards to, inverse_title: receives mail from, meaning: route}
+  - {id: signs_in_with, title: signs in with, inverse_title: is the sign-in of, meaning: identity}
+  - {id: secret_kept_in, title: secret kept in, inverse_title: keeps the secret of, meaning: identity}
+  - {id: recovers_through, title: recovers through, inverse_title: is the recovery route of, meaning: identity}
+  - {id: reached_through, title: reached through, inverse_title: is the way into, meaning: identity}
+  - {id: backs_up_to, title: backs up to, inverse_title: holds the backup of, meaning: backup}
+  - {id: code_in, title: code in, inverse_title: holds the code of, meaning: other}
+  - {id: built_by, title: built by, inverse_title: builds, meaning: other}
+  - {id: owned_by, title: owned by, inverse_title: owns, meaning: other}
+  - {id: search_property, title: search property, inverse_title: is the search property of, meaning: other}
 kinds:
   - id: account
     title: Account
@@ -68,3 +93,69 @@ kinds:
       - {name: resets_at, title: Resets at, unit: time, group: limit}
       - {name: ends_on, title: Ends on, unit: date, group: credit}
       - {name: cost_month, title: Cost per month, unit: "", group: cost}
+  - id: product
+    title: Product
+    question: Which pieces does the product run on, and which of them are not known?
+  - id: repo
+    title: Repository
+    question: Is the code pushed somewhere other than this machine, and when did it last change?
+    facts:
+      - {name: has_remote, title: Has a remote, unit: bool, group: use, warn_when: is_false}
+      - {name: last_commit, title: Last commit, unit: date, group: use}
+  - id: deployment
+    title: Deployment
+    question: Is the deployed unit live, and when was it last deployed?
+    facts:
+      - {name: live, title: Live, unit: "", group: use}
+      - {name: last_deploy, title: Last deploy, unit: date, group: use}
+  - id: container
+    title: Container
+    question: Is the container running?
+    facts:
+      - {name: status, title: Status, unit: "", group: use}
+  - id: hostname
+    title: Hostname
+    question: Where does the name lead, and is the route known end to end?
+    facts:
+      - {name: traced, title: Traced, unit: "", group: use}
+  - id: datastore
+    title: Datastore
+    question: Where does the data live, and is it backed up?
+    facts:
+      - {name: backed_up, title: Backed up, unit: bool, group: use, warn_when: is_false}
+  - id: external_service
+    title: External service
+    question: Which outside service is this, and what relies on it?
+  - id: store_app
+    title: Store app
+    question: What state is the app in on its store?
+    facts:
+      - {name: status, title: Status, unit: "", group: use}
+  - id: mailbox
+    title: Mailbox
+    question: Which mailbox is this, and what signs in or recovers through it?
+  - id: alias
+    title: Mail alias
+    question: Where does the alias forward to?
+  - id: identity
+    title: Sign-in identity
+    question: Does the sign-in work, when does it end, and are a second factor and a recovery route on file?
+    facts:
+      - {name: sign_in_works, title: Sign-in works, unit: bool, group: identity, warn_when: is_false}
+      - {name: sign_in_ends, title: Sign-in ends, unit: date, group: identity}
+      - {name: second_factor_on_file, title: Second factor on file, unit: bool, group: identity}
+      - {name: recovery_on_file, title: Recovery route on file, unit: bool, group: identity}
+  - id: secret_store
+    title: Secret store
+    question: Which kind of store keeps the secret (never the secret itself)?
+    facts:
+      - {name: store_kind, title: Store kind, unit: "", group: identity}
+  - id: tunnel
+    title: Tunnel
+    question: Which tunnel reaches the host, and what does it route?
+  - id: backup_target
+    title: Backup target
+    question: When was the last backup, and is it off the host?
+    facts:
+      - {name: last_backup, title: Last backup, unit: date, group: use}
+      - {name: off_host, title: Off the host, unit: bool, group: use, warn_when: is_false}

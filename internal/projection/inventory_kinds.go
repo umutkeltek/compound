@@ -24,7 +24,30 @@ import (
 )
 
 // InventoryKindsSchemaVersion names the kinds file shape (embedded and overlay).
-const InventoryKindsSchemaVersion = "compound.system_inventory_kinds.v0.1"
+// v0.2 adds relations and the is_false warning rule; a v0.1 overlay still loads.
+const InventoryKindsSchemaVersion = "compound.system_inventory_kinds.v0.2"
+
+const inventoryKindsSchemaV01 = "compound.system_inventory_kinds.v0.1"
+
+// Relation meanings. A depends relation means the source cannot work without
+// the target; the graph walks depends relations (and parent) for "what does X
+// depend on", route relations when it starts from a hostname, and identity
+// relations for the sign-ins and secret stores a thing rests on.
+const (
+	InventoryMeaningDepends  = "depends"
+	InventoryMeaningContains = "contains"
+	InventoryMeaningRoute    = "route"
+	InventoryMeaningIdentity = "identity"
+	InventoryMeaningBackup   = "backup"
+	InventoryMeaningOther    = "other"
+)
+
+// InventoryRelParent is the link name of a resource's parent. It is not a
+// relation row: parent counts as runs_on.
+const InventoryRelParent = "parent"
+
+// inventoryWarnIsFalse is the boolean warning rule: warn when a yes/no fact is no.
+const inventoryWarnIsFalse = "is_false"
 
 // InventoryKindsOverlayRel is the overlay path relative to COMPOUND_HOME.
 const InventoryKindsOverlayRel = "config/inventory-kinds.yaml"
@@ -51,8 +74,18 @@ var inventoryTokenRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
 // InventoryKindsFile is the on-disk shape of the embedded file and the overlay.
 type InventoryKindsFile struct {
-	SchemaVersion string          `yaml:"schema_version" json:"schema_version"`
-	Kinds         []InventoryKind `yaml:"kinds" json:"kinds"`
+	SchemaVersion string              `yaml:"schema_version" json:"schema_version"`
+	Relations     []InventoryRelation `yaml:"relations" json:"relations"`
+	Kinds         []InventoryKind     `yaml:"kinds" json:"kinds"`
+}
+
+// InventoryRelation is one kind of link between resources: its id, how it
+// reads forwards and backwards, and what it means for the graph walks.
+type InventoryRelation struct {
+	ID           string `yaml:"id" json:"id"`
+	Title        string `yaml:"title" json:"title"`
+	InverseTitle string `yaml:"inverse_title" json:"inverse_title"`
+	Meaning      string `yaml:"meaning" json:"meaning"`
 }
 
 // InventoryKind is one resource kind and the facts worth knowing about it.
@@ -76,7 +109,8 @@ type InventoryFactSpec struct {
 // InventoryKindSet is the served kinds: embedded, merged with the overlay
 // when the overlay is present and valid.
 type InventoryKindSet struct {
-	Kinds []InventoryKind
+	Kinds     []InventoryKind
+	Relations []InventoryRelation
 	// OverlayPath is set when an overlay file exists (merged or not).
 	OverlayPath string
 	// OverlayError is the reason a present overlay was ignored; "" when the
@@ -113,6 +147,53 @@ func (s InventoryKindSet) KindIDs() []string {
 	return out
 }
 
+// Relation returns the served relation with the given id. parent is served
+// as runs_on.
+func (s InventoryKindSet) Relation(id string) (InventoryRelation, bool) {
+	if id == InventoryRelParent {
+		id = "runs_on"
+	}
+	for _, r := range s.Relations {
+		if r.ID == id {
+			return r, true
+		}
+	}
+	return InventoryRelation{}, false
+}
+
+// NearestRelation is the served relation id closest to id by edit distance,
+// for an error that says what was probably meant.
+func (s InventoryKindSet) NearestRelation(id string) string {
+	best, bestD := "", -1
+	for _, r := range s.Relations {
+		if d := inventoryEditDistance(id, r.ID); bestD < 0 || d < bestD {
+			best, bestD = r.ID, d
+		}
+	}
+	return best
+}
+
+func inventoryEditDistance(a, b string) int {
+	ra, rb := []rune(a), []rune(b)
+	prev := make([]int, len(rb)+1)
+	cur := make([]int, len(rb)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(ra); i++ {
+		cur[0] = i
+		for j := 1; j <= len(rb); j++ {
+			cost := 1
+			if ra[i-1] == rb[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev, cur = cur, prev
+	}
+	return prev[len(rb)]
+}
+
 // LoadInventoryKinds returns the embedded kinds merged with the overlay under
 // homePath (when homePath is non-empty and the overlay exists). It fails only
 // when the embedded file itself is invalid; any overlay problem is reported in
@@ -125,7 +206,10 @@ func LoadInventoryKinds(homePath string) (InventoryKindSet, error) {
 	if err := ValidateInventoryKinds(base.Kinds); err != nil {
 		return InventoryKindSet{}, fmt.Errorf("embedded inventory kinds: %w", err)
 	}
-	set := InventoryKindSet{Kinds: base.Kinds}
+	if err := ValidateInventoryRelations(base.Relations); err != nil {
+		return InventoryKindSet{}, fmt.Errorf("embedded inventory kinds: %w", err)
+	}
+	set := InventoryKindSet{Kinds: base.Kinds, Relations: base.Relations}
 	if strings.TrimSpace(homePath) == "" {
 		return set, nil
 	}
@@ -149,7 +233,13 @@ func LoadInventoryKinds(homePath string) (InventoryKindSet, error) {
 		set.OverlayError = "overlay " + InventoryKindsOverlayRel + ": " + err.Error()
 		return set, nil
 	}
+	mergedRels := MergeInventoryRelations(base.Relations, overlay.Relations)
+	if err := ValidateInventoryRelations(mergedRels); err != nil {
+		set.OverlayError = "overlay " + InventoryKindsOverlayRel + ": " + err.Error()
+		return set, nil
+	}
 	set.Kinds = merged
+	set.Relations = mergedRels
 	return set, nil
 }
 
@@ -181,10 +271,78 @@ func ParseInventoryKinds(data []byte) (InventoryKindsFile, error) {
 		}
 		return InventoryKindsFile{}, fmt.Errorf("parse kinds: %w", err)
 	}
-	if file.SchemaVersion != "" && file.SchemaVersion != InventoryKindsSchemaVersion {
+	switch file.SchemaVersion {
+	case "", InventoryKindsSchemaVersion:
+	case inventoryKindsSchemaV01:
+		if len(file.Relations) > 0 {
+			return InventoryKindsFile{}, fmt.Errorf("relations need kinds schema %q", InventoryKindsSchemaVersion)
+		}
+	default:
 		return InventoryKindsFile{}, fmt.Errorf("unsupported kinds schema %q (want %q)", file.SchemaVersion, InventoryKindsSchemaVersion)
 	}
 	return file, nil
+}
+
+// ValidateInventoryRelations checks unique token-shaped relation ids, titles
+// both ways and a known meaning. parent is reserved: it is served as runs_on.
+func ValidateInventoryRelations(rels []InventoryRelation) error {
+	seen := map[string]bool{}
+	for i, r := range rels {
+		if !inventoryTokenRe.MatchString(r.ID) {
+			return fmt.Errorf("relation %d: id %q must be lowercase letters, digits and _", i, r.ID)
+		}
+		if r.ID == InventoryRelParent {
+			return fmt.Errorf("relation %q is reserved: parent counts as runs_on", r.ID)
+		}
+		if seen[r.ID] {
+			return fmt.Errorf("relation %q is listed twice", r.ID)
+		}
+		seen[r.ID] = true
+		if strings.TrimSpace(r.Title) == "" || strings.TrimSpace(r.InverseTitle) == "" {
+			return fmt.Errorf("relation %q needs title and inverse_title", r.ID)
+		}
+		switch r.Meaning {
+		case InventoryMeaningDepends, InventoryMeaningContains, InventoryMeaningRoute,
+			InventoryMeaningIdentity, InventoryMeaningBackup, InventoryMeaningOther:
+		default:
+			return fmt.Errorf("relation %q: unknown meaning %q (want depends, contains, route, identity, backup or other)", r.ID, r.Meaning)
+		}
+	}
+	if !seen["runs_on"] {
+		return fmt.Errorf("relation runs_on is missing (parent counts as runs_on)")
+	}
+	return nil
+}
+
+// MergeInventoryRelations merges overlay relations into base by id: a known
+// relation takes the overlay's non-empty fields, a new one is appended. The
+// result is not validated here.
+func MergeInventoryRelations(base, overlay []InventoryRelation) []InventoryRelation {
+	out := append([]InventoryRelation(nil), base...)
+	index := map[string]int{}
+	for i, r := range out {
+		index[r.ID] = i
+	}
+	for _, o := range overlay {
+		i, exists := index[o.ID]
+		if !exists {
+			index[o.ID] = len(out)
+			out = append(out, o)
+			continue
+		}
+		r := out[i]
+		if strings.TrimSpace(o.Title) != "" {
+			r.Title = o.Title
+		}
+		if strings.TrimSpace(o.InverseTitle) != "" {
+			r.InverseTitle = o.InverseTitle
+		}
+		if o.Meaning != "" {
+			r.Meaning = o.Meaning
+		}
+		out[i] = r
+	}
+	return out
 }
 
 // ValidateInventoryKinds checks unique kind ids, unique fact names per kind,
@@ -225,6 +383,10 @@ func ValidateInventoryKinds(kinds []InventoryKind) error {
 			}
 			switch {
 			case f.WarnAt == nil && f.WarnWhen == "":
+			case f.WarnWhen == inventoryWarnIsFalse:
+				if f.WarnAt != nil {
+					return fmt.Errorf("kind %q fact %q: warn_when is_false takes no warn_at", k.ID, f.Name)
+				}
 			case f.WarnAt == nil:
 				return fmt.Errorf("kind %q fact %q: warn_when needs warn_at", k.ID, f.Name)
 			case f.WarnWhen != "above" && f.WarnWhen != "below":

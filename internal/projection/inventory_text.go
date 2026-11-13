@@ -114,8 +114,9 @@ func FormatInventoryText(p InventoryProjection) string {
 	}
 
 	if p.Changes.PreviousObservedAt != "" {
-		add("Changes since the import observed %s: %d added, %d removed, %d facts changed.",
-			inventoryShortTime(p.Changes.PreviousObservedAt), len(p.Changes.Added), len(p.Changes.Removed), len(p.Changes.FactChanges))
+		add("Changes since the import observed %s: %d added, %d removed, %d facts changed, %d links added, %d links removed.",
+			inventoryShortTime(p.Changes.PreviousObservedAt), len(p.Changes.Added), len(p.Changes.Removed), len(p.Changes.FactChanges),
+			len(p.Changes.LinksAdded), len(p.Changes.LinksRemoved))
 	} else if p.Changes.Note != "" {
 		add("Changes: %s.", p.Changes.Note)
 	}

@@ -311,7 +311,7 @@ func TestInventoryFalsifierBrokenOverlayStillServesTheRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a broken overlay must not fail the read: %v", err)
 	}
-	if p.OverlayError == "" || p.Summary.Resources != 6 || len(p.Kinds) != 8 {
+	if p.OverlayError == "" || p.Summary.Resources != 6 || len(p.Kinds) != inventorySeedKindCount {
 		t.Fatalf("broken overlay read = overlay_error %q resources %d kinds %d", p.OverlayError, p.Summary.Resources, len(p.Kinds))
 	}
 	if !inventoryWarned(p, "examplehv:node:example-node-1", "disk_pct") {

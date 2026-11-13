@@ -20,8 +20,23 @@ func TestInventoryKindsEmbeddedSeedIsValid(t *testing.T) {
 		"site":    {"verified", "last_data_day"},
 		"app":     {"status"},
 		"plan":    {"balance", "window_used_pct", "resets_at", "ends_on", "cost_month"},
+		// v0.2 graph kinds
+		"product":          {},
+		"repo":             {"has_remote", "last_commit"},
+		"deployment":       {"live", "last_deploy"},
+		"container":        {"status"},
+		"hostname":         {"traced"},
+		"datastore":        {"backed_up"},
+		"external_service": {},
+		"store_app":        {"status"},
+		"mailbox":          {},
+		"alias":            {},
+		"identity":         {"sign_in_works", "sign_in_ends", "second_factor_on_file", "recovery_on_file"},
+		"secret_store":     {"store_kind"},
+		"tunnel":           {},
+		"backup_target":    {"last_backup", "off_host"},
 	}
-	if len(set.Kinds) != len(want) {
+	if len(want) != inventorySeedKindCount || len(set.Kinds) != len(want) {
 		t.Fatalf("kinds = %v, want %d seed kinds", set.KindIDs(), len(want))
 	}
 	for id, facts := range want {
@@ -50,6 +65,95 @@ func TestInventoryKindsEmbeddedSeedIsValid(t *testing.T) {
 	}
 	if set.OverlayError != "" || set.OverlayPath != "" {
 		t.Fatalf("no home must mean no overlay: %+v", set)
+	}
+	// Boolean warning rules on the four facts the contract names.
+	for kind, fact := range map[string]string{"repo": "has_remote", "identity": "sign_in_works", "backup_target": "off_host", "datastore": "backed_up"} {
+		k, _ := set.Kind(kind)
+		f, _ := k.Fact(fact)
+		if f.WarnWhen != "is_false" || f.WarnAt != nil {
+			t.Fatalf("%s.%s rule = %+v, want is_false", kind, fact, f)
+		}
+	}
+	// The seed relations and what each means for the walks.
+	meanings := map[string]string{
+		"runs_on": "depends", "deployed_on": "depends", "uses": "depends", "calls": "depends", "sold_through": "depends",
+		"routes_to": "route", "points_to": "route", "serves": "route", "forwards_to": "route",
+		"signs_in_with": "identity", "secret_kept_in": "identity", "recovers_through": "identity", "reached_through": "identity",
+		"backs_up_to": "backup", "code_in": "other", "built_by": "other", "owned_by": "other", "search_property": "other",
+	}
+	if len(set.Relations) != len(meanings) {
+		t.Fatalf("relations = %+v, want %d", set.Relations, len(meanings))
+	}
+	for id, meaning := range meanings {
+		r, ok := set.Relation(id)
+		if !ok || r.Meaning != meaning || r.Title == "" || r.InverseTitle == "" {
+			t.Fatalf("relation %s = %+v (present %v), want meaning %s", id, r, ok, meaning)
+		}
+	}
+	if r, ok := set.Relation("parent"); !ok || r.ID != "runs_on" {
+		t.Fatalf("parent must count as runs_on: %+v %v", r, ok)
+	}
+}
+
+// inventorySeedKindCount is the number of kinds the embedded file serves.
+const inventorySeedKindCount = 22
+
+func TestInventoryKindsRelationValidationAndOverlay(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{"unknown meaning", "relations:\n- {id: feeds, title: feeds, inverse_title: fed by, meaning: sometimes}\n", `unknown meaning "sometimes"`},
+		{"duplicate", "relations:\n- {id: runs_on, title: a, inverse_title: b, meaning: depends}\n- {id: runs_on, title: a, inverse_title: b, meaning: depends}\n", "listed twice"},
+		{"no inverse", "relations:\n- {id: runs_on, title: a, meaning: depends}\n", "needs title and inverse_title"},
+		{"parent reserved", "relations:\n- {id: runs_on, title: a, inverse_title: b, meaning: depends}\n- {id: parent, title: a, inverse_title: b, meaning: depends}\n", "reserved"},
+		{"no runs_on", "relations:\n- {id: uses, title: a, inverse_title: b, meaning: depends}\n", "runs_on is missing"},
+		{"bad id", "relations:\n- {id: Runs-On, title: a, inverse_title: b, meaning: depends}\n", `id "Runs-On"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			file, err := ParseInventoryKinds([]byte(tc.yaml))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if err := ValidateInventoryRelations(file.Relations); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	if _, err := ParseInventoryKinds([]byte("schema_version: compound.system_inventory_kinds.v0.1\nrelations:\n- {id: x, title: x, inverse_title: y, meaning: other}\n")); err == nil {
+		t.Fatal("relations in a v0.1 kinds file must be refused")
+	}
+	if _, err := ParseInventoryKinds([]byte("relations:\n- {id: x, title: x, inverse_title: y, meaning: other, colour: red}\n")); err == nil {
+		t.Fatal("unknown relation field must be refused")
+	}
+	if err := ValidateInventoryKinds([]InventoryKind{{ID: "a", Title: "A", Facts: []InventoryFactSpec{{Name: "x", Title: "X", Group: "use", WarnWhen: "is_false", WarnAt: new(float64)}}}}); err == nil || !strings.Contains(err.Error(), "is_false takes no warn_at") {
+		t.Fatalf("is_false with warn_at err = %v", err)
+	}
+
+	home := t.TempDir()
+	writeProjectionFile(t, filepath.Join(home, "config", "inventory-kinds.yaml"),
+		"relations:\n- {id: mirrors, title: mirrors, inverse_title: mirrored by, meaning: backup}\n- {id: uses, title: relies on, meaning: \"\"}\n")
+	set, err := LoadInventoryKinds(home)
+	if err != nil || set.OverlayError != "" {
+		t.Fatalf("overlay relations: %v %q", err, set.OverlayError)
+	}
+	if r, ok := set.Relation("mirrors"); !ok || r.Meaning != "backup" {
+		t.Fatalf("overlay relation not added: %+v", set.Relations)
+	}
+	if r, _ := set.Relation("uses"); r.Title != "relies on" || r.Meaning != "depends" || r.InverseTitle != "used by" {
+		t.Fatalf("overlay must change only the fields it sets: %+v", r)
+	}
+	broken := t.TempDir()
+	writeProjectionFile(t, filepath.Join(broken, "config", "inventory-kinds.yaml"),
+		"relations:\n- {id: uses, meaning: often}\n")
+	set, _ = LoadInventoryKinds(broken)
+	if set.OverlayError == "" || len(set.Relations) != 18 {
+		t.Fatalf("a broken relation overlay must serve the embedded relations: %q %d", set.OverlayError, len(set.Relations))
+	}
+	if got := set.NearestRelation("run_on"); got != "runs_on" {
+		t.Fatalf("nearest relation = %q", got)
 	}
 }
 
@@ -152,7 +256,7 @@ func TestInventoryKindsBrokenOverlayServesEmbedded(t *testing.T) {
 			if set.OverlayError == "" {
 				t.Fatal("overlay error not reported")
 			}
-			if len(set.Kinds) != 8 {
+			if len(set.Kinds) != inventorySeedKindCount {
 				t.Fatalf("embedded kinds not served: %v", set.KindIDs())
 			}
 			host, _ := set.Kind("host")

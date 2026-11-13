@@ -288,7 +288,7 @@ func TestInventoryProjectionShape(t *testing.T) {
 	if p.SchemaVersion != InventorySchemaVersion || p.Snapshot.State != "fresh" || p.Snapshot.AgeHours == nil || *p.Snapshot.AgeHours != 2 {
 		t.Fatalf("snapshot = %+v", p.Snapshot)
 	}
-	if p.Filter.StaleHours != DefaultInventoryStaleHours || p.Boundary == "" || len(p.Kinds) != 8 {
+	if p.Filter.StaleHours != DefaultInventoryStaleHours || p.Boundary == "" || len(p.Kinds) != inventorySeedKindCount {
 		t.Fatalf("filter/boundary/kinds = %+v %q %d", p.Filter, p.Boundary, len(p.Kinds))
 	}
 	if p.Summary.Resources != 6 || p.Summary.ByKind["guest"] != 2 || p.Summary.ByProvider["examplehv"] != 3 {
