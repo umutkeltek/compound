@@ -32,6 +32,19 @@ function hasAnyEvidence(app: GrowthApp): boolean {
   return app.freshness.sources.length > 0 || app.audit.some((row) => hasEvidence(row.status));
 }
 
+function cellSummary(app: GrowthApp, group: string, c: Counts, move: boolean): string {
+  const judged = judgedOf(c);
+  const parts = [
+    judged ? `${c.measured} of ${judged} measured` : "",
+    knownOf(c) > c.measured ? `${knownOf(c) - c.measured} with some data` : "",
+    c.blind ? `${c.blind} with no data yet` : "",
+    c.unknown ? `${c.unknown} not on file` : "",
+    c.deferred ? `${c.deferred} set aside` : "",
+    !judged && !c.unknown && !c.deferred ? "nothing here applies" : "",
+  ].filter(Boolean);
+  return `${app.name} · ${group}: ${parts.join(", ")}.${move ? " Holds a next move." : ""}`;
+}
+
 function cellTitle(app: GrowthApp, title: string, row: AuditRow | undefined, move: boolean): string {
   const status = row?.status ?? "blind";
   const text = row?.summary || row?.reason || STATUS_META[status].meaning;
@@ -88,10 +101,9 @@ export default async function GrowthPage({ searchParams }: { searchParams: Promi
   const total = sumCounts(groupStats.map((g) => g.total));
   const dark = groupStats.flatMap((g) => g.dark);
   const darkGroups = groupStats.filter((g) => g.areas.length > 0 && knownOf(g.total) === 0 && judgedOf(g.total) > 0).map((g) => g.group.title);
-  const emptyGroups = groupStats.filter((g) => g.areas.length === 0).length;
 
   const answer = [
-    `Across ${apps.length} ${apps.length === 1 ? "app" : "apps"}, ${knownOf(total)} of ${judgedOf(total)} checks have any data, and ${total.measured} ${total.measured === 1 ? "is" : "are"} fully measured.`,
+    `Across ${apps.length} ${apps.length === 1 ? "app" : "apps"}, ${judgedOf(total)} areas apply. ${knownOf(total)} have some data and ${total.measured} ${total.measured === 1 ? "is" : "are"} fully measured.`,
     darkGroups.length
       ? `${joinWords(darkGroups)} ${darkGroups.length === 1 ? "has" : "have"} no data in any app.`
       : dark.length
@@ -123,7 +135,7 @@ export default async function GrowthPage({ searchParams }: { searchParams: Promi
         </h2>
         <p className="max-w-4xl text-md text-ink">{answer}</p>
         <p className="max-w-4xl text-sm text-muted">
-          Each cell is one app in one group: the bar shows what we know there, the number counts areas fully measured out of those that apply. Open a group to see its areas.
+          Each cell is one app in one group. The bar shows what we know there. A number appears only where something is fully measured. Open a group to see its areas.
         </p>
       </section>
 
@@ -147,16 +159,15 @@ export default async function GrowthPage({ searchParams }: { searchParams: Promi
           <table className="border-separate border-spacing-0 text-left text-sm">
             <thead>
               <tr>
-                <th className="sticky left-0 z-10 min-w-60 bg-panel pb-2 pr-4 align-bottom text-xs font-medium text-faint">Group</th>
+                <th className="sticky left-0 z-10 min-w-56 bg-panel pb-2 pr-4 align-bottom text-xs font-medium text-faint">Group</th>
                 {apps.map((app) => (
                   <th key={app.productId} className="px-0.5 pb-2 align-bottom">
-                    <Link href={`/apps/${appSlug(app.productId)}`} className="mx-auto flex w-10 flex-col items-center gap-1.5 text-faint hover:text-ink" title={app.name}>
+                    <Link href={`/apps/${appSlug(app.productId)}`} className="mx-auto flex w-8 flex-col items-center gap-1.5 text-faint hover:text-ink" title={app.name}>
                       <span className="max-h-28 truncate text-xs font-medium [writing-mode:vertical-rl] rotate-180">{app.name}</span>
                       <AppGlyph productId={app.productId} name={app.name} size="sm" />
                     </Link>
                   </th>
                 ))}
-                <th className="pb-2 pl-4 align-bottom text-xs font-medium text-faint">No data in any app</th>
               </tr>
             </thead>
             <tbody>
@@ -176,9 +187,19 @@ export default async function GrowthPage({ searchParams }: { searchParams: Promi
                           ›
                         </span>
                         <span className="font-semibold">{group.title}</span>
-                        <span className="text-2xs text-faint tabular-nums">{areas.length}</span>
+                        <span className="text-2xs text-faint tabular-nums">
+                          {areas.length} {areas.length === 1 ? "area" : "areas"}
+                        </span>
                       </Link>
-                      <p className="max-w-56 truncate pl-5 text-2xs text-muted">{group.question}</p>
+                      <p className="max-w-52 truncate pl-5 text-2xs text-muted" title={group.question}>
+                        {!areas.length
+                          ? "No areas in the catalog yet"
+                          : groupDark.length === areas.length
+                            ? "No data in any app"
+                            : groupDark.length
+                              ? `${groupDark.length} with no data in any app`
+                              : group.question}
+                      </p>
                     </th>
                     {apps.map((app, i) => {
                       const counts = perApp[i];
@@ -188,30 +209,29 @@ export default async function GrowthPage({ searchParams }: { searchParams: Promi
                         <td key={app.productId} className={`border-t border-hair-2 px-0.5 py-2 align-middle ${open ? "" : "group-hover/row:bg-soft"}`}>
                           <Link
                             href={`/apps/${appSlug(app.productId)}#group-${group.id}`}
-                            className="relative mx-auto flex w-10 flex-col items-center gap-1 rounded-md px-1 py-0.5 hover:bg-soft-2"
-                            title={`${app.name} · ${group.title}: ${counts.measured} of ${judged} measured, ${knownOf(counts)} with any data${counts.unknown ? `, ${counts.unknown} not on file` : ""}.${groupMove ? " Holds a next move." : ""}`}
+                            className="relative mx-auto flex w-8 flex-col items-center gap-1 rounded-md px-0.5 py-0.5 hover:bg-soft-2"
+                            title={cellSummary(app, group.title, counts, groupMove)}
+                            aria-label={cellSummary(app, group.title, counts, groupMove)}
                           >
                             {areas.length ? <StatusMixBar counts={counts} className="h-1.5" /> : <span className="h-1.5" />}
-                            <span className={`text-2xs tabular-nums ${counts.measured ? "font-semibold text-ink" : "text-faint"}`}>
-                              {judged ? `${counts.measured}/${judged}` : "—"}
-                            </span>
-                            {groupMove ? <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-ink" aria-label="holds a next move" /> : null}
+                            {/* Only a measured count is drawn: "0 of 5" would read as a zero, and a gap is not a zero. */}
+                            <span className="h-4 text-2xs font-semibold tabular-nums text-ink">{counts.measured ? `${counts.measured}/${judged}` : ""}</span>
+                            {groupMove ? <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-ink" aria-hidden /> : null}
                           </Link>
                         </td>
                       );
                     })}
-                    <td className={`border-t border-hair-2 py-2 pl-4 text-xs tabular-nums ${groupDark.length ? "text-muted" : "text-faint"}`}>
-                      {areas.length ? `${groupDark.length} of ${areas.length}` : "No areas yet"}
-                    </td>
                   </tr>,
                   ...(open
                     ? areas.map((area) => (
                         <tr key={area.id} className="bg-soft/60">
                           <th scope="row" className="sticky left-0 z-10 border-t border-hair-2 bg-soft py-1.5 pl-5 pr-4 text-left font-normal">
-                            <span className="block max-w-56 truncate text-sm text-ink" title={area.question}>
+                            <span className="block max-w-52 truncate text-sm text-ink" title={area.question}>
                               {area.title}
                             </span>
-                            <span className="mono block text-2xs text-faint">{area.id}</span>
+                            <span className="block max-w-52 truncate text-2xs text-faint">
+                              {groupDark.includes(area) ? "No data in any app" : <span className="mono">{area.id}</span>}
+                            </span>
                           </th>
                           {apps.map((app) => {
                             const row = rowOf(app, area.id);
@@ -221,7 +241,7 @@ export default async function GrowthPage({ searchParams }: { searchParams: Promi
                               <td key={app.productId} className="border-t border-hair-2 px-0.5 py-1.5">
                                 <Link
                                   href={`/apps/${appSlug(app.productId)}#area-${area.id}`}
-                                  className={`mx-auto flex h-4 w-7 items-center justify-center rounded-xs ${STATUS_META[status].fill || "border border-hair-2"} ${move ? "ring-1 ring-ink" : ""}`}
+                                  className={`mx-auto flex h-4 w-6 items-center justify-center rounded-xs ${STATUS_META[status].fill || "border border-hair-2"} ${move ? "ring-1 ring-ink" : ""}`}
                                   title={cellTitle(app, area.title, row, move)}
                                   aria-label={`${app.name}, ${row?.title || area.title}: ${STATUS_META[status].label}${move ? ", next move" : ""}`}
                                 >
@@ -230,7 +250,6 @@ export default async function GrowthPage({ searchParams }: { searchParams: Promi
                               </td>
                             );
                           })}
-                          <td className="border-t border-hair-2 py-1.5 pl-4 text-2xs text-faint">{groupDark.includes(area) ? "No data in any app" : ""}</td>
                         </tr>
                       ))
                     : []),
@@ -239,11 +258,6 @@ export default async function GrowthPage({ searchParams }: { searchParams: Promi
             </tbody>
           </table>
         </div>
-        {emptyGroups ? (
-          <p className="mt-3 text-xs text-faint">
-            {emptyGroups} {emptyGroups === 1 ? "group has" : "groups have"} no areas in the catalog yet.
-          </p>
-        ) : null}
       </section>
 
       {dark.length ? (

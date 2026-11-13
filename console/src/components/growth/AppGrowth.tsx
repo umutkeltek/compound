@@ -61,9 +61,11 @@ function Dot() {
   return <span className="text-faint" aria-hidden>·</span>;
 }
 
-function MoveMeta({ move, look }: { move: NextMove; look: Lookup }) {
+function MoveMeta({ move }: { move: NextMove }) {
   const parts: ReactNode[] = [];
-  parts.push(<span key="kind">{MOVE_KIND_LABEL[move.kind] ?? move.kind}</span>);
+  const kind = MOVE_KIND_LABEL[move.kind] ?? move.kind;
+  // The CLI's titles already start with the kind ("Refresh data for …"); say it only when they do not.
+  if (kind && !move.title.toLowerCase().startsWith(kind.toLowerCase())) parts.push(<span key="kind">{kind}</span>);
   if (move.branch) parts.push(<span key="branch">Pipeline: {branchLabel(move.branch)}</span>);
   if (move.skills.length) parts.push(<span key="skills">Skills that can help: {move.skills.join(", ")}</span>);
   if (move.areaId) parts.push(<a key="area" href={`#area-${move.areaId}`} className="mono hover:text-ink hover:underline">{move.areaId}</a>);
@@ -89,13 +91,12 @@ function UnblockLine({ move, look }: { move: NextMove; look: Lookup }) {
   }
   if (move.unblocks <= 0 || !move.areaId) return null;
   const names = dependents(move.areaId, look);
-  const word = move.unblocks === 1 ? "area" : "areas";
   return (
     <p className="text-sm text-ink">
-      <span className="font-medium">
-        Unblocks {move.unblocks} other {word}
-      </span>
-      {names.length === move.unblocks ? <span className="text-muted">: {joinWords(names.map((id) => areaTitle(id, look)))}.</span> : "."}
+      <span className="font-medium">Unblocks </span>
+      {names.length === move.unblocks
+        ? `${joinWords(names.map((id) => areaTitle(id, look)))}.`
+        : `${move.unblocks} other ${move.unblocks === 1 ? "area" : "areas"}.`}
     </p>
   );
 }
@@ -118,7 +119,7 @@ export function NextMoves({ app, look }: { app: GrowthApp; look: Lookup }) {
             </div>
             <p className="line-clamp-2 max-w-3xl text-sm text-muted" title={move.why}>{move.why}</p>
             <UnblockLine move={move} look={look} />
-            <MoveMeta move={move} look={look} />
+            <MoveMeta move={move} />
           </div>
         </li>
       ))}
@@ -246,7 +247,7 @@ function groupLine(counts: ReturnType<typeof countStatuses>): string {
   return "Does not apply";
 }
 
-function AreaRow({ row, area, look }: { row: AuditRow | undefined; area: GrowthArea; look: Lookup }) {
+function AreaRow({ row, area, look, moveRank }: { row: AuditRow | undefined; area: GrowthArea; look: Lookup; moveRank: number }) {
   const status = row?.status ?? "blind";
   const title = row?.title || area.title;
   const question = row?.question || area.question;
@@ -259,6 +260,9 @@ function AreaRow({ row, area, look }: { row: AuditRow | undefined; area: GrowthA
         <div className="flex flex-wrap items-center gap-2">
           <GrowthStatusChip status={status} />
           <span className={`font-medium ${judged ? "text-ink" : "text-muted"}`}>{title}</span>
+          {moveRank > 0 ? (
+            <span className="inline-flex items-center gap-1 rounded-md border border-strong px-1.5 py-0.5 text-2xs font-medium text-ink">Next move {moveRank}</span>
+          ) : null}
         </div>
         <p className="mt-0.5 text-xs text-muted">{question}</p>
         {forms.length > 1 ? <p className="mt-0.5 text-2xs text-faint">Checked as: {forms.join(" · ")}</p> : null}
@@ -280,7 +284,11 @@ function AreaRow({ row, area, look }: { row: AuditRow | undefined; area: GrowthA
 
 /** The 12 groups as closed sections; a group holding a next move starts open. */
 export function GroupAudit({ app, groups, areas, look }: { app: GrowthApp; groups: GrowthGroup[]; areas: GrowthArea[]; look: Lookup }) {
-  const moveAreas = new Set(app.nextMoves.map((m) => m.areaId).filter(Boolean));
+  const moveRank = new Map<string, number>();
+  app.nextMoves.slice(0, 5).forEach((m, i) => {
+    if (m.areaId && !moveRank.has(m.areaId)) moveRank.set(m.areaId, i + 1);
+  });
+  const moveAreas = new Set(moveRank.keys());
   return (
     <div className="flex flex-col gap-2">
       {groups.map((group) => {
@@ -310,7 +318,7 @@ export function GroupAudit({ app, groups, areas, look }: { app: GrowthApp; group
             {groupAreas.length ? (
               <ul className="divide-y divide-hair-2 border-t border-hair">
                 {groupAreas.map((area) => (
-                  <AreaRow key={area.id} row={look.rowById.get(area.id)} area={area} look={look} />
+                  <AreaRow key={area.id} row={look.rowById.get(area.id)} area={area} look={look} moveRank={moveRank.get(area.id) ?? 0} />
                 ))}
               </ul>
             ) : (

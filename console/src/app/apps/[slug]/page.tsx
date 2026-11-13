@@ -141,12 +141,12 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
       <section className="flex flex-col gap-4" aria-labelledby="numbers-title">
         <div className="flex flex-wrap items-baseline justify-between gap-3">
           <h2 id="numbers-title" className="text-md font-semibold text-ink">Numbers</h2>
-          {allocation ? <p className="max-w-3xl text-sm text-muted">{allocation.reason}</p> : null}
+          {allocation && hasSources ? <p className="max-w-3xl text-sm text-muted">{allocation.reason}</p> : null}
         </div>
+        {hasSources ? (
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs text-faint">Data sources</span>
-          {hasSources ? (
-            app.freshness.sources.map((source) => (
+          {app.freshness.sources.map((source) => (
               <span
                 key={source.source}
                 className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs ${source.stale ? "border-seam-line bg-seam-soft text-seam" : "border-hair bg-panel text-muted"}`}
@@ -156,12 +156,10 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
                 <span className="font-medium text-ink">{SOURCE_LABEL[source.source] ?? source.source}</span>
                 {source.stale ? `stopped ${shortDate(source.latestDate)}` : `current to ${shortDate(source.latestDate)}`}
               </span>
-            ))
-          ) : (
-            <span className="text-xs text-muted">None reports for this app yet.</span>
-          )}
+            ))}
           {app.aliases.length ? <span className="text-2xs text-faint">Also recorded as {app.aliases.join(", ")}</span> : null}
         </div>
+        ) : null}
 
         {hasSources ? (
           <>
