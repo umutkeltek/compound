@@ -38,7 +38,18 @@ try {
   const { runProjectionTimeoutSelfTest } = await import("../src/lib/projection-timeout.selftest.ts");
   const result = await runProjectionTimeoutSelfTest();
   assert.equal(result.ok, true);
-  console.log(`projection-timeout-smoke ok: ${result.details}`);
+  // The read-queue cases run as their own bun process, not an import: they
+  // pin COMPOUND_HOME and COMPOUND_BIN at import, the read cache lives on
+  // globalThis, they move Date.now, and this smoke replaces node:fs/promises.
+  // One process would let either side's state leak into the other. The cases
+  // make their own scratch folder and cache folder (COMPOUND_CONSOLE_CACHE_DIR).
+  const cases = Bun.spawn([process.execPath, join(import.meta.dir, "read-queue-cases.mjs")], {
+    stdout: "inherit",
+    stderr: "inherit",
+    env: process.env,
+  });
+  assert.equal(await cases.exited, 0, "read-queue cases failed (output above)");
+  console.log(`projection-timeout-smoke ok: ${result.details}; read-queue cases ok`);
 } finally {
   await rm(scratch, { recursive: true, force: true });
 }

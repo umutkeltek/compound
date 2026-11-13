@@ -68,6 +68,12 @@ if (failures.length) {
   console.error("work-legibility-smoke FAILED\n" + failures.map((f) => "  - " + f).join("\n"));
   process.exit(1);
 }
+// Owner labels on the Work list and the one "waiting on you" definition
+// (scripts/waiting-and-owner-cases.mjs). They are pure functions with no home,
+// binary or cache, so they run in this process; a failing case throws and this
+// smoke exits non-zero.
+await import("./waiting-and-owner-cases.mjs");
+
 console.log(
   `work-legibility-smoke ok: ${prose.length} operator-prose strings CLI-free; ` +
     `${commands.length} command(s) live only in copy affordances`,

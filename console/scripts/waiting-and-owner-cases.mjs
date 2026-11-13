@@ -3,7 +3,8 @@
 //    empty, although the work items carry owners;
 // 2. Today, the sidebar and Work counted "waiting on you" three ways. There is
 //    now one function (waitingOnYou) with named units, and unknown is null.
-// Run: bun scripts/waiting-and-owner-smoke.mjs
+// Run: bun scripts/waiting-and-owner-cases.mjs. The wired gate runs it:
+// work-legibility-smoke.mjs imports it, and a failing case fails that smoke.
 import assert from "node:assert/strict";
 
 const { buildWorkLensItems, groupWorkLensItems } = await import("../src/lib/work-views.ts");
@@ -44,4 +45,4 @@ const report = toAttentionReport({
 const waiting = waitingOnYou(report);
 assert.deepEqual(waiting, { groups: 22, items: 245, workItems: 20 });
 
-console.log("waiting-and-owner-smoke ok: owners label lanes without an executor join; one waiting-on-you definition with named units");
+console.log("waiting-and-owner-cases ok: owners label lanes without an executor join; one waiting-on-you definition with named units");

@@ -2,7 +2,9 @@
 // a page never waits for compound, at most two heavy reads run at once, the
 // same read never starts twice, a failure keeps the last good copy, an action
 // marks values out of date without deleting them, and two homes never mix.
-// Run: bun scripts/read-queue-smoke.mjs
+// Run: bun scripts/read-queue-cases.mjs. The wired gate runs it:
+// projection-timeout-smoke.mjs starts it as its own bun process and fails
+// when it exits non-zero.
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -161,7 +163,7 @@ try {
   assert.equal(otherRead.value, null, "a value read for one home must never be served for another");
   await other.settleProjectionReads();
 
-  console.log("read-queue-smoke ok: non-blocking loading, <=2 compound reads at once, one run per read, due gap, failure keeps last good, out-of-date mark, home-keyed cache");
+  console.log("read-queue-cases ok: non-blocking loading, <=2 compound reads at once, one run per read, due gap, failure keeps last good, out-of-date mark, home-keyed cache");
 } finally {
   await rm(scratch, { recursive: true, force: true });
 }
