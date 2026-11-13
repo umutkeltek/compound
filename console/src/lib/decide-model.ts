@@ -6,6 +6,8 @@ import { type DecisionEffectKind, type DecisionOption, type FieldSpec, specFor }
 import { genericActionEffectKind, genericActionProjectionEligible, genericActionRevision, reviewResolutionRevision, OPERATOR_INPUTS } from "@/lib/generic-actions";
 import { areaPlain } from "@/lib/glossary";
 import { areaOf } from "@/lib/review-data";
+import { plainAge } from "@/components/kit/ReadState";
+import type { DecisionStanding } from "@/lib/plain-words";
 import type { AuthorityFace, ObjectFace } from "@/representation";
 
 /**
@@ -305,6 +307,12 @@ export type DecideGroup = {
    * unchanged. undefined/null means "render exactly as before this packet."
    */
   brief?: DecideBrief | null;
+  /**
+   * Where this decision stands, in the gate's own terms, from its freshest
+   * evidence (the list, or the opened decision's own read). Wording only:
+   * optional so DecideGroup literals built elsewhere keep compiling.
+   */
+  standing?: DecisionStanding;
 };
 
 /* ---------- helpers ---------- */
@@ -1049,13 +1057,85 @@ function faceConfidence(sample: Json): ObjectFace["confidence"] {
 
 export type SampleForGroup = (group: Json) => Json;
 
+/**
+ * Fresh evidence for ONE opened decision, from its own scoped read
+ * (`compound reviews --json --area <area>`, the read the action path resolves
+ * against). It replaces the list's evidence for that decision only: `key`
+ * must equal the decision's key, and no other decision ever reads it. The
+ * gate is unchanged: a button still needs `status === "live"`.
+ */
+export type ScopedDecisionEvidence = {
+  /** the one decision this evidence belongs to */
+  key: string;
+  /** the scoped read's own status; null when no copy is used (still checking) */
+  status: ProjectionStatus | null;
+  /** the decision's group, membership from the list, owner detail from the scoped read */
+  group: Json | null;
+  /** the scoped read's items (only that area's) */
+  itemByID: Map<string, Json> | null;
+  /** the scoped read's own time (its `generated_at`) */
+  generatedAt: string;
+  source: string;
+  /** the scoped read is running now and no live copy is here yet */
+  checking: boolean;
+};
+
+/**
+ * What the evidence about one decision says, judged by the gate's own rules
+ * whether or not the evidence is live. Only the wording uses this: `act` and
+ * `primaryAction` come from the unchanged gate, so a "ready" standing on old
+ * evidence never mounts a button.
+ */
+function standingKind(args: {
+  authorityBound: boolean;
+  authorityReady: boolean;
+  faceReady: boolean;
+  unavailableReason: string;
+  group: Json;
+  sample: Json;
+  sampleId: string;
+  area: string;
+  panelMisaligned: boolean;
+  exactAuthority: { action: Json; authority: AuthorityFace } | null;
+  attnAction: Json | null;
+  itemByID: Map<string, Json>;
+  act: DecideAct;
+}): Pick<DecisionStanding, "kind" | "reason"> {
+  const { group, area, exactAuthority, itemByID } = args;
+  const copyReason = args.act.mode === "copy" ? args.act.reason : "";
+  if (!args.authorityBound) return args.faceReady ? { kind: "ready", reason: "" } : { kind: "other", reason: args.unavailableReason };
+  if (args.authorityReady) return { kind: "ready", reason: "" };
+  if (args.panelMisaligned || area === "external-repo-intake") return { kind: "other", reason: copyReason };
+  const terminal = str(group.terminal_reason);
+  const found = exactAuthority?.authority ?? null;
+  if (found && found.current && !found.allowed) return { kind: "held", reason: found.wording };
+  if (found && !found.current) return { kind: "incomplete", reason: "The owner authority bundle is not current." };
+  if (found) {
+    const would = strictAllowedAct(group, args.sample, args.sampleId, exactAuthority, itemByID);
+    return would.mode === "copy" ? { kind: "no_button", reason: would.reason } : { kind: "ready", reason: "" };
+  }
+  const effectKind = genericActionEffectKind(area);
+  if (!effectKind) return { kind: "no_button", reason: terminal };
+  if (!safeBatchAction(group) && allowedEnumerableMembers(group, itemByID).length > 0) return { kind: "ready", reason: "" };
+  const memberIDs = arr(group.item_ids).map(String).filter(Boolean);
+  const offersAction = Boolean(
+    args.attnAction ||
+    safeBatchAction(group) ||
+    memberIDs.some((id) => arr(itemByID.get(id)?.actions).length > 0),
+  );
+  return offersAction
+    ? { kind: "incomplete", reason: terminal || "No complete current owner authority bundle is available." }
+    : { kind: "no_button", reason: terminal };
+}
+
 /** Build the serializable Decide model for the already-ordered needs-you groups. */
 export function buildDecideGroups(
   orderedGroups: Json[],
-  itemByID: Map<string, Json>,
+  listItemByID: Map<string, Json>,
   attention: AttentionReport | null,
   sampleFor: SampleForGroup,
-  projectionStatus?: ProjectionStatus,
+  listProjectionStatus?: ProjectionStatus,
+  scoped?: ScopedDecisionEvidence | null,
 ): DecideGroup[] {
   const attnByKey = new Map<string, Json>();
   const attnByArea = new Map<string, Json>();
@@ -1066,17 +1146,28 @@ export function buildDecideGroups(
     if (a && !attnByArea.has(a)) attnByArea.set(a, g);
   }
 
-  return orderedGroups.map((group) => {
+  return orderedGroups.map((listGroup) => {
+    // The opened decision may carry its own fresher evidence. Only the
+    // decision whose key matches uses it; every other decision keeps the
+    // list's evidence, so one decision's read can never enable another's
+    // button. The gate below reads `projectionStatus` exactly as before.
+    const own = scoped && scoped.key && scoped.key === str(listGroup.key) ? scoped : null;
+    const usesOwn = Boolean(own?.status && own.group && own.itemByID);
+    const group = usesOwn ? own!.group! : listGroup;
+    const itemByID = usesOwn ? own!.itemByID! : listItemByID;
+    const projectionStatus = usesOwn ? own!.status! : listProjectionStatus;
     const area = areaOf(group);
     const briefTarget = groupBriefTarget(group, itemByID);
-    const sample = briefTarget?.item ?? sampleFor(group);
+    const sample = briefTarget?.item ?? (usesOwn ? ownSample(group, itemByID) : sampleFor(group));
     const sampleId = str(sample.id) || str(sample.review_id) || str(group.key);
     const panel = panelReviewGroup(group, itemByID);
     const panelReview = panel?.reviews.find((review) => review.id === sampleId) ?? panel?.reviews[0] ?? null;
     const spec = specFor(area);
     const pl = spec ? spec.plainLanguage(sample) : null;
 
-    const attn = attnByKey.get(str(group.key)) ?? attnByArea.get(area) ?? null;
+    // The list's action is evidence from the list's read, not from this
+    // decision's own read: with own evidence only the scoped read counts.
+    const attn = usesOwn ? null : attnByKey.get(str(group.key)) ?? attnByArea.get(area) ?? null;
     const attnAction = attn && typeof attn.action === "object" ? (attn.action as Json) : null;
     const authorityBound = projectionStatus !== undefined;
     const exactAuthority = authorityBound
@@ -1189,10 +1280,12 @@ export function buildDecideGroups(
         : title;
     const brief = briefTarget?.brief ?? null;
     const freshnessRow = group.freshness && typeof group.freshness === "object" ? group.freshness as Json : {};
-    const freshness = {
-      generatedAt: str(attention?.generated_at) || str(freshnessRow.generated_at),
-      source: str(freshnessRow.source) || "compound attention --json",
-    };
+    const freshness = usesOwn
+      ? { generatedAt: own!.generatedAt, source: own!.source }
+      : {
+          generatedAt: str(attention?.generated_at) || str(freshnessRow.generated_at),
+          source: str(freshnessRow.source) || "compound attention --json",
+        };
     const copyOnly = act.mode === "copy";
     const authorityHeld = Boolean(
       authorityBound && projectionStatus === "live" && authority?.current && !authority.allowed,
@@ -1334,6 +1427,33 @@ export function buildDecideGroups(
           : "",
     };
 
+    const found = standingKind({
+      authorityBound,
+      authorityReady,
+      faceReady: face.state === "ready",
+      unavailableReason,
+      group,
+      sample,
+      sampleId,
+      area,
+      panelMisaligned: Boolean(panel && !panel.projectionAligned),
+      exactAuthority,
+      attnAction,
+      itemByID,
+      act,
+    });
+    const live = authorityBound ? projectionStatus === "live" : true;
+    const checkedMs = freshness.generatedAt ? toDate(freshness.generatedAt)?.getTime() ?? null : null;
+    const standing: DecisionStanding = {
+      // Old evidence that found a button says so in words only; the gate has
+      // already refused it (face.state is not "ready" without live evidence).
+      kind: found.kind === "ready" && live && face.state !== "ready" ? "other" : found.kind,
+      reason: found.kind === "ready" && live && face.state !== "ready" ? unavailableReason : found.reason,
+      live,
+      checking: Boolean(own?.checking) && !(usesOwn && projectionStatus === "live"),
+      checkedAgo: checkedMs !== null ? plainAge(Math.max(0, Date.now() - checkedMs)) : "",
+    };
+
     return {
       key: str(group.key) || sampleId,
       area,
@@ -1371,6 +1491,18 @@ export function buildDecideGroups(
       authorityBound,
       panel,
       brief,
+      standing,
     };
   });
+}
+
+/** The scoped read's own sample for a group (mirrors the page's list sample rule). */
+function ownSample(group: Json, itemByID: Map<string, Json>): Json {
+  const sample = group.sample;
+  if (sample && typeof sample === "object") return sample as Json;
+  for (const id of arr(group.item_ids).map(String)) {
+    const item = itemByID.get(id);
+    if (item) return item;
+  }
+  return { id: str(group.key), area: areaOf(group) };
 }

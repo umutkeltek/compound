@@ -101,6 +101,14 @@ const reply = {
       { id: "rev_fx_filed_3", area: "source-control-cleanup/scr_99aa88bb.preimage", band: "filed", status: "filed", operator_summary: "A filed cleanup record.", created_at: iso(7) },
     ],
   },
+  // The opened decision's own read (Decide ?decision=route-promotions|x): its
+  // one item offers an action that carries no approval record.
+  "reviews --json --area route-promotions": {
+    schema_version: "compound.review_queue.v0.1", generated_at: iso(0), area: "route-promotions",
+    groups: [{ key: "route-promotions|x", area: "route-promotions", band: "needs_you", item_ids: ["route-promotions|x-item-0"], terminal_reason: "actions are item-specific; no safe batch action exposed" }],
+    items: [{ id: "route-promotions|x-item-0", area: "route-promotions", band: "needs_you", status: "review_required", operator_summary: "Promote the fixture route?", created_at: iso(4),
+      actions: [{ id: "route_promotion_record", label: "Record the promotion", argv: ["compound", "route", "promotion-record", "--id", "fx"], requires_review: true }] }],
+  },
   "policy operator-authority --json": { generated_at: iso(0), autonomy_level: "L1", mode: "propose_only" },
   "source connections --json": { schema_version: "compound.source_connections_projection.v0.2", generated_at: iso(0), counts: {}, connections: [] },
   "director propose --dry-run --json": { generated_at: iso(0), proposals: [] },
@@ -124,6 +132,94 @@ const { default: Today } = await import("../src/app/page.tsx");
 const { default: Work } = await import("../src/app/work/page.tsx");
 const { default: Decide } = await import("../src/app/reviews/page.tsx");
 const { default: Live } = await import("../src/app/live/page.tsx");
+const { buildDecideGroups } = await import("../src/lib/decide-model.ts");
+const { standingLine } = await import("../src/lib/plain-words.ts");
+
+/**
+ * A complete, current, allowed owner action for one review item (the
+ * ActionIntent -> PolicyDecision -> AuthorityFace bundle the gate requires),
+ * in an area that has a button (source-control-cleanup records a review).
+ */
+function authorityAction(itemId) {
+  const scope = { entity_id: itemId, project_id: "fixture", surface: "reviews" };
+  const target = { kind: "review_artifact", id: itemId };
+  return {
+    id: "record_source_control_cleanup_review",
+    label: "Record the current source-control review",
+    argv: ["compound", "authority", "dirty-review", `reviews/source-control-cleanup/${itemId}.review.yaml`, "--json"],
+    requires_review: false,
+    action_intent: {
+      schema_version: "compound.action_intent.v0.1", id: `act_${itemId}`, created_at: "2026-07-17T12:00:00Z",
+      ids: { work_id: "work_fixture_scoped" }, scope, capability: "source-control-review", target,
+      mutation_class: "local_reversible", reversibility: "easy", blast_radius: "local_reversible",
+      rollback_plan: "supersede the recorded review",
+    },
+    policy_decision: {
+      schema_version: "compound.policy_decision.v0.1", id: `pol_${itemId}`, created_at: "2026-07-17T12:00:01Z",
+      ids: { work_id: "work_fixture_scoped" }, scope, action_intent_id: `act_${itemId}`, outcome: "allow",
+      obligations: [], standing_grant_id: "grant_fixture",
+    },
+    policy_authority: {
+      schema_version: "compound.policy_authority_face.v0.1", revision: `policy-authority-v1:sha256:${"e".repeat(64)}`,
+      current: true, allowed: true, wording: "Allowed by current policy", action_intent_id: `act_${itemId}`,
+      policy_decision_id: `pol_${itemId}`, policy_outcome: "allow", standing_grant_id: "grant_fixture", target,
+      target_scope: "private", blast_radius: "local_reversible", reversibility: "easy",
+      verified_recoverability: "verified", operator_control_continuity: "continuous", policy_source: "fixture-policy",
+      exact_gate: "standing_scope", expected_receipt: "source-control review receipt", expected_proof: ["proof:review-recorded"],
+    },
+  };
+}
+
+/**
+ * Safety of the opened decision's own read (lib/decide-model.ts
+ * ScopedDecisionEvidence): the gate still refuses evidence older than the
+ * live window, and decision A's read never enables a button on decision B.
+ */
+async function scopedEvidenceCases() {
+  const area = "source-control-cleanup";
+  const item = (id) => ({ id, area, band: "needs_you", operator_summary: `Review ${id}.`, actions: [authorityAction(id)] });
+  const group = (key, id) => ({ key, area, band: "needs_you", source: "reviews", count: 1, item_ids: [id], operator_summary: `Review ${id}.` });
+  const listItems = new Map([["scr_a", item("scr_a")], ["scr_b", item("scr_b")]]);
+  const groups = [group("scr|a", "scr_a"), group("scr|b", "scr_b")];
+  const build = (listStatus, scoped) =>
+    buildDecideGroups(groups, listItems, null, (g) => listItems.get(g.item_ids[0]), listStatus, scoped);
+  const offered = (g) => g.face.state === "ready" || g.face.primaryAction != null || g.act.mode !== "copy";
+
+  // Control: live evidence with a complete approval record shows the button.
+  const live = build("live");
+  assert.ok(live.every(offered), "control: live, complete evidence offers the action");
+  assert.equal(standingLine(live[0].standing).text, "You can decide this now");
+
+  // 1. Evidence older than the live window: the gate refuses, whatever it found.
+  const stale = build("stale");
+  for (const g of stale) {
+    assert.equal(offered(g), false, `${g.key}: no action from evidence older than the live window`);
+    assert.equal(g.standing.kind, "ready", "the words still say what the last check found");
+    assert.equal(g.standing.live, false);
+    assert.doesNotMatch(standingLine(g.standing).text, /paused|You can decide this now/i);
+  }
+  // The opened decision's own read, when it is old too, is refused the same way.
+  const ownItems = new Map([["scr_a", item("scr_a")], ["scr_b", item("scr_b")]]);
+  const own = (status) => ({ key: "scr|a", status, group: groups[0], itemByID: ownItems, generatedAt: new Date().toISOString(), source: "compound reviews --json --area source-control-cleanup", checking: false });
+  const staleOwn = build("stale", own("stale"));
+  assert.equal(offered(staleOwn[0]), false, "a stale scoped read never offers the action");
+
+  // 2. A's live read enables A only. B keeps the list's (stale) evidence even
+  // though A's read carries a complete record for B too.
+  const liveOwn = build("stale", own("live"));
+  assert.equal(offered(liveOwn[0]), true, "A's own live read lets the gate offer A's action");
+  assert.equal(liveOwn[0].act.mode === "generic" && liveOwn[0].act.itemId, "scr_a");
+  assert.equal(offered(liveOwn[1]), false, "A's read never enables a button on B");
+  assert.equal(liveOwn[1].standing.live, false);
+  // A read keyed to another decision changes nothing here.
+  const elsewhere = build("stale", { ...own("live"), key: "scr|other" });
+  assert.ok(elsewhere.every((g) => !offered(g)), "a read for another decision enables nothing");
+  // Still checking: the words say so, and nothing is offered.
+  const checkingOwn = build("stale", { key: "scr|a", status: null, group: null, itemByID: null, generatedAt: "", source: "", checking: true });
+  assert.equal(offered(checkingOwn[0]), false);
+  assert.equal(standingLine(checkingOwn[0].standing).text, "Checking… (takes a few seconds)");
+  assert.equal(checkingOwn[1].standing.checking, false, "only the opened decision says it is checking");
+}
 
 const router = Object.fromEntries(["push", "replace", "refresh", "back", "forward", "prefetch"].map((k) => [k, () => {}]));
 const wrap = (path, element) =>
@@ -209,16 +305,37 @@ try {
   assert.match(warm.Today, /2 more decisions on Decide/);
   assert.match(warm.Today, /Repository cleanup/, "area path becomes its plain kind");
   assert.match(warm.Today, /blocked on your review/, "system wording 'operator review' becomes 'your review'");
-  assert.match(warm.Today, /before agents can continue/, "system wording 'executors' becomes 'agents'");
+  assert.match(warm.Today, /Why: Agents cannot go on until you lift the hold\./, "a known 'why' line reads in plain words");
+  assert.doesNotMatch(warm.Today, /executors can continue/, "system wording never reaches the why line");
   assert.match(warm.Today, /There is no button for this kind of decision yet/);
   assert.doesNotMatch(warm.Today, /compound reviews --area/, "a command is never the 'why'");
 
   // Decide: filed is a count plus kinds, not one chip per item; reasons in plain words.
   assert.match(warm.Decide, /Filed .*3 items/);
   assert.match(warm.Decide, /Benchmark results/);
-  // The queue-wide reason, in plain words, said once above the list.
-  assert.match(warm.Decide, /Why none can be decided yet/);
-  assert.match(warm.Decide, /The approval record behind it is incomplete/);
+  // Where each decision stands, from the data: here every decision's kind has
+  // no button, so it is said once above the list, and the answer counts it.
+  assert.match(warm.Decide, /Why none can be decided now/);
+  assert.match(warm.Decide, /No button exists for this kind of decision yet/);
+  assert.match(warm.Decide, /None can be decided with a button right now\. 7 have no button for their kind of decision yet\./);
+  assert.doesNotMatch(warm.Decide, /paused|pause while/i, "an old copy is only old: never 'paused'");
+
+  // 5. The opened decision checks its own evidence (`reviews --json --area`):
+  // "Checking…" while that read runs, then its real standing from that read.
+  const openedPath = { decision: "route-promotions|x" };
+  const renderOpened = async () => visibleText(wrap("/reviews", await Decide({ searchParams: Promise.resolve(openedPath) })));
+  const checking = await renderOpened();
+  assert.match(checking, /Checking… \(takes a few seconds\)/, "the opened decision says it is being checked");
+  await compound.settleProjectionReads();
+  const opened = await renderOpened();
+  assert.doesNotMatch(opened, /Checking…/);
+  assert.match(
+    opened,
+    /The approval record is incomplete: each item has its own action; there is no single action for all of them/,
+    "the opened decision shows its real standing from its own read",
+  );
+  assert.deepEqual(findBannedPhrases(opened), []);
+  await scopedEvidenceCases();
 
   // 4. Decide sends only the open decision's detail.
   const page = await Decide({ searchParams: Promise.resolve({}) });
@@ -239,7 +356,7 @@ try {
     assert.equal(group.evidence.length, 0, `${group.key}: list-only rows carry no evidence`);
   }
 
-  console.log(`plain-pages cases ok: 4 pages × 2 read states free of ${BANNED_PHRASES.length} banned phrases; shared counts agree; Decide sends one decision's detail`);
+  console.log(`plain-pages cases ok: 4 pages × 2 read states free of ${BANNED_PHRASES.length} banned phrases; shared counts agree; Decide sends one decision's detail; opened decision checks its own read (stale refused, A's read never enables B)`);
 } finally {
   await compound.settleProjectionReads();
   await rm(scratch, { recursive: true, force: true });

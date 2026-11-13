@@ -171,8 +171,10 @@ const REASON_PLAIN: Array<[RegExp, string]> = [
   [/actions are item-specific/i, "Each item needs its own answer. Open it and decide one at a time."],
   [/authority (?:bundle|stamp)|No complete current owner authority|owner authority bundle is not current/i, "The approval record behind it is incomplete, so it cannot be answered with a button yet."],
   [/resolve (?:the )?policy\/source-control hold/i, "Each held work item needs you to let it continue, start it again, or cancel it."],
-  [/Owner authority evidence is (?:stale|unreachable|loading)|live status feed is/i, "Buttons pause while the list is read again. They come back when the new copy lands."],
-  [/Current owner authority evidence is not live/i, "Buttons pause while the list is read again. They come back when the new copy lands."],
+  // The list's copy is older than the 25-second live window. That is a fact
+  // about the copy's age, not a pause: opening the decision checks it again.
+  [/Owner authority evidence is stale|Current owner authority evidence is not live/i, "This was last checked more than 25 seconds ago. Opening it checks it again in a few seconds."],
+  [/Owner authority evidence is (?:unreachable|loading)|live status feed is/i, "The list could not be read yet, so nothing can be decided from it."],
   [/no executable adapter|no effect-compatible workflow|no one-click action built/i, "There is no button for this kind of decision yet. Open it to read the items, or set it aside."],
   [/requires its own reviewed owner artifact/i, "Each repository needs its own review. Open it and decide one at a time."],
 ];
@@ -191,20 +193,20 @@ export function plainReason(reason: string): string {
 }
 
 const DECISION_STATE_PLAIN: Record<string, string> = {
-  "Owner evidence not live": "Paused while the list refreshes",
+  "Owner evidence not live": "Checked more than 25 seconds ago",
   "Projection detail not aligned": "Details still loading",
   "Authority unavailable": "No approval record",
   "Action adapter unavailable": "No button yet",
   "Needs context": "Read it first",
 };
 
-/** A Decide card's state label in plain words ("Owner evidence not live" → "Paused while the list refreshes"). */
+/** A Decide card's state label in plain words ("Authority unavailable" → "No approval record"). */
 export function plainDecisionState(label: string): string {
   return DECISION_STATE_PLAIN[label] ?? label;
 }
 
 const NEXT_STEP_PLAIN: Array<[RegExp, string]> = [
-  [/^Refresh current owner evidence before acting\.?$/, "Wait for the next read of the list; the buttons come back then."],
+  [/^Refresh current owner evidence before acting\.?$/, "It is checked again while it is open; that takes a few seconds and the page updates by itself."],
   [/^Wait for (?:the )?owner projection to emit (?:a )?complete current authority bundle\.?$/, "Wait until the system records a complete approval for it."],
   [/^Use the manual owner command below, or wait for (?:the )?owner to expose (?:a )?governed workflow\.?$/, "Run the command below yourself, or wait until the system offers a button for it."],
   [/^Use (?:the )?owner surface (?:after it |that )?exposes an authority-bound adapter\.?$/, "Answer it where the system offers a button for it, once it does."],
@@ -219,6 +221,142 @@ export function plainNextStep(text: string): string {
   return trimmed;
 }
 
+/* ---------- where a decision stands (Decide rows, banner, answer) ---------- */
+
+/**
+ * What the evidence about one decision says, judged by the same rules the
+ * Decide gate uses (lib/decide-model.ts `standing`). `live` is the gate's own
+ * test: only live evidence can show a button. Client-safe: the page computes
+ * the standing and its age on the server and sends them as data.
+ */
+export type DecisionStanding = {
+  kind: "ready" | "no_button" | "incomplete" | "held" | "other";
+  /** the tool's own reason, as written (shown through `plainToolReason`) */
+  reason: string;
+  /** the evidence is inside the live window, so the gate may show a button */
+  live: boolean;
+  /** this decision's own read is running now and no live copy is here yet */
+  checking: boolean;
+  /** "3 min ago": when that evidence was read; "" when unknown */
+  checkedAgo: string;
+};
+
+const TOOL_REASON_PLAIN: Array<[RegExp, string]> = [
+  [/^owner authority bundle is incomplete or invalid/i, "parts of it are missing or do not match. Read the item before acting."],
+  [/^owner-work authority stamp blocked/i, "the tool that raised it has not recorded what the action would do and who may approve it."],
+  [/^actions are item-specific/i, "each item has its own action; there is no single action for all of them."],
+  [/^owner has not exposed a safe action/i, "the tool offers no safe action for it."],
+  [/^The owner authority bundle is not current/i, "it is out of date."],
+  [/^No complete current owner authority bundle/i, "no complete approval record came with it."],
+];
+
+/**
+ * The tool's reason as the end of a sentence ("The approval record is
+ * incomplete: <this>"). An unknown reason is shown as the tool wrote it.
+ */
+export function plainToolReason(reason: string): string {
+  const trimmed = (reason || "").trim();
+  if (!trimmed) return "";
+  for (const [pattern, plain] of TOOL_REASON_PLAIN) if (pattern.test(trimmed)) return plain;
+  return trimmed;
+}
+
+/** The standing as one line, plus a tone for its dot. Never says "paused". */
+export function standingLine(s: DecisionStanding): { text: string; tone: "good" | "seam" | "muted" } {
+  if (s.checking) return { text: "Checking… (takes a few seconds)", tone: "muted" };
+  const age = !s.live && s.checkedAgo ? ` · checked ${s.checkedAgo}` : "";
+  switch (s.kind) {
+    case "ready":
+      return s.live
+        ? { text: "You can decide this now", tone: "good" }
+        : { text: `Could be decided at the last check; open it to check again${age}`, tone: "good" };
+    case "no_button":
+      return { text: `No button exists for this kind of decision yet${age}`, tone: "muted" };
+    case "incomplete": {
+      const why = plainToolReason(s.reason);
+      return { text: `The approval record is incomplete${why ? `: ${why.replace(/\.$/, "")}` : ""}${age}`, tone: "seam" };
+    }
+    case "held":
+      return { text: `The approval rules hold this${s.reason ? `: ${s.reason}` : ""}${age}`, tone: "seam" };
+    default:
+      return { text: `${plainReason(s.reason) || "It cannot be decided here yet."}${age}`, tone: "muted" };
+  }
+}
+
+/* ---------- Today: why a decision matters ---------- */
+
+/** The "why it matters" lines `compound attention --json` writes today, in plain words. */
+const WHY_PLAIN: Array<[RegExp, string]> = [
+  [/^Resolve the hold before executors can continue\.?$/i, "Agents cannot go on until you lift the hold."],
+  [/^decision source changes only after reviewed approval\.?$/i, "The rule is only added after it has been reviewed and approved."],
+  [/^the product loop gets an evidence-shaped hypothesis\.?$/i, "The product gets an idea to test that rests on evidence."],
+  [/^the router surfaces the right capability more often\.?$/i, "Agents find the right tool more often."],
+  [/^the router starts trusting auto\/judge with classify extract work\.?$/i, "The model picker starts giving sorting and extraction work to the automatic judge model."],
+  [/^the repo stops blocking follow-up work\.?$/i, "The repository stops holding up later work."],
+  [/^the hypothesis gets a reviewed product result\.?$/i, "The product idea gets a reviewed result."],
+  [/^regenerate dirty-plan from the current read-only source-control snapshot before reviewing\.?$/i, "The cleanup plan must be made again from a fresh look at the repository before it can be reviewed."],
+  [/^restore repository visibility, then retry the read-only review projection\.?$/i, "The repository must be readable again; then the review can be read again."],
+];
+
+/* ---------- Work: the next step on a card ---------- */
+
+/** The next-step instructions `compound workbench --json` writes today, in plain words. */
+const WORK_STEP_PLAIN: Array<[RegExp, string]> = [
+  [/^close completed or failed, or return (?:to )?running$/i, "Mark it done or failed, or send it back to running."],
+  [/^attach (?:the )?final verified candidate (?:as )?commit:<full-sha>$/i, "Record the final checked commit for it."],
+  [/^advance (?:to )?verifying, completed, blocked, held, or failed$/i, "Move it on: to the proof check, done, blocked, on hold or failed."],
+  [/^advance (?:to )?running or release to ready$/i, "Start running it, or put it back as ready to start."],
+  [/^run a new certifying proof battery in the WorkEnvelope repository$/i, "Run the full proof checks again in its repository."],
+  [/^resolve policy\/source-control hold, then ready or cancel$/i, "Lift the hold, then make it ready again or cancel it."],
+  [/^admit or cancel after owner review$/i, "Accept it or cancel it after review."],
+  [/^close with the attached current Git delivery proof$/i, "Close it with the proof that its change landed."],
+  [/^claim before touching$/i, "An agent must pick it up before working on it."],
+  [/^replace this incomplete code work with a WorkEnvelope carrying a complete git_delivery contract$/i, "Replace it with a work item that says where its code change will land."],
+  [/^resolve blocker, then running, failed, or cancel$/i, "Clear what blocks it, then run it, fail it or cancel it."],
+  [/^check out \S+ in the explicit target worktree, then rerun land-check$/i, "Switch its target folder to the right branch, then check the landing again."],
+  [/^wait for a green verifier verdict covering commit:/i, "Waiting for the proof check to pass on its final commit."],
+  [/^rebase candidate \S+ onto (?:the )?current main tip/i, "Bring its change up to date with main, then check the landing again."],
+  [/^repair the bound Git delivery target/i, "Fix where its change should land, then check the landing again."],
+  [/^run (?:a )?fresh canonical certifying proof for (?:the )?attached candidate/i, "Run the full proof checks again on its final commit, then check the landing again."],
+  [/^repository fingerprint changed/i, "Its repository looks different than before, for example a renamed address. Confirm it before going on."],
+  [/^record the current delivery proof/i, "Record the proof that its change landed."],
+  [/^rebuild candidate \S+ from expected base/i, "Rebuild its change from the right starting point; this version cannot be accepted."],
+  [/^recover candidate tip \S+ into this repository/i, "Bring its final commit back into the repository, then check the landing again."],
+  [/^prepare ready with reviewed action context; do not execute action until claimed\/running$/i, "Get it ready with a reviewed plan; nothing runs until an agent picks it up."],
+];
+
+/** A work item's next step in plain words; an unknown instruction is shown as written. */
+export function plainWorkStep(text: string): string {
+  const trimmed = (text || "").trim();
+  for (const [pattern, plain] of WORK_STEP_PLAIN) if (pattern.test(trimmed)) return plain;
+  return trimmed;
+}
+
+/* ---------- Today: names and levels ---------- */
+
+/**
+ * A title that starts with a product id ("product:fixture-app has a product
+ * hypothesis…") in plain words: the product's name leads, and the id is
+ * returned apart for small secondary text. Other titles pass through.
+ */
+export function productTitle(text: string, nameOf: (productId: string) => string): { text: string; id: string } {
+  const match = /^(product:[\w.-]+)\b/.exec(text || "");
+  if (!match) return { text: text || "", id: "" };
+  return { text: `${nameOf(match[1])}${text.slice(match[1].length)}`, id: match[1] };
+}
+
+const AUTONOMY_PLAIN: Record<string, string> = {
+  L0: "Agents only suggest; every change waits for you.",
+  L1: "Agents suggest changes and ask you before they change files on this machine.",
+  L2: "Agents may make local, undoable changes without asking; everything else waits for you.",
+  L3: "Agents may make local changes and work inside the projects you have granted without asking; destructive actions still wait for you.",
+};
+
+/** What an autonomy level lets agents do without asking, in one sentence ("" when the level is unknown). */
+export function plainAutonomy(level: string): string {
+  return AUTONOMY_PLAIN[(level || "").trim().toUpperCase()] ?? "";
+}
+
 /**
  * What answering a decision unlocks ("why it matters"), in plain words. An
  * unlock that only points at a command or "the review queue" says nothing
@@ -227,6 +365,7 @@ export function plainNextStep(text: string): string {
 export function plainWhy(unlock: string): string {
   const trimmed = (unlock || "").trim();
   if (!trimmed) return "";
+  for (const [pattern, plain] of WHY_PLAIN) if (pattern.test(trimmed)) return plain;
   if (/\bcompound\s+[a-z]/i.test(trimmed) || /--[a-z]/.test(trimmed)) return "";
   if (/^open (?:it|the review queue)\b/i.test(trimmed)) return "";
   return sentence(plainText(trimmed).replace(/\.+$/, "")) + ".";
@@ -287,6 +426,10 @@ export const BANNED_PHRASES: readonly string[] = [
   "Manual owner command",
   "Projected unlock",
   "No spend projection wired",
+  // Decide said these while its list copy was older than 25 seconds, which is
+  // nearly always: a pause that never clears, hiding the real reason.
+  "Paused while the list refreshes",
+  "Buttons pause while the list is read again",
 ];
 
 /** Area ids that are folder paths with an id tail, used as a label. */

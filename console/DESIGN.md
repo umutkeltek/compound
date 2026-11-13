@@ -567,7 +567,7 @@ the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line
 |---|---|---|
 | Today | What needs you today? | "N decisions wait for you, with M items in all", then at most five decisions in the attention order, each with what to do, why, and one way in. When nothing waits, it says so and "What the agents are doing" becomes the answer. |
 | Work | What is being worked on, and what is stuck? | Work items marked in progress out of open work, the split, what is stuck (picked up 7+ days ago and still open; on hold), and work items waiting for a decision. |
-| Decide | What is waiting for your decision? | How many decisions and items wait, and how many can be decided now. Those come first; the rest are one quieter "Not yet" list, with the reason said once when it is the same for all. |
+| Decide | What is waiting for your decision? | How many decisions and items wait, how many can be decided now, and why the rest wait, counted from the last check: no button for that kind yet, or an incomplete approval record. Those that can be decided come first; the rest are one quieter "Not yet" list, with the standing said once when it is the same for all. |
 | Live | Who is working on what right now? | Agents holding work, the in-progress split and age, and a plain note when live run records are not visible, so "running" is the work record's word. |
 
 - **Words.** `lib/plain-words.ts` owns the names (decision, item, work item, agent, in progress,
@@ -585,6 +585,16 @@ the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line
   (`?decision=<key>` re-renders with that one's detail); filed is a count plus one row per kind
   (`?filed=<kind>` opens its newest 100). Live's timeline gets its six rows, and the list of
   agent-started sessions renders only at the Technical depth.
+- **Decide standing (2026-11-13).** A button needs owner evidence read in the last 25 seconds;
+  that gate is unchanged. The list (`attention --json`) takes about a minute to read, so the
+  opened decision also reads its own area (`reviews --json --area <area>`, about a second, the
+  read the action path resolves against) through the non-blocking read, and that copy is its
+  evidence when it is fresher than the list's. It applies to that one decision only. Each row
+  says its standing from its freshest evidence (`lib/decide-model.ts` `standing`, words in
+  `lib/plain-words.ts` `standingLine`): "You can decide this now", "No button exists for this
+  kind of decision yet", "The approval record is incomplete: <the tool's reason>", or
+  "Checking… (takes a few seconds)" while the opened decision's read runs. Evidence older than
+  the live window says what it found and "checked N min ago"; it never says "paused".
 - **Work views.** The board by state is the default; List, Stages, Flow, By agent and Work packets
   are quieter text tabs beside it. Board columns: Suggested · Ready to start · Running or picked up
   · On hold · Waiting for a proof check · Done; the two middle in-progress columns add up to the

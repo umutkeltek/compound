@@ -229,19 +229,49 @@ export type DecisionCount = {
   readyNow: number;
   /** decisions that cannot be answered yet, each with a reason */
   notYet: number;
+  /**
+   * What the last check of each decision found (its standing, lib/decide-model.ts),
+   * whether or not that check is still inside the live window. Units: decisions.
+   */
+  found: {
+    /** the last check found a button for it (a button shows only while that check is live) */
+    decidable: number;
+    /** no button exists for this kind of decision yet */
+    noButton: number;
+    /** an action exists but its approval record is incomplete */
+    incomplete: number;
+    /** the approval rules hold it */
+    held: number;
+    /** any other reason (details still loading, one review per repository) */
+    other: number;
+  };
+  /** decisions whose last check is older than the live window */
+  checkedEarlier: number;
 };
 
 /**
  * Count decisions on Decide. "Ready now" is the Decide card's own readiness
  * (`face.state === "ready"`): the owner offers an action and the console may
- * run it now. Everything else is "not yet".
+ * run it now. Everything else is "not yet". `found` splits every decision by
+ * what its last check found, so the page can say why each one waits.
  */
-export function countDecisions(groups: readonly { count: number; face: { state: string } }[]): DecisionCount {
+export function countDecisions(
+  groups: readonly { count: number; face: { state: string }; standing?: { kind: string; live: boolean } }[],
+): DecisionCount {
   let items = 0;
   let readyNow = 0;
+  let checkedEarlier = 0;
+  const found = { decidable: 0, noButton: 0, incomplete: 0, held: 0, other: 0 };
   for (const group of groups) {
     items += group.count;
     if (group.face.state === "ready") readyNow += 1;
+    const kind = group.standing?.kind ?? (group.face.state === "ready" ? "ready" : "other");
+    if (kind === "ready") found.decidable += 1;
+    else if (kind === "no_button") found.noButton += 1;
+    else if (kind === "incomplete") found.incomplete += 1;
+    else if (kind === "held") found.held += 1;
+    else found.other += 1;
+    if (group.standing && !group.standing.live) checkedEarlier += 1;
   }
-  return { decisions: groups.length, items, readyNow, notYet: groups.length - readyNow };
+  return { decisions: groups.length, items, readyNow, notYet: groups.length - readyNow, found, checkedEarlier };
 }

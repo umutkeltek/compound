@@ -21,7 +21,7 @@ import type { DecisionEffectKind } from "@/lib/decision-registry";
 import { buildEnumerableActionRequest, decideActIdentity, RATIONALE_REQUIRED_MESSAGE } from "@/lib/governed-action-client";
 import { OPERATOR_INPUTS } from "@/lib/operator-inputs";
 import { ownerUnavailableMessage } from "@/lib/glossary";
-import { plainArea, plainDecisionState, plainNextStep, plainReach, plainReason, plainText } from "@/lib/plain-words";
+import { plainArea, plainDecisionState, plainNextStep, plainReach, plainReason, plainText, standingLine } from "@/lib/plain-words";
 import { GovernedAct, type ExecuteResult } from "./GovernedAct";
 
 /** Decide's two lists, in plain words (the split itself is decide-members' face-state rule). */
@@ -33,6 +33,53 @@ const SECTION_COPY: Record<"act_now" | "needs_context", { label: string; descrip
 /** The system's reason in plain words (lib/plain-words.ts owns the mapping). */
 const blockedReasonPlain = plainReason;
 import { PanelProofContinuity } from "./PanelProofContinuity";
+
+const STANDING_DOT: Record<"good" | "seam" | "muted", string> = {
+  good: "bg-good",
+  seam: "bg-seam",
+  muted: "bg-faint",
+};
+
+/**
+ * Where one decision stands, in one line: what its freshest check found, and
+ * when that check ran if it is older than the live window. The standing is
+ * computed on the server (lib/decide-model.ts); a group without one (built
+ * outside the model) falls back to its face label and reason.
+ */
+function standingOf(group: DecideGroup): { text: string; tone: "good" | "seam" | "muted" } {
+  if (group.standing) return standingLine(group.standing);
+  const reason = group.face.primaryAction ? "" : blockedReasonPlain(group.face.unavailableReason);
+  return {
+    text: [plainDecisionState(group.face.stateLabel), reason].filter(Boolean).join(": "),
+    tone: group.face.state === "ready" ? "good" : "muted",
+  };
+}
+
+function StandingText({ group, className = "" }: { group: DecideGroup; className?: string }) {
+  const { text, tone } = standingOf(group);
+  return (
+    <span className={`flex items-start gap-1.5 text-2xs leading-snug text-muted ${className}`} data-standing={group.standing?.kind ?? ""}>
+      <span aria-hidden className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${STANDING_DOT[tone]}`} />
+      <span className="line-clamp-3">{text}</span>
+    </span>
+  );
+}
+
+/**
+ * Said once above the list when every decision that cannot be decided now
+ * stands the same way (same words); the rows then stay quiet. Mixed reasons
+ * get no banner: each row says its own.
+ */
+function standingBanner(groups: DecideGroup[]): { title: string; text: string } | null {
+  const waiting = groups.filter((group) => group.face.state !== "ready");
+  if (waiting.length < 2) return null;
+  const texts = waiting.map((group) => standingOf(group).text);
+  if (!texts.every((text) => text === texts[0]) || !texts[0]) return null;
+  return {
+    title: waiting.length === groups.length ? "Why none can be decided now" : `Why ${waiting.length} of ${groups.length} cannot be decided now`,
+    text: texts[0],
+  };
+}
 
 /* Domain hue is accent-only (glyph tile + dot); the needs-you seam is amber. */
 const DOMAIN_TILE: Record<DecideDomain, string> = {
@@ -563,9 +610,9 @@ function DecisionRow({
   onActivate: () => void;
   onFocus: () => void;
   onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => void;
-  /** True when a queue-level systemic-blocker banner already explains this
-   * exact reason once for the whole queue — the per-row stamp goes quiet
-   * instead of repeating it. */
+  /** True when the banner above the list already says this row's exact
+   * standing once for the whole queue — the row goes quiet instead of
+   * repeating it. */
   demoteBlockedStamp: boolean;
 }) {
   return (
@@ -599,19 +646,13 @@ function DecisionRow({
         <span className="mt-1 line-clamp-2 block text-sm font-semibold leading-snug text-ink">
           {operatorText(group.objectText || group.title)}
         </span>
-        <span className="mt-2 flex flex-wrap items-center gap-2">
-          <StateBadge state={group.face.state} label={plainDecisionState(group.face.stateLabel)} />
-          {group.count > 1 ? <span className="mono text-2xs text-faint">{group.count} items</span> : null}
-        </span>
+        {demoteBlockedStamp ? null : <StandingText group={group} className="mt-2" />}
+        {group.count > 1 ? <span className="mono mt-1 block text-2xs text-faint">{group.count} items</span> : null}
         {group.face.primaryAction ? (
           <span className="mt-1.5 block truncate text-2xs font-semibold text-muted" title={group.face.primaryAction.label}>
             Next: {group.face.primaryAction.label}
           </span>
-        ) : demoteBlockedStamp ? null : (
-          <span className="mt-1.5 block text-2xs leading-snug text-muted">
-            Why not yet: {blockedReasonPlain(group.face.unavailableReason) || "the system gives no reason."}
-          </span>
-        )}
+        ) : null}
       </span>
     </button>
   );
@@ -787,7 +828,10 @@ function DecisionDetail({
             <GlyphTile domain={group.domain} glyph={group.glyph} />
             <div className="min-w-0 text-2xs font-bold uppercase text-faint">{group.face.kind}</div>
           </div>
-          <StateBadge state={group.face.state} label={plainDecisionState(group.face.stateLabel)} />
+          <StateBadge
+            state={group.face.state}
+            label={group.standing?.checking ? "Checking…" : group.face.state === "ready" ? "Ready" : "Not yet"}
+          />
         </div>
 
         {/* 1. WHAT is being decided — the full object text, quoted, first and
@@ -821,8 +865,8 @@ function DecisionDetail({
                 <span className="font-semibold text-good">{group.face.primaryAction.label}</span> — open the Action tab below.
               </p>
             ) : (
-              <p className="mt-1 text-sm leading-relaxed text-seam">
-                {blockedReasonPlain(group.face.unavailableReason) || "There is no button for this yet."}
+              <p className="mt-1 text-sm leading-relaxed text-seam" data-standing={group.standing?.kind ?? ""}>
+                {standingOf(group).text || "There is no button for this yet."}
               </p>
             )}
           </div>
@@ -901,7 +945,7 @@ function DecisionDetail({
               <div className="grid gap-3 border-l-2 border-seam-line pl-3">
                 <div>
                   <p className="text-sm font-semibold text-seam">
-                    {group.reviewResolutionItemId ? ownerUnavailableMessage(group.area) : blockedReasonPlain(group.face.unavailableReason)}
+                    {group.reviewResolutionItemId ? ownerUnavailableMessage(group.area) : standingOf(group).text}
                   </p>
                   <p className="mt-1 text-xs leading-relaxed text-muted">{plainNextStep(group.face.unblockPath)}</p>
                 </div>
@@ -1036,9 +1080,22 @@ export function DecideQueue({
   const visibleIndexByKey = useMemo(() => new Map(visible.map((group, index) => [group.key, index])), [visible]);
   // The whole queue's decidability, not just the filtered view — a search
   // shouldn't change whether the systemic-blocker fact is true.
+  // A queue-level reason the projection states itself wins; otherwise the
+  // banner appears only when every waiting decision stands the same way.
   const systemicBlocker: SystemicBlocker | null = useMemo(
-    () => queueSystemicBlocker(groups, systemicBlockerReason),
+    () => (systemicBlockerReason ? queueSystemicBlocker(groups, systemicBlockerReason) : null),
     [groups, systemicBlockerReason],
+  );
+  const banner = useMemo(
+    () => systemicBlocker
+      ? {
+          title: systemicBlocker.totalCount - systemicBlocker.blockedCount === 0
+            ? "Why none can be decided now"
+            : `Why ${systemicBlocker.blockedCount} of ${systemicBlocker.totalCount} cannot be decided now`,
+          text: blockedReasonPlain(systemicBlocker.reason),
+        }
+      : standingBanner(groups),
+    [groups, systemicBlocker],
   );
 
   useEffect(() => {
@@ -1165,14 +1222,10 @@ export function DecideQueue({
   return (
     <div className="grid gap-3">
       <div aria-live="polite" className="sr-only">{liveMessage}</div>
-      {systemicBlocker ? (
+      {banner ? (
         <div role="status" className="rounded-lg border border-seam-line bg-seam-soft px-4 py-3">
-          <div className="text-sm font-semibold text-seam">
-            {systemicBlocker.totalCount - systemicBlocker.blockedCount === 0
-              ? "Why none can be decided yet"
-              : `Why ${systemicBlocker.blockedCount} of ${systemicBlocker.totalCount} cannot be decided yet`}
-          </div>
-          <p className="mt-1 text-xs leading-relaxed text-muted">{blockedReasonPlain(systemicBlocker.reason)}</p>
+          <div className="text-sm font-semibold text-seam">{banner.title}</div>
+          <p className="mt-1 text-xs leading-relaxed text-muted">{banner.text}</p>
         </div>
       ) : null}
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1211,7 +1264,7 @@ export function DecideQueue({
                     key={group.key}
                     group={group}
                     selected={selected?.key === group.key}
-                    demoteBlockedStamp={Boolean(systemicBlocker)}
+                    demoteBlockedStamp={Boolean(systemicBlocker) || Boolean(banner && group.face.state !== "ready" && standingOf(group).text === banner.text)}
                     rowRef={(element) => { rowRefs.current[index] = element; }}
                     onActivate={() => select(group, index, true)}
                     onFocus={() => select(group, index)}

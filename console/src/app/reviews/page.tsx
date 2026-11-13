@@ -1,15 +1,16 @@
 import Link from "next/link";
 
 import { DecideQueue } from "@/components/decide/DecideQueue";
-import { CheckIcon, ClockIcon, hasCopy, QuestionHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending } from "@/components/kit";
+import { CheckIcon, ClockIcon, hasCopy, plainAge, QuestionHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending } from "@/components/kit";
 import { PendingRefresh } from "@/components/PendingRefresh";
-import { attentionNeedsYouGroups, readAttention } from "@/lib/attention";
-import { arr, HEAVY_PROJECTION_TIMEOUT_MS, num, readProjection, str, type Json } from "@/lib/compound";
+import { attentionNeedsYouGroups, readAttention, type AttentionGroup } from "@/lib/attention";
+import { arr, HEAVY_PROJECTION_TIMEOUT_MS, num, readProjection, str, type Json, type LiveRead, type ProjectionStatus } from "@/lib/compound";
 import { ago } from "@/lib/time";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
-import { countDecisions, unit, waitingOnYou } from "@/lib/counts";
+import { countDecisions, type DecisionCount, unit, waitingOnYou } from "@/lib/counts";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
-import { buildDecideGroups, type DecideAct, type DecideGroup } from "@/lib/decide-model";
+import { buildDecideGroups, type DecideAct, type DecideGroup, type ScopedDecisionEvidence } from "@/lib/decide-model";
+import { ATTENTION_SOURCED_GENERIC_AREAS } from "@/lib/generic-actions";
 import { areaOf, bandOf, enrichAttentionGroups, externalReviewRows, groupsForBand } from "@/lib/review-data";
 import { plainArea, plainText, TERMS } from "@/lib/plain-words";
 
@@ -81,6 +82,72 @@ function listOnly(group: DecideGroup): DecideGroup {
   return { ...group, members: [], evidence: [], brief: null, act: withoutDetail(group.act) };
 }
 
+/**
+ * Why the rest wait, counted from what the last check of each decision found
+ * (lib/counts.ts `countDecisions`), with that check's age when it is older
+ * than the live window. Never "paused": an old check is only old.
+ */
+function standingSentence(counted: DecisionCount, listAgeMs: number | null): string {
+  const n = (value: number) => value.toLocaleString("en-US");
+  const has = (value: number) => (value === 1 ? "has" : "have");
+  const is = (value: number) => (value === 1 ? "is" : "are");
+  const waitingOnTheCheck = Math.max(0, counted.found.decidable - counted.readyNow);
+  const parts = [
+    waitingOnTheCheck ? `${n(waitingOnTheCheck)} could be decided when last checked` : "",
+    counted.found.noButton ? `${n(counted.found.noButton)} ${has(counted.found.noButton)} no button for their kind of decision yet` : "",
+    counted.found.incomplete ? `${n(counted.found.incomplete)} ${has(counted.found.incomplete)} an incomplete approval record` : "",
+    counted.found.held ? `${n(counted.found.held)} ${is(counted.found.held)} held by the approval rules` : "",
+    counted.found.other ? `${n(counted.found.other)} wait for another reason, said on the row` : "",
+  ].filter(Boolean);
+  if (!parts.length) return "";
+  const list = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+  if (counted.checkedEarlier === 0) return `${sentenceCase(list)}.`;
+  const age = listAgeMs !== null ? ` (${plainAge(listAgeMs)})` : "";
+  return `At the last check${age}: ${list}. Opening one checks it again in a few seconds.`;
+}
+
+function sentenceCase(value: string): string {
+  return value ? value[0].toUpperCase() + value.slice(1) : value;
+}
+
+/* ---------- the opened decision checks its own evidence ----------
+ * The list (`attention --json`) takes about a minute to read, and the gate
+ * shows a button only from evidence read in the last 25 seconds, so a button
+ * read from the list would almost never show. The opened decision reads its
+ * own area instead (`reviews --json --area <area>`, about a second; the same
+ * read the action path resolves against) through the non-blocking read, and
+ * that copy is its evidence when it is fresher than the list's. The gate is
+ * unchanged. Decisions that do not come from the review queue (held work,
+ * attention-only areas) keep the list's evidence.
+ */
+async function scopedEvidence(
+  group: AttentionGroup | null,
+  listLastGoodAt: string | null,
+): Promise<{ evidence: ScopedDecisionEvidence; read: LiveRead } | null> {
+  if (!group || group.source !== "reviews" || !group.area || ATTENTION_SOURCED_GENERIC_AREAS.has(group.area)) return null;
+  const read = await readProjection(["reviews", "--json", "--area", group.area]);
+  const hasCopyNow = read.status === "live" || read.status === "stale";
+  const checking = hasCopyNow ? read.status !== "live" && read.updating : read.status === "loading" || read.updating;
+  const fresher = hasCopyNow && Boolean(read.value) && (!listLastGoodAt || (read.lastGoodAt ?? "") > listLastGoodAt);
+  if (!fresher || !read.value) {
+    return { read, evidence: { key: group.key, status: null, group: null, itemByID: null, generatedAt: "", source: read.source, checking } };
+  }
+  const own = arr(read.value.groups).filter((candidate: Json) => str(candidate.key) === group.key);
+  const [enriched] = enrichAttentionGroups([group], own);
+  return {
+    read,
+    evidence: {
+      key: group.key,
+      status: read.status as ProjectionStatus,
+      group: enriched ?? null,
+      itemByID: buildItemIndex(read.value),
+      generatedAt: read.generatedAt ?? read.lastGoodAt ?? "",
+      source: read.source,
+      checking,
+    },
+  };
+}
+
 /* ---------- watching (informational — no buttons, on purpose) ---------- */
 type WatchingEntry = { key: string; area: string; summary: string; count: number; createdAt: string };
 
@@ -129,13 +196,16 @@ export default async function Decide({
     ...arr(reviews?.groups).filter((group: Json) => bandOf(group) === "needs_you"),
     ...groupsForBand(reviews, "needs_you", attention),
   ];
-  const orderedGroups = enrichAttentionGroups(attentionNeedsYouGroups(attention), reviewEnrichmentGroups);
+  const needsYou = attentionNeedsYouGroups(attention);
+  const orderedGroups = enrichAttentionGroups(needsYou, reviewEnrichmentGroups);
+  const scoped = await scopedEvidence(needsYou.find((group) => group.key === requestedKey) ?? null, attentionRead.lastGoodAt);
   const decideGroups = buildDecideGroups(
     orderedGroups,
     itemByID,
     attention,
     (g) => sampleForGroup(g, itemByID),
     attentionRead.status === "loading" ? "unreachable" : attentionRead.status,
+    scoped?.evidence ?? null,
   );
   // Feature-detect a queue-level `systemic_blocker` reason the projection
   // may start carrying directly; DecideQueue also computes the
@@ -177,7 +247,7 @@ export default async function Decide({
 
   const attentionKnown = hasCopy(attentionRead);
   const reviewsKnown = hasCopy(reviewsRead);
-  const pending = readsPending(attentionRead, reviewsRead);
+  const pending = readsPending(attentionRead, reviewsRead, scoped?.read ?? null);
   const panelDetailOpen = Boolean(decideGroups.find((group) => group.key === requestedKey)?.panel);
 
   const answer = !waiting ? (
@@ -193,8 +263,9 @@ export default async function Decide({
           You can decide <strong className="font-semibold text-good">{counted.readyNow.toLocaleString("en-US")}</strong> of them right now; they are listed first.
         </>
       ) : (
-        <>None can be decided with a button right now. Open one to read it; each row says why it has to wait.</>
-      )}
+        <>None can be decided with a button right now.</>
+      )}{" "}
+      {standingSentence(counted, attentionRead.ageMs)}
     </p>
   );
 

@@ -429,8 +429,13 @@ export function runDecideDecisionFeedbackSelfTest(): SelfTestResult {
       fail("the per-row stamp is no longer demoted when a systemic-blocker banner covers it");
     } else if (/\{group\.face\.unavailableReason\}/.test(src)) {
       fail("a raw unavailableReason is rendered verbatim somewhere instead of through blockedReasonPlain(...)");
-    } else if ((src.match(/blockedReasonPlain\(/g) ?? []).length < 4) {
-      fail("blockedReasonPlain is not wired at every card/row site that used to show the raw reason string");
+    } else if (
+      // Rows and the open card now say the decision's standing (lib/plain-words.ts
+      // standingLine), which carries the reason in plain words; both routes count.
+      (src.match(/blockedReasonPlain\(|standingOf\(/g) ?? []).length < 4 ||
+      !/standingLine\(group\.standing\)/.test(src)
+    ) {
+      fail("the plain-words route (blockedReasonPlain, or standingOf through standingLine) is not wired at every card/row site that used to show the raw reason string");
     } else {
       pass("the Decide card leads with the quoted object text, shows one banner for a systemic blocker, demotes the per-row stamp, and never renders a raw reason string verbatim");
     }
