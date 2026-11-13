@@ -93,7 +93,7 @@ type InventoryAttention struct {
 	Value      any     `json:"value"`
 	Unit       string  `json:"unit"`
 	Why        string  `json:"why"`
-	rank       int     // 0 snapshot, 1 failed source, 2 sign-in source, 3 warning
+	rank       int     // 0 snapshot, 1 failed source, 2 sign-in source, 3 warning, 4 failed or sign-in fact
 	past       float64 // how far past the threshold, relative
 }
 
@@ -295,6 +295,20 @@ func BuildInventory(home string, q InventoryQuery, now time.Time) (InventoryProj
 					Why: fmt.Sprintf("%s is %s, %s %s", f.Title, formatInventoryValue(f.Value, f.Unit),
 						spec.WarnWhen, formatInventoryValue(*spec.WarnAt, f.Unit)),
 					rank: 3, past: inventoryPastThreshold(f.Value, spec),
+				})
+			}
+			// A fact that failed or needs sign-in is something to fix. A fact
+			// that needs the owner, costs money, is not supported or was not
+			// reported is a standing unknown and is not an attention row.
+			if f.State == "failed" || f.State == "needs_sign_in" {
+				why := f.Title + " " + strings.ReplaceAll(strings.Replace(f.State, "needs_sign_in", "needs sign-in", 1), "_", " ")
+				why += inventoryDetailSuffix(f.Detail)
+				if at, err := time.Parse(time.RFC3339, f.ObservedAt); err == nil {
+					why += fmt.Sprintf(" (read %s ago)", humanInventoryAge(math.Max(0, now.Sub(at).Hours())))
+				}
+				p.Attention = append(p.Attention, InventoryAttention{
+					ResourceID: r.ID, Label: r.Label, Kind: r.Kind, Fact: f.Name, Title: f.Title,
+					Unit: f.Unit, Why: why, rank: 4,
 				})
 			}
 		}
@@ -530,13 +544,19 @@ func nonNilStrings(s []string) []string {
 }
 
 func humanInventoryAge(hours float64) string {
+	unit := func(v float64, one, many string) string {
+		if v == 1 {
+			return "1 " + one
+		}
+		return strconv.FormatFloat(v, 'f', -1, 64) + " " + many
+	}
 	switch {
 	case hours < 1:
-		return fmt.Sprintf("%d minutes", int(math.Round(hours*60)))
+		return unit(math.Round(hours*60), "minute", "minutes")
 	case hours < 48:
-		return strconv.FormatFloat(math.Round(hours*10)/10, 'f', -1, 64) + " hours"
+		return unit(math.Round(hours*10)/10, "hour", "hours")
 	default:
-		return strconv.FormatFloat(math.Round(hours/24*10)/10, 'f', -1, 64) + " days"
+		return unit(math.Round(hours/24*10)/10, "day", "days")
 	}
 }
 

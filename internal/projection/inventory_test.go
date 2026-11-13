@@ -312,7 +312,7 @@ func TestInventoryProjectionShape(t *testing.T) {
 	for _, a := range p.Attention {
 		order = append(order, a.Kind+":"+a.Label+":"+a.Fact)
 	}
-	want := []string{"source:edge-box:", "source:dns:", "host:lab-node:disk_pct", "plan:Example seat:window_used_pct", "guest:app-vm:memory_pct"}
+	want := []string{"source:edge-box:", "source:dns:", "host:lab-node:disk_pct", "plan:Example seat:window_used_pct", "guest:app-vm:memory_pct", "domain:shop.example:plan"}
 	if strings.Join(order, ",") != strings.Join(want, ",") {
 		t.Fatalf("attention order = %v\nwant %v", order, want)
 	}

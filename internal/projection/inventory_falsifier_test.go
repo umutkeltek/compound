@@ -77,8 +77,8 @@ func TestInventoryFalsifierNonOKFactNeverRendersANumber(t *testing.T) {
 		t.Fatalf("failed disk fact = %+v, want value null and no warning", disk)
 	}
 	for _, a := range p.Attention {
-		if a.Fact == "disk_pct" && a.Kind == "host" {
-			t.Fatalf("a failed fact must not raise a threshold warning: %+v", a)
+		if a.Fact == "disk_pct" && a.Kind == "host" && (a.rank == 3 || a.Value != nil) {
+			t.Fatalf("a failed fact must not raise a threshold warning or carry a value: %+v", a)
 		}
 	}
 	js := inventoryJSON(t, p)
@@ -370,7 +370,64 @@ func TestInventoryFalsifierTextStaysNearFortyLines(t *testing.T) {
 		t.Fatalf("a capped group must say how to see the rest:\n%s", text)
 	}
 	filtered, _ := BuildInventory(home, InventoryQuery{Kind: "domain"}, inventoryT0)
-	if got := strings.Count(FormatInventoryText(filtered), ".example …"); got != 31 {
+	if got := strings.Count(FormatInventoryText(filtered), "\n    site"); got != 30 {
 		t.Fatalf("--kind domain must list every domain, got %d", got)
+	}
+}
+
+func TestInventoryFalsifierFailedAndSignInFactsAreAttentionStandingUnknownsAreNot(t *testing.T) {
+	data := mutateInventoryFixture(t, inventoryT0, func(doc map[string]any) {
+		host := inventoryFixtureResource(doc, 1)["facts"].(map[string]any)
+		host["memory_pct"] = map[string]any{"value": nil, "unit": "pct", "state": "failed", "detail": "free timed out", "observed_at": inventoryT0.Format(time.RFC3339)}
+		// already in the fixture: account cost_month_to_date costs_money,
+		// credit_left needs_owner; guest disk_pct not_supported; domain plan
+		// needs_sign_in; host cost_month not reported.
+	})
+	home := t.TempDir()
+	if _, err := RefreshInventory(home, data, InventoryRefreshOptions{}, inventoryT0); err != nil {
+		t.Fatal(err)
+	}
+	p, err := BuildInventory(home, InventoryQuery{}, inventoryT0.Add(2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := map[string]InventoryAttention{}
+	var order []int
+	for _, a := range p.Attention {
+		if a.Fact != "" {
+			rows[a.ResourceID+"/"+a.Fact] = a
+		}
+		order = append(order, a.rank)
+	}
+	mem, ok := rows["examplehv:node:example-node-1/memory_pct"]
+	if !ok || mem.Why != "Memory used failed: free timed out (read 2 hours ago)" || mem.Value != nil {
+		t.Fatalf("failed fact row = %+v (present %v)", mem, ok)
+	}
+	plan, ok := rows["dnsco:zone:5f1e/plan"]
+	if !ok || !strings.HasPrefix(plan.Why, "Plan needs sign-in: token expired") {
+		t.Fatalf("sign-in fact row = %+v (present %v)", plan, ok)
+	}
+	for _, standing := range []string{
+		inventoryLongID + "/cost_month_to_date", // costs_money
+		inventoryLongID + "/credit_left",        // needs_owner
+		inventoryLongID + "/credit_ends",        // not reported
+		"examplehv:vm:101/disk_pct",             // not_supported
+		"examplehv:node:example-node-1/cost_month",
+	} {
+		if a, found := rows[standing]; found {
+			t.Fatalf("a standing unknown must not be an attention row: %+v", a)
+		}
+	}
+	// failed sources, then warnings, then failed or sign-in facts
+	for i := 1; i < len(order); i++ {
+		if order[i] < order[i-1] {
+			t.Fatalf("attention out of order: %v", order)
+		}
+	}
+	if order[len(order)-1] != 4 || order[len(order)-2] != 4 {
+		t.Fatalf("fact rows must come last: %v", order)
+	}
+	if text := FormatInventoryText(p); !strings.Contains(text, "lab-node …de-1 (host): Memory used failed: free timed out (read 2 hours ago)") {
+		t.Fatalf("text missing the failed fact row:\n%s", text)
 	}
 }
