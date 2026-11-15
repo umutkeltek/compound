@@ -65,7 +65,19 @@ func campaignTestFile(t *testing.T, base, name string, b []byte) CampaignFile {
 
 func campaignObservationFixture(t *testing.T, c VisualCampaign, base string, now time.Time) CampaignObservation {
 	t.Helper()
-	return CampaignObservation{ProductID: c.ProductID, ExperimentID: c.Experiment.ID, CampaignSHA256: campaignDigest(c), ControlSetSHA256: c.Experiment.ControlSetSHA256, Locale: "en-US", Target: "store-portrait", Design: "randomized", AssignmentRef: "fixture:randomized-assignment", RegisteredAt: c.CreatedAt, StartsAt: c.Experiment.StartsAt, EndsAt: c.Experiment.EndsAt, ObservedAt: now.Format(time.RFC3339), Source: campaignTestFile(t, base, "exposure.json", []byte(`{"fixture":"synthetic exposure report"}`)), Unit: "unique_users", Control: CampaignArm{Exposed: 10000, Converted: 2000}, Treatment: CampaignArm{Exposed: 10000, Converted: 2600}}
+	o := CampaignObservation{ProductID: c.ProductID, ExperimentID: c.Experiment.ID, CampaignSHA256: campaignDigest(c), ControlSetSHA256: c.Experiment.ControlSetSHA256, Locale: "en-US", Target: "store-portrait", Design: "randomized", AssignmentRef: "fixture:randomized-assignment", RegisteredAt: c.CreatedAt, StartsAt: c.Experiment.StartsAt, EndsAt: c.Experiment.EndsAt, ObservedAt: now.Format(time.RFC3339), Unit: "unique_users", Control: CampaignArm{Exposed: 10000, Converted: 2000}, Treatment: CampaignArm{Exposed: 10000, Converted: 2600}}
+	return campaignObservationSource(t, base, o)
+}
+
+func campaignObservationSource(t *testing.T, base string, o CampaignObservation) CampaignObservation {
+	t.Helper()
+	o.Source = CampaignFile{}
+	b, err := json.Marshal(CampaignExposureExport{SchemaVersion: "compound.campaign_exposure.v0.1", Observation: o, EvidenceRefs: []string{"fixture:platform-export"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.Source = campaignTestFile(t, base, "exposure.json", b)
+	return o
 }
 
 func TestVisualCampaignAdaptsScenesLocksDesignAndAttachesLocalizedCaptures(t *testing.T) {
@@ -169,6 +181,9 @@ func TestVisualCampaignMeasurementRefusesFalseWins(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			changed := o
 			mutate(&changed)
+			if name != "wrong source" {
+				changed = campaignObservationSource(t, base, changed)
+			}
 			out, err := MeasureVisualCampaign(c, base, changed, base, now)
 			if err == nil && out.Decision == "supported_improvement" {
 				t.Fatalf("false win: %+v", out)
@@ -203,6 +218,14 @@ func TestVisualCampaignCLIToExistingProductLearning(t *testing.T) {
 		t.Fatal(err)
 	}
 	home := seedLoopModelHome(t)
+	hypothesis, err := loadHypothesisCandidate(home, c.Experiment.HypothesisID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hypothesis.Metrics = []string{c.Experiment.Metric}
+	if err = writeHypothesisCandidate(home, hypothesis); err != nil {
+		t.Fatal(err)
+	}
 	store, err := mem.Open(home)
 	if err != nil {
 		t.Fatal(err)

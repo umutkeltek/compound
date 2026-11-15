@@ -1,5 +1,7 @@
 # Kernel Contracts (the lego seams)
 
+Visual campaigns use the existing product and work owners: [executable campaign contract](../../../skills/product-pipeline/references/visual-campaigns.md). `product campaign prompts|check|measure` compiles and validates work artifacts; `product signal --campaign ... --observation ...` imports exact-version experiment evidence through ProductSignal. Rendering, review attestations, platform assignment and release remain executor/adapter responsibilities, not a second scheduler.
+
 Closed PostgreSQL password repair and recovery are owned by
 [closed-credential-password-alignment.md](closed-credential-password-alignment.md).
 The existing verifier stays read-only; native installer admission consumes the

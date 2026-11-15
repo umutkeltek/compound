@@ -56,6 +56,10 @@ composition, capture and platform adapters. Preparation does not authorize publi
    impressions, sequential peeking, multiple treatments, clusters and revenue need
    a suitable measurement adapter. Do not rename those denominators to fit.
    Preserve raw source bytes with SHA256, assignment evidence and confounders.
+   The source is a `compound.campaign_exposure.v0.1` normalized export with
+   `observation` (the same fields, but an empty `source`) and `evidence_refs` to
+   the original platform export. Its counts and assignment must exactly match
+   the observation being measured; arbitrary cited bytes cannot substantiate it.
    Record the whole package's effect; do not credit individual scenes or models.
 8. Run `compound product campaign measure campaign.json observation.json`. Identity,
    window, counts, sample size and allocation checks precede a conclusion. Sparse,

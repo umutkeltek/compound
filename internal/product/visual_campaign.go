@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -158,6 +159,7 @@ type CampaignPromptPacket struct {
 
 var campaignHashPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 var campaignLocalePattern = regexp.MustCompile(`^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$`)
+var campaignKeyPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 func campaignDigest(v any) string {
 	b, _ := json.Marshal(v) // all callers use validated, finite JSON values
@@ -222,6 +224,9 @@ func validateCampaignBrief(c VisualCampaign, now time.Time) error {
 		return fmt.Errorf("invalid campaign created_at")
 	}
 	e := c.Experiment
+	if math.IsNaN(e.MinAbsoluteLift) || math.IsInf(e.MinAbsoluteLift, 0) || math.IsNaN(e.TreatmentShare) || math.IsInf(e.TreatmentShare, 0) {
+		return fmt.Errorf("experiment thresholds must be finite")
+	}
 	start, e1 := time.Parse(time.RFC3339, e.StartsAt)
 	end, e2 := time.Parse(time.RFC3339, e.EndsAt)
 	if !campaignNonempty(e.ID, e.HypothesisID, e.Metric) || !campaignHashPattern.MatchString(e.ControlSetSHA256) || e1 != nil || e2 != nil || !start.Before(end) || created.After(start) || e.MinPerArm < 100 || e.MinAbsoluteLift < 0 || e.MinAbsoluteLift >= 1 || e.TreatmentShare <= 0 || e.TreatmentShare >= 1 {
@@ -238,6 +243,9 @@ func validateCampaignBrief(c VisualCampaign, now time.Time) error {
 		locales[l.Tag] = true
 	}
 	for _, t := range c.Targets {
+		if !campaignKeyPattern.MatchString(t.ID) {
+			return fmt.Errorf("invalid target id %q", t.ID)
+		}
 		checked, a := time.Parse(time.RFC3339, t.RulesCheckedAt)
 		until, b := time.Parse(time.RFC3339, t.RulesValidUntil)
 		if !campaignNonempty(t.ID, t.Surface, t.RulesRef) || targets[t.ID] || t.Width <= 0 || t.Height <= 0 || t.Width > 20000 || t.Height > 20000 || (t.Format != "png" && t.Format != "jpeg") || t.MaxBytes <= 0 || a != nil || b != nil || checked.After(now) || !until.After(now) || !until.After(checked) {
@@ -252,6 +260,9 @@ func validateCampaignBrief(c VisualCampaign, now time.Time) error {
 		refs[r.ID] = r
 	}
 	for _, s := range c.Scenes {
+		if !campaignKeyPattern.MatchString(s.ID) {
+			return fmt.Errorf("invalid scene id %q", s.ID)
+		}
 		if !campaignNonempty(s.ID, s.Purpose, s.Setting, s.Action, s.Composition) || scenes[s.ID] || len(s.ReferenceIDs) == 0 {
 			return fmt.Errorf("invalid/duplicate scene %q or missing image references", s.ID)
 		}

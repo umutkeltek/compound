@@ -3,6 +3,7 @@ package product
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -45,6 +46,15 @@ type CampaignMeasurement struct {
 	AbsoluteLift  float64        `json:"absolute_lift"`
 	Interval95    [2]float64     `json:"interval_95"`
 	Signal        SignalDocument `json:"signal"`
+}
+
+// Platform adapters normalize their export into this evidence document before
+// measurement. Counts and assignment identity must agree with the observed row;
+// callers cannot cite arbitrary bytes while supplying different counts.
+type CampaignExposureExport struct {
+	SchemaVersion string              `json:"schema_version"`
+	Observation   CampaignObservation `json:"observation"` // source must be empty here
+	EvidenceRefs  []string            `json:"evidence_refs"`
 }
 
 func LoadCampaignMeasurement(campaignPath, observationPath string, now time.Time) (CampaignMeasurement, error) {
@@ -106,6 +116,15 @@ func MeasureVisualCampaign(c VisualCampaign, base string, o CampaignObservation,
 	if hex.EncodeToString(h[:]) != o.Source.SHA256 || len(b) == 0 {
 		return out, fmt.Errorf("observation source changed or empty")
 	}
+	var source CampaignExposureExport
+	if err := json.Unmarshal(b, &source); err != nil {
+		return out, fmt.Errorf("decode normalized exposure export: %w", err)
+	}
+	expected := o
+	expected.Source = CampaignFile{}
+	if source.SchemaVersion != "compound.campaign_exposure.v0.1" || !campaignEvidence(source.EvidenceRefs) || campaignDigest(source.Observation) != campaignDigest(expected) {
+		return out, fmt.Errorf("exposure export does not match supplied counts, assignment or experiment identity")
+	}
 	for _, arm := range []CampaignArm{o.Control, o.Treatment} {
 		if arm.Exposed <= 0 || arm.Exposed > 1000000000 || arm.Converted < 0 || arm.Converted > arm.Exposed {
 			return out, fmt.Errorf("invalid exposure/conversion counts")
@@ -142,6 +161,7 @@ func MeasureVisualCampaign(c VisualCampaign, base string, o CampaignObservation,
 		}
 	}
 	evidence := append([]string{}, c.Context.EvidenceRefs...)
+	evidence = append(evidence, source.EvidenceRefs...)
 	evidence = append(evidence, "campaign-sha256:"+check.CampaignSHA256, "observation-sha256:"+campaignDigest(o), "source-sha256:"+o.Source.SHA256, o.AssignmentRef, "hypothesis:"+e.HypothesisID)
 	confidence := 0.0 // descriptive input confidence is not posterior P(winner)
 	if out.Decision == "supported_improvement" || out.Decision == "evidence_of_harm" {
