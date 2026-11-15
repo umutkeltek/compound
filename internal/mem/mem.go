@@ -2663,11 +2663,20 @@ func (s *Store) nextSeq() (int64, error) {
 // maxLedgerSeq is the highest seq across claims AND edges (they share the seq space: relate-edges
 // and supersedes edges both draw from nextSeq).
 func (s *Store) maxLedgerSeq() (int64, error) {
-	claims, err := s.loadClaimsRaw()
+	// A malformed claims row is skipped here, as a malformed edges row
+	// already is: seq allocation must not be blocked by one bad row, and the
+	// counter file still holds the last seq allocated.
+	var hi int64
+	err := readJSONL(s.claimsLog(), func(line []byte) error {
+		var c Claim
+		if json.Unmarshal(line, &c) == nil && c.Seq > hi {
+			hi = c.Seq
+		}
+		return nil
+	})
 	if err != nil {
 		return 0, err
 	}
-	hi := s.maxSeq(claims)
 	err = readJSONL(s.edgesLog(), func(line []byte) error {
 		var e Edge
 		if json.Unmarshal(line, &e) == nil && e.Seq > hi {

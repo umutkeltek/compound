@@ -250,11 +250,15 @@ func RunLessonsIndexCommand(args []string, stdout, stderr io.Writer) int {
 	for _, problem := range problems {
 		messages = append(messages, problem.Error())
 	}
+	advice := LessonIndexFullAdvice(build)
 	if jsonOut {
 		encoded, _ := json.MarshalIndent(map[string]any{
 			"path":                   out,
 			"lessons":                len(index.Lessons),
 			"problems":               messages,
+			"unserved_lesson_ids":    build.Unserved,
+			"bytes":                  build.Bytes,
+			"fill_percent":           build.FillPercent(),
 			"source_memory_revision": index.SourceMemoryRevision,
 			"source_ledger_seq":      index.SourceLedgerSeq,
 			"excluded_lesson_ids":    index.ExcludedLessonIDs,
@@ -264,15 +268,21 @@ func RunLessonsIndexCommand(args []string, stdout, stderr io.Writer) int {
 		}, "", "  ")
 		fmt.Fprintln(stdout, string(encoded))
 	} else {
-		fmt.Fprintf(stdout, "hook lessons index: %d lessons -> %s\n", len(index.Lessons), out)
+		fmt.Fprintf(stdout, "hook lessons index: %d lessons -> %s (%d%% of the %d KiB cap)\n", len(index.Lessons), out, build.FillPercent(), LessonIndexMaxBytes>>10)
 		if recordedPath != "" {
 			fmt.Fprintf(stdout, "sources recorded for automatic rebuilds: %s\n", recordedPath)
 		}
 		for _, message := range messages {
 			fmt.Fprintln(stdout, "- rejected:", message)
 		}
+		for _, id := range build.Unserved {
+			fmt.Fprintln(stdout, "- not served, index full:", id)
+		}
 	}
-	if len(problems) > 0 {
+	if advice != "" {
+		fmt.Fprintln(stderr, "warning:", advice)
+	}
+	if len(problems) > 0 || len(build.Unserved) > 0 {
 		return 1
 	}
 	return 0

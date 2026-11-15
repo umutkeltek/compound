@@ -75,7 +75,7 @@ func writeServedLesson(t *testing.T, store *mem.Store, how, trigger string) Less
 func TestLessonWriteIsServedWithoutManualIndexBuild(t *testing.T) {
 	homePath, store := servingTestHome(t)
 	receipt := writeServedLesson(t, store, "Run widget --dry-run before --force.", `Bash:widget\s+--force`)
-	if !receipt.Index.Rebuilt || !receipt.Index.Served || receipt.Index.Path != hook.LessonIndexPath(homePath) {
+	if !receipt.Index.Rebuilt || !receipt.Index.Indexed || receipt.Index.Path != hook.LessonIndexPath(homePath) {
 		t.Fatalf("the write must rebuild and report the index: %+v", receipt.Index)
 	}
 	for _, harnessName := range []string{"claude_code", "codex"} {
@@ -89,7 +89,7 @@ func TestLessonWriteIsServedWithoutManualIndexBuild(t *testing.T) {
 	}
 	// Text output says the index was rebuilt.
 	code, out, errOut := runLesson(t, store, "--why", "the gadget flag was renamed", "--how", "Use gadget --apply.", "--by", "agent:test", "--trigger", `Bash:gadget\b`)
-	if code != 0 || !strings.Contains(out, "hook index rebuilt: 2 lessons served") {
+	if code != 0 || !strings.Contains(out, "hook index rebuilt: 2 lessons indexed") {
 		t.Fatalf("text output: %d %s %s", code, out, errOut)
 	}
 }
@@ -108,7 +108,7 @@ func TestSupersededLessonStopsBeingServedWithoutManualBuild(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	hook.RecordLessonUses(homePath, "work_example", "agent:test", b.Claim.ID, servingTestNow, &stdout, &stderr)
-	if !strings.Contains(stdout.String(), "superseded contested "+a.Claim.ID) || !strings.Contains(stdout.String(), "hook index rebuilt: 1 lessons served") {
+	if !strings.Contains(stdout.String(), "superseded contested "+a.Claim.ID) || !strings.Contains(stdout.String(), "hook index rebuilt: 1 lessons indexed") {
 		t.Fatalf("close --used step: %s %s", &stdout, &stderr)
 	}
 	got := served(t, "claude_code", "widget --force all")

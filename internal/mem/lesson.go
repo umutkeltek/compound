@@ -98,6 +98,8 @@ type LessonResult struct {
 	PositionID    string `json:"position_id"`
 	ContestedWith string `json:"contested_with,omitempty"`
 	TransitionID  string `json:"transition_id,omitempty"`
+	// SkippedLedgerRows counts malformed claims rows the write read past.
+	SkippedLedgerRows int `json:"skipped_ledger_rows,omitempty"`
 }
 
 // LessonTrigger is the parsed form of a trigger string.
@@ -240,18 +242,11 @@ func (s *Store) WriteLesson(in LessonInput, now time.Time) (LessonResult, error)
 	slotKey := ClaimSlotKey(entity, predicate, ClaimTypeLesson, qualifiers, "")
 
 	err = s.withLock(func() error {
-		claims, err := s.loadClaimsRaw()
+		claims, superseded, skipped, err := s.lessonLedgerLocked()
 		if err != nil {
 			return err
 		}
-		maxSeq, err := s.maxLedgerSeq()
-		if err != nil {
-			return err
-		}
-		superseded, err := s.supersededAsOf(maxSeq)
-		if err != nil {
-			return err
-		}
+		res.SkippedLedgerRows = skipped
 		var current []Claim
 		for _, c := range claims {
 			if c.ClaimType != ClaimTypeLesson || superseded[c.ID] {

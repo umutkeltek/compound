@@ -414,10 +414,46 @@ func BuildLessonIndex(lessons []Lesson, now time.Time) (LessonIndex, []error) {
 	}, problems
 }
 
+// fitLessonIndex keeps, in index (rank) order, every lesson that still fits
+// under LessonIndexMaxBytes, so a full index publishes the highest-ranked
+// lessons instead of nothing. It returns the ids it left out and the size of
+// the file WriteLessonIndex will write.
+func fitLessonIndex(index LessonIndex) (LessonIndex, []string, int, error) {
+	all := index.Lessons
+	index.Lessons = []Lesson{}
+	base, err := json.Marshal(index)
+	if err != nil {
+		return index, nil, 0, err
+	}
+	size := len(base) + 1 // trailing newline
+	kept := make([]Lesson, 0, len(all))
+	var left []string
+	for _, lesson := range all {
+		encoded, err := json.Marshal(lesson)
+		if err != nil {
+			return index, nil, 0, err
+		}
+		add := len(encoded)
+		if len(kept) > 0 {
+			add++ // separating comma
+		}
+		if size+add > LessonIndexMaxBytes {
+			left = append(left, lesson.ID)
+			continue
+		}
+		size += add
+		kept = append(kept, lesson)
+	}
+	index.Lessons = kept
+	return index, left, size, nil
+}
+
 // WriteLessonIndex writes the index atomically (temp file + rename) so the
 // hook never reads a half-written document.
 func WriteLessonIndex(path string, index LessonIndex) error {
-	data, err := json.MarshalIndent(index, "", "  ")
+	// Compact JSON: the size cap is about what the hook reads, and indent
+	// would spend about a tenth of it on spaces.
+	data, err := json.Marshal(index)
 	if err != nil {
 		return err
 	}

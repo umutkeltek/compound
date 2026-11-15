@@ -52,7 +52,7 @@ func TestRetireLessonStopsServingAndRestoreBringsItBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	if retired.Change != mem.LessonChangeRetired || retired.Claim.Qualifiers["changed_by"] != "agent:test" ||
-		retired.Undo != "compound memory lesson restore "+retired.Claim.ID+" --by 'agent:test'" || !retired.Index.Rebuilt || retired.Index.Served {
+		retired.Undo != "compound memory lesson restore "+retired.Claim.ID+" --by 'agent:test'" || !retired.Index.Rebuilt || retired.Index.Indexed {
 		t.Fatalf("retire receipt = %+v", retired)
 	}
 	for _, harnessName := range []string{"claude_code", "codex"} {
@@ -76,7 +76,7 @@ func TestRetireLessonStopsServingAndRestoreBringsItBack(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &restored); err != nil {
 		t.Fatal(err)
 	}
-	if restored.Prior.ID != retired.Claim.ID || !restored.Index.Served || !strings.HasPrefix(restored.Undo, "compound memory lesson retire "+restored.Claim.ID) {
+	if restored.Prior.ID != retired.Claim.ID || !restored.Index.Indexed || !strings.HasPrefix(restored.Undo, "compound memory lesson retire "+restored.Claim.ID) {
 		t.Fatalf("restore receipt = %+v", restored)
 	}
 	if got := served(t, "claude_code", "widget --force all"); !strings.Contains(got, "Compound lesson ("+restored.Claim.ID+"): Run widget --dry-run before --force.") {
@@ -84,7 +84,7 @@ func TestRetireLessonStopsServingAndRestoreBringsItBack(t *testing.T) {
 	}
 	// Text output names the change, the undo and the index.
 	code, out, _ = runLesson(t, store, "retire", restored.Claim.ID, "--reason", "done", "--by", "agent:test")
-	if code != 0 || !strings.Contains(out, "lesson retired: "+restored.Claim.ID+" -> ") || !strings.Contains(out, "undo: compound memory lesson restore ") || !strings.Contains(out, "hook index rebuilt: 0 lessons served") {
+	if code != 0 || !strings.Contains(out, "lesson retired: "+restored.Claim.ID+" -> ") || !strings.Contains(out, "undo: compound memory lesson restore ") || !strings.Contains(out, "hook index rebuilt: 0 lessons indexed") {
 		t.Fatalf("text retire: %d %s", code, out)
 	}
 }
@@ -102,7 +102,7 @@ func TestAmendLessonChangesWhatIsServedAndPrintsTheUndo(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &amended); err != nil {
 		t.Fatal(err)
 	}
-	if amended.Undo != "compound memory lesson amend "+amended.Claim.ID+" --trigger 'Bash:widget' --by 'agent:test'" || !amended.Index.Served {
+	if amended.Undo != "compound memory lesson amend "+amended.Claim.ID+" --trigger 'Bash:widget' --by 'agent:test'" || !amended.Index.Indexed {
 		t.Fatalf("amend receipt = %+v", amended)
 	}
 	if got := served(t, "claude_code", "widget status"); got != "" {

@@ -84,7 +84,16 @@ sources for the home's own index are recorded in `COMPOUND_HOME/config/hook-less
 and every later rebuild (automatic or with no flags) reads the ledger plus those sources. A lesson is
 `{id, tools[], pattern, apply, source}`. The builder also accepts the producer spellings `trigger`
 and `how_to_apply`. Limits: `apply` is one line of at most 300 bytes, at most 2 lessons per call, and
-an index file of at most 256 KiB. The pattern runs against the shell command for shell tools, and
+an index file of at most 256 KiB (written as compact JSON).
+
+**Rank and capacity.** The index is in rank order: ledger lessons newest first, then skill-file and
+`--from` lines in the order read (their age is unknown, so they rank as oldest). A tool call serves the
+first two matches in that order, so the newest matching lesson wins. A build never fails on size: it
+publishes, in rank order, every lesson that still fits, and returns the rest as unserved (oldest out
+first). Every build reports the fill level; from 80 % it warns that the index is nearly full. When
+lessons are left out, the lesson write, amend or restore that rebuilt the index exits 1 and names
+them, `compound hook lessons-index` exits 1 and lists them, and a retire (which only frees room) exits
+0 with a warning. The left-out lessons stay in the ledger and go live as soon as room is made. The pattern runs against the shell command for shell tools, and
 against the compact JSON input for every other tool. A lesson naming `Bash` also covers the shell
 tool names other harnesses use. In a skill file, a trigger is one line: `trigger: {<lesson JSON>}`.
 The builder rejects invalid lessons, keeps the valid subset, and exits 1 so automation notices.
@@ -98,8 +107,12 @@ authored triggers still work without a memory lookup.
 
 Builds hold `COMPOUND_HOME/lock/hook-lessons.lock` and read the ledger inside it, then publish with a
 temporary file and a rename, so concurrent lesson writers all end up served and a reader never sees
-a half-written file. An unreadable memory snapshot or sources file fails the build visibly and
-preserves the last complete index.
+a half-written file. A malformed ledger row is skipped and reported; it never stops the build, a
+lesson write or a retire. A ledger file with rows of which none is readable, or an unreadable sources
+file, fails the build visibly and preserves the last complete index. When a full rebuild fails for any
+reason, a retire (and the old version of an amend, and a lesson superseded by `work close --used`) is
+removed from the published index directly: a removal only shrinks the file, so it always fits, and a
+retired lesson stops being served even then.
 
 The tool-call path continues to read only the bounded index; it never queries memory or rebuilds it.
 A missing, empty, half-written, foreign-schema, oversized or non-regular index serves no lessons and

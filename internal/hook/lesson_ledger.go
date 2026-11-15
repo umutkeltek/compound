@@ -32,6 +32,9 @@ const (
 	lessonIndexLockRelPath = "lock/hook-lessons.lock"
 	// LessonIndexRepairCommand rebuilds the index by hand.
 	LessonIndexRepairCommand = "compound hook lessons-index"
+	// LessonIndexWarnPercent is the fill level at which every build warns
+	// that the index is nearly full.
+	LessonIndexWarnPercent = 80
 )
 
 // LessonSources are the extra index sources besides the ledger.
@@ -43,21 +46,37 @@ type LessonSources struct {
 
 func (s LessonSources) empty() bool { return len(s.Skills) == 0 && len(s.From) == 0 }
 
-// LessonIndexBuild is one published index plus the lessons it left out.
+// LessonIndexBuild is one published index plus what it left out.
 type LessonIndexBuild struct {
 	Path     string
 	Index    LessonIndex
 	Problems []error
+	// Unserved are valid lessons left out because the index is full, lowest
+	// rank first out. They stay in the ledger and go live once room is made.
+	Unserved []string
+	// Bytes is the published file size.
+	Bytes int
 }
 
 // Serves reports whether the published index carries lesson id.
 func (b LessonIndexBuild) Serves(id string) bool {
-	for _, lesson := range b.Index.Lessons {
+	return b.Rank(id) > 0
+}
+
+// Rank is id's 1-based position in the published index, 0 when absent. A
+// tool call serves the first LessonMaxInjected matches in this order.
+func (b LessonIndexBuild) Rank(id string) int {
+	for i, lesson := range b.Index.Lessons {
 		if lesson.ID == id {
-			return true
+			return i + 1
 		}
 	}
-	return false
+	return 0
+}
+
+// FillPercent is the published size as a share of LessonIndexMaxBytes.
+func (b LessonIndexBuild) FillPercent() int {
+	return b.Bytes * 100 / LessonIndexMaxBytes
 }
 
 // LessonSourcesPath returns the recorded-sources file inside a home.
@@ -126,8 +145,9 @@ func RebuildLessonIndex(homePath string, now time.Time) (LessonIndexBuild, error
 
 // CompileLessonIndex builds and publishes one index at out. The ledger is
 // always a source; sources adds skill folders and lesson files. Lessons that
-// fail validation are returned as Problems and left out; an error means
-// nothing was published and the previous index still serves.
+// fail validation are returned as Problems and left out; lessons past the
+// size cap are returned as Unserved and left out. An error means nothing was
+// published and the previous index still serves.
 func CompileLessonIndex(homePath, out string, sources LessonSources, now time.Time) (LessonIndexBuild, error) {
 	build := LessonIndexBuild{Path: out}
 	unlock, err := lockLessonIndexBuild(homePath)
@@ -164,11 +184,56 @@ func CompileLessonIndex(homePath, out string, sources LessonSources, now time.Ti
 	index.SourceLedgerSeq = projection.generation
 	index.ExcludedLessonIDs = projection.excluded
 	build.Problems = append(build.Problems, buildProblems...)
-	if err := WriteLessonIndex(out, index); err != nil {
+	fitted, unserved, size, err := fitLessonIndex(index)
+	if err != nil {
 		return build, err
 	}
-	build.Index = index
+	if err := WriteLessonIndex(out, fitted); err != nil {
+		return build, err
+	}
+	build.Index, build.Unserved, build.Bytes = fitted, unserved, size
 	return build, nil
+}
+
+// RemoveLessonsFromIndex drops ids from the published index without a full
+// rebuild. A removal only shrinks the file, so it always fits. Retire and the
+// supersede step use it when a full rebuild fails, so a lesson that must stop
+// being served stops even then. A missing or unreadable index already serves
+// nothing, so there is nothing to remove.
+func RemoveLessonsFromIndex(homePath string, ids []string) ([]string, error) {
+	unlock, err := lockLessonIndexBuild(homePath)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	path := LessonIndexPath(homePath)
+	data, state := readLessonIndexBytes(path)
+	if state != "" {
+		return nil, nil
+	}
+	var index LessonIndex
+	if json.Unmarshal(data, &index) != nil || index.SchemaVersion != LessonIndexSchemaVersion {
+		return nil, nil
+	}
+	drop := map[string]bool{}
+	for _, id := range ids {
+		drop[id] = true
+	}
+	kept := make([]Lesson, 0, len(index.Lessons))
+	var removed []string
+	for _, lesson := range index.Lessons {
+		if drop[lesson.ID] {
+			removed = append(removed, lesson.ID)
+			continue
+		}
+		kept = append(kept, lesson)
+	}
+	if len(removed) == 0 {
+		return nil, nil
+	}
+	index.Lessons = kept
+	index.ExcludedLessonIDs = append(index.ExcludedLessonIDs, removed...)
+	return removed, WriteLessonIndex(path, index)
 }
 
 func lockLessonIndexBuild(homePath string) (func(), error) {
@@ -227,25 +292,59 @@ func writeFileAtomic(path string, data []byte, pattern string) error {
 // LessonIndexSummary is the short status a lesson-changing command prints
 // about the index it rebuilt.
 func LessonIndexSummary(build LessonIndexBuild) string {
-	line := fmt.Sprintf("hook index rebuilt: %d lessons served", len(build.Index.Lessons))
+	line := fmt.Sprintf("hook index rebuilt: %d lessons indexed (%d%% of the %d KiB cap)", len(build.Index.Lessons), build.FillPercent(), LessonIndexMaxBytes>>10)
+	if n := len(build.Unserved); n > 0 {
+		line += fmt.Sprintf("; FULL, %d lessons not served: %s", n, LessonIDList(build.Unserved))
+	} else if build.FillPercent() >= LessonIndexWarnPercent {
+		line += "; nearly full"
+	}
 	if n := len(build.Problems); n > 0 {
-		line += fmt.Sprintf("; %d trigger lines left out (run `%s` to list them)", n, LessonIndexRepairCommand)
+		line += fmt.Sprintf("; %d trigger lines or ledger rows left out (run `%s` to list them)", n, LessonIndexRepairCommand)
 	}
 	return line
 }
 
+// LessonIndexFullAdvice says what to do about a full or nearly full index.
+func LessonIndexFullAdvice(build LessonIndexBuild) string {
+	switch {
+	case len(build.Unserved) > 0:
+		return fmt.Sprintf("the hook index is full (%d KiB): %d lessons are in the ledger but not served (%s); retire or amend lessons (`compound memory lesson retire <claim_id> --reason ... --by <actor>`) to make room",
+			LessonIndexMaxBytes>>10, len(build.Unserved), LessonIDList(build.Unserved))
+	case build.FillPercent() >= LessonIndexWarnPercent:
+		return fmt.Sprintf("the hook index is %d%% full (%d KiB cap); retire lessons that no longer hold before it fills", build.FillPercent(), LessonIndexMaxBytes>>10)
+	}
+	return ""
+}
+
+// LessonIDList renders at most ten ids.
+func LessonIDList(ids []string) string {
+	if len(ids) <= 10 {
+		return strings.Join(ids, ",")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(ids[:10], ","), len(ids)-10)
+}
+
 // RecordLessonUses is the `work close --used` step: the memory owner records
 // each used lesson (a used, contested lesson supersedes the other), then the
-// index is rebuilt so the superseded lesson stops being served at once. Close
-// has already succeeded, so a failed rebuild is a warning with its repair.
+// index is rebuilt so the superseded lesson stops being served at once. If
+// the rebuild fails, the superseded lessons are removed from the published
+// index instead. Close has already succeeded, so failures are warnings.
 func RecordLessonUses(homePath, workID, actor, usedCSV string, now time.Time, stdout, stderr io.Writer) {
-	if superseded := mem.RecordLessonUses(homePath, workID, actor, usedCSV, stdout, stderr); len(superseded) == 0 {
+	superseded := mem.RecordLessonUses(homePath, workID, actor, usedCSV, stdout, stderr)
+	if len(superseded) == 0 {
 		return
 	}
 	build, err := RebuildLessonIndex(homePath, now)
 	if err != nil {
-		fmt.Fprintf(stderr, "warning: hook lesson index not rebuilt: %v; the superseded lesson is still served until `%s` succeeds\n", err, LessonIndexRepairCommand)
+		if _, removeErr := RemoveLessonsFromIndex(homePath, superseded); removeErr != nil {
+			fmt.Fprintf(stderr, "warning: hook lesson index not rebuilt (%v) and the superseded lessons could not be removed from it (%v); they are still served until `%s` succeeds\n", err, removeErr, LessonIndexRepairCommand)
+			return
+		}
+		fmt.Fprintf(stderr, "warning: hook lesson index not rebuilt (%v); the superseded lessons were removed from it; run `%s` to repair the rest\n", err, LessonIndexRepairCommand)
 		return
 	}
 	fmt.Fprintln(stdout, LessonIndexSummary(build))
+	if advice := LessonIndexFullAdvice(build); advice != "" {
+		fmt.Fprintln(stderr, "warning:", advice)
+	}
 }

@@ -369,7 +369,7 @@ func TestHookLessonsIndexBuildsFromJSONAndSkillTriggers(t *testing.T) {
 		t.Fatalf("bad lessons exit = %d\n%s", code, stdout.String())
 	}
 	data, _ = os.ReadFile(hook.LessonIndexPath(homePath))
-	if !strings.Contains(string(data), `"id": "ok"`) || strings.Contains(string(data), `"id": "bad"`) {
+	if !strings.Contains(string(data), `"id":"ok"`) || strings.Contains(string(data), `"id":"bad"`) {
 		t.Fatalf("index after partial build:\n%s", data)
 	}
 }

@@ -65,7 +65,9 @@ type LessonChangeResult struct {
 	// ContestedWith names the current lesson a restored one contradicts.
 	ContestedWith string `json:"contested_with,omitempty"`
 	TransitionID  string `json:"transition_id"`
-	PositionID    string `json:"position_id"`
+	// SkippedLedgerRows counts malformed claims rows the change read past.
+	SkippedLedgerRows int    `json:"skipped_ledger_rows,omitempty"`
+	PositionID        string `json:"position_id"`
 }
 
 func lessonRetired(c Claim) bool {
@@ -136,18 +138,11 @@ func (s *Store) changeLesson(in LessonChangeInput, change string, now time.Time)
 	now = now.UTC()
 	res := LessonChangeResult{SchemaVersion: LessonChangeSchemaVersion, Change: change}
 	err := s.withLock(func() error {
-		claims, err := s.loadClaimsRaw()
+		claims, superseded, skipped, err := s.lessonLedgerLocked()
 		if err != nil {
 			return err
 		}
-		maxSeq, err := s.maxLedgerSeq()
-		if err != nil {
-			return err
-		}
-		superseded, err := s.supersededAsOf(maxSeq)
-		if err != nil {
-			return err
-		}
+		res.SkippedLedgerRows = skipped
 		head, err := s.lessonChainHead(claims, superseded, in.ID)
 		if err != nil {
 			return err
@@ -287,6 +282,46 @@ func (s *Store) changeLesson(in LessonChangeInput, change string, now time.Time)
 	}
 	res.PositionID = positionIDForClaim(res.Claim)
 	return res, nil
+}
+
+// lessonLedgerLocked reads the claims and the supersession state the lesson
+// door and verbs need. A malformed claims row is skipped and counted, so one
+// bad row never blocks a lesson write or a retire. Caller holds the lock.
+func (s *Store) lessonLedgerLocked() ([]Claim, map[string]bool, int, error) {
+	var claims []Claim
+	skipped := 0
+	err := readJSONL(s.claimsLog(), func(line []byte) error {
+		var c Claim
+		if json.Unmarshal(line, &c) != nil {
+			skipped++
+			return nil
+		}
+		claims = append(claims, c)
+		return nil
+	})
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	superseded := map[string]bool{}
+	err = readJSONL(s.edgesLog(), func(line []byte) error {
+		var e Edge
+		if err := json.Unmarshal(line, &e); err != nil {
+			return err
+		}
+		if e.Kind == EdgeKindSupersedes {
+			superseded[e.To] = true
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	for _, c := range claims {
+		if c.Supersedes != "" {
+			superseded[c.Supersedes] = true
+		}
+	}
+	return claims, superseded, skipped, nil
 }
 
 // lessonChainHead resolves id to the head of its lesson version chain, so the

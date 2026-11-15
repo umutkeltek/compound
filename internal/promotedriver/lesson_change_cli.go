@@ -136,9 +136,15 @@ func RunLessonChangeCLI(store *mem.Store, verb string, args []string, stdout, st
 			fmt.Fprintf(stdout, "  contested_with: %s (both kept; the next consumer that records a use supersedes the other)\n", res.ContestedWith)
 		}
 		fmt.Fprintf(stdout, "  undo: %s\n", receipt.Undo)
-		if indexErr == nil {
+		if receipt.Index.Rebuilt {
 			fmt.Fprintf(stdout, "  %s\n", receipt.Index.summary)
 		}
+		if receipt.Index.Indexed {
+			fmt.Fprintf(stdout, "  indexed at rank %d of %d (a tool call serves the first 2 matching lessons in rank order)\n", receipt.Index.Rank, receipt.Index.Lessons)
+		}
+	}
+	if indexErr == nil && receipt.Index.Warning != "" {
+		fmt.Fprintln(stderr, "warning:", receipt.Index.Warning)
 	}
 	if indexErr != nil {
 		fmt.Fprintf(stderr, "error: lesson %s is %s in the ledger (%s), but %v\n", res.Prior.ID, res.Change, res.Claim.ID, indexErr)

@@ -448,6 +448,9 @@ Skill publication serializes the entire read/merge/rename for the canonical file
      door rebuilds the index after its ledger write, so the next matching tool call is served
      with no manual build. If the rebuild fails, the lesson stays in the ledger and the
      command exits 1, says serving is stale and names the repair (`compound hook lessons-index`).
+     The index holds at most 256 KiB; newer lessons rank first and a full index leaves the
+     oldest out, so the write that filled it exits 1 and names the lessons no longer served
+     (docs/architecture/hook-redesign.md, "Rank and capacity").
 4. **The next consumer supersedes.** `compound work close --used <claim_id>`
    (or `lesson:<claim_id>`) records a use; when the used lesson is contested,
    the used lesson wins: a `supersedes` edge from it to each contesting lesson
@@ -465,8 +468,11 @@ Skill publication serializes the entire read/merge/rename for the canonical file
    Transition, and rebuilds the hook index in the same command. Nothing is
    deleted; the chain is the history. Retire sets visibility `retired`
    (`cooled_reason: lesson_retired`): the lesson stops being served and
-   recalled at once and is never brought back by a skill line, because the
-   ledger wins for lesson-backed lines. Retiring one side of a contest clears
+   recalled at once, also when the hook index is full (a build publishes
+   what fits) or the full rebuild fails (the retired lesson is then removed
+   from the published index directly), and it is never brought back by a
+   skill line, because the ledger wins for lesson-backed lines. A malformed
+   ledger row is skipped and reported; it does not block a write or a retire. Retiring one side of a contest clears
    the contest, so the other side is served alone. Restore undoes a retire
    (a restored lesson that differs from the slot's current lesson is parked as
    a contest again). An amend is undone by amending back; every receipt prints

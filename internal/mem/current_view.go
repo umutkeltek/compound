@@ -28,6 +28,8 @@ type CurrentView struct {
 	hasTopic   bool
 	generation int64
 	revision   string
+	// skipped lists malformed rows a lesson snapshot left out.
+	skipped []string
 }
 
 // CurrentView builds the current memory view from exactly one claims read and
@@ -79,11 +81,23 @@ func (s *Store) currentViewForTopic(topicToken string, includeLessons bool) (*Cu
 	if err != nil {
 		return nil, err
 	}
-	claims, err := decodeCurrentViewRows[Claim](claimsRaw, "claims")
+	decodeClaims, decodeEdges := decodeCurrentViewRows[Claim], decodeCurrentViewRows[Edge]
+	var skipped []string
+	if includeLessons {
+		// The lesson compiler skips a malformed row and reports it: one bad
+		// row must not stop every lesson from being served or retired.
+		decodeClaims = func(raw []byte, input string) ([]Claim, error) {
+			return decodeCurrentViewRowsSkipping[Claim](raw, input, &skipped)
+		}
+		decodeEdges = func(raw []byte, input string) ([]Edge, error) {
+			return decodeCurrentViewRowsSkipping[Edge](raw, input, &skipped)
+		}
+	}
+	claims, err := decodeClaims(claimsRaw, "claims")
 	if err != nil {
 		return nil, err
 	}
-	edges, err := decodeCurrentViewRows[Edge](edgesRaw, "edges")
+	edges, err := decodeEdges(edgesRaw, "edges")
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +146,16 @@ func (s *Store) currentViewForTopic(topicToken string, includeLessons bool) (*Cu
 		hasTopic:   hasTopic,
 		generation: generation,
 		revision:   "sha256:" + hex.EncodeToString(h.Sum(nil)),
+		skipped:    skipped,
 	}, nil
+}
+
+// SkippedRows lists the malformed ledger rows a lesson snapshot left out.
+func (v *CurrentView) SkippedRows() []string {
+	if v == nil {
+		return nil
+	}
+	return append([]string(nil), v.skipped...)
 }
 
 // TopicResolution returns only the single token/result pair captured by
@@ -276,6 +299,37 @@ func readCurrentViewInput(path string) ([]byte, error) {
 		return nil, nil
 	}
 	return raw, err
+}
+
+// decodeCurrentViewRowsSkipping decodes like decodeCurrentViewRows but skips a
+// malformed row and records it. A file with rows of which none decodes is
+// unreadable, not empty: that stays an error, so a wholly corrupt ledger never
+// publishes an empty lesson index over the last good one.
+func decodeCurrentViewRowsSkipping[T any](raw []byte, input string, skipped *[]string) ([]T, error) {
+	lines := bytes.Split(raw, []byte{'\n'})
+	out := make([]T, 0, len(lines))
+	bad := 0
+	var first error
+	for index, line := range lines {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var row T
+		if err := json.Unmarshal(line, &row); err != nil {
+			bad++
+			if first == nil {
+				first = err
+			}
+			*skipped = append(*skipped, fmt.Sprintf("%s.jsonl row %d: %v", input, index+1, err))
+			continue
+		}
+		out = append(out, row)
+	}
+	if bad > 0 && len(out) == 0 {
+		return nil, fmt.Errorf("decode current-view %s: no readable row (%d malformed; first: %v)", input, bad, first)
+	}
+	return out, nil
 }
 
 func decodeCurrentViewRows[T any](raw []byte, input string) ([]T, error) {

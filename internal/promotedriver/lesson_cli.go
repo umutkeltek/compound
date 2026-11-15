@@ -326,9 +326,15 @@ func RunLessonCLIAt(store *mem.Store, args []string, stdout, stderr io.Writer, n
 			}
 			fmt.Fprintf(stdout, "  skill: %s (%s)\n", skillFile, state)
 		}
-		if indexErr == nil {
+		if receipt.Index.Rebuilt {
 			fmt.Fprintf(stdout, "  %s\n", receipt.Index.summary)
 		}
+		if receipt.Index.Indexed {
+			fmt.Fprintf(stdout, "  indexed at rank %d of %d (a tool call serves the first 2 matching lessons in rank order)\n", receipt.Index.Rank, receipt.Index.Lessons)
+		}
+	}
+	if indexErr == nil && receipt.Index.Warning != "" {
+		fmt.Fprintln(stderr, "warning:", receipt.Index.Warning)
 	}
 	if indexErr != nil {
 		fmt.Fprintf(stderr, "error: lesson %s is in the ledger, but %v\n", res.Claim.ID, indexErr)
