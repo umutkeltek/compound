@@ -1556,13 +1556,23 @@ func (c growthCtx) metricStatus(g *growthGroup, spec growthAreaSpec, full, cappe
 	}
 	var staleEv []growthEv
 	if spec.custom == "unit_economics" {
+		// Currency coverage and report freshness are different questions.
+		// USD and unconverted observations belong to one ads source.
+		ads := growthEv{GrowthEvidence: GrowthEvidence{Metric: growthAdsSpend}}
 		for _, e := range all {
-			if e.Metric == growthAdsSpend && c.adsCurrencyGap(g, spec) {
-				continue // Fresh unconverted reports are not a stopped ads feed.
+			if e.Metric == growthAdsSpend || e.Metric == growthAdsUnconverted {
+				ads.Rows += e.Rows
+				if e.LatestDate > ads.LatestDate {
+					ads.LatestDate = e.LatestDate
+				}
+				continue
 			}
 			if c.age(e.LatestDate) > stale {
 				staleEv = append(staleEv, e)
 			}
+		}
+		if ads.LatestDate != "" && c.age(ads.LatestDate) > stale {
+			staleEv = append(staleEv, ads)
 		}
 	} else if c.age(latest) > stale {
 		for _, e := range all {

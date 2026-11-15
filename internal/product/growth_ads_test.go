@@ -158,21 +158,30 @@ func TestGrowthAdsCurrencyGapPreservesCoverageAndLimitsAssessment(t *testing.T) 
 	}
 }
 
-func TestGrowthAdsFreshForeignReportDoesNotLookLikeStoppedFeed(t *testing.T) {
+func TestGrowthAdsFreshnessCombinesCurrencyReports(t *testing.T) {
 	for _, salesAge := range []int{0, 25} {
-		home := t.TempDir()
-		writeGrowthSignals(t, home, growthDaily("product:alpha", "app_store_connect_developer_proceeds_usd", salesAge+3, salesAge, 3)...)
-		writeGrowthAds(t, home,
-			AdRow{ProductID: "product:alpha", Date: growthDay(20), Currency: "USD", Spend: 5, HasRevenue: true, Revenue: 9},
-			AdRow{ProductID: "product:alpha", Date: growthDay(0), Currency: "EUR", Spend: 5, HasRevenue: true, Revenue: 9},
-		)
-		audit := growthAudit(t, buildGrowthT(t, home, growthOpts()).Apps[0], "operations_unit_economics")
-		want := GrowthPartial
-		if salesAge > 0 {
-			want = GrowthStale
-		}
-		if audit.Status != want || !strings.Contains(audit.Summary, "currency") || strings.Contains(audit.Summary, "Ad spend data stopped") {
-			t.Fatalf("fresh currency gap, sales age %d: %+v", salesAge, audit)
+		for _, ages := range [][2]int{{20, 0}, {0, 20}, {20, 21}} {
+			home := t.TempDir()
+			writeGrowthSignals(t, home, growthDaily("product:alpha", "app_store_connect_developer_proceeds_usd", salesAge+3, salesAge, 3)...)
+			writeGrowthAds(t, home,
+				AdRow{ProductID: "product:alpha", Date: growthDay(ages[0]), Currency: "USD", Spend: 5, HasRevenue: true, Revenue: 9},
+				AdRow{ProductID: "product:alpha", Date: growthDay(ages[1]), Currency: "EUR", Spend: 5, HasRevenue: true, Revenue: 9},
+			)
+			audit := growthAudit(t, buildGrowthT(t, home, growthOpts()).Apps[0], "operations_unit_economics")
+			newestAd := min(ages[0], ages[1])
+			want := GrowthPartial
+			if salesAge > 0 || newestAd > 14 {
+				want = GrowthStale
+			}
+			if audit.Status != want || !strings.Contains(audit.Summary, "currency") {
+				t.Fatalf("currency report ages %v, sales age %d: %+v", ages, salesAge, audit)
+			}
+			if newestAd == 0 && strings.Contains(audit.Summary, "Ad spend data stopped") {
+				t.Fatalf("fresh ads described as stopped: %+v", audit)
+			}
+			if salesAge == 0 && strings.Contains(audit.Summary, "Sales data stopped") {
+				t.Fatalf("foreign currency misreported as stale sales: %+v", audit)
+			}
 		}
 	}
 }
