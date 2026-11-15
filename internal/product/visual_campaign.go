@@ -224,6 +224,9 @@ func validateCampaignBrief(c VisualCampaign, now time.Time) error {
 		return fmt.Errorf("invalid campaign created_at")
 	}
 	e := c.Experiment
+	if !strings.HasPrefix(e.Metric, "experiment_") || len(e.Metric) <= len("experiment_") {
+		return fmt.Errorf("campaign metric must use the experiment_ prefix, for example experiment_download_conversion; experiment rates must stay separate from whole-product metrics")
+	}
 	if math.IsNaN(e.MinAbsoluteLift) || math.IsInf(e.MinAbsoluteLift, 0) || math.IsNaN(e.TreatmentShare) || math.IsInf(e.TreatmentShare, 0) {
 		return fmt.Errorf("experiment thresholds must be finite")
 	}

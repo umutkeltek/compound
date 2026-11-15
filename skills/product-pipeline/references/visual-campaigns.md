@@ -43,8 +43,9 @@ composition, capture and platform adapters. Preparation does not authorize publi
    `campaign_sha256` is the exact version. Never edit a version used in an experiment:
    new copy, scene, model output or asset means a new hash and experiment assignment.
 6. Before exposure, predeclare the experiment ID/hypothesis, metric, control-set
-   hash, fixed window, allocation, minimum samples and minimum absolute lift. Use a
-   distinct experiment metric (for example `experiment_download_conversion`) so a
+   hash, fixed window, allocation, minimum samples and minimum absolute lift. The
+   validator requires an `experiment_` metric prefix (for example
+   `experiment_download_conversion`) so a
    treatment subgroup is never mistaken for the whole product's conversion metric.
    Record platform assignment binding both asset-set identities, product, locale,
    target and registration time. Check current release authority and existing tests.

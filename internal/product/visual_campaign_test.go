@@ -294,3 +294,19 @@ func TestVisualCampaignFrozenExperimentUsesLaunchRules(t *testing.T) {
 		t.Fatal("post-launch rule checks cannot prove launch readiness")
 	}
 }
+
+func TestVisualCampaignRequiresExperimentMetricNamespace(t *testing.T) {
+	c, base, now := campaignFixture(t)
+	for _, metric := range []string{"app_store_product_page_conversion", "activation_rate", "experiment_"} {
+		c.Experiment.Metric = metric
+		// Compile directly: checking old assets would already fail on a changed
+		// prompt hash, hiding a missing metric admission guard.
+		if _, err := CompileCampaignPrompts(c, base, now); err == nil || !strings.Contains(err.Error(), "experiment_ prefix") {
+			t.Fatalf("metric %q admitted or failed for the wrong reason: %v", metric, err)
+		}
+	}
+	c.Experiment.Metric = "experiment_activation_rate"
+	if _, err := CompileCampaignPrompts(c, base, now); err != nil {
+		t.Fatalf("scoped metric refused: %v", err)
+	}
+}
