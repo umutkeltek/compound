@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -30,12 +31,19 @@ func RunSpoolCommand(harnessName, hookName string, stdin io.Reader, stdout, stde
 	if len(data) > 0 {
 		in := DecodeSpoolInput(data)
 		var lessonIDs []string
+		indexState := ""
 		if in.Err == nil && homeErr == nil {
-			matches := MatchLessonsFile(LessonIndexPath(homePath), NormalizeNativeTool(harnessName, in.ToolName), in.ToolInput)
+			indexPath := LessonIndexPath(homePath)
+			matches, state := MatchLessonsFileWithState(indexPath, NormalizeNativeTool(harnessName, in.ToolName), in.ToolInput)
 			for _, match := range matches {
 				lessonIDs = append(lessonIDs, match.ID)
 			}
 			lessonContext = LessonContext(matches)
+			indexState = state
+			if state != "" && state != LessonIndexMissing {
+				// A broken index means no lessons, never a failed or slow call.
+				fmt.Fprintf(stderr, "hook spool: lesson index %s at %s; serving no lessons (repair: %s)\n", state, indexPath, LessonIndexRepairCommand)
+			}
 		}
 		if homeErr == nil {
 			// Same rule as every other home writer: never append to a home
@@ -45,6 +53,7 @@ func RunSpoolCommand(harnessName, hookName string, stdin io.Reader, stdout, stde
 		}
 		if homeErr == nil {
 			line := NewSpoolLine(hookName, harnessName, in, now, lessonIDs)
+			line.LessonIndex = indexState
 			if err := AppendSpoolLine(homePath, line, now); err != nil {
 				fmt.Fprintln(stderr, "hook spool: not recorded:", err)
 			}
@@ -161,11 +170,15 @@ func writeDrainReport(stdout io.Writer, report SpoolDrainReport) {
 	_, _ = stdout.Write(append(encoded, '\n'))
 }
 
-const lessonsIndexUsage = "usage: compound hook lessons-index [--from lessons.json]... [--skills DIR]... [--out PATH] [--json]"
+const lessonsIndexUsage = "usage: compound hook lessons-index [--from lessons.json]... [--skills DIR]... [--out PATH] [--json]\n" +
+	"  Builds the index from the memory ledger (every current lesson with a trigger) plus the named sources.\n" +
+	"  Named sources are recorded for the home's own index; with none named, the recorded ones are read."
 
-// RunLessonsIndexCommand builds the PreToolUse lesson trigger index. Invalid
-// lessons are reported and left out; the valid subset is still written, and
-// the exit code is 1 so automation notices the rejected lines.
+// RunLessonsIndexCommand builds the PreToolUse lesson trigger index by hand.
+// Lesson-changing commands rebuild it on their own (RebuildLessonIndex); this
+// is the repair door and the way to record extra sources. Invalid lessons are
+// reported and left out; the valid subset is still written, and the exit code
+// is 1 so automation notices the rejected lines.
 func RunLessonsIndexCommand(args []string, stdout, stderr io.Writer) int {
 	var fromFiles, skillDirs []string
 	out := ""
@@ -196,55 +209,43 @@ func RunLessonsIndexCommand(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
-	if len(fromFiles) == 0 && len(skillDirs) == 0 {
-		fmt.Fprintln(stderr, lessonsIndexUsage)
-		return 2
+	homePath, err := home.Resolve("")
+	if err == nil && out == "" {
+		err = home.RequireMutationCompatible(homePath)
 	}
-	if out == "" {
-		homePath, err := home.Resolve("")
-		if err == nil {
-			err = home.RequireMutationCompatible(homePath)
-		}
-		if err != nil {
-			fmt.Fprintln(stderr, "error:", err)
-			return 1
-		}
-		out = LessonIndexPath(homePath)
-	}
-	var lessons []Lesson
-	var problems []error
-	for _, path := range fromFiles {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			problems = append(problems, err)
-			continue
-		}
-		parsed, err := ParseLessonsJSON(data, path)
-		if err != nil {
-			problems = append(problems, err)
-			continue
-		}
-		lessons = append(lessons, parsed...)
-	}
-	for _, dir := range skillDirs {
-		parsed, errs := ParseSkillTriggerLines(dir)
-		lessons = append(lessons, parsed...)
-		problems = append(problems, errs...)
-	}
-	projection, err := currentLessonInstructions(lessons)
 	if err != nil {
-		fmt.Fprintln(stderr, "error: resolve current lessons:", err)
-		return 1
-	}
-	index, buildProblems := BuildLessonIndex(projection.lessons, time.Now())
-	index.SourceMemoryRevision = projection.revision
-	index.SourceLedgerSeq = projection.generation
-	index.ExcludedLessonIDs = projection.excluded
-	problems = append(problems, buildProblems...)
-	if err := WriteLessonIndex(out, index); err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
+	homeIndex := out == "" || filepath.Clean(out) == filepath.Clean(LessonIndexPath(homePath))
+	if out == "" {
+		out = LessonIndexPath(homePath)
+	}
+	// Named sources replace the recorded ones; with none named the build
+	// reads the ledger plus what the last explicit build recorded.
+	sources := LessonSources{SchemaVersion: LessonSourcesSchemaVersion, Skills: skillDirs, From: fromFiles}
+	if sources.empty() {
+		if sources, err = ReadLessonSources(homePath); err != nil {
+			fmt.Fprintln(stderr, "error:", err)
+			return 1
+		}
+	}
+	build, err := CompileLessonIndex(homePath, out, sources, time.Now())
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	recordedPath := ""
+	if homeIndex && (len(skillDirs) > 0 || len(fromFiles) > 0) {
+		// The home's own index records its named sources so the automatic
+		// rebuild after a lesson write reads the same folders.
+		if _, err := WriteLessonSources(homePath, sources); err != nil {
+			fmt.Fprintln(stderr, "error: index written but sources not recorded:", err)
+			return 1
+		}
+		recordedPath = LessonSourcesPath(homePath)
+	}
+	index, problems := build.Index, build.Problems
 	messages := make([]string, 0, len(problems))
 	for _, problem := range problems {
 		messages = append(messages, problem.Error())
@@ -257,10 +258,16 @@ func RunLessonsIndexCommand(args []string, stdout, stderr io.Writer) int {
 			"source_memory_revision": index.SourceMemoryRevision,
 			"source_ledger_seq":      index.SourceLedgerSeq,
 			"excluded_lesson_ids":    index.ExcludedLessonIDs,
+			"skills":                 sources.Skills,
+			"from":                   sources.From,
+			"sources_recorded":       recordedPath,
 		}, "", "  ")
 		fmt.Fprintln(stdout, string(encoded))
 	} else {
 		fmt.Fprintf(stdout, "hook lessons index: %d lessons -> %s\n", len(index.Lessons), out)
+		if recordedPath != "" {
+			fmt.Fprintf(stdout, "sources recorded for automatic rebuilds: %s\n", recordedPath)
+		}
 		for _, message := range messages {
 			fmt.Fprintln(stdout, "- rejected:", message)
 		}

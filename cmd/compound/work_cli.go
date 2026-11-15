@@ -2134,7 +2134,7 @@ func cmdWork(args []string) {
 		observeWorkSurpriseOnDivergedClose(homePath, res)
 		observeEVCardCalibrationOnClose(homePath, res)
 		offerStandingProofGraduationOnClose(homePath, res)
-		mem.RecordLessonUses(homePath, closeID, closeActor, flag("--used"), os.Stdout, os.Stderr)
+		hook.RecordLessonUses(homePath, closeID, closeActor, flag("--used"), time.Now(), os.Stdout, os.Stderr)
 		autoConsumeCapabilityFeedback(homePath)
 	case "sweep-stale":
 		// sweep-stale is the work-state-machine counterpart to

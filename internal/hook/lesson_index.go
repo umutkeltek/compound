@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -140,35 +141,68 @@ func capLessonSubject(s string) string {
 	return s
 }
 
+// Why the hook served no lessons because of the index itself. The spool line
+// records the state; an empty state means the index was read.
+const (
+	LessonIndexMissing       = "missing"
+	LessonIndexUnreadable    = "unreadable"
+	LessonIndexOversized     = "oversized"
+	LessonIndexCorrupt       = "corrupt"
+	LessonIndexUnknownSchema = "unknown_schema"
+)
+
 // MatchLessonsFile reads the index once and returns the lessons whose trigger
 // matches this tool call, in index order, at most LessonMaxInjected. Every
 // failure (missing file, oversized file, bad JSON, bad pattern) yields no
 // match: the caller degrades to "no injection", never to a block.
 func MatchLessonsFile(indexPath, tool string, toolInput json.RawMessage) []LessonMatch {
-	data, ok := readLessonIndexBytes(indexPath)
-	if !ok {
-		return nil
-	}
-	var index LessonIndex
-	if err := json.Unmarshal(data, &index); err != nil || index.SchemaVersion != LessonIndexSchemaVersion {
-		return nil
-	}
-	return MatchLessons(index.Lessons, tool, LessonSubject(toolInput))
+	matches, _ := MatchLessonsFileWithState(indexPath, tool, toolInput)
+	return matches
 }
 
-func readLessonIndexBytes(indexPath string) ([]byte, bool) {
-	file, err := os.Open(indexPath)
+// MatchLessonsFileWithState is MatchLessonsFile plus the index read state, so
+// the hook can say in its own record why it served nothing.
+func MatchLessonsFileWithState(indexPath, tool string, toolInput json.RawMessage) ([]LessonMatch, string) {
+	data, state := readLessonIndexBytes(indexPath)
+	if state != "" {
+		return nil, state
+	}
+	var index LessonIndex
+	if err := json.Unmarshal(data, &index); err != nil {
+		return nil, LessonIndexCorrupt
+	}
+	if index.SchemaVersion != LessonIndexSchemaVersion {
+		return nil, LessonIndexUnknownSchema
+	}
+	return MatchLessons(index.Lessons, tool, LessonSubject(toolInput)), ""
+}
+
+func readLessonIndexBytes(indexPath string) ([]byte, string) {
+	// O_NONBLOCK and the regular-file check keep a FIFO or device at the
+	// index path from hanging the tool call; neither costs a measurable time.
+	file, err := os.OpenFile(indexPath, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if os.IsNotExist(err) {
+		return nil, LessonIndexMissing
+	}
 	if err != nil {
-		return nil, false
+		return nil, LessonIndexUnreadable
 	}
 	defer file.Close()
-	// Read one byte past the cap so an oversized index is detected without
-	// a separate stat call.
-	data, err := io.ReadAll(io.LimitReader(file, LessonIndexMaxBytes+1))
-	if err != nil || len(data) == 0 || len(data) > LessonIndexMaxBytes {
-		return nil, false
+	if info, err := file.Stat(); err != nil || !info.Mode().IsRegular() {
+		return nil, LessonIndexUnreadable
 	}
-	return data, true
+	// Read one byte past the cap so an oversized index is detected without
+	// trusting the size the stat reported.
+	data, err := io.ReadAll(io.LimitReader(file, LessonIndexMaxBytes+1))
+	switch {
+	case err != nil:
+		return nil, LessonIndexUnreadable
+	case len(data) > LessonIndexMaxBytes:
+		return nil, LessonIndexOversized
+	case len(data) == 0:
+		return nil, LessonIndexCorrupt
+	}
+	return data, ""
 }
 
 // MatchLessons applies already-loaded lessons to one tool call.
@@ -391,26 +425,5 @@ func WriteLessonIndex(path string, index LessonIndex) error {
 	if len(data) > LessonIndexMaxBytes {
 		return fmt.Errorf("lesson index is %d bytes; the hook reads at most %d", len(data), LessonIndexMaxBytes)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".hook-lessons-*.json")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	if err := os.Chmod(tmpName, 0o644); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	return os.Rename(tmpName, path)
+	return writeFileAtomic(path, data, ".hook-lessons-*.json")
 }

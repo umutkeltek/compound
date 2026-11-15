@@ -443,10 +443,17 @@ Skill publication serializes the entire read/merge/rename for the canonical file
    The offline hook-index compiler consumes current lesson state from a revision-bound
    memory snapshot; superseded guidance stays historical, and unresolved conflicts surface
    as uncertainty rather than active competing prescriptions.
+   - **A lesson write serves itself.** The hook index is compiled from the ledger: every
+     current lesson claim with a trigger is an entry, with or without `--skill`. The lesson
+     door rebuilds the index after its ledger write, so the next matching tool call is served
+     with no manual build. If the rebuild fails, the lesson stays in the ledger and the
+     command exits 1, says serving is stale and names the repair (`compound hook lessons-index`).
 4. **The next consumer supersedes.** `compound work close --used <claim_id>`
    (or `lesson:<claim_id>`) records a use; when the used lesson is contested,
    the used lesson wins: a `supersedes` edge from it to each contesting lesson
-   in the slot, and `needs_review_cleared` edges on both sides.
+   in the slot, and `needs_review_cleared` edges on both sides. The close
+   rebuilds the hook index in the same command, so the superseded lesson stops
+   being served at once.
 5. **Automatic producers are opt-in.** The automatic candidate writers run only
    with `COMPOUND_CANDIDATE_PRODUCERS=1`: knowledge import metadata rows and
    knowledge extraction (which then skips the model call), session-mining

@@ -197,6 +197,26 @@ func (v *CurrentView) Lesson(id string) (Claim, bool) {
 	return cloneCurrentViewClaim(claim), true
 }
 
+// Lessons returns every non-retired, non-superseded lesson in this snapshot,
+// contested ones included, in ledger order. The hook-index compiler builds its
+// ledger source from it, so a lesson write is served without naming a skill.
+func (v *CurrentView) Lessons() []Claim {
+	if v == nil {
+		return nil
+	}
+	out := make([]Claim, 0, len(v.lessons))
+	for _, claim := range v.lessons {
+		out = append(out, cloneCurrentViewClaim(claim))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Seq != out[j].Seq {
+			return out[i].Seq < out[j].Seq
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
 // Generation is the maximum sequence consumed across claims and edges.
 func (v *CurrentView) Generation() int64 {
 	if v == nil {

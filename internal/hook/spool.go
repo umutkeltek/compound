@@ -70,6 +70,7 @@ type SpoolLine struct {
 	InputError    string                     `json:"input_error,omitempty"`
 	InputSHA256   string                     `json:"input_sha256,omitempty"`
 	SourceLists   map[string]SpoolSourceList `json:"omitted_source_lists,omitempty"`
+	LessonIndex   string                     `json:"lesson_index,omitempty"` // why no lesson could match: missing, corrupt, ...; empty when the index was read
 }
 
 // SpoolInput is the decoded native hook input the spool path needs.

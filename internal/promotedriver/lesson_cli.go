@@ -26,7 +26,8 @@ const SkillsDirsEnv = "COMPOUND_SKILLS_DIRS"
 
 // LessonUsage is the usage text for `compound memory lesson`.
 const LessonUsage = "usage: compound memory lesson --why TEXT --how TEXT --by ACTOR [--skill NAME] [--trigger TOOL:REGEX] [--evidence REF]... [--slot entity::predicate] [--harness H] [--work W] [--repo DIR] [--skills-dir DIR]... [--json]\n" +
-	"  Promotes on write (claim_type lesson). With --skill, also appends a dated line (and a trigger: JSON line when --trigger is set) to the skill's \"## Lessons\" section.\n" +
+	"  Promotes on write (claim_type lesson) and rebuilds the hook index, so a lesson with --trigger is served on the next matching tool call.\n" +
+	"  With --skill, also appends a dated line (and a trigger: JSON line when --trigger is set) to the skill's \"## Lessons\" section.\n" +
 	"  Skill files resolve from <repo>/skills/<name>/SKILL.md (repo defaults to the enclosing checkout), then each --skills-dir, then each dir in $" + SkillsDirsEnv + "."
 
 type lessonArgs struct {
@@ -252,10 +253,19 @@ type LessonReceipt struct {
 	SkillFile     string   `json:"skill_file,omitempty"`
 	SkillLines    []string `json:"skill_lines,omitempty"`
 	SkillAppended bool     `json:"skill_appended"`
+	// Index is the hook index the write rebuilt.
+	Index LessonIndexStatus `json:"index"`
 }
 
-// RunLessonCLI runs `compound memory lesson` and returns the exit code.
+// RunLessonCLI runs `compound memory lesson` and returns the exit code. The
+// hook index is rebuilt after the ledger write, so the lesson is served on the
+// next matching tool call.
 func RunLessonCLI(store *mem.Store, args []string, stdout, stderr io.Writer) int {
+	return RunLessonCLIAt(store, args, stdout, stderr, time.Now())
+}
+
+// RunLessonCLIAt is RunLessonCLI with an injected clock.
+func RunLessonCLIAt(store *mem.Store, args []string, stdout, stderr io.Writer, now time.Time) int {
 	parsed, err := parseLessonArgs(args)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
@@ -267,7 +277,7 @@ func RunLessonCLI(store *mem.Store, args []string, stdout, stderr io.Writer) int
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	res, err := store.WriteLesson(parsed.in, time.Now())
+	res, err := store.WriteLesson(parsed.in, now)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
@@ -283,6 +293,13 @@ func RunLessonCLI(store *mem.Store, args []string, stdout, stderr io.Writer) int
 			return 1
 		}
 	}
+	// A duplicate rebuilds too: writing a lesson again is also its repair.
+	want := ""
+	if lessonServedWhenCurrent(res.Claim) {
+		want = res.Claim.ID
+	}
+	var indexErr error
+	receipt.Index, indexErr = rebuildLessonIndexFor(store.HomePath(), want, nil, now)
 	if parsed.json {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
@@ -290,18 +307,25 @@ func RunLessonCLI(store *mem.Store, args []string, stdout, stderr io.Writer) int
 			fmt.Fprintln(stderr, "error:", err)
 			return 1
 		}
-		return 0
-	}
-	fmt.Fprintf(stdout, "lesson %s: %s\n  slot: %s\n  position: %s\n", res.Outcome, res.Claim.ID, receipt.Slot, res.PositionID)
-	if res.ContestedWith != "" {
-		fmt.Fprintf(stdout, "  contested_with: %s (both kept; the next consumer that records a use supersedes the other)\n", res.ContestedWith)
-	}
-	if skillFile != "" {
-		state := "appended"
-		if !receipt.SkillAppended {
-			state = "already present"
+	} else {
+		fmt.Fprintf(stdout, "lesson %s: %s\n  slot: %s\n  position: %s\n", res.Outcome, res.Claim.ID, receipt.Slot, res.PositionID)
+		if res.ContestedWith != "" {
+			fmt.Fprintf(stdout, "  contested_with: %s (both kept; the next consumer that records a use supersedes the other)\n", res.ContestedWith)
 		}
-		fmt.Fprintf(stdout, "  skill: %s (%s)\n", skillFile, state)
+		if skillFile != "" {
+			state := "appended"
+			if !receipt.SkillAppended {
+				state = "already present"
+			}
+			fmt.Fprintf(stdout, "  skill: %s (%s)\n", skillFile, state)
+		}
+		if indexErr == nil {
+			fmt.Fprintf(stdout, "  %s\n", receipt.Index.summary)
+		}
+	}
+	if indexErr != nil {
+		fmt.Fprintf(stderr, "error: lesson %s is in the ledger, but %v\n", res.Claim.ID, indexErr)
+		return 1
 	}
 	return 0
 }

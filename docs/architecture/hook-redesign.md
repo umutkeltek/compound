@@ -75,8 +75,13 @@ each line in observation mode at its call time. It skips a trailing partial line
 appending). A line that fails to replay goes to `rejected.ndjson` with its error, and the queue moves
 on. A drained file from a past day is removed after a one-minute grace.
 
-**Lesson index.** `COMPOUND_HOME/indexes/hook-lessons.json` (rebuildable family), built by
-`compound hook lessons-index --from lessons.json --skills DIR`. A lesson is
+**Lesson index.** `COMPOUND_HOME/indexes/hook-lessons.json` (rebuildable family). Its first source
+is the memory ledger: every current lesson claim with a trigger becomes an entry, in ledger order.
+Every command that changes a lesson rebuilds it in the same command: the lesson door, the
+`work close --used` supersede step, and the lesson verbs. `compound hook lessons-index
+[--from lessons.json]... [--skills DIR]...` is the repair door and adds extra sources. Named
+sources for the home's own index are recorded in `COMPOUND_HOME/config/hook-lesson-sources.json`,
+and every later rebuild (automatic or with no flags) reads the ledger plus those sources. A lesson is
 `{id, tools[], pattern, apply, source}`. The builder also accepts the producer spellings `trigger`
 and `how_to_apply`. Limits: `apply` is one line of at most 300 bytes, at most 2 lessons per call, and
 an index file of at most 256 KiB. The pattern runs against the shell command for shell tools, and
@@ -84,13 +89,23 @@ against the compact JSON input for every other tool. A lesson naming `Bash` also
 tool names other harnesses use. In a skill file, a trigger is one line: `trigger: {<lesson JSON>}`.
 The builder rejects invalid lessons, keeps the valid subset, and exits 1 so automation notices.
 
-Lesson-backed trigger entries resolve through one memory-owner snapshot during index compilation,
-including current instruction and trigger bytes. The index records that snapshot's ledger sequence
-and content revision, lists excluded non-current IDs, and excludes superseded or retired lessons.
-Unresolved contradictions render as conflict notices, never as two accepted instructions. Historical
-Markdown remains intact. Ordinary manually authored triggers still work without a memory lookup.
-An unreadable memory snapshot fails the build visibly and preserves the last complete index.
+For a lesson-backed entry (`claim_*` id or `lesson:` source) the ledger wins over a skill line: a
+current lesson is served once with its ledger text and trigger, and a line whose claim is superseded,
+retired or without a trigger is excluded and listed in `excluded_lesson_ids`. Historical Markdown
+remains intact. The index records the snapshot's ledger sequence and content revision. Unresolved
+contradictions render as conflict notices, never as two accepted instructions. Ordinary manually
+authored triggers still work without a memory lookup.
+
+Builds hold `COMPOUND_HOME/lock/hook-lessons.lock` and read the ledger inside it, then publish with a
+temporary file and a rename, so concurrent lesson writers all end up served and a reader never sees
+a half-written file. An unreadable memory snapshot or sources file fails the build visibly and
+preserves the last complete index.
+
 The tool-call path continues to read only the bounded index; it never queries memory or rebuilds it.
+A missing, empty, half-written, foreign-schema, oversized or non-regular index serves no lessons and
+never fails or delays the call (the open is non-blocking). The spool line records the reason in
+`lesson_index`, and every state except `missing` is also written to the hook's stderr with the repair
+command.
 
 ## Acceptance numbers
 

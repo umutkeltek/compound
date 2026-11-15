@@ -47,7 +47,9 @@ func LessonSkillLines(claim Claim) []string {
 // RecordLessonUses is the `work close --used` hook-up: every used ref naming a
 // lesson claim (claim_* or lesson:claim_*) resolves its contradiction in favour
 // of the used lesson. Close has already succeeded, so failures are warnings.
-func RecordLessonUses(homePath, workID, actor, usedCSV string, stdout, stderr io.Writer) {
+// It returns the lessons it superseded, so the caller can rebuild the hook
+// index (hook.RecordLessonUses does).
+func RecordLessonUses(homePath, workID, actor, usedCSV string, stdout, stderr io.Writer) []string {
 	var refs []string
 	for _, ref := range strings.Split(usedCSV, ",") {
 		if ref = strings.TrimPrefix(strings.TrimSpace(ref), "lesson:"); strings.HasPrefix(ref, "claim_") {
@@ -55,21 +57,24 @@ func RecordLessonUses(homePath, workID, actor, usedCSV string, stdout, stderr io
 		}
 	}
 	if len(refs) == 0 {
-		return
+		return nil
 	}
 	store, err := Open(homePath)
 	if err != nil {
 		fmt.Fprintln(stderr, "warning: lesson use not recorded:", err)
-		return
+		return nil
 	}
+	var superseded []string
 	for _, ref := range refs {
 		res, err := store.ResolveContestedLessonOnUse(ref, actor, workID, time.Now())
 		if err != nil {
 			fmt.Fprintf(stderr, "warning: lesson use %s not recorded: %v\n", ref, err)
 		} else if len(res.Superseded) > 0 {
 			fmt.Fprintf(stdout, "lesson %s used: superseded contested %s\n", ref, strings.Join(res.Superseded, ","))
+			superseded = append(superseded, res.Superseded...)
 		}
 	}
+	return superseded
 }
 
 // WithoutStatusRows drops status-typed candidates (status never promotes) and

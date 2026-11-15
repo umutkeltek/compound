@@ -35,8 +35,10 @@ above for one kind of memory: the lesson.
   one dated line to that skill's `## Lessons` section. No review queue.
 - **Inject at the moment of use.** A lesson with a trigger is pulled by the
   tool-call hook when a matching call happens (`Bash:proof-check.*\|.*jq`
-  fires when proof-check output is piped to jq). The hook reads the
-  `trigger: {JSON}` line the lesson door writes under the skill's `## Lessons`.
+  fires when proof-check output is piped to jq). The lesson door rebuilds the
+  hook index from the ledger in the same command, so the next matching call is
+  served with or without `--skill`; the skill's `trigger: {JSON}` line is
+  history and a second source, and the ledger wins for a lesson-backed line.
   Hook context arrives with the NEXT tool result, so trigger on the step
   before the damage (the listing or dry-run call). That is intent-shaped pull,
   consistent with R-pull-only-by-default; lessons are `contextual`, never
