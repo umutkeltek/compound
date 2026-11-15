@@ -640,7 +640,13 @@ func LatestAdRows(rows []AdRow) []AdRow {
 		if a.CampaignID != b.CampaignID {
 			return a.CampaignID < b.CampaignID
 		}
-		return a.Date < b.Date
+		if a.Date != b.Date {
+			return a.Date < b.Date
+		}
+		if a.Account != b.Account {
+			return a.Account < b.Account
+		}
+		return a.Currency < b.Currency
 	})
 	return out
 }

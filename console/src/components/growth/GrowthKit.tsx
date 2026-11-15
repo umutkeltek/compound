@@ -87,7 +87,8 @@ export function KpiTile({ kpiKey, kpi, color, label }: { kpiKey: KpiKey; kpi: Kp
       <DayMeter reported={kpi?.daysReported ?? 0} total={kpi?.daysInWindow || 30} color={color} />
       <div className="flex flex-col gap-0.5">
         <DeltaLine kpi={kpi} lowerIsBetter={kpiLowerIsBetter(kpiKey)} />
-        {!kpi?.hasData ? (
+        {kpi?.note ? <span className="text-xs text-seam">{kpi.note}</span> : null}
+        {!kpi?.hasData && !kpi?.note ? (
           <span className="text-xs text-faint">No data in the last {kpi?.daysInWindow || 30} days</span>
         ) : partial && kpi ? (
           <span className="text-xs text-seam">

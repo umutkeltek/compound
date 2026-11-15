@@ -264,10 +264,10 @@ func TestGrowthAdKpisAndCPA(t *testing.T) {
 	home := t.TempDir()
 	writeGrowthSignals(t, home)
 	writeGrowthAds(t, home,
-		AdRow{ProductID: "product:alpha", Date: growthDay(2), Spend: 6, Conversions: 2, ImportedAt: "2026-11-01T00:00:00Z"},
-		AdRow{ProductID: "product:alpha", Date: growthDay(3), Spend: 4, Conversions: 0, ImportedAt: "2026-11-01T00:00:00Z"},
-		AdRow{ProductID: "product:alpha", Date: growthDay(3), Spend: 4, Conversions: 0, ImportedAt: "2026-11-01T00:00:00Z"}, // exact re-import
-		AdRow{ProductID: "product:beta-app", Date: growthDay(2), Spend: 3, Conversions: 0, ImportedAt: "2026-11-01T00:00:00Z"},
+		AdRow{Currency: "USD", ProductID: "product:alpha", Date: growthDay(2), Spend: 6, Conversions: 2, ImportedAt: "2026-11-01T00:00:00Z"},
+		AdRow{Currency: "USD", ProductID: "product:alpha", Date: growthDay(3), Spend: 4, Conversions: 0, ImportedAt: "2026-11-01T00:00:00Z"},
+		AdRow{Currency: "USD", ProductID: "product:alpha", Date: growthDay(3), Spend: 4, Conversions: 0, ImportedAt: "2026-11-01T00:00:00Z"}, // exact re-import
+		AdRow{Currency: "USD", ProductID: "product:beta-app", Date: growthDay(2), Spend: 3, Conversions: 0, ImportedAt: "2026-11-01T00:00:00Z"},
 	)
 	g := buildGrowthT(t, home, growthOpts())
 	a := growthApp(t, g, "product:alpha").Kpis

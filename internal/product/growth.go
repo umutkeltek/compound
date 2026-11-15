@@ -547,55 +547,7 @@ func loadGrowthWorld(homePath string, opts GrowthOptions) (*growthWorld, error) 
 	}
 	applyGrowthASCFunnel(ascFunnel, ascAppIDs, asOfStr)
 
-	// Ads: dedupe a re-imported (platform, campaign, date), keep the latest import.
-	type adKey struct{ g, platform, campaign, date string }
-	latestAd := map[adKey]AdRow{}
-	adGroup := map[adKey]*growthGroup{}
-	for _, r := range adRows {
-		g := resolve(r.ProductID)
-		if g == nil || r.Date > asOfStr {
-			continue
-		}
-		if _, ok := parseGrowthDay(r.Date); !ok {
-			continue
-		}
-		k := adKey{fmt.Sprint(g.idx), r.Platform, r.CampaignID, r.Date}
-		if prior, ok := latestAd[k]; ok && r.ImportedAt < prior.ImportedAt {
-			continue
-		}
-		latestAd[k] = r
-		adGroup[k] = g
-	}
-	adKeys := make([]adKey, 0, len(latestAd))
-	for k := range latestAd {
-		adKeys = append(adKeys, k)
-	}
-	sort.Slice(adKeys, func(i, j int) bool {
-		a, b := adKeys[i], adKeys[j]
-		if a.g != b.g {
-			return a.g < b.g
-		}
-		if a.platform != b.platform {
-			return a.platform < b.platform
-		}
-		if a.campaign != b.campaign {
-			return a.campaign < b.campaign
-		}
-		return a.date < b.date
-	})
-	for _, k := range adKeys {
-		r, g := latestAd[k], adGroup[k]
-		g.rows[strings.ToLower(r.ProductID)]++
-		g.adsRows++
-		if r.HasRevenue && r.Revenue > 0 {
-			g.adsRevenueRows++
-		}
-		g.addDaily(growthAdsSpend, r.Date, r.Spend)
-		g.addDaily(growthAdsConversions, r.Date, r.Conversions)
-		if r.Platform == "apple_search_ads" {
-			g.addDaily(growthAppleAds, r.Date, r.Spend)
-		}
-	}
+	applyGrowthAds(adRows, resolve, asOfStr)
 
 	for _, d := range drafts {
 		if d.Post == nil || len(d.Post.PostedAt) < 10 {
@@ -694,15 +646,17 @@ func (w *growthWorld) build(opts GrowthOptions) Growth {
 	}
 	var apps []ranked
 	portfolioDaily := map[string]map[string]float64{}
+	portfolioMetrics := []string{growthAdsUnconverted}
+	for _, key := range GrowthKpiKeys {
+		if metric, ok := growthKpiMetric[key]; ok {
+			portfolioMetrics = append(portfolioMetrics, metric)
+		}
+	}
 	for _, g := range groups {
 		app, facts := ctx.buildApp(g)
 		alloc := ctx.allocate(app, facts)
 		apps = append(apps, ranked{app, alloc, facts.proceeds90, facts.clicks90})
-		for _, key := range GrowthKpiKeys {
-			metric, ok := growthKpiMetric[key]
-			if !ok {
-				continue
-			}
+		for _, metric := range portfolioMetrics {
 			pm := portfolioDaily[metric]
 			if pm == nil {
 				pm = map[string]float64{}
@@ -996,7 +950,11 @@ func latestKeyUpTo(m map[string]float64, last string) string {
 func (c growthCtx) kpis(daily map[string]map[string]float64) map[string]GrowthKpi {
 	out := map[string]GrowthKpi{}
 	for _, key := range GrowthKpiKeys {
-		out[key] = c.kpiFor(key, daily)
+		k := c.kpiFor(key, daily)
+		if key == "ad_spend_usd" || key == "ad_cpa_usd" {
+			c.withholdUnconvertedAds(&k, daily, c.opts.WindowDays)
+		}
+		out[key] = k
 	}
 	return out
 }
@@ -1009,7 +967,7 @@ func (c growthCtx) series(daily map[string]map[string]float64) map[string][]Grow
 		for off := c.opts.SeriesDays - 1; off >= 0; off-- {
 			d := c.day(off)
 			p := GrowthPoint{Date: d}
-			if v, ok := m[d]; ok {
+			if v, ok := m[d]; ok && (key != "ad_spend_usd" || daily[growthAdsUnconverted][d] == 0) {
 				p.Value = growthPtr(v)
 			}
 			pts = append(pts, p)

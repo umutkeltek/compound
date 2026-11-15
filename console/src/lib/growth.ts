@@ -34,6 +34,7 @@ export type Kpi = {
   daysReported: number;
   daysInWindow: number;
   unit: "usd" | "count" | "ratio" | string;
+  note?: string;
 };
 
 export type SeriesPoint = { date: string; value: number | null };
@@ -221,6 +222,7 @@ function mapKpi(v: unknown): Kpi {
     daysReported: n(o.days_reported),
     daysInWindow: n(o.days_in_window),
     unit: s(o.unit),
+    note: s(o.note),
   };
 }
 

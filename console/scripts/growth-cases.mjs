@@ -3,6 +3,9 @@
 // console-ads-smoke (scripts/ads-smoke.mjs) imports this module, so a failing
 // case fails that gate. Alone: bun scripts/growth-cases.mjs
 import assert from "node:assert/strict";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { KpiTile } from "../src/components/growth/GrowthKit.tsx";
 
 import { countStatuses, mapGrowthModel, unknownGates, STATUS_META } from "../src/lib/growth.ts";
 import { profileSentence } from "../src/components/growth/AppGrowth.tsx";
@@ -122,5 +125,25 @@ assert.equal(STATUS_META.blind.label, "No data yet");
 // v0.1 had `stages` and no profile: refuse it rather than draw an empty catalog.
 assert.equal(mapGrowthModel({ ...payload, schema_version: "compound.product_growth.v0.1" }), null);
 assert.equal(mapGrowthModel({ schema_version: "something.else" }), null);
+
+// The backend's missing currency reason must survive mapping and reach the tile.
+const currencyNote = "USD total unavailable: ads include non-USD or unknown currency; no exchange-rate conversion is recorded.";
+const gapKpi = { value: null, previous: null, has_data: false, unit: "usd", note: currencyNote, days_in_window: 30, days_reported: 1 };
+const currencyGap = mapGrowthModel({
+  ...payload,
+  portfolio: { ...payload.portfolio, totals: { ad_spend_usd: gapKpi, ad_cpa_usd: gapKpi } },
+  apps: [{ ...payload.apps[0], kpis: { ad_spend_usd: gapKpi, ad_cpa_usd: gapKpi } }],
+});
+for (const kpis of [currencyGap.portfolio.totals, currencyGap.apps[0].kpis]) {
+  for (const key of ["ad_spend_usd", "ad_cpa_usd"]) {
+    assert.equal(kpis[key].value, null);
+    assert.equal(kpis[key].hasData, false);
+    assert.equal(kpis[key].note, currencyNote);
+    const html = renderToStaticMarkup(createElement(KpiTile, { kpiKey: key, kpi: kpis[key], color: "blue" }));
+    assert.ok(html.includes(currencyNote), "currency reason reaches the rendered KPI");
+    assert.ok(!html.includes("No data in the last"), "existing reports are not described as missing");
+    assert.ok(!html.includes("$"), "unknown money is never rendered as dollars");
+  }
+}
 
 console.log("growth cases ok: v0.2 maps, folded moves keep every area, profile sentence names only gating dimensions, unknown statuses stay gaps, v0.1 refused");
