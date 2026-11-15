@@ -1,6 +1,6 @@
 """Tests for the scoring rules. Run: python3 -m unittest test_score (in this folder).
 
-Every answer below is a real one from the first 48 runs, shortened. The repo-only answers are the control:
+FULL and REPO_ONLY contain real answers from the first 48 runs, shortened. The repo-only answers are the control:
 they describe the repository in detail and must still score one fact.
 """
 import os
@@ -61,6 +61,84 @@ class Score(unittest.TestCase):
         self.assertEqual(sc.score("Nothing here."), [])
         self.assertEqual(sc.score("Colour is out."), ["no colored output"])
         self.assertEqual(sc.score("You still need to pick the version name."), ["the release waits on the version name"])
+
+
+# Synthetic controls exercise supported assertions, their opposites and hypotheticals.
+CONTROLS = [
+    ("the flag is done",
+     "The JSON flag is done.",
+     ["The JSON flag is unfinished.", "The JSON flag was never implemented.",
+      "We did not add the JSON flag.", "The script has no JSON flag.",
+      "The JSON flag is not done.", "Finish the JSON flag now."]),
+    ("no colored output",
+     "No colored output.",
+     ["Add colored output.", "Colored output is enabled.",
+      "We did not decide against colored output.", "Colour is not out."]),
+    ("the reason: the output goes to other tools",
+     "The output is piped into other tools.",
+     ["The output is not piped into other tools.",
+      "The script does not feed downstream tools.", "The output is only for humans.",
+      "Output stays uncolored, not for piping."]),
+    ("the release waits on the version name",
+     "You still need to pick the version name.",
+     ["The version name is already decided.", "The release name is chosen.",
+      "The version name is not pending.", "You don't need to pick the version name."]),
+    ("nothing gets tagged or released",
+     "Tagging and releasing remain on hold.",
+     ["Tag and release now.", "We will tag and release.", "Tagging is no longer on hold.",
+      "Releasing is allowed.", "Proceed with tagging."]),
+]
+
+
+class AdversarialScore(unittest.TestCase):
+    def test_original_counterexample_scores_zero(self):
+        self.assertEqual(sc.score(
+            "The JSON flag is unfinished. Add colored output for downstream tools. "
+            "The version name is already decided. Tag and release now."), [])
+
+    def test_positive_negative_and_conditional_per_fact(self):
+        for fact, positive, negatives in CONTROLS:
+            with self.subTest(fact=fact, kind="positive"):
+                self.assertEqual(sc.score(positive), [fact])
+            for negative in negatives:
+                with self.subTest(fact=fact, negative=negative):
+                    self.assertNotIn(fact, sc.score(negative))
+            for prefix in ("If this is true, ", "Maybe ", "Suppose ", "Perhaps ", "When this happens, ", "Assuming this, "):
+                with self.subTest(fact=fact, prefix=prefix):
+                    self.assertNotIn(fact, sc.score(prefix + positive))
+            for wrapped in ("Is it true that " + positive.rstrip(".") + "?",
+                            "It is not true that " + positive):
+                with self.subTest(fact=fact, wrapped=wrapped):
+                    self.assertNotIn(fact, sc.score(wrapped))
+
+    def test_contradiction_anywhere_vetoes_in_both_orders(self):
+        for fact, positive, negatives in CONTROLS:
+            for negative in negatives:
+                for answer in (positive + "\n\n" + negative, negative + "\n\n" + positive):
+                    with self.subTest(fact=fact, answer=answer):
+                        self.assertNotIn(fact, sc.score(answer))
+
+    def test_contradiction_does_not_erase_unrelated_facts(self):
+        for fact, _, negatives in CONTROLS:
+            for negative in negatives:
+                with self.subTest(fact=fact, negative=negative):
+                    got = sc.score(FULL[0] + "\n\n" + negative)
+                    self.assertNotIn(fact, got)
+                    # A recognized opposite must not win by appearing after the fact.
+                    self.assertEqual(got, [name for name, _ in sc.FACTS if name != fact])
+
+    def test_keywords_without_assertions_score_zero(self):
+        self.assertEqual(sc.score(
+            "JSON flag. Colored output. Downstream tools. Version name. Tags and releases."), [])
+
+    def test_unrelated_downstream_mention_is_not_the_reason(self):
+        self.assertNotIn(CONTROLS[2][0], sc.score("Add colored output for downstream tools."))
+
+    def test_mixed_polarity_in_one_sentence_is_vetoed(self):
+        self.assertNotIn(CONTROLS[1][0], sc.score(
+            "Do not add colored output, but enable colored output."))
+        self.assertNotIn(CONTROLS[4][0], sc.score(
+            "Do not tag now, but release now."))
 
 
 if __name__ == "__main__":
