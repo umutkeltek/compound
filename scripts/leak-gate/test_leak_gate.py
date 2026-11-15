@@ -41,6 +41,7 @@ class GateRepo(unittest.TestCase):
         self.env = {k: v for k, v in os.environ.items() if not k.startswith(("GIT_", "LEAK_GATE_"))}
         self.env.update(HOME=self.home, GIT_CONFIG_NOSYSTEM="1", COMPOUND_HOME=os.path.join(self.tmp, "compound-home"))
         self.env.pop("COMPOUND_WORK_ID", None)
+        self.env.pop("XDG_CONFIG_HOME", None)  # git reads a second global config there
         self.rules = os.path.join(self.tmp, "rules.tsv")
         with open(self.rules, "w") as handle:
             handle.write(RULES)
