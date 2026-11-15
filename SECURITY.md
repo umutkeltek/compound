@@ -9,7 +9,7 @@ that boundary.
 ## Report a vulnerability privately
 
 Use this repository's **Security → Advisories → Report a vulnerability** page. Private
-vulnerability reporting is enabled. It has not yet been tested from a separate reporter account.
+vulnerability reporting is enabled. On 2026-11-16 a separate reporter account opened the report form.
 
 If that button is missing or the page returns 404, you do not have a private channel. Do not put
 exploit details, credentials, private home contents or sensitive logs in a public issue. Open a
