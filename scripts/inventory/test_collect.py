@@ -480,7 +480,8 @@ class CloudflareAndSearchTests(unittest.TestCase):
         self.assertTrue(all(s["parent"] == owner["id"] for s in sites.values()))
 
 
-TOKEN = "tok-SYNTHETIC-0123456789-abcdef"
+# Arbitrary bearer fixture; keep it visibly synthetic, not credential-shaped.
+TOKEN = "test-token"
 BAL_ROW = {"id": "credit-example", "provider": "balance_http", "vendor": "example_models",
            "label": "Example prepaid credit", "url": "https://api.example/v1/balance",
            "token_env": "EXAMPLE_API_KEY", "balance_path": "balance_infos[0].total_balance",
