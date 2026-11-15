@@ -16,7 +16,7 @@ func TestGrowthSameEvidenceFormsReportOnce(t *testing.T) {
 	writeGrowthSignals(t, home, rows...)
 	var ads []AdRow
 	for off := 6; off >= 0; off-- {
-		ads = append(ads, AdRow{ProductID: "product:dual", Date: growthDay(off), Spend: 3, Conversions: 1, ImportedAt: "2026-11-01T00:00:00Z"})
+		ads = append(ads, AdRow{Currency: "USD", ProductID: "product:dual", Date: growthDay(off), Spend: 3, Conversions: 1, ImportedAt: "2026-11-01T00:00:00Z"})
 	}
 	writeGrowthAds(t, home, ads...)
 	app := growthApp(t, buildGrowthT(t, home, growthOpts()), "product:dual")
@@ -34,7 +34,7 @@ func TestGrowthSameEvidenceFormsReportOnce(t *testing.T) {
 
 	// One row from another ad platform: the base row now reads rows the app
 	// form does not, so both forms stay.
-	ads = append(ads, AdRow{ProductID: "product:dual", Platform: "other", Date: growthDay(1), Spend: 4, Conversions: 1, ImportedAt: "2026-11-01T00:00:00Z"})
+	ads = append(ads, AdRow{Currency: "USD", ProductID: "product:dual", Platform: "other", Date: growthDay(1), Spend: 4, Conversions: 1, ImportedAt: "2026-11-01T00:00:00Z"})
 	writeGrowthAds(t, home, ads...)
 	paid = growthAudit(t, growthApp(t, buildGrowthT(t, home, growthOpts()), "product:dual"), "acquisition_paid")
 	if len(paid.Forms) != 2 || len(paid.Evidence) != 2 {

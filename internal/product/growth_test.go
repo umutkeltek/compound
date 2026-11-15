@@ -404,9 +404,9 @@ func TestGrowthUnitEconomicsPartialWithoutAdRevenue(t *testing.T) {
 			home := t.TempDir()
 			writeGrowthSignals(t, home, growthDaily("product:alpha", "app_store_connect_developer_proceeds_usd", 9, 0, 3)...)
 			writeGrowthAds(t, home,
-				AdRow{ProductID: "product:alpha", Date: growthDay(1), Spend: 5, HasRevenue: tc.hasRevenue, Revenue: tc.revenue},
-				AdRow{ProductID: "product:alpha", Date: growthDay(2), Spend: 5, HasRevenue: tc.hasRevenue, Revenue: tc.revenue},
-				AdRow{ProductID: "product:alpha", Date: growthDay(3), Spend: 5, HasRevenue: tc.hasRevenue, Revenue: tc.revenue},
+				AdRow{Currency: "USD", ProductID: "product:alpha", Date: growthDay(1), Spend: 5, HasRevenue: tc.hasRevenue, Revenue: tc.revenue},
+				AdRow{Currency: "USD", ProductID: "product:alpha", Date: growthDay(2), Spend: 5, HasRevenue: tc.hasRevenue, Revenue: tc.revenue},
+				AdRow{Currency: "USD", ProductID: "product:alpha", Date: growthDay(3), Spend: 5, HasRevenue: tc.hasRevenue, Revenue: tc.revenue},
 			)
 			g := buildGrowthT(t, home, growthOpts())
 			got := growthAudit(t, g.Apps[0], "operations_unit_economics")
@@ -598,7 +598,7 @@ func TestGrowthStaleNamesTheStaleInput(t *testing.T) {
 	writeGrowthSignals(t, home, rows...)
 	var ads []AdRow
 	for off := 5; off >= 0; off-- {
-		ads = append(ads, AdRow{ProductID: "product:alpha", Date: growthDay(off), Spend: 2, HasRevenue: true})
+		ads = append(ads, AdRow{Currency: "USD", ProductID: "product:alpha", Date: growthDay(off), Spend: 2, HasRevenue: true})
 	}
 	writeGrowthAds(t, home, ads...)
 	app := buildGrowthT(t, home, growthOpts()).Apps[0]
