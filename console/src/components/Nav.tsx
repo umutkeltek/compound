@@ -254,7 +254,6 @@ function NavBody({
       <div className="flex flex-col gap-3">
         {status}
         <Divider />
-        <NavRow href="/settings" label="Settings" icon="sliders" active={pathname === "/settings"} onNavigate={onNavigate} />
       </div>
     </>
   );
