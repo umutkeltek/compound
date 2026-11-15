@@ -29,7 +29,10 @@ The first fact is in the Git log. The other four are decisions that exist nowher
 
 ## Results (2026-11-12, 53 runs)
 
-Each number is how many of the five facts a new session stated.
+These are the original scores from the manually read dataset: each number is how many
+of the five facts a new session stated. The table and the answers and scores in
+`results.json` are retained unchanged. They are historical results, not output from
+the conservative automatic heuristic added on 2026-11-15.
 
 | What existed after the working session | New Claude Code session | New Codex session |
 |---|---|---|
@@ -103,7 +106,7 @@ working session: a receipt with the time, the changed files and the path of the 
 
 The change is described in [Runtime](../architecture/runtime.md), in the orient brief note.
 
-## Run it yourself
+## Run a convenience check
 
 You need Git, Python 3, and the agents you want to test: Claude Code (`claude`) and the Codex CLI
 (`codex`), each signed in. Every session is a real one on your plan. One working session and one
@@ -123,8 +126,13 @@ question take two to four minutes.
 ./where_were_we.sh --worker claude --asker claude --where clone
 ```
 
-The script prints one line per answer: how many of the five facts it states and which are missing.
-`score.py` holds the five rules and can score any saved answer: `python3 score.py answer.txt`.
+The script prints one line per answer with automatic credits and missing facts.
+`score.py` can check any saved answer: `python3 score.py answer.txt`.
+
+This is a convenience runner with the same prompts, not a reproduction of all 53
+historical setups. It uses current agents and your configuration. It does not
+isolate saved notes, create Compound scratch homes, disable hooks, or recreate
+the historical before/after briefing versions.
 
 The script uses your own settings, so the result is about your setup. If Compound's hooks are
 installed, they record the working session, and a new session can ask for the briefing.
@@ -143,8 +151,54 @@ installed, they record the working session, and a new session can ask for the br
 - The script in this folder is a cleaned-up version of the scripts that made the runs. The prompts
   are identical. It does not set up scratch homes or turn hooks off. One run in the table was made
   with it, as a check that it works.
-- Scoring is by the rules in `score.py`, applied to every answer alike. Every answer was also read.
+- The retained dataset contains the original five-fact scores, and every answer was manually read.
+  The old word-matching rules were too permissive: an answer saying the flag was unfinished,
+  asking for colored output, saying the version name was decided and asking to release scored
+  five. The current automatic rules reject that counterexample; they do not rewrite the dataset.
   In the answers, machine paths, session ids and the operator's first name are replaced.
+
+## Automatic scoring (2026-11-15)
+
+The five facts are fixed. Each automatic credit requires a supported positive
+assertion; a recognized contradiction anywhere in the answer vetoes that fact,
+regardless of order. Questions, uncertainty and hypothetical assertions receive
+no automatic credit. A present hold such as "until you choose" is supported.
+The reason needs an assertion about the output feeding tools; mentioning
+"downstream tools" alone does not count.
+
+These are bounded English patterns, with per-fact positive, negative and
+conditional controls in `test_score.py`. They are a conservative convenience
+heuristic, not a general semantic judge. Unsupported paraphrases, cross-sentence
+references, quotations, complex negation and sentences mixing a completed fact
+with uncertainty still need human review. Only recognized contradictions are
+vetoed; the patterns cannot detect every way to contradict a fact.
+
+Rechecking the unchanged 53 answers gives 139 automatic credits versus 155
+original credits. Thirty-seven run totals match. These sixteen totals differ:
+
+| Run | Original retained score | Automatic credits |
+|---|---|---|
+| 2, 4, 9, 11, 12, 20, 22, 23, 44, 45 | 1 each | 0 each |
+| 13, 15, 27, 32, 35, 53 | 5 each | 4 each |
+
+The missed completions use unsupported commit descriptions or assertions mixed
+with uncertainty. Runs 32 and 35 express the waiting decision across a heading
+and a later sentence. These automatic misses do not revise the historical
+reading. To compare locally without changing `results.json`:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
+import json
+from score import score
+
+with open("results.json") as source:
+    runs = json.load(source)["runs"]
+for run in runs:
+    automatic = len(score(run["answer"]))
+    if automatic != run["facts"]:
+        print(run["run"], "original:", run["facts"], "automatic:", automatic)
+PY
+```
 
 ## Limits
 
@@ -162,8 +216,10 @@ installed, they record the working session, and a new session can ask for the br
 ## Tests
 
 ```sh
-python3 -m unittest test_score
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest test_score
 ```
 
 The tests score real answers from the runs: full answers must score five, and answers built from the
-repository alone must score one.
+repository alone must score one. Synthetic controls also check negative and conditional
+assertions for every fact, both contradiction orders, mixed polarity and the original
+false-positive counterexample.
