@@ -121,3 +121,58 @@ func TestGrowthAdsCurrencyIsScopedToEachComparisonWindow(t *testing.T) {
 		t.Fatalf("out-of-window currency poisoned current KPI: %+v", k)
 	}
 }
+
+func TestGrowthAdsCurrencyGapPreservesCoverageAndLimitsAssessment(t *testing.T) {
+	for _, mixed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "foreign only", true: "USD and foreign"}[mixed], func(t *testing.T) {
+			home := t.TempDir()
+			signals := growthDaily("product:alpha", "app_store_connect_developer_proceeds_usd", 29, 0, 3)
+			signals = append(signals, growthDaily("product:alpha", "app_store_connect_units", 29, 0, 1)...)
+			writeGrowthSignals(t, home, signals...)
+			var rows []AdRow
+			for off := 29; off >= 0; off-- {
+				currency := "EUR"
+				if mixed && off > 0 {
+					currency = "USD"
+				}
+				rows = append(rows, AdRow{ProductID: "product:alpha", Date: growthDay(off), Currency: currency, Spend: 5, Conversions: 1, HasRevenue: true, Revenue: 9})
+			}
+			writeGrowthAds(t, home, rows...)
+			model := buildGrowthT(t, home, growthOpts())
+			app := growthApp(t, model, "product:alpha")
+			for _, kpis := range []map[string]GrowthKpi{app.Kpis, model.Portfolio.Totals} {
+				for _, key := range []string{"ad_spend_usd", "ad_cpa_usd"} {
+					k := kpis[key]
+					if k.Value != nil || k.HasData || k.DaysReported != 30 || k.LatestDate != growthDay(0) {
+						t.Fatalf("currency is unknown, reporting coverage is known: %s %+v", key, k)
+					}
+				}
+			}
+			for _, area := range []string{"acquisition_paid", "operations_unit_economics"} {
+				audit := growthAudit(t, app, area)
+				if audit.Status != GrowthPartial || !strings.Contains(audit.Summary, "currency") || !strings.Contains(audit.NextMove, "currency") {
+					t.Fatalf("currency gap must limit monetary assessment: %+v", audit)
+				}
+			}
+		})
+	}
+}
+
+func TestGrowthAdsFreshForeignReportDoesNotLookLikeStoppedFeed(t *testing.T) {
+	for _, salesAge := range []int{0, 25} {
+		home := t.TempDir()
+		writeGrowthSignals(t, home, growthDaily("product:alpha", "app_store_connect_developer_proceeds_usd", salesAge+3, salesAge, 3)...)
+		writeGrowthAds(t, home,
+			AdRow{ProductID: "product:alpha", Date: growthDay(20), Currency: "USD", Spend: 5, HasRevenue: true, Revenue: 9},
+			AdRow{ProductID: "product:alpha", Date: growthDay(0), Currency: "EUR", Spend: 5, HasRevenue: true, Revenue: 9},
+		)
+		audit := growthAudit(t, buildGrowthT(t, home, growthOpts()).Apps[0], "operations_unit_economics")
+		want := GrowthPartial
+		if salesAge > 0 {
+			want = GrowthStale
+		}
+		if audit.Status != want || !strings.Contains(audit.Summary, "currency") || strings.Contains(audit.Summary, "Ad spend data stopped") {
+			t.Fatalf("fresh currency gap, sales age %d: %+v", salesAge, audit)
+		}
+	}
+}

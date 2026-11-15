@@ -1463,6 +1463,9 @@ func (c growthCtx) evalMetrics(g *growthGroup, app GrowthApp, spec growthAreaSpe
 	stale := c.opts.StaleDays
 	a := GrowthAudit{AreaID: spec.ID, Evidence: []GrowthEvidence{}}
 	full := c.evidence(g, spec.patterns)
+	if c.adsCurrencyGap(g, spec) {
+		full = append(full, c.evidence(g, []string{growthAdsUnconverted})...)
+	}
 	capped := c.evidence(g, spec.capped)
 	all := append(append([]growthEv{}, full...), capped...)
 	for _, e := range all {
@@ -1554,6 +1557,9 @@ func (c growthCtx) metricStatus(g *growthGroup, spec growthAreaSpec, full, cappe
 	var staleEv []growthEv
 	if spec.custom == "unit_economics" {
 		for _, e := range all {
+			if e.Metric == growthAdsSpend && c.adsCurrencyGap(g, spec) {
+				continue // Fresh unconverted reports are not a stopped ads feed.
+			}
 			if c.age(e.LatestDate) > stale {
 				staleEv = append(staleEv, e)
 			}
@@ -1567,6 +1573,9 @@ func (c growthCtx) metricStatus(g *growthGroup, spec growthAreaSpec, full, cappe
 	}
 	if len(staleEv) > 0 {
 		return GrowthStale, "", staleEv
+	}
+	if c.adsCurrencyGap(g, spec) {
+		return GrowthPartial, growthAdsCurrencyNote, nil
 	}
 	has := func(glob string) bool {
 		for _, e := range all {
@@ -1621,7 +1630,11 @@ func (c growthCtx) summary(g *growthGroup, spec growthAreaSpec, status, missing 
 		}
 		return fmt.Sprintf("No rows from %s for this app. Nothing measures %s today.", spec.source, spec.measure)
 	case GrowthStale:
-		return c.staleSummary(g, spec, ev, staleEv)
+		s := c.staleSummary(g, spec, ev, staleEv)
+		if c.adsCurrencyGap(g, spec) {
+			s += " " + growthAdsCurrencyNote
+		}
+		return s
 	}
 	switch spec.custom {
 	case "web_traffic":
@@ -1726,12 +1739,18 @@ func (c growthCtx) staleSummary(g *growthGroup, spec growthAreaSpec, ev, staleEv
 		sort.Strings(parts)
 		s := strings.Join(parts, "; ")
 		for _, e := range ev {
+			if e.Metric == growthAdsUnconverted {
+				continue
+			}
 			if isStale[e.Metric] {
 				continue
 			}
 			label := "sales data is current"
 			if e.Metric == growthAdsSpend {
 				label = "ad spend is current"
+				if c.adsCurrencyGap(g, spec) {
+					label = "ads have reports with unconverted currency"
+				}
 			}
 			s += "; " + label
 		}
@@ -1748,6 +1767,9 @@ func (c growthCtx) staleSummary(g *growthGroup, spec growthAreaSpec, ev, staleEv
 }
 
 func (c growthCtx) nextMove(g *growthGroup, spec growthAreaSpec, status, missing, latest string, staleEv []growthEv) string {
+	if missing == growthAdsCurrencyNote {
+		return "Review spend by currency in the ads report; record a supported conversion before comparing USD costs."
+	}
 	switch status {
 	case GrowthBlind:
 		if spec.source == "" || len(spec.Inputs) == 0 {

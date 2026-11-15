@@ -128,7 +128,7 @@ assert.equal(mapGrowthModel({ schema_version: "something.else" }), null);
 
 // The backend's missing currency reason must survive mapping and reach the tile.
 const currencyNote = "USD total unavailable: ads include non-USD or unknown currency; no exchange-rate conversion is recorded.";
-const gapKpi = { value: null, previous: null, has_data: false, unit: "usd", note: currencyNote, days_in_window: 30, days_reported: 1 };
+const gapKpi = { value: null, previous: null, has_data: false, unit: "usd", note: currencyNote, days_in_window: 30, days_reported: 30, latest_date: "2026-01-02" };
 const currencyGap = mapGrowthModel({
   ...payload,
   portfolio: { ...payload.portfolio, totals: { ad_spend_usd: gapKpi, ad_cpa_usd: gapKpi } },
@@ -139,10 +139,12 @@ for (const kpis of [currencyGap.portfolio.totals, currencyGap.apps[0].kpis]) {
     assert.equal(kpis[key].value, null);
     assert.equal(kpis[key].hasData, false);
     assert.equal(kpis[key].note, currencyNote);
+    assert.equal(kpis[key].daysReported, 30);
     const html = renderToStaticMarkup(createElement(KpiTile, { kpiKey: key, kpi: kpis[key], color: "blue" }));
     assert.ok(html.includes(currencyNote), "currency reason reaches the rendered KPI");
     assert.ok(!html.includes("No data in the last"), "existing reports are not described as missing");
     assert.ok(!html.includes("$"), "unknown money is never rendered as dollars");
+    assert.ok(!/\b0 of 30/.test(html) && !html.includes("window has missing days"), "currency gap does not erase reporting coverage");
   }
 }
 

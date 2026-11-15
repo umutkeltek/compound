@@ -3,7 +3,7 @@ package product
 import "strings"
 
 // This marker carries missing currency through daily and portfolio aggregation.
-// It is not a public metric or a money amount.
+// It is not a public KPI or a money amount.
 const growthAdsUnconverted = "ads_unconverted_currency"
 
 const growthAdsCurrencyNote = "USD total unavailable: ads include non-USD or unknown currency; no exchange-rate conversion is recorded."
@@ -52,6 +52,18 @@ func (c growthCtx) withholdUnconvertedAds(k *GrowthKpi, daily map[string]map[str
 	_, current := c.sumRange(unresolved, window-1, 0)
 	_, previous := c.sumRange(unresolved, 2*window-1, window)
 	if current > 0 {
+		k.DaysReported = 0
+		spend := daily[growthAdsSpend]
+		for off := 0; off < window; off++ {
+			date := c.day(off)
+			_, usd := spend[date]
+			if usd || unresolved[date] > 0 {
+				k.DaysReported++
+			}
+		}
+		if latest := latestKey(unresolved); latest > k.LatestDate {
+			k.LatestDate = latest
+		}
 		k.Value, k.HasData, k.Note = nil, false, growthAdsCurrencyNote
 	}
 	if previous > 0 {
@@ -60,4 +72,12 @@ func (c growthCtx) withholdUnconvertedAds(k *GrowthKpi, daily map[string]map[str
 			k.Note = "Previous " + growthAdsCurrencyNote
 		}
 	}
+}
+
+func (c growthCtx) adsCurrencyGap(g *growthGroup, spec growthAreaSpec) bool {
+	if spec.custom != "search_ads" && spec.custom != "unit_economics" {
+		return false
+	}
+	_, days := c.sumRange(g.daily[growthAdsUnconverted], c.opts.WindowDays-1, 0)
+	return days > 0
 }
