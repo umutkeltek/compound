@@ -26,6 +26,7 @@ const SkillsDirsEnv = "COMPOUND_SKILLS_DIRS"
 
 // LessonUsage is the usage text for `compound memory lesson`.
 const LessonUsage = "usage: compound memory lesson --why TEXT --how TEXT --by ACTOR [--skill NAME] [--trigger TOOL:REGEX] [--evidence REF]... [--slot entity::predicate] [--harness H] [--work W] [--repo DIR] [--skills-dir DIR]... [--json]\n" +
+	"       compound memory lesson retire|amend|restore <claim_id> ... (see `compound memory lesson retire --help`)\n" +
 	"  Promotes on write (claim_type lesson) and rebuilds the hook index, so a lesson with --trigger is served on the next matching tool call.\n" +
 	"  With --skill, also appends a dated line (and a trigger: JSON line when --trigger is set) to the skill's \"## Lessons\" section.\n" +
 	"  Skill files resolve from <repo>/skills/<name>/SKILL.md (repo defaults to the enclosing checkout), then each --skills-dir, then each dir in $" + SkillsDirsEnv + "."
@@ -258,14 +259,20 @@ type LessonReceipt struct {
 }
 
 // RunLessonCLI runs `compound memory lesson` and returns the exit code. The
-// hook index is rebuilt after the ledger write, so the lesson is served on the
-// next matching tool call.
+// first argument retire, amend or restore selects a lesson verb instead of a
+// write. Either way the hook index is rebuilt after the ledger change, so the
+// lesson is served (or stops being served) on the next matching tool call.
 func RunLessonCLI(store *mem.Store, args []string, stdout, stderr io.Writer) int {
 	return RunLessonCLIAt(store, args, stdout, stderr, time.Now())
 }
 
 // RunLessonCLIAt is RunLessonCLI with an injected clock.
 func RunLessonCLIAt(store *mem.Store, args []string, stdout, stderr io.Writer, now time.Time) int {
+	if len(args) > 0 {
+		if _, ok := lessonVerbs[args[0]]; ok {
+			return RunLessonChangeCLI(store, args[0], args[1:], stdout, stderr, now)
+		}
+	}
 	parsed, err := parseLessonArgs(args)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)

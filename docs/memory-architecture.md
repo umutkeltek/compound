@@ -454,6 +454,27 @@ Skill publication serializes the entire read/merge/rename for the canonical file
    in the slot, and `needs_review_cleared` edges on both sides. The close
    rebuilds the hook index in the same command, so the superseded lesson stops
    being served at once.
+4a. **Retire, amend, restore — one step each, any actor.**
+   `compound memory lesson retire <claim_id> --reason R --by A`,
+   `lesson amend <claim_id> [--how H] [--trigger T | --no-trigger] --by A`,
+   `lesson restore <claim_id> --by A`. No carrier work item, no owner
+   provenance: the actor that runs the verb is recorded on the new version
+   (`change`, `changed_by`, `changed_on`, `change_reason`). Each verb appends a
+   new version of the lesson in the same slot that supersedes the head of its
+   version chain (any id in the chain works), plus a `memory_delta`
+   Transition, and rebuilds the hook index in the same command. Nothing is
+   deleted; the chain is the history. Retire sets visibility `retired`
+   (`cooled_reason: lesson_retired`): the lesson stops being served and
+   recalled at once and is never brought back by a skill line, because the
+   ledger wins for lesson-backed lines. Retiring one side of a contest clears
+   the contest, so the other side is served alone. Restore undoes a retire
+   (a restored lesson that differs from the slot's current lesson is parked as
+   a contest again). An amend is undone by amending back; every receipt prints
+   the exact undo command. Writing a retired lesson's exact how again is
+   refused with the restore command, so a writer cannot silently undo a
+   retirement; a different how in the slot is a new lesson. A contested
+   lesson cannot be amended (retire the wrong side first). `rule`-class
+   lessons that need owner provenance are a later slice (S7).
 5. **Automatic producers are opt-in.** The automatic candidate writers run only
    with `COMPOUND_CANDIDATE_PRODUCERS=1`: knowledge import metadata rows and
    knowledge extraction (which then skips the model call), session-mining

@@ -54,6 +54,12 @@ above for one kind of memory: the lesson.
   how keeps both, marks each contested by the other, and serves the newest as
   `contested`. The next consumer that records a use (`work close --used
   <claim_id>`) supersedes the other.
+- **Undo a wrong lesson in one step.** `compound memory lesson retire <claim_id>
+  --reason "<why>" --by <you>` stops it at once (the hook line's id works);
+  `lesson restore <claim_id> --by <you>` undoes it; `lesson amend <claim_id>
+  [--how ...] [--trigger ...|--no-trigger] --by <you>` fixes text or a noisy
+  trigger. No work item; you are recorded as the actor; the old version stays
+  as history.
 - **Automatic candidate producers are opt-in** (`COMPOUND_CANDIDATE_PRODUCERS=1`).
   Explicit writes (`compound capture`, `compound memory candidate`,
   `compound memory lesson`) always work.

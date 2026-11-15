@@ -257,9 +257,20 @@ func (s *Store) WriteLesson(in LessonInput, now time.Time) (LessonResult, error)
 			if c.ClaimType != ClaimTypeLesson || superseded[c.ID] {
 				continue
 			}
-			if ClaimSlotKey(c.Entity, c.Predicate, c.ClaimType, c.Qualifiers, c.ID) == slotKey {
-				current = append(current, c)
+			if ClaimSlotKey(c.Entity, c.Predicate, c.ClaimType, c.Qualifiers, c.ID) != slotKey {
+				continue
 			}
+			if lessonRetired(c) {
+				// A retired lesson is history, not the slot's current meaning: a
+				// different how is a new lesson, not a contradiction. The same how
+				// again is refused so a retirement is never undone by accident.
+				if NormalizeClaimValue(c.Object) == NormalizeClaimValue(in.How) {
+					return fmt.Errorf("this lesson was retired as %s (reason: %s); restore it with `compound memory lesson restore %s --by <actor>` or write a different how",
+						c.ID, orDef(c.Qualifiers[lessonChangeReasonKey], "none given"), c.ID)
+				}
+				continue
+			}
+			current = append(current, c)
 		}
 		sort.Slice(current, func(i, j int) bool { return current[i].Seq < current[j].Seq })
 		for _, c := range current {
@@ -303,21 +314,8 @@ func (s *Store) WriteLesson(in LessonInput, now time.Time) (LessonResult, error)
 			return err
 		}
 		if contested.ID != "" {
-			// Park the contradiction: append-only marks in both directions. A
-			// needs_review edge From=X To=Y reads "Y is contested by X".
-			for _, pair := range [][2]string{{claim.ID, contested.ID}, {contested.ID, claim.ID}} {
-				edgeSeq, err := s.nextSeq()
-				if err != nil {
-					return err
-				}
-				edge := Edge{
-					Seq: edgeSeq, Kind: EdgeKindNeedsReview, From: pair[0], To: pair[1], Confidence: claim.Confidence,
-					EvidenceRefs: []string{"lesson-contradiction", "contested_by:" + pair[0]},
-					CreatedAt:    rfc3339(now),
-				}
-				if err := appendJSONL(s.edgesLog(), &edge); err != nil {
-					return err
-				}
+			if err := s.markLessonContestLocked(claim, contested.ID, now); err != nil {
+				return err
 			}
 			res.ContestedWith = contested.ID
 		}
