@@ -202,7 +202,7 @@ func normalizeAdminAccounts(doc adminAccountsDoc, now time.Time) AccountProjecti
 	accountEnrolled := make(map[string]bool, len(doc.Accounts))
 	for _, acct := range doc.Accounts {
 		id := strings.TrimSpace(acct.ID)
-		provider := strings.TrimSpace(acct.Provider)
+		provider := accountProjectionProvider(acct.Provider)
 		enrolled := strings.EqualFold(strings.TrimSpace(acct.State), "enrolled")
 		// The source authority retains parked/superseded history, but this projection is
 		// specifically the CURRENT account-admission surface. Counting historical rows as
@@ -369,4 +369,17 @@ func atomicWriteAccountProjection(path string, data []byte) error {
 		return err
 	}
 	return nil
+}
+
+// accountProjectionProvider aligns Switchback enrollment names with the
+// existing account-admission keys, merging aliases before counts are reduced.
+func accountProjectionProvider(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "anthropic", "claude":
+		return "claude"
+	case "openai", "codex":
+		return "codex"
+	default:
+		return strings.ToLower(strings.TrimSpace(provider))
+	}
 }

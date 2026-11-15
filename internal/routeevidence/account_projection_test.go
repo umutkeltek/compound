@@ -183,7 +183,7 @@ func TestAccountProjectionExcludesParkedAccountHistoryFromTotals(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("load: ok=%v err=%v", ok, err)
 	}
-	openai := projection.Providers["openai"]
+	openai := projection.Providers["codex"]
 	if openai.TotalAccountCount != 2 || openai.HealthyAccountCount != 2 {
 		t.Fatalf("parked account history entered current totals: %+v", openai)
 	}
@@ -414,5 +414,43 @@ func TestAccountAdmissionGateStaleProjectionNotGated(t *testing.T) {
 		if lane.AccountAdmission != "" || lane.AccountProjectionRevision != "" {
 			t.Fatalf("stale-gate plan must otherwise match fail-open (no Account* fields), got %+v", lane)
 		}
+	}
+}
+
+func TestAccountProjectionAliasesMergeAndGateCanonicalProviders(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(t.TempDir(), "aliases.json")
+	body := `{"schema":"switchback/admin-accounts@1","authority_revision":98,
+"accounts":[
+{"id":"fixture-a","provider":"openai","state":"enrolled"},
+{"id":"fixture-b","provider":"codex","state":"enrolled"},
+{"id":"fixture-c","provider":" anthropic ","state":"enrolled"},
+{"id":"fixture-d","provider":"claude","state":"enrolled"}],
+"capacity":[
+{"account_id":"fixture-a","windows":[{"used":{"kind":"percent","used_percent":100}}]},
+{"account_id":"fixture-b","windows":[{"used":{"kind":"percent","used_percent":100}}]},
+{"account_id":"fixture-c","windows":[{"used":{"kind":"percent","used_percent":100}}]},
+{"account_id":"fixture-d","windows":[{"used":{"kind":"percent","used_percent":100}}]}]}`
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportAccountProjectionFile(home, path, t0); err != nil {
+		t.Fatal(err)
+	}
+	projection, ok, err := LoadAccountProjection(home)
+	if err != nil || !ok || len(projection.Providers) != 2 {
+		t.Fatalf("aliases not merged: %+v %v", projection, err)
+	}
+	for _, provider := range []string{"codex", "claude"} {
+		entry := projection.Providers[provider]
+		if entry.TotalAccountCount != 2 || entry.HealthyAccountCount != 0 {
+			t.Fatalf("wrong %s totals: %+v", provider, entry)
+		}
+	}
+	accountAdmissionRouteChain(t, home, []string{"codex/gpt", "claude/code"})
+	cfg := accountAdmissionCapacityConfig(t, home)
+	plan, err := PlanCapabilityRoute(home, "build-implement", CapabilityRoutePlanOptions{CapacityConfig: &cfg, SuppressRefusalEvidence: true}, t0)
+	if err != nil || len(plan.Chain) != 0 || len(plan.Omitted) != 2 {
+		t.Fatalf("aliases bypassed account gate: %+v %v", plan, err)
 	}
 }

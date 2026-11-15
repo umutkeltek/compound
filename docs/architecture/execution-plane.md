@@ -665,6 +665,19 @@ pool, revision, membership counts, timestamps and required quota windows, and
 passes the result through the same capacity policy. Available member percentages
 are never added together. Unknown observations remain confirmation-gated; a
 failed declared source never falls back to an unrelated default account.
+The separate `switchback_account_usage` source uses
+`switchback://account-usage/<provider>` and runs only
+`sb limits --provider <provider> --json` under the same deadline and output bound.
+It validates `switchback/account-usage@1` and its observation-only purpose,
+then checks each enabled account's saved quota windows against the declared freshness
+and run horizon. Coverage lists gaps; successful observations do not require a coverage
+entry. Negative coverage, refresh errors, stale windows and passed resets stay unknown.
+Provider-wide usage does not prove account selection: multiple enabled accounts are
+admitted only when all are independently usable, without adding their percentages.
+Account identifiers and private source errors do not enter capacity evidence.
+Imported enrollment provider aliases `anthropic` and `openai` normalize to the
+existing admission keys `claude` and `codex` before totals are reduced.
+Native account-pool admission remains a separate source.
 This read does not refresh usage, log in, change pool membership, or grant away
 execution. Native configuration/settings pins and permission/hook checks remain
 independent admission requirements. Capacity admission
