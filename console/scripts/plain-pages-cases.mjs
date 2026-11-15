@@ -26,11 +26,13 @@ import { PathnameContext, SearchParamsContext } from "next/dist/shared/lib/hooks
 
 const scratch = await mkdtemp(join(tmpdir(), "compound-plain-pages-"));
 const bin = join(scratch, "compound-stub");
+const releaseReads = join(scratch, "release-reads");
 
 // Synthetic home: 6 open work items. In progress = 4 (1 running, 1 picked up,
 // 2 waiting for a proof check); 2 of them picked up more than 7 days ago;
 // 1 on hold; 7 decisions wait, 13 items in all.
 await writeFile(bin, `#!/usr/bin/env bun
+import { existsSync } from "node:fs";
 const args = process.argv.slice(2).join(" ");
 const now = Date.now();
 const iso = (daysAgo) => new Date(now - daysAgo * 86400000).toISOString();
@@ -115,6 +117,8 @@ const reply = {
   "packets list --json": { schema_version: "compound.work.offered_packets.v0.1", counts: {}, items: [] },
 };
 if (args === "version") { console.log("synthetic"); process.exit(0); }
+// The test releases all reads only after every cold page has rendered.
+while (!existsSync(${JSON.stringify(releaseReads)})) await Bun.sleep(5);
 const key = Object.keys(reply).find((k) => args === k) ?? (args.startsWith("memory candidates") ? "memory" : "");
 if (key === "memory") { console.log(JSON.stringify({ generated_at: iso(0), items: [], counts: { by_state: { promoted: 3, parked: 1, proposed: 1 } } })); process.exit(0); }
 console.log(JSON.stringify(key ? reply[key] : { generated_at: iso(0) }));
@@ -273,16 +277,21 @@ try {
   assert.equal(findBannedPhrases("source-control-cleanup/scr_4b6d91fd142c.preimage").length, 1, "a raw area path is caught");
 
   // 1. Cold: nothing read yet. Every page says it is reading, never zero.
-  const cold = await renderAll();
-  checkPlain(cold, "loading");
-  assert.match(cold.Today, /Reading what waits for you for the first time/);
-  assert.doesNotMatch(cold.Today, /Nothing needs you today|\b0 decisions\b/, "an unread attention copy is not 'nothing'");
-  assert.match(cold.Work, /Reading work for the first time/);
-  assert.doesNotMatch(cold.Work, /\b0 work items are marked in progress/);
-  assert.match(cold.Decide, /Reading what waits for you for the first time/);
-  assert.match(cold.Live, /Reading who works on what for the first time/);
+  // Today and Work share reads with Live. Hold fixture replies across both
+  // render passes so a fast child cannot warm a later page's "cold" snapshot.
+  for (const cold of [await renderAll(), await renderAll()]) {
+    checkPlain(cold, "loading");
+    assert.match(cold.Today, /Reading what waits for you for the first time/);
+    assert.doesNotMatch(cold.Today, /Nothing needs you today|\b0 decisions\b/, "an unread attention copy is not 'nothing'");
+    assert.match(cold.Work, /Reading work for the first time/);
+    assert.doesNotMatch(cold.Work, /\b0 work items are marked in progress/);
+    assert.match(cold.Decide, /Reading what waits for you for the first time/);
+    assert.match(cold.Live, /Reading who works on what for the first time/);
+  }
+  assert.ok(compound.readQueueSnapshot().inflight > 0, "cold pages must exercise pending reads");
 
-  // 2. The reads land; render again.
+  // 2. Release the held replies, then prove that real populated reads land.
+  await writeFile(releaseReads, "");
   await compound.settleProjectionReads();
   const warm = await renderAll();
   checkPlain(warm, "loaded");
@@ -392,6 +401,7 @@ try {
 
   console.log(`plain-pages cases ok: 4 pages × 2 read states free of ${BANNED_PHRASES.length} banned phrases; shared counts agree; Decide sends one decision's detail; opened decision checks its own read (stale refused, A's read never enables B)`);
 } finally {
+  await writeFile(releaseReads, "");
   await compound.settleProjectionReads();
   await rm(scratch, { recursive: true, force: true });
 }

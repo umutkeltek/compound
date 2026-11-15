@@ -21,7 +21,7 @@ const MAX_BUFFER = 64 * 1024 * 1024;
 
 // The manifest is deliberately scoped to the six briefing doors. These other
 // literal read calls predate that contract and remain visible here so any new
-// literal runJson/runProjection argv still fails the drift guard.
+// literal runJson/runProjection/readProjection argv still fails the drift guard.
 const PREEXISTING_NON_BRIEFING_ARGV = new Set(
   [
     ["contract", "hooks-authority"],
@@ -98,7 +98,7 @@ function literalProjectionCalls(source) {
   const calls = [];
   // The argv array may be followed by an options argument (runProjection's
   // { timeoutMs }); current options objects never contain ")".
-  const pattern = /\b(?:runJson|runProjection)\s*\(\s*(\[(?:\s*"(?:\\.|[^"\\])*"\s*,?)*\s*\])\s*(?:,[^)]*)?\)/gms;
+  const pattern = /\b(?:runJson|runProjection|readProjection)\s*\(\s*(\[(?:\s*"(?:\\.|[^"\\])*"\s*,?)*\s*\])\s*(?:,[^)]*)?\)/gms;
   for (const match of source.matchAll(pattern)) {
     calls.push(JSON.parse(match[1].replace(/,\s*]$/, "]")));
   }
@@ -116,13 +116,27 @@ function boundProjectionArgv(source) {
   const pattern = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+?)?=\s*(\[(?:\s*"(?:\\.|[^"\\])*"\s*,?)*\s*\])/gms;
   for (const match of source.matchAll(pattern)) {
     const binding = match[1].replace(/\$/g, "\\$");
-    const passed = new RegExp(`\\b(?:runJson|runProjection)\\s*\\(\\s*${binding}\\s*(?:,[^)]*)?\\)`);
+    const passed = new RegExp(`\\b(?:runJson|runProjection|readProjection)\\s*\\(\\s*${binding}\\s*(?:,[^)]*)?\\)`);
     if (passed.test(source)) argv.push(JSON.parse(match[2].replace(/,\s*]$/, "]")));
   }
   return argv;
 }
 
 function assertDoorManifestCoversLiteralCalls() {
+  // Exercise each production reader spelling. Losing one must fail even when
+  // another reader still consumes the same declared door.
+  const argv = ["workbench", "--json", "--recent", "500"];
+  const literal = JSON.stringify(argv);
+  for (const reader of ["runJson", "runProjection", "readProjection"]) {
+    assert.deepEqual(literalProjectionCalls(
+      reader + "(" + literal + ", { timeoutMs: 1000 })",
+    ), [argv], reader + " literal call must be visible");
+    assert.deepEqual(boundProjectionArgv(
+      "const args = " + literal + "; " + reader + "(args, { timeoutMs: 1000 })",
+    ), [argv], reader + " bound call must be visible");
+  }
+  assert.deepEqual(literalProjectionCalls("unrelated(" + literal + ")"), []);
+  assert.deepEqual(boundProjectionArgv("const args = " + literal + "; unrelated(args)"), []);
   const declared = new Map();
   for (const door of DOORS) {
     const key = JSON.stringify(door.argv);
