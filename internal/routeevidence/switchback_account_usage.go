@@ -21,6 +21,8 @@ type switchbackAccountUsage struct {
 		State           string  `json:"state"`
 		RefreshError    *string `json:"refresh_error"`
 		ReloginRequired bool    `json:"relogin_required"`
+		Estimated       bool    `json:"estimated"`
+		UsageKind       string  `json:"usage_kind"`
 		Windows         []struct {
 			Name      string   `json:"name"`
 			Used      *float64 `json:"used_percent"`
@@ -28,6 +30,9 @@ type switchbackAccountUsage struct {
 			SampledAt string   `json:"sampled_at"`
 			ResetsAt  *string  `json:"resets_at"`
 			State     string   `json:"state"`
+			Scope     string   `json:"scope"`
+			Estimated bool     `json:"estimated"`
+			UsageKind string   `json:"usage_kind"`
 		} `json:"windows"`
 	} `json:"accounts"`
 	Coverage []struct {
@@ -129,11 +134,27 @@ func parseSwitchbackAccountUsage(body []byte, provider string, now time.Time, fr
 			member.State = CapacityDead
 		} else if account.RefreshError != nil && *account.RefreshError != "" {
 			member = unknown("refresh_error")
+		} else if account.Estimated || account.UsageKind == "estimated" {
+			member = unknown("estimated_usage")
 		} else if account.State != "fresh" || len(account.Windows) == 0 {
 			member = unknown("usage_unavailable")
 		} else {
 			windowNames := map[string]bool{}
+			applicableWindows := 0
 			for _, window := range account.Windows {
+				// MCP/tool quotas do not constrain generation capacity.
+				if window.Scope == "tools" {
+					continue
+				}
+				if window.Scope != "" && window.Scope != "general" && window.Scope != "generation" {
+					member = unknown("window_scope_unknown")
+					break
+				}
+				if window.Estimated || window.UsageKind == "estimated" {
+					member = unknown("estimated_usage")
+					break
+				}
+				applicableWindows++
 				if window.Name == "" || windowNames[window.Name] {
 					return bad()
 				}
@@ -165,6 +186,9 @@ func parseSwitchbackAccountUsage(body []byte, provider string, now time.Time, fr
 						member.ResetsAt = reset.UTC()
 					}
 				}
+			}
+			if member.State == CapacityAlive && applicableWindows == 0 {
+				member = unknown("no_generation_windows")
 			}
 			if member.State == CapacityAlive {
 				if member.Remaining <= 0 {

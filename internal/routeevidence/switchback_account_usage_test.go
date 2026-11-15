@@ -269,3 +269,49 @@ routing_defaults:
 		t.Fatal("coordination wrote runtime evidence")
 	}
 }
+
+func TestSwitchbackUsageOnlyMeasuredGenerationWindowsConstrainCapacity(t *testing.T) {
+	now := time.Now().UTC()
+	for _, tc := range []struct {
+		name   string
+		mutate func(map[string]any)
+		want   LaneCapacityState
+	}{
+		{"generation-and-exhausted-MCP", func(x map[string]any) {
+			usageWindow(x)["scope"] = "generation"
+			tool := usageWindow(accountUsageFixture(now))
+			tool["name"], tool["scope"] = "monthly_mcp", "tools"
+			tool["used_percent"], tool["remaining_percent"] = 100, 0
+			usageAccount(x)["windows"] = []any{tool, usageWindow(x)}
+		}, CapacityAlive},
+		{"general-generation", func(x map[string]any) { usageWindow(x)["scope"] = "general" }, CapacityAlive},
+		{"tool-only", func(x map[string]any) { usageWindow(x)["scope"] = "tools" }, CapacityUnknown},
+		{"unknown-scope", func(x map[string]any) { usageWindow(x)["scope"] = "another" }, CapacityUnknown},
+		{"account-estimated", func(x map[string]any) { usageAccount(x)["estimated"] = true }, CapacityUnknown},
+		{"account-estimated-kind", func(x map[string]any) { usageAccount(x)["usage_kind"] = "estimated" }, CapacityUnknown},
+		{"window-estimated", func(x map[string]any) { usageWindow(x)["estimated"] = true }, CapacityUnknown},
+		{"window-estimated-kind", func(x map[string]any) { usageWindow(x)["usage_kind"] = "estimated" }, CapacityUnknown},
+		{"generation-state-recomputed-from-sample", func(x map[string]any) {
+			w := usageWindow(x)
+			w["scope"] = "generation"
+			w["sampled_at"] = now.Add(-16 * time.Minute).Format(time.RFC3339Nano)
+		}, CapacityUnknown},
+		{"generation-state-recomputed-from-reset", func(x map[string]any) {
+			w := usageWindow(x)
+			w["scope"] = "generation"
+			w["resets_at"] = now.Add(-time.Second).Format(time.RFC3339Nano)
+		}, CapacityUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := accountUsageFixture(now)
+			tc.mutate(doc)
+			got, err := parseSwitchbackAccountUsage(usageBody(t, doc), "minimax", now, 15*time.Minute, 60)
+			if err != nil || got.State != tc.want {
+				t.Fatalf("got %+v, %v; want %s", got, err, tc.want)
+			}
+			if tc.want == CapacityAlive && got.Remaining != 80 {
+				t.Fatalf("tool window constrained generation: %+v", got)
+			}
+		})
+	}
+}

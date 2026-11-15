@@ -672,6 +672,9 @@ It validates `switchback/account-usage@1` and its observation-only purpose,
 then checks each enabled account's saved quota windows against the declared freshness
 and run horizon. Coverage lists gaps; successful observations do not require a coverage
 entry. Negative coverage, refresh errors, stale windows and passed resets stay unknown.
+Tool-scoped windows do not constrain generation; only empty, general or generation scopes
+are applicable. Unknown scopes, tool-only observations and account/window usage marked
+estimated remain unknown for admission. Fresh labels never replace timestamp/reset checks.
 Provider-wide usage does not prove account selection: multiple enabled accounts are
 admitted only when all are independently usable, without adding their percentages.
 Account identifiers and private source errors do not enter capacity evidence.
