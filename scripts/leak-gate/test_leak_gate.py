@@ -240,7 +240,9 @@ class PushGateTest(GateRepo):
 
     def test_author_committer_and_tagger_identity_are_not_scanned(self):
         # Identity headers may carry the operator's own mail on purpose; only message bodies count.
+        # The address is configured, so the attribution check accepts it and only the rules are tested.
         ident = "quarkbox@example.invalid"
+        self.git(["config", "--add", "leakgate.identity", ident])
         env = dict(self.env, GIT_AUTHOR_EMAIL=ident, GIT_COMMITTER_EMAIL=ident)
         self.branch("ident")
         self.write("a.txt", "clean\n")
@@ -381,6 +383,175 @@ class CommitHooksTest(GateRepo):
             self.assertEqual(sorted(handle.read().split()), ["commit-msg", "pre-push"])
         self.commit({"b.txt": "%s\n" % TOKEN}, verify=False)
         self.assertRefused(self.push("chain"), "fake_product")
+
+
+class AttributionTest(GateRepo):
+    """A commit is by the configured identity only and never carries a co-author line."""
+
+    HELPER = "helper@example.invalid"
+
+    def try_commit(self, message, args=(), env_extra=None, git_args=()):
+        self.write("a.txt", "change %d\n" % self.counter())
+        self.git(["add", "a.txt"])
+        env = dict(self.env, **(env_extra or {}))
+        return self.git([*git_args, "commit", "-q", "-m", message, *args], env=env, check=False)
+
+    def counter(self):
+        self._n = getattr(self, "_n", 0) + 1
+        return self._n
+
+    def head_count(self):
+        return int(self.git(["rev-list", "--count", "HEAD"]).stdout.strip())
+
+    def assertCommitRefused(self, proc, label, before):
+        self.assertNotEqual(proc.returncode, 0, "commit was accepted:\n" + proc.stderr)
+        self.assertIn(label, proc.stderr)
+        self.assertIn("Compound-Harness:", proc.stderr, "the refusal must say what to do instead")
+        self.assertEqual(self.head_count(), before)
+
+    def test_co_authored_by_trailer_is_refused_at_commit(self):
+        before = self.head_count()
+        proc = self.try_commit("fix: a change\n\nCo-Authored-By: Helper <%s>" % self.HELPER)
+        self.assertCommitRefused(proc, "co_author_trailer", before)
+
+    def test_co_authored_by_in_any_capitalisation_is_refused(self):
+        for line in ("co-authored-by: Helper <%s>", "CO-AUTHORED-BY: Helper <%s>", "Co-authored-by : Helper <%s>",
+                     "  co-Authored-BY:Helper <%s>"):
+            with self.subTest(line=line):
+                before = self.head_count()
+                proc = self.try_commit("fix: a change\n\nCompound-Harness: claude_code\n" + line % self.HELPER)
+                self.assertCommitRefused(proc, "co_author_trailer", before)
+
+    def test_phrase_inside_prose_is_accepted(self):
+        message = ("docs: say why co-authored-by: lines are refused\n\n"
+                   "The gate refuses a Co-authored-by: trailer, so this sentence only names it.")
+        proc = self.try_commit(message)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("leak-gate", proc.stderr)
+
+    def test_foreign_author_is_refused_at_commit(self):
+        before = self.head_count()
+        proc = self.try_commit("fix: a change", args=["--author", "Helper <%s>" % self.HELPER])
+        self.assertCommitRefused(proc, "foreign_author", before)
+
+    def test_foreign_author_from_environment_is_refused_at_commit(self):
+        before = self.head_count()
+        proc = self.try_commit("fix: a change", env_extra={"GIT_AUTHOR_EMAIL": self.HELPER})
+        self.assertCommitRefused(proc, "foreign_author", before)
+
+    def test_foreign_committer_is_refused_at_commit(self):
+        before = self.head_count()
+        proc = self.try_commit("fix: a change", env_extra={"GIT_COMMITTER_EMAIL": self.HELPER})
+        self.assertCommitRefused(proc, "foreign_committer", before)
+
+    def test_command_line_identity_is_not_a_configured_identity(self):
+        before = self.head_count()
+        proc = self.try_commit("fix: a change", git_args=["-c", "user.email=%s" % self.HELPER])
+        self.assertCommitRefused(proc, "foreign_author", before)
+        self.assertIn("foreign_committer", proc.stderr)
+
+    def test_configured_identity_passes_quietly(self):
+        proc = self.try_commit("fix: a change\n\nCompound-Harness: claude_code")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("leak-gate", proc.stderr)
+
+    def test_extra_identity_from_git_config_passes(self):
+        self.git(["config", "--add", "leakgate.identity", "second@example.invalid"])
+        proc = self.try_commit("fix: a change", args=["--author", "Synthetic <SECOND@example.invalid>"])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_owner_merge_and_revert_commits_pass(self):
+        self.branch("side")
+        self.commit({"side.txt": "side\n"}, message="side change")
+        self.branch("feature")
+        self.commit({"feature.txt": "feature\n"}, message="feature change")
+        merge = self.git(["merge", "--no-ff", "-m", "Merge branch 'side' into feature", "side"], check=False)
+        self.assertEqual(merge.returncode, 0, merge.stderr)
+        self.assertEqual(len(self.git(["log", "-1", "--format=%P"]).stdout.split()), 2)
+        revert = self.git(["revert", "--no-edit", "HEAD~1"], check=False)
+        self.assertEqual(revert.returncode, 0, revert.stderr)
+        self.assertAccepted(self.push("feature"))
+        self.assertTrue(self.remote_has("refs/heads/feature"))
+
+    def test_push_refuses_a_range_with_an_offending_commit_and_names_it(self):
+        self.branch("attrib")
+        self.commit({"a.txt": "clean\n"}, message="clean change")
+        trailer = self.commit({"b.txt": "clean\n"}, verify=False,
+                              message="fix: b\n\nCo-authored-by: Helper <%s>" % self.HELPER)
+        self.write("c.txt", "clean\n")
+        self.git(["add", "c.txt"])
+        self.git(["commit", "-q", "--no-verify", "-m", "fix: c", "--author", "Helper <%s>" % self.HELPER])
+        foreign = self.git(["rev-parse", "HEAD"]).stdout.strip()
+        proc = self.push("attrib", env_extra={"LEAK_GATE_OVERRIDE": "an override must not cover attribution"})
+        self.assertRefused(proc, "co_author_trailer", "commit %s" % trailer[:10],
+                           "foreign_author", "commit %s" % foreign[:10], "nothing was pushed", "Compound-Harness:")
+        self.assertNotIn("OVERRIDDEN", proc.stderr)
+        self.assertNotIn(self.HELPER, proc.stderr, "the identity itself is not printed by default")
+        self.assertFalse(self.remote_has("refs/heads/attrib"))
+        range_proc = self.run_gate(["range", "origin/main..attrib"])
+        self.assertEqual(range_proc.returncode, 1, range_proc.stderr)
+        self.assertIn("commit %s" % trailer[:10], range_proc.stderr)
+
+    def test_the_suggested_fix_makes_the_push_pass(self):
+        self.branch("fixme")
+        self.write("a.txt", "clean\n")
+        self.git(["add", "a.txt"])
+        self.git(["commit", "-q", "--no-verify", "-m", "fix: a\n\nCo-authored-by: Helper <%s>" % self.HELPER,
+                  "--author", "Helper <%s>" % self.HELPER])
+        self.assertRefused(self.push("fixme"), "foreign_author")
+        self.git(["commit", "-q", "--amend", "--reset-author", "-m", "fix: a\n\nCompound-Harness: claude_code"])
+        self.assertAccepted(self.push("fixme"))
+
+    def test_commits_already_on_the_remote_are_not_checked_again(self):
+        # Historical attribution (or a web merge made by the hosting service) is on the remote
+        # already; a later clean push on top of it is accepted.
+        self.git(["checkout", "-q", "main"])
+        self.write("old.txt", "old\n")
+        self.git(["add", "old.txt"])
+        hosted = dict(self.env, GIT_COMMITTER_NAME="Hosting", GIT_COMMITTER_EMAIL="noreply@hosting.invalid")
+        self.git(["commit", "-q", "--no-verify", "-m", "Merge pull request #1\n\nCo-authored-by: Helper <%s>"
+                  % self.HELPER], env=hosted)
+        self.assertAccepted(self.git(["push", "--no-verify", "origin", "main"], check=False))
+        self.commit({"new.txt": "clean\n"}, message="clean change on top")
+        self.assertAccepted(self.push("main"))
+
+    def test_archive_ref_keeps_old_commits_but_a_branch_push_reaching_them_is_refused(self):
+        self.branch("old-agent-work")
+        self.write("a.txt", "clean\n")
+        self.git(["add", "a.txt"])
+        self.git(["commit", "-q", "--no-verify", "-m", "old: a\n\nCo-authored-by: Helper <%s>" % self.HELPER,
+                  "--author", "Helper <%s>" % self.HELPER])
+        old = self.git(["rev-parse", "HEAD"]).stdout.strip()
+        refused = self.push("old-agent-work")
+        self.assertRefused(refused, "foreign_author", "refs/backups/")
+        self.assertAccepted(self.push("old-agent-work:refs/backups/20261116/old-agent-work"))
+        self.assertTrue(self.remote_has("refs/backups/20261116/old-agent-work"))
+        # The archived commit is on the remote but not in the remote-tracking refs, so a branch
+        # that later reaches it is checked again.
+        self.git(["checkout", "-q", "main"])
+        self.git(["merge", "-q", "--no-ff", "-m", "Merge the archived work", "old-agent-work"])
+        self.assertRefused(self.push("main"), "commit %s" % old[:10], "foreign_author")
+
+    def test_archive_ref_still_runs_the_leak_rules(self):
+        self.branch("old-leak")
+        self.commit({"a.txt": "%s\n" % TOKEN}, verify=False)
+        self.assertRefused(self.push("old-leak:refs/backups/20261116/old-leak"), "fake_product")
+
+    def test_attribution_refuses_at_commit_even_without_rules(self):
+        os.rename(self.rules, self.rules + ".hidden")
+        try:
+            before = self.head_count()
+            proc = self.try_commit("fix: a change\n\nCo-authored-by: Helper <%s>" % self.HELPER)
+            self.assertCommitRefused(proc, "co_author_trailer", before)
+        finally:
+            os.rename(self.rules + ".hidden", self.rules)
+
+    def test_no_configured_identity_refuses_the_push(self):
+        self.branch("noid")
+        self.commit({"a.txt": "clean\n"}, message="clean change")
+        env = dict(self.env, GIT_CONFIG_GLOBAL=os.path.join(self.tmp, "empty.gitconfig"))
+        open(env["GIT_CONFIG_GLOBAL"], "w").close()
+        self.assertRefused(self.git(["push", "origin", "noid"], env=env, check=False), "no identity configured")
 
 
 class CommandTest(GateRepo):

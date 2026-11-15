@@ -37,6 +37,22 @@ the push is refused and the message names the path. There is no "no rules" fallb
 Paths always refused, with or without rules: anything under `docs_private/`,
 `.compound-private/` or `.claude/` (at any depth), and any `*.private.md` file.
 
+Attribution, checked with or without rules (commit-msg, pre-push and range):
+  * a message line that starts with `Co-authored-by:` (any capitalisation) is refused;
+    the words inside a sentence are not. Credit an agent in the `Compound-Harness:`
+    trailer instead.
+  * an author or committer e-mail that is not a configured identity is refused. The
+    configured identities are every `user.email` and `leakgate.identity` value in the git
+    config files (system, global, local). Command-line `-c` values, `--author` and the
+    GIT_AUTHOR_* / GIT_COMMITTER_* / EMAIL variables never add an identity. This file and
+    its tests hold no real identity; add another address with
+    `git config --add leakgate.identity <address>`.
+LEAK_GATE_OVERRIDE does not cover an attribution refusal: the fix is to rewrite the commit
+before it is pushed. At push time attribution is checked for branch and tag updates
+(refs/heads/, refs/tags/). To archive old commits unchanged, push them to another ref, e.g.
+refs/backups/<date>/<name>; the leak rules still scan it, and a later branch push that
+reaches those commits checks them again (they are not in the remote-tracking refs).
+
 Output names the category, commit, file and line, never the matched text. Set
 LEAK_GATE_SHOW=1 to also print the matched text on the terminal (never into a file).
 
@@ -67,6 +83,23 @@ MAX_FINDINGS = 200
 MIN_REASON = 12
 HOOK_MARKER = "leak-gate managed hook"
 SHOW = os.environ.get("LEAK_GATE_SHOW") == "1"
+CO_AUTHOR_LINE = re.compile(rb"^[ \t]*co-authored-by[ \t]*:", re.I | re.M)
+# Variables that set an identity for one command; they must never widen the allowed set.
+IDENTITY_OVERRIDES = ("GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "EMAIL", "GIT_AUTHOR_NAME",
+                      "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL")
+ATTRIBUTION_FIX = {
+    "message": "commit stopped. Commit as the identity in git config (no --author, no -c user.email, no "
+               "GIT_AUTHOR_*/GIT_COMMITTER_* variables) and delete every Co-authored-by line; to credit an "
+               "agent, name its harness in the Compound-Harness: trailer.",
+    "push": "nothing was pushed. Rewrite the commits above (they are not on the remote yet): "
+            "`git commit --amend --reset-author` replaces a foreign identity, delete every Co-authored-by line, "
+            "and credit an agent only in the Compound-Harness: trailer. To archive old commits unchanged, push "
+            "them to a ref outside refs/heads/ and refs/tags/, e.g. refs/backups/<date>/<name>.",
+}
+# Attribution is checked for what can become history: branches and tags. An archive ref
+# (refs/backups/..., refs/rescue/...) is never a branch, so old commits can be kept there unchanged;
+# the leak rules still scan it, and a later branch push that reaches those commits is checked again.
+ATTRIBUTED_REFS = ("refs/heads/", "refs/tags/")
 
 
 class GateError(Exception):
@@ -150,6 +183,7 @@ class Scanner:
         self.prefixes = rules.prefixes
         self.findings = []  # verify hits: (kind, label, commit, where, path, line, matched)
         self.kept = {}  # keep hits are counted only; they never fill the cap or stop the scan
+        self.attribution = []  # (label, commit or None, detail); never overridable
         self.commits = set()
         self.full = False
 
@@ -420,6 +454,70 @@ def rev_list(repo, args):
     return [line for line in out.splitlines() if line]
 
 
+# ---------------------------------------------------------------- attribution
+
+def _email(value):
+    value = value.strip()
+    if "<" in value and ">" in value:
+        value = value[value.rindex("<") + 1:value.rindex(">")]
+    return value.strip().casefold()
+
+
+def allowed_identities(repo=None):
+    """Every user.email and leakgate.identity in the git config files, never from -c or env."""
+    env = {k: v for k, v in os.environ.items()
+           if k not in IDENTITY_OVERRIDES and not k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))}
+    found = set()
+    for key in ("user.email", "leakgate.identity"):
+        proc = subprocess.run(["git", "config", "--get-all", key], cwd=repo, env=env,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if proc.returncode not in (0, 1):
+            raise GateError("git config --get-all %s failed (exit %d)" % (key, proc.returncode))
+        found.update(_email(v) for v in proc.stdout.decode("utf-8", "replace").splitlines() if v.strip())
+    found.discard("")
+    if not found:
+        raise GateError("no identity configured: set `git config user.email` (or leakgate.identity) first")
+    return found
+
+
+def check_message_attribution(scanner, body, commit):
+    if CO_AUTHOR_LINE.search(body):
+        scanner.attribution.append(("co_author_trailer", commit, "commit message"))
+
+
+def check_identity(scanner, allowed, author, committer, commit):
+    for label, email in (("foreign_author", author), ("foreign_committer", committer)):
+        if _email(email) not in allowed:
+            scanner.attribution.append((label, commit, "%s e-mail" % label.split("_")[1]))
+
+
+def scan_attribution(scanner, repo, commits):
+    """Co-author lines and foreign identities in commits that are about to leave."""
+    if not commits:
+        return
+    allowed = allowed_identities(repo)
+    out = git(["log", "--no-walk=unsorted", "--stdin", "--format=%x01%H%x00%ae%x00%ce%x00%B"], cwd=repo,
+              inp=("\n".join(commits) + "\n").encode())
+    for record in out.split(b"\x01")[1:]:
+        sha, author, committer, body = record.split(b"\x00", 3)
+        sha = sha.decode("ascii", "replace")
+        check_message_attribution(scanner, body, sha)
+        check_identity(scanner, allowed, author.decode("utf-8", "replace"), committer.decode("utf-8", "replace"), sha)
+
+
+def scan_pending_commit(scanner, body):
+    """commit-msg time: the message, and the identities the commit is about to be made with."""
+    check_message_attribution(scanner, body, None)
+    try:
+        allowed = allowed_identities()
+        author = git_text(["var", "GIT_AUTHOR_IDENT"])
+        committer = git_text(["var", "GIT_COMMITTER_IDENT"])
+    except GateError as err:
+        scanner.attribution.append(("identity_unreadable", None, str(err)))
+        return
+    check_identity(scanner, allowed, author, committer, None)
+
+
 # ---------------------------------------------------------------- push range
 
 def configured_remote(repo, remote, url):
@@ -440,10 +538,11 @@ def object_exists(repo, oid):
 
 
 def push_commits(repo, remote, url, updates):
-    """Commits the push would add, plus annotated tag objects and ref names to scan."""
+    """Commits the push would add, annotated tag objects, ref names, and the commits whose
+    attribution is checked (those reached by a branch or tag update)."""
     known = configured_remote(repo, remote, url)
     exclude = ["--remotes=%s" % known] if known else []
-    commits, seen, tags, refs = [], set(), [], []
+    commits, seen, tags, refs, attributed, seen_attributed = [], set(), [], [], [], set()
     for local_ref, local_oid, remote_ref, remote_oid in updates:
         if ZERO_OID.match(local_oid):
             continue
@@ -453,11 +552,15 @@ def push_commits(repo, remote, url, updates):
         args = [local_oid, "--not", *exclude]
         if not ZERO_OID.match(remote_oid) and object_exists(repo, remote_oid):
             args.append(remote_oid)
+        checked = remote_ref.startswith(ATTRIBUTED_REFS)
         for commit in rev_list(repo, args):
             if commit not in seen:
                 seen.add(commit)
                 commits.append(commit)
-    return commits, tags, refs, known
+            if checked and commit not in seen_attributed:
+                seen_attributed.add(commit)
+                attributed.append(commit)
+    return commits, tags, refs, known, attributed
 
 
 def tag_message(repo, oid):
@@ -518,22 +621,39 @@ def verdict(scanner, mode, what, refs_desc, repo, started, quiet_ok=False):
     """Print the result; return the exit code."""
     say = lambda msg: print("leak-gate: " + msg, file=sys.stderr)
     hits = scanner.verify_hits()
+    attribution = scanner.attribution
     elapsed = time.time() - started
     if scanner.kept:
         say("note: %d kept name(s), not refused (%s)" % (sum(scanner.kept.values()),
                                                          ",".join("%s:%d" % (k, scanner.kept[k]) for k in sorted(scanner.kept))))
-    if not hits:
+    if not hits and not attribution:
         if not quiet_ok:
             say("ok: %s, %d commit(s) scanned, 0 private hits (%.2f s)" % (what, len(scanner.commits), elapsed))
         return 0
-    more = " (stopped after %d)" % MAX_FINDINGS if scanner.full else ""
-    say("REFUSED: %s would add private names: %d hit(s)%s in %d categor%s (%.2f s)" % (
-        what, len(hits), more, len({h[1] for h in hits}), "y" if len({h[1] for h in hits}) == 1 else "ies", elapsed))
-    for f in hits[:25]:
-        print(describe(f), file=sys.stderr)
-    if len(hits) > 25:
-        say("... and %d more" % (len(hits) - 25))
-    fields = [("mode", mode), ("repo", repo), ("refs", refs_desc), ("categories", category_counts(hits)), ("actor", actor())]
+    if hits:
+        more = " (stopped after %d)" % MAX_FINDINGS if scanner.full else ""
+        say("REFUSED: %s would add private names: %d hit(s)%s in %d categor%s (%.2f s)" % (
+            what, len(hits), more, len({h[1] for h in hits}), "y" if len({h[1] for h in hits}) == 1 else "ies", elapsed))
+        for f in hits[:25]:
+            print(describe(f), file=sys.stderr)
+        if len(hits) > 25:
+            say("... and %d more" % (len(hits) - 25))
+    fields = [("mode", mode), ("repo", repo), ("refs", refs_desc),
+              ("categories", category_counts(hits + [("verify", a[0]) for a in attribution])), ("actor", actor())]
+    if attribution:
+        say("REFUSED: %s carries a co-author line or an identity that is not configured: %d finding(s)" % (
+            what, len(attribution)))
+        for label, commit, detail in attribution[:25]:
+            print("  %-22s %s  %s" % (label, "commit %s" % commit[:10] if commit else "this commit", detail),
+                  file=sys.stderr)
+        if len(attribution) > 25:
+            say("... and %d more" % (len(attribution) - 25))
+        try:
+            append_log("refusals.log", fields)
+        except OSError:
+            pass
+        say(ATTRIBUTION_FIX["message" if mode in ("staged", "message") else "push"])
+        return 1
     reason = (os.environ.get("LEAK_GATE_OVERRIDE") or "").strip()
     if reason:
         if len(reason) < MIN_REASON:
@@ -581,12 +701,13 @@ def cmd_pre_push(argv):
             raise GateError("unexpected pre-push input line: %r" % raw[:120])
     rules = load_rules(rules_path())
     scanner = Scanner(rules)
-    commits, tags, refs, known = push_commits(None, remote, url, updates)
+    commits, tags, refs, known, attributed = push_commits(None, remote, url, updates)
     for ref in refs:
         scanner.scan_text(ref.encode("utf-8", "surrogateescape"), None, "ref")
     for tag in tags:
         scanner.scan_text(tag_message(None, tag), None, "tag")
     scan_commits(scanner, None, commits)
+    scan_attribution(scanner, None, attributed)
     target = known or "an unconfigured remote"
     # Log tips, not ref names: a ref name can itself be the private hit.
     refs_desc = "%d ref(s) tips=%s" % (len(refs), ",".join(u[1][:12] for u in updates if not ZERO_OID.match(u[1])))
@@ -599,7 +720,9 @@ def cmd_range(argv):
     started = time.time()
     rules = load_rules(rules_path())
     scanner = Scanner(rules)
-    scan_commits(scanner, None, rev_list(None, argv))
+    commits = rev_list(None, argv)
+    scan_commits(scanner, None, commits)
+    scan_attribution(scanner, None, commits)
     return verdict(scanner, "range", "range %s" % " ".join(argv), "%d commit(s)" % len(scanner.commits), toplevel(), started)
 
 
@@ -624,8 +747,6 @@ def cmd_message(argv):
     if len(argv) != 1:
         raise Usage("message needs <file>")
     started = time.time()
-    rules = load_rules(rules_path())
-    scanner = Scanner(rules)
     with open(argv[0], "rb") as handle:
         lines = []
         for line in handle.read().split(b"\n"):
@@ -633,7 +754,15 @@ def cmd_message(argv):
                 break
             if not line.startswith(b"#"):
                 lines.append(line)
-    scanner.scan_text(b"\n".join(lines), None, "message")
+    body = b"\n".join(lines)
+    # Attribution does not need the rule file, so it still refuses when the rules are missing.
+    early = Scanner(Rules(None, [], [], []))
+    scan_pending_commit(early, body)
+    if early.attribution:
+        return verdict(early, "message", "commit message", "message", toplevel(), started, quiet_ok=True)
+    rules = load_rules(rules_path())
+    scanner = Scanner(rules)
+    scanner.scan_text(body, None, "message")
     return verdict(scanner, "message", "commit message", "message", toplevel(), started, quiet_ok=True)
 
 

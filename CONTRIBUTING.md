@@ -122,6 +122,16 @@ skills/                   Agent ceremony definitions
    disabled here; `.woodpecker.yml` runs CI. The files under `.github/workflows/` are inactive and
    kept for tests. See the [release procedure](docs/release.md).
 
+### Commit rules
+
+- **Author and committer are you.** Commit with the identity in your git config. Do not set
+  `--author`, `-c user.email` or `GIT_AUTHOR_*`/`GIT_COMMITTER_*` to make a commit look like someone else's.
+- **No co-author lines.** A commit never carries a `Co-authored-by:` line. When an agent did the work,
+  name its harness in a `Compound-Harness:` trailer instead.
+- **The hooks check this.** `python3 -I scripts/leak-gate/leak-gate.py install` writes the commit and
+  push hooks once per clone. They refuse a co-author line or an identity that is not configured, at
+  commit and at push. Never skip them with `--no-verify`.
+
 ### Proof rules for landing
 
 These apply when a maintainer lands a change on `main`. The landing steps are in

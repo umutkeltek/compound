@@ -283,7 +283,8 @@ reasons before building what the note implies.
   (installed once in the shared git dir, so every worktree has it) and as a named `compound-land` §5 step. It
   scans only what a push adds (added lines, new binary files, paths, commit and tag messages, ref names)
   against the operator's private rule file, refuses on any `verify` hit or any path under `docs_private/`,
-  `.compound-private/` or `.claude/`, and fails closed when the rule file is missing. The only override is
+  `.compound-private/` or `.claude/`, and fails closed when the rule file is missing. It also refuses a
+  co-author line or an identity that is not configured, with or without the rule file (§Commit & safety). The only override is
   `LEAK_GATE_OVERRIDE="<reason>"`, recorded in the Compound state folder. `git push --no-verify` skips every
   hook: never use it here.
 
@@ -291,6 +292,13 @@ reasons before building what the note implies.
 - Scoped, single-concern commits (source/contracts; tests/fixtures; docs). Never `git add -A` / "commit all";
   stage explicitly and check `git status --short` for strays first. The docs/contract/instruction updates a
   change implies land in the SAME commit as the code (same-change doctrine) — a doc that lands "later" rots.
+- **A commit is by the configured identity, with no co-authors.** Commit as the identity in git config;
+  never pass `--author` or `-c user.email`, never set `GIT_AUTHOR_*`/`GIT_COMMITTER_*`, and never write a
+  `Co-authored-by:` line. Credit an agent only in the `Compound-Harness:` trailer. The leak gate refuses
+  either at commit (`commit-msg`) and at push, names the commit, and `LEAK_GATE_OVERRIDE` does not cover
+  it: rewrite the commit before it leaves. A second address of the maintainer goes in untracked local
+  config (`git config --add leakgate.identity <address>`), never in a tracked file. Old commits are
+  archived unchanged under `refs/backups/<date>/<name>`: push attribution is checked for branches and tags.
 - **Push is pre-authorized** (standing operator grant): a normal `git push` of committed work to the
   existing remote — public included — needs no per-push confirmation. Two floors remain: a clean `redact` scan as a
   separate required gate before any public push; force-push, history rewrite, or a new remote still confirms.
