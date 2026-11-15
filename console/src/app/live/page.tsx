@@ -5,7 +5,7 @@ import { normalizeExecutorProjection } from "@/components/agents/executor-normal
 import { CoordinationBoard, type ExecDetail } from "@/components/coordination/CoordinationBoard";
 import { LiveHarnessCanvas, type LiveLane } from "@/components/live/LiveHarnessCanvas";
 import { LiveOperationsTimeline } from "@/components/live/LiveOperationsTimeline";
-import { PulseIcon, QuestionHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending, SectionHeader, StatusChip } from "@/components/kit";
+import { PageHeader, PulseIcon, ReadChip, ReadFailedBanner, ReadNotice, readsPending, SectionHeader, StatusChip } from "@/components/kit";
 import { PendingRefresh } from "@/components/PendingRefresh";
 import { readAttention } from "@/lib/attention";
 import { arr, type Json } from "@/lib/compound";
@@ -137,9 +137,9 @@ export default async function LivePage() {
   return (
     <div className="console-stage flex flex-col gap-6">
       <PendingRefresh pending={pending} stamp={Date.now()} />
-      <QuestionHeader
+      <PageHeader
         name="Live"
-        question="Who is working on what right now?"
+        title="Who is working on what right now?"
         answer={answer}
         right={
           <>

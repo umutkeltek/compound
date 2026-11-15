@@ -1,7 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { arr, COMPOUND_HOME, HEAVY_PROJECTION_TIMEOUT_MS, privateFallbacksEnabled, runProjection, type Json, type ProjectionRead, str } from "@/lib/compound";
+import { arr, COMPOUND_HOME, HEAVY_PROJECTION_TIMEOUT_MS, privateFallbacksEnabled, readProjection, runProjection, type Json, type ProjectionRead, str } from "@/lib/compound";
 
 const MEMORY_INBOX = path.resolve(COMPOUND_HOME, "inbox", "memory-candidates");
 const KNOWLEDGE_EXTRACTION_INBOX = path.resolve(COMPOUND_HOME, "inbox", "knowledge-extractions");
@@ -231,10 +231,17 @@ export async function loadProposedMemorySplit(): Promise<{
  * here (it also admits the entity:decision: prefix branch). On the real home the
  * prefilter returns exactly the decision-typed parked rows, so 18 in ⇒ 18 out.
  */
+const STANDING_CANDIDATES_ARGS = ["memory", "candidates", "--json", "--state", "parked", "--kind", "decision"];
+
 export async function loadStandingLawCandidatesRead(): Promise<MemoryCandidateRead> {
-  const read = await runProjection([
-    "memory", "candidates", "--json", "--state", "parked", "--kind", "decision",
-  ], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS });
+  return standingCandidates(await runProjection(STANDING_CANDIDATES_ARGS, { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }));
+}
+
+export async function readStandingLawCandidates() {
+  return standingCandidates(await readProjection(STANDING_CANDIDATES_ARGS, { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }));
+}
+
+function standingCandidates<T extends { value: Json | null }>(read: T) {
   const rows = read.value
     ? arr(read.value.items)
         .map((item) => candidateWithId(asObject(item)))

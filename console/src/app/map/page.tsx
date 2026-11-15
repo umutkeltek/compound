@@ -74,8 +74,7 @@ export default async function CapabilitiesPage({
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        breadcrumb="know / capabilities"
-        title="Capabilities"
+        name="Map"
         right={<FreshnessChip generatedAt={initial.generatedAt} source="compound capability graph --json" />}
       />
 

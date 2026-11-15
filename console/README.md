@@ -103,10 +103,10 @@ Optional local-only gates:
 
 ## Stable destinations + contextual append
 
-The left rail is the stable seven-surface map defined by
-[`DESIGN.md` §10](./DESIGN.md#10-experience-architecture--simple-first-depth-on-demand):
-Today, Live, Work, Decide, Knowledge, System, and Outcomes. Ask Compound is a
-global read-only overlay.
+The navigation registry in `src/lib/experience.ts` owns the sidebar, breadcrumb
+and command palette. Essentials contains Today, Work, Decide and Live. Growth
+contains Portfolio, Growth audit, Feedback loops and Ads. Knowledge and System
+hold the less frequent destinations, including Settings.
 
 New projections append inside their context owner. They do not add a top-level
 navigation row merely because a command, object, or read model exists. When a
@@ -117,3 +117,22 @@ freshness, and a link back to the canonical surface.
 
 Work cards show `owner` / `claimed_by` from work envelopes, so the active lane is
 visible even when work is merely offered or unclaimed.
+
+
+## Frontend verification
+
+Run the relevant existing checks from `console/`:
+
+```bash
+bun scripts/decide-model-brief-smoke.mjs
+bun scripts/decide-decision-feedback-smoke.mjs
+bun scripts/plain-pages-cases.mjs
+bun scripts/read-queue-cases.mjs
+bun scripts/mutation-readiness-consumers-smoke.mjs
+bun scripts/client-bundle-guard-smoke.mjs
+```
+
+The read-queue checks exercise the real cold Settings, Feedback loops and
+Standing law entry points while collectors are pending. Browser validation must
+also exercise search, area filtering, owner navigation and section disclosure.
+A green UI check does not authorize applying a decision to live data.

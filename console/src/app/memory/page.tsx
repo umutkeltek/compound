@@ -82,8 +82,7 @@ export default async function Memory({
   return (
     <div className="flex flex-col gap-8">
       <PageHeader
-        breadcrumb="know / memory"
-        title="Memory"
+        name="Memory"
         right={
           <>
             {models.length ? (

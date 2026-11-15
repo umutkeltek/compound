@@ -71,6 +71,8 @@ export function domainForArea(area: string): DecideDomain {
 export type DecideMember = {
   id: string;
   label: string;
+  /** Console route for this member when its owner is a navigable surface. */
+  href?: string;
   /** Clean per-member argv (without leading "compound"); null when run-scoped. */
   argv: string[] | null;
   /** Per-member action id for the generic pathway; "" when none. */
@@ -546,12 +548,16 @@ function allowedEnumerableMembers(group: Json, itemByID: Map<string, Json>): Dec
 
 function readonlyMembers(group: Json, itemByID: Map<string, Json>): DecideMember[] {
   const area = areaOf(group);
+  const workbench = str(group.source) === "workbench";
   return arr(group.item_ids)
     .map(String)
     .filter(Boolean)
     .map((id) => {
       const m = memberOf(area, id, itemByID);
-      return { ...m, argv: null }; // read-only: strip any argv so the client can't fake exclusion
+      // The workbench queue's members are WorkEnvelopes with their own page.
+      // Every other owner has no console route for one member; keep it text.
+      const href = workbench && /^work_[A-Za-z0-9_]+$/.test(id) ? `/work/${encodeURIComponent(id)}` : undefined;
+      return { ...m, href, argv: null }; // read-only: strip any argv so the client can't fake exclusion
     });
 }
 
@@ -726,6 +732,12 @@ function fallbackCommand(group: Json, sample: Json): string {
     if (command) return command;
     const argv = cleanArgv(action.argv);
     if (argv.length) return `compound ${argv.join(" ")}`;
+  }
+  // Workbench groups carry WorkEnvelope ids, not review items. A reviews
+  // command for them names an area that does not exist.
+  if (str(group.source) === "workbench") {
+    const first = arr(group.item_ids).map(String).find(Boolean);
+    return first ? `compound work show ${first} --json` : "compound workbench --json";
   }
   return reviewCommand(sample);
 }
@@ -1185,6 +1197,18 @@ export function buildDecideGroups(
       ? strictAllowedAct(group, sample, sampleId, exactAuthority, itemByID)
       : null;
 
+    // A revision-bound owner workflow can supply a form when no policy bundle
+    // was published. A partial/denied bundle is evidence of a gate, never absence.
+    const resolvedAct = resolveAct(group, sample, sampleId, attnAction, itemByID);
+    const represented = [...new Set(arr(group.item_ids).map(String).filter(Boolean))];
+    const projectedActions = [attnAction, group.action, group.safe_batch_action,
+      ...arr(sample.actions), ...represented.flatMap((id) => arr(itemByID.get(id)?.actions))];
+    const hasAuthorityFields = projectedActions.some((action) => action && typeof action === "object" &&
+      ["action_intent", "policy_decision", "policy_authority"].some((field) => field in action));
+    const ownerDerivedAct = !hasAuthorityFields && represented.length === 1 && num(group.count) === 1 &&
+      represented[0] === sampleId && resolvedAct.mode === "bespoke" &&
+      spec?.revisionFor && spec.idPattern.test(sampleId) && resolvedAct.expectedRevision ? resolvedAct : null;
+
     // External-repo intake is a per-repository reviewed-artifact workflow.
     // An Attention group can contain several repositories, but the bespoke
     // registry action resolves only one member's YAML. Keep the aggregate
@@ -1203,24 +1227,36 @@ export function buildDecideGroups(
           reason: "Each repository requires its own reviewed owner artifact before it can be decided.",
         }
       : authorityBound
-        ? projectionStatus !== "live"
-          ? {
-              mode: "copy",
-              command: fallbackCommand(group, sample),
-              reason: "Current owner authority evidence is not live.",
-            }
-          : exactAuthority && (!authority || !authority.current || !authority.allowed)
+        ? exactAuthority
+          ? projectionStatus !== "live"
             ? {
                 mode: "copy",
                 command: fallbackCommand(group, sample),
-                reason: authority?.wording || "No complete current owner authority bundle is available.",
+                reason: "Current owner authority evidence is not live.",
               }
-            : strictAct ?? {
+            : !authority || !authority.current || !authority.allowed
+              ? {
+                  mode: "copy",
+                  command: fallbackCommand(group, sample),
+                  reason: authority?.wording || "No complete current owner authority bundle is available.",
+                }
+              : (strictAct?.mode !== "copy" ? strictAct : ownerDerivedAct) ?? strictAct ?? {
+                  mode: "copy",
+                  command: fallbackCommand(group, sample),
+                  reason: "No complete current owner authority bundle is available.",
+                }
+          : projectionStatus !== "live"
+            ? {
+                mode: "copy",
+                command: fallbackCommand(group, sample),
+                reason: "Current owner authority evidence is not live.",
+              }
+            : (strictAct?.mode !== "copy" ? strictAct : ownerDerivedAct) ?? strictAct ?? {
                 mode: "copy",
                 command: fallbackCommand(group, sample),
                 reason: "No complete current owner authority bundle is available.",
               }
-        : resolveAct(group, sample, sampleId, attnAction, itemByID);
+        : resolvedAct;
     const createdAt = groupCreatedAt(group, itemByID);
     const count = num(group.count) || arr(group.item_ids).length || 1;
     const representedMemberIDs = [...new Set(arr(group.item_ids).map(String).filter(Boolean))];
@@ -1302,11 +1338,19 @@ export function buildDecideGroups(
       act.members.length > 0 &&
       act.members.every((member) => member.authority?.current && member.authority.allowed),
     );
-    const authorityReady = Boolean(
+    const bespokeReady = Boolean(
       authorityBound &&
       projectionStatus === "live" &&
+      act.mode === "bespoke" &&
+      spec?.revisionFor &&
+      act.expectedRevision,
+    );
+    const authorityReady = Boolean(
+      authorityBound &&
       !copyOnly &&
-      ((authority?.current && authority.allowed) || memberAuthorityReady),
+      (bespokeReady ||
+        (projectionStatus === "live" &&
+          ((authority?.current && authority.allowed) || memberAuthorityReady))),
     );
     const authorityUnavailableReason = !authorityBound
       ? ""

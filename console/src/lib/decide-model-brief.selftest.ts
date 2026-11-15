@@ -1382,6 +1382,33 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
     );
   }
 
+  // The standard browser can explain a live owner workflow without treating
+  // absent, partial, stale or aggregate evidence as an execution grant.
+  {
+    const item: Json = { id: "clp_live_fixture", area: "capability-lifecycle-proposals", decision_card: {
+      claim: "Review a synthetic capability improvement", meta: { proposal_hash: "b".repeat(64) },
+      choices: [{ id: "defer", label: "Defer", effect: "Revisit later" }],
+    }};
+    const group = baseGroup({ count: 1, item_ids: [item.id], sample: item });
+    const build = (status: "live" | "stale" | "unreachable", candidate = item, ids = [item.id]) =>
+      buildDecideGroups([{ ...group, item_ids: ids, count: ids.length, sample: candidate }],
+        new Map([[String(item.id), candidate]]), null, () => candidate, status)[0];
+    const live = build("live");
+    const stale = build("stale");
+    const failed = build("unreachable");
+    const partial = build("live", { ...item, actions: [{ policy_authority: { allowed: false } }] });
+    const aggregate = build("live", item, [item.id, "clp_second_fixture"]);
+    const mismatched = buildDecideGroups([{ ...group, count: 2 }], new Map([[String(item.id), item]]), null, () => item, "live")[0];
+    push("revision-bound-owner-fallback-is-live-singleton-only",
+      live.act.mode === "bespoke" && live.face.state === "ready" &&
+      [stale, failed, partial, aggregate, mismatched].every((row) => row.act.mode === "copy" && !row.face.primaryAction),
+      [live, stale, failed, partial, aggregate].map((row) => row.act.mode).join(","));
+    const work = { key: "workbench:blocked", source: "workbench", area: "workbench-blocked-on-you",
+      item_ids: ["work_example_20261116"], count: 1, sample: {} };
+    const row = buildDecideGroups([work], new Map(), null, () => ({}), "live")[0];
+    push("blocked-work-links-support-underscored-ids", row.members[0]?.href === "/work/work_example_20261116", String(row.members[0]?.href));
+  }
+
   const failed = checks.filter((c) => !c.ok);
   return {
     ok: failed.length === 0,

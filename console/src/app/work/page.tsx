@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-import { hasCopy, QuestionHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending, aboutDuration } from "@/components/kit";
+import { hasCopy, PageHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending, aboutDuration } from "@/components/kit";
 import { CopyActionButton } from "@/components/CopyCmd";
 import { PendingRefresh } from "@/components/PendingRefresh";
 import { WorkLenses } from "@/components/work/WorkLenses";
@@ -122,9 +122,9 @@ export default async function WorkPage({
   return (
     <div className="console-stage flex flex-col gap-6">
       <PendingRefresh pending={pending} stamp={Date.now()} />
-      <QuestionHeader
+      <PageHeader
         name="Work"
-        question="What is being worked on, and what is stuck?"
+        title="What is being worked on, and what is stuck?"
         answer={answer}
         right={
           <>

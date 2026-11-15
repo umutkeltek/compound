@@ -1,4 +1,4 @@
-import { ReadChip, ReadNotice, type ReadView } from "@/components/kit";
+import { PageHeader, ReadChip, ReadNotice, type ReadView } from "@/components/kit";
 import type { WaitingOnYou } from "@/lib/attention";
 import { humanAge } from "@/lib/briefing";
 import { str } from "@/lib/compound";
@@ -47,27 +47,23 @@ export function BriefingHeader({
 }) {
   const age = ageWords(oldest);
   return (
-    <header className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-faint">
-        <span>
-          {greeting(now)} · {dateLabel(now)}
-        </span>
-        <ReadChip read={read} />
-      </div>
-      <h1 className="text-3xl font-semibold tracking-tight text-strong">What needs you today?</h1>
-      {!waiting ? (
-        <ReadNotice read={read} label="what waits for you" />
-      ) : waiting.groups <= 0 ? (
-        <p className="max-w-read text-lg leading-snug text-ink">
-          Nothing needs you today. No decision is waiting for you.
-        </p>
-      ) : (
-        <p className="max-w-read text-lg leading-snug text-ink">
-          <strong className="font-semibold text-seam">{unit(waiting.groups, "decision")}</strong>{" "}
-          {waiting.groups === 1 ? "waits" : "wait"} for you, with {unit(waiting.items, "item")} in all.
-          {age ? <> The oldest has waited {age}.</> : null} Start with the first one below.
-        </p>
-      )}
-    </header>
+    <PageHeader
+      meta={`${greeting(now)} · ${dateLabel(now)}`}
+      title="What needs you today?"
+      right={<ReadChip read={read} />}
+      answer={
+        !waiting ? (
+          <ReadNotice read={read} label="what waits for you" />
+        ) : waiting.groups <= 0 ? (
+          <>Nothing needs you today. No decision is waiting for you.</>
+        ) : (
+          <>
+            <strong className="font-semibold text-seam">{unit(waiting.groups, "decision")}</strong>{" "}
+            {waiting.groups === 1 ? "waits" : "wait"} for you, with {unit(waiting.items, "item")} in all.
+            {age ? <> The oldest has waited {age}.</> : null} Start with the first one below.
+          </>
+        )
+      }
+    />
   );
 }

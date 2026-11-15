@@ -10,14 +10,12 @@ type Item =
 
 const ITEMS: Item[] = [
   ...NAV_GROUPS.flatMap((group) => group.items.map((item): Item => ({ kind: "nav", label: item.label, href: item.href }))),
-  { kind: "nav", label: "Settings", href: "/settings" },
   { kind: "cmd", label: "Growth model (terminal)", cmd: "compound product growth" },
   { kind: "cmd", label: "Workbench (terminal)", cmd: "compound workbench" },
   { kind: "cmd", label: "Review queue (terminal)", cmd: "compound reviews" },
   { kind: "cmd", label: "External-repo reviews", cmd: "compound reviews --area external-repo-intake" },
   { kind: "cmd", label: "List work", cmd: "compound work list" },
   { kind: "cmd", label: "Architecture doctor", cmd: "compound architecture doctor --strict" },
-  { kind: "cmd", label: "Rebuild CLI onto PATH", cmd: "go build -C ~/Projects/systems/compound -o ~/.local/bin/compound ./cmd/compound" },
 ];
 
 export function CommandK() {

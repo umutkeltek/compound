@@ -1,10 +1,11 @@
 import Link from "next/link";
+import { PendingRefresh } from "@/components/PendingRefresh";
 
 import { StandingLawBrowser } from "@/components/standing-law/StandingLawBrowser";
 import { StandingLawCandidateCard } from "@/components/standing-law/StandingLawCandidateCard";
-import { EmptyState, FreshnessChip, GavelIcon, PageHeader, SectionHeader } from "@/components/kit";
-import { runJson, type Json } from "@/lib/compound";
-import { loadStandingLawCandidates } from "@/lib/memory-data";
+import { EmptyState, FreshnessChip, GavelIcon, PageHeader, SectionHeader, ReadChip, ReadNotice, readsPending } from "@/components/kit";
+import { readProjection, type Json } from "@/lib/compound";
+import { readStandingLawCandidates } from "@/lib/memory-data";
 import { buildStandingLaw, type StandingLawConflict } from "@/lib/standing-law";
 
 export const dynamic = "force-dynamic";
@@ -22,8 +23,8 @@ export const dynamic = "force-dynamic";
  */
 
 async function loadStandingLaw() {
-  const data = (await runJson(["decisions", "standing-law", "--json"])) as Json | null;
-  return buildStandingLaw(data);
+  const read = await readProjection(["decisions", "standing-law", "--json"]);
+  return { model: buildStandingLaw(read.value as Json | null), read };
 }
 
 function ConflictStrip({ conflicts }: { conflicts: StandingLawConflict[] }) {
@@ -71,29 +72,32 @@ function ConflictStrip({ conflicts }: { conflicts: StandingLawConflict[] }) {
 }
 
 export default async function StandingLaw() {
-  const [model, lawCandidates] = await Promise.all([loadStandingLaw(), loadStandingLawCandidates()]);
+  const [{ model, read }, { candidates: lawCandidates, read: candidateRead }] = await Promise.all([loadStandingLaw(), readStandingLawCandidates()]);
   const waiting = lawCandidates.length;
+  const checking = read.value === null;
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex flex-col gap-6">
+      <PendingRefresh pending={readsPending(read, candidateRead)} stamp={Date.now()} />
       <PageHeader
-        breadcrumb="know / standing law"
-        title="Standing law"
+        name="Standing law"
+        lead="Your accepted rules and permissions. Search here before making the same decision again."
         right={
           <>
             <span className="inline-flex items-center gap-1.5 rounded-pill border border-hair bg-soft-2 px-2.5 py-0.5 text-xs font-semibold text-muted">
-              <span className="mono tabular-nums">{model.counts.records}</span> in force
+              {checking ? (
+                "checking…"
+              ) : (
+                <>
+                  <span className="mono tabular-nums">{model.counts.records}</span> in force
+                </>
+              )}
             </span>
-            <FreshnessChip source="compound decisions standing-law --json" />
+            <ReadChip read={read} />
           </>
         }
       />
-      <p className="text-sm text-muted" style={{ maxWidth: "var(--read-max)" }}>
-        Every accepted ruling, grant, and freeze — the same standing law orient serves agents. Search it
-        before you re-decide. Superseded records are kept for provenance but shown struck-through under their
-        successor, never as live law.
-      </p>
-
+      {!candidateRead.value ? <ReadNotice read={candidateRead} label="proposed rules" /> : null}
       {waiting > 0 ? (
         <Link
           href="/memory"
@@ -107,22 +111,28 @@ export default async function StandingLaw() {
         </Link>
       ) : null}
 
-      <ConflictStrip conflicts={model.conflicts} />
+      {checking && model.records.length === 0 ? (
+        <ReadNotice read={read} label="standing rules" />
+      ) : (
+        <>
+          <ConflictStrip conflicts={model.conflicts} />
 
-      <section className="flex flex-col gap-3">
-        <SectionHeader
-          tone="seam"
-          icon={<GavelIcon />}
-          label="In force"
-          sub="accepted rulings · grants · freezes — newest first"
-          right={
-            <span className="mono text-2xs text-faint">
-              {model.counts.rulings}R · {model.counts.grants}G · {model.counts.freezes}F
-            </span>
-          }
-        />
-        <StandingLawBrowser records={model.records} />
-      </section>
+          <section className="flex flex-col gap-3">
+            <SectionHeader
+              tone="seam"
+              icon={<GavelIcon />}
+              label="In force"
+              sub="accepted rulings · grants · freezes — newest first"
+              right={
+                <span className="mono text-2xs text-faint">
+                  {model.counts.rulings}R · {model.counts.grants}G · {model.counts.freezes}F
+                </span>
+              }
+            />
+            <StandingLawBrowser records={model.records} />
+          </section>
+        </>
+      )}
 
       <section className="flex flex-col gap-3">
         <SectionHeader

@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 import { DecideQueue } from "@/components/decide/DecideQueue";
-import { CheckIcon, ClockIcon, hasCopy, plainAge, QuestionHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending } from "@/components/kit";
+import { CheckIcon, ClockIcon, hasCopy, PageHeader, plainAge, ReadChip, ReadFailedBanner, ReadNotice, readsPending } from "@/components/kit";
 import { PendingRefresh } from "@/components/PendingRefresh";
 import { attentionNeedsYouGroups, readAttention, type AttentionGroup } from "@/lib/attention";
 import { arr, HEAVY_PROJECTION_TIMEOUT_MS, num, readProjection, str, type Json, type LiveRead, type ProjectionStatus } from "@/lib/compound";
@@ -251,32 +251,16 @@ export default async function Decide({
   const pending = readsPending(attentionRead, reviewsRead, scoped?.read ?? null);
   const panelDetailOpen = Boolean(decideGroups.find((group) => group.key === requestedKey)?.panel);
 
-  const answer = !waiting ? (
-    <ReadNotice read={attentionRead} label="what waits for you" />
-  ) : waiting.groups <= 0 ? (
-    <p>Nothing is waiting for your decision.</p>
-  ) : (
-    <p>
-      <strong className="font-semibold text-seam">{unit(waiting.groups, TERMS.decision.name)}</strong>{" "}
-      {waiting.groups === 1 ? "waits" : "wait"} for you, with {unit(waiting.items, TERMS.item.name)} in all.{" "}
-      {counted.readyNow > 0 ? (
-        <>
-          You can decide <strong className="font-semibold text-good">{counted.readyNow.toLocaleString("en-US")}</strong> of them right now; they are listed first.
-        </>
-      ) : (
-        <>None can be decided with a button right now.</>
-      )}{" "}
-      {standingSentence(counted, attentionRead.ageMs)}
-    </p>
-  );
+  const answer = !waiting ? <ReadNotice read={attentionRead} label="what waits for you" />
+    : waiting.groups <= 0 ? <p>Nothing is waiting for your decision.</p>
+    : <p><strong className="font-semibold text-seam">{unit(waiting.groups, TERMS.decision.name)}</strong> waiting · {unit(waiting.items, TERMS.item.name)} to review</p>;
 
   return (
     <div className={`flex flex-col ${panelDetailOpen ? "gap-3" : "gap-6"}`}>
       <PendingRefresh pending={pending} stamp={Date.now()} />
       {panelDetailOpen ? null : (
-        <QuestionHeader
+        <PageHeader
           name="Decide"
-          question="What is waiting for your decision?"
           answer={answer}
           right={<ReadChip read={attentionRead} />}
         />
@@ -366,6 +350,7 @@ export default async function Decide({
           ) : null}
         </div>
       </details>
+      <details className="text-xs text-muted"><summary className="cursor-pointer">Queue status & browser access</summary><p className="mt-2 max-w-read">{standingSentence(counted, attentionRead.ageMs)} This browser is read-only. Use the owner links and commands to continue with Compound.</p></details>
     </div>
   );
 }

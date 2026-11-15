@@ -38,8 +38,7 @@ export default async function CoordinationPage({ searchParams }: { searchParams:
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        breadcrumb="operate / coordination"
-        title="Coordination"
+        name="Coordination"
         right={<FreshnessChip generatedAt={coordination.view.generatedAt || traffic.generatedAt} source="compound coordination / stream" />}
       />
       <p className="text-sm text-muted" style={{ maxWidth: "var(--read-max)" }}>

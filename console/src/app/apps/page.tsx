@@ -42,7 +42,7 @@ export default async function PortfolioPage() {
   if (!model) {
     return (
       <div className="flex flex-col gap-6">
-        <PageHeader title="Portfolio" />
+        <PageHeader name="Portfolio" />
         <DegradedGrowth status={growth.status} error={growth.error} />
       </div>
     );
@@ -77,11 +77,11 @@ export default async function PortfolioPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        breadcrumb="growth / portfolio"
-        title="Portfolio"
+        name="Portfolio"
         stats={
           <>
-            <HeaderStat value={withData.length} label="apps with data" />
+            <HeaderStat value={model.apps.length} label="registered apps" />
+            <HeaderStat value={withData.length} label="with data" />
             <HeaderStat value={formatKpi(totals.proceeds_usd)} label={`proceeds, last ${model.windowDays} days`} />
             <HeaderStat value={formatKpi(totals.web_clicks)} label="web search clicks" />
             <HeaderStat value={formatKpi(totals.ad_spend_usd)} label="ad spend" />

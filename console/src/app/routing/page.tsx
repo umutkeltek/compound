@@ -77,21 +77,17 @@ export default async function RoutingPage() {
   return (
     <div className="flex flex-col gap-8">
       <PageHeader
-        breadcrumb="control / routing & cost"
-        title="Routing & cost"
+        name="Routing"
+        lead="Which model handles the work, what it costs, and where a change is needed."
         right={
           <>
-            <FreshnessChip generatedAt={attentionRead.generatedAt ?? str(attention?.generated_at)} source="compound attention --json" />
+            <span className="flex items-center gap-1 text-xs text-muted">Decisions <FreshnessChip generatedAt={attentionRead.generatedAt ?? str(attention?.generated_at)} source="compound attention --json" /></span>
             {lanes?.generatedAt ? (
-              <FreshnessChip generatedAt={lanes.generatedAt} source="compound route model-capabilities --json" />
+              <span className="flex items-center gap-1 text-xs text-muted">Models <FreshnessChip generatedAt={lanes.generatedAt} source="compound route model-capabilities --json" /></span>
             ) : null}
           </>
         }
       />
-      <p className="max-w-prose text-sm text-muted">
-        Is routing sending the right mind at the right cost — and should a lane change?
-      </p>
-
       <PromotionBand
         needsYou={promotion.needsYou}
         holdRecord={promotion.watching}

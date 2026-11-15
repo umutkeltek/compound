@@ -1,7 +1,7 @@
+import Link from "next/link";
 import { arr, num, str, type Json, type ProjectionRead } from "@/lib/compound";
 
 import { FeedDegraded } from "@/components/kit/FeedDegraded";
-import { parseHarnessList } from "./data";
 import { PlugIcon } from "@/components/kit";
 
 import { Card, CountChip, DoctrineNote, KV, SettingsSection } from "./primitives";
@@ -13,15 +13,12 @@ import { Card, CountChip, DoctrineNote, KV, SettingsSection } from "./primitives
  * just carries the fixture.
  */
 export function HarnessesHooks({
-  harnessText,
   hooks,
   generatedAt,
 }: {
-  harnessText: string;
   hooks: ProjectionRead;
   generatedAt?: string;
 }) {
-  const harnesses = parseHarnessList(harnessText);
   const value = hooks.status === "unreachable" ? null : hooks.value;
   const known = typeof value?.installed === "boolean";
   const hookCount = num(value?.hook_count);
@@ -39,44 +36,7 @@ export function HarnessesHooks({
       source="compound contract hooks-authority"
       generatedAt={hooks.status === "live" && known ? generatedAt : undefined}
     >
-      <Card title="Harness registry" badge={<CountChip n={harnesses.length} label="harnesses" tone="muted" />}>
-        {harnesses.length ? (
-          <div className="flex flex-col gap-3">
-            {harnesses.map((harness) => (
-              <div key={harness.name} className="border-b border-hair pb-3 last:border-b-0 last:pb-0">
-                <div className="flex flex-wrap items-baseline justify-between gap-2">
-                  <span className="mono text-sm font-semibold text-ink">{harness.name}</span>
-                  {harness.fallback ? (
-                    <span className="mono rounded-pill border border-hair bg-soft px-2 py-0.5 text-2xs text-faint">
-                      fallback
-                    </span>
-                  ) : null}
-                </div>
-                {harness.capabilities ? (
-                  <p className="mt-0.5 text-2xs text-muted">{harness.capabilities}</p>
-                ) : null}
-                {harness.hooks ? (
-                  <p className="mono mt-1 text-2xs leading-relaxed text-faint">{harness.hooks}</p>
-                ) : null}
-                {harness.limitations.length ? (
-                  <ul className="mt-1 flex flex-col gap-0.5">
-                    {harness.limitations.map((limitation, index) => (
-                      <li key={index} className="text-2xs text-muted">
-                        · {limitation}
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-              </div>
-            ))}
-          </div>
-        ) : (
-          <pre className="mono overflow-x-auto rounded-md border border-hair bg-soft p-3 text-2xs text-muted">
-            {harnessText || "compound harness list produced no output"}
-          </pre>
-        )}
-      </Card>
-
+      <Link href="/executors" className="text-sm font-semibold text-work hover:underline">Open connected agents and their sessions →</Link>
       <Card title="Installed-hooks lock" badge={known ? <CountChip n={hookCount} label={hooks.status === "stale" ? "last-known hooks" : "hooks"} tone="muted" /> : undefined}>
         {!known ? <FeedDegraded label="Hook authority" source="compound contract hooks-authority" lastGoodAt={hooks.lastGoodAt} /> : null}
         {hooks.status === "stale" ? <p className="mb-3 text-sm text-seam">Last-known hook configuration. Current installation is unconfirmed.</p> : null}

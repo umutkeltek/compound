@@ -18,7 +18,6 @@ export * from "./icons";
 export * from "./IdRef";
 export * from "./MetaCount";
 export * from "./PageHeader";
-export * from "./QuestionHeader";
 export * from "./ReadState";
 export * from "./SectionHeader";
 export * from "./SegmentedControl";

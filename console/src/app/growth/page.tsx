@@ -64,7 +64,7 @@ export default async function GrowthPage({ searchParams }: { searchParams: Promi
   if (!model) {
     return (
       <div className="flex flex-col gap-6">
-        <PageHeader title="Growth" />
+        <PageHeader name="Growth audit" />
         <DegradedGrowth status={growth.status} error={growth.error} />
       </div>
     );
@@ -119,13 +119,13 @@ export default async function GrowthPage({ searchParams }: { searchParams: Promi
   return (
     <div className="flex flex-col gap-8">
       <PageHeader
-        breadcrumb="growth / audit"
-        title="Growth"
+        name="Growth audit"
         stats={
           <>
             <HeaderStat value={model.groups.length} label="groups" />
             <HeaderStat value={model.areas.length} label="areas" />
-            <HeaderStat value={apps.length} label={noData.length ? `apps with data · ${noData.length} without` : "apps"} />
+            <HeaderStat value={apps.length + noData.length} label="registered apps" />
+            <HeaderStat value={apps.length} label="with data" />
           </>
         }
         right={<FreshnessChip generatedAt={model.generatedAt} source="compound product growth --json" />}

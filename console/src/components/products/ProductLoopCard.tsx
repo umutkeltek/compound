@@ -1,15 +1,16 @@
 import Link from "next/link";
 
+import { appSlug, humanizeProductId } from "@/lib/app-identity";
 import { CopyCmd } from "@/components/CopyCmd";
 import { IdRef, StateBadge } from "@/components/kit";
 import { ago } from "@/lib/time";
 import {
   formatMetricValue,
   groupSignalsByLens,
+  latestProductSignals,
   metricLabel,
   metricSurface,
   nextMove,
-  productDisplayName,
   type ProductLoop,
   type ProductSignal,
 } from "@/lib/products";
@@ -52,40 +53,6 @@ function SignalFreshness({ stale, latestSignalAt }: { stale: boolean; latestSign
   );
 }
 
-/** The hypothesis chain: done → now → next (the cockpit motif). */
-function StepChain({ loop }: { loop: ProductLoop }) {
-  const move = nextMove(loop);
-  const done = loop.signalCount > 0 ? `${loop.signalCount} signals` : "connected";
-  const now =
-    loop.hypothesisCount > 0
-      ? `${loop.hypothesisCount} hypothes${loop.hypothesisCount === 1 ? "is" : "es"}`
-      : loop.signalCount > 0
-        ? "forming hypothesis"
-        : "no signal yet";
-  const steps: { key: string; tone: string; value: string }[] = [
-    { key: "done", tone: "border-good-line bg-good-soft text-good", value: done },
-    { key: "now", tone: "border-work-line bg-work-soft text-work", value: now },
-    { key: "next", tone: "border-hair bg-soft-2 text-muted", value: move.text },
-  ];
-  return (
-    <div className="flex flex-wrap items-stretch gap-1.5">
-      {steps.map((step, i) => (
-        <div key={step.key} className="flex items-center gap-1.5">
-          <div className={`rounded-md border px-2.5 py-1.5 ${step.tone}`}>
-            <div className="text-2xs font-bold uppercase tracking-wide opacity-70">{step.key}</div>
-            <div className="mt-0.5 text-xs font-medium leading-snug">{step.value}</div>
-          </div>
-          {i < steps.length - 1 ? (
-            <span className="text-faint" aria-hidden>
-              →
-            </span>
-          ) : null}
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function SurfaceChip({ label }: { label: string }) {
   return (
     <span className="inline-flex items-center rounded-pill border border-hair bg-soft px-2 py-0.5 text-2xs font-semibold text-muted">
@@ -99,7 +66,6 @@ function MetricRow({ s }: { s: ProductSignal }) {
   const before = formatMetricValue(s.metric, s.before);
   const after = formatMetricValue(s.metric, s.after);
   const changed = s.before != null && s.after != null && s.before !== s.after;
-  const up = changed && (s.after as number) > (s.before as number);
   return (
     <div className="flex items-center justify-between gap-3 py-1">
       <div className="flex min-w-0 items-center gap-2">
@@ -110,7 +76,7 @@ function MetricRow({ s }: { s: ProductSignal }) {
         {changed ? (
           <>
             <span className="text-faint">{before}</span>
-            <span className={up ? "text-good" : "text-crit"}>→ {after}</span>
+            <span className="text-muted">→ {after}</span>
           </>
         ) : (
           <span className="font-medium text-ink" title="before == after (snapshot)">
@@ -135,9 +101,9 @@ export function ProductLoopCard({ loop }: { loop: ProductLoop }) {
         blockedOnYou ? "admission-seam" : ""
       }`}
     >
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="text-md font-semibold text-ink">{productDisplayName(loop.productId)}</h2>
+          <h2 className="text-md font-semibold text-ink"><Link href={`/apps/${appSlug(loop.productId)}`} className="hover:underline">{loop.name || humanizeProductId(loop.productId)}</Link></h2>
           <p className="mt-0.5 text-2xs text-faint">
             {empty
               ? "connected · awaiting first signal"
@@ -150,15 +116,15 @@ export function ProductLoopCard({ loop }: { loop: ProductLoop }) {
         </div>
       </div>
 
-      {/* the loop as a done → now → next chain */}
-      <StepChain loop={loop} />
+      {/* Counts summarize the full history; metric disclosure shows latest observations. */}
+      <div className="flex flex-wrap gap-3 text-xs text-muted"><span>{loop.signalCount} observations</span><span>{loop.hypothesisCount} hypotheses</span><span>{loop.reviews.length} reviews</span></div>
 
       {/* signals through domain lenses (a view of the same evidence) */}
       {!empty ? (
-        <div className="rounded-md border border-hair bg-soft px-3 py-2.5">
-          <div className="section-label mb-2">Lenses · the same signals, read by what matters</div>
+        <details className="rounded-md border border-hair bg-soft px-3 py-2.5">
+          <summary className="cursor-pointer text-xs font-semibold text-muted">Latest observations by metric</summary>
           <div className="flex flex-col gap-3">
-            {groupSignalsByLens(loop.signals).map(({ lens, meta, signals }) => (
+            {groupSignalsByLens(latestProductSignals(loop.signals)).map(({ lens, meta, signals }) => (
               <div key={lens}>
                 <div className="mb-0.5 flex items-center gap-2">
                   <SurfaceChip label={meta.label} />
@@ -170,7 +136,7 @@ export function ProductLoopCard({ loop }: { loop: ProductLoop }) {
               </div>
             ))}
           </div>
-        </div>
+        </details>
       ) : null}
 
       {/* the verdict's own next-action, if a review exists */}

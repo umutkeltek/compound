@@ -1,6 +1,7 @@
+import { PendingRefresh } from "@/components/PendingRefresh";
 import { ProductLoopCard, loopState } from "@/components/products/ProductLoopCard";
 import { EmptyState, FreshnessChip, LoopIcon, PageHeader, SectionHeader } from "@/components/kit";
-import { getProductLoopsReport, getProductPortfolio } from "@/lib/products";
+import { getProductLoopsReport } from "@/lib/products";
 
 export const dynamic = "force-dynamic";
 
@@ -19,11 +20,11 @@ function StatTile({
   seam,
 }: {
   label: string;
-  value: number;
+  value: number | string;
   sub?: string;
   seam?: boolean;
 }) {
-  const emphasise = seam && value > 0;
+  const emphasise = seam && typeof value === "number" && value > 0;
   return (
     <div className="rounded-lg border border-hair bg-panel px-3 py-2.5 shadow-sm">
       <div className={`text-2xs font-bold uppercase tracking-wide ${emphasise ? "text-seam" : "text-faint"}`}>
@@ -36,14 +37,11 @@ function StatTile({
 }
 
 export default async function LoopsPage() {
-  const [{ generatedAt, loops, status, error }, portfolio] = await Promise.all([
-    getProductLoopsReport(),
-    getProductPortfolio(),
-  ]);
+  const { generatedAt, loops, status, checking, error } = await getProductLoopsReport();
+  const known = status === "live" || status === "stale";
 
   const withSignals = loops.filter((l) => l.signalCount > 0).length;
   const totalSignals = loops.reduce((n, l) => n + l.signalCount, 0);
-  const reviewReady = portfolio.reduce((n, p) => n + p.reviewReadyCount, 0);
   const blockedOnYou = loops.filter((l) => loopState(l).blockedOnYou).length;
 
   // Loops blocked on the operator float to the top; the rest keep the
@@ -55,24 +53,24 @@ export default async function LoopsPage() {
 
   return (
     <div className="flex flex-col gap-6">
+      <PendingRefresh pending={checking} stamp={Date.now()} />
       <PageHeader
-        breadcrumb="operate / loops"
-        title="Feedback loops"
+        name="Feedback loops"
+        lead="Did the last change help? Follow each product from change to evidence to next step."
         right={<FreshnessChip generatedAt={generatedAt} source="compound product loops --json" />}
       />
-      <p className="max-w-prose text-sm text-muted">
-        One shape for anything with outputs and feedback — change → signal → hypothesis → review → next move. Today these
-        are your apps; the same loop holds any product, channel, or workflow as sources connect.
-      </p>
-
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <StatTile label="Loops" value={loops.length} sub="tracked" />
-        <StatTile label="With live signals" value={withSignals} sub={`${totalSignals} signals total`} />
-        <StatTile label="Blocked on you" value={blockedOnYou} sub="a verdict is due" seam />
-        <StatTile label="Awaiting data" value={loops.length - withSignals} sub="connected, no signal yet" />
+        <StatTile label="Loops" value={known ? loops.length : "—"} sub="tracked" />
+        <StatTile label="With signals" value={known ? withSignals : "—"} sub={known ? `${totalSignals} signals recorded` : "Checking signals"} />
+        <StatTile label="Blocked on you" value={known ? blockedOnYou : "—"} sub="a verdict is due" seam />
+        <StatTile label="Awaiting data" value={known ? loops.length - withSignals : "—"} sub="connected, no signal yet" />
       </div>
 
-      {loops.length === 0 && status === "unreachable" ? (
+      {loops.length === 0 && checking ? (
+        <EmptyState>
+          Loading product feedback. Results will appear here automatically.
+        </EmptyState>
+      ) : loops.length === 0 && status === "unreachable" ? (
         <div className="rounded-2xl border border-seam-line bg-seam-soft p-5 text-sm">
           <div className="font-semibold text-seam">Feedback loops could not be loaded.</div>
           <p className="mt-1 text-muted">
@@ -102,11 +100,8 @@ export default async function LoopsPage() {
         </section>
       )}
 
-      <p className="mono text-2xs leading-snug text-faint">
-        source: compound product loops --json · compound product authority --json · reviewReady {reviewReady}.
-        Connected: App Store Connect, Search Console, canonical metrics. Shape-supported (no puller yet): RevenueCat,
-        PostHog. Not connected: TelemetryDeck.
-      </p>
+      {status === "stale" ? <p className="text-xs text-seam">Showing the last successful read{checking ? "; checking for updates" : ""}. {error ? "The latest refresh failed." : ""}</p> : null}
+      <details className="text-xs text-muted"><summary className="cursor-pointer">Where these numbers come from</summary><p className="mt-2">Each loop is one registered product. Signal counts are recorded observations, not proof of an improvement.</p><code className="mono mt-2 block">compound product loops --json</code></details>
     </div>
   );
 }

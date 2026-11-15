@@ -87,7 +87,6 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
     <div className="flex flex-col gap-8">
       <OpenOnHash />
       <PageHeader
-        breadcrumb={`growth / apps / ${app.name}`}
         title={
           <span className="inline-flex items-center gap-3">
             <AppGlyph productId={app.productId} name={app.name} size="lg" />

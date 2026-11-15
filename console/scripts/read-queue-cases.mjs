@@ -155,6 +155,33 @@ try {
   // 9. The cache folder is the configured one.
   assert.ok((await readdir(cacheDir)).some((n) => n.endsWith(".json")), "values are written to COMPOUND_CONSOLE_CACHE_DIR");
 
+  // The real settings/loops/law page entry points must return while their
+  // expensive cold projections are still queued. A blocking read returns
+  // values instead and fails both the timing and pending-state assertions.
+  const [{ default: Settings }, { default: Loops }, { default: Law }, products] = await Promise.all([
+    import("../src/app/settings/page.tsx"), import("../src/app/loops/page.tsx"),
+    import("../src/app/standing-law/page.tsx"), import("../src/lib/products.ts"),
+  ]);
+  const pageStart = performance.now();
+  const coldPages = await Promise.all([Settings({}), Loops(), Law()]);
+  assert.ok(performance.now() - pageStart < 750, "cold settings, loops and law must not await collectors");
+  function nodes(root, name) {
+    if (Array.isArray(root)) return root.flatMap((node) => nodes(node, name));
+    if (!root || typeof root !== "object") return [];
+    return [...(root.type?.name === name ? [root] : []), ...nodes(root.props?.children, name)];
+  }
+  for (const page of coldPages) assert.ok(nodes(page, "PendingRefresh").some((node) => node.props.pending), "cold pages must arrange a refresh");
+  assert.ok(nodes(coldPages[1], "StatTile").every((node) => node.props.value === "—"), "unknown loop counts are not zero");
+  const observations = [
+    { signalId: "old", provider: "analytics", metric: "downloads", observedAt: "2026-01-01T00:00:00Z" },
+    { signalId: "new", provider: "analytics", metric: "downloads", observedAt: "2026-01-03T00:00:00Z" },
+    { signalId: "other-provider", provider: "store", metric: "downloads", observedAt: "2026-01-02T00:00:00Z" },
+    { signalId: "missing-time", provider: "analytics", metric: "downloads", observedAt: "" },
+  ];
+  assert.deepEqual(products.latestProductSignals(observations).map((s) => s.signalId), ["new", "other-provider"], "latest metric rows preserve provider identity and ignore older/missing times");
+  assert.equal(observations.length, 4, "the view must not mutate historical evidence");
+  await api.settleProjectionReads();
+
   // 10. Two homes never mix: a module instance pinned to another home sees nothing.
   process.env.COMPOUND_HOME = join(scratch, "home-b");
   const other = await import("../src/lib/compound.ts?home-b");

@@ -76,8 +76,7 @@ export default async function AgentsPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        breadcrumb="operate / agents"
-        title="Agents"
+        name="Harnesses"
         right={<FreshnessChip generatedAt={projection?.generatedAt} source="compound executors --json" />}
       />
       <p className="text-sm text-muted">Who is working, on what, at what cost — and is anything stuck?</p>

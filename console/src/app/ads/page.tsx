@@ -110,8 +110,8 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        breadcrumb="outcomes / ads"
-        title="Ads"
+        name="Ads"
+        lead="Spend, installs and return from imported campaign reports."
         right={
           <>
             <WindowSwitch active={windowDays} product={product} />
@@ -119,13 +119,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
           </>
         }
       />
-      <p className="text-sm text-muted" style={{ maxWidth: "var(--read-max)" }}>
-        Paid acquisition on every platform, read from each platform&apos;s own report export. Compound never calls an ad
-        network: you export a daily campaign report, import it, and this panel folds the rows — spend, clicks,
-        conversions, CPA, ROAS — per platform, product, and campaign. A connected platform can feed the loop as a
-        product signal; a stale one carries the amber seam until a fresh report lands.
-      </p>
-
+      <details className="text-xs text-muted"><summary className="cursor-pointer">How reporting works</summary><p className="mt-2 max-w-read">Import campaign exports to compare platforms, products and campaigns. These numbers come from the imported reports; their date shows when the underlying data was last collected.</p></details>
       {read.status === "unreachable" || !projection ? (
         <FeedDegraded label="Ads" source={read.source} lastGoodAt={read.lastGoodAt} />
       ) : (

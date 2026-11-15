@@ -18,7 +18,7 @@ export function RoutingModels({
   generatedAt,
 }: {
   routeEvidence: Json | null;
-  promotionCount: number;
+  promotionCount: number | null;
   generatedAt?: string;
 }) {
   const evidenceCount = num(routeEvidence?.route_evidence_count);
@@ -59,10 +59,10 @@ export function RoutingModels({
 
         <Card
           title="Promotion reviews"
-          badge={<CountChip n={promotionCount} label="pending" tone={promotionCount > 0 ? "seam" : "good"} />}
+          badge={promotionCount === null ? undefined : <CountChip n={promotionCount} label="pending" tone={promotionCount > 0 ? "seam" : "good"} />}
         >
           <DoctrineNote>
-            {promotionCount > 0
+            {promotionCount === null ? "Open Routing to review model choices and pending promotions." : promotionCount > 0
               ? `${promotionCount.toLocaleString("en-US")} lane promotion${promotionCount === 1 ? "" : "s"} await a promote/hold call. A one-way promotion is a Class-A gate on the Decide queue.`
               : "No lane promotions pending. Claim levels are settled."}
           </DoctrineNote>
@@ -98,7 +98,7 @@ export function RoutingModels({
       </Link>
       <DoctrineNote>
         Lane config and promotion criteria are file-owned (`compound route import-model-capabilities`,
-        `import-promotion-criteria`). The Routing & cost screen lands with the parallel routing lane.
+        `import-promotion-criteria`). Open Routing for the full provider and model view.
       </DoctrineNote>
     </SettingsSection>
   );

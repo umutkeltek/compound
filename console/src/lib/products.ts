@@ -1,4 +1,4 @@
-import { HEAVY_PROJECTION_TIMEOUT_MS, arr, num, runJson, runProjection, str, type ProjectionStatus } from "@/lib/compound";
+import { HEAVY_PROJECTION_TIMEOUT_MS, arr, num, readProjection, runJson, str, type ReadState } from "@/lib/compound";
 import type { Accent } from "@/components/ui";
 
 /*
@@ -104,16 +104,23 @@ function mapLoop(p: Record<string, unknown>): ProductLoop {
   };
 }
 
-export type ProductLoopsReport = { generatedAt: string; loops: ProductLoop[]; status: ProjectionStatus; error: string | null };
+export type ProductLoopsReport = {
+  generatedAt: string;
+  loops: ProductLoop[];
+  status: ReadState;
+  /** the first read is still queued or running; `loops` is not an answer yet */
+  checking: boolean;
+  error: string | null;
+};
 
 /** Loops plus the projection's own generated_at, so the page can stamp a
  *  FreshnessChip against the real read time (not a fabricated one).
  *  `product loops` reads the release-observation inventory and takes ~25s on
  *  a real home, past the default 15s budget; a timed-out read used to render
- *  as "No loops yet". It gets the heavy budget, and the page tells an
- *  unreachable read apart from a genuinely empty one. */
+ *  as "No loops yet". The read is non-blocking: the page paints from the
+ *  cached copy and says it is checking when there is none. */
 export async function getProductLoopsReport(): Promise<ProductLoopsReport> {
-  const read = await runProjection(["product", "loops", "--json"], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS });
+  const read = await readProjection(["product", "loops", "--json"], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS });
   const j = read.value;
   return {
     generatedAt: str(j?.generated_at),
@@ -121,6 +128,7 @@ export async function getProductLoopsReport(): Promise<ProductLoopsReport> {
       .map((p) => mapLoop(p as Record<string, unknown>))
       .sort((a, b) => b.signalCount - a.signalCount),
     status: read.status,
+    checking: read.status === "loading" || read.updating,
     error: read.error,
   };
 }
@@ -143,6 +151,19 @@ export async function getProductPortfolio(): Promise<ProductPortfolioRow[]> {
       sourceIssueCount: num(o.source_issue_count),
     };
   });
+}
+
+/** A card compares the latest observation for each provider/metric pair.
+ * The complete history remains in the owned product projection. */
+export function latestProductSignals(signals: ProductSignal[]): ProductSignal[] {
+  const latest = new Map<string, ProductSignal>();
+  const time = (value: string) => Number.isFinite(Date.parse(value)) ? Date.parse(value) : -Infinity;
+  for (const signal of signals) {
+    const key = JSON.stringify([signal.provider, signal.metric]);
+    const previous = latest.get(key);
+    if (!previous || time(signal.observedAt) > time(previous.observedAt)) latest.set(key, signal);
+  }
+  return [...latest.values()];
 }
 
 /* ---------- display helpers (plain language, never system slugs) ---------- */

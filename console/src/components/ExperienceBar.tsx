@@ -1,7 +1,6 @@
 "use client";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { surfaceForPath } from "@/lib/experience";
 
 type Depth = "glance" | "understand" | "investigate" | "technical";
 
@@ -35,8 +34,7 @@ function writeDepthCookie(depth: Depth) {
 export function ExperienceBar() {
   const pathname = usePathname();
   const router = useRouter();
-  const surface = surfaceForPath(pathname);
-  const progressive = surface.id === "today" || surface.id === "live";
+  const progressive = pathname === "/" || pathname === "/live";
   const [depth, setDepth] = useState<Depth>("understand");
 
   useEffect(() => {
@@ -73,7 +71,7 @@ export function ExperienceBar() {
               onClick={() => choose(item.id)}
               className="rounded-md px-2.5 py-1 text-xs font-medium text-faint transition-colors hover:text-ink aria-pressed:bg-panel aria-pressed:text-ink aria-pressed:shadow-sm"
             >
-              <span className={item.id === "investigate" || item.id === "technical" ? "hidden sm:inline" : ""}>{item.label}</span>
+              <span>{item.label}</span>
             </button>
           ))}
         </div>

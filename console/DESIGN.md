@@ -599,3 +599,33 @@ the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line
   are quieter text tabs beside it. Board columns: Suggested · Ready to start · Running or picked up
   · On hold · Waiting for a proof check · Done; the two middle in-progress columns add up to the
   "in progress" number.
+
+
+## Console clarity and bounded reads
+
+- `lib/experience.ts` owns the sidebar, breadcrumb and command-palette route names.
+  Use `PageHeader` for the page label, a short lead or answer, and named freshness.
+  A question or product name may be the title when its section label stays visible.
+- Decide leads with the proposal and opens on **Next step**. Choices, status,
+  history and evidence remain available without repeating the same blocked
+  sentence on every row. Search matches the displayed area names; area filters
+  combine equal display names and preserve the underlying decision identities.
+- Owner readiness and browser access are separate facts. The standard browser
+  is read-only. Show inspect commands and owner links instead of a disabled
+  form or advice to relaunch with more permissions. A complete denial or even
+  a partial authority bundle must never be treated as absent authority. A live,
+  singleton, revision-bound registry workflow can describe the owner's options;
+  this does not grant the browser permission to execute them.
+- Settings opens one section through `?section=`. Unopened panels do not render
+  their bodies. Settings, Feedback loops and Standing law use the existing
+  background read queue, preserve last-good/failure/loading states, and refresh
+  while reads are pending. Unknown counts are shown as unknown, never zero.
+- Loop cards summarize observations, hypotheses and reviews. Metric disclosure
+  shows the latest observation per provider and metric; it does not render the
+  whole event history. A rising number is not automatically a good result.
+- Counts name their population: registered apps, apps with data, decisions,
+  underlying items, agents and active work have different meanings. Do not
+  force different populations to have the same total.
+
+The existing read-queue, plain-pages, decision-model and decision-feedback checks
+exercise these seams, including cold page reads and stale or partial authority.

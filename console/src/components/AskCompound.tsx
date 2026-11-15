@@ -85,7 +85,7 @@ export function AskCompound() {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="fixed bottom-5 left-1/2 z-50 inline-flex h-10 -translate-x-1/2 items-center gap-2 rounded-pill border border-hair bg-panel pl-2 pr-4 text-sm font-medium text-ink shadow-lg transition-colors hover:bg-soft md:left-[calc(50%+var(--nav-w)/2)]"
+        className="fixed bottom-5 right-5 z-50 inline-flex h-10 items-center gap-2 rounded-pill border border-hair bg-panel pl-2 pr-4 text-sm font-medium text-ink shadow-lg transition-colors hover:bg-soft"
         title={`Ask Compound about ${context.label.toLowerCase()}`}
       >
         <span className="flex h-6.5 w-6.5 items-center justify-center rounded-full bg-work text-panel" aria-hidden>

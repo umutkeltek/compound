@@ -1,6 +1,7 @@
 "use client";
 
 import * as Dialog from "@radix-ui/react-dialog";
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
@@ -27,8 +28,8 @@ import { GovernedAct, type ExecuteResult } from "./GovernedAct";
 
 /** Decide's two lists, in plain words (the split itself is decide-members' face-state rule). */
 const SECTION_COPY: Record<"act_now" | "needs_context", { label: string; description: string }> = {
-  act_now: { label: "You can decide these now", description: "Each one has a button ready." },
-  needs_context: { label: "Not yet", description: "Open one to read it. Each row says why it has to wait." },
+  act_now: { label: "Ready to review", description: "An owner workflow is available." },
+  needs_context: { label: "Needs a closer look", description: "Open a decision to see the next step." },
 };
 
 /** The system's reason in plain words (lib/plain-words.ts owns the mapping). */
@@ -550,9 +551,19 @@ function ReadonlyMembers({ members, atomic }: { members: DecideMember[]; atomic:
       <ul className="mt-2 flex flex-col gap-1">
         {members.slice(0, 60).map((m) => (
           <li key={m.id}>
-            <span className="block min-w-0 truncate text-2xs text-muted" title={m.id}>
-              {m.label}
-            </span>
+            {m.href ? (
+              <Link
+                href={m.href}
+                className="block min-w-0 truncate text-2xs text-muted underline-offset-2 hover:text-ink hover:underline"
+                title={m.id}
+              >
+                {m.label}
+              </Link>
+            ) : (
+              <span className="block min-w-0 truncate text-2xs text-muted" title={m.id}>
+                {m.label}
+              </span>
+            )}
           </li>
         ))}
       </ul>
@@ -661,7 +672,7 @@ function DecisionRow({
           {titled(group.objectText || group.title).text}
         </span>
         <TitleId id={titled(group.objectText || group.title).id} className="mt-0.5" />
-        {demoteBlockedStamp ? null : <StandingText group={group} className="mt-2" />}
+        {demoteBlockedStamp || (!selected && group.standing?.kind === "no_button") ? null : <StandingText group={group} className="mt-2" />}
         {group.count > 1 ? <span className="mono mt-1 block text-2xs text-faint">{group.count} items</span> : null}
         {group.face.primaryAction ? (
           <span className="mt-1.5 block truncate text-2xs font-semibold text-muted" title={group.face.primaryAction.label}>
@@ -738,7 +749,7 @@ function HistoryPanel({ group }: { group: DecideGroup }) {
               <span className="text-xs font-semibold text-ink">Where it stands now</span>
               <StateBadge state={group.face.state} label={plainDecisionState(group.face.stateLabel)} />
             </div>
-            <p className="mt-1 text-xs text-muted">Nothing has been done with it since it was raised.</p>
+            <p className="mt-1 text-xs text-muted">This is the latest available status. A complete activity history is not included in this review.</p>
           </div>
         </li>
       </ol>
@@ -831,7 +842,7 @@ function DecisionDetail({
 }) {
   const { act } = group;
   const [tab, setTab] = useState<"summary" | "compare" | "action" | "history" | "evidence">(
-    group.brief?.options.length || group.consequences ? "compare" : group.face.state === "ready" ? "action" : "summary",
+    "action",
   );
   const effectKind = group.capability.kind === "unavailable" ? "apply" : group.capability.kind;
   const reviewResolutionActs = genericReviewResolutionActs(group);
@@ -870,33 +881,8 @@ function DecisionDetail({
           </p>
         ) : null}
 
-        {/* 3. WHAT to do now — the action when the group exposes one,
-         * otherwise ONE plain-language blocked line (never the raw jargon
-         * reason string verbatim). */}
-        <div className="mt-4 grid gap-3 md:grid-cols-2">
-          <div className="rounded-md border border-hair bg-soft px-3 py-2.5">
-            <div className="text-2xs font-bold uppercase tracking-wide text-faint">What to do now</div>
-            {group.face.primaryAction ? (
-              <p className="mt-1 text-sm leading-relaxed text-ink">
-                <span className="font-semibold text-good">{group.face.primaryAction.label}</span> — open the Action tab below.
-              </p>
-            ) : (
-              <p className="mt-1 text-sm leading-relaxed text-seam" data-standing={group.standing?.kind ?? ""}>
-                {standingOf(group).text || "There is no button for this yet."}
-              </p>
-            )}
-          </div>
-
-          <div className="rounded-md border border-hair bg-soft px-3 py-2.5">
-            <div className="text-2xs font-bold uppercase tracking-wide text-faint">Why it matters</div>
-            {/* The tool's own line in plain words (lib/plain-words.ts plainWhy); a
-              * line that is only a command says nothing about why, so the
-              * model's own default stands in for it. */}
-            <p className="mt-1 max-w-read text-sm leading-relaxed text-ink">
-              {plainWhy(operatorText(group.face.whyNow)) || "Your review is the next safe step for this item."}
-            </p>
-          </div>
-        </div>
+        <p className="mt-2 text-sm text-muted">{plainWhy(operatorText(group.face.whyNow)) || "Review the evidence before choosing the next step."}</p>
+        <details className="mt-3 text-xs text-muted"><summary className="cursor-pointer">Status, owner & timing</summary>
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-2xs text-faint">
           <span className="inline-flex items-center gap-1.5">
             <span>Proposed</span>
@@ -913,6 +899,7 @@ function DecisionDetail({
           </span>
           {group.face.confidence ? <span className="tabular-nums">{group.face.confidence.label}</span> : null}
         </div>
+        </details>
       </header>
 
       {group.face.authority ? <AuthorityFaceDetails authority={group.face.authority} /> : null}
@@ -920,9 +907,9 @@ function DecisionDetail({
       <Tabs value={tab} onValueChange={(value) => setTab(value as typeof tab)} className="border-t border-hair">
         <div className="overflow-x-auto px-4 py-3">
           <TabsList label="Decision face">
-            <TabsTrigger value="compare" count={group.brief?.options.length}>Compare</TabsTrigger>
+            <TabsTrigger value="action">Next step</TabsTrigger>
+            <TabsTrigger value="compare" count={group.brief?.options.length}>Choices</TabsTrigger>
             <TabsTrigger value="summary">Summary</TabsTrigger>
-            <TabsTrigger value="action">Action</TabsTrigger>
             <TabsTrigger value="history">History</TabsTrigger>
             <TabsTrigger value="evidence" count={group.evidence.length}>Evidence</TabsTrigger>
           </TabsList>
@@ -955,7 +942,7 @@ function DecisionDetail({
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div>
                 <div className="text-2xs font-bold uppercase tracking-wide text-faint">What you can do</div>
-                <div className="mt-0.5 text-sm font-semibold text-ink">{group.face.primaryAction?.label || "No button for this yet"}</div>
+                <div className="mt-0.5 text-sm font-semibold text-ink">{group.members.some((member) => member.href) ? "Open a held work item" : group.face.primaryAction?.label || "Inspect this decision"}</div>
                 {group.face.primaryAction?.description ? (
                   <p className="mt-1 max-w-read text-xs leading-relaxed text-muted">{group.face.primaryAction.description}</p>
                 ) : null}
@@ -966,9 +953,9 @@ function DecisionDetail({
               <div className="grid gap-3 border-l-2 border-seam-line pl-3">
                 <div>
                   <p className="text-sm font-semibold text-seam">
-                    {group.reviewResolutionItemId ? ownerUnavailableMessage(group.area) : standingOf(group).text}
+                    {group.members.some((member) => member.href) ? "Review each work item separately." : group.reviewResolutionItemId ? ownerUnavailableMessage(group.area) : standingOf(group).text}
                   </p>
-                  <p className="mt-1 text-xs leading-relaxed text-muted">{plainNextStep(group.face.unblockPath)}</p>
+                  <p className="mt-1 text-xs leading-relaxed text-muted">{group.members.some((member) => member.href) ? "Open an item for its hold reason and the action needed to continue." : plainNextStep(group.face.unblockPath)}</p>
                 </div>
                 {reviewResolutionActs.map((resolutionAct) => (
                   <GovernedAct
@@ -978,6 +965,8 @@ function DecisionDetail({
                     effectKind="record"
                   />
                 ))}
+                <div className="flex flex-wrap gap-2">{group.members.filter((member) => member.href).map((member) => <Link key={member.id} href={member.href!} title={member.id} className="max-w-full break-words rounded-md border border-work-line bg-work-soft px-3 py-2 text-xs font-semibold text-work">{member.label === member.id ? member.id.replace(/^work_/, "").replace(/_\d{8}$/, "").replaceAll("_", " ") : member.label} →</Link>)}</div>
+                <div><span className="mb-1 block text-xs font-semibold text-muted">Inspect current details</span><CopyCmd cmd={group.members[0]?.href?.startsWith("/work/") ? `compound work show ${group.members[0].id} --json` : `compound reviews --area '${group.area.replaceAll("'", "'\\''")}' --json`} /></div>
                 {!group.authorityBound ? (
                   <details className="text-xs text-muted">
                     <summary className="cursor-pointer font-semibold">Command to do it yourself</summary>
@@ -986,6 +975,8 @@ function DecisionDetail({
                   </details>
                 ) : null}
               </div>
+            ) : act.mode === "batch-enumerable" && !mutationsEnabled ? (
+              <div className="grid gap-3"><p className="text-sm text-muted">These items have separate actions. Review each with Compound.</p><ReadonlyMembers members={act.members} atomic={false} /><CopyCmd cmd={group.members[0]?.href?.startsWith("/work/") ? `compound work show ${group.members[0].id} --json` : `compound reviews --area '${group.area.replaceAll("'", "'\\''")}' --json`} /></div>
             ) : act.mode === "batch-enumerable" ? (
               <EnumerableApply
                 area={act.area}
@@ -1077,6 +1068,7 @@ export function DecideQueue({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const [filter, setFilter] = useState("");
+  const [areaFilter, setAreaFilter] = useState("");
   const [focused, setFocused] = useState(() => Math.max(0, initialDecideIndex(groups, initialSelectedKey)));
   const [selectedKey, setSelectedKey] = useState(() => initialDecideKey(groups, initialSelectedKey));
   const [excluded, setExcluded] = useState<Record<string, Set<string>>>({});
@@ -1092,11 +1084,13 @@ export function DecideQueue({
     router.replace(decisionSelectionHref(pathname, searchParams.toString(), key), { scroll: false });
   }, [pathname, router, searchParams]);
 
+  const areas = useMemo(() => [...new Set(groups.map((group) => plainArea(group.area)))]
+    .sort((a, b) => a.localeCompare(b)), [groups]);
   const visible = useMemo(() => {
     const query = filter.trim().toLowerCase();
-    if (!query) return groups;
-    return groups.filter((group) => `${group.title} ${titled(group.title).text} ${group.areaLabel} ${group.body}`.toLowerCase().includes(query));
-  }, [groups, filter]);
+    return groups.filter((group) => (!areaFilter || plainArea(group.area) === areaFilter) &&
+      (!query || `${group.title} ${group.objectText} ${titled(group.title).text} ${plainArea(group.area)} ${group.areaLabel} ${group.body}`.toLowerCase().includes(query)));
+  }, [groups, filter, areaFilter]);
   const readinessSections = useMemo(() => decideReadinessSections(visible), [visible]);
   const visibleIndexByKey = useMemo(() => new Map(visible.map((group, index) => [group.key, index])), [visible]);
   // The whole queue's decidability, not just the filtered view — a search
@@ -1260,11 +1254,15 @@ export function DecideQueue({
           aria-label="Filter decisions"
           className="w-full rounded-md border border-hair bg-panel px-3 py-2 text-sm text-ink outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus sm:max-w-xs"
         />
-        <span className="mono text-2xs tabular-nums text-faint">{visible.length} decisions</span>
+        <select aria-label="Filter by area" value={areaFilter} onChange={(event) => setAreaFilter(event.target.value)} className="min-h-10 max-w-full rounded-md border border-hair bg-panel px-3 py-2 text-sm text-ink">
+          <option value="">All areas</option>{areas.map((area) => <option key={area} value={area}>{area} ({groups.filter((group) => plainArea(group.area) === area).length})</option>)}
+        </select>
+        <span className="mono text-2xs tabular-nums text-faint">{visible.length} of {groups.length} decisions</span>
+        {filter || areaFilter ? <button type="button" onClick={() => { setFilter(""); setAreaFilter(""); }} className="text-xs font-semibold text-work hover:underline">Clear filters</button> : null}
       </div>
 
       <div className="grid items-start gap-4 lg:grid-cols-5">
-        <div ref={listRef} className="scroll-mt-16 max-h-[52vh] overflow-y-auto rounded-lg border border-hair bg-panel lg:col-span-2 lg:max-h-none lg:overflow-visible">
+        <div ref={listRef} className="scroll-mt-16 max-h-[52vh] overflow-y-auto rounded-lg border border-hair bg-panel lg:col-span-2 lg:max-h-[70vh] lg:overflow-y-auto">
           {visible.length ? readinessSections.map((section) => (
             <section
               key={section.key}

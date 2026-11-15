@@ -236,7 +236,7 @@ const wrap = (path, element) =>
 const pages = {
   Today: { path: "/", render: () => Today(), question: "What needs you today?" },
   Work: { path: "/work", render: () => Work({ searchParams: Promise.resolve({}) }), question: "What is being worked on, and what is stuck?" },
-  Decide: { path: "/reviews", render: () => Decide({ searchParams: Promise.resolve({}) }), question: "What is waiting for your decision?" },
+  Decide: { path: "/reviews", render: () => Decide({ searchParams: Promise.resolve({}) }), question: "Decide" },
   Live: { path: "/live", render: () => Live(), question: "Who is working on what right now?" },
 };
 
@@ -306,7 +306,7 @@ try {
   }
   assert.match(warm.Work, /Stuck: 2 of them were picked up more than 7 days ago and are still not finished; 1 work item is on hold/);
   assert.match(warm.Today, /7 decisions wait for you, with 13 items in all/);
-  assert.match(warm.Decide, /7 decisions wait for you, with 13 items in all/);
+  assert.match(warm.Decide, /7 decisions waiting · 13 items to review/);
   assert.match(warm.Work, /1 work item waits for your decision/);
   assert.match(warm.Live, /1 work item waits for your decision/);
   assert.match(warm.Live, /2 agents hold 5 work items/, "agents count excludes the no-agent bucket and idle agents");
@@ -344,7 +344,7 @@ try {
   // no button, so it is said once above the list, and the answer counts it.
   assert.match(warm.Decide, /Why none can be decided now/);
   assert.match(warm.Decide, /No button exists for this kind of decision yet/);
-  assert.match(warm.Decide, /None can be decided with a button right now\. 7 have no button for their kind of decision yet\./);
+  assert.match(warm.Decide, /7 have no button for their kind of decision yet\./);
   assert.doesNotMatch(warm.Decide, /paused|pause while/i, "an old copy is only old: never 'paused'");
   // A title that starts with a product id leads with the product's name on
   // Decide too, as on Today; the id stays as small text.
@@ -377,7 +377,7 @@ try {
   const bench = visibleText(wrap("/reviews", await Decide({ searchParams: Promise.resolve({ decision: "bench|review" }) })));
   assert.match(bench, /Fixture App has a product hypothesis\. Review it\?/);
   assert.match(bench, /product:fixture-app/, "the id stays, as small text");
-  assert.match(bench, /Why it matters The product gets an idea to test that rests on evidence\./);
+  assert.match(bench, /The product gets an idea to test that rests on evidence\./);
   assert.doesNotMatch(bench, /evidence-shaped/, "the tool's raw why line never reaches the card");
 
   // 4. Decide sends only the open decision's detail.

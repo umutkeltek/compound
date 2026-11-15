@@ -1,7 +1,7 @@
 import { DeltaPill, GearIcon } from "@/components/kit";
 import type { AttentionReport } from "@/lib/attention";
 import { FeedDegraded } from "@/components/kit/FeedDegraded";
-import { num, type ProjectionRead } from "@/lib/compound";
+import { num, type LiveRead } from "@/lib/compound";
 
 import { buildCoverage, type AreaCoverage } from "./data";
 import { Card, CountChip, DoctrineNote, KV, SettingsSection } from "./primitives";
@@ -41,7 +41,7 @@ export function ConsoleEnv({
   standardClientAuthorized: boolean;
   privateFallbacks: boolean;
   attention: AttentionReport | null;
-  attentionRead: ProjectionRead;
+  attentionRead: LiveRead;
   generatedAt?: string;
 }) {
   const coverage = buildCoverage(attention);
@@ -82,7 +82,9 @@ export function ConsoleEnv({
         </Card>
 
         <Card title="Coverage burn-down">
-          {!coverageKnown || attentionRead.status === "unreachable" ? (
+          {attentionRead.status === "loading" ? (
+            <p className="text-sm text-muted">Checking which review areas have a server adapter…</p>
+          ) : !coverageKnown || attentionRead.status === "unreachable" ? (
             <FeedDegraded label="Coverage" source="compound attention --json" lastGoodAt={attentionRead.lastGoodAt} />
           ) : (
           <>

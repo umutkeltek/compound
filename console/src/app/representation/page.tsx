@@ -43,8 +43,7 @@ export default async function RepresentationPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        breadcrumb="operate / representation"
-        title="Representation"
+        name="View grammar"
         right={<FreshnessChip generatedAt={str(workbench?.generated_at)} source="compound workbench --json" />}
       />
       <p className="text-sm text-muted" style={{ maxWidth: "var(--read-max)" }}>
