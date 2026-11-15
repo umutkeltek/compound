@@ -208,7 +208,7 @@ const LEARN_MOVES = new Set(["memory_delta", "rule_delta", "control_plane_repair
 function cardTitle(item: Json): string {
   const surface = str(item.canonical_surface);
   if (surface.startsWith("packet:")) return surface.slice("packet:".length).replace(/-/g, " ");
-  return str(item.success_predicate) || str(item.desired_outcome) || str(item.title) || workId(item) || "work item";
+  return str(item.title) || str(item.desired_outcome) || str(item.success_predicate) || workId(item) || "work item";
 }
 
 function workCard(item: Json, note = "", progress?: StageProgress): BoardCard {

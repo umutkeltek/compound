@@ -1,3 +1,4 @@
+import { PageHeader } from "@/components/kit";
 import { LineageSearch } from "@/components/map/LineageSearch";
 import { TimelineStep } from "@/components/map/TimelineStep";
 import { Card, EmptyState, FreshnessChip } from "@/components/ui";
@@ -12,15 +13,9 @@ export default async function LineagePage({ params }: { params: Promise<{ id: st
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-end justify-between gap-4">
-        <div>
-          <h1 className="text-[22px] font-semibold tracking-tight">Lineage</h1>
-          <p className="mt-0.5 text-[12.5px] text-ink-3">
-            How a datum arrived and what it feeds — source → evidence → candidate → adjudication → claim.
-          </p>
-        </div>
-        <FreshnessChip source="compound system lineage --json" />
-      </div>
+      <PageHeader name="Map" title="Evidence history" lead="Trace where a record came from and which decisions use it."
+        action={{ label: "Find a record", href: "#lineage-search" }} right={<FreshnessChip source="compound system lineage --json" />} />
+      <div id="lineage-search" tabIndex={-1} className="scroll-mt-6" />
 
       <LineageSearch initial={queryId} />
 

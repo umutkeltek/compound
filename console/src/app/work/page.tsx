@@ -1,7 +1,6 @@
 import Link from "next/link";
 
 import { hasCopy, PageHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending, aboutDuration } from "@/components/kit";
-import { CopyActionButton } from "@/components/CopyCmd";
 import { PendingRefresh } from "@/components/PendingRefresh";
 import { WorkLenses } from "@/components/work/WorkLenses";
 import { readAttention } from "@/lib/attention";
@@ -18,8 +17,6 @@ import type { WorkLensKey } from "@/components/work/WorkLenses";
 
 export const dynamic = "force-dynamic";
 
-/** What "New work" copies: the command that creates a work item. */
-const NEW_WORK_COMMAND = 'compound work create --owner <owner> --predicate "<what done looks like>"';
 
 /**
  * Work answers one question first: "What is being worked on, and what is
@@ -99,9 +96,10 @@ export default async function WorkPage({
     <ReadNotice read={workbenchRead} label="work" />
   ) : (
     <div className="flex flex-col gap-1.5">
-      <p>
-        <strong className="font-semibold">{progress.headline}</strong>, out of {unit(countOpenWork(open), "open work item")}.
-      </p>
+      <p><strong className="font-semibold">{inProgress.total.toLocaleString("en-US")} in progress</strong> · {countOpenWork(open).toLocaleString("en-US")} open tasks</p>
+      <p className="text-sm text-muted">{onHold || 0} on hold{inProgress.pickedUpOver7Days ? ` · ${inProgress.pickedUpOver7Days.toLocaleString("en-US")} picked up over a week ago` : ""}</p>
+      <details className="text-sm text-muted"><summary className="cursor-pointer">Progress breakdown</summary>
+      <p className="mt-2">{progress.headline}, out of {unit(countOpenWork(open), "open work item")}.</p>
       {progress.detail ? <p className="text-sm text-muted">{progress.detail}</p> : null}
       {stuck.length ? (
         <p className="text-base text-seam">Stuck: {stuck.join("; ")}.</p>
@@ -110,6 +108,7 @@ export default async function WorkPage({
       ) : (
         <p className="text-base text-good">Nothing looks stuck.</p>
       )}
+      </details>
       {waiting && waiting.workItems > 0 ? (
         <p className="text-sm text-muted">
           {unit(waiting.workItems, "work item")} {waiting.workItems === 1 ? "waits" : "wait"} for your decision.{" "}
@@ -124,12 +123,12 @@ export default async function WorkPage({
       <PendingRefresh pending={pending} stamp={Date.now()} />
       <PageHeader
         name="Work"
-        title="What is being worked on, and what is stuck?"
+        lead="Follow progress and resolve what is holding work up."
         answer={answer}
         right={
           <>
             <ReadChip read={workbenchRead} />
-            <CopyActionButton cmd={NEW_WORK_COMMAND} label="Copy the command to create work" copiedLabel="Command copied: paste it in a terminal" />
+
           </>
         }
       />

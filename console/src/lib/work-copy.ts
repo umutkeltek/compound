@@ -30,11 +30,11 @@ export const WORK_COPY = {
   laneTraffic: {
     /** No route-evidence rows yet — informational, nothing to act on. */
     noTraffic:
-      "No lane traffic recorded yet. This fills in as executors run and route-evidence rows land.",
+      "No model activity has been recorded yet. This fills in as agents run.",
     /** Account-health feed never imported: capsules can't be colored by health. */
     noAccountProjection: {
       prose:
-        "Lane colors aren't wired to account health yet — connect the account feed to color each capsule by how healthy its accounts are.",
+        "Account health is not connected yet. Check the account feed to see which agents are available.",
       command: "compound route import-account-projection",
     },
   },
@@ -48,7 +48,7 @@ export const WORK_COPY = {
   /** The whole console is read-only until launched with an operator home. */
   consoleReadOnly: {
     prose:
-      "This console is read-only until it's launched with an explicit home — launch it in operator mode to enable the primary action buttons.",
+      "This browser is read-only. You can review progress and prepare an agent handoff, but cannot start or change tasks here.",
     command: "compound console --operator",
   },
 } as const;

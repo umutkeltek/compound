@@ -111,6 +111,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
     <div className="flex flex-col gap-6">
       <PageHeader
         name="Ads"
+        action={!projection ? { label: "Review data connections", href: "/sources" } : projection.campaigns.length ? undefined : { label: "Review reporting gaps", href: "#campaign-results" }}
         lead="Spend, installs and return from imported campaign reports."
         right={
           <>
@@ -120,6 +121,7 @@ export default async function AdsPage({ searchParams }: { searchParams: Promise<
         }
       />
       <details className="text-xs text-muted"><summary className="cursor-pointer">How reporting works</summary><p className="mt-2 max-w-read">Import campaign exports to compare platforms, products and campaigns. These numbers come from the imported reports; their date shows when the underlying data was last collected.</p></details>
+      {!projection?.campaigns.length ? <div id="campaign-results" tabIndex={-1} className="scroll-mt-6" /> : null}
       {read.status === "unreachable" || !projection ? (
         <FeedDegraded label="Ads" source={read.source} lastGoodAt={read.lastGoodAt} />
       ) : (
@@ -194,7 +196,7 @@ function AdsBody({ projection, windowDays, product, stale }: { projection: AdsPr
       ) : null}
 
       {projection.campaigns.length > 0 ? (
-        <section className="flex flex-col gap-3">
+        <section id="campaign-results" tabIndex={-1} className="scroll-mt-6 flex flex-col gap-3">
           <SectionHeader
             tone="product"
             icon={<TableIcon />}

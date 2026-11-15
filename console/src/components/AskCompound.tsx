@@ -12,7 +12,7 @@ function routeContext(pathname: string): { label: string; suggestions: string[] 
   if (pathname === "/live" || pathname.startsWith("/traffic") || pathname.startsWith("/executors")) {
     return {
       label: "Live operations",
-      suggestions: ["Which harnesses are actually moving?", "Where is work waiting?", "Show active work by owner", "What needs intervention?"],
+      suggestions: ["Which agents are working?", "Where is work waiting?", "Show active work by owner", "What needs intervention?"],
     };
   }
   if (pathname === "/work" || pathname.startsWith("/work/")) {
@@ -30,7 +30,7 @@ function routeContext(pathname: string): { label: string; suggestions: string[] 
   if (pathname === "/") {
     return {
       label: "Today",
-      suggestions: ["What needs me now?", "What changed most recently?", "What can Compound continue safely?", "Show the highest-leverage seam"],
+      suggestions: ["What needs me now?", "What changed most recently?", "What can Compound continue safely?", "What would help most next?"],
     };
   }
   return { label: "Current view", suggestions: DEFAULT_SUGGESTIONS };
@@ -98,10 +98,10 @@ export function AskCompound() {
         open={open}
         onOpenChange={setOpen}
         title="Ask Compound"
-        meta={`${context.label} · composed from registered views`}
+        meta={`${context.label} · explore the current records`}
         size="wide"
         contextual
-        footer={<span className="text-2xs text-faint">View composition only. Every governed action stays with its registered owner.</span>}
+        footer={<span className="text-2xs text-faint">Answers help you understand the work. They do not start or change tasks.</span>}
       >
         <div className="flex flex-col gap-6">
           <div className="composer-stage rounded-xl px-4 py-4">
@@ -109,14 +109,13 @@ export function AskCompound() {
               <div>
                 <div className="section-label text-route">Understand this moment</div>
                 <p className="mt-2 max-w-xl text-md font-semibold leading-snug text-ink">
-                  Ask across the current {context.label.toLowerCase()} projections without leaving the flow.
+                  Get help understanding {context.label.toLowerCase()}.
                 </p>
               </div>
               <StatusChip tone="work" label="View only" />
             </div>
             <p className="mt-2 max-w-xl text-xs leading-relaxed text-muted">
-              Compound chooses registered evidence views. A model may compose the explanation, but it cannot invent
-              history, consequences, or mutation authority.
+              Choose a suggested question or ask your own. Answers use the records available to this console.
             </p>
           </div>
 
@@ -130,7 +129,7 @@ export function AskCompound() {
               placeholder="Show what is blocked by me, why, and what moves if I decide."
               className="w-full resize-none rounded-xl border border-hair bg-soft px-4 py-3 text-sm leading-relaxed text-ink outline-none placeholder:text-faint focus:border-route-line"
             />
-            <div className="flex justify-end"><Button variant="primary" type="submit" disabled={busy || !query.trim()}>{busy ? "Composing…" : "Compose answer"}</Button></div>
+            <div className="flex justify-end"><Button variant="primary" type="submit" disabled={busy || !query.trim()}>{busy ? "Looking it up…" : "Show answer"}</Button></div>
           </form>
 
           <div className="flex flex-wrap gap-2">
@@ -148,7 +147,7 @@ export function AskCompound() {
 
           {error ? (
             <div role="alert" className="rounded-lg border border-crit-line bg-crit-soft px-3 py-2.5 text-xs leading-relaxed text-crit">
-              {error} Try again, or open the underlying Work and Decide projections directly.
+              {error} Try again, or open Work or Decide to review the records.
             </div>
           ) : null}
 
@@ -156,10 +155,10 @@ export function AskCompound() {
             <section aria-live="polite" className="border-t border-hair pt-5">
               <div className="mb-3 flex items-center justify-between gap-3">
                 <div>
-                  <div className="section-label">Composed answer</div>
-                  <p className="mt-1 text-xs text-muted">Built only from the registered views available to this console.</p>
+                  <div className="section-label">Answer</div>
+                  <p className="mt-1 text-xs text-muted">Based on the available records.</p>
                 </div>
-                <StatusChip tone="good" label="Current projection" />
+                <StatusChip tone="good" label="Recorded information" />
               </div>
               <div className="grid gap-4 md:grid-cols-2">{result}</div>
             </section>

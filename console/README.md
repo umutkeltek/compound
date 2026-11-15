@@ -136,3 +136,10 @@ The read-queue checks exercise the real cold Settings, Feedback loops and
 Standing law entry points while collectors are pending. Browser validation must
 also exercise search, area filtering, owner navigation and section disclosure.
 A green UI check does not authorize applying a decision to live data.
+
+
+Page navigation and primary next steps are defined together in
+`src/lib/experience.ts`. The shared header renders one contextual link; entity
+pages override it with their own destination. Work filter URLs preserve their
+selection, and Work details read structured lifecycle notes from `work show
+--json`. Clipboard handoffs are explicitly manual and do not schedule execution.

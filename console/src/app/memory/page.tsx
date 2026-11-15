@@ -83,6 +83,7 @@ export default async function Memory({
     <div className="flex flex-col gap-8">
       <PageHeader
         name="Memory"
+        action={queueLive && !models.length ? { label: "Explore supporting evidence", href: "#memory-evidence" } : undefined}
         right={
           <>
             {models.length ? (
@@ -95,17 +96,16 @@ export default async function Memory({
         }
       />
       <p className="text-sm text-muted" style={{ maxWidth: "var(--read-max)" }}>
-        Only durable candidates enter your queue. Source evidence stays searchable but out of
-        approval debt until a promoted claim cites it.
+        Review proposed memories before Compound uses them. Supporting evidence stays available below.
       </p>
 
       {/* 1 — adjudication queue (the operator's gate) */}
-      <section className="flex flex-col gap-3">
+      <section id="memory-review" tabIndex={-1} className="scroll-mt-6 flex flex-col gap-3">
         <SectionHeader
           tone="memory"
           icon={<BrainIcon />}
-          label="Adjudication queue"
-          sub="promote / park / reject / no-promote — each with its basis"
+          label="Memories to review"
+          sub="Choose what to keep, set aside or reject."
         />
         <MemoryReadNotice label="proposed memory" source="compound memory candidates --json --state proposed" read={proposedRead} />
         <MemoryReadNotice label="standing decisions" source="compound memory candidates --json --state parked --kind decision" read={law.read} />
@@ -117,8 +117,7 @@ export default async function Memory({
           </div>
         ) : queueLive ? (
           <EmptyState>
-            Clean seam. No durable memory candidate needs a verdict — recall stays exactly as you
-            left it.
+            No proposed memories need review. You can explore the stored evidence below.
           </EmptyState>
         ) : null}
       </section>
@@ -131,8 +130,8 @@ export default async function Memory({
         <SectionHeader
           tone="memory"
           icon={<DatabaseIcon />}
-          label="What's believed"
-          sub="candidate lifecycle across the ledger"
+          label="Stored memories"
+          sub="How previous proposals were handled"
         />
         <MemoryReadNotice label="memory counts" source="compound memory candidates --json" read={countRead.read} />
         <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-hair bg-hair sm:grid-cols-5">
@@ -145,12 +144,12 @@ export default async function Memory({
         </div>
       </section>
 
-      <section className="flex flex-col gap-3">
+      <section id="memory-evidence" tabIndex={-1} className="scroll-mt-6 flex flex-col gap-3">
         <SectionHeader
           tone="neutral"
           icon={<DocIcon />}
           label="Source evidence"
-          sub="proposed imports & extractions — evidence, not approval debt"
+          sub="Supporting information for future decisions"
         />
         <MemoryReadNotice label="source evidence" source="compound memory candidates --json --state proposed" read={proposedRead} />
         {sourceEvidence.length ? (
@@ -160,7 +159,7 @@ export default async function Memory({
             ))}
           </div>
         ) : proposedRead.status === "live" ? (
-          <EmptyState>No proposed source evidence. Nothing waits to be cited into canon.</EmptyState>
+          <EmptyState>No new supporting evidence has been recorded.</EmptyState>
         ) : null}
         {sourceEvidence.length > 24 ? (
           <p className="mono text-2xs text-faint">+{sourceEvidence.length - 24} more not shown.</p>

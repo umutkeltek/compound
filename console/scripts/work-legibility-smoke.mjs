@@ -73,6 +73,7 @@ if (failures.length) {
 // binary or cache, so they run in this process; a failing case throws and this
 // smoke exits non-zero.
 await import("./waiting-and-owner-cases.mjs");
+await import("./work-next-step-cases.mjs");
 
 // The four main pages in plain words (scripts/plain-pages-cases.mjs): render
 // Today, Work, Decide and Live against a synthetic binary and fail on any

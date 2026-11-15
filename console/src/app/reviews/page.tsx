@@ -261,12 +261,13 @@ export default async function Decide({
       {panelDetailOpen ? null : (
         <PageHeader
           name="Decide"
+          action={waiting && waiting.groups === 0 ? { label: "See work in progress", href: "/live" } : undefined}
           answer={answer}
           right={<ReadChip read={attentionRead} />}
         />
       )}
 
-      <section className="flex flex-col gap-3" aria-label="Decisions">
+      <section id="decision-queue" tabIndex={-1} className="scroll-mt-6 flex flex-col gap-3" aria-label="Decisions">
         {attentionKnown ? <ReadFailedBanner read={attentionRead} label="what waits for you" /> : null}
         {attentionKnown && decideGroups.length > 0 ? (
           <DecideQueue

@@ -66,7 +66,7 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
   if (!model) {
     return (
       <div className="flex flex-col gap-6">
-        <PageHeader title="App" />
+        <PageHeader name="Portfolio" title="App not found" action={{ label: "Choose an app", href: "/apps" }} />
         <DegradedGrowth status={growth.status} error={growth.error} />
       </div>
     );
@@ -87,6 +87,8 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
     <div className="flex flex-col gap-8">
       <OpenOnHash />
       <PageHeader
+        name="Portfolio"
+        action={{ label: "Review next steps", href: "#app-next-steps" }}
         title={
           <span className="inline-flex items-center gap-3">
             <AppGlyph productId={app.productId} name={app.name} size="lg" />
@@ -107,11 +109,12 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
         }
         right={<FreshnessChip generatedAt={model.generatedAt} source={`compound product growth --product ${app.productId} --json`} />}
       />
+      <div id="app-next-steps" tabIndex={-1} className="scroll-mt-6" />
 
       <section className="flex flex-col gap-3" aria-labelledby="next-question">
         <div>
-          <h2 id="next-question" className="text-hero font-semibold tracking-tight text-ink">
-            What should I do next for {app.name}, and why?
+          <h2 id="next-question" className="text-lg font-semibold tracking-tight text-ink">
+            Recommended next steps
           </h2>
           <p className="mt-1 max-w-3xl text-sm text-muted">
             {app.nextMoves.length

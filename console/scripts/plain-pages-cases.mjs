@@ -193,7 +193,7 @@ async function scopedEvidenceCases() {
   // Control: live evidence with a complete approval record shows the button.
   const live = build("live");
   assert.ok(live.every(offered), "control: live, complete evidence offers the action");
-  assert.equal(standingLine(live[0].standing).text, "You can decide this now");
+  assert.equal(standingLine(live[0].standing).text, "Ready for review");
 
   // 1. Evidence older than the live window: the gate refuses, whatever it found.
   const stale = build("stale");
@@ -234,10 +234,10 @@ const wrap = (path, element) =>
         createElement(SearchParamsContext.Provider, { value: new URLSearchParams() }, element))));
 
 const pages = {
-  Today: { path: "/", render: () => Today(), question: "What needs you today?" },
-  Work: { path: "/work", render: () => Work({ searchParams: Promise.resolve({}) }), question: "What is being worked on, and what is stuck?" },
+  Today: { path: "/", render: () => Today(), question: "Today" },
+  Work: { path: "/work", render: () => Work({ searchParams: Promise.resolve({}) }), question: "Work" },
   Decide: { path: "/reviews", render: () => Decide({ searchParams: Promise.resolve({}) }), question: "Decide" },
-  Live: { path: "/live", render: () => Live(), question: "Who is working on what right now?" },
+  Live: { path: "/live", render: () => Live(), question: "Live" },
 };
 
 /** What a person reads: text content only (no scripts, styles or attributes). */
@@ -267,7 +267,7 @@ function checkPlain(texts, when) {
   for (const [name, text] of Object.entries(texts)) {
     const hits = findBannedPhrases(text);
     assert.deepEqual(hits, [], `${name} (${when}) shows system words: ${hits.join(", ")}`);
-    assert.ok(text.includes(pages[name].question), `${name} (${when}) must lead with its question`);
+    assert.ok(text.includes(pages[name].question), `${name} (${when}) must name its page`);
   }
 }
 
@@ -343,7 +343,7 @@ try {
   // Where each decision stands, from the data: here every decision's kind has
   // no button, so it is said once above the list, and the answer counts it.
   assert.match(warm.Decide, /Why none can be decided now/);
-  assert.match(warm.Decide, /No button exists for this kind of decision yet/);
+  assert.match(warm.Decide, /Needs follow-up before it can be applied/);
   assert.match(warm.Decide, /7 have no button for their kind of decision yet\./);
   assert.doesNotMatch(warm.Decide, /paused|pause while/i, "an old copy is only old: never 'paused'");
   // A title that starts with a product id leads with the product's name on

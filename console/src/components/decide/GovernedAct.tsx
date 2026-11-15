@@ -1,4 +1,5 @@
 "use client";
+import { AgentHandoff } from "@/components/AgentHandoff";
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -360,14 +361,15 @@ export function GovernedAct({
     const inspect = `compound reviews --area '${act.area.replaceAll("'", "'\\''")}' --json`;
     return (
       <div className="grid gap-3">
-        <p className="text-sm text-muted">Review here, then continue with Compound. This browser cannot apply decisions.</p>
+        <p className="text-sm text-muted">Review the options below. Applying a decision requires an authorized agent; this page does not start one.</p>
         {options.length ? <ul className="grid gap-2">{options.map((option) => (
           <li key={option.value} className="rounded-md border border-hair bg-panel px-3 py-2">
             <div className="text-sm font-semibold text-ink">{option.label}</div>
             {option.description ? <p className="mt-1 text-xs text-muted">{option.description}</p> : null}
           </li>
         ))}</ul> : null}
-        <div><span className="mb-1 block text-xs font-semibold text-muted">Read this review in Compound</span><CopyCmd cmd={inspect} /></div>
+        <AgentHandoff title={act.label} reference={`${act.area}: ${act.itemId}`} />
+        <details className="text-xs text-muted"><summary className="cursor-pointer">Technical reference</summary><div className="mt-2"><CopyCmd cmd={inspect} /></div></details>
       </div>
     );
   }

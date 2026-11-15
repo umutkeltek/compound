@@ -161,7 +161,7 @@ export function runDecideDecisionFeedbackSelfTest(): SelfTestResult {
       fail("ownerUnavailableMessage returned the bare legacy label instead of a named line");
     } else if (!/route promotions/.test(msg)) {
       fail(`ownerUnavailableMessage does not name the area, got ${JSON.stringify(msg)}`);
-    } else if (!/park\/dismiss/i.test(msg)) {
+    } else if (!/agent.*check.*blocker/i.test(msg) || /park\/dismiss/i.test(msg)) {
       fail(`ownerUnavailableMessage does not say what the operator can still do, got ${JSON.stringify(msg)}`);
     } else {
       pass(`ownerUnavailableMessage("route-promotions") names the owner and the honest state: ${JSON.stringify(msg)}`);

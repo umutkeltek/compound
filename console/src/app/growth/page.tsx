@@ -64,7 +64,7 @@ export default async function GrowthPage({ searchParams }: { searchParams: Promi
   if (!model) {
     return (
       <div className="flex flex-col gap-6">
-        <PageHeader name="Growth audit" />
+        <PageHeader name="Growth" action={{ label: "Review data connections", href: "/sources" }} />
         <DegradedGrowth status={growth.status} error={growth.error} />
       </div>
     );
@@ -119,7 +119,7 @@ export default async function GrowthPage({ searchParams }: { searchParams: Promi
   return (
     <div className="flex flex-col gap-8">
       <PageHeader
-        name="Growth audit"
+        name="Growth"
         stats={
           <>
             <HeaderStat value={model.groups.length} label="groups" />
@@ -131,9 +131,9 @@ export default async function GrowthPage({ searchParams }: { searchParams: Promi
         right={<FreshnessChip generatedAt={model.generatedAt} source="compound product growth --json" />}
       />
 
-      <section className="flex flex-col gap-2" aria-labelledby="growth-question">
-        <h2 id="growth-question" className="text-hero font-semibold tracking-tight text-ink">
-          Where are we blind across the apps, group by group?
+      <section id="growth-coverage" tabIndex={-1} className="scroll-mt-6 flex flex-col gap-2" aria-labelledby="growth-question">
+        <h2 id="growth-question" className="text-lg font-semibold tracking-tight text-ink">
+          Where do we need better evidence?
         </h2>
         <p className="max-w-4xl text-md text-ink">{answer}</p>
         <p className="max-w-4xl text-sm text-muted">

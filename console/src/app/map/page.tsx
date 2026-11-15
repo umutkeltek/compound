@@ -80,16 +80,16 @@ export default async function CapabilitiesPage({
 
       <CapabilityAttentionStrip items={capItems} />
 
-      <SystemMap initial={initial} lens={lens} />
+      <section id="capability-map" tabIndex={-1} className="scroll-mt-6"><SystemMap initial={initial} lens={lens} /></section>
 
-      {/* Substrate topology — a DIFFERENT question than the capability graph:
-          how data flows capture → storage → meaning → outward. Collapsed by
+      {/* How information flows — a DIFFERENT question than the capability graph:
+          how data flows from incoming evidence to completed work. Collapsed by
           default; orientation, not the hero. */}
       <details className="rounded-lg border border-hair bg-panel">
         <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3">
           <span className="text-md font-semibold text-ink">
-            Substrate topology
-            <span className="ml-2 text-xs font-normal text-faint">capture → storage → meaning → outward</span>
+            How information flows
+            <span className="ml-2 text-xs font-normal text-faint">from incoming evidence to completed work</span>
           </span>
           <span className="flex items-center gap-1.5">
             <span className="inline-flex items-center rounded-pill border border-good-line bg-good-soft px-2 py-0.5 text-2xs font-semibold tabular-nums text-good">

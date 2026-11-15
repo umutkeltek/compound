@@ -1,4 +1,5 @@
 "use client";
+import { AgentHandoff } from "@/components/AgentHandoff";
 
 import * as Dialog from "@radix-ui/react-dialog";
 import Link from "next/link";
@@ -966,10 +967,11 @@ function DecisionDetail({
                   />
                 ))}
                 <div className="flex flex-wrap gap-2">{group.members.filter((member) => member.href).map((member) => <Link key={member.id} href={member.href!} title={member.id} className="max-w-full break-words rounded-md border border-work-line bg-work-soft px-3 py-2 text-xs font-semibold text-work">{member.label === member.id ? member.id.replace(/^work_/, "").replace(/_\d{8}$/, "").replaceAll("_", " ") : member.label} →</Link>)}</div>
-                <div><span className="mb-1 block text-xs font-semibold text-muted">Inspect current details</span><CopyCmd cmd={group.members[0]?.href?.startsWith("/work/") ? `compound work show ${group.members[0].id} --json` : `compound reviews --area '${group.area.replaceAll("'", "'\\''")}' --json`} /></div>
+                {!group.members.some((member) => member.href) && reviewResolutionActs.length === 0 ? <AgentHandoff title={group.face.label} context={plainNextStep(group.face.unblockPath)} reference={`${group.area}: ${group.reviewResolutionItemId || group.key}`} /> : null}
+                <details className="text-xs text-muted"><summary className="cursor-pointer">Technical reference</summary><div><span className="mb-1 block text-xs font-semibold text-muted">Inspect current details</span><CopyCmd cmd={group.members[0]?.href?.startsWith("/work/") ? `compound work show ${group.members[0].id} --json` : `compound reviews --area '${group.area.replaceAll("'", "'\\''")}' --json`} /></div></details>
                 {!group.authorityBound ? (
                   <details className="text-xs text-muted">
-                    <summary className="cursor-pointer font-semibold">Command to do it yourself</summary>
+                    <summary className="cursor-pointer font-semibold">Advanced command</summary>
                     <div className="mt-2"><CopyCmd cmd={act.command} compact /></div>
                     {act.reason ? <p className="mt-2 leading-relaxed text-faint">{act.reason}</p> : null}
                   </details>

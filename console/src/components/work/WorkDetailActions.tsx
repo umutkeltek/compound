@@ -10,7 +10,7 @@ import type { WorkActionRowData } from "@/lib/work-pipeline";
 /**
  * Replaces the /work/[id] "Manual state controls" that were buried in a closed
  * <details> (the audit's headline finding). The same governed action row is now
- * inline and prominent, and a first-class "Open trace" button raises the
+ * inline and prominent, and a first-class "View activity" button raises the
  * envelope-spine drawer — the id page and the board share one trace surface.
  */
 export function WorkDetailActions({
@@ -28,15 +28,15 @@ export function WorkDetailActions({
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-md font-semibold text-ink">Move this work</h2>
-          <p className="text-xs text-muted">Contextual governed transitions for its current state.</p>
+          <h2 className="text-md font-semibold text-ink">Progress and activity</h2>
+          <p className="text-xs text-muted">See the latest updates, attempts and results.</p>
         </div>
         <Button variant="primary" tone="ink" onClick={() => setTraceOpen(true)}>
-          Open trace
+          View activity
         </Button>
       </div>
 
-      <WorkActionRow data={actionRow} mutationsReady={mutationsReady} dense />
+      {mutationsReady ? <WorkActionRow data={actionRow} mutationsReady={mutationsReady} dense /> : <details className="text-xs text-muted"><summary className="cursor-pointer">Advanced task controls</summary><div className="mt-3"><WorkActionRow data={actionRow} mutationsReady={false} dense /></div></details>}
 
       <TraceDrawer workId={traceOpen ? workId : null} onClose={() => setTraceOpen(false)} mutationsReady={mutationsReady} />
     </div>

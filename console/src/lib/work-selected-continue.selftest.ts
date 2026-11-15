@@ -35,7 +35,7 @@ export function runSelectedContinueSelfTest(): { ok: boolean; details: string[] 
   const running = selectedContinueView({ ...base, state: "running" }, lease);
   const needsProof = selectedContinueView(verifying, lease);
   check("status does not conflate run and completion", running.status === "Running" &&
-    needsProof.status === "Needs proof review" && needsProof.detail.includes("never automatic"));
+    needsProof.status === "Result needs checking" && needsProof.detail.includes("never automatic"));
   const completed = selectedContinueView({ ...base, state: "completed" }, lease);
   check("completed view points to proof without attesting it", completed.status === "Completed" &&
     completed.detail.includes("Inspect its receipt") && !completed.detail.includes("proof transition"));

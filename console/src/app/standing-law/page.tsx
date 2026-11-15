@@ -35,7 +35,7 @@ function ConflictStrip({ conflicts }: { conflicts: StandingLawConflict[] }) {
         tone="crit"
         icon={<GavelIcon />}
         label="Contradictions"
-        sub="a spoken ruling reverses accepted law — resolve before it re-litigates"
+        sub="These proposed rules disagree with an accepted decision."
         right={
           <span className="mono rounded-pill border border-crit-line bg-crit-soft px-2 py-0.5 text-2xs font-semibold text-crit tabular-nums">
             {conflicts.length}
@@ -80,7 +80,7 @@ export default async function StandingLaw() {
     <div className="flex flex-col gap-6">
       <PendingRefresh pending={readsPending(read, candidateRead)} stamp={Date.now()} />
       <PageHeader
-        name="Standing law"
+        name="Rules"
         lead="Your accepted rules and permissions. Search here before making the same decision again."
         right={
           <>
@@ -97,6 +97,7 @@ export default async function StandingLaw() {
           </>
         }
       />
+      {checking && !model.records.length ? <div id="accepted-rules" tabIndex={-1} className="scroll-mt-6" /> : null}
       {!candidateRead.value ? <ReadNotice read={candidateRead} label="proposed rules" /> : null}
       {waiting > 0 ? (
         <Link
@@ -117,12 +118,12 @@ export default async function StandingLaw() {
         <>
           <ConflictStrip conflicts={model.conflicts} />
 
-          <section className="flex flex-col gap-3">
+          <section id="accepted-rules" tabIndex={-1} className="scroll-mt-6 flex flex-col gap-3">
             <SectionHeader
               tone="seam"
               icon={<GavelIcon />}
               label="In force"
-              sub="accepted rulings · grants · freezes — newest first"
+              sub="Your accepted rules and permissions, newest first"
               right={
                 <span className="mono text-2xs text-faint">
                   {model.counts.rulings}R · {model.counts.grants}G · {model.counts.freezes}F

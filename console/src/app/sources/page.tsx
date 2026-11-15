@@ -1,3 +1,4 @@
+import { PageHeader } from "@/components/kit";
 import { CopyCmd } from "@/components/CopyCmd";
 import { SourceIntakeButton } from "@/components/SourceIntakeButton";
 import { Card, Chip, EmptyState, FreshnessChip, Stat, type Accent } from "@/components/ui";
@@ -157,9 +158,9 @@ function SourceConnectionCard({ connection, mutationsEnabled }: { connection: Js
         ) : null}
 
         <div>
-          <div className="section-label mb-1">Next safe action</div>
+          <div className="section-label mb-1">Next step</div>
           <p className="text-[12.5px] leading-relaxed text-ink-2">
-            {str(connection.next_safe_action) || "No next action surfaced."}
+            {str(connection.next_safe_action) || "No next step has been recorded."}
           </p>
         </div>
 
@@ -194,15 +195,7 @@ export default async function SourcesPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-end justify-between gap-4">
-        <div>
-          <h1 className="text-[22px] font-semibold tracking-tight">Sources</h1>
-          <p className="mt-0.5 text-[12.5px] text-ink-3">
-            What arrived, what has evidence, and what needs input before import.
-          </p>
-        </div>
-        <FreshnessChip generatedAt={str(projection?.generated_at)} source="compound source connections --json" />
-      </div>
+      <PageHeader name="Sources" action={!connections.length ? { label: "Check connection settings", href: "/settings?section=agent-connections" } : undefined} lead="Check which connections are bringing in useful, current information." right={<FreshnessChip generatedAt={str(projection?.generated_at)} source="compound source connections --json" />} />
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat label="Sources" value={Number(counts.total) || connections.length} glyph="S" accent="blue" />
@@ -226,6 +219,7 @@ export default async function SourcesPage() {
         <Stat label="Cards" value={Number(counts.action_required) || 0} glyph="C" accent="violet" />
       </div>
 
+      <div id="source-connections" tabIndex={-1} className="scroll-mt-6" />
       {connections.length ? (
         <div className="grid gap-4 lg:grid-cols-2">
           {connections.map((connection) => (
@@ -237,7 +231,7 @@ export default async function SourcesPage() {
           ))}
         </div>
       ) : (
-        <EmptyState>No source connections projection available.</EmptyState>
+        <EmptyState>No connections could be loaded. Open Settings to check the connection setup.</EmptyState>
       )}
     </div>
   );

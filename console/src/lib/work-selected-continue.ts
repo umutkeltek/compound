@@ -30,25 +30,25 @@ export function selectedContinueView(work: Json, lease: Json | null): SelectedCo
   const ready = Boolean(actor && hasSelection && hasWorkspace);
   const canStart = state === "claimed" && ready;
   const canResume = state === "verifying" && ready;
-  let status = "Needs me";
-  let detail = "This work is waiting for a decision or proof; no task command was started from this view.";
+  let status = "Waiting";
+  let detail = "This task has not started a new run. Check its next step for what is needed.";
   if (state === "claimed") {
     status = ready ? "Ready to run" : "Needs setup";
     detail = ready
-      ? "The saved selection, workspace, and current lease holder are present. Execution still requires an authorized client."
-      : "A saved selection, workspace, or current lease holder is missing. No run can be admitted yet.";
+      ? "An agent, model and workspace are selected. An authorized agent can check the task and start a run."
+      : "An agent, model or workspace still needs to be assigned before work can start.";
   } else if (state === "running") {
     status = "Running";
-    detail = "The governed run is in progress. Its outcome is not proof of task completion.";
+    detail = "The task is marked as running. Check its activity for the latest progress; completion still needs verification.";
   } else if (state === "verifying") {
-    status = "Needs proof review";
-    detail = "Execution returned to verification. Review the attempt and proof before closing; a fresh resume is explicit, never automatic.";
+    status = "Result needs checking";
+    detail = "The run has finished. The agent needs to check its result before this task can be completed. Starting another run is never automatic.";
   } else if (state === "completed") {
     status = "Completed";
     detail = "Closed as completed. Inspect its receipt and proof trail for the recorded evidence.";
   } else if (state === "failed") {
     status = "Failed";
-    detail = "This work was closed as failed. A run result alone did not complete it.";
+    detail = "The task ended without a verified result. Review the activity to understand what failed.";
   }
   const selectedRoute = [str(selection.launch_profile_id), str(selection.harness), str(selection.requested_model_id)]
     .filter(Boolean).join(" · ");

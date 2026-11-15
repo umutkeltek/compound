@@ -629,3 +629,23 @@ the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line
 
 The existing read-queue, plain-pages, decision-model and decision-feedback checks
 exercise these seams, including cold page reads and stale or partial authority.
+
+
+## Page journeys (supersedes question-title and read-only fallback copy above)
+
+- Pages lead with their familiar navigation name, a short purpose or current
+  answer, and one useful primary link. `lib/experience.ts` owns default purposes
+  and destinations; `PageHeader` renders them. Dates and read status are secondary.
+- Primary links reach real content, filters, or relevant pages. Empty and loading
+  states retain useful destinations. Work filters are shareable and respond to
+  browser navigation. Commands containing placeholders are never primary actions.
+- Work details lead with the goal, assigned agent, latest recorded blocker and
+  next step. `work-next-step.ts` reads the work record and its current lifecycle
+  transition; cached board text cannot override the blocker. Missing retry and
+  ownership evidence stays explicit. Technical detail remains behind disclosures.
+- The standard browser remains read-only. A clipboard handoff says it copies a
+  task and starts nothing. Never claim that operator mode enables browser writes,
+  that unavailable actions are queued for repair, or that Park/Dismiss works
+  without checking its actual authority.
+- Results, Rules, Agents and Views are the navigation names. Supporting copy
+  explains consequences and next steps. Internal identifiers stay in detail.

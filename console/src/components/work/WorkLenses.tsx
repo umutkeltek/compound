@@ -72,12 +72,13 @@ export function WorkLenses({
   const paramsRef = useRef(searchParams.toString());
   const [trace, setTrace] = useState<string | null>(initialTrace);
   const [lens, setLens] = useState<WorkLensKey>(defaultLens);
+  useEffect(() => { setLens(defaultLens); }, [defaultLens]);
 
   useEffect(() => {
     paramsRef.current = searchParams.toString();
   }, [searchParams]);
 
-  const replaceParams = useCallback((next: { trace?: string | null; lens?: WorkLensKey }) => {
+  const replaceParams = useCallback((next: { trace?: string | null; lens?: WorkLensKey; filter?: string }) => {
     // Keep a synchronous query snapshot. A close followed immediately by a
     // lens switch must not resurrect the trace while router.replace settles.
     const params = new URLSearchParams(paramsRef.current);
@@ -87,6 +88,7 @@ export function WorkLenses({
       if (next.lens === "board") params.delete("lens");
       else params.set("lens", next.lens);
     }
+    if (next.filter) params.set("filter", next.filter);
     const query = params.toString();
     paramsRef.current = query;
     router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
@@ -154,7 +156,7 @@ export function WorkLenses({
           <PipelineLens stages={stages} onOpenTrace={openTrace} />
         </Tabs.Content>
         <Tabs.Content value="table" className="min-w-0 focus-visible:outline-none">
-          <WorkTableLens items={items} onOpenTrace={openTrace} />
+          <WorkTableLens items={items} onOpenTrace={openTrace} initialFilter={searchParams.get("filter") ?? "focus"} onFilterChange={(filter) => replaceParams({ filter })} />
         </Tabs.Content>
         <Tabs.Content value="flow" className="min-w-0 focus-visible:outline-none">
           <WorkFlowLens stages={stages} groups={groups} onOpenTrace={openTrace} />

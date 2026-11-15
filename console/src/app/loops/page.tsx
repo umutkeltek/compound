@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 
 /**
  * Loops — "how does output change the next move; which loop is blocked on me?"
- * (redesign plan Part 3). Product loops are the first shape; the same
+ * (redesign plan Part 3). App results are the first shape; the same
  * change → signal → hypothesis → review → next-move loop holds any product,
  * channel, or workflow. Loops blocked on the operator (a verdict is due) float
  * to the top with the amber admission seam.
@@ -55,17 +55,19 @@ export default async function LoopsPage() {
     <div className="flex flex-col gap-6">
       <PendingRefresh pending={checking} stamp={Date.now()} />
       <PageHeader
-        name="Feedback loops"
+        name="Results"
+        action={known && !loops.length ? { label: "Review data connections", href: "/sources" } : undefined}
         lead="Did the last change help? Follow each product from change to evidence to next step."
         right={<FreshnessChip generatedAt={generatedAt} source="compound product loops --json" />}
       />
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <StatTile label="Loops" value={known ? loops.length : "—"} sub="tracked" />
-        <StatTile label="With signals" value={known ? withSignals : "—"} sub={known ? `${totalSignals} signals recorded` : "Checking signals"} />
-        <StatTile label="Blocked on you" value={known ? blockedOnYou : "—"} sub="a verdict is due" seam />
+        <StatTile label="Apps tracked" value={known ? loops.length : "—"} sub="tracked" />
+        <StatTile label="With observations" value={known ? withSignals : "—"} sub={known ? `${totalSignals} signals recorded` : "Checking signals"} />
+        <StatTile label="Needs review" value={known ? blockedOnYou : "—"} sub="a verdict is due" seam />
         <StatTile label="Awaiting data" value={known ? loops.length - withSignals : "—"} sub="connected, no signal yet" />
       </div>
 
+      <div id="app-results" tabIndex={-1} className="scroll-mt-6" />
       {loops.length === 0 && checking ? (
         <EmptyState>
           Loading product feedback. Results will appear here automatically.
@@ -80,16 +82,15 @@ export default async function LoopsPage() {
         </div>
       ) : loops.length === 0 ? (
         <EmptyState>
-          No loops yet. A loop starts when a subject gets a signal — register an app with{" "}
-          <code className="mono">compound product import &lt;product.yaml&gt;</code> and feed it a metric.
+          No results yet. Connect an app and collect its first measurement to start tracking changes.
         </EmptyState>
       ) : (
         <section className="flex flex-col gap-3">
           <SectionHeader
             tone="product"
             icon={<LoopIcon />}
-            label="Product loops"
-            sub="blocked-on-you first, then by signal volume"
+            label="App results"
+            sub="Apps needing review appear first."
             right={<span className="mono text-2xs tabular-nums text-faint">{loops.length}</span>}
           />
           <div className="grid gap-4 lg:grid-cols-2">

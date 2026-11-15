@@ -1,3 +1,5 @@
+import Link from "next/link";
+import { NAV_GROUPS } from "@/lib/experience";
 import type { ReactNode } from "react";
 
 /**
@@ -17,6 +19,7 @@ export function PageHeader({
   answer,
   stats,
   right,
+  action,
 }: {
   /** The sidebar label. Rendered small above the title when the title differs. */
   name?: string;
@@ -30,7 +33,11 @@ export function PageHeader({
   answer?: ReactNode;
   stats?: ReactNode;
   right?: ReactNode;
+  action?: { label: string; href: string } | null;
 }) {
+  const page = NAV_GROUPS.flatMap((group) => group.items).find((item) => item.label === name);
+  const next = action === undefined ? page?.nextAction : action;
+  const description = lead ?? (answer ? null : page?.description);
   const heading = title ?? name;
   const kicker = !meta && name && title && title !== name ? name : null;
   return (
@@ -41,10 +48,11 @@ export function PageHeader({
           {kicker ? <div className="text-sm font-semibold text-faint">{kicker}</div> : null}
           <h1 className="text-3xl font-semibold tracking-tight text-ink">{heading}</h1>
         </div>
-        {right ? <div className="flex min-w-0 w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">{right}</div> : null}
+        {next ? <Link href={next.href} className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md border border-strong bg-strong px-4 py-2 text-sm font-semibold text-panel transition-colors hover:bg-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus">{next.label}<span aria-hidden>→</span></Link> : null}
       </div>
-      {lead ? <div className="max-w-read text-sm leading-relaxed text-muted">{lead}</div> : null}
+      {description ? <div className="max-w-read text-sm leading-relaxed text-muted">{description}</div> : null}
       {answer ? <div className="max-w-read text-lg leading-snug text-ink">{answer}</div> : null}
+      {right ? <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted">{right}</div> : null}
       {stats ? <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted">{stats}</div> : null}
     </header>
   );

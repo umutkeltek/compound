@@ -19,6 +19,7 @@ export type NavItem = {
   href: string;
   icon: NavIconKey;
   description: string;
+  nextAction: { label: string; href: string };
   match?: string[];
   /** Which attention count this row shows, if any. */
   badge?: "decide" | "work";
@@ -40,10 +41,10 @@ export const NAV_GROUPS: NavGroup[] = [
       // Each description is the page's own question (lib/plain-words.ts names);
       // the badges count with lib/counts.ts: Work = work items waiting for
       // your decision, Decide = decisions waiting for you.
-      { label: "Today", href: "/", icon: "home", description: "What needs you today?" },
-      { label: "Work", href: "/work", icon: "board", match: ["/work/", "/flow"], badge: "work", description: "What is being worked on, and what is stuck?" },
-      { label: "Decide", href: "/reviews", icon: "gavel", badge: "decide", description: "What is waiting for your decision?" },
-      { label: "Live", href: "/live", icon: "pulse", description: "Who is working on what right now?" },
+      { label: "Today", href: "/", nextAction: { label: "Review decisions", href: "/reviews" }, icon: "home", description: "Start with what needs attention, then see what is moving." },
+      { label: "Work", href: "/work", nextAction: { label: "Review blocked work", href: "/work?lens=table&filter=blocked" }, icon: "board", match: ["/work/", "/flow"], badge: "work", description: "Follow progress and resolve what is holding work up." },
+      { label: "Decide", href: "/reviews", nextAction: { label: "Review next decision", href: "#decision-queue" }, icon: "gavel", badge: "decide", description: "Review the recommendation, understand the tradeoff and choose the next step." },
+      { label: "Live", href: "/live", nextAction: { label: "Review active work", href: "/work?lens=table&filter=running" }, icon: "pulse", description: "Follow the latest recorded activity from your agents." },
     ],
   },
   {
@@ -51,10 +52,10 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "Growth",
     collapsible: false,
     items: [
-      { label: "Portfolio", href: "/apps", icon: "chart", match: ["/apps/"], description: "Revenue, downloads, traffic and ads across every app." },
-      { label: "Growth audit", href: "/growth", icon: "target", description: "25 growth areas per app: measured, stale or blind." },
-      { label: "Feedback loops", href: "/loops", icon: "loop", description: "Change → signal → hypothesis → review, per app." },
-      { label: "Ads", href: "/ads", icon: "coins", description: "Ad spend, installs and cost per install." },
+      { label: "Portfolio", href: "/apps", nextAction: { label: "Choose an app", href: "#apps-list" }, icon: "chart", match: ["/apps/"], description: "Revenue, downloads, traffic and ads across every app." },
+      { label: "Growth", href: "/growth", nextAction: { label: "Compare growth gaps", href: "#growth-coverage" }, icon: "target", description: "Find what limits growth and where better evidence would help." },
+      { label: "Results", href: "/loops", nextAction: { label: "Review app results", href: "#app-results" }, icon: "loop", description: "See what changed in each app and whether it helped." },
+      { label: "Ads", href: "/ads", nextAction: { label: "Review campaigns", href: "#campaign-results" }, icon: "coins", description: "Ad spend, installs and cost per install." },
     ],
   },
   {
@@ -62,9 +63,9 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "Knowledge",
     collapsible: true,
     items: [
-      { label: "Memory", href: "/memory", icon: "brain", match: ["/map/memory"], description: "What Compound knows and trusts." },
-      { label: "Standing law", href: "/standing-law", icon: "law", description: "Rules agents follow without asking." },
-      { label: "Sources", href: "/sources", icon: "source", description: "Where knowledge comes from." },
+      { label: "Memory", href: "/memory", nextAction: { label: "Review proposed memories", href: "#memory-review" }, icon: "brain", match: ["/map/memory"], description: "Review proposed memories and explore the evidence behind them." },
+      { label: "Rules", href: "/standing-law", nextAction: { label: "Find a rule", href: "#accepted-rules" }, icon: "law", description: "Rules agents follow without asking." },
+      { label: "Sources", href: "/sources", nextAction: { label: "Review connections", href: "#source-connections" }, icon: "source", description: "Where knowledge comes from." },
     ],
   },
   {
@@ -72,12 +73,12 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "System",
     collapsible: true,
     items: [
-      { label: "Harnesses", href: "/executors", icon: "users", description: "Agents, lanes, sessions and cost." },
-      { label: "Coordination", href: "/traffic", icon: "route", description: "Who is working on what, who waits on whom." },
-      { label: "Map", href: "/map", icon: "map", match: ["/map/"], description: "Capabilities, routes and lineage." },
-      { label: "Routing", href: "/routing", icon: "sliders", description: "Which model lane handles which work." },
-      { label: "Settings", href: "/settings", icon: "sliders", description: "Permissions, safety, connections and console health." },
-      { label: "View grammar", href: "/representation", icon: "grid", description: "How the console chooses a view." },
+      { label: "Agents", href: "/executors", nextAction: { label: "See active work", href: "/live" }, icon: "users", description: "See which agents are available and what they are working on." },
+      { label: "Coordination", href: "/traffic", nextAction: { label: "Review blocked work", href: "/work?lens=table&filter=blocked" }, icon: "route", description: "Find work waiting on another agent or a shared resource." },
+      { label: "Map", href: "/map", nextAction: { label: "Explore skills and tools", href: "#capability-map" }, icon: "map", match: ["/map/"], description: "Explore the skills, tools and connections Compound can use." },
+      { label: "Routing", href: "/routing", nextAction: { label: "Review model decisions", href: "/reviews" }, icon: "sliders", description: "Review model choices, usage and proposed changes." },
+      { label: "Settings", href: "/settings", nextAction: { label: "Review permissions", href: "/settings?section=safety-permissions#settings-safety-permissions" }, icon: "sliders", description: "Permissions, safety, connections and console health." },
+      { label: "Views", href: "/representation", nextAction: { label: "Explore available views", href: "#view-library" }, icon: "grid", description: "Explore the ways Compound can explain your work." },
     ],
   },
 ];

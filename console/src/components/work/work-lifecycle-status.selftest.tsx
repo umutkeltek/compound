@@ -52,6 +52,11 @@ export function runWorkLifecycleStatusSelfTest(): { ok: boolean; details: string
   }));
 
   const table = renderToStaticMarkup(createElement(WorkTableLens, { items, onOpenTrace }));
+  const blockedTable = renderToStaticMarkup(createElement(WorkTableLens, { items, onOpenTrace, initialFilter: "blocked" }));
+  const blockedBody = blockedTable.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1] ?? "";
+  check("blocked-work link filters lifecycle rather than attempt status", blockedBody.includes("work_held_fixture") && !blockedBody.includes("work_running_fixture") && !blockedBody.includes("work_verifying_fixture"));
+  const invalidFilterTable = renderToStaticMarkup(createElement(WorkTableLens, { items, onOpenTrace, initialFilter: "made-up" }));
+  check("invalid filter falls back to useful focus view", invalidFilterTable === table);
   const body = table.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1] ?? "";
   const rows = body.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/g) ?? [];
   check("default focus keeps held, running and verifying work but excludes claimed", rows.length === 3

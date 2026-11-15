@@ -1033,7 +1033,7 @@ function capabilityForAct(act: DecideAct): DecideCapability {
   if (act.mode === "copy") {
     return {
       kind: "unavailable",
-      label: "Owner action unavailable",
+      label: "Needs follow-up",
       detail: act.reason || "This owner has not exposed a safe governed workflow yet.",
     };
   }
@@ -1368,7 +1368,7 @@ export function buildDecideGroups(
     const capability = authorityBound && copyOnly
       ? {
           kind: "unavailable" as const,
-          label: authorityHeld ? "Needs decision" : "Action unavailable",
+          label: authorityHeld ? "Needs decision" : "Needs follow-up",
           detail: authorityUnavailableReason,
         }
       : capabilityForAct(act);

@@ -32,7 +32,7 @@ export type WorkLensGroup = { id: string; label: string; status: string; items: 
 function titleFor(item: Json): string {
   const surface = str(item.canonical_surface);
   if (surface.startsWith("packet:")) return surface.slice("packet:".length).replace(/-/g, " ");
-  return str(item.success_predicate) || str(item.desired_outcome) || str(item.title) || workId(item) || "work item";
+  return str(item.title) || str(item.desired_outcome) || str(item.success_predicate) || workId(item) || "work item";
 }
 
 /** Claimant first (who holds it now), then the accountable owner. */

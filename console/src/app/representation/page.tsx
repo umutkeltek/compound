@@ -43,12 +43,12 @@ export default async function RepresentationPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        name="View grammar"
+        name="Views"
         right={<FreshnessChip generatedAt={str(workbench?.generated_at)} source="compound workbench --json" />}
       />
+      <div id="view-library" tabIndex={-1} className="scroll-mt-6" />
       <p className="text-sm text-muted" style={{ maxWidth: "var(--read-max)" }}>
-        Each open item chooses its own shape from the evidence — a divergence splits into expected vs observed, an
-        unbacked claim beats like a heartbeat, a quantity draws a sparkline. Every card states why it took this form.
+        Compare the available views. Each one explains which evidence it shows and when to use it.
       </p>
       <RepresentationRack evidence={evidence} />
     </div>

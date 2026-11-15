@@ -45,7 +45,7 @@ export const TERMS = {
   onHold: {
     name: "on hold",
     plural: "on hold",
-    means: "Stopped until you decide what happens next.",
+    means: "Waiting for a dependency or decision before work can continue.",
   },
   checking: {
     name: "waiting for a proof check",
@@ -196,7 +196,7 @@ const DECISION_STATE_PLAIN: Record<string, string> = {
   "Owner evidence not live": "Checked more than 25 seconds ago",
   "Projection detail not aligned": "Details still loading",
   "Authority unavailable": "No approval record",
-  "Action adapter unavailable": "No button yet",
+  "Action adapter unavailable": "Needs follow-up",
   "Needs context": "Read it first",
 };
 
@@ -207,9 +207,9 @@ export function plainDecisionState(label: string): string {
 
 const NEXT_STEP_PLAIN: Array<[RegExp, string]> = [
   [/^Refresh current owner evidence before acting\.?$/, "It is checked again while it is open; that takes a few seconds and the page updates by itself."],
-  [/^Wait for (?:the )?owner projection to emit (?:a )?complete current authority bundle\.?$/, "Wait until the system records a complete approval for it."],
-  [/^Use the manual owner command below, or wait for (?:the )?owner to expose (?:a )?governed workflow\.?$/, "Run the command below yourself, or wait until the system offers a button for it."],
-  [/^Use (?:the )?owner surface (?:after it |that )?exposes an authority-bound adapter\.?$/, "Answer it where the system offers a button for it, once it does."],
+  [/^Wait for (?:the )?owner projection to emit (?:a )?complete current authority bundle\.?$/, "An agent needs to refresh the approval record before applying this."],
+  [/^Use the manual owner command below, or wait for (?:the )?owner to expose (?:a )?governed workflow\.?$/, "Continue with an agent to check the blocker and prepare the next step."],
+  [/^Use (?:the )?owner surface (?:after it |that )?exposes an authority-bound adapter\.?$/, "Continue with the agent responsible for this review."],
   [/^Park or dismiss this review with a reason; (?:the )?underlying authority stays unchanged\.?$/, "Set it aside or dismiss it, with a reason; nothing else changes."],
   [/^Refresh until Attention membership and Reviews claim detail align\.?$/, "The details are still loading; look again in a moment."],
 ];
@@ -269,10 +269,10 @@ export function standingLine(s: DecisionStanding): { text: string; tone: "good" 
   switch (s.kind) {
     case "ready":
       return s.live
-        ? { text: "You can decide this now", tone: "good" }
+        ? { text: "Ready for review", tone: "good" }
         : { text: `Could be decided at the last check; open it to check again${age}`, tone: "good" };
     case "no_button":
-      return { text: `No button exists for this kind of decision yet${age}`, tone: "muted" };
+      return { text: `Needs follow-up before it can be applied${age}`, tone: "muted" };
     case "item_by_item":
       // Nothing is incomplete here: the tool offers one action per item and
       // none for the group, so the group is decided one item at a time.

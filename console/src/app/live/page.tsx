@@ -139,7 +139,7 @@ export default async function LivePage() {
       <PendingRefresh pending={pending} stamp={Date.now()} />
       <PageHeader
         name="Live"
-        title="Who is working on what right now?"
+        lead="Follow the latest recorded activity from your agents."
         answer={answer}
         right={
           <>

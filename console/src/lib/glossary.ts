@@ -60,17 +60,10 @@ export function areaPlain(area: string): string {
   return AREA_GLOSSARY[area] ?? "A review area awaiting a decision.";
 }
 
-/**
- * Replaces the bare "Owner action unavailable" label with a plain-language
- * line naming the missing owner workflow and the honest state — the card is
- * read-only and park/dismiss remain available (decide-resolution-acts.ts
- * always offers them for a copy-mode card). Derived from the area already
- * carried by the read model (DecideGroup.area) — never invents server
- * authority or a new capability.
- */
+/** Explain the pending handoff without claiming that a resolution can run here. */
 export function ownerUnavailableMessage(area: string): string {
-  const label = area ? area.replace(/-/g, " ") : "this";
-  return `No ${label} owner workflow is built yet — this card is read-only; park/dismiss still works.`;
+  const label = area.split("/")[0].replaceAll("-", " ") || "current";
+  return `The ${label} review needs follow-up. An agent needs to check the blocker and prepare the next step.`;
 }
 
 export function movePlain(moveType: string): string {

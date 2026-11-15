@@ -42,7 +42,7 @@ export default async function PortfolioPage() {
   if (!model) {
     return (
       <div className="flex flex-col gap-6">
-        <PageHeader name="Portfolio" />
+        <PageHeader name="Portfolio" action={{ label: "Review data connections", href: "/sources" }} />
         <DegradedGrowth status={growth.status} error={growth.error} />
       </div>
     );
@@ -197,6 +197,7 @@ export default async function PortfolioPage() {
         {allocation[0]?.rule ? <p className="mt-3 text-xs text-faint">Rule: {allocation[0].rule}</p> : null}
       </Panel>
 
+      <div id="apps-list" tabIndex={-1} className="scroll-mt-6" />
       <Panel title="All apps" subtitle={`${withData.length} apps with data${noData.length ? ` · ${noData.length} registered with no data yet` : ""}`}>
         <div className="overflow-x-auto">
           <table className="w-full min-w-3xl text-left text-sm">

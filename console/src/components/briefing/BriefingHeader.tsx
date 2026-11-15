@@ -49,7 +49,8 @@ export function BriefingHeader({
   return (
     <PageHeader
       meta={`${greeting(now)} · ${dateLabel(now)}`}
-      title="What needs you today?"
+      name="Today"
+      action={waiting && waiting.groups === 0 ? { label: "See work in progress", href: "/live" } : undefined}
       right={<ReadChip read={read} />}
       answer={
         !waiting ? (

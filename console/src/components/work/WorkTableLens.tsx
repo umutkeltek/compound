@@ -10,7 +10,7 @@ const FILTERS = [
   { id: "focus", label: "Needs focus" },
   { id: "running", label: "Running" },
   { id: "blocked", label: "Blocked" },
-  { id: "verifying", label: "Verifying" },
+  { id: "verifying", label: "Checking results" },
   { id: "all", label: "All open" },
 ] as const;
 type WorkFilter = (typeof FILTERS)[number]["id"];
@@ -35,9 +35,17 @@ function rowAccent(item: WorkLensItem): string {
   return "var(--hair)";
 }
 
-export function WorkTableLens({ items, onOpenTrace }: { items: WorkLensItem[]; onOpenTrace: (workId: string) => void }) {
+export function WorkTableLens({ items, onOpenTrace, initialFilter = "focus", onFilterChange }: {
+  items: WorkLensItem[]; onOpenTrace: (workId: string) => void; initialFilter?: string; onFilterChange?: (filter: string) => void;
+}) {
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<WorkFilter>("focus");
+  const validFilter = (value: string): WorkFilter => FILTERS.some((entry) => entry.id === value) ? value as WorkFilter : "focus";
+  const [filter, updateFilter] = useState<WorkFilter>(validFilter(initialFilter));
+  useEffect(() => { updateFilter(validFilter(initialFilter)); }, [initialFilter]);
+  function setFilter(value: WorkFilter) {
+    updateFilter(value);
+    onFilterChange?.(value);
+  }
   const [limit, setLimit] = useState(PAGE_SIZE);
   const rows = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -63,7 +71,7 @@ export function WorkTableLens({ items, onOpenTrace }: { items: WorkLensItem[]; o
   return (
     <section className="min-w-0 overflow-hidden rounded-xl border border-hair bg-panel shadow-sm">
       <div className="flex flex-wrap items-center gap-2 border-b border-hair px-3 py-3">
-        <div className="flex items-center gap-1 rounded-lg border border-hair bg-soft p-1" aria-label="Filter work by state">
+        <div className="flex flex-wrap items-center gap-1 rounded-lg border border-hair bg-soft p-1" aria-label="Filter work by state">
           {FILTERS.map((option) => (
             <button key={option.id} type="button" aria-pressed={filter === option.id} onClick={() => setFilter(option.id)} className="rounded-md px-2.5 py-1 text-xs font-semibold text-faint hover:text-ink aria-pressed:bg-work-soft aria-pressed:text-work aria-pressed:shadow-sm">
               {option.label}
@@ -72,7 +80,7 @@ export function WorkTableLens({ items, onOpenTrace }: { items: WorkLensItem[]; o
         </div>
         <label className="ml-auto min-w-[220px] flex-1 sm:max-w-xs">
           <span className="sr-only">Filter work</span>
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find work, owner, or harness…" className="h-8 w-full rounded-md border border-hair bg-soft px-3 text-xs text-ink outline-none placeholder:text-faint focus:border-work-line" />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a task or agent…" className="h-8 w-full rounded-md border border-hair bg-soft px-3 text-xs text-ink outline-none placeholder:text-faint focus:border-work-line" />
         </label>
       </div>
 
@@ -98,20 +106,20 @@ export function WorkTableLens({ items, onOpenTrace }: { items: WorkLensItem[]; o
                   <td className="px-3 py-3"><div className="text-xs font-semibold text-ink">{item.laneLabel}</div><div className="mt-0.5 text-2xs text-faint" title={item.harness ? `Recorded harness: ${item.harness}` : undefined}>{item.harnessLabel}</div>{item.runStatus ? <div className="mt-1 text-2xs text-faint">Run status: {item.runStatus.replace(/_/g, " ")}</div> : null}</td>
                   <td className="px-3 py-3"><StateBadge state={item.state} /><div className="mt-1 text-2xs tabular-nums text-faint">{item.ageLabel}</div></td>
                   <td className="max-w-44 px-3 py-3"><div className="truncate text-xs text-muted" title={item.owner}>{item.owner}</div>{item.actor ? <div className="mono mt-0.5 truncate text-2xs text-faint">run by {item.actor}</div> : null}</td>
-                  <td className="max-w-xs px-3 py-3"><p className="line-clamp-2 text-xs leading-relaxed text-muted">{item.nextAction || "No next action projected."}</p></td>
+                  <td className="max-w-xs px-3 py-3"><p className="line-clamp-2 text-xs leading-relaxed text-muted">{item.nextAction || "Open this task to check its latest activity."}</p></td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-      ) : <div className="p-4"><EmptyState>No work matches this view.</EmptyState></div>}
+      ) : <div className="p-4"><EmptyState>No tasks match this view. <button type="button" className="font-semibold text-work underline" onClick={() => { setQuery(""); setFilter("all"); }}>Show all tasks</button></EmptyState></div>}
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-hair px-3 py-2 text-2xs text-faint">
-        <span>Showing {visibleRows.length} of {rows.length} matching · {items.length} open WorkEnvelopes</span>
+        <span>Showing {visibleRows.length} of {rows.length} matching · {items.length} open tasks</span>
         {visibleRows.length < rows.length ? (
           <button type="button" onClick={() => setLimit((current) => current + PAGE_SIZE)} className="rounded-md border border-hair bg-soft px-2.5 py-1 font-semibold text-work hover:bg-work-soft">
             Show {Math.min(PAGE_SIZE, rows.length - visibleRows.length)} more
           </button>
-        ) : <span>Rows open the shared trace.</span>}
+        ) : <span>Select a task to see its progress and next step.</span>}
       </div>
     </section>
   );
