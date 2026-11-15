@@ -132,7 +132,7 @@ func MeasureVisualCampaign(c VisualCampaign, base string, o CampaignObservation,
 		return out, fmt.Errorf("exposure export does not match supplied counts, assignment or experiment identity")
 	}
 	for _, arm := range []CampaignArm{o.Control, o.Treatment} {
-		if arm.Exposed <= 0 || arm.Exposed > 1000000000 || arm.Converted < 0 || arm.Converted > arm.Exposed {
+		if arm.Exposed <= 0 || arm.Exposed > 1_000_000_000 || arm.Converted < 0 || arm.Converted > arm.Exposed {
 			return out, fmt.Errorf("invalid exposure/conversion counts")
 		}
 	}
