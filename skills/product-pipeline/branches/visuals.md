@@ -9,6 +9,8 @@ Input: Verified product states, channel format, audience/claim, rights, localiza
 
 ## Procedure and composition
 
+When Compound is available, execute the [native campaign workflow](../references/visual-campaigns.md). It compiles attached-reference requests, checks every target/locale export and binds experiment evidence to exact creative versions. Use product essence and dated platform requirements; scene choices belong to this product's audience and hypothesis.
+
 Define one narrative and meaningful variation across the set. Use real UI for functionality claims; distinguish illustration/mockup from shipping behavior. Check composition, legibility, safe areas, export sizes, brand consistency and rights. Inspect final exported bytes at intended scale.
 Optional complement: image/visual-generation or store-screenshot tools only for this output; verify their source and rights. Verify installation, provenance and its narrower contract before loading. Do not import an external body merely because this branch names it.
 
