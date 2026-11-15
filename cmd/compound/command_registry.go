@@ -76,7 +76,7 @@ func compoundCommandRegistry() map[string]compoundCommand {
 			withSubcommandAdmission("doctor", policy.FirstPartyCommandGoverned),
 		"projection":  heldCommand(cmdProjection),
 		"system":      heldCommand(cmdSystem),
-		"product":     heldCommand(cmdProduct),
+		"product":     heldCommand(cmdProduct).withSubcommandAdmission("campaign", policy.FirstPartyCommandRead),
 		"source":      heldCommand(cmdSource),
 		"console":     heldCommand(cmdConsole),
 		"event":       heldCommand(cmdEvent),
