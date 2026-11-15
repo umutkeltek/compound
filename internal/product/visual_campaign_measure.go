@@ -71,7 +71,14 @@ func LoadCampaignMeasurement(campaignPath, observationPath string, now time.Time
 
 func MeasureVisualCampaign(c VisualCampaign, base string, o CampaignObservation, observationBase string, now time.Time) (CampaignMeasurement, error) {
 	var out CampaignMeasurement
-	check, err := CheckVisualCampaign(c, base, now)
+	// Frozen experiments use their registered launch snapshot. Expiry today
+	// must not rewrite history, and checks after assignment cannot prove launch
+	// readiness retroactively.
+	registered, rerr := time.Parse(time.RFC3339, o.RegisteredAt)
+	if rerr != nil || registered.After(now) {
+		return out, fmt.Errorf("valid prior registration time required")
+	}
+	check, err := CheckVisualCampaign(c, base, registered)
 	if err != nil {
 		return out, err
 	}
@@ -97,7 +104,6 @@ func MeasureVisualCampaign(c VisualCampaign, base string, o CampaignObservation,
 	}
 	start, _ := time.Parse(time.RFC3339, e.StartsAt)
 	end, _ := time.Parse(time.RFC3339, e.EndsAt)
-	registered, rerr := time.Parse(time.RFC3339, o.RegisteredAt)
 	observed, oerr := time.Parse(time.RFC3339, o.ObservedAt)
 	created, _ := time.Parse(time.RFC3339, c.CreatedAt)
 	if rerr != nil || oerr != nil || registered.After(start) || registered.Before(created) || o.StartsAt != e.StartsAt || o.EndsAt != e.EndsAt || observed.Before(end) || observed.After(now) || now.Before(end) {

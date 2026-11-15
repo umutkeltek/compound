@@ -35,7 +35,7 @@ func campaignFixture(t *testing.T) (VisualCampaign, string, time.Time) {
 		Context:    CampaignContext{Audience: "friends playing together", Problem: "scoring interrupts the game", Value: "stay in the game together", EvidenceRefs: []string{"fixture:verified-product"}, Constraints: []string{"no fictional functionality"}},
 		Direction:  CampaignDirection{Concept: "shared game night", Palette: "warm amber and charcoal", Lighting: "soft practical light", Typography: "clear bold sans", Layout: "headline above scene, capture below", Avoid: []string{"generic business stock photo"}},
 		Locales:    []CampaignLocale{{Tag: "en-US", Direction: "ltr", Font: "Example Sans"}, {Tag: "ar", Direction: "rtl", Font: "Example Arabic"}},
-		Targets:    []CampaignTarget{{ID: "store-portrait", Surface: "synthetic-store", Width: 16, Height: 24, Format: "png", MaxBytes: 1 << 20, RulesRef: "https://platform.example/rules", RulesCheckedAt: now.Add(-24 * time.Hour).Format(time.RFC3339), RulesValidUntil: now.Add(30 * 24 * time.Hour).Format(time.RFC3339)}},
+		Targets:    []CampaignTarget{{ID: "store-portrait", Surface: "synthetic-store", Width: 16, Height: 24, Format: "png", MaxBytes: 1 << 20, RulesRef: "https://platform.example/rules", RulesCheckedAt: now.Add(-30 * 24 * time.Hour).Format(time.RFC3339), RulesValidUntil: now.Add(30 * 24 * time.Hour).Format(time.RFC3339)}},
 		References: []CampaignReference{{ID: "style", Role: "style", RightsRef: "fixture:owned", File: file}, {ID: "capture-en", Role: "capture", Locale: "en-US", RightsRef: "fixture:owned", File: file}, {ID: "capture-ar", Role: "capture", Locale: "ar", RightsRef: "fixture:owned", File: file}},
 		Scenes:     []CampaignScene{{ID: "friends", Purpose: "show the social benefit", Setting: "friends beside a game table", Action: "celebrating a close game", Composition: "faces and hands frame a clear phone", ReferenceIDs: []string{"style"}, Copy: map[string]CampaignCopy{"en-US": {Headline: "Stay in the game", Caption: "Keep score together", CaptureRef: "capture-en"}, "ar": {Headline: "استمتع باللعب", Caption: "تابع النتيجة", CaptureRef: "capture-ar"}}}},
 		Experiment: CampaignExperiment{ID: "exp_game", HypothesisID: "hyp_loop_activation_missing", Metric: "experiment_conversion_rate", ControlSetSHA256: strings.Repeat("a", 64), StartsAt: now.Add(-14 * 24 * time.Hour).Format(time.RFC3339), EndsAt: now.Add(-24 * time.Hour).Format(time.RFC3339), MinPerArm: 1000, MinAbsoluteLift: .01, TreatmentShare: .5},
@@ -268,4 +268,29 @@ func TestVisualCampaignCLIToExistingProductLearning(t *testing.T) {
 		t.Fatal("same experiment identity accepted changed result")
 	}
 	t.Logf("2 locales validated; campaign %.12s; control %.1f%% treatment %.1f%%; existing signal %s, hypothesis review and growth consumed", campaignDigest(c), signal.Signal.Before*100, signal.Signal.After*100, signal.Signal.ID)
+}
+
+func TestVisualCampaignFrozenExperimentUsesLaunchRules(t *testing.T) {
+	c, base, now := campaignFixture(t)
+	c.Targets[0].RulesValidUntil = now.Add(-time.Hour).Format(time.RFC3339)
+	registered, _ := time.Parse(time.RFC3339, c.CreatedAt)
+	packet, err := CompileCampaignPrompts(c, base, registered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range c.Assets {
+		c.Assets[i].PromptID = packet.Requests[i].ID
+	}
+	o := campaignObservationFixture(t, c, base, now)
+	if _, err = CheckVisualCampaign(c, base, now); err == nil {
+		t.Fatal("fresh exports must refresh expired rules")
+	}
+	if out, err := MeasureVisualCampaign(c, base, o, base, now); err != nil || out.Decision != "supported_improvement" {
+		t.Fatalf("historical measurement: %+v %v", out, err)
+	}
+	c.Targets[0].RulesCheckedAt = now.Format(time.RFC3339)
+	o = campaignObservationFixture(t, c, base, now)
+	if _, err = MeasureVisualCampaign(c, base, o, base, now); err == nil {
+		t.Fatal("post-launch rule checks cannot prove launch readiness")
+	}
 }
