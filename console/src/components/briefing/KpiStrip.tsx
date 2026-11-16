@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { memoryReviewHref, settingsHref } from "@/lib/links";
+import { memoryAcceptedHref, memoryReviewHref, settingsHref } from "@/lib/links";
 import type { ReactNode } from "react";
 
 import { Panel } from "@/components/briefing/primitives";
@@ -153,7 +153,7 @@ export function KpiStrip({
 
       <KpiTile
         label="Learned · 7 days"
-        link={mind.totals && mind.totals.awaiting > 0 ? { label: `${mind.totals.awaiting.toLocaleString("en-US")} ${mind.totals.awaiting === 1 ? "memory waits" : "memories wait"} for review`, href: memoryReviewHref() } : { label: "See what it knows", href: "/memory" }}
+        link={mind.totals && mind.totals.awaiting > 0 ? { label: `${mind.totals.awaiting.toLocaleString("en-US")} ${mind.totals.awaiting === 1 ? "memory waits" : "memories wait"} for review`, href: memoryReviewHref() } : { label: "See what it knows", href: memoryAcceptedHref() }}
         dot="bg-memory"
         value={mind.promotedThisWeek == null ? "—" : `${mind.promotedThisWeek > 0 ? "+" : ""}${mind.promotedThisWeek.toLocaleString("en-US")}`}
         delta={mind.delta != null ? <DeltaPill value={mind.delta} showZero title="promotions vs previous 7 days" /> : null}
