@@ -44,7 +44,7 @@ export async function POST(request: Request) {
     proposal.components.push({
       view: "causal-brief",
       props: {
-        title: "Highest-leverage seam",
+        title: "The decision that matters most",
         summary: top.operator_summary,
         unlock: top.operator_unlock || undefined,
         count: top.count,
@@ -72,7 +72,7 @@ export async function POST(request: Request) {
     proposal.components.push({
       view: "work-list",
       props: {
-        label: asksBlocked ? "Work at a seam" : "Open work",
+        label: asksBlocked ? "Work on hold" : "Open work",
         items: matching.map((item) => ({
           id: str(item.work_id) || str(item.id),
           title: workTitle(item),
@@ -92,9 +92,9 @@ export async function POST(request: Request) {
     proposal.components.push({
       view: "stat-tile",
       props: {
-        label: "Current projections",
-        value: open.length,
-        sub: `${attention?.counts.needs_you_groups ?? 0} attention groups · ask about work, evidence, or a comparison`,
+        label: "Open work",
+        value: workbenchRead?.value ? open.length : "unknown",
+        sub: attention ? `${attention.counts.needs_you_groups} decisions wait for you` : "Still reading what waits for you",
       },
     });
   }

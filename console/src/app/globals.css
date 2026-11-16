@@ -177,6 +177,9 @@
 
 html {
   background: var(--color-canvas);
+  /* An in-page link lands below the sticky top bar (about 56 px plus the
+     panel inset), never under it (DESIGN.md "Page journeys"). */
+  scroll-padding-top: 4.5rem;
 }
 
 body {

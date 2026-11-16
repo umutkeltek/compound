@@ -103,10 +103,13 @@ Optional local-only gates:
 
 ## Stable destinations + contextual append
 
-The navigation registry in `src/lib/experience.ts` owns the sidebar, breadcrumb
-and command palette. Essentials contains Today, Work, Decide and Live. Growth
-contains Portfolio, Growth audit, Feedback loops and Ads. Knowledge and System
-hold the less frequent destinations, including Settings.
+The navigation registry in `src/lib/experience.ts` owns the sidebar, the tab
+row under each page header, the breadcrumb and search. The sidebar is six
+sections named after the operator's questions: Today (with All decisions),
+Apps (All apps, Growth gaps, Results, Ads, and the list of apps), Work, Agents
+(Working now, All agents, Waiting on each other), Knowledge (Memory, Rules,
+Sources) and Settings (Settings, Models and cost, and a back room for the pages
+agents use). Every earlier address keeps working.
 
 New projections append inside their context owner. They do not add a top-level
 navigation row merely because a command, object, or read model exists. When a

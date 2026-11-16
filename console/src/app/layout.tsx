@@ -3,14 +3,15 @@ import "./globals.css";
 import { NavContainer } from "@/components/NavContainer";
 import { CommandK } from "@/components/CommandK";
 import { RefreshControl } from "@/components/RefreshControl";
-import { SystemBanner } from "@/components/SystemBanner";
-import { AskCompound } from "@/components/AskCompound";
+import { SystemBanner, type BannerFreshness } from "@/components/SystemBanner";
+import { getInstalledBinaryFreshness } from "@/lib/compound";
 import { ExperienceBar } from "@/components/ExperienceBar";
 import { OperatorConnection } from "@/components/OperatorConnection";
+import { InstanceBadge } from "@/components/InstanceBadge";
 import { Breadcrumb, ThemeToggle } from "@/components/kit";
 
+// No fixed title: the breadcrumb renders each page's own (section, page, item).
 export const metadata: Metadata = {
-  title: "Compound",
   description: "Operator workspace over Compound projections",
 };
 
@@ -21,16 +22,20 @@ export const metadata: Metadata = {
  * resolution exactly. Light is the default; "auto" and "dark" are opt-in.
  * `suppressHydrationWarning` on <html> covers the attribute this script stamps.
  */
-const THEME_SCRIPT = `(function(){try{var k='compound-theme';var p=localStorage.getItem(k)||'light';var d=(p==='dark')||(p==='auto'&&window.matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.setAttribute('data-theme',d?'dark':'light');var q=localStorage.getItem('compound-experience-depth')||'understand';document.documentElement.setAttribute('data-depth',q);}catch(e){}})();`;
+const THEME_SCRIPT = `(function(){try{var k='compound-theme';var p=localStorage.getItem(k)||'light';var d=(p==='dark')||(p==='auto'&&window.matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.setAttribute('data-theme',d?'dark':'light');var q=localStorage.getItem('compound-experience-depth')||'understand';var w=location.pathname;if(w==='/'||w==='/live'){document.documentElement.setAttribute('data-depth',q);}}catch(e){}})();`;
 
 /**
  * The workspace shell: a quiet frame holding the sidebar, and one white panel
  * holding the page. Identity, autonomy and freshness live in the sidebar's
  * status card; the panel header keeps only "where am I" and the refresh and
- * theme controls. Ask Compound floats at the bottom; ⌘K opens from the
- * sidebar search.
+ * theme controls. Nothing floats over the content: search (⌘K, or the
+ * sidebar's Search box) holds the quick views, and the browser connection
+ * lives on Settings.
  */
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // Non-blocking: the last known answer, or "unknown" while it is checked.
+  const known = await getInstalledBinaryFreshness();
+  const freshness: BannerFreshness = { status: known.status, installedBuild: known.installedBuild, head: known.head };
   return (
     <html lang="en" suppressHydrationWarning>
       <body>
@@ -42,22 +47,21 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <header className="sticky top-0 z-40 flex min-h-12 flex-wrap items-center gap-2 border-b border-hair bg-panel/85 px-3 py-2 backdrop-blur sm:flex-nowrap sm:gap-3 sm:px-5 md:rounded-t-2xl md:px-8 md:py-3">
                 <NavContainer variant="mobile" />
                 <div className="min-w-0"><Breadcrumb /></div>
-                <div className="hidden min-w-0 2xl:block"><SystemBanner /></div>
+                <div className="hidden min-w-0 2xl:block"><SystemBanner freshness={freshness} /></div>
                 <div className="ml-auto flex shrink-0 items-center gap-1 sm:gap-2">
-                  <OperatorConnection />
                   <RefreshControl responsive />
                   <ThemeToggle responsive />
                 </div>
               </header>
-              <div className="2xl:hidden"><SystemBanner compact /></div>
+              <div className="2xl:hidden"><SystemBanner freshness={freshness} compact /></div>
               <ExperienceBar />
               <main className="mx-auto w-full flex-1 px-4 pb-24 pt-6 sm:px-6 md:px-8 md:pt-8" style={{ maxWidth: "1480px" }}>
                 {children}
+                <OperatorConnection instance={<InstanceBadge />} />
               </main>
             </div>
           </div>
         </div>
-        <AskCompound />
         <CommandK />
       </body>
     </html>

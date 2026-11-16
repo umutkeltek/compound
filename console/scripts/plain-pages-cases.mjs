@@ -284,8 +284,9 @@ async function redirectOf(render) {
 const pages = {
   Today: { path: "/", render: () => Today(), question: "Today" },
   Work: { path: "/work", render: () => Work({ searchParams: Promise.resolve({}) }), question: "Work" },
-  Decide: { path: "/reviews", render: () => Decide({ searchParams: Promise.resolve({}) }), question: "Decide" },
-  Live: { path: "/live", render: () => Live(), question: "Live" },
+  // The page names come from lib/experience.ts (Decide is "All decisions", Live is "Working now").
+  Decide: { path: "/reviews", render: () => Decide({ searchParams: Promise.resolve({}) }), question: "All decisions" },
+  Live: { path: "/live", render: () => Live(), question: "Working now" },
 };
 
 /** What a person reads: text content only (no scripts, styles or attributes). */

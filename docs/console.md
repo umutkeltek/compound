@@ -85,7 +85,8 @@ compound console serve --operator --operator-session --require-explicit-home
 
 Open **http://127.0.0.1:3777**. In an interactive terminal with the same explicit
 `COMPOUND_HOME`, run `compound console pair`, then enter its one-use code in
-**Connect operator**. The launcher never prints pairing codes into its service
+the **Browser connection** card on Settings ("For agents: how to connect"). The
+connection is not used for anything yet. The launcher never prints pairing codes into its service
 logs. Redirected pair output is refused; an explicit `--out NEW_PRIVATE_FILE`
 creates a new private file and refuses an existing file or symlink. Codes expire
 after five minutes, and at most three may be outstanding. Run `pair` again when
@@ -151,7 +152,7 @@ they do not automatically become new navigation rows.
 | **System** | What technical and authority configuration is effective? | Capabilities, routing, hooks, health, Settings, and Standing law |
 | **Outcomes** | What external change fed learning back into the system? | Product signals, hypotheses, reviews, learned next moves, and paid acquisition (Ads: spend, CPA, ROAS per platform, product, campaign — see [`docs/operations/ads-signals.md`](operations/ads-signals.md)) |
 
-Ask Compound is a global read-only overlay rather than another destination. A
+Search is the one global overlay rather than another destination. A
 Live row opens the same WorkEnvelope in Work; Today links to the owning Work or
 decision record; evidence links to its Knowledge source; contextual authority
 links to the full System record.

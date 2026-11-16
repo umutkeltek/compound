@@ -5,7 +5,10 @@ import { PendingRefresh } from "@/components/PendingRefresh";
 import { ReadChip, readsPending } from "@/components/kit";
 import { readAttention } from "@/lib/attention";
 import { waitingOnYou } from "@/lib/counts";
+import Link from "next/link";
 import { autonomyPosture } from "@/lib/briefing";
+import { settingsHref } from "@/lib/links";
+import { plainAutonomy } from "@/lib/plain-words";
 import { readProjection } from "@/lib/compound";
 import { appHue, appSlug, mapGrowthModel } from "@/lib/growth";
 
@@ -14,12 +17,10 @@ import { appHue, appSlug, mapGrowthModel } from "@/lib/growth";
  * the non-blocking `readProjection` (a cached copy at once, or "loading"),
  * so the shell renders immediately on every page.
  *
- * Badge counts come from the ONE "waiting on you" definition
- * (`waitingOnYou` over `compound attention --json`), the same function the
- * Today header and the Work header use:
- * - Decide badge = decision groups waiting on you;
- * - Work badge = work items waiting on you.
- * Before attention has been read there is no badge (unknown is not zero).
+ * The sidebar's one count, on Today, comes from the ONE "waiting on you"
+ * definition (`waitingOnYou` over `compound attention --json`), the same
+ * function the Today header uses: decisions waiting for you. Before attention
+ * has been read there is no count (unknown is not zero).
  *
  * The Apps list reads `compound product growth --json` through the same
  * cache key `getGrowth` uses, and maps it with growth's own mapper.
@@ -64,34 +65,39 @@ async function NavApps() {
   return <NavAppLinks apps={apps} total={apps.length} />;
 }
 
+/**
+ * The sidebar status card, in plain words: what agents may do without asking
+ * (lib/plain-words.ts plainAutonomy, the same sentence Today uses), when the
+ * waiting list was last read, and a link to the Settings section that owns
+ * it. The instance badge shows here only when this server is unpinned (a
+ * warning); otherwise it lives on Settings.
+ */
 async function NavStatus() {
   const [{ read: attentionRead }, policyRead] = await Promise.all([
     readAttention(),
     readProjection(["policy", "operator-authority", "--json"]),
   ]);
   const autonomy = policyRead.value ? autonomyPosture(policyRead.value) : null;
+  const plain = autonomy ? plainAutonomy(autonomy.level) : "";
   return (
-    <div className="rounded-xl border border-hair bg-panel p-3 shadow-sm">
-      <div className="text-2xs text-faint">Autonomy</div>
-      {autonomy ? (
-        <>
-          <div className="flex items-baseline gap-2">
-            <span className="text-xl font-semibold tracking-tight text-ink">{autonomy.level}</span>
-            <span className={`h-1.5 w-1.5 rounded-full ${autonomy.tone === "good" ? "bg-good" : "bg-seam"}`} aria-hidden />
-          </div>
-          <p className="mt-1 text-xs leading-snug text-muted" title="Kill switch: compound policy autonomy-halt · source: compound policy operator-authority --json">
-            {autonomy.detail}
-          </p>
-        </>
-      ) : (
-        <p className="mt-1 text-xs leading-snug text-muted">
-          {policyRead.status === "unreachable" ? "Could not read the autonomy level." : "Reading the autonomy level…"}
-        </p>
-      )}
-      <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-        <ReadChip read={attentionRead} />
-        <InstanceBadge />
+    <div className="rounded-xl border border-hair bg-panel p-3 shadow-sm" data-status-card>
+      <div className="flex items-center gap-2 text-2xs text-faint">
+        <span>What agents may do</span>
+        {autonomy ? <span className={`h-1.5 w-1.5 rounded-full ${autonomy.tone === "good" ? "bg-good" : "bg-seam"}`} aria-hidden /> : null}
       </div>
+      <p className="mt-1 text-xs leading-snug text-ink">
+        {autonomy
+          ? plain || `Their permission level is ${autonomy.level}.`
+          : policyRead.status === "unreachable" ? "Could not read what agents may do." : "Reading what agents may do…"}
+      </p>
+      <div className="mt-2.5 flex flex-wrap items-center gap-1.5 text-2xs text-faint">
+        <span>Waiting list</span>
+        <ReadChip read={attentionRead} />
+        <InstanceBadge onlyWhenUnpinned />
+      </div>
+      <Link href={settingsHref("safety-permissions")} className="mt-2 inline-block text-xs font-semibold text-work hover:underline">
+        Safety and permissions →
+      </Link>
     </div>
   );
 }
@@ -107,7 +113,6 @@ export async function NavContainer({ variant = "desktop" }: { variant?: "desktop
     <>
       <Nav
         decideCount={waiting?.groups ?? null}
-        workCount={waiting?.workItems ?? null}
         variant={variant}
         apps={<NavApps />}
         status={<NavStatus />}

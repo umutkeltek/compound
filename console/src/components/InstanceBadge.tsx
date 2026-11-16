@@ -13,10 +13,12 @@ import { INSTANCE_PIN } from "@/lib/instance-pin";
  * Server component: the port is read from the request Host header, so the badge
  * reflects the port the browser is actually talking to, not a build-time guess.
  */
-export async function InstanceBadge() {
+export async function InstanceBadge({ onlyWhenUnpinned = false }: { onlyWhenUnpinned?: boolean } = {}) {
   const host = (await headers()).get("host") ?? "";
   const port = host.includes(":") ? host.slice(host.lastIndexOf(":") + 1) : "";
   const { homeBasename, homeHash, home, explicit, buildKind } = INSTANCE_PIN;
+  // The sidebar shows it only as a warning; Settings shows it always.
+  if (onlyWhenUnpinned && explicit) return null;
 
   const tone = explicit
     ? "border-hair bg-soft text-muted"

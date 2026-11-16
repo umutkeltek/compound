@@ -13,6 +13,20 @@ const DEPTHS: Array<{ id: Depth; label: string }> = [
 
 const DEPTH_KEY = "compound-experience-depth";
 
+/** The only pages with a depth control; depth hides nothing anywhere else. */
+export const DEPTH_PAGES: readonly string[] = ["/", "/live"];
+
+/** The depth attribute for <html> on this page: the chosen depth on Today and Live, none elsewhere. */
+export function depthAttributeFor(pathname: string, depth: string): string | null {
+  return DEPTH_PAGES.includes(pathname) ? depth : null;
+}
+
+function applyDepth(pathname: string, depth: Depth) {
+  const value = depthAttributeFor(pathname, depth);
+  if (value) document.documentElement.dataset.depth = value;
+  else delete document.documentElement.dataset.depth;
+}
+
 function cookieDepth(): string {
   const match = document.cookie.split("; ").find((part) => part.startsWith(`${DEPTH_KEY}=`));
   return match ? decodeURIComponent(match.slice(DEPTH_KEY.length + 1)) : "";
@@ -34,26 +48,33 @@ function writeDepthCookie(depth: Depth) {
 export function ExperienceBar() {
   const pathname = usePathname();
   const router = useRouter();
-  const progressive = pathname === "/" || pathname === "/live";
+  const progressive = DEPTH_PAGES.includes(pathname);
   const [depth, setDepth] = useState<Depth>("understand");
+  // The saved depth is read after mount; until then the first-paint script's attribute stands.
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     const saved = window.localStorage.getItem(DEPTH_KEY) as Depth | null;
     const resolved = DEPTHS.some((item) => item.id === saved) ? saved! : "understand";
     setDepth(resolved);
-    document.documentElement.dataset.depth = resolved;
+    setReady(true);
     if (cookieDepth() !== resolved) {
       writeDepthCookie(resolved);
       if (resolved === "technical") router.refresh();
     }
   }, [router]);
 
+  // A depth chosen on Today or Live never hides a section on another page.
+  useEffect(() => {
+    if (ready || !DEPTH_PAGES.includes(pathname)) applyDepth(pathname, depth);
+  }, [pathname, depth, ready]);
+
   function choose(next: Depth) {
     const crossesTechnical = (depth === "technical") !== (next === "technical");
     setDepth(next);
     window.localStorage.setItem(DEPTH_KEY, next);
     writeDepthCookie(next);
-    document.documentElement.dataset.depth = next;
+    applyDepth(pathname, next);
     if (crossesTechnical) router.refresh();
   }
 

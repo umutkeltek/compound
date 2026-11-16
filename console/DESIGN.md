@@ -440,8 +440,9 @@ decision-relevant summary, then link to the owner; they do not create a second i
   live here. Work and Decide may open a contextual authority inspector for the active object.
 - **Outcomes owns external feedback.** Product signals, hypotheses, reviews, and learned next moves
   belong here; an internal Receipt is not an outcome merely because work completed.
-- **Ask Compound is a global read-only overlay, not an eighth destination.** It composes registered
-  views, cites their owners and freshness, and never invents authority or duplicate state.
+- **Search is the one global overlay, not a destination.** It finds pages, apps, decisions and work,
+  and its quick views replaced the Ask Compound box; it never invents authority or duplicate state,
+  and nothing floats over page content.
 
 Cross-surface navigation preserves object identity: a Live row opens the same WorkEnvelope in
 Work; a Today seam opens its decision or work owner; evidence opens its Knowledge source; authority
@@ -475,7 +476,8 @@ layout, invent activity to make the system feel alive, or persist prompt content
 
 ### 10.3 Generative view boundary (Tambo-ready)
 
-Ask Compound may translate natural language into registered view invocations. The model composes
+The read-only composition seam (`/api/ask`; no page calls it since Ask Compound's box became Search's
+quick views) may translate natural language into registered view invocations. The model composes
 the view; the registry owns rendering and every act. The current deterministic AI sandbox is a
 replaceable adapter boundary for Tambo or another model runtime. Replacing it MUST NOT grant the
 model mutation authority: registered actions still cross the existing policy, confirmation,
@@ -509,10 +511,10 @@ The operator supplied two references: a task-board workspace and a performance-o
 These deviations from §1–§10 follow from them.
 
 - **Shell.** The sidebar sits on a quiet frame (`--page`). The page lives in one white, rounded,
-  hairline panel (`.shell-panel`). The sidebar order is workspace switcher, search (opens ⌘K),
-  Essentials, Apps, Growth, then Knowledge and System. Knowledge and System collapse until one of
-  their pages is active. Every route stays one click away. Autonomy, freshness and instance identity
-  move from the top bar into the sidebar status card. Ask Compound floats at the bottom centre.
+  hairline panel (`.shell-panel`). The sidebar order is workspace, search (opens ⌘K), then the six
+  sections (see "Console clarity"), with the apps under Apps. Every route stays one click away, as
+  a section or a tab. Autonomy, freshness and instance identity move from the top bar into the
+  sidebar status card. Nothing floats over the content.
 - **Neutrals.** Light `--page/--ink/--muted/--faint/--hair` move from blue-grey to faintly warm
   grey. Dark mode is unchanged.
 - **Type.** Page titles use a new `--text-3xl` step (34px). A `PageHeader` stat strip reads
@@ -616,9 +618,21 @@ the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line
 
 ## Console clarity and bounded reads
 
-- `lib/experience.ts` owns the sidebar, breadcrumb and command-palette route names.
+- `lib/experience.ts` owns every name a person sees for a place. The sidebar is
+  six sections named after his questions (Today, Apps, Work, Agents, Knowledge,
+  Settings) plus Search, with his apps listed under Apps and the app he is on
+  always shown. A section's pages are one row of tabs at the foot of the page
+  header, so each stays one click away; a one-page section has no row. The
+  breadcrumb reads section › page › item. A page that leaves the menu stays in
+  the registry as unlisted, so its address and breadcrumb keep working; pages
+  agents use sit in Settings' quiet back room. The sidebar has one count: what
+  waits for him, on Today; no page counts on groups and no Work count.
+  Search finds every page by name, earlier name and purpose, every app by name
+  and alias, waiting decisions by the words Today shows and open work by title.
+  It reads the copies the pages already cache once, when it opens; typing never
+  starts a read, a read still loading says so, and it offers no terminal commands.
   Use `PageHeader` for the page label, a short lead or answer, and named freshness.
-  A question or product name may be the title when its section label stays visible.
+  An item or a question may be the title; the section's name stays above it.
 - Decide leads with the proposal and opens on **Next step**. Choices, status,
   history and evidence remain available without repeating the same blocked
   sentence on every row. Search matches the displayed area names; area filters
@@ -646,10 +660,14 @@ exercise these seams, including cold page reads and stale or partial authority.
 
 ## Page journeys (supersedes question-title and read-only fallback copy above)
 
-- Pages lead with their familiar navigation name, a short purpose or current
-  answer, and one useful primary link. `lib/experience.ts` owns default purposes
+- Pages lead with their registry name (the same words as their tab), a short
+  purpose or current answer, and at most one header button. `lib/experience.ts` owns default purposes
   and destinations; `PageHeader` renders them. Dates and read status are secondary.
-- Primary links reach real content, filters, or relevant pages. Empty and loading
+- A page has a header button only when it leads somewhere he is not already
+  looking: another page, a filtered list, or a part far below the first screen.
+  No button scrolls to what is already on screen or repeats a tab of the same
+  section; no button is better than a decorative one. In-page links land below
+  the sticky top bar (`scroll-padding-top` on `html`). Empty and loading
   states retain useful destinations. Work filters are shareable and respond to
   browser navigation. Commands containing placeholders are never primary actions.
 - Work details lead with the goal, assigned agent, latest recorded blocker and
@@ -660,8 +678,12 @@ exercise these seams, including cold page reads and stale or partial authority.
   task and starts nothing. Never claim that operator mode enables browser writes,
   that unavailable actions are queued for repair, or that Park/Dismiss works
   without checking its actual authority.
-- Results, Rules, Agents and Views are the navigation names. Supporting copy
-  explains consequences and next steps. Internal identifiers stay in detail.
+- Tab names are words he would say out loud: All decisions, All apps, Growth
+  gaps, Results, Ads, Working now, All agents, Waiting on each other, Memory,
+  Rules, Sources, Models and cost. Earlier names (Decide, Portfolio, Live,
+  Coordination, Routing, Map, Views) are aliases so `PageHeader name=` callers
+  keep working; they are not shown. Supporting copy explains consequences and
+  next steps. Internal identifiers stay in detail.
 
 Coordination also uses the existing background reader and refreshes while waiting;
 a cold read must not delay rendering or appear as an empty list of agents.
