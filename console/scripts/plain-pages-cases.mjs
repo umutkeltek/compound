@@ -132,7 +132,7 @@ const reply = {
   // One item's own record, with the lifecycle list \`work show --json\` returns.
   "work show work_fx_held --json": {
     id: "work_fx_held", state: "held", owner: "claude_code", created_at: iso(12), success_predicate: "Fixture item on hold",
-    canonical_surface: "product:fixture-app", evidence_refs: ["rec_fixture_one"],
+    canonical_surface: "product:fixture-app", evidence_refs: ["ev_fixture_one", "land-check:landcheck_fixture01", "ratt_20300101T000000Z_fixture1", "rec_fixture_one"],
     lifecycle: [
       { ts: ns(12), from: "", to: "ready", note: "created" },
       { ts: ns(11), from: "ready", to: "claimed", by: "claude_code:fixture-lane", note: "claimed" },
@@ -391,7 +391,14 @@ try {
   assert.match(heldHTML, /href="\/apps\/fixture-app"/, "Related: its app page");
   assert.match(heldHTML, /href="\/work\?lens=table&amp;filter=all&amp;owner=claude_code"/, "Related: its agent's work");
   assert.match(heldHTML, /href="\/reviews\?decision=workbench%3Ablocked-on-you"/, "Related: the Decide entry that lists it");
-  assert.match(heldHTML, /href="\/map\/lineage\/rec_fixture_one"/, "Related: evidence links to its history page");
+  assert.match(heldHTML, /href="\/map\/lineage\/ev_fixture_one"/, "Related: evidence links to its history page");
+  // Only what a page can open is a link: an agent run, a landing check and a result record are named in words, not linked to "not found".
+  for (const href of [...heldHTML.matchAll(/href="\/map\/lineage\/([^"]+)"/g)].map((m) => decodeURIComponent(m[1]))) {
+    assert.match(href, /^(?:ev|cand|claim|work)_/, `the history page resolves ${href}`);
+  }
+  assert.match(held, /Evidence Evidence ev_fixture_one Landing check landcheck_fixture01 2 more below/, "each record by what it is, the id small");
+  assert.match(held, /Agent run ratt_20300101T000000Z_fixture1/);
+  assert.match(held, /Result record rec_fixture_one/);
   assert.match(held, /History Running → On hold by Claude Code/, "history, newest first, in plain words");
   assert.ok(held.indexOf("Running → On hold") < held.indexOf("Created as Ready to start"), "newest first");
   assert.match(held, /For agents: commands and technical record/, "commands sit behind a disclosure for agents");

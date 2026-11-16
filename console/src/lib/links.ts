@@ -237,6 +237,24 @@ export function memoryCandidateHref(candidateId: string): string {
   return id ? `/memory#${encodeURIComponent(id)}` : memoryReviewHref();
 }
 
+/**
+ * Where a record reference leads, or null when no page can open it. Only
+ * what resolves is linked: a work item opens its own page; evidence, a
+ * proposed memory and a memory open their evidence history (the history
+ * page resolves those ids); a web address opens itself. Agent runs, landing
+ * checks, commits, result records and the rest have no page that reads them
+ * yet, so they are shown as text, never as a link to "not found".
+ */
+export function recordHref(ref: string): string | null {
+  const value = (ref ?? "").trim();
+  const work = value.replace(/^work:/, "");
+  if (isWorkId(work)) return workItemHref(work);
+  const id = value.replace(/^evidence:/, "");
+  if (/^(?:ev|cand|claim)_[\w-]+$/.test(id)) return evidenceHistoryHref(id);
+  if (/^https?:\/\/[^\s]+$/i.test(value)) return value;
+  return null;
+}
+
 /** Link to a record's evidence history: `/map/lineage/<id>`. An empty id links to the map. */
 export function evidenceHistoryHref(id: string): string {
   const value = (id ?? "").trim();

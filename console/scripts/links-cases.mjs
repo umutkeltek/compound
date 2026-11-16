@@ -97,6 +97,29 @@ assert.equal(memoryCandidateHref(""), "/memory#memory-review");
 assert.equal(evidenceHistoryHref("ev_0123456789ab"), "/map/lineage/ev_0123456789ab");
 assert.equal(evidenceHistoryHref(""), "/map");
 
+// A record reference links only where a page opens it; the rest are words, never a link to "not found".
+{
+  const { recordHref } = await import("../src/lib/links.ts");
+  const { recordRefWords } = await import("../src/lib/plain-words.ts");
+  assert.equal(recordHref("work_fixture_item"), "/work/work_fixture_item");
+  assert.equal(recordHref("work:work_fixture_item"), "/work/work_fixture_item");
+  assert.equal(recordHref("ev_0123456789ab"), "/map/lineage/ev_0123456789ab");
+  assert.equal(recordHref("evidence:ev_0123456789ab"), "/map/lineage/ev_0123456789ab");
+  assert.equal(recordHref("cand_0123456789ab"), "/map/lineage/cand_0123456789ab");
+  assert.equal(recordHref("https://docs.example/page"), "https://docs.example/page");
+  for (const ref of ["ratt_20300101T000000Z_fixture1", "land-check:landcheck_fixture01", "commit:0123456789abcdef0123", "rec_fixture", "tr_fixture",
+    "proof-check:pfrs_fixture", "presubmit-execution:artifact:sha256:00", "/srv/fixture/notes.md", "finding:find_fixture", "ctx_fixture"]) {
+    assert.equal(recordHref(ref), null, `${ref} has no page that reads it`);
+  }
+  assert.deepEqual(recordRefWords("ratt_20300101T000000Z_fixture1"), { kind: "Agent run", id: "ratt_20300101T000000Z_fixture1" });
+  assert.deepEqual(recordRefWords("land-check:landcheck_fixture01"), { kind: "Landing check", id: "landcheck_fixture01" });
+  assert.deepEqual(recordRefWords("commit:0123456789abcdef0123"), { kind: "Commit", id: "0123456789ab" });
+  assert.deepEqual(recordRefWords("presubmit-execution:artifact:sha256:00"), { kind: "Test run before landing", id: "artifact:sha256:00" });
+  assert.deepEqual(recordRefWords("/srv/fixture/notes.md"), { kind: "File", id: "notes.md" });
+  assert.deepEqual(recordRefWords("https://docs.example/page"), { kind: "Web page", id: "docs.example/page" });
+  assert.deepEqual(recordRefWords("something-else"), { kind: "Record", id: "something-else" });
+}
+
 // No builder ever writes a placeholder such as <id>.
 for (const href of [workListHref({ trace: "<id>" }), workItemHref(" "), appHref(" "), memoryCandidateHref(" "), evidenceHistoryHref(" ")]) {
   assert.doesNotMatch(href, /[<>]|\/$/, `no placeholder or dangling slash in ${href}`);
