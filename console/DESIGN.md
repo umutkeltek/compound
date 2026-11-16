@@ -649,3 +649,6 @@ exercise these seams, including cold page reads and stale or partial authority.
   without checking its actual authority.
 - Results, Rules, Agents and Views are the navigation names. Supporting copy
   explains consequences and next steps. Internal identifiers stay in detail.
+
+Coordination also uses the existing background reader and refreshes while waiting;
+a cold read must not delay rendering or appear as an empty list of agents.

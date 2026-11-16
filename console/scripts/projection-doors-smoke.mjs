@@ -245,6 +245,8 @@ function assertWorkDetailReader() {
         const work = await getWork(id);
         assert.equal(work?.id, id, "work-detail reader must preserve exact owner-created ID");
         assert.equal(work?.desired_outcome, "Inspect the synthetic task");
+        assert.ok(Array.isArray(work?.lifecycle) && work.lifecycle.some((event) => event.to === "ready"),
+          "work detail must retain structured lifecycle notes");
       }
     `], { env, stdio: "pipe" });
     // A not-found response would also return null. Observe the CLI boundary to

@@ -1,6 +1,7 @@
-import { FreshnessChip, PageHeader } from "@/components/kit";
+import { hasCopy, PageHeader, ReadChip, ReadNotice, readsPending } from "@/components/kit";
 import { CoordinationBoard, type ExecDetail } from "@/components/coordination/CoordinationBoard";
-import { getCoordination } from "@/lib/coordination";
+import { PendingRefresh } from "@/components/PendingRefresh";
+import { readCoordination } from "@/lib/coordination";
 import { getTraffic } from "@/lib/traffic";
 
 export const dynamic = "force-dynamic";
@@ -20,7 +21,7 @@ export const dynamic = "force-dynamic";
 export default async function CoordinationPage({ searchParams }: { searchParams: Promise<{ actor?: string }> }) {
   const { actor } = await searchParams;
   const actorParam = typeof actor === "string" ? actor.trim() : "";
-  const [coordination, traffic] = await Promise.all([getCoordination(actorParam || undefined), getTraffic()]);
+  const [coordination, traffic] = await Promise.all([readCoordination(actorParam || undefined), getTraffic()]);
 
   const execDetail: Record<string, ExecDetail> = {};
   for (const lane of traffic.lanes) {
@@ -37,23 +38,18 @@ export default async function CoordinationPage({ searchParams }: { searchParams:
 
   return (
     <div className="flex flex-col gap-6">
+      <PendingRefresh pending={readsPending(coordination.read, traffic.read)} stamp={Date.now()} />
       <PageHeader
         name="Coordination"
-        right={<FreshnessChip generatedAt={coordination.view.generatedAt || traffic.generatedAt} source="compound coordination / stream" />}
+        right={<ReadChip read={coordination.read} />}
       />
-      <p className="text-sm text-muted" style={{ maxWidth: "var(--read-max)" }}>
-        Who is doing what — and who is waiting on whom to start. Each actor's face is the read-only planning half of
-        `work continue` (workbench, candidate prep, lane-capacity gate) without executing any of it; the Waiting-on
-        section is the global dependency graph. State streams in live; the projection reconciles on a short poll
-        whether or not you are at the wheel.
-      </p>
-      <CoordinationBoard
+      {!hasCopy(coordination.read) ? <ReadNotice read={coordination.read} label="agent coordination" /> : <CoordinationBoard
         view={coordination.view}
-        doorStatus={coordination.status}
-        doorError={coordination.error}
+        doorStatus={coordination.read.status === "loading" ? "unreachable" : coordination.read.status}
+        doorError={coordination.read.error}
         execDetail={execDetail}
         runAttemptsPresent={traffic.runAttemptsPresent}
-      />
+      />}
     </div>
   );
 }

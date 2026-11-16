@@ -158,13 +158,13 @@ try {
   // The real settings/loops/law page entry points must return while their
   // expensive cold projections are still queued. A blocking read returns
   // values instead and fails both the timing and pending-state assertions.
-  const [{ default: Settings }, { default: Loops }, { default: Law }, products] = await Promise.all([
+  const [{ default: Settings }, { default: Loops }, { default: Law }, products, { default: Coordination }] = await Promise.all([
     import("../src/app/settings/page.tsx"), import("../src/app/loops/page.tsx"),
-    import("../src/app/standing-law/page.tsx"), import("../src/lib/products.ts"),
+    import("../src/app/standing-law/page.tsx"), import("../src/lib/products.ts"), import("../src/app/traffic/page.tsx"),
   ]);
   const pageStart = performance.now();
-  const coldPages = await Promise.all([Settings({}), Loops(), Law()]);
-  assert.ok(performance.now() - pageStart < 750, "cold settings, loops and law must not await collectors");
+  const coldPages = await Promise.all([Settings({}), Loops(), Law(), Coordination({ searchParams: Promise.resolve({}) })]);
+  assert.ok(performance.now() - pageStart < 750, "cold settings, loops, law and coordination must not await collectors");
   function nodes(root, name) {
     if (Array.isArray(root)) return root.flatMap((node) => nodes(node, name));
     if (!root || typeof root !== "object") return [];
