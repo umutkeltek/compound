@@ -65,7 +65,9 @@ try {
     { cookie: `compound_operator_session=${SESSION}; compound_operator_session=${SESSION}` },
   ]) assert.equal((await session.authorizeOperatorSession(request({ headers })))?.status, 403);
   assert.equal(calls, before, "untrusted browser requests must not reach native broker");
-  assert.equal((await session.authorizeOperatorSession(request({ url: "http://127.0.0.1:9000/api/decision/execute" })))?.status, 403);
+  const wrongPort = new URL("/api/decision/execute", ORIGIN);
+  wrongPort.port = "9000";
+  assert.equal((await session.authorizeOperatorSession(request({ url: wrongPort.href })))?.status, 403);
   assert.equal((await session.authorizeOperatorSession(request({ headers: { cookie: `compound_operator_session=${CAPABILITY}` } })))?.status, 403);
   assert.equal(consoleMutationBlockedResponse(request())?.status, 403, "new opaque cookie must never authenticate legacy capability extension");
   const paired = await session.pairOperatorSession(request({ headers: { "content-type": "application/json" }, body: JSON.stringify({ code: PAIR }) }));
