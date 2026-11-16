@@ -430,6 +430,9 @@ try {
     assert.match(warm[name], /1 running, 1 picked up but not started, 2 waiting for a proof check/, `${name}: in-progress split`);
     assert.match(warm[name], /2 of them were picked up more than 7 days ago/, `${name}: age from claimed_at`);
   }
+  // Today's "outside changes" tile counts finished work, which no Work list holds: it says what it counts and links nowhere else.
+  assert.match(warm.Today, /work items finished in 7 days whose change reached a product or the world, of \d+ finished/, "the tile says what it counts");
+  assert.doesNotMatch(warm.Today, /See all work/, "the finished-work count does not open the list of open work");
   // Work leads with what is stopped, splits in progress into its named parts,
   // and every number opens the List of exactly those items.
   // Waiting for you and waiting on something else are the waiting list's own sorting, named apart as Today and Decide name them.
