@@ -576,11 +576,20 @@ the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line
   secondary text), the plain reasons and next steps, and `BANNED_PHRASES`. The wired
   work-legibility smoke runs `scripts/plain-pages-cases.mjs`, which renders the four pages against
   a synthetic binary and fails on any banned phrase or raw area path in the visible text.
+  A work item has one title, from `lib/work-title.ts` (stated title, goal, success condition, else
+  words derived from the record; never a generic "Work details"), short on cards and lists and
+  whole on its page. An agent has one key and one name, from `lib/harness-label.ts` (`agentKey`,
+  `agentDisplayName`): every spelling of one agent groups and filters as one. Links to Work, a work
+  item, Decide, an app, Ads, a Settings section, Memory and evidence history come from
+  `lib/links.ts`, and the Work page reads its parameters through `parseWorkListParams`.
 - **Numbers.** `lib/counts.ts` holds one function per concept, with its unit in the label:
   waiting for you (decisions, items, work items), open work items, in progress (`claimed`,
   `running`/`in_progress`, `verifying`), picked up more than 7 days ago (from `claimed_at`: the
   projections carry no "last changed" time for open work), on hold (`held`, `blocked`), agents
   holding work, and decisions ready now. Pages and the sidebar call these, never their own count.
+  The rules for one work item (`isInProgress`, `isOnHold`, `isWaitingForCheck`, `isStale` and its
+  threshold `STALE_AFTER_DAYS`) live in the client-safe `lib/work-state.ts`; `counts.ts` counts with
+  them and re-exports them, so a client component asks the same question without its own copy.
 - **Send only what is shown.** Decide sends the full detail of the open decision only
   (`?decision=<key>` re-renders with that one's detail); filed is a count plus one row per kind
   (`?filed=<kind>` opens its newest 100). Live's timeline gets its six rows, and the list of
