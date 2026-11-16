@@ -90,6 +90,9 @@ type Inputs struct {
 	// DraftPlaceholders are the texts owners stamp on a draft nobody has
 	// written yet; an ask resting on one is set aside, not counted.
 	DraftPlaceholders []string
+	// Work reads the current state of work an answer named (see
+	// outcomes.go). Nil leaves those states unknown.
+	Work WorkLookup
 }
 
 // ActivityDayInput carries one day's pre-computed unaccounted activity blocks (from
@@ -131,6 +134,10 @@ type Report struct {
 	CoveredByRule []CoveredByRule `json:"covered_by_rule"`
 	// Rules says whether his standing rules were read for this report.
 	Rules RulesState `json:"rules"`
+	// Answered lists every review record that carries a recorded answer,
+	// newest first, with what came of it (see outcomes.go). It is not part
+	// of any count.
+	Answered []Answer `json:"answered"`
 }
 
 // ReportFreshness says when each source was read and how new its newest
@@ -260,6 +267,7 @@ func Build(in Inputs, now time.Time) Report {
 		Groups:        []Group{},
 		SetAside:      []SetAside{},
 		CoveredByRule: []CoveredByRule{},
+		Answered:      []Answer{},
 	}
 	if in.Rules != nil {
 		report.Rules = RulesState{Read: true, ActiveStandingGrants: len(in.Rules.activeGrants(now))}
@@ -315,6 +323,9 @@ func Build(in Inputs, now time.Time) Report {
 	}
 	sortGroups(report.Groups)
 	report.Counts = countGroups(report.Groups, report.Counts.FallbackGroups)
+	if in.Reviews != nil {
+		report.Answered = answersFromReviews(*in.Reviews, liveReviewItems(report.Groups), in.Probe, in.Work)
+	}
 	queueRead[SourceReviews] = reviewTotalRead
 	report.Totals = buildTotals(report, queueRead, unchecked)
 	report.Freshness = buildFreshness(in, now)

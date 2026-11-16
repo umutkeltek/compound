@@ -92,6 +92,7 @@ func cmdAttention(args []string) {
 		Workbench: &workbench,
 		Executors: &executors,
 		Activity:  activityAttentionInput(homePath, &workbench, now),
+		Work:      attentionWorkLookup{store: store},
 	}, homePath, now), now)
 	if jsonOut {
 		operatorAttention, err := hookplan.ReadOperatorAttention(hookplan.OperatorAttentionRequest{
@@ -121,6 +122,18 @@ func cmdAttention(args []string) {
 		return
 	}
 	printAttentionTextWithReceiptOnlyGrade(report, receiptOnlyGrade)
+}
+
+// attentionWorkLookup reads the current state of work an answer named,
+// through the read-only work store.
+type attentionWorkLookup struct{ store *work.Store }
+
+func (l attentionWorkLookup) WorkState(workID string) (string, bool) {
+	w, err := l.store.Get(workID)
+	if err != nil {
+		return "", false
+	}
+	return w.State, true
 }
 
 // attentionRules reads his standing grants the way the policy owner loads
@@ -327,6 +340,15 @@ func printAttentionTextWithReceiptOnlyGrade(report attention.Report, receiptOnly
 			report.Totals.ClosedWithoutYou,
 			report.Totals.SetAside-report.Totals.ClosedWithoutYou,
 		)
+	}
+	if len(report.Answered) > 0 {
+		back := 0
+		for _, answer := range report.Answered {
+			if answer.StillWaiting {
+				back++
+			}
+		}
+		fmt.Printf("answers on file: %d (back in your list: %d) — what came of each, with --json\n", len(report.Answered), back)
 	}
 	if report.Totals.CoveredByRule > 0 {
 		fmt.Printf("covered by your standing rules, not counted: %d (nothing works them yet) — view with --json\n", report.Totals.CoveredByRule)
