@@ -146,7 +146,9 @@ export default async function WorkDetail({ params }: { params: Promise<{ id: str
     <div className="flex flex-col gap-6 pb-16">
       <PendingRefresh pending={readsPending(workbenchRead, projectIndex.reads.apps, projectIndex.reads.inventory)} stamp={nowMs} />
       <WorkBackLink />
-      <PageHeader name="Work" title={workTitleFull(work)}
+      {/* No header button: nothing on this page changes the work, and the Work
+          list's own lead and action do not describe one item. */}
+      <PageHeader name="Work" title={workTitleFull(work)} lead="" action={null}
         right={<><StateBadge state={state} label={plainState(state || "unknown")} /><span>{nextStep.owner === "No agent" ? "No agent has it" : `Held by ${nextStep.owner}`}</span></>} />
 
       <section className="flex flex-col gap-4 rounded-xl border border-hair bg-panel p-5" aria-label="When and what it is connected to">

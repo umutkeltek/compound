@@ -376,6 +376,7 @@ try {
   assert.match(held, /Created \d{1,2} \w{3} \d{4} · Picked up \d{1,2} \w{3} \d{4} \(3 days ago\) · Last changed \d{1,2} \w{3} \d{4} \(3 days ago\)/, "dates under the title");
   assert.match(held, /Recorded reason On hold Waiting for a fixture device\. Nothing moves until the hold is lifted\./, "the recorded reason, without the policy suffix");
   assert.doesNotMatch(held, /The assigned agent needs to check|See next step|Work details/, "no generic line, no button that only scrolls");
+  assert.doesNotMatch(held, /Review blocked work|Follow progress and resolve/, "the Work list's button and lead are not the item's");
   assert.match(held, /Held by Claude Code/, "the agent by its one name");
   assert.match(heldHTML, /href="\/apps\/fixture-app"/, "Related: its app page");
   assert.match(heldHTML, /href="\/work\?lens=table&amp;filter=all&amp;owner=claude_code"/, "Related: its agent's work");
