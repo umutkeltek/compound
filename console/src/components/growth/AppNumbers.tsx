@@ -60,17 +60,53 @@ export function funnelSubtitle(steps: FunnelStep[]): string {
   return `From being seen to paying again${shared ? `, ${shared}` : ""}. A dashed card means nothing measures that step yet.`;
 }
 
+/** Ads ran for this app: a spend series or a spend tile with data. */
+export function appHasAds(app: GrowthApp): boolean {
+  return (app.series.ad_spend_usd ?? []).some((p) => p.value != null) || app.kpis.ad_spend_usd?.hasData === true;
+}
+
+/**
+ * The app's ads: spend, installs and cost per install, dated, each opening
+ * this app's Ads page (`adsHref`). One quiet line when no ad report names it.
+ */
+export function AppAds({ app }: { app: GrowthApp }) {
+  const ads = adsHref({ product: app.productId, window: 30 });
+  if (!appHasAds(app)) {
+    return (
+      <section id="app-ads" className="scroll-mt-24">
+        <p className="text-sm text-muted">
+          <span className="font-medium text-ink">Ads:</span> none run for this app. No ad report names it.
+        </p>
+      </section>
+    );
+  }
+  return (
+    <section id="app-ads" className="flex scroll-mt-24 flex-col gap-3" aria-labelledby="app-ads-title">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 id="app-ads-title" className="text-lg font-semibold tracking-tight text-ink">Ads</h2>
+        <Link href={ads} className="text-sm font-medium text-work hover:underline">
+          See this app&apos;s campaigns →
+        </Link>
+      </div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <KpiTile kpiKey="ad_spend_usd" kpi={app.kpis.ad_spend_usd} color="var(--viz-2)" href={ads} />
+        <KpiTile kpiKey="ad_conversions" kpi={app.kpis.ad_conversions} color="var(--viz-1)" href={ads} />
+        <KpiTile kpiKey="ad_cpa_usd" kpi={app.kpis.ad_cpa_usd} color="var(--memory-fg)" href={ads} />
+      </div>
+    </section>
+  );
+}
+
 /**
  * "How it is doing": every number dated. One proceeds figure (the tile), the
- * ads that bring installs (spend, installs, cost per install, each opening
- * this app's Ads page), the funnel and the daily charts with their days.
+ * funnel and the daily charts with their days. Ads have their own block
+ * (`AppAds`).
  */
 export function AppNumbers({ app }: { app: GrowthApp }) {
-  const hasAds = (app.series.ad_spend_usd ?? []).some((p) => p.value != null) || app.kpis.ad_spend_usd?.hasData === true;
+  const hasAds = appHasAds(app);
   const hasWeb = (app.series.web_clicks ?? []).some((p) => p.value != null);
   const hasSales = (app.series.proceeds_usd ?? []).some((p) => p.value != null);
   const hasSources = app.freshness.sources.length > 0;
-  const ads = adsHref({ product: app.productId, window: 30 });
   const seriesDays = seriesPeriod(app.series.proceeds_usd ?? app.series.units);
 
   return (
@@ -101,24 +137,6 @@ export function AppNumbers({ app }: { app: GrowthApp }) {
             <KpiTile kpiKey="units" kpi={app.kpis.units} color="var(--viz-2)" />
             <KpiTile kpiKey="web_clicks" kpi={app.kpis.web_clicks} color="var(--cap-fg)" />
           </div>
-
-          {hasAds ? (
-            <div className="flex flex-col gap-2" id="app-ads">
-              <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <h3 className="text-md font-semibold text-ink">Ads</h3>
-                <Link href={ads} className="text-sm font-medium text-work hover:underline">
-                  See this app&apos;s campaigns →
-                </Link>
-              </div>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                <KpiTile kpiKey="ad_spend_usd" kpi={app.kpis.ad_spend_usd} color="var(--viz-2)" href={ads} />
-                <KpiTile kpiKey="ad_conversions" kpi={app.kpis.ad_conversions} color="var(--viz-1)" href={ads} />
-                <KpiTile kpiKey="ad_cpa_usd" kpi={app.kpis.ad_cpa_usd} color="var(--memory-fg)" href={ads} />
-              </div>
-            </div>
-          ) : (
-            <p className="text-sm text-muted">No ads run for this app: no ad report names it.</p>
-          )}
 
           <Panel title="Funnel" subtitle={funnelSubtitle(app.funnel)}>
             <FunnelStrip steps={app.funnel} />

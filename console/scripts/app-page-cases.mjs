@@ -9,7 +9,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { buildWorkProjectIndex } from "../src/lib/work-project.ts";
 import { appWorkModel } from "../src/components/growth/app-work.ts";
 import { AppWork, APP_WORK_SHOWN } from "../src/components/growth/AppWork.tsx";
-import { AppNumbers, funnelSubtitle } from "../src/components/growth/AppNumbers.tsx";
+import { AppAds, AppNumbers, funnelSubtitle } from "../src/components/growth/AppNumbers.tsx";
+import { AppNeedsYou } from "../src/components/growth/AppNeedsYou.tsx";
+import { readFileSync } from "node:fs";
 import { KpiTile } from "../src/components/growth/GrowthKit.tsx";
 import { AdsPlatformCard } from "../src/components/ads/AdsPlatformCard.tsx";
 import { mapTotals } from "../src/lib/ads.ts";
@@ -147,12 +149,14 @@ console.log("app page cases ok: all of an app's work under every spelling, on ho
   assert.ok(tile.includes("vs. the 30 days before"), tile);
   const html = renderToStaticMarkup(createElement(AppNumbers, { app }));
   const words = text(html);
-  assert.ok(words.includes("Ad spend Feb 15 – Mar 16") && words.includes("Ad installs") && words.includes("Cost per install"), words);
-  assert.ok(html.includes('href="/ads?product=product%3Apocket-log&amp;window=30"'), "the ad tiles open this app's Ads page");
+  const adsHtml = renderToStaticMarkup(createElement(AppAds, { app }));
+  const adsWords = text(adsHtml);
+  assert.ok(adsWords.includes("Ad spend Feb 15 – Mar 16") && adsWords.includes("Ad installs") && adsWords.includes("Cost per install"), adsWords);
+  assert.ok(adsHtml.includes('href="/ads?product=product%3Apocket-log&amp;window=30"'), "the ad tiles open this app's Ads page");
   assert.ok(words.includes("at least"), "a partial funnel step reads as a lower bound");
   assert.ok(/aria-hidden="true">→/.test(html), "dated steps are drawn as one funnel");
   assert.ok(words.includes("New downloads"), "the downloads tile and the funnel use one name");
-  assert.ok(!/\bCPA\b/.test(words), "one name for cost per install");
+  assert.ok(!/\bCPA\b/.test(words + adsWords), "one name for cost per install");
 
   // The Ads page's platform card uses the same name.
   const card = text(renderToStaticMarkup(createElement(AdsPlatformCard, {
@@ -167,3 +171,33 @@ console.log("app page cases ok: all of an app's work under every spelling, on ho
 }
 
 console.log("app page cases ok: numbers name their days, one proceeds figure, funnel never mixes undated steps, one name for cost per install");
+
+/* ---------- 3. The page reads as a briefing, in the owner's order ---------- */
+{
+  const source = readFileSync(new URL("../src/app/apps/[slug]/page.tsx", import.meta.url), "utf8");
+  const body = source.slice(source.indexOf("return (\n    <div className=\"flex flex-col gap-8\">"));
+  const order = ["<AppNeedsYou", "<AppNumbers", "<AppWork", 'id="app-next-steps"', "<AppAds", "<ProfileRow", "<GroupAudit"];
+  const at = order.map((mark) => body.indexOf(mark));
+  assert.ok(at.every((i) => i >= 0), `every block is on the page: ${order.filter((_, i) => at[i] < 0)}`);
+  assert.deepEqual([...at].sort((a, b) => a - b), at, "needs you, numbers, work, next steps, ads, then the profile and groups");
+  assert.ok(body.includes("<BreadcrumbTitle title={app.name} />"), "the tab and breadcrumb name the app");
+  assert.ok(/action=\{null\}/.test(body), "no header button that only scrolls");
+  assert.ok(body.includes("lead={`How ${app.name} is doing"), "the app page has its own purpose line, not the overview's");
+
+  // Needs you: held work first; unknown while reading; "nothing" only when known.
+  const work = { rows: [
+    { id: "work_a", title: "Held fixture item", state: "On hold", onHold: true, stale: false, days: 2, href: "/work/work_a" },
+    { id: "work_b", title: "Running fixture item", state: "Running", onHold: false, stale: false, days: 1, href: "/work/work_b" },
+  ], counts: { open: 2, needYou: 1, inProgress: 1, waitingForCheck: 0, stale: 0 }, hrefs: { all: "/work", onHold: "/work?x", stale: "/work?y", checking: "/work?z" } };
+  const needs = text(renderToStaticMarkup(createElement(AppNeedsYou, { name: "Pocket Log", work, verdicts: [{ text: "Did the new subtitle help?", href: "/reviews?decision=k" }] })));
+  assert.ok(needs.includes("On hold, waiting for you Held fixture item") && needs.includes("Verdict due Did the new subtitle help?"), needs);
+  assert.ok(!needs.includes("Running fixture item"), "only what waits for him");
+  assert.ok(text(renderToStaticMarkup(createElement(AppNeedsYou, { name: "Pocket Log", work: null, verdicts: [] }))).includes("not yet known"));
+  assert.ok(text(renderToStaticMarkup(createElement(AppNeedsYou, { name: "Pocket Log", work: { ...work, rows: [] }, verdicts: [] }))).includes("Nothing about Pocket Log waits for you"));
+
+  // No ads: one quiet line, not an empty block.
+  const quiet = mapGrowthModel({ schema_version: "compound.product_growth.v0.2", apps: [{ product_id: "product:quiet-app", name: "Quiet App" }] }).apps[0];
+  assert.equal(text(renderToStaticMarkup(createElement(AppAds, { app: quiet }))), "Ads: none run for this app. No ad report names it.");
+}
+
+console.log("app page cases ok: the page leads with what needs you, then numbers, work, next steps and ads");

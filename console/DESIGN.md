@@ -538,9 +538,12 @@ The growth read moved to `compound.product_growth.v0.2`: a catalog of areas in 1
 profile that decides which areas apply, and ranked next moves. These rules replace the 25-area
 matrix and the pale red fill above.
 
-- **One question first.** `/apps/[slug]` opens with "What should I do next for <app>, and why?" and
-  the next moves (at most five, in the CLI's order). Each move says what to do, why in one line,
-  what it unblocks by name, and has a copy button for its brief command. `/growth` opens with "Where
+- **One question first.** `/apps/[slug]` is a short briefing about one app, with its own purpose
+  line and no header button: what needs you (its work on hold, a real verdict due), how it is
+  doing (dated numbers), all of its open work (the shared work-to-app index, on hold and not moved
+  first, "See all N in Work"), the next moves (at most five, in the CLI's order), its ads, then what
+  the product is and the 12 groups. Each move says what to do, why in one line and
+  what it unblocks by name. `/growth` opens with "Where
   are we blind across the apps, group by group?" and a two- or three-sentence answer computed from
   the projection. Everything else sits below and is quieter.
 - **Never the full grid.** `/growth` draws 12 group rows × apps. One group opens at a time

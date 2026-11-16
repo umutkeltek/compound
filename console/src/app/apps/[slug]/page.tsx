@@ -1,8 +1,9 @@
 import { ProductVisuals } from "@/components/products/VisualCampaigns";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
-import { FreshnessChip, HeaderStat, PageHeader } from "@/components/kit";
-import { AppNumbers } from "@/components/growth/AppNumbers";
+import { BreadcrumbTitle, FreshnessChip, HeaderStat, PageHeader } from "@/components/kit";
+import { AppAds, AppNumbers } from "@/components/growth/AppNumbers";
+import { AppNeedsYou } from "@/components/growth/AppNeedsYou";
 import { GroupAudit, NextMoves, ProfileRow, makeLookup } from "@/components/growth/AppGrowth";
 import { AppGlyph, DegradedGrowth, FocusChip, StatusLegend, coverageCounts } from "@/components/growth/GrowthKit";
 import { OpenOnHash } from "@/components/growth/OpenOnHash";
@@ -14,9 +15,11 @@ import { findApp, getGrowth, valueLabel } from "@/lib/growth";
 export const dynamic = "force-dynamic";
 
 /**
- * One app: what to do next and why (the hero), what the product is, then
- * the 12 groups of areas, then the numbers and the work already moving.
- * Every status, count and order is from `compound product growth --json`.
+ * One app's page, a short briefing in the order the owner reads it: what
+ * needs him, how the app is doing (every number dated), all of its open
+ * work, the next steps, its ads, then what the product is and the 12 groups
+ * of areas. Numbers, statuses and moves come from `compound product growth
+ * --json`; the work comes from the shared work-to-app index.
  */
 export default async function AppPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
@@ -25,7 +28,7 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
   if (!model) {
     return (
       <div className="flex flex-col gap-6">
-        <PageHeader name="Portfolio" title="App not found" action={{ label: "Choose an app", href: "/apps" }} />
+        <PageHeader name="All apps" title="App not found" action={{ label: "Choose an app", href: "/apps" }} />
         <DegradedGrowth status={growth.status} error={growth.error} />
       </div>
     );
@@ -38,35 +41,56 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
   const judged = app.coverage.measured + app.coverage.partial + app.coverage.stale + app.coverage.blind;
   const kinds = app.profile.kinds.values.map(valueLabel);
 
+  // The app's work: non-blocking reads that share the Work page's cache entries.
+  const nowMs = Date.now();
+  const [projectIndex, workbench] = await Promise.all([
+    readWorkProjectIndex({ nowMs }),
+    readProjection([...WORK_PROJECT_INDEX_READS.work.args], { timeoutMs: WORK_PROJECT_INDEX_READS.work.timeoutMs }),
+  ]);
+  const work = appWorkModel(arr(workbench.value?.open), projectIndex.index, app.productId, nowMs);
+  const labels = { work: "open work", apps: "your app list", inventory: "where each app's code lives" } as const;
+  const keys = Object.keys(labels) as Array<keyof typeof labels>;
+
   return (
     <div className="flex flex-col gap-8">
       <OpenOnHash />
+      <BreadcrumbTitle title={app.name} />
       <PageHeader
-        name="Portfolio"
-        action={{ label: "Review next steps", href: "#app-next-steps" }}
+        name="All apps"
+        action={null}
         title={
           <span className="inline-flex items-center gap-3">
             <AppGlyph productId={app.productId} name={app.name} size="lg" />
             {app.name}
           </span>
         }
+        lead={`How ${app.name} is doing, what is being done for it, and what waits for you.`}
         stats={
           <>
             <span className="text-muted">{kinds.length ? kinds.join(" and ") : "Kind not on file"}</span>
             {allocation ? (
               <span className="inline-flex items-center gap-1.5">
-                Rank <span className="font-semibold text-ink tabular-nums">#{allocation.rank}</span> <FocusChip focus={allocation.focus} />
+                Rank <span className="font-semibold text-ink tabular-nums">#{allocation.rank}</span> of {model.apps.length} by proceeds <FocusChip focus={allocation.focus} />
               </span>
             ) : null}
             <HeaderStat value={`${app.coverage.measured} of ${judged}`} label="areas measured" />
-            {app.hypotheses.open ? <HeaderStat value={app.hypotheses.open} label={app.hypotheses.open === 1 ? "open hypothesis" : "open hypotheses"} /> : null}
           </>
         }
         right={<FreshnessChip generatedAt={model.generatedAt} source={`compound product growth --product ${app.productId} --json`} />}
       />
-      <div id="app-next-steps" tabIndex={-1} className="scroll-mt-6" />
 
-      <section className="flex flex-col gap-3" aria-labelledby="next-question">
+      <AppNeedsYou name={app.name} work={work} verdicts={[]} />
+
+      <AppNumbers app={app} />
+
+      <AppWork
+        name={app.name}
+        model={work}
+        missing={projectIndex.missing.map((key) => ({ label: labels[key], read: projectIndex.reads[key] }))}
+        reads={keys.map((key) => ({ label: labels[key], read: projectIndex.reads[key] }))}
+      />
+
+      <section id="app-next-steps" className="flex scroll-mt-24 flex-col gap-3" aria-labelledby="next-question">
         <div>
           <h2 id="next-question" className="text-lg font-semibold tracking-tight text-ink">
             Recommended next steps
@@ -79,6 +103,8 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
         </div>
         <NextMoves app={app} look={look} />
       </section>
+
+      <AppAds app={app} />
 
       <Suspense fallback={<p className="text-sm text-muted">Loading visual work…</p>}><ProductVisuals productIds={[app.productId, ...app.aliases]} /></Suspense>
 
@@ -97,37 +123,9 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
         <GroupAudit app={app} groups={model.groups} areas={model.areas} look={look} />
       </section>
 
-      <AppNumbers app={app} />
-
-      <AppWorkSection productId={app.productId} name={app.name} />
-
       <p className="text-xs text-faint">
         {model.boundary}. Catalog: {model.catalog.areas} areas in {model.catalog.groups} groups.
       </p>
     </div>
-  );
-}
-
-/**
- * Every open work item the shared resolver places in this app. The reads are
- * non-blocking (they share the Work page's cache entries), so this renders at
- * once from the last good copies or says what it is still reading.
- */
-async function AppWorkSection({ productId, name }: { productId: string; name: string }) {
-  const nowMs = Date.now();
-  const [projectIndex, workbench] = await Promise.all([
-    readWorkProjectIndex({ nowMs }),
-    readProjection([...WORK_PROJECT_INDEX_READS.work.args], { timeoutMs: WORK_PROJECT_INDEX_READS.work.timeoutMs }),
-  ]);
-  const model = appWorkModel(arr(workbench.value?.open), projectIndex.index, productId, nowMs);
-  const labels = { work: "open work", apps: "your app list", inventory: "where each app's code lives" } as const;
-  const keys = Object.keys(labels) as Array<keyof typeof labels>;
-  return (
-    <AppWork
-      name={name}
-      model={model}
-      missing={projectIndex.missing.map((key) => ({ label: labels[key], read: projectIndex.reads[key] }))}
-      reads={keys.map((key) => ({ label: labels[key], read: projectIndex.reads[key] }))}
-    />
   );
 }
