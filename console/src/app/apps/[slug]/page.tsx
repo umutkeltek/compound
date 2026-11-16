@@ -15,7 +15,7 @@ import { OpenOnHash } from "@/components/growth/OpenOnHash";
 import { arr, HEAVY_PROJECTION_TIMEOUT_MS, readProjection, readWorkProjectIndex, WORK_PROJECT_INDEX_READS } from "@/lib/compound";
 import { AppWork } from "@/components/growth/AppWork";
 import { appWorkModel } from "@/components/growth/app-work";
-import { findApp, getGrowth, valueLabel } from "@/lib/growth";
+import { findApp, getGrowth, proceeds90Window, sumBetween, valueLabel } from "@/lib/growth";
 
 export const dynamic = "force-dynamic";
 
@@ -43,7 +43,15 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
 
   const look = makeLookup(app, model.areas);
   const allocation = model.portfolio.allocation.find((row) => row.productId === app.productId);
-  const judged = app.coverage.measured + app.coverage.partial + app.coverage.stale + app.coverage.blind;
+  // One total of areas on the page: the header counts measured areas out of
+  // the same areas the groups below list ("All N groups, M areas").
+  const areasTotal = model.areas.length;
+  // A rank by proceeds is shown only with proceeds to rank by: an app with no
+  // sales figure gets no rank (its place in the order says nothing then).
+  // The ranking sums 90 days of proceeds (lib/growth.ts proceeds90Window), so that is the figure checked.
+  const window90 = allocation ? proceeds90Window(allocation.windowEnd) : null;
+  const proceeds = window90 ? sumBetween(app.series.proceeds_usd, window90.start, window90.end) : app.kpis.proceeds_usd?.value;
+  const rankedByProceeds = allocation && typeof proceeds === "number" && proceeds > 0 ? allocation : null;
   const kinds = app.profile.kinds.values.map(valueLabel);
 
   // The app's work: non-blocking reads that share the Work page's cache entries.
@@ -84,12 +92,16 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
         stats={
           <>
             <span className="text-muted">{kinds.length ? kinds.join(" and ") : "Kind not on file"}</span>
-            {allocation ? (
+            {rankedByProceeds ? (
               <span className="inline-flex items-center gap-1.5">
-                Rank <span className="font-semibold text-ink tabular-nums">#{allocation.rank}</span> of {model.apps.length} by proceeds <FocusChip focus={allocation.focus} />
+                Rank <span className="font-semibold text-ink tabular-nums">#{rankedByProceeds.rank}</span> of {model.apps.length} by proceeds <FocusChip focus={rankedByProceeds.focus} />
+              </span>
+            ) : allocation ? (
+              <span className="inline-flex items-center gap-1.5">
+                No sales figure to rank by <FocusChip focus={allocation.focus} />
               </span>
             ) : null}
-            <HeaderStat value={`${app.coverage.measured} of ${judged}`} label="areas measured" />
+            <HeaderStat value={`${app.coverage.measured} of ${areasTotal}`} label="areas measured" />
           </>
         }
         right={<FreshnessChip generatedAt={model.generatedAt} source={`compound product growth --product ${app.productId} --json`} />}

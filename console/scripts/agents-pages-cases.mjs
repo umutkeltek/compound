@@ -30,6 +30,7 @@
 // home and cache folder and moves the read layer's global state). Directly:
 //   bun scripts/agents-pages-cases.mjs
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -374,6 +375,12 @@ try {
   assert.match(live, /Record the final checked commit for it\./, "next steps in plain words");
   assert.doesNotMatch(live, /commit:<full-sha>/);
   assert.match(live, /not a live feed/, "the page says it is the last read, not a live feed");
+  {
+    // The agent panel's counts use the canvas's own colours (ink on the canvas), not blue on grey.
+    const canvasSource = readFileSync(new URL("../src/components/live/LiveHarnessCanvas.tsx", import.meta.url), "utf8");
+    const laneCount = canvasSource.slice(canvasSource.indexOf("function LaneCount"), canvasSource.indexOf("function Canvas"));
+    assert.ok(laneCount.includes("text-[var(--canvas-ink)]") && !laneCount.includes("bg-soft") && !laneCount.includes("text-work"), "panel numbers read on the dark canvas");
+  }
   for (const href of ["/work?lens=table&filter=picked&owner=alpha_agent", "/work?lens=table&filter=progress&owner=alpha_agent", "/work/work_ap_alpha_check"]) {
     assert.ok(hrefs(liveHtml).includes(href), `Working now links ${href}`);
   }
@@ -396,7 +403,6 @@ try {
   /* ---------- 7. back room: Skills and tools, View library ---------- */
   const strip = renderToStaticMarkup(createElement(CapabilityAttentionStrip, { items: [{ area: "fixture-empty", label: "Empty", count: 0 }, { area: "capability-lifecycle-proposals", label: "Skill changes", count: 3 }] }));
   assert.ok(hrefs(strip).includes("/reviews?area=capability-lifecycle-proposals"), "Review in Decide opens the matching decisions, not the whole queue");
-  const { readFileSync } = await import("node:fs");
   assert.doesNotMatch(readFileSync(new URL("../src/app/map/page.tsx", import.meta.url), "utf8"), /\/projects/, "no link to the retired project map");
   await Views();
   await compound.settleProjectionReads();

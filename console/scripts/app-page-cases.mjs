@@ -195,6 +195,11 @@ console.log("app page cases ok: numbers name their days, one proceeds figure, fu
   assert.ok(at.every((i) => i >= 0), `every block is on the page: ${order.filter((_, i) => at[i] < 0)}`);
   assert.deepEqual([...at].sort((a, b) => a - b), at, "needs you, numbers, work, next steps, ads, then the profile and groups");
   assert.ok(body.includes("<BreadcrumbTitle title={app.name} />"), "the tab and breadcrumb name the app");
+  // One total of areas: the header's "N of M areas measured" uses the same total as "All G groups, M areas".
+  assert.ok(source.includes("const areasTotal = model.areas.length;") && body.includes("`${app.coverage.measured} of ${areasTotal}`") && body.includes("{model.areas.length} areas"),
+    "the header and the groups heading name one total of areas");
+  // No rank by proceeds without proceeds to rank by.
+  assert.ok(body.includes("{rankedByProceeds ? (") && !/#\{allocation\.rank\}/.test(body), "a rank by proceeds is shown only with a proceeds figure");
   assert.ok(/action=\{null\}/.test(body), "no header button that only scrolls");
   assert.ok(body.includes("lead={`How ${app.name} is doing"), "the app page has its own purpose line, not the overview's");
 
