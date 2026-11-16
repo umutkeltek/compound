@@ -3,11 +3,12 @@ import { EvidenceCard } from "@/components/memory/EvidenceCard";
 import { MemoryGraphPanel } from "@/components/memory/MemoryGraphPanel";
 import { buildAdjudicationModel, type AdjudicationCardModel } from "@/components/memory/model";
 import { PendingRefresh } from "@/components/PendingRefresh";
-import { BrainIcon, DatabaseIcon, DocIcon, EmptyState, hasCopy, PageHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending, SectionHeader } from "@/components/kit";
+import { BrainIcon, DocIcon, EmptyState, hasCopy, PageHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending, SectionHeader } from "@/components/kit";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
-import { countProposalRecords } from "@/lib/counts";
+import { countAcceptedMemories, countProposalRecords, unit } from "@/lib/counts";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
-import { readProposedMemory, readStandingLawCandidates } from "@/lib/memory-data";
+import { readMemoryCanon, readProposedMemory, readStandingLawCandidates } from "@/lib/memory-data";
+import { memoryKindPlural, memoryRecordState, MEMORY_RECORD_STATE_ORDER } from "@/lib/plain-words";
 import { loadMemoryEgoGraph, type EgoGraph } from "@/lib/map/memory-graph";
 import Link from "next/link";
 
@@ -15,12 +16,14 @@ export const dynamic = "force-dynamic";
 
 /*
  * Memory — "What does the system believe, what's contested, what needs
- * adjudication?" One column, three honest bands:
+ * adjudication?" One column:
+ *   0) what agents remember now: accepted memories by kind (`memory canon`),
+ *      unknown (never 0) when that read fails;
  *   1) the adjudication queue (the operator's actual job — governed verdicts);
  *   2) the belief graph, embedded and seedable from any card (the /map/memory
  *      route is retired into this section);
- *   3) what's already canon (a tabular state strip) + the proposed source
- *      evidence that is deliberately kept OUT of the approval queue.
+ *   3) proposal records by state, folded, labelled as records (not memories),
+ *      + the proposed source evidence kept OUT of the approval queue.
  *
  * Every read goes through the non-blocking read queue (`readProjection`):
  * the page renders at once from the last good copy, says "reading for the
@@ -29,14 +32,6 @@ export const dynamic = "force-dynamic";
  * window is still the last good read, not a fault, so the page no longer
  * flips to a warning between auto-refreshes.
  */
-
-const STAT_STATES: { key: string; label: string }[] = [
-  { key: "promoted", label: "Accepted for recall" },
-  { key: "parked", label: "Set aside" },
-  { key: "rejected", label: "Rejected" },
-  { key: "no_promote", label: "Kept out of recall" },
-  { key: "proposed", label: "Awaiting review" },
-];
 
 /** No copy yet: the loading or failed notice. A copy whose refresh failed: the banner above it. */
 function MemoryRead({ read, label }: { read: Parameters<typeof ReadNotice>[0]["read"]; label: string }) {
@@ -51,9 +46,10 @@ export default async function Memory({
   const { graph: graphParam } = await searchParams;
   const seed = (graphParam ?? "").trim();
 
-  const [{ actionable, sourceEvidence, read: proposedRead }, law, ego] = await Promise.all([
+  const [{ actionable, sourceEvidence, read: proposedRead }, law, canonRead, ego] = await Promise.all([
     readProposedMemory(),
     readStandingLawCandidates(),
+    readMemoryCanon(),
     seed ? loadMemoryEgoGraph(seed, { maxNodes: 60 }) : Promise.resolve<EgoGraph | null>(null),
   ]);
 
@@ -74,10 +70,14 @@ export default async function Memory({
   const queueKnown = hasCopy(proposedRead) && hasCopy(law.read);
   const queueClean = queueKnown && !proposedRead.error && !law.read.error;
   const counts = hasCopy(proposedRead) ? countProposalRecords(proposedRead.value) : null;
+  const accepted = hasCopy(canonRead) ? countAcceptedMemories(canonRead.value) : null;
+  const recordStates = counts
+    ? [...MEMORY_RECORD_STATE_ORDER.filter((state) => state in counts), ...Object.keys(counts).filter((state) => !(MEMORY_RECORD_STATE_ORDER as readonly string[]).includes(state))]
+    : [];
 
   return (
     <div className="flex flex-col gap-8">
-      <PendingRefresh pending={readsPending(proposedRead, law.read)} stamp={Date.now()} />
+      <PendingRefresh pending={readsPending(proposedRead, law.read, canonRead)} stamp={Date.now()} />
       <PageHeader
         name="Memory"
         action={queueClean && !models.length ? { label: "Explore supporting evidence", href: "#memory-evidence" } : undefined}
@@ -85,7 +85,7 @@ export default async function Memory({
           <>
             {queueKnown && models.length ? (
               <span className="inline-flex items-center gap-1.5 rounded-pill border border-seam-line bg-seam-soft px-2.5 py-0.5 text-xs font-semibold text-seam">
-                <span className="mono tabular-nums">{models.length}</span> awaiting your verdict
+                {unit(lawModels.length, "proposed rule")} and {unit(proposedModels.length, "proposed memory", "proposed memories")} wait for your choice
               </span>
             ) : null}
             <ReadChip read={proposedRead} />
@@ -100,6 +100,26 @@ export default async function Memory({
         <Link href="/sources" className="hover:underline">Manage evidence sources →</Link>
         <Link href="/reviews" className="hover:underline">Review decisions →</Link>
       </nav>
+
+      {/* 0 — what agents remember now: the memories, not the proposal records */}
+      <section id="memory-accepted" tabIndex={-1} className="scroll-mt-6 flex flex-col gap-2" aria-label="What agents remember">
+        {accepted ? (
+          <p className="text-sm leading-relaxed text-ink" style={{ maxWidth: "var(--read-max)" }}>
+            Agents remember <span className="font-semibold tabular-nums">{unit(accepted.total, "accepted memory", "accepted memories")}</span>
+            {accepted.byKind.length ? (
+              <span className="text-muted">: {accepted.byKind.map((row) => `${row.count.toLocaleString("en-US")} ${memoryKindPlural(row.kind)}`).join(" · ")}</span>
+            ) : null}
+            .
+          </p>
+        ) : hasCopy(canonRead) ? (
+          <p className="text-sm text-muted">How many memories agents have is unknown: the memory report came back without a count.</p>
+        ) : canonRead.status === "unreachable" ? (
+          <p className="text-sm text-muted">How many memories agents have is unknown: the memory report could not be read{canonRead.updating ? "; trying again now" : ""}.</p>
+        ) : (
+          <p className="text-sm text-muted">Checking how many memories agents have…</p>
+        )}
+        {accepted ? <ReadFailedBanner read={canonRead} label="the memory count" /> : null}
+      </section>
 
       {/* 1 — adjudication queue (the operator's gate) */}
       <section id="memory-review" tabIndex={-1} className="scroll-mt-6 flex flex-col gap-3">
@@ -127,23 +147,32 @@ export default async function Memory({
       {/* 2 — the belief graph (retired /map/memory lives here) */}
       <MemoryGraphPanel seed={seed} graph={ego} open={Boolean(seed)} />
 
-      {/* 3 — what's already believed: tabular state strip + proposed evidence */}
-      <section className="flex flex-col gap-3">
-        <SectionHeader
-          tone="memory"
-          icon={<DatabaseIcon />}
-          label="Proposal history"
-          sub="Counts of candidate records by their recorded state. Accepted records may be recalled when relevant; set-aside records are evidence for later."
-        />
-        <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-hair bg-hair sm:grid-cols-5">
-          {STAT_STATES.map((s) => (
-            <div key={s.key} className="flex flex-col gap-1 bg-panel px-4 py-3">
-              <span className="text-2xs font-bold uppercase tracking-wide text-faint">{s.label}</span>
-              <span className="text-xl font-extrabold tabular-nums text-ink">{counts ? (counts[s.key] ?? 0) : "—"}</span>
-            </div>
-          ))}
-        </div>
-      </section>
+      {/* 3 — proposal records by state (a different population from the memories above) */}
+      <details className="rounded-lg border border-hair bg-panel px-4 py-3">
+        <summary className="cursor-pointer text-sm font-semibold text-ink">
+          Proposal records by state
+          <span className="ml-2 text-xs font-normal text-muted">{counts ? unit(Object.values(counts).reduce((sum, n) => sum + n, 0), "record") : "unknown"}</span>
+        </summary>
+        <p className="mt-2 text-xs leading-relaxed text-muted" style={{ maxWidth: "var(--read-max)" }}>
+          Each record is one proposed statement and what was decided about it. These are not memories: a memory can also be recorded directly, without a proposal, so these numbers do not add up to the memories above. Proposed rules waiting for you are set-aside records.
+        </p>
+        {counts ? (
+          <dl className="mt-3 grid gap-px overflow-hidden rounded-md border border-hair bg-hair sm:grid-cols-3">
+            {recordStates.map((state) => {
+              const words = memoryRecordState(state);
+              return (
+                <div key={state} className="flex flex-col gap-0.5 bg-panel px-3 py-2">
+                  <dt className="text-xs font-semibold text-ink">{words.label}</dt>
+                  <dd className="text-lg font-extrabold tabular-nums text-ink">{counts[state].toLocaleString("en-US")}</dd>
+                  {words.means ? <dd className="text-2xs text-muted">{words.means}</dd> : null}
+                </div>
+              );
+            })}
+          </dl>
+        ) : (
+          <p className="mt-3 text-sm text-muted">Unknown: {hasCopy(proposedRead) ? "the proposal report came back without counts." : proposedRead.status === "unreachable" ? "the proposal report could not be read." : "the proposal report is still being read."}</p>
+        )}
+      </details>
 
       <section id="memory-evidence" tabIndex={-1} className="scroll-mt-6 flex flex-col gap-3">
         <SectionHeader

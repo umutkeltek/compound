@@ -15,6 +15,12 @@ require("node:fs").appendFileSync(${JSON.stringify(join(scratch, "argv.log"))}, 
 if (process.argv[2] === "version") { console.log("synthetic"); process.exit(0); }
 if (mode === "fail") { console.error("synthetic memory projection unavailable"); process.exit(7); }
 if (mode === "slow") await Bun.sleep(16000);
+if (process.argv[2] === "memory" && process.argv[3] === "canon") {
+  // Accepted memories by kind: a different population from candidate records.
+  const distribution = mode === "empty" ? {decision:0,status:0} : {decision:5,principle:0,status:15,unclassified:3};
+  console.log(JSON.stringify({schema_version:"compound.memory.canon.v0.1",distribution,total:Object.values(distribution).reduce((a,b)=>a+b,0)}));
+  process.exit(0);
+}
 let items = mode === "empty" ? [] : [
  {id:"cand_action",entity:"product:synthetic",state:"proposed",predicate:"status",object:"observed",confidence:0.8},
  {id:"cand_source",entity:"knowledge:synthetic",state:"proposed",predicate:"source",object:"evidence",confidence:0.8},
@@ -64,6 +70,7 @@ try {
 
   // The page never waits for compound: render, let the reads it queued land, render again.
   const renderPageSettled = async () => { await renderPage(); await joinRefreshes(); return renderPage(); };
+  const visible = (html) => html.replace(/<[^>]+>/g, "").replace(/\s+/g, " ");
   const noFalseWarning = /Could not read|not a current confirmed read|must recover|Check connection and access/;
 
   const renderHomeNow = async () => renderToStaticMarkup(createElement(AppRouterContext.Provider,{value:router},
@@ -90,7 +97,9 @@ try {
   const unavailable = await renderPage();
   assert.match(unavailable, /Could not read proposed memories/, "actual memory page discloses failed reads");
   assert.doesNotMatch(unavailable, /Clean seam|No proposed memories need review|No new supporting evidence/, "failed page may not claim an empty queue or source set");
-  assert.match(unavailable, /—/, "unavailable counts are unknown, not zero");
+  assert.match(visible(unavailable), /Proposal records by state\s*unknown/, "unavailable counts are unknown, not zero");
+  assert.match(visible(unavailable), /How many memories agents have is unknown/, "a failed memory count is unknown, never 0");
+  assert.doesNotMatch(visible(unavailable), /Agents remember 0/);
 
   process.env.MEMORY_READ_SMOKE_MODE = "empty";
   // A failed read is due again only after max(25 s, 2 x its run time).
@@ -103,6 +112,7 @@ try {
   const liveEmpty = await renderPageSettled();
   assert.match(liveEmpty, /No new supporting evidence has been recorded/);
   assert.match(liveEmpty, /No proposed memories need review/);
+  assert.match(visible(liveEmpty), /Agents remember 0 accepted memories\./, "a real empty memory is zero");
   assert.doesNotMatch(liveEmpty, noFalseWarning);
 
   process.env.MEMORY_READ_SMOKE_MODE = "data";
@@ -115,6 +125,12 @@ try {
   assert.deepEqual(live.sourceEvidence.map(x=>x.id),["cand_source"]);
   const livePage = await renderPageSettled();
   assert.match(livePage, /cand_action/, "the proposed memory renders");
+  // KNOW-03: the headline counts memories (the canon report), not candidate
+  // records, and names its unit; candidate states sit in a labelled disclosure.
+  assert.match(visible(livePage), /Agents remember 23 accepted memories: 15 status notes · 5 decisions · 3 not sorted by kind\./);
+  assert.doesNotMatch(visible(livePage), /Accepted for recall|Kept out of recall/);
+  assert.match(visible(livePage), /Proposal records by state\s*23 records/);
+  assert.match(visible(livePage), /1 proposed rule and 1 proposed memory wait for your choice/, "the header names what it counts");
   assert.doesNotMatch(livePage, noFalseWarning);
   // KNOW-02: a good copy past the 25 s cache window, with the refresh not yet
   // landed, is the last good read, not a fault. The page keeps the same cards

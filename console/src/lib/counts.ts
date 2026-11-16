@@ -70,6 +70,33 @@ export function countProposalRecords(reply: unknown): Record<string, number> | n
   return out;
 }
 
+/** Accepted memories: `total` and its split by kind, largest first, zero kinds left out. */
+export type AcceptedMemoryCount = { total: number; byKind: { kind: string; count: number }[] };
+
+/**
+ * Accepted memories: the current statements agents can be given, from
+ * `memory canon --json` (`total`, split by kind in `distribution`). Unit:
+ * memories. `null` when the reply is missing or malformed: unknown, never
+ * zero. The split is shown only when it adds up to the total.
+ */
+export function countAcceptedMemories(canon: unknown): AcceptedMemoryCount | null {
+  const reply = canon as { total?: unknown; distribution?: unknown } | null | undefined;
+  if (!reply || !isCount(reply.total)) return null;
+  const dist = reply.distribution;
+  let byKind: { kind: string; count: number }[] = [];
+  if (dist && typeof dist === "object" && !Array.isArray(dist)) {
+    const rows = Object.entries(dist as Record<string, unknown>);
+    if (rows.every(([, n]) => isCount(n))) {
+      byKind = rows
+        .map(([kind, n]) => ({ kind, count: n as number }))
+        .filter((row) => row.count > 0)
+        .sort((a, b) => b.count - a.count || a.kind.localeCompare(b.kind));
+      if (byKind.reduce((sum, row) => sum + row.count, 0) !== reply.total) byKind = [];
+    }
+  }
+  return { total: reply.total, byKind };
+}
+
 /* ---------- open work ---------- */
 
 /** Open work items: every item the work projection lists as not finished. Unit: work items. */
