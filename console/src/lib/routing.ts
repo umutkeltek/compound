@@ -12,7 +12,7 @@ import { areaOf, groupsForBand } from "@/lib/review-data";
  *      tier + cost_class (the "which mind" table; compare → table doctrine).
  *   - `compound route evidence-authority --json`   → route-evidence traffic +
  *      token/cost aggregates (the "at what cost" signal; honest about the
- *      dollar-spend gap, same as Agents' CostLanes).
+ *      dollar-spend gap).
  *   - `compound attention --json` + `compound reviews --json` → the route
  *      promotion/remorse decisions (the "should a lane change" gate), built
  *      through the SAME decide-model resolver the Decide queue uses so the

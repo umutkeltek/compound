@@ -146,6 +146,8 @@ const { MemoryLenses } = await import("../src/components/settings/MemoryLenses.t
 const { PromotionBand } = await import("../src/components/routing/PromotionBand.tsx");
 const { BenchPanel } = await import("../src/components/routing/BenchPanel.tsx");
 const { routingTabOf } = await import("../src/components/routing/RoutingTabs.tsx");
+const { DelegatedSessions } = await import("../src/components/agents/DelegatedSessions.tsx");
+const { WorktreeInventory } = await import("../src/components/agents/WorktreeInventory.tsx");
 
 const router = Object.fromEntries(["push", "replace", "refresh", "back", "forward", "prefetch"].map((k) => [k, () => {}]));
 const wrap = (path, element) =>
@@ -260,6 +262,18 @@ try {
   assert.doesNotMatch(all, /clear it|Archive lease history|Copy command|Lease pressure/i, "no instruction to act where no action exists");
   assert.match(all, /3 work items were picked up more than 7 days ago and are still not finished\. Nothing moves them on its own yet/);
   assert.ok(agentLinks.indexOf("/work/work_ap_sched_old") < agentLinks.indexOf("/work/work_ap_alpha_old"), "the oldest stale item is listed first, linked");
+
+  /* ---------- 6. All agents carries its weight: old sessions folded, no start-up hint, cost in one place ---------- */
+  const session = (i, status, extra = {}) => ({ workId: `work_ap_session_${i}`, lane: "fixture-lane", session: `s${i}`, status, holder: "", runAttemptId: "", runAttemptStatus: "", progress: null, refusedReason: "", spawnedAt: "", lastSteerAt: "", exitedAt: "", observedExit: "", ...extra });
+  const sessionRows = [session(0, "running"), session(1, "exited", { observedExit: "abandoned" }), ...Array.from({ length: 14 }, (_, i) => session(i + 2, "exited", { observedExit: "succeeded" }))];
+  const sessionsHtml = renderToStaticMarkup(createElement(DelegatedSessions, { rows: sessionRows, counts: { total: 16, running: 1, exited: 15, refused: 0, unknown: 0 } }));
+  assert.match(sessionsHtml, /<details[^>]*><summary[^>]*>5 earlier sessions<\/summary>/, "running and the latest 10 shown, the rest folded behind their count");
+  assert.ok(sessionsHtml.indexOf("Ended unfinished") > 0 && sessionsHtml.indexOf("Ended unfinished") < sessionsHtml.indexOf("text-good"), "an abandoned session is not shown as done");
+  assert.ok(hrefs(sessionsHtml).includes("/work/work_ap_session_0"), "a session's work links to its page");
+  assert.match(sessionsHtml, /overflow-x-auto/, "wide tables scroll instead of cutting columns off");
+  assert.equal(renderToStaticMarkup(createElement(WorktreeInventory, { repo: null, read: null })), "", "no start-up hint when no repository was chosen");
+  assert.doesNotMatch(all, /COMPOUND_WORKTREE_REPO|not wired|cost-doctor|path\/to/, "All agents opens with its answer, not a start-up hint or a command with a blank");
+  assert.ok(agentLinks.includes("/routing?tab=traffic"), "cost is one link to Models and cost");
 
   /* ---------- 5. models and cost ---------- */
   const routeGroup = (key, title, extra = {}) => ({

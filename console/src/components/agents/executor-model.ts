@@ -289,11 +289,13 @@ export function delegatedSessionView(row: DelegatedSessionRow): DelegatedSession
   if (status === "refused") detail = row.refusedReason;
   else if (status === "exited") detail = row.observedExit || row.runAttemptStatus;
   else if (status === "running") detail = row.runAttemptStatus;
+  // An exit is green only when it finished: abandoned, vanished, failed or killed is not done.
+  const unfinished = status === "exited" && /abandon|vanish|fail|kill|lost|crash|timeout|timed out/i.test(detail);
   return {
     workId: row.workId,
     status,
-    statusLabel: meta.label,
-    tone: meta.tone,
+    statusLabel: unfinished ? "Ended unfinished" : meta.label,
+    tone: unfinished ? "seam" : meta.tone,
     lane: row.lane,
     session: row.session,
     holder: row.holder,

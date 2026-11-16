@@ -1,12 +1,13 @@
 import { buildRoster, oldestNotMoved } from "@/components/agents/agent-roster";
 import { AgentsAnswer } from "@/components/agents/AgentsAnswer";
-import { CostLanes } from "@/components/agents/CostLanes";
 import { DelegatedSessions } from "@/components/agents/DelegatedSessions";
 import type { ExecutorProjection } from "@/components/agents/executor-model";
 import { normalizeExecutorProjection } from "@/components/agents/executor-normalize";
 import { ExecutorTable } from "@/components/agents/ExecutorTable";
 import { HygieneBand } from "@/components/agents/HygieneBand";
-import { LocalModelsTile } from "@/components/agents/LocalModelsTile";
+import Link from "next/link";
+
+import { ForAgents } from "@/components/settings/primitives";
 import { hasCopy, PageHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending } from "@/components/kit";
 import { PendingRefresh } from "@/components/PendingRefresh";
 import { getWorktreeInventory } from "@/lib/compound";
@@ -26,23 +27,9 @@ export const dynamic = "force-dynamic";
 
 function Provenance({ projection }: { projection: ExecutorProjection }) {
   return (
-    <div className="rounded-lg border border-hair bg-soft px-4 py-3 text-2xs leading-relaxed text-faint">
-      <span className="font-bold uppercase tracking-wide">Authority</span>{" "}
-      <span className="mono text-muted">{projection.authorityRef || "—"}</span>
-      {projection.sourceRefs.length ? (
-        <>
-          {" · "}
-          <span className="font-bold uppercase tracking-wide">Sources</span>{" "}
-          <span className="mono text-muted">{projection.sourceRefs.join(", ")}</span>
-        </>
-      ) : null}
-      {projection.nextCommand.length ? (
-        <>
-          {" · "}
-          <span className="mono text-muted">{projection.nextCommand.join(" ")}</span>
-        </>
-      ) : null}
-    </div>
+    <ForAgents cmds={projection.nextCommand.length ? [projection.nextCommand.join(" ")] : []} label="For agents: where these numbers come from">
+      <p className="mono text-2xs text-faint">{projection.authorityRef || "—"}{projection.sourceRefs.length ? ` · ${projection.sourceRefs.join(", ")}` : ""}</p>
+    </ForAgents>
   );
 }
 
@@ -85,12 +72,12 @@ export default async function AgentsPage() {
             </p>
           ) : null}
 
-          <DelegatedSessions rows={projection.delegatedSessions} counts={projection.delegatedCounts} />
+          <p className="text-sm text-muted">
+            What each model costs is on{" "}
+            <Link href="/routing?tab=traffic" className="font-semibold text-work hover:underline">Models and cost</Link>.
+          </p>
 
-          <div className="grid gap-4 lg:grid-cols-2">
-            <CostLanes executors={projection.executors} generatedAt={projection.generatedAt} />
-            <LocalModelsTile />
-          </div>
+          <DelegatedSessions rows={projection.delegatedSessions} counts={projection.delegatedCounts} />
 
           <Provenance projection={projection} />
         </>

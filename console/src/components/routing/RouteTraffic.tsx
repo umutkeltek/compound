@@ -4,7 +4,7 @@ import type { RouteTrafficReport } from "@/lib/routing";
 /**
  * Route traffic & cost — "at what cost is routing sending work?" Reads
  * `compound route evidence-authority --json`. Same honesty contract as Agents'
- * CostLanes (src/components/agents/CostLanes.tsx): route-evidence rows per
+ * the old Agents cost card: route-evidence rows per
  * provider are the CHEAP, LIVE traffic signal — dollar spend is only known for
  * the few rows the provider ledger covers, so we chart traffic, state the token
  * total, and name the spend gap instead of inventing a cost. Bars use the kit

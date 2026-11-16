@@ -74,6 +74,7 @@ export function ConsoleEnv({
           <KV k="instance pin" v={instancePinned ? "explicit" : "missing"} />
           <KV k="standard client" v={standardClientAuthorized ? "authorized" : "projection-only"} />
           <KV k="private run-record reads" v={privateFallbacks ? "on" : "off"} />
+          <KV k="branch list repository" v={process.env.COMPOUND_WORKTREE_REPO || "not set: start the console with an absolute COMPOUND_WORKTREE_REPO to list branches on All agents"} mono={false} />
         </ForAgents>
       </Card>
 

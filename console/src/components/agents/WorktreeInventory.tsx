@@ -12,6 +12,8 @@ export function WorktreeInventory({ repo, read }: { repo: string | null; read: P
   // compares itself for unlanded commits. Live/probe classes short-circuit.
   const countsKnown = (row: Json) => ["landed_clean", "stalled_unlanded"].includes(str(row.class));
   const count = (value: unknown) => Number.isInteger(value) && Number(value) >= 0 ? String(value) : "unknown";
+  // No repository chosen when the console started: nothing to show here.
+  if (!repo || !read) return null;
   return (
     <section className="rounded-lg border border-hair bg-panel p-5" aria-label="Branches and worktrees">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">

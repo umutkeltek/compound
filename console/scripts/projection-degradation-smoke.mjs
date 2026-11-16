@@ -309,7 +309,8 @@ async function healthTruth() {
   const malformedTrees = renderToStaticMarkup(createElement(WorktreeInventory, { ...inventory, read: read({ ...inventory.read.value, rows: [null] }) }));
   assert.match(malformedTrees, /unreachable|unavailable/i);
   const emptyTrees = renderToStaticMarkup(createElement(WorktreeInventory, unbound));
-  assert.match(emptyTrees, /COMPOUND_WORKTREE_REPO/);
+  // No repository chosen: All agents shows nothing here (the setup note lives in Settings › This console).
+  assert.equal(emptyTrees, "");
   console.log("  worktrees ok: explicitly bound read-only inventory, unknown liveness preserved");
 }
 
