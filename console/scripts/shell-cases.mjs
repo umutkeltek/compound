@@ -21,6 +21,8 @@
 //     are gone, and their canned views are named quick views in search.
 //  8. The browser connection left the top bar for Settings and says it is
 //     not used for anything yet, in the one shared sentence.
+//  9. A header button leads somewhere he is not already looking: no scroll to
+//     what is on screen, no repeat of a tab; anchors land below the top bar.
 //
 // Run: bun scripts/shell-cases.mjs
 import assert from "node:assert/strict";
@@ -328,5 +330,28 @@ const { CONSOLE_ACTS_SENTENCE } = await import("../src/components/OperatorConnec
 assert.match(CONSOLE_ACTS_SENTENCE, /shows and explains/);
 assert.match(CONSOLE_ACTS_SENTENCE, /Acting from it is being built/);
 
-console.log("shell-cases ok: six sections in his words, every page placed with a tab, one sidebar count, current app shown, earlier header names kept, section › page › item breadcrumb; search finds pages, apps, decisions and work; wrong addresses and failures lead back; nothing floats, quick views in search; browser connection on Settings");
+// ---------- 9. header buttons ----------
+// The two anchors kept point far below the first screen (measured at 1280 px:
+// the app list near 2,000 px, the campaign table near 1,900 px).
+const FAR_BELOW = new Set(["#apps-list", "#campaign-results"]);
+for (const section of NAV_SECTIONS) {
+  const siblings = new Set(section.pages.map((p) => p.href));
+  for (const page of section.pages) {
+    const next = page.nextAction;
+    if (!next) continue;
+    assert.ok(!next.href.startsWith("#") || FAR_BELOW.has(next.href), `${page.label}: its button scrolls to what is on screen (${next.href})`);
+    assert.ok(!siblings.has(next.href.split(/[?#]/)[0]) || next.href.includes("?"), `${page.label}: its button repeats a tab (${next.href})`);
+  }
+}
+for (const label of ["Today", "All decisions", "Growth gaps", "Results", "All agents", "Memory", "Rules", "Sources", "Models and cost", "Skills and tools", "View library"]) {
+  const page = NAV_SECTIONS.flatMap((s) => s.pages).find((p) => p.label === label);
+  assert.equal(page.nextAction, null, `${label} has no header button`);
+}
+const growthHeader = render("/growth", createElement(PageHeader, { name: "Growth" }));
+hasNot(growthHeader, /<a [^>]*class="inline-flex min-h-11/, "no decorative button renders");
+const passed = render("/growth", createElement(PageHeader, { name: "Growth", action: { label: "Review data connections", href: "/sources" } }));
+has(passed, /href="\/sources"[^>]*>Review data connections/, "a page may still pass its own button");
+assert.match(readSrc("app/globals.css"), /html \{[^}]*scroll-padding-top: 4\.5rem/, "anchors land below the sticky top bar");
+
+console.log("shell-cases ok: six sections in his words, every page placed with a tab, one sidebar count, current app shown, earlier header names kept, section › page › item breadcrumb; search finds pages, apps, decisions and work; wrong addresses and failures lead back; nothing floats, quick views in search; browser connection on Settings; header buttons lead somewhere new");
 console.log(table.join("\n"));

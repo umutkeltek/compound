@@ -10,6 +10,8 @@
  * header, but no tab and no search row. Pages agents use more than he does sit
  * in Settings' quiet "back room".
  */
+import { settingsHref, workListHref } from "@/lib/links";
+
 export type NavIconKey = "home" | "chart" | "board" | "users" | "brain" | "sliders";
 
 export type NavPage = {
@@ -18,7 +20,12 @@ export type NavPage = {
   href: string;
   /** One plain sentence: what this page shows. PageHeader's default lead on the page itself. */
   description: string;
-  /** The header button. Only when it leads somewhere he is not already looking; null = none. */
+  /**
+   * The header button, or null for none. Only when it leads somewhere he is
+   * not already looking: another page, a filtered list, or a part far below
+   * the first screen. Never a scroll to what is on screen, never a tab of the
+   * same section (the tab row is right under the header).
+   */
   nextAction: { label: string; href: string } | null;
   /** Path prefixes of this page's detail pages (an app, a work item, a record). */
   match?: readonly string[];
@@ -61,14 +68,14 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         label: "Today",
         href: "/",
         description: "Start with what needs attention, then see what is moving.",
-        nextAction: { label: "Review decisions", href: "/reviews" },
+        nextAction: null,
         keywords: ["home", "needs me", "waiting for me", "inbox", "start"],
       },
       {
         label: "All decisions",
         href: "/reviews",
         description: "Every decision that waits for you, with the recommendation and what happens next.",
-        nextAction: { label: "Review next decision", href: "#decision-queue" },
+        nextAction: null,
         aliases: ["Decide"],
         keywords: ["decisions", "review", "approve", "verdict", "blocked on me", "queue"],
       },
@@ -93,7 +100,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         label: "Growth gaps",
         href: "/growth",
         description: "Find what limits growth and where better evidence would help.",
-        nextAction: { label: "Compare growth gaps", href: "#growth-coverage" },
+        nextAction: null,
         aliases: ["Growth", "Growth audit"],
         keywords: ["growth", "coverage", "what limits growth"],
       },
@@ -101,7 +108,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         label: "Results",
         href: "/loops",
         description: "See what changed in each app and whether it helped.",
-        nextAction: { label: "Review app results", href: "#app-results" },
+        nextAction: null,
         aliases: ["Feedback loops"],
         keywords: ["did it help", "experiments", "changes", "before and after"],
       },
@@ -124,7 +131,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         label: "Work",
         href: "/work",
         description: "Follow progress and resolve what is holding work up.",
-        nextAction: { label: "Review blocked work", href: "/work?lens=table&filter=blocked" },
+        nextAction: { label: "Review work on hold", href: workListHref({ filter: "blocked" }) },
         match: ["/work/", "/flow"],
         keywords: ["tasks", "work items", "blocked", "running", "stuck", "board", "list", "on hold"],
       },
@@ -132,7 +139,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         label: "Projects",
         href: "/projects",
         description: "Follow a project from its recorded goals to work, dependencies and evidence.",
-        nextAction: { label: "Choose a project", href: "#project-scope" },
+        nextAction: null,
         unlisted: true,
       },
     ],
@@ -147,7 +154,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         label: "Working now",
         href: "/live",
         description: "Follow the latest recorded activity from your agents.",
-        nextAction: { label: "Review active work", href: "/work?lens=table&filter=running" },
+        nextAction: { label: "Review running work", href: workListHref({ filter: "running" }) },
         aliases: ["Live"],
         keywords: ["live", "now", "activity", "running"],
       },
@@ -155,7 +162,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         label: "All agents",
         href: "/executors",
         description: "See which agents are available and what they are working on.",
-        nextAction: { label: "See active work", href: "/live" },
+        nextAction: null,
         aliases: ["Agents"],
         keywords: ["agents", "who works", "available"],
       },
@@ -163,7 +170,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         label: "Waiting on each other",
         href: "/traffic",
         description: "Find work waiting on another agent or a shared resource.",
-        nextAction: { label: "Review blocked work", href: "/work?lens=table&filter=blocked" },
+        nextAction: { label: "Review work on hold", href: workListHref({ filter: "blocked" }) },
         aliases: ["Coordination"],
         keywords: ["coordination", "handoff", "blocked", "shared resource"],
       },
@@ -179,7 +186,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         label: "Memory",
         href: "/memory",
         description: "Review proposed memories and explore the evidence behind them.",
-        nextAction: { label: "Review proposed memories", href: "#memory-review" },
+        nextAction: null,
         match: ["/map/memory"],
         keywords: ["remember", "recall", "proposed memories", "what it knows"],
       },
@@ -187,7 +194,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         label: "Rules",
         href: "/standing-law",
         description: "Rules agents follow without asking.",
-        nextAction: { label: "Find a rule", href: "#accepted-rules" },
+        nextAction: null,
         aliases: ["Standing law"],
         keywords: ["standing rules", "policy", "allowed", "what agents may do"],
       },
@@ -195,7 +202,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         label: "Sources",
         href: "/sources",
         description: "Where knowledge comes from.",
-        nextAction: { label: "Review connections", href: "#source-connections" },
+        nextAction: null,
         keywords: ["connections", "intake", "evidence", "feeds", "data sources"],
       },
     ],
@@ -210,14 +217,14 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         label: "Settings",
         href: "/settings",
         description: "Permissions, safety, connections and console health.",
-        nextAction: { label: "Review permissions", href: "/settings?section=safety-permissions#settings-safety-permissions" },
+        nextAction: { label: "Review permissions", href: settingsHref("safety-permissions") },
         keywords: ["permissions", "safety", "autonomy", "health", "stop agents", "preferences"],
       },
       {
         label: "Models and cost",
         href: "/routing",
         description: "Review model choices, usage and proposed changes.",
-        nextAction: { label: "Review model decisions", href: "/reviews" },
+        nextAction: null,
         aliases: ["Routing"],
         keywords: ["models", "routing", "usage", "providers", "spend"],
       },
@@ -225,7 +232,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         label: "Skills and tools",
         href: "/map",
         description: "Explore the skills, tools and connections Compound can use.",
-        nextAction: { label: "Explore skills and tools", href: "#capability-map" },
+        nextAction: null,
         match: ["/map/"],
         aliases: ["Map"],
         keywords: ["map", "capabilities", "skills", "tools"],
@@ -235,7 +242,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         label: "Evidence history",
         href: "/map/lineage",
         description: "Trace where a record came from and which decisions use it.",
-        nextAction: { label: "Find a record", href: "#lineage-search" },
+        nextAction: null,
         match: ["/map/lineage/"],
         aliases: ["Lineage"],
         keywords: ["lineage", "trace", "where did this come from"],
@@ -245,7 +252,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         label: "View library",
         href: "/representation",
         description: "Explore the ways Compound can explain your work.",
-        nextAction: { label: "Explore available views", href: "#view-library" },
+        nextAction: null,
         aliases: ["Views"],
         keywords: ["views", "explanations"],
         backRoom: true,

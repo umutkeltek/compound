@@ -657,9 +657,13 @@ exercise these seams, including cold page reads and stale or partial authority.
 ## Page journeys (supersedes question-title and read-only fallback copy above)
 
 - Pages lead with their registry name (the same words as their tab), a short
-  purpose or current answer, and one useful primary link. `lib/experience.ts` owns default purposes
+  purpose or current answer, and at most one header button. `lib/experience.ts` owns default purposes
   and destinations; `PageHeader` renders them. Dates and read status are secondary.
-- Primary links reach real content, filters, or relevant pages. Empty and loading
+- A page has a header button only when it leads somewhere he is not already
+  looking: another page, a filtered list, or a part far below the first screen.
+  No button scrolls to what is already on screen or repeats a tab of the same
+  section; no button is better than a decorative one. In-page links land below
+  the sticky top bar (`scroll-padding-top` on `html`). Empty and loading
   states retain useful destinations. Work filters are shareable and respond to
   browser navigation. Commands containing placeholders are never primary actions.
 - Work details lead with the goal, assigned agent, latest recorded blocker and
