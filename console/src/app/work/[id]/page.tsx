@@ -1,7 +1,8 @@
 import { Suspense } from "react";
 import { WorkVisuals } from "@/components/products/VisualCampaigns";
 import Link from "next/link";
-import { PageHeader } from "@/components/kit";
+import { hasCopy, PageHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending } from "@/components/kit";
+import { PendingRefresh } from "@/components/PendingRefresh";
 import { AgentHandoff } from "@/components/AgentHandoff";
 import { workNextStep } from "@/lib/work-next-step";
 import { notFound } from "next/navigation";
@@ -14,7 +15,7 @@ import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { buildActionRow } from "@/lib/work-pipeline";
 import {
   enrichWorkItem,
-  findWorkbenchItem,
+  readWorkbenchItem,
   packetForSurface,
   shortText,
 } from "@/lib/work-data";
@@ -64,7 +65,7 @@ export default async function WorkDetail({ params }: { params: Promise<{ id: str
   const leases = await getWorkLeases();
   const execution = selectedContinueView(work, selectedWorkLease(leases, id));
 
-  const workbenchItem = await findWorkbenchItem(id);
+  const { read: workbenchRead, item: workbenchItem } = await readWorkbenchItem(id);
   const merged = await enrichWorkItem({ ...(workbenchItem ?? {}), ...work, work_id: id });
   const packet = merged.packet ?? (await packetForSurface(str(work.canonical_surface)));
   const state = str(work.state);
@@ -94,6 +95,7 @@ export default async function WorkDetail({ params }: { params: Promise<{ id: str
 
   return (
     <div className="flex flex-col gap-6">
+      <PendingRefresh pending={readsPending(workbenchRead)} stamp={Date.now()} />
       <Link href="/work" className="text-sm font-medium text-muted hover:text-ink">← All work</Link>
       <PageHeader name="Work" title={packet?.title || str(work.desired_outcome) || "Work details"}
         action={{ label: "See next step", href: "#work-next-step" }}
@@ -135,6 +137,10 @@ export default async function WorkDetail({ params }: { params: Promise<{ id: str
       <details className="rounded-xl border border-hair bg-panel p-5">
         <summary className="cursor-pointer text-sm font-semibold text-ink">Evidence and technical details</summary>
         <div className="mt-4 grid gap-4">
+          <ReadChip read={workbenchRead} />
+          {hasCopy(workbenchRead)
+            ? <ReadFailedBanner read={workbenchRead} label="supplemental work details" />
+            : <ReadNotice read={workbenchRead} label="supplemental work details" />}
           <CodeList items={evidence} empty="No evidence references have been attached yet." />
           <TextBlock title="Task reference" body={id} />
           {receiptId ? <TextBlock title="Result reference" body={receiptId} /> : null}

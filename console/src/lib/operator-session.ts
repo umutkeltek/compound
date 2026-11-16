@@ -26,7 +26,12 @@ export function operatorSessionConfigured(): boolean {
 
 export function operatorRequestOriginAllowed(request: Request, write = request.method !== "GET"): boolean {
   const url = new URL(request.url);
-  if (url.origin !== OPERATOR_ORIGIN || request.headers.get("host") !== "127.0.0.1:3777") return false;
+  // NextRequest normalizes loopback URLs to localhost. The browser's exact
+  // Host and Origin remain the authority; this only recognizes that internal
+  // representation and never admits another browser hostname or port.
+  const normalizedOrigin = new URL(OPERATOR_ORIGIN);
+  normalizedOrigin.hostname = "localhost";
+  if ((url.origin !== OPERATOR_ORIGIN && url.origin !== normalizedOrigin.origin) || request.headers.get("host") !== "127.0.0.1:3777") return false;
   const origin = request.headers.get("origin");
   if ((write && origin !== OPERATOR_ORIGIN) || (origin !== null && origin !== OPERATOR_ORIGIN)) return false;
   if (request.headers.get("sec-fetch-site") !== "same-origin") return false;

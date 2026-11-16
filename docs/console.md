@@ -103,7 +103,9 @@ An action already admitted before disconnect may finish; later admissions fail.
 The new browser transport accepts only current owner-issued `generic-action-v2`
 actions carrying their exact ActionIntent and authority revision. Every submit
 independently checks the live native session, exact Host and Origin, browser
-fetch context, CSRF token and fresh native action authority. A connected label
+fetch context, CSRF token and fresh native action authority. Next's internal
+loopback URL normalization is accepted only alongside the unchanged canonical
+browser Host and Origin; other browser hostnames and ports remain refused. A connected label
 alone grants no permission. Unsupported legacy forms, memory promotion, grant
 editing and unstamped controls remain unavailable through this connection.
 The existing capability extension keeps its separate authentication gate. Adding
@@ -117,6 +119,10 @@ empty lock primitive so a concurrent process cannot create a second owner by
 replacing its lockfile. A stopped or unreachable broker fails closed.
 
 ### Work-attached visual campaigns
+
+Work detail reads its own native record first. Supplemental overview data loads
+through the shared background reader, with refresh and stale/error evidence;
+a slow overview collector does not delay the task's goal, status or next step.
 
 App and work detail pages read visual campaigns attached to native WorkEnvelope
 artifacts. Discovery covers open and recent work, so a campaign remains findable

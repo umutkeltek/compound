@@ -1,4 +1,4 @@
-import { arr, getWorkbench, Json, runJson, str } from "@/lib/compound";
+import { arr, getWorkbench, HEAVY_PROJECTION_TIMEOUT_MS, Json, readProjection, runJson, str } from "@/lib/compound";
 
 export type PacketSummary = {
   path: string;
@@ -80,4 +80,12 @@ export async function findWorkbenchItem(id: string): Promise<Json | null> {
   const workbench = await getWorkbench();
   const items = [...arr(workbench?.open), ...arr(workbench?.recent)];
   return items.find((item) => workId(item) === id) ?? null;
+}
+
+/** Detail enrichment uses the shared background reader, never waits for the
+ * broad collector, and keeps its loading/failure state separate from absence. */
+export async function readWorkbenchItem(id: string) {
+  const read = await readProjection(["workbench", "--json"], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS });
+  const items = [...arr(read.value?.open), ...arr(read.value?.recent)];
+  return { read, item: items.find((item) => workId(item) === id) ?? null };
 }

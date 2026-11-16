@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { NextRequest } from "next/server";
 
 // Native replay/expiry/concurrency are tested by internal/console. This fixture
 // falsifies the HTTP adapter's independent boundaries and credential handling.
@@ -50,6 +51,17 @@ try {
   }
   assert.equal(session.operatorSessionConfigured(), true);
   assert.equal(await session.authorizeOperatorSession(request()), null);
+  const nativeRequest = new NextRequest(request());
+  assert.equal(new URL(nativeRequest.url).hostname, "localhost", "exercise Next's actual loopback normalization");
+  assert.equal(await session.authorizeOperatorSession(nativeRequest), null);
+  assert.equal((await session.operatorSessionStatus(new NextRequest(request({ method: "GET" })))).status, 200);
+  for (const headers of [
+    { host: "localhost:3777" },
+    { origin: ORIGIN.replace("127.0.0.1", "localhost") },
+    { host: "127.0.0.2:3777" },
+    { origin: ORIGIN.replace("127.0.0.1", "127.0.0.2") },
+    { "x-compound-operator-csrf": "" },
+  ]) assert.equal((await session.authorizeOperatorSession(new NextRequest(request({ headers }))))?.status, 403);
   const before = calls;
   for (const headers of [
     { origin: "http://console.invalid" },
@@ -70,7 +82,7 @@ try {
   assert.equal((await session.authorizeOperatorSession(request({ url: wrongPort.href })))?.status, 403);
   assert.equal((await session.authorizeOperatorSession(request({ headers: { cookie: `compound_operator_session=${CAPABILITY}` } })))?.status, 403);
   assert.equal(consoleMutationBlockedResponse(request())?.status, 403, "new opaque cookie must never authenticate legacy capability extension");
-  const paired = await session.pairOperatorSession(request({ headers: { "content-type": "application/json" }, body: JSON.stringify({ code: PAIR }) }));
+  const paired = await session.pairOperatorSession(new NextRequest(request({ headers: { "content-type": "application/json" }, body: JSON.stringify({ code: PAIR }) })));
   assert.equal(paired.status, 200);
   const cookie = paired.headers.get("set-cookie");
   assert.match(cookie, /HttpOnly; SameSite=Strict; Path=\/; Max-Age=3600/);
@@ -112,7 +124,7 @@ try {
   const stale = await POST(request({ headers: { "content-type": "application/json" }, body: JSON.stringify({ ...action, expectedRevision: "generic-action-v2:stale" }) }));
   assert.equal(stale.status, 409, "existing owner must reject stale revision after session admission");
   assert.equal((await stale.json()).error_code, "authority_drift");
-  const exact = await POST(request({ headers: { "content-type": "application/json" }, body: JSON.stringify(action) }));
+  const exact = await POST(new NextRequest(request({ headers: { "content-type": "application/json" }, body: JSON.stringify(action) })));
   assert.equal(exact.status, 200);
   assert.equal(executions, 2);
   const revoked = await session.revokeOperatorSession(request());
