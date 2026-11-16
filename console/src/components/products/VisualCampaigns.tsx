@@ -1,8 +1,9 @@
 import Link from "next/link";
+import { appHref } from "@/lib/links";
 import { PendingRefresh } from "@/components/PendingRefresh";
 import { campaignAssetURL, getProductCampaigns, getWorkCampaigns, type VisualCampaign } from "@/lib/visual-campaigns";
 
-export function VisualCampaignCard({ campaign }: { campaign: VisualCampaign }) {
+export function VisualCampaignCard({ campaign, resultsHref = "/loops" }: { campaign: VisualCampaign; resultsHref?: string }) {
   const assets = campaign.assets ?? [];
   const available = assets.filter((asset) => asset.available);
   const expected = (campaign.locales?.length ?? 0) * (campaign.targets?.length ?? 0) * (campaign.scenes?.length ?? 0);
@@ -40,7 +41,7 @@ export function VisualCampaignCard({ campaign }: { campaign: VisualCampaign }) {
     <div className="mt-4 border-t border-hair pt-4">
       <p className="text-sm font-semibold text-ink">Next: {campaign.status === "unavailable" ? "repair the attached campaign" : available.length < expected ? "complete the missing exports" : "review the complete set"}</p>
       <p className="mt-1 text-sm text-muted">{available.length ? "Confirm the current app screens, review each language, then use the release workflow. Improvement is measured after exposure." : "The work record holds the brief, owner and progress."}</p>
-      <div className="mt-3 flex flex-wrap gap-4 text-sm font-semibold"><Link className="text-work hover:underline" href={`/work/${campaign.work_id}`}>Open visual work →</Link><Link className="text-work hover:underline" href="/loops">Review measured results</Link></div>
+      <div className="mt-3 flex flex-wrap gap-4 text-sm font-semibold"><Link className="text-work hover:underline" href={`/work/${campaign.work_id}`}>Open visual work →</Link><Link className="text-work hover:underline" href={resultsHref}>Review measured results</Link></div>
     </div>
     <details className="mt-4 text-xs text-muted"><summary className="cursor-pointer">Checks and source details</summary>
       <p className="mt-2">{campaign.check?.ready ? "File checks passed. This does not approve publication or prove conversion lift." : campaign.check_error || campaign.issue || "File checks are incomplete."}</p>
@@ -51,15 +52,31 @@ export function VisualCampaignCard({ campaign }: { campaign: VisualCampaign }) {
   </article>;
 }
 
+/**
+ * An app's marketing visuals. Shown as a section only when its work holds a
+ * visual campaign; otherwise one quiet line (also while the work read is
+ * still running), never an empty block that looks like an answer.
+ */
 export async function ProductVisuals({ productIds }: { productIds: string[] }) {
   const report = await getProductCampaigns(productIds);
+  return <ProductVisualsView report={report} resultsHref={`${appHref(productIds[0] ?? "")}#app-results`} />;
+}
+
+export function ProductVisualsView({ report, resultsHref }: { report: Awaited<ReturnType<typeof getProductCampaigns>>; resultsHref: string }) {
+  if (!report.campaigns.length) {
+    return <div id="visuals" className="scroll-mt-24 text-sm text-muted" data-visuals-quiet>
+      <PendingRefresh pending={report.pending} stamp={Date.now()} />
+      <span className="font-medium text-ink">Marketing visuals:</span>{" "}
+      {report.pending ? "still reading this app's work." : "none in this app's open or recent work."}
+      {report.issue ? <span className="ml-1 text-xs text-faint">{report.issue}</span> : null}
+    </div>;
+  }
   return <section id="visuals" className="scroll-mt-24 space-y-3" aria-labelledby="visuals-title">
     <PendingRefresh pending={report.pending} stamp={Date.now()} />
     <h2 id="visuals-title" className="text-lg font-semibold text-ink">Marketing visuals</h2>
     <p className="text-sm text-muted">Images and release checks from open and recent work on this app.</p>
     {report.issue ? <p className="text-sm text-seam">{report.issue}</p> : null}
-    {report.campaigns.map((campaign) => <VisualCampaignCard key={`${campaign.work_id}:${campaign.index}`} campaign={campaign} />)}
-    {!report.campaigns.length && !report.pending ? <div className="rounded-xl border border-dashed border-hair p-4 text-sm"><p className="text-muted">No visual campaign is available in the current work view.</p><Link className="mt-2 inline-block font-semibold text-work hover:underline" href="/work">Find work or review progress →</Link></div> : null}
+    {report.campaigns.map((campaign) => <VisualCampaignCard key={`${campaign.work_id}:${campaign.index}`} campaign={campaign} resultsHref={resultsHref} />)}
     {report.limited ? <p className="text-xs text-muted">Showing the first 12 visual work records. Open Work for the rest.</p> : null}
   </section>;
 }

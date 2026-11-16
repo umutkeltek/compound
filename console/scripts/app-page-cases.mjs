@@ -355,3 +355,17 @@ console.log("app page cases ok: next steps say they are shared chores, no copy-a
 }
 
 console.log("app page cases ok: overview and growth gaps name their counts, the ranking leads to each app's next steps");
+
+/* ---------- 8. Marketing visuals: one quiet line where the app has none ---------- */
+{
+  const { ProductVisualsView } = await import("../src/components/products/VisualCampaigns.tsx");
+  const { AppRouterContext } = await import("next/dist/shared/lib/app-router-context.shared-runtime.js");
+  const router = { refresh() {}, push() {}, replace() {}, prefetch() {}, back() {}, forward() {} };
+  const view = (report) => renderToStaticMarkup(createElement(AppRouterContext.Provider, { value: router }, createElement(ProductVisualsView, { report, resultsHref: "/apps/pocket-log#app-results" })));
+  const none = text(view({ campaigns: [], pending: false, issue: "", limited: false }));
+  assert.equal(none.replace(/&#x27;/g, "'"), "Marketing visuals: none in this app's open or recent work.");
+  const reading = text(view({ campaigns: [], pending: true, issue: "", limited: false }));
+  assert.ok(reading.includes("still reading"), "the line shows while the work read runs, never an empty heading");
+}
+
+console.log("app page cases ok: marketing visuals are one quiet line where an app has none");
