@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { fetchWithOperatorSession, readBrowserOperatorSession, type BrowserOperatorSession } from "@/lib/operator-session-client";
 
@@ -13,14 +13,16 @@ export const CONSOLE_ACTS_SENTENCE =
   "The console shows and explains your apps, work and agents. Acting from it is being built; for now nothing you click here changes them.";
 
 /**
- * The browser connection, shown on Settings only (it left the top bar). A
+ * Settings' last card: which Compound home this console reads (the instance
+ * badge, moved here from the sidebar) and the browser connection, which left
+ * the top bar. A
  * one-use code from a terminal on this computer connects this browser to the
  * local Compound. The connection is not proof that a click is the
  * operator's, so it unlocks nothing yet, and the card says so. The code is
  * requested in a local terminal, never issued by a web page; pairing changes
  * transport identity only, owner policy still decides.
  */
-export function OperatorConnection() {
+export function OperatorConnection({ instance }: { instance?: ReactNode } = {}) {
   const router = useRouter();
   const pathname = usePathname();
   const onSettings = pathname === "/settings";
@@ -37,7 +39,16 @@ export function OperatorConnection() {
     window.addEventListener("focus", refresh);
     return () => { current = false; window.clearInterval(timer); window.removeEventListener("focus", refresh); };
   }, [onSettings]);
-  if (!onSettings || !session?.enabled) return null;
+  if (!onSettings) return null;
+  if (!session?.enabled) {
+    return instance ? (
+      <section className="mt-6 rounded-xl border border-hair bg-panel p-5 text-sm" aria-label="Where this console reads from" data-console-instance>
+        <h2 className="text-base font-semibold text-ink">Where this console reads from</h2>
+        <p className="mt-1 flex flex-wrap items-center gap-2 text-muted">Reads and shows the Compound home {instance}</p>
+        <p className="mt-2 max-w-read text-muted">{CONSOLE_ACTS_SENTENCE}</p>
+      </section>
+    ) : null;
+  }
   async function submit(disconnect = false) {
     setPending(true); setMessage("");
     try {
@@ -55,6 +66,7 @@ export function OperatorConnection() {
   return (
     <section className="mt-6 rounded-xl border border-hair bg-panel p-5 text-sm" aria-label="Browser connection" data-browser-connection>
       <h2 className="text-base font-semibold text-ink">Browser connection</h2>
+      {instance ? <p className="mt-1 flex flex-wrap items-center gap-2 text-muted">This console reads and shows the Compound home {instance}</p> : null}
       <p className="mt-1 max-w-read text-muted">
         {session.connected
           ? `This browser is connected to Compound on this computer${until ? ` until ${until}` : ""}. The connection is not used for anything yet.`

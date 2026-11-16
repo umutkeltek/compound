@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { NavTabs } from "@/components/NavTabs";
+import { BreadcrumbTitle } from "@/components/kit/Breadcrumb";
 import { placeForName } from "@/lib/experience";
 import type { ReactNode } from "react";
 
@@ -41,12 +42,15 @@ export function PageHeader({
   const place = placeForName(name);
   const page = place?.page;
   const next = action === undefined ? page?.nextAction : action;
-  const description = lead ?? (answer ? null : page?.description);
   const label = page?.label ?? name;
+  // The registry's purpose line describes the page itself: an item or question
+  // page (its own title) does not borrow its list page's purpose.
+  const description = lead ?? (answer || (title && title !== label) ? null : page?.description);
   const heading = title ?? label;
   const kicker = !meta && place && title && title !== label ? place.section.label : null;
   return (
     <header className="flex flex-col gap-3">
+      {typeof title === "string" && title !== label ? <BreadcrumbTitle title={title} /> : null}
       {meta ? <div className="text-sm text-faint">{meta}</div> : null}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">

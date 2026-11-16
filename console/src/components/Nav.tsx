@@ -7,7 +7,6 @@ import {
   BarChartIcon,
   BoardIcon,
   BrainIcon,
-  ChevronsUpDownIcon,
   HomeIcon,
   SearchIcon,
   SlidersIcon,
@@ -64,20 +63,13 @@ function WaitingPill({ count }: { count: number }) {
   );
 }
 
+/** Which console this is. Not a switcher and not a link: there is one workspace. */
 function Workspace() {
   return (
-    <Link
-      href="/settings"
-      className="flex items-center gap-2.5 rounded-xl border border-hair bg-panel px-2.5 py-2 shadow-sm transition-colors hover:bg-soft"
-      title="Workspace settings"
-    >
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-strong text-md font-bold text-panel">c</span>
-      <span className="min-w-0 flex-1 leading-tight">
-        <span className="block text-2xs text-faint">Workspace</span>
-        <span className="block truncate text-md font-semibold text-ink">Compound</span>
-      </span>
-      <span className="text-faint"><ChevronsUpDownIcon size={14} /></span>
-    </Link>
+    <div className="flex items-center gap-2.5 px-2.5 py-1" data-workspace>
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-strong text-md font-bold text-panel" aria-hidden>c</span>
+      <span className="truncate text-md font-semibold text-ink">Compound</span>
+    </div>
   );
 }
 

@@ -26,6 +26,11 @@
 // 10. The build note says in plain words what it means and who handles it,
 //     leads to no page that says nothing about it, and can be dismissed until
 //     the source moves again.
+// 11. Small things that misled: the workspace block is not a fake switcher;
+//     the app dot has a legend; the status card is plain and links to its
+//     Settings section; auto-refresh off is honoured by every timer and
+//     remembered; depth chosen on Today hides nothing elsewhere; each browser
+//     tab has its own title; an item page does not borrow its list's purpose.
 //
 // Run: bun scripts/shell-cases.mjs
 import assert from "node:assert/strict";
@@ -370,5 +375,50 @@ assert.doesNotMatch(bannerSource, /href="\/settings"/, "it no longer leads to a 
 assert.match(bannerSource, />\s*Dismiss\s*</, "it can be dismissed");
 assert.doesNotMatch(bannerSource, /newer Compound build is available/);
 
-console.log("shell-cases ok: six sections in his words, every page placed with a tab, one sidebar count, current app shown, earlier header names kept, section › page › item breadcrumb; search finds pages, apps, decisions and work; wrong addresses and failures lead back; nothing floats, quick views in search; browser connection on Settings; header buttons lead somewhere new; build note plain and dismissible");
+// ---------- 11. small things that misled ----------
+hasNot(sidebar, /data-workspace[^>]*href=|href="\/settings"[^>]*>\s*<span[^>]*>c</, "the workspace block is not a link");
+hasNot(sidebar, /m7 9 5-5 5 5M7 15l5 5 5-5/, "no switcher chevrons");
+const staleApps = apps.map((app, i) => (i === 1 ? { ...app, stale: true } : app));
+has(render("/apps", createElement(NavAppLinks, { apps: staleApps, total: staleApps.length })), /data-dot-legend[^>]*>.*a data feed stopped arriving/, "an amber dot is explained");
+hasNot(render("/apps", createElement(NavAppLinks, { apps, total: apps.length })), /data-dot-legend/, "no legend when no dot is amber");
+const statusSource = readSrc("components/NavContainer.tsx");
+assert.match(statusSource, /plainAutonomy\(/, "the status card uses the plain autonomy sentence");
+assert.doesNotMatch(statusSource, /autonomy\.detail|compound policy autonomy-halt/, "no jargon line or command tooltip");
+assert.match(statusSource, /settingsHref\("safety-permissions"\)/, "the card leads to its Settings section");
+assert.match(statusSource, /<InstanceBadge onlyWhenUnpinned \/>/, "the instance badge shows in the sidebar only as a warning");
+assert.match(layoutSource, /<OperatorConnection instance=\{<InstanceBadge \/>\} \/>/, "and always on Settings");
+// Auto-refresh: remembered, and honoured by PendingRefresh.
+const memory = new Map([["compound-auto-refresh", "off"]]);
+globalThis.window = { localStorage: { getItem: (k) => memory.get(k) ?? null, setItem: (k, v) => memory.set(k, String(v)) } };
+const refresh = await import("../src/components/RefreshControl.tsx");
+const t0 = 1_000_000;
+assert.equal(refresh.refreshAllowed(t0), false, "auto-refresh off, remembered from this browser, stops timers");
+refresh.followManualRefresh(t0);
+assert.equal(refresh.refreshAllowed(t0 + 5_000), true, "a manual Refresh follows its reads");
+assert.equal(refresh.refreshAllowed(t0 + refresh.MANUAL_FOLLOW_MS + 1), false, "then stops");
+refresh.followManualRefresh(null);
+refresh.setAutoRefresh(true);
+assert.equal(memory.get("compound-auto-refresh"), "on", "the choice is remembered");
+assert.equal(refresh.refreshAllowed(t0), true);
+delete globalThis.window;
+assert.match(readSrc("components/PendingRefresh.tsx"), /refreshAllowed\(Date\.now\(\)\)/, "the loading follow-up honours the choice");
+// Depth belongs to Today and Live only.
+const { depthAttributeFor } = await import("../src/components/ExperienceBar.tsx");
+assert.equal(depthAttributeFor("/work", "glance"), null, "depth chosen on Today hides nothing on Work");
+assert.equal(depthAttributeFor("/", "glance"), "glance");
+assert.equal(depthAttributeFor("/live", "technical"), "technical");
+assert.match(layoutSource, /if\(w==='\/'\|\|w==='\/live'\)\{document\.documentElement\.setAttribute\('data-depth'/, "the first-paint script scopes depth too");
+// Tab titles.
+const { documentTitleFor } = await import("../src/components/kit/Breadcrumb.tsx");
+assert.equal(documentTitleFor(breadcrumbFor("/reviews")), "All decisions · Today · Compound");
+assert.equal(documentTitleFor(breadcrumbFor("/work/work_sample", "Fix the sync gap")), "Fix the sync gap · Work · Compound", "an item page's tab names the item");
+assert.deepEqual(crumbs("/work/work_sample"), ["Work", "work_sample"], "without a title the id stays");
+assert.doesNotMatch(layoutSource, /title: "Compound"/, "no fixed title for every tab");
+has(render("/reviews", createElement((await import("../src/components/kit/Breadcrumb.tsx")).Breadcrumb)), /<title>All decisions · Today · Compound<\/title>/, "the breadcrumb renders the tab title");
+// An item page does not borrow its list page's purpose line.
+const visible = (html) => html.replace(/<[^>]+>/g, " ");
+hasNot(visible(appPage), /across every app/, "an app page does not say it covers every app");
+has(visible(render("/apps", createElement(PageHeader, { name: "Portfolio" }))), /across every app/, "the list page keeps its purpose");
+
+console.log("shell-cases ok: six sections in his words, every page placed with a tab, one sidebar count, current app shown, earlier header names kept, section › page › item breadcrumb; search finds pages, apps, decisions and work; wrong addresses and failures lead back; nothing floats, quick views in search; browser connection on Settings; header buttons lead somewhere new; build note plain and dismissible; small misleading things fixed");
 console.log(table.join("\n"));

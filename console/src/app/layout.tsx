@@ -7,10 +7,11 @@ import { SystemBanner, type BannerFreshness } from "@/components/SystemBanner";
 import { getInstalledBinaryFreshness } from "@/lib/compound";
 import { ExperienceBar } from "@/components/ExperienceBar";
 import { OperatorConnection } from "@/components/OperatorConnection";
+import { InstanceBadge } from "@/components/InstanceBadge";
 import { Breadcrumb, ThemeToggle } from "@/components/kit";
 
+// No fixed title: the breadcrumb renders each page's own (section, page, item).
 export const metadata: Metadata = {
-  title: "Compound",
   description: "Operator workspace over Compound projections",
 };
 
@@ -21,7 +22,7 @@ export const metadata: Metadata = {
  * resolution exactly. Light is the default; "auto" and "dark" are opt-in.
  * `suppressHydrationWarning` on <html> covers the attribute this script stamps.
  */
-const THEME_SCRIPT = `(function(){try{var k='compound-theme';var p=localStorage.getItem(k)||'light';var d=(p==='dark')||(p==='auto'&&window.matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.setAttribute('data-theme',d?'dark':'light');var q=localStorage.getItem('compound-experience-depth')||'understand';document.documentElement.setAttribute('data-depth',q);}catch(e){}})();`;
+const THEME_SCRIPT = `(function(){try{var k='compound-theme';var p=localStorage.getItem(k)||'light';var d=(p==='dark')||(p==='auto'&&window.matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.setAttribute('data-theme',d?'dark':'light');var q=localStorage.getItem('compound-experience-depth')||'understand';var w=location.pathname;if(w==='/'||w==='/live'){document.documentElement.setAttribute('data-depth',q);}}catch(e){}})();`;
 
 /**
  * The workspace shell: a quiet frame holding the sidebar, and one white panel
@@ -56,7 +57,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <ExperienceBar />
               <main className="mx-auto w-full flex-1 px-4 pb-24 pt-6 sm:px-6 md:px-8 md:pt-8" style={{ maxWidth: "1480px" }}>
                 {children}
-                <OperatorConnection />
+                <OperatorConnection instance={<InstanceBadge />} />
               </main>
             </div>
           </div>

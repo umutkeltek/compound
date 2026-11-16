@@ -71,6 +71,12 @@ export function NavAppLinks({ apps, total, note }: { apps: NavApp[]; total: numb
           );
         })}
       </div>
+      {apps.some((app) => app.stale) ? (
+        <div className="flex items-center gap-1.5 px-2.5 pt-1 text-2xs text-faint" data-dot-legend>
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-seam" aria-hidden />
+          Amber: a data feed stopped arriving
+        </div>
+      ) : null}
       {expanded || hidden > 0 ? (
         <button
           type="button"
