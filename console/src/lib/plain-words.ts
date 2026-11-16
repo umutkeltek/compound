@@ -105,6 +105,18 @@ export const HOW_DECISIONS_MOVE =
 
 /* ---------- areas (what a decision is about) ---------- */
 
+/**
+ * The waiting list's own kinds that are not review-queue areas: each source
+ * that lists his items one by one (`compound attention --json` groups with
+ * `items[]`). Kept apart so the review areas below stay one list.
+ */
+const WAITING_LIST_AREA_LABEL: Record<string, string> = {
+  "memory-proposals": "Proposed memories",
+  "product-results-due": "Did a change work?",
+  "hook-approval-requests": "Agent actions held for you",
+  "data-source-setup": "Data source setup",
+};
+
 const AREA_LABEL: Record<string, string> = {
   "workbench-blocked-on-you": "Work on hold",
   "workbench-needs-claim": "Work nobody picked up",
@@ -149,7 +161,7 @@ const AREA_LABEL: Record<string, string> = {
 export function plainArea(area: string): string {
   const head = (area || "").split("/")[0].trim();
   if (!head) return "Other";
-  return AREA_LABEL[head] ?? sentence(head.replace(/[_-]+/g, " "));
+  return AREA_LABEL[head] ?? WAITING_LIST_AREA_LABEL[head] ?? sentence(head.replace(/[_-]+/g, " "));
 }
 
 /** The id part of an area path, for small secondary text ("" when none). */

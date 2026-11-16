@@ -1,8 +1,8 @@
 import { PageHeader, ReadChip, ReadNotice, type ReadView } from "@/components/kit";
 import type { WaitingOnYou } from "@/lib/attention";
-import { humanAge } from "@/lib/briefing";
 import { str } from "@/lib/compound";
-import { describeWaiting, unit } from "@/lib/counts";
+import { describeWaiting } from "@/lib/counts";
+import { waitingAge } from "@/lib/decide-model";
 
 const TZ = "Europe/Istanbul";
 
@@ -17,15 +17,6 @@ function dateLabel(now: Date): string {
   return new Intl.DateTimeFormat("en-US", { timeZone: TZ, weekday: "long", month: "long", day: "numeric" }).format(now);
 }
 
-/** "125d" → "125 days", "3h" → "3 hours", "now" → "a moment". */
-function ageWords(value: unknown): string {
-  const age = humanAge(value);
-  const match = age.match(/^(\d+)([mhd])$/);
-  if (!match) return age === "now" ? "a moment" : "";
-  const n = Number(match[1]);
-  const word = match[2] === "m" ? "minute" : match[2] === "h" ? "hour" : "day";
-  return unit(n, word);
-}
 
 /**
  * Today's question and its answer, first on the page: "What needs you
@@ -46,7 +37,8 @@ export function BriefingHeader({
   read: ReadView;
   oldest: unknown;
 }) {
-  const age = ageWords(oldest);
+  // The same function the oldest card's "waiting N days" uses, on the same clock.
+  const age = waitingAge(oldest instanceof Date ? oldest.toISOString() : oldest, now.getTime());
   return (
     <PageHeader
       meta={`${greeting(now)} · ${dateLabel(now)}`}

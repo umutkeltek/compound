@@ -46,13 +46,18 @@ export function NeedsYouList({
   const now = nowMs ?? Date.now();
   const shown = groups.slice(0, 5);
   const more = Math.max(0, total - shown.length);
+  // "N more" opens the first decision this list does not show, never the
+  // first one again (which is already row 1 here).
+  const next = groups[shown.length] ?? null;
   return (
     <section aria-label="What needs you" className="overflow-hidden rounded-xl border border-hair bg-panel shadow-sm">
       <ol className="divide-y divide-hair">
         {shown.map((group, index) => {
           // The same title, app, question and wait as Decide's row (one function).
           const headline = decisionHeadline(group as unknown as Json, {}, now);
-          const href = decideHref({ decision: group.key });
+          // A kind another page answers (proposed memories: the Memory page)
+          // opens there; every other row opens its exact decision on Decide.
+          const href = headline.answerAt?.href ?? decideHref({ decision: group.key });
           return (
             <li key={group.key || index} className="flex flex-col gap-2 px-4 py-3.5 sm:flex-row sm:items-start sm:gap-4">
               <span
@@ -72,7 +77,8 @@ export function NeedsYouList({
                       ? <Link href={headline.about.href} className="font-semibold text-work hover:underline">{headline.about.label}</Link>
                       : <span className="font-semibold text-muted">{headline.about.label}</span>
                   ) : null}
-                  {group.count > 1 ? <span className="tabular-nums">{unit(group.count, "item")}</span> : null}
+                  {headline.countLabel ? <span className="tabular-nums">{headline.countLabel}</span>
+                    : group.count > 1 ? <span className="tabular-nums">{unit(group.count, "item")}</span> : null}
                   {headline.waiting ? <span className={isOld(group.oldest_created_at) ? "text-seam" : ""}>waiting {headline.waiting}</span> : null}
                 </div>
                 <p className="mt-1 text-md font-semibold leading-snug text-strong">{headline.subject || headline.question || plainArea(group.area)}</p>
@@ -93,7 +99,7 @@ export function NeedsYouList({
       </ol>
       {more > 0 ? (
         <Link
-          href={decideHref()}
+          href={decideHref(next ? { decision: next.key } : {})}
           className="flex items-center justify-between gap-3 border-t border-hair bg-soft px-4 py-2.5 text-sm text-muted hover:text-ink"
         >
           <span>{unit(more, "more decision")} on Decide</span>

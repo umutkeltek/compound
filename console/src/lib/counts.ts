@@ -21,7 +21,7 @@
  */
 
 export { attentionShare, housekeepingGroups, waitingOnYou, yourDecisionGroups, type AttentionShare, type WaitingOnYou } from "@/lib/attention";
-import type { WaitingOnYou } from "@/lib/attention";
+import type { AttentionSetAsideReason, WaitingOnYou } from "@/lib/attention";
 
 import { isInProgress, isOnHold, isStale, isWaitingForCheck, STALE_AFTER_DAYS, timestampMs } from "@/lib/work-state";
 import { NO_AGENT_KEY, OPERATOR_AGENT_KEY } from "@/lib/harness-label";
@@ -352,8 +352,16 @@ export type WaitingWords = {
   /** quiet lines, each one plain sentence; "" when there is nothing to say */
   wording: string;
   housekeeping: string;
+  /**
+   * What was set aside, with both numbers each naming what it counts: set
+   * aside in all, and of those, closed without him ("" when nothing was).
+   */
   closedWithoutYou: string;
   waitingOnOthers: string;
+  /** "Agents handle these under your rule: N" ("" when no rule covers anything) */
+  coveredByRule: string;
+  /** his standing rules could not be read ("" when they were, or the source does not say) */
+  rulesUnread: string;
 };
 
 /**
@@ -373,11 +381,55 @@ export function describeWaiting(w: WaitingOnYou): WaitingWords {
   const housekeeping = w.housekeeping.groups > 0
     ? `${unit(w.housekeeping.groups, "proposal")} to update agent skills ${be(w.housekeeping.groups)} agent housekeeping, not decisions for you, so ${w.housekeeping.groups === 1 ? "it is" : "they are"} not counted.`
     : "";
-  const closedWithoutYou = w.closedWithoutYou && w.closedWithoutYou > 0
-    ? `${unit(w.closedWithoutYou, "record")} closed without you: nothing is left to decide.`
+  const closed = w.closedWithoutYou ?? 0;
+  const setAside = Math.max(w.setAside ?? 0, closed);
+  const closedWithoutYou = setAside > 0
+    ? `${unit(setAside, "record")} ${setAside === 1 ? "was" : "were"} set aside and not counted as yours. ${
+        closed === setAside
+          ? `${setAside === 1 ? "It" : `All ${setAside.toLocaleString("en-US")}`} closed without you: nothing is left to decide.`
+          : closed > 0
+            ? `${closed.toLocaleString("en-US")} of them closed without you: nothing is left to decide.`
+            : "None of them is closed yet."
+      }`
     : "";
   const waitingOnOthers = w.waitingOnOthers && w.waitingOnOthers.items > 0
     ? `${unit(w.waitingOnOthers.items, "work item")} ${w.waitingOnOthers.items === 1 ? "waits" : "wait"} on something outside you, not on you.`
     : "";
-  return { headline, wording, housekeeping, closedWithoutYou, waitingOnOthers };
+  const coveredByRule = w.coveredByRule && w.coveredByRule.items > 0
+    ? `Agents handle these under your rule: ${w.coveredByRule.items.toLocaleString("en-US")}.`
+    : "";
+  const rulesUnread = w.rulesRead === false
+    ? "Your standing rules could not be read, so it is not known whether one already covers any of these."
+    : "";
+  return { headline, wording, housekeeping, closedWithoutYou, waitingOnOthers, coveredByRule, rulesUnread };
+}
+
+/* ---------- what was set aside, grouped so each group adds up ---------- */
+
+/** One group of set-aside reasons: closed, or not closed but not his now. */
+export type SetAsideGroup = {
+  closed: boolean;
+  heading: string;
+  /** the sum of its rows: each group adds up to its own number */
+  count: number;
+  reasons: AttentionSetAsideReason[];
+};
+
+/**
+ * The set-aside reasons in two groups whose rows add up to each group's
+ * number: closed without him (nothing left to decide), and not closed but not
+ * his now (someone or something else acts first). Empty groups are left out.
+ */
+export function setAsideGroups(reasons: readonly AttentionSetAsideReason[]): SetAsideGroup[] {
+  const groups: SetAsideGroup[] = [
+    { closed: true, heading: "Closed without you: nothing is left to decide", count: 0, reasons: [] },
+    { closed: false, heading: "Not closed, and not yours now: someone or something else acts first", count: 0, reasons: [] },
+  ];
+  for (const reason of reasons) {
+    if (reason.count <= 0) continue;
+    const group = reason.closed ? groups[0] : groups[1];
+    group.reasons.push(reason);
+    group.count += reason.count;
+  }
+  return groups.filter((group) => group.count > 0);
 }
