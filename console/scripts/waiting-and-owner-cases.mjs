@@ -86,4 +86,53 @@ assert.deepEqual(waiting, { groups: 22, items: 245, workItems: 20 });
   assert.equal(state.isWaitingForCheck("running"), false);
 }
 
-console.log("waiting-and-owner-cases ok: owners label lanes without an executor join; one waiting-on-you definition with named units; one stale rule shared by the count");
+// One name per agent (lib/harness-label.ts). Lists showed one agent as
+// several rows because each page compared raw spellings. Every raw form of
+// one agent gives one key and one display name; names come from the data.
+{
+  const { agentKey, agentDisplayName, operatorNames, NO_AGENT_KEY, OPERATOR_AGENT_KEY } = await import("../src/lib/harness-label.ts");
+  const counts = await import("../src/lib/counts.ts");
+  const spellings = [
+    "fixture_agent", "fixture-agent", "Fixture Agent", "FIXTURE_AGENT", " fixture_agent ",
+    "fixture_agent:cleanup-20300101", "Fixture-Agent:lane-2", "harness:fixture-agent", "owner:fixture_agent", "fixture_agent/model-x",
+  ];
+  for (const raw of spellings) assert.equal(agentKey(raw), "fixture_agent", `key of ${JSON.stringify(raw)}`);
+  for (const raw of spellings) assert.equal(agentDisplayName(raw), "Fixture Agent", `name of ${JSON.stringify(raw)} without a directory`);
+  assert.equal(agentKey("relay_bot:lane-1"), "relay_bot", "a different agent keeps its own key");
+
+  // The executors projection's label and aliases come in through a directory.
+  const directory = [{ id: "fixture_agent", label: "Fixture Studio", aliases: ["fixture", "fixture-studio"] }];
+  for (const raw of [...spellings, "fixture", "fixture:lane-9", "Fixture Studio"]) {
+    assert.equal(agentKey(raw, directory), "fixture_agent", `alias ${JSON.stringify(raw)} folds into the agent's id`);
+    assert.equal(agentDisplayName(raw, directory), "Fixture Studio", `projection label for ${JSON.stringify(raw)}`);
+  }
+
+  // The operator and "no agent", in every form.
+  for (const raw of ["operator", "Operator", "operator:pat", "operator-console", "operator_orchestration_console"]) {
+    assert.equal(agentKey(raw), OPERATOR_AGENT_KEY, `operator form ${raw}`);
+    assert.equal(agentDisplayName(raw), "You");
+  }
+  for (const raw of ["", "   ", null, undefined, "unassigned", "Unassigned"]) {
+    assert.equal(agentKey(raw), NO_AGENT_KEY, `no-agent form ${JSON.stringify(raw)}`);
+    assert.equal(agentDisplayName(raw), "No agent");
+  }
+  assert.equal(counts.UNASSIGNED_AGENT_ID, NO_AGENT_KEY, "the executors bucket and the agent key share one string");
+
+  // A bare personal name joins the operator when the data names it as one.
+  const owners = ["operator:pat", "pat", "operator", "fixture-agent", "Fixture Agent", "harness:fixture-agent", "relay_bot", "", null];
+  const names = operatorNames(owners);
+  assert.deepEqual(names, ["pat"]);
+  const withOperator = [...directory, { id: OPERATOR_AGENT_KEY, label: "You", aliases: names }];
+  const lanes = new Map();
+  for (const owner of owners) {
+    const key = agentKey(owner, withOperator);
+    lanes.set(key, agentDisplayName(owner, withOperator));
+  }
+  assert.deepEqual(
+    [...lanes].sort(),
+    [["fixture_agent", "Fixture Studio"], ["operator", "You"], ["relay_bot", "Relay Bot"], ["unassigned", "No agent"]],
+    "nine raw owners are four agents, each with one name",
+  );
+}
+
+console.log("waiting-and-owner-cases ok: owners label lanes without an executor join; one waiting-on-you definition with named units; one stale rule shared by the count; one key and one name per agent");

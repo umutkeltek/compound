@@ -20,6 +20,7 @@
 export { waitingOnYou, type WaitingOnYou } from "@/lib/attention";
 
 import { isInProgress, isOnHold, isStale, isWaitingForCheck, STALE_AFTER_DAYS, timestampMs } from "@/lib/work-state";
+import { NO_AGENT_KEY } from "@/lib/harness-label";
 
 // The per-item rules (in progress, on hold, waiting for a check, stale and its
 // threshold) live in the client-safe lib/work-state.ts; this file counts with
@@ -156,8 +157,11 @@ export function countOnHold(items: readonly Row[]): number {
 
 /* ---------- agents ---------- */
 
-/** The executors projection's bucket for work whose owner matches no agent. */
-export const UNASSIGNED_AGENT_ID = "unassigned";
+/**
+ * The executors projection's bucket for work whose owner matches no agent.
+ * The same string as the agent key for "no agent" (lib/harness-label.ts).
+ */
+export const UNASSIGNED_AGENT_ID = NO_AGENT_KEY;
 
 export type AgentCount = {
   /** agents (harnesses) that hold at least one open work item */

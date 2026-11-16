@@ -9,6 +9,7 @@
  */
 
 import { blockedReasonPlain } from "@/lib/glossary";
+import { agentKey } from "@/lib/harness-label";
 
 /* ---------- names ---------- */
 
@@ -355,12 +356,16 @@ export function productTitle(text: string, nameOf: (productId: string) => string
  * the way Live names agents: the executors projection's label for that agent
  * id ("Claude Code"). `names` maps agent id → label. The full id comes back
  * as `lane` for small text. An id no agent matches keeps its own text.
+ * Spellings of one agent (`harness:claude-code`, `Claude_Code:lane`) find
+ * its label through the one agent key (lib/harness-label.ts `agentKey`).
  */
 export function agentNameFor(owner: string, names: ReadonlyMap<string, string>): { name: string; lane: string } {
   const raw = (owner || "").trim();
   if (!raw) return { name: "", lane: "" };
   const head = raw.split(/[:/]/)[0];
-  const name = names.get(raw) ?? names.get(head) ?? "";
+  const key = agentKey(raw);
+  let name = names.get(raw) ?? names.get(head) ?? "";
+  if (!name) for (const [id, label] of names) if (agentKey(id) === key) { name = label; break; }
   return name ? { name, lane: raw === head ? "" : raw } : { name: raw, lane: "" };
 }
 

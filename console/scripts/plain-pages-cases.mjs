@@ -350,6 +350,9 @@ try {
   assert.equal(plainWhy("a reason nobody mapped"), "A reason nobody mapped.");
   assert.deepEqual(agentNameFor("claude_code:lane-x", new Map([["claude_code", "Claude Code"]])), { name: "Claude Code", lane: "claude_code:lane-x" });
   assert.deepEqual(agentNameFor("someone:else", new Map([["claude_code", "Claude Code"]])), { name: "someone:else", lane: "" });
+  // Other spellings of a known agent find its label through the one agent key.
+  assert.deepEqual(agentNameFor("harness:fixture-agent", new Map([["fixture_agent", "Fixture Studio"]])), { name: "Fixture Studio", lane: "harness:fixture-agent" });
+  assert.deepEqual(agentNameFor("Fixture-Agent:lane-2", new Map([["fixture_agent", "Fixture Studio"]])), { name: "Fixture Studio", lane: "Fixture-Agent:lane-2" });
   assert.match(warm.Today, /There is no button for this kind of decision yet/);
   assert.doesNotMatch(warm.Today, /compound reviews --area/, "a command is never the 'why'");
 
