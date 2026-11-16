@@ -159,6 +159,8 @@ console.log(JSON.stringify({ generated_at: iso(0) }));
     assert.match(memory, /href="\/map\/lineage\/ev_fxpaper01"/, "the source links to its evidence history");
     assert.doesNotMatch(text, /No source reference was returned|age unknown|conf 0\.9|basis: curated_page|Recorded page/);
     assert.match(text, /added 26d ago/);
+    assert.match(text, /From: a decision you confirmed, /, "a proposed rule's one provenance line, without a doubled From");
+    assert.doesNotMatch(text, /From: From/i);
 
     // KNOW-07 (words) and KNOW-19: one name, plain choices.
     assert.match(text, /Proposed rule /);
@@ -218,8 +220,8 @@ console.log(JSON.stringify({ generated_at: iso(0) }));
 
     // KNOW-11: where a rule came from, how it ends, how to change it; raw paths only for agents.
     assert.match(rulesText, /This rule ends when A later decision replaces this one\./);
-    assert.match(rulesText, /Your ruling, recorded by you through Claude Code on \d{4}-\d{2}-\d{2}\./);
-    assert.match(rulesText, /Permission, recorded by you on/);
+    assert.match(rulesText, /Your ruling from \d{4}-\d{2}-\d{2}, recorded by you through Claude Code\./);
+    assert.match(rulesText, /Permission from \d{4}-\d{2}-\d{2}, recorded by you\./);
     assert.match(rules, /href="\/map\/lineage\/claim_fxruling"[^>]*>Read its history/);
     assert.match(rules, /href="\/map\/lineage\/ev_fxcorr1"/, "a restatement links to its evidence history");
     assert.match(rulesText, /To change or retire a rule, ask an agent to record a new decision that replaces it/);
@@ -256,7 +258,7 @@ console.log(JSON.stringify({ generated_at: iso(0) }));
     const sourcesText = visible(sources);
     for (const phrase of findBannedPhrases(sourcesText)) assert.fail(`Sources shows a banned phrase: ${phrase}`);
     // KNOW-15: one status per source that agrees with its date; tiles add up.
-    assert.match(visible(card(sources, "fx_feed_old")), /Out of date .*No new data since 27 days ago/, "a 27-day-old feed is out of date, whatever the CLI label");
+    assert.match(visible(card(sources, "fx_feed_old")), /Out of date .*No new data for 27 days\./, "a 27-day-old feed is out of date, whatever the CLI label");
     assert.match(visible(card(sources, "fx_feed_recent")), /Up to date .*Last data 2 days ago/, "a 2-day-old feed is up to date");
     assert.match(visible(card(sources, "fx_import_old")), /Imported .*Last import 137 days ago/);
     assert.doesNotMatch(card(sources, "fx_import_old"), /text-good/, "an old import is never shown green");

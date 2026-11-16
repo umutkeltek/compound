@@ -89,7 +89,7 @@ export function buildAdjudicationModel(
   // from" ("From a decision you confirmed, July 30"); a proposed memory's is
   // the heading of the source it was taken from.
   const from = kind === "rule"
-    ? { text: pl.body || "No source was recorded with this proposal", href: evidenceHistoryHref(candidate.id) }
+    ? { text: pl.body ? pl.body.replace(/^from\s+/i, "") : "No source was recorded with this proposal", href: evidenceHistoryHref(candidate.id) }
     : sourceText(candidate);
 
   const choices: MemoryChoiceView[] = options.map((option) => {

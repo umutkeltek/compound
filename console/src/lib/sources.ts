@@ -47,6 +47,12 @@ export function sourceAge(ms: number): string {
   return `${Math.floor(hours / 24)} days ago`;
 }
 
+/** "80 hours", "27 days": how long a feed has gone without new data. */
+export function sourceSpan(ms: number): string {
+  const hours = Math.floor(ms / 3_600_000);
+  return hours < 48 ? `${hours} hours` : `${Math.floor(hours / 24)} days`;
+}
+
 /** What a source brings in, in everyday words (the projection's `produces`). */
 const PRODUCES: [RegExp, string][] = [
   [/^memory candidates?$/i, "proposed memories"],
@@ -127,7 +133,7 @@ export function sourceView(connection: Row, nowMs: number, appHref: (app: string
     detail = `Last data ${sourceAge(age)}.`;
   } else {
     key = "out_of_date";
-    detail = `No new data since ${sourceAge(age)}.`;
+    detail = `No new data for ${sourceSpan(age)}.`;
   }
 
   const next =

@@ -102,8 +102,8 @@ function RecordCard({ record }: { record: StandingLawRecord }) {
             <div className="flex flex-col gap-1">
               <span>
                 {sentence(ruleKindWords(record.kind).one)}
-                {recordedBy ? `, recorded by ${recordedBy}` : "; who recorded it is not on file"}
-                {date ? ` on ${date}` : ""}.
+                {date ? ` from ${date}` : ""}
+                {recordedBy ? `, recorded by ${recordedBy}.` : ". Who recorded it is not on file."}
               </span>
               {history ? (
                 <Link href={history.href} className="font-semibold text-work hover:underline">Read its history →</Link>
