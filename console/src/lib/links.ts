@@ -32,9 +32,14 @@ const WORK_LENS_ALIASES: Readonly<Record<string, WorkLens>> = { list: "table" };
  * Every filter of the List (`lens=table`). `focus` is the default; `stale`
  * is in progress and picked up more than STALE_AFTER_DAYS days ago
  * (lib/work-state.ts `isStale`); `claimed` is picked up but not started;
- * `progress` is every item in progress (`isInProgress`).
+ * `progress` is every item in progress (`isInProgress`); `picked` is every
+ * item an agent or you hold (`isPickedUp`: in progress or on hold), the
+ * population the Agents pages count; `queued` is open work nobody has
+ * picked up yet (suggested or ready to start). `blocked` is the work
+ * waiting for your answer and `others` the work blocked on something outside
+ * you, both as the waiting list sorts them (lib/work-state.ts `waitsOn`).
  */
-export const WORK_FILTERS = ["focus", "running", "blocked", "verifying", "stale", "all", "claimed", "progress"] as const;
+export const WORK_FILTERS = ["focus", "running", "blocked", "verifying", "stale", "all", "claimed", "progress", "picked", "queued", "others"] as const;
 export type WorkFilter = (typeof WORK_FILTERS)[number];
 export const DEFAULT_WORK_FILTER: WorkFilter = "focus";
 
@@ -230,6 +235,24 @@ export function memoryReviewHref(): string {
 export function memoryCandidateHref(candidateId: string): string {
   const id = (candidateId ?? "").trim();
   return id ? `/memory#${encodeURIComponent(id)}` : memoryReviewHref();
+}
+
+/**
+ * Where a record reference leads, or null when no page can open it. Only
+ * what resolves is linked: a work item opens its own page; evidence, a
+ * proposed memory and a memory open their evidence history (the history
+ * page resolves those ids); a web address opens itself. Agent runs, landing
+ * checks, commits, result records and the rest have no page that reads them
+ * yet, so they are shown as text, never as a link to "not found".
+ */
+export function recordHref(ref: string): string | null {
+  const value = (ref ?? "").trim();
+  const work = value.replace(/^work:/, "");
+  if (isWorkId(work)) return workItemHref(work);
+  const id = value.replace(/^evidence:/, "");
+  if (/^(?:ev|cand|claim)_[\w-]+$/.test(id)) return evidenceHistoryHref(id);
+  if (/^https?:\/\/[^\s]+$/i.test(value)) return value;
+  return null;
 }
 
 /** Link to a record's evidence history: `/map/lineage/<id>`. An empty id links to the map. */

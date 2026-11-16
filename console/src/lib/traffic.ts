@@ -1,4 +1,4 @@
-import { type LiveRead, readExecutors } from "@/lib/compound";
+import { arr, type Json, type LiveRead, readExecutors, readProjection, WORK_PROJECT_INDEX_READS } from "@/lib/compound";
 import { normalizeExecutorProjection } from "@/components/agents/executor-normalize";
 import {
   type ExecutorProjection,
@@ -183,4 +183,44 @@ export async function getTraffic(): Promise<TrafficReport> {
   const [read, attempts] = await Promise.all([readExecutors(), getRunAttempts()]);
   const projection = normalizeExecutorProjection(read.value);
   return { ...buildTraffic(projection, attempts), read };
+}
+
+/**
+ * The open work list every count of work by agent is made from: the Work
+ * page's own read (`workbench --json`, the same argv, so the same cached
+ * copy). A number on Live, All agents or Waiting and the Work List it opens
+ * are then counted from one read and cannot differ.
+ */
+export async function readOpenWork(): Promise<LiveRead> {
+  const { args, timeoutMs } = WORK_PROJECT_INDEX_READS.work;
+  return readProjection([...args], { timeoutMs });
+}
+
+/** What the Agents pages show, from two reads: who is set up (executors) and the open work they hold (the Work page's read). */
+export type AgentsWork = {
+  traffic: TrafficReport;
+  /** the executors read (profiles, leases, sessions) */
+  executorsRead: LiveRead;
+  /** the open work read (the Work page's) */
+  workRead: LiveRead;
+  /** the open work list, null until it is read */
+  open: Json[] | null;
+  /** executors profiles with each agent's work counted from `open`; null until both reads have a copy */
+  projection: ExecutorProjection | null;
+};
+
+const hasValue = (read: LiveRead | null) => !!read && (read.status === "live" || read.status === "stale");
+
+/**
+ * Both reads, non-blocking. The projection exists only when both have a
+ * copy: an agent's numbers are never counted from the executors read alone
+ * (its open list leaves out suggested and ready work and is read at another
+ * moment than the Work List).
+ */
+export async function readAgentsWork(): Promise<AgentsWork> {
+  const [traffic, workRead] = await Promise.all([getTraffic(), readOpenWork()]);
+  const executorsRead = traffic.read!;
+  const open = hasValue(workRead) ? arr(workRead.value?.open) : null;
+  const projection = open && hasValue(executorsRead) ? normalizeExecutorProjection(executorsRead.value, open) : null;
+  return { traffic, executorsRead, workRead, open, projection };
 }

@@ -1,7 +1,7 @@
 import {
   countAgents,
   countInProgress,
-  countOnHold,
+  countWaitingWork,
   type AgentCount,
   type InProgressCount,
 } from "@/lib/counts";
@@ -9,7 +9,7 @@ import { plainAge } from "@/components/kit/ReadState";
 import { NO_AGENT_KEY, OPERATOR_AGENT_KEY } from "@/lib/harness-label";
 import { workItemHref, workListHref } from "@/lib/links";
 import { plainState, plainWorkStep } from "@/lib/plain-words";
-import { isInProgress, isOnHold, isStale, timestampMs } from "@/lib/work-state";
+import { isInProgress, isOnHold, isStale, timestampMs, type WaitingWorkIds } from "@/lib/work-state";
 import { workTitle } from "@/lib/work-title";
 
 import type { ExecutorRow, ExecutorWorkRef } from "./executor-model";
@@ -50,6 +50,7 @@ export type RosterAgent = {
   spellings: string[];
   items: number;
   inProgress: InProgressCount;
+  /** its work waiting for your answer (lib/work-state.ts `waitsOn`), the Work list `filter=blocked` */
   onHold: number;
   /** in progress and picked up more than a week ago; null when no pick-up time is known */
   stale: number | null;
@@ -69,7 +70,20 @@ export type Roster = {
   idle: { key: string; name: string }[];
   count: AgentCount;
   inProgress: InProgressCount;
+  /** work waiting for your answer, every holder together (lib/work-state.ts `waitsOn`) */
   onHold: number;
+};
+
+/** Options for `buildRoster`: the open list the rows were built from, and the waiting list's sorting of it. */
+export type RosterOptions = {
+  /** the open list (components/agents/executor-normalize.ts), to count what nobody holds yet */
+  openWork?: readonly { state?: unknown }[] | null;
+  /**
+   * which work waits for you (lib/counts.ts `waitingWork`), so "need you"
+   * is the number Today, Decide and Work's filter use; null or absent: the
+   * state rule (lib/work-state.ts `waitsOn`)
+   */
+  waiting?: WaitingWorkIds | null;
 };
 
 function rowsFor(items: readonly ExecutorWorkRef[]) {
@@ -101,8 +115,14 @@ function rosterWork(work: ExecutorWorkRef, nowMs: number): RosterWork {
   };
 }
 
-/** Build the roster from normalized executors rows. `nowMs` is the clock for "not moved in a week"; `top` caps each agent's listed items. */
-export function buildRoster(rows: readonly ExecutorRow[], nowMs: number, top = 6): Roster {
+/**
+ * Build the roster from normalized executors rows. `nowMs` is the clock for
+ * "not moved in a week"; `top` caps each agent's listed items. Pass the open
+ * list the rows were built from (`openWork`, components/agents/executor-normalize.ts)
+ * so the count also says how much open work nobody has picked up yet.
+ */
+export function buildRoster(rows: readonly ExecutorRow[], nowMs: number, top = 6, opts: RosterOptions = {}): Roster {
+  const waiting = opts.waiting ?? null;
   const holders: RosterAgent[] = [];
   const idle: Roster["idle"] = [];
   for (const row of rows) {
@@ -122,13 +142,14 @@ export function buildRoster(rows: readonly ExecutorRow[], nowMs: number, top = 6
       spellings,
       items: row.currentWork.length,
       inProgress,
-      onHold: countOnHold(rowsFor(row.currentWork)),
+      onHold: countWaitingWork(rowsFor(row.currentWork), waiting).you,
       stale: inProgress.pickedUpOver7Days,
       oldestPickUpMs: pickUps.length ? Math.min(...pickUps) : null,
       oldestPickUpAgo: pickUps.length ? plainAge(Math.max(0, nowMs - Math.min(...pickUps))) : "",
       top: sorted.slice(0, top),
       href: {
-        all: workListHref({ filter: "all", owner: row.id }),
+        // What it holds: picked-up work (in progress or on hold), the rows' own population.
+        all: workListHref({ filter: "picked", owner: row.id }),
         progress: workListHref({ filter: "progress", owner: row.id }),
         stale: workListHref({ filter: "stale", owner: row.id }),
         onHold: workListHref({ filter: "blocked", owner: row.id }),
@@ -139,9 +160,9 @@ export function buildRoster(rows: readonly ExecutorRow[], nowMs: number, top = 6
   return {
     holders,
     idle,
-    count: countAgents(rows),
+    count: countAgents(rows, opts.openWork as readonly Record<string, unknown>[] | null | undefined),
     inProgress: countInProgress(rowsFor(all), nowMs),
-    onHold: countOnHold(rowsFor(all)),
+    onHold: countWaitingWork(rowsFor(all), waiting).you,
   };
 }
 

@@ -14,13 +14,16 @@ import type { WorkLensItem } from "@/lib/work-views";
 
 /** The List's filters, in the board's words (lib/plain-words.ts). The URL value is the id. */
 const FILTERS: ReadonlyArray<{ id: WorkFilter; label: string }> = [
-  { id: "focus", label: "On hold or not moved" },
-  { id: "blocked", label: "On hold" },
+  { id: "focus", label: "Waiting for you or not moved" },
+  { id: "blocked", label: "Waiting for you" },
+  { id: "others", label: "Waiting on something else" },
   { id: "stale", label: `Not moved in ${STALE_AFTER_DAYS} days` },
   { id: "progress", label: "In progress" },
   { id: "running", label: "Running" },
   { id: "claimed", label: "Picked up, not started" },
   { id: "verifying", label: "Waiting for a proof check" },
+  { id: "picked", label: "Picked up" },
+  { id: "queued", label: "Not picked up yet" },
   { id: "all", label: "All open" },
 ];
 const PAGE_SIZE = 18;

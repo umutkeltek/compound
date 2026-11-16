@@ -19,7 +19,7 @@ import { AdsPlatformCard } from "../src/components/ads/AdsPlatformCard.tsx";
 import { ADS_GOOD_DIRECTION, campaignStateLabel, hasPlaceholder, mapAdsProjection, mapTotals } from "../src/lib/ads.ts";
 import { AdsCampaignTable } from "../src/components/ads/AdsTables.tsx";
 import { DeltaPill } from "../src/components/kit/DeltaPill.tsx";
-import { allocationWhy, funnelPeriods, kpiPeriod, mapGrowthModel } from "../src/lib/growth.ts";
+import { allocationWhy, funnelPeriods, kpiPeriod, mapGrowthModel, proceeds90Window, sumBetween } from "../src/lib/growth.ts";
 
 const NOW = Date.parse("2030-03-20T12:00:00Z");
 const DAY = 86_400_000;
@@ -144,6 +144,16 @@ console.log("app page cases ok: all of an app's work under every spelling, on ho
   const app = fresh.apps[0];
   assert.equal(kpiPeriod(app.kpis.proceeds_usd), "Feb 12 – Mar 13");
   assert.equal(allocationWhy(fresh.portfolio.allocation[0], app), "$1,120.51 proceeds in 30 days, 2030-02-12 to 2030-03-13.", "a dated reason is shown as written");
+  // One 90-day window for proceeds on the portfolio page: the ranking's "in 90 days" ends on the proceeds window's
+  // last day, not on the series' last day; the panel sums those same days and both say the dates.
+  assert.deepEqual(proceeds90Window("2030-03-13"), { start: "2029-12-14", end: "2030-03-13" });
+  assert.equal(proceeds90Window(""), null);
+  assert.equal(sumBetween([{ date: "2029-12-13", value: 7 }, { date: "2029-12-14", value: 1 }, { date: "2030-03-13", value: 2 }, { date: "2030-03-14", value: 9 }, { date: "2030-03-15", value: null }], "2029-12-14", "2030-03-13"), 3);
+  const dated90 = { product_id: "product:pocket-log", name: "Pocket Log", rank: 1, focus: "grow", rule: "", ...windowed,
+    reason: "$1,120.51 proceeds in 30 days, 2030-02-12 to 2030-03-13 ($3,410.70 in 90 days), with sales data fresh through 2030-03-14." };
+  assert.equal(allocationWhy(model([], [dated90]).portfolio.allocation[0], app),
+    "$1,120.51 proceeds in 30 days, 2030-02-12 to 2030-03-13 ($3,410.70 in 90 days, Dec 14 – Mar 13), with sales data fresh through 2030-03-14.",
+    "the ranking's 90-day figure carries the dates the panel uses");
   const periods = funnelPeriods(app.funnel);
   assert.equal(periods.shared, "Feb 12 – Mar 13");
   assert.deepEqual(periods.steps, ["", "", "", "one reading, Mar 14", ""]);
@@ -185,6 +195,11 @@ console.log("app page cases ok: numbers name their days, one proceeds figure, fu
   assert.ok(at.every((i) => i >= 0), `every block is on the page: ${order.filter((_, i) => at[i] < 0)}`);
   assert.deepEqual([...at].sort((a, b) => a - b), at, "needs you, numbers, work, next steps, ads, then the profile and groups");
   assert.ok(body.includes("<BreadcrumbTitle title={app.name} />"), "the tab and breadcrumb name the app");
+  // One total of areas: the header's "N of M areas measured" uses the same total as "All G groups, M areas".
+  assert.ok(source.includes("const areasTotal = model.areas.length;") && body.includes("`${app.coverage.measured} of ${areasTotal}`") && body.includes("{model.areas.length} areas"),
+    "the header and the groups heading name one total of areas");
+  // No rank by proceeds without proceeds to rank by.
+  assert.ok(body.includes("{rankedByProceeds ? (") && !/#\{allocation\.rank\}/.test(body), "a rank by proceeds is shown only with a proceeds figure");
   assert.ok(/action=\{null\}/.test(body), "no header button that only scrolls");
   assert.ok(body.includes("lead={`How ${app.name} is doing"), "the app page has its own purpose line, not the overview's");
 
@@ -351,6 +366,8 @@ console.log("app page cases ok: next steps say they are shared chores, no copy-a
   assert.ok(portfolio.includes('label="with a data feed"') && !portfolio.includes('label="with data"'), "the overview says what its count counts");
   assert.ok(gaps.includes('label="with any evidence on file"') && !gaps.includes('label="with data"'), "growth gaps says what its count counts");
   assert.ok(portfolio.includes('row.focus !== "hold"'), "the ranking lists only where an hour could go");
+  assert.ok(portfolio.includes("proceeds90Window(") && portfolio.includes("sumBetween(app.series.proceeds_usd, window90.start, window90.end)"),
+    "the proceeds panel sums the same 90 days the ranking's figure covers");
   assert.ok(portfolio.includes("#app-next-steps") && !portfolio.includes("Rule: {"), "each row leads to the app's next steps; the rule is in plain words");
   assert.ok(gaps.includes("not a to-do list"), "growth gaps says plainly it is a coverage map");
 }

@@ -1,6 +1,7 @@
 import { hasCopy, PageHeader, ReadChip, ReadNotice, readsPending } from "@/components/kit";
 import { PendingRefresh } from "@/components/PendingRefresh";
 import { arr, HEAVY_PROJECTION_TIMEOUT_MS, readProjection, str } from "@/lib/compound";
+import { workTitle } from "@/lib/work-title";
 import { RepresentationRack, type Evidence } from "@/representation";
 
 export const dynamic = "force-dynamic";
@@ -30,7 +31,8 @@ export default async function RepresentationPage() {
     const receiptRefs = arr(row.receipt_refs).map(String).filter(Boolean);
     return {
       id: str(row.id) || str(row.work_id) || "work_unknown",
-      subject: str(row.title) || str(row.subject) || str(row.id) || str(row.work_id),
+      // The work's plain title (lib/work-title.ts), never its id; the id stays on the card as small text.
+      subject: str(row.subject) || workTitle(row),
       state: str(row.state),
       expected_state: str(row.expected_state) || undefined,
       observed_state: str(row.observed_state) || undefined,

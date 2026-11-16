@@ -9,7 +9,7 @@
  */
 
 import { appSlug } from "@/lib/app-identity";
-import { agentKey } from "@/lib/harness-label";
+import { agentKeyFolder } from "@/lib/harness-label";
 import {
   appHref,
   parseWorkListParams,
@@ -19,7 +19,7 @@ import {
   type SearchParamsInput,
   type WorkFilter,
 } from "@/lib/links";
-import { isInProgress, isOnHold, isWaitingForCheck } from "@/lib/work-state";
+import { isInProgress, isOnHold, isPickedUp, isWaitingForCheck, type WaitsOn } from "@/lib/work-state";
 
 /** What the List needs from a row (lib/work-views.ts `WorkLensItem` carries it). */
 export type WorkListRow = {
@@ -38,17 +38,34 @@ export type WorkListRow = {
   readonly stale: boolean;
   /** pick-up time in epoch ms, or null when unknown */
   readonly pickedUpMs: number | null;
+  /**
+   * whom it waits on (lib/work-state.ts `waitsOn`); absent on a row built
+   * without it, which then falls back to the state rule (on hold = yours)
+   */
+  readonly waitsOn?: WaitsOn;
 };
 
-/** Does one row belong to a List filter? `focus` is what needs a look: on hold, or not moved in a week. */
-export function matchesWorkFilter(row: Pick<WorkListRow, "state" | "stale">, filter: WorkFilter): boolean {
+/** Whom a row waits on: its own `waitsOn`, else the state rule. */
+function rowWaitsOn(row: Pick<WorkListRow, "state" | "waitsOn">): WaitsOn {
+  return row.waitsOn ?? (isOnHold(row.state) ? "you" : "");
+}
+
+/**
+ * Does one row belong to a List filter? `focus` is what needs a look:
+ * waiting for you, or not moved in a week. `blocked` is waiting for you (the
+ * waiting list's "held for your answer", the number Today and Decide show);
+ * `others` is blocked on something outside you.
+ */
+export function matchesWorkFilter(row: Pick<WorkListRow, "state" | "stale" | "waitsOn">, filter: WorkFilter): boolean {
   switch (filter) {
     case "all":
       return true;
     case "focus":
-      return isOnHold(row.state) || row.stale;
+      return rowWaitsOn(row) === "you" || row.stale;
     case "blocked":
-      return isOnHold(row.state);
+      return rowWaitsOn(row) === "you";
+    case "others":
+      return rowWaitsOn(row) === "others";
     case "running":
       return row.state === "running" || row.state === "in_progress";
     case "claimed":
@@ -59,6 +76,10 @@ export function matchesWorkFilter(row: Pick<WorkListRow, "state" | "stale">, fil
       return row.stale;
     case "progress":
       return isInProgress(row.state);
+    case "picked":
+      return isPickedUp(row.state);
+    case "queued":
+      return !isPickedUp(row.state);
   }
 }
 
@@ -99,9 +120,13 @@ export function filterWorkList<T extends WorkListRow>(
   if (wantsGroup && !opts.projectsKnown) return { rows: [], waitingForGroups: true };
   const app = params.app.toLowerCase();
   const needle = params.q.trim().toLowerCase();
+  // One agent per key, lane spellings folded over every listed item's holder
+  // (lib/harness-label.ts), the same fold the Agents pages count with.
+  const keyOf = agentKeyFolder(items.map((item) => item.owner));
+  const owner = params.owner ? keyOf(params.owner) : "";
   const rows = items.filter((item) => {
     if (!matchesWorkFilter(item, params.filter)) return false;
-    if (params.owner && agentKey(item.owner) !== params.owner) return false;
+    if (owner && keyOf(item.owner) !== owner) return false;
     if (app && !(item.projectKind === "app" && appSlug(item.projectId).toLowerCase() === app)) return false;
     if (params.project && item.projectId !== params.project) return false;
     if (needle) {

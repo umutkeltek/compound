@@ -3,18 +3,17 @@ import Link from "next/link";
 import { buildRoster, latestPickedUp } from "@/components/agents/agent-roster";
 import { AgentsAnswer } from "@/components/agents/AgentsAnswer";
 import { DelegatedSessions } from "@/components/agents/DelegatedSessions";
-import { normalizeExecutorProjection } from "@/components/agents/executor-normalize";
 import { WaitingPanel } from "@/components/coordination/WaitingPanel";
 import { LiveHarnessCanvas, type LiveLane } from "@/components/live/LiveHarnessCanvas";
 import { LiveOperationsTimeline, type TimelineRow } from "@/components/live/LiveOperationsTimeline";
-import { PageHeader, PulseIcon, ReadChip, ReadFailedBanner, ReadNotice, readsPending, SectionHeader, StatusChip } from "@/components/kit";
+import { hasCopy, PageHeader, PulseIcon, ReadChip, ReadFailedBanner, ReadNotice, readsPending, SectionHeader, StatusChip } from "@/components/kit";
 import { PendingRefresh } from "@/components/PendingRefresh";
 import { readAttention } from "@/lib/attention";
 import { readCoordination } from "@/lib/coordination";
-import { unit, waitingOnYou } from "@/lib/counts";
+import { countWaitingWork, unit, waitingWork } from "@/lib/counts";
 import { depthShows, requestDepth } from "@/lib/depth";
 import { workListHref } from "@/lib/links";
-import { getTraffic, trafficKnown } from "@/lib/traffic";
+import { readAgentsWork } from "@/lib/traffic";
 
 export const dynamic = "force-dynamic";
 
@@ -47,19 +46,24 @@ async function LiveCoordination() {
  * work record's word, not proof an agent is busy this minute.
  */
 export default async function LivePage() {
-  // Non-blocking: getTraffic reads the cached executors copy (or "loading").
+  // Non-blocking: readAgentsWork reads the cached executors and open work copies (or "loading").
   // The coordination section shows only at the Technical depth; its read is
   // skipped entirely when hidden.
-  const [traffic, depth, attentionLive] = await Promise.all([getTraffic(), requestDepth(), readAttention()]);
-  const waiting = waitingOnYou(attentionLive.report);
+  const [agentsWork, depth, attentionLive] = await Promise.all([readAgentsWork(), requestDepth(), readAttention()]);
+  const { traffic, executorsRead, workRead, open, projection } = agentsWork;
+  // Which open work waits for you and which on something else: the waiting
+  // list's own sorting (Today and Decide count it), counted over the same open
+  // list the Work filters show, so each number equals the list it opens.
+  const waitingIds = waitingWork(attentionLive.report);
+  const waits = waitingIds && open ? countWaitingWork(open, waitingIds) : null;
   const showCoordination = depthShows(depth, "technical");
-  const executorsRead = traffic.read!;
-  const known = trafficKnown(traffic);
-  const projection = normalizeExecutorProjection(executorsRead.value);
+  const known = projection !== null;
+  // The read still missing when the numbers cannot be counted yet: the open work first.
+  const missingRead = hasCopy(workRead) ? executorsRead : workRead;
   const nowMs = Date.now();
-  // One row per agent key, counted with lib/counts.ts (components/agents/agent-roster.ts):
-  // the same rows Today counts, and each row's numbers equal its Work list.
-  const roster = known && projection ? buildRoster(projection.executors, nowMs, 2) : null;
+  // One row per agent key, counted with lib/counts.ts (components/agents/agent-roster.ts)
+  // over the Work page's own open list, so each number equals the Work list it opens.
+  const roster = projection ? buildRoster(projection.executors, nowMs, 2, { openWork: open, waiting: waitingIds }) : null;
   const runOf = new Map(traffic.lanes.flatMap((lane) => lane.inFlight.map((work) => [work.workId, work] as const)));
   // The canvas holds the agents that hold the most; the rest are on All agents.
   const shown = (roster?.holders ?? []).slice(0, CANVAS_LANES);
@@ -108,19 +112,27 @@ export default async function LivePage() {
 
 
   const delegatedRunning = projection?.delegatedCounts.running ?? 0;
-  const pending = readsPending(executorsRead, attentionLive.read);
+  const pending = readsPending(executorsRead, workRead, attentionLive.read);
 
   const answer = !roster ? (
-    <ReadNotice read={executorsRead} label="who works on what" />
+    <ReadNotice read={missingRead} label="who works on what" />
   ) : (
     <AgentsAnswer
       roster={roster}
       runRecordsVisible={traffic.runAttemptsPresent}
-      extra={waiting && waiting.workItems > 0 ? (
+      extra={waits && waits.you + waits.others > 0 ? (
         <p className="text-sm text-muted">
-          <Link href={workListHref({ filter: "blocked" })} className="font-semibold text-work hover:underline">
-            {unit(waiting.workItems, "work item")} {waiting.workItems === 1 ? "waits" : "wait"} for your decision.
-          </Link>
+          {waits.you > 0 ? (
+            <Link href={workListHref({ filter: "blocked" })} className="font-semibold text-work hover:underline">
+              {unit(waits.you, "work item")} {waits.you === 1 ? "waits" : "wait"} for your decision.
+            </Link>
+          ) : null}
+          {waits.you > 0 && waits.others > 0 ? " " : null}
+          {waits.others > 0 ? (
+            <Link href={workListHref({ filter: "others" })} className="font-semibold text-work hover:underline">
+              {unit(waits.others, waits.you > 0 ? "more work item" : "work item", waits.you > 0 ? "more work items" : "work items")} {waits.others === 1 ? "waits" : "wait"} on something else, not on you.
+            </Link>
+          ) : null}
         </p>
       ) : null}
     />
@@ -133,10 +145,10 @@ export default async function LivePage() {
         name="Live"
         lead="Follow the latest recorded activity from your agents."
         answer={answer}
-        right={<ReadChip read={executorsRead} />}
+        right={<ReadChip read={workRead} />}
       />
 
-      {known ? <ReadFailedBanner read={executorsRead} label="who works on what" /> : null}
+      {known ? <><ReadFailedBanner read={workRead} label="open work" /><ReadFailedBanner read={executorsRead} label="who is set up" /></> : null}
 
       <section data-depth-min="understand" className="flex flex-col gap-3">
         <SectionHeader
@@ -145,7 +157,7 @@ export default async function LivePage() {
           label="Who holds what"
           sub="each agent and its two most urgent work items · pick one for details"
         />
-        {known ? <LiveHarnessCanvas lanes={lanes} /> : <ReadNotice read={executorsRead} label="who holds what" />}
+        {known ? <LiveHarnessCanvas lanes={lanes} /> : <ReadNotice read={missingRead} label="who holds what" />}
         {hiddenHolders > 0 ? (
           <p className="text-sm text-muted">
             {unit(hiddenHolders, "more agent")} {hiddenHolders === 1 ? "holds" : "hold"} less work and {hiddenHolders === 1 ? "is" : "are"} listed on{" "}
@@ -161,7 +173,7 @@ export default async function LivePage() {
           label="Latest work picked up"
           sub="newest first · who holds it and what comes next"
         />
-        {known ? <LiveOperationsTimeline rows={timelineRows} total={latest?.total ?? 0} allHref={workListHref({ filter: "all" })} /> : <ReadNotice read={executorsRead} label="the latest work picked up" />}
+        {known ? <LiveOperationsTimeline rows={timelineRows} total={latest?.total ?? 0} allHref={workListHref({ filter: "picked" })} /> : <ReadNotice read={missingRead} label="the latest work picked up" />}
       </section>
 
       {showCoordination ? (

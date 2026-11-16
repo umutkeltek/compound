@@ -1,12 +1,10 @@
 import { buildRoster } from "@/components/agents/agent-roster";
-import { InProgressSentence } from "@/components/agents/AgentsAnswer";
-import { normalizeExecutorProjection } from "@/components/agents/executor-normalize";
+import { AgentsSentence, InProgressSentence } from "@/components/agents/AgentsAnswer";
 import { WaitingPanel } from "@/components/coordination/WaitingPanel";
 import { hasCopy, PageHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending } from "@/components/kit";
 import { PendingRefresh } from "@/components/PendingRefresh";
 import { readCoordination } from "@/lib/coordination";
-import { describeAgents } from "@/lib/counts";
-import { getTraffic } from "@/lib/traffic";
+import { readAgentsWork } from "@/lib/traffic";
 
 export const dynamic = "force-dynamic";
 
@@ -21,14 +19,14 @@ export const dynamic = "force-dynamic";
  * card said the same thing and nothing on them could be acted on.
  */
 export default async function WaitingPage() {
-  const [coordination, traffic] = await Promise.all([readCoordination(), getTraffic()]);
-  const executors = traffic.read!;
-  const projection = hasCopy(executors) ? normalizeExecutorProjection(executors.value) : null;
-  const roster = projection ? buildRoster(projection.executors, Date.now(), 0) : null;
+  const [coordination, agentsWork] = await Promise.all([readCoordination(), readAgentsWork()]);
+  const { executorsRead: executors, workRead, open, projection } = agentsWork;
+  // Counted over the Work page's own open list, as Working now and All agents count.
+  const roster = projection ? buildRoster(projection.executors, Date.now(), 0, { openWork: open }) : null;
 
   return (
     <div className="flex flex-col gap-6">
-      <PendingRefresh pending={readsPending(coordination.read, executors)} stamp={Date.now()} />
+      <PendingRefresh pending={readsPending(coordination.read, executors, workRead)} stamp={Date.now()} />
       <PageHeader name="Waiting on each other" right={<ReadChip read={coordination.read} />} />
       {!hasCopy(coordination.read) ? (
         <ReadNotice read={coordination.read} label="who waits on whom" />
@@ -40,7 +38,7 @@ export default async function WaitingPage() {
       )}
       {roster ? (
         <p className="max-w-read border-t border-hair pt-4 text-sm leading-relaxed text-muted">
-          {describeAgents(roster.count)} <InProgressSentence c={roster.inProgress} />
+          <AgentsSentence count={roster.count} /> <InProgressSentence c={roster.inProgress} />
         </p>
       ) : null}
     </div>

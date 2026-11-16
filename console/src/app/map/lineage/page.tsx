@@ -12,8 +12,12 @@ export default function LineageIndex() {
       <div id="lineage-search" tabIndex={-1} className="scroll-mt-6" />
 
       <Card>
+        <p className="mb-2 text-sm text-ink">
+          A tool for agents. You reach a record's history from the page that names it: a work item's
+          evidence, a memory or a rule links here when its history can be shown.
+        </p>
         <p className="mb-3 text-[12.5px] text-ink-2">
-          Paste any id from the system — a memory candidate (<code className="mono">cand_…</code>), a claim
+          To look one up by hand, paste its id — a memory candidate (<code className="mono">cand_…</code>), a claim
           (<code className="mono">cl_…</code> / <code className="mono">claim_…</code> /{" "}
           <code className="mono">DEC-…</code>), evidence (<code className="mono">ev_…</code>), work
           (<code className="mono">work_…</code>), or an entity token — to trace its full path.

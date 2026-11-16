@@ -62,6 +62,42 @@ export function isOnHold(state: unknown): boolean {
   return (ON_HOLD_STATES as readonly string[]).includes(text(state));
 }
 
+/**
+ * Picked up: an agent (or you) holds it. In progress or on hold, the same
+ * work `executors --json` lists under each agent. Work suggested or ready
+ * to start is open but not picked up yet: nobody holds it.
+ */
+export function isPickedUp(state: unknown): boolean {
+  return isInProgress(state) || isOnHold(state);
+}
+
+/**
+ * Which open work waits on whom, as the waiting list (`compound attention
+ * --json`) sorts it: `you` are the work items held for your answer (the ones
+ * Today and Decide count), `others` the ones blocked on something outside
+ * you (another item, an account, a device). Ids only; lib/counts.ts
+ * `waitingWork` builds it from the attention read.
+ */
+export type WaitingWorkIds = { readonly you: ReadonlySet<string>; readonly others: ReadonlySet<string> };
+
+/** Whom an open work item waits on: you, something else, or nobody ("": it is not waiting). */
+export type WaitsOn = "you" | "others" | "";
+
+/**
+ * Whom one open work item waits on. With the waiting list read, its own
+ * sorting decides (the CLI reads more of the record than the open list
+ * carries, so the console never re-derives it). Before that read lands, the
+ * item's state is the only evidence: on hold or blocked counts as yours,
+ * which is how every page counted it before the waiting list split it.
+ */
+export function waitsOn(item: { readonly work_id?: unknown; readonly state?: unknown }, waiting: WaitingWorkIds | null): WaitsOn {
+  if (!waiting) return isOnHold(item.state) ? "you" : "";
+  const id = text(item.work_id);
+  if (waiting.you.has(id)) return "you";
+  if (waiting.others.has(id)) return "others";
+  return "";
+}
+
 /** Finished running and waiting for a proof check (`verifying`). Still in progress. */
 export function isWaitingForCheck(state: unknown): boolean {
   return text(state) === "verifying";

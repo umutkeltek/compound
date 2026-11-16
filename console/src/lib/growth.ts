@@ -766,7 +766,15 @@ export function funnelPeriods(steps: readonly FunnelStep[]): { shared: string; u
  * app's row and page) with its days.
  */
 export function allocationWhy(row: Allocation, app: GrowthApp | undefined): string {
-  if (row.windowStart && row.windowEnd) return row.reason;
+  if (row.windowStart && row.windowEnd) {
+    // The CLI writes its 90-day proceeds without dates; they end on the
+    // proceeds window's last day (`proceeds90Window`), the days the Proceeds
+    // panel sums too. Say them, so both figures carry the same dates.
+    const window = proceeds90Window(row.windowEnd);
+    if (!window) return row.reason;
+    const range = dateRange(window.start, window.end);
+    return row.reason.replace(/(\$[\d,]+(?:\.\d+)? (?:proceeds )?in 90 days)/g, `$1, ${range}`);
+  }
   const proceeds = app?.kpis.proceeds_usd;
   if ((row.focus === "grow" || row.focus === "fix_data") && proceeds?.value != null) {
     return `${formatValue(proceeds.value, "usd")} proceeds, ${kpiPeriod(proceeds)}. ${FOCUS_META[row.focus]?.meaning ?? ""}`.trim();
@@ -787,6 +795,24 @@ export function sharedMoves(app: GrowthApp, apps: readonly GrowthApp[]): { share
   const shown = app.nextMoves.slice(0, 5);
   const shared = shown.filter((m) => (counts.get(key(m)) ?? 0) * 2 >= withMoves.length && withMoves.length > 1).length;
   return { shared, shown: shown.length, appCount: withMoves.length };
+}
+
+/**
+ * The 90 days the CLI sums an app's proceeds over when it ranks apps ("in 90
+ * days"): the 90 days ending on the proceeds window's last day (`window_end`
+ * on an allocation row), not on the series' last day, which runs ahead of
+ * sales data that arrives days late. Null without an end day.
+ */
+export function proceeds90Window(windowEnd: string): { start: string; end: string } | null {
+  const end = (windowEnd ?? "").slice(0, 10);
+  const endMs = Date.parse(`${end}T00:00:00Z`);
+  if (!end || Number.isNaN(endMs)) return null;
+  return { start: new Date(endMs - 89 * 86_400_000).toISOString().slice(0, 10), end };
+}
+
+/** Sum a daily series over the days from `start` to `end`, both included (ISO dates). Missing values add nothing. */
+export function sumBetween(points: readonly SeriesPoint[] | undefined, start: string, end: string): number {
+  return (points ?? []).reduce((sum, p) => (p.date.slice(0, 10) >= start && p.date.slice(0, 10) <= end ? sum + (p.value ?? 0) : sum), 0);
 }
 
 /** The first and last day of a daily series' last `days` points: "Aug 18 – Nov 16". */

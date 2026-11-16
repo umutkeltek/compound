@@ -202,7 +202,8 @@ action seam.
   run=blue fill + beat, pending=hollow), each step = name + phase pill + description + mono meta.
   Footer: contextual governed acts — one primary, rest hairline.
 - **Freshness chip:** dot + mono label, `title`=source command. The label is always the plain age of
-  the copy (`updated 3 min ago`), plus `updating…` while a refresh runs. Green dot by default; amber
+  the copy (`updated 3 min ago`), plus `updating…` while a refresh runs, or "waiting for another read"
+  while its read only waits in the queue (`LiveRead.queued`). Green dot by default; amber
   only when the copy is older than 10 minutes or the last refresh failed. Unknown: faint. Every card
   showing projected data carries one.
 - **Read states (never wait, never pretend):** pages read through the non-blocking `readProjection`
@@ -470,11 +471,16 @@ than explicit depth on the two overview surfaces.
 
 Live renders a harness → WorkEnvelope graph from the executor, RunAttempt, traffic, and
 coordination projections. Configured harnesses are not activity. An agent is one agent key
-(`lib/harness-label.ts`): the console regroups the executors projection's rows by the key of who
-picked each item up, else its owner, which is the key the Work filter `owner=` compares, so an
-agent's count equals the list its link opens. Work nobody holds is "No agent" and work you hold
-is "You"; neither is counted as an agent. Working now, All agents and Today say the same
-sentences from `lib/counts.ts`, and every number links to its Work list. A node or edge animates only
+(`lib/harness-label.ts`): every number on Working now, All agents and Waiting is counted over the
+Work page's own open read (`readOpenWork`, the same cached copy), grouped by the key of who picked
+each item up, else its owner, with a lane spelled with hyphens folded into the shorter observed
+key it extends (`agentKeyFolder`, the same fold the Work List and its agent menu use), so an
+agent's count equals the list its link opens. The executors read gives only each agent's profile.
+An agent holds what it picked up (in progress or on hold, `isPickedUp`); suggested and ready work
+is held by nobody yet and is named and linked apart (`filter=queued`), so the parts add up to
+every open item. Work with no holder is "No agent" and work you hold is "You"; neither is counted
+as an agent. Working now, All agents and Today say the same sentences from `lib/counts.ts`, and
+every number links to its Work list. A node or edge animates only
 when a run record (RunAttempt or heartbeat) says an agent is running it now; the work record's own
 state, `running` included, never animates. While the console cannot read run records nothing on the
 page moves, and the answer says so: the page shows the work records as last read, not a live feed.
@@ -508,11 +514,16 @@ registered owner of an action.
 
 ### 10.4 Work starts with intervention
 
-Work leads with what is stopped: the header names work on hold and work not moved in over a
-week first, then splits "in progress" into running, picked up and not started, and waiting for a
-proof check. Every number links to the List filtered to exactly those items (`filter=blocked`,
-`stale`, `progress`, `running`, `claimed`, `verifying`, `all`); the stale List is oldest first.
-The List's default filter is "On hold or not moved" (on hold, plus stale), led by on-hold items.
+Work leads with what is stopped: the header names work waiting for you, work blocked on
+something else, and work not moved in over a week first, then splits "in progress" into running,
+picked up and not started, and waiting for a proof check. "Waiting for you" and "waiting on
+something else" are the waiting list's own sorting (`lib/work-state.ts` `waitsOn` over the
+attention read), the number Today and Decide show; before that read lands, on hold is counted by
+state and not called "waiting for you". Every number links to the List filtered to exactly those
+items (`filter=blocked`, `others`, `stale`, `progress`, `running`, `claimed`, `verifying`,
+`picked`, `queued`, `all`), counted by the rule the List filters with; the stale List is oldest
+first. The List's default filter is "Waiting for you or not moved", led by on-hold items. The
+agent menu counts each agent's open work ("Claude Code (89 open)"), the list `owner=` opens.
 It initially exposes 18 rows and expands deliberately. Filter, agent, app or group and search
 text live in the address. Every card and row links to the item's own page; a click elsewhere on
 it opens a short preview with the same recorded reason and "Open work page". Stages, Flow,
@@ -634,12 +645,17 @@ the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line
   whole on its page. An agent has one key and one name, from `lib/harness-label.ts` (`agentKey`,
   `agentDisplayName`): every spelling of one agent groups and filters as one. Links to Work, a work
   item, Decide, an app, Ads, a Settings section, Memory and evidence history come from
-  `lib/links.ts`, and the Work page reads its parameters through `parseWorkListParams`.
+  `lib/links.ts`, and the Work page reads its parameters through `parseWorkListParams`. A record
+  an item points to (an agent run, a landing check, a commit) is named by what it is
+  (`recordRefWords`, id as small text) and linked only where a page opens it (`recordHref`); a
+  record no page reads is text, never a link to "not found".
 - **Numbers.** `lib/counts.ts` holds one function per concept, with its unit in the label:
   waiting for you (decisions, items, work items), open work items, in progress (`claimed`,
   `running`/`in_progress`, `verifying`), picked up more than 7 days ago (from `claimed_at`: the
-  projections carry no "last changed" time for open work), on hold (`held`, `blocked`), agents
-  holding work, and decisions ready now. Pages and the sidebar call these, never their own count.
+  projections carry no "last changed" time for open work), on hold (`held`, `blocked`), waiting
+  for you or on something else (`countWaitingWork`, the waiting list's sorting), agents holding
+  work and open work nobody has picked up (`countAgents` with the open list), and decisions ready
+  now. Pages and the sidebar call these, never their own count.
   "Waiting for you" counts only what is his: agent housekeeping (skill proposals), records with no
   clear question (`needs_wording`), what a standing rule covers (`covered_by_rule`), what was set
   aside and work waiting on others are each named apart (`describeWaiting`) and never added in; a

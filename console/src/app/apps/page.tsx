@@ -10,7 +10,7 @@ import {
   Panel,
   ShareBars,
 } from "@/components/growth/GrowthKit";
-import { FOCUS_META, allocationWhy, appHue, appSlug, formatKpi, formatValue, getGrowth, kpiPeriod, seriesPeriod, shortDate, valueLabel, type GrowthApp, type SeriesPoint } from "@/lib/growth";
+import { FOCUS_META, allocationWhy, appHue, appSlug, dateRange, formatKpi, formatValue, getGrowth, kpiPeriod, proceeds90Window, seriesPeriod, shortDate, sumBetween, valueLabel, type GrowthApp, type SeriesPoint } from "@/lib/growth";
 import { adsHref, appHref } from "@/lib/links";
 
 export const dynamic = "force-dynamic";
@@ -53,8 +53,14 @@ export default async function PortfolioPage() {
   const asc = sourceLag(model.apps, "app_store_connect");
   const ascStale = asc != null && asc.daysSince > model.staleDays;
 
+  // One 90-day window for every proceeds figure on this page: the days the
+  // ranking's "in 90 days" sums (lib/growth.ts proceeds90Window), so the
+  // panel and "Where the next hour should go" give one figure per app.
+  const window90 = proceeds90Window(allocation.find((row) => row.windowEnd)?.windowEnd ?? "");
+  const proceedsOf = (app: GrowthApp) =>
+    window90 ? sumBetween(app.series.proceeds_usd, window90.start, window90.end) : sumLast(app.series.proceeds_usd, 90);
   const byProceeds = model.apps
-    .map((app) => ({ app, value: sumLast(app.series.proceeds_usd, 90) }))
+    .map((app) => ({ app, value: proceedsOf(app) }))
     .filter((row) => row.value > 0)
     .sort((a, b) => b.value - a.value);
   const top = byProceeds.slice(0, 4);
@@ -130,7 +136,7 @@ export default async function PortfolioPage() {
             ]}
           />
         </Panel>
-        <Panel title="Proceeds by app" subtitle={`90 days, ${seriesPeriod(series.proceeds_usd, 90) || "of reported data"}`}>
+        <Panel title="Proceeds by app" subtitle={`90 days, ${window90 ? dateRange(window90.start, window90.end) : seriesPeriod(series.proceeds_usd, 90) || "of reported data"}`}>
           <div className="mb-5 text-3xl font-semibold tracking-tight text-ink tabular-nums">{formatValue(proceeds90, "usd")}</div>
           {top.length ? (
             <ShareBars
@@ -174,7 +180,7 @@ export default async function PortfolioPage() {
 
       <Panel
         title="Where the next hour should go"
-        subtitle="Apps ranked by proceeds over the last 90 days, then web search clicks. Apps with little money or traffic are left out. Each name opens that app's next steps."
+        subtitle={`Apps ranked by proceeds over 90 days${window90 ? ` (${dateRange(window90.start, window90.end)}, the days of "Proceeds by app")` : ""}, then web search clicks. Apps with little money or traffic are left out. Each name opens that app's next steps.`}
       >
         <div className="overflow-x-auto">
           <table className="w-full min-w-xl text-left text-sm">
