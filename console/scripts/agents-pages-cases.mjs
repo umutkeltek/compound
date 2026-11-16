@@ -409,6 +409,10 @@ try {
   const views = visibleText(wrap("/representation", await Views()));
   assert.match(views, /A workbench for the agents that build this console/, "the View library says what it is");
   assert.doesNotMatch(views, /Compare the available views/);
+  // Each card leads with the work's plain title; the id is small text, never the title.
+  assert.match(views, /Fixture alpha lane [A-Za-z ,]*work_ap_alpha_lane/, "a card is titled by the work's own words, its id under it");
+  const { default: LineageIndex } = await import("../src/app/map/lineage/page.tsx");
+  assert.match(visibleText(wrap("/map/lineage", LineageIndex())), /A tool for agents\. You reach a record's history from the page that names it/, "the history page says who it is for");
 
   /* ---------- 5. models and cost ---------- */
   const routeGroup = (key, title, extra = {}) => ({

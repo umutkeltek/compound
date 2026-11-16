@@ -24,10 +24,15 @@ function ShapeTag({ name, reason }: { name: ShapeName; reason: string }) {
 }
 
 function Subject({ evidence }: { evidence: Evidence }) {
+  // The plain title leads; the id stays as small text to find the record.
+  const showId = Boolean(evidence.subject) && evidence.subject !== evidence.id;
   return (
-    <div className="flex items-center gap-2">
-      <span className="text-sm font-semibold text-strong">{evidence.subject || evidence.id}</span>
-      {evidence.state ? <StateBadge state={evidence.state} /> : null}
+    <div className="flex flex-col gap-0.5">
+      <div className="flex items-center gap-2">
+        <span className="text-sm font-semibold text-strong">{evidence.subject || evidence.id}</span>
+        {evidence.state ? <StateBadge state={evidence.state} /> : null}
+      </div>
+      {showId ? <span className="mono truncate text-2xs text-faint">{evidence.id}</span> : null}
     </div>
   );
 }
