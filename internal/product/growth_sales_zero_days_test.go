@@ -133,3 +133,38 @@ func TestGrowthSalesZeroDaysCoverAppsKnownFromTheLedger(t *testing.T) {
 		t.Fatalf("a day neither the ledger nor the index covers = %v, want missing", *v)
 	}
 }
+
+// A days index row that does not count the day's series rows cannot show the
+// series is complete for that day, so the day stays missing, never zero.
+func TestGrowthSalesZeroDaysNeedTheSeriesRowCount(t *testing.T) {
+	home := t.TempDir()
+	registerExampleApps(t, home, map[string]string{"product:busy-app": "900000061", "product:small-app": "900000062"})
+	yes := true
+	var series, index []string
+	for off := 12; off >= 1; off-- {
+		series = append(series, salesKindsLine("900000061", growthDay(off), 3, 0, 0, 0, 2, &yes))
+		n := 1
+		if off == 12 {
+			series = append(series, salesKindsLine("900000062", growthDay(off), 1, 0, 0, 0, 1, &yes))
+			n = 2
+		}
+		line := salesIndexLine(growthDay(off), "reported", n)
+		if off == 5 { // this row does not say how many series rows the day has
+			line = `{"date":"` + growthDay(off) + `","status":"reported","final":true}`
+		}
+		index = append(index, line)
+	}
+	writeASCSeries(t, home, series...)
+	writeASCDaysIndex(t, home, index...)
+
+	small := growthApp(t, buildGrowthT(t, home, growthOpts()), "product:small-app")
+	if v := growthPoint(t, small.Series["units"], growthDay(5)); v != nil {
+		t.Fatalf("a day without a series row count = %v, want missing", *v)
+	}
+	if v := growthPoint(t, small.Series["units"], growthDay(4)); v == nil || *v != 0 {
+		t.Fatalf("a counted day = %v, want 0", v)
+	}
+	if u := small.Kpis["units"]; u.DaysReported != 11 {
+		t.Fatalf("units = %+v, want 11 of 12 days reported", u)
+	}
+}

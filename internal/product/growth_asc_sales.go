@@ -164,6 +164,22 @@ func growthStoreWindowEnd(rows []growthSalesRow, index []ascSalesDayIndexRow, as
 // nothing about the day.
 var growthSalesDayExists = map[string]bool{"reported": true, "no_sales": true}
 
+// growthSalesDayComplete reports whether the series holds every row of the
+// day's Sales report. A reported day needs the index to count its series rows
+// and the series to hold exactly that many: a row without the count does not
+// show the series is complete. A no-sales day is complete when the series has
+// no row for it, since Apple said the whole account sold nothing; a count, if
+// given, must be zero.
+func growthSalesDayComplete(d ascSalesDayIndexRow, seriesRows int) bool {
+	switch d.Status {
+	case "reported":
+		return d.SeriesRows != nil && *d.SeriesRows == seriesRows
+	case "no_sales":
+		return seriesRows == 0 && (d.SeriesRows == nil || *d.SeriesRows == 0)
+	}
+	return false
+}
+
 // applyGrowthASCSalesZeroDays writes a zero for an app on a day the Sales
 // report exists but holds no sales data for the app. Apple's Sales report
 // lists every app that had a unit or proceeds that day, so no row means
@@ -172,8 +188,7 @@ var growthSalesDayExists = map[string]bool{"reported": true, "no_sales": true}
 //
 // The rule holds within these limits, and outside them a day stays missing:
 //   - the days index must list the day as reported or no sales, on or before
-//     as-of; when it counts the day's series rows, the series must hold
-//     exactly that many, else the series for the day is incomplete;
+//     as-of, and the series must be complete for it (growthSalesDayComplete);
 //   - the app must be the only app some store app id maps to, and must have
 //     daily sales data of its own, from the series or from the older ledger
 //     rows its import wrote, which shows the account's report lists it;
@@ -246,7 +261,7 @@ func applyGrowthASCSalesZeroDays(rows []growthSalesRow, index []ascSalesDayIndex
 			if !growthSalesDayExists[d.Status] || d.Date > asOf || d.Date < first || onFile[d.Date] {
 				continue
 			}
-			if d.SeriesRows != nil && *d.SeriesRows != perDay[d.Date] {
+			if !growthSalesDayComplete(d, perDay[d.Date]) {
 				continue
 			}
 			for _, mv := range metrics {
