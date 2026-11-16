@@ -1,7 +1,11 @@
 import { PendingRefresh } from "@/components/PendingRefresh";
 import { ProductLoopCard, loopState } from "@/components/products/ProductLoopCard";
 import { EmptyState, FreshnessChip, LoopIcon, PageHeader, SectionHeader } from "@/components/kit";
-import { getProductLoopsReport } from "@/lib/products";
+import Link from "next/link";
+import { readProjection } from "@/lib/compound";
+import { appHref } from "@/lib/links";
+import { foldLoopsByApp, getProductLoopsReport } from "@/lib/products";
+import { catalogFromGrowth } from "@/lib/work-project";
 
 export const dynamic = "force-dynamic";
 
@@ -37,7 +41,14 @@ function StatTile({
 }
 
 export default async function LoopsPage() {
-  const { generatedAt, loops, status, checking, error } = await getProductLoopsReport();
+  const [report, growth] = await Promise.all([
+    getProductLoopsReport(),
+    // The app catalog folds every spelling of an app into one card; same argv as every growth page, so one cached read.
+    readProjection(["product", "growth", "--json"], { timeoutMs: 60_000 }),
+  ]);
+  const { generatedAt, status, checking, error } = report;
+  const catalog = growth.value ? catalogFromGrowth(growth.value) : null;
+  const { loops, missing } = foldLoopsByApp(report.loops, catalog);
   const known = status === "live" || status === "stale";
 
   const withSignals = loops.filter((l) => l.signalCount > 0).length;
@@ -61,10 +72,10 @@ export default async function LoopsPage() {
         right={<FreshnessChip generatedAt={generatedAt} source="compound product loops --json" />}
       />
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <StatTile label="Apps tracked" value={known ? loops.length : "—"} sub="tracked" />
-        <StatTile label="With observations" value={known ? withSignals : "—"} sub={known ? `${totalSignals} signals recorded` : "Checking signals"} />
-        <StatTile label="Needs review" value={known ? blockedOnYou : "—"} sub="a verdict is due" seam />
-        <StatTile label="Awaiting data" value={known ? loops.length - withSignals : "—"} sub="connected, no signal yet" />
+        <StatTile label="Apps with a record" value={known ? loops.length : "—"} sub={catalog ? "one card per app" : "app list still loading: alternate ids may show apart"} />
+        <StatTile label="With observations" value={known ? withSignals : "—"} sub={known ? `${totalSignals} readings recorded` : "Checking readings"} />
+        <StatTile label="Verdict due" value={known ? blockedOnYou : "—"} sub="a change measured against what it should do" seam />
+        <StatTile label="Nothing measured" value={known ? loops.length - withSignals : "—"} sub="no reading yet" />
       </div>
 
       <div id="app-results" tabIndex={-1} className="scroll-mt-6" />
@@ -90,7 +101,7 @@ export default async function LoopsPage() {
             tone="product"
             icon={<LoopIcon />}
             label="App results"
-            sub="Apps needing review appear first."
+            sub="Apps whose verdict is due come first. Each card names the change, what it should do, and the dated readings."
             right={<span className="mono text-2xs tabular-nums text-faint">{loops.length}</span>}
           />
           <div className="grid gap-4 lg:grid-cols-2">
@@ -101,8 +112,21 @@ export default async function LoopsPage() {
         </section>
       )}
 
+      {known && missing.length ? (
+        <p className="text-sm text-muted">
+          <span className="font-medium text-ink">{missing.length} {missing.length === 1 ? "app has" : "apps have"} no results record yet:</span>{" "}
+          {missing.map((app, i) => (
+            <span key={app.productId}>
+              {i ? ", " : ""}
+              <Link href={appHref(app.productId)} className="hover:underline">{app.name}</Link>
+            </span>
+          ))}
+          .
+        </p>
+      ) : null}
+
       {status === "stale" ? <p className="text-xs text-seam">Showing the last successful read{checking ? "; checking for updates" : ""}. {error ? "The latest refresh failed." : ""}</p> : null}
-      <details className="text-xs text-muted"><summary className="cursor-pointer">Where these numbers come from</summary><p className="mt-2">Each loop is one registered product. Signal counts are recorded observations, not proof of an improvement.</p><code className="mono mt-2 block">compound product loops --json</code></details>
+      <details className="text-xs text-muted"><summary className="cursor-pointer">Where these numbers come from</summary><p className="mt-2">One card per app; other ids of the same app are folded in. Readings are recorded observations, not proof that a change helped. Drafts made from a data snapshot with no expected effect written are not counted as a verdict due.</p><code className="mono mt-2 block">compound product loops --json</code></details>
     </div>
   );
 }

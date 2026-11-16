@@ -567,6 +567,13 @@ matrix and the pale red fill above.
   days, else "quiet since <day>"; the campaign table comes first, apps link to their page, and
   platforms with no report fold into one closed line. A command with a `<placeholder>` is never
   shown; a runnable one sits in a closed "For agents" disclosure.
+- **One results card per app.** Results rows fold into the catalog's app by every id spelling
+  (`foldLoopsByApp`, `lib/products.ts`), named by the catalog; apps with no record are named in
+  one line. A card names the change, what it should do and the days it is watched, and each
+  reading carries its date. "Verdict due" means a real expected effect was written
+  (`verdictDue`): a machine draft with a placeholder effect never waits on the owner. A due
+  verdict links its exact decision (`decideHref`), never the general Decide list. The app page
+  shows its own card under "Did the changes help?" and puts a due verdict under "Needs you".
 - **Gaps are background.** "No data yet" is a pale neutral fill, the calmest filled state. "Not on
   file" is a dashed outline or hatch, "Set aside" a hatch on soft, "Does not apply" is left empty.
   Measured (green), out of date (amber) and the next-move mark (an ink dot or ring) are the only

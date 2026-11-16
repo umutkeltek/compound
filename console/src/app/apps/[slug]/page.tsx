@@ -4,6 +4,9 @@ import { Suspense } from "react";
 import { BreadcrumbTitle, FreshnessChip, HeaderStat, PageHeader } from "@/components/kit";
 import { AppAds, AppNumbers } from "@/components/growth/AppNumbers";
 import { AppNeedsYou } from "@/components/growth/AppNeedsYou";
+import { AppResults } from "@/components/products/AppResults";
+import { decideHref } from "@/lib/links";
+import { foldLoopsByApp, getProductLoopsReport, productResultsDecision, verdictDue } from "@/lib/products";
 import { GroupAudit, NextMoves, ProfileRow, makeLookup } from "@/components/growth/AppGrowth";
 import { AppGlyph, DegradedGrowth, FocusChip, StatusLegend, coverageCounts } from "@/components/growth/GrowthKit";
 import { OpenOnHash } from "@/components/growth/OpenOnHash";
@@ -43,10 +46,18 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
 
   // The app's work: non-blocking reads that share the Work page's cache entries.
   const nowMs = Date.now();
-  const [projectIndex, workbench] = await Promise.all([
+  const [projectIndex, workbench, results] = await Promise.all([
     readWorkProjectIndex({ nowMs }),
     readProjection([...WORK_PROJECT_INDEX_READS.work.args], { timeoutMs: WORK_PROJECT_INDEX_READS.work.timeoutMs }),
+    getProductLoopsReport(),
   ]);
+  // One results card per app: every spelling folds into the catalog's app.
+  const loop = foldLoopsByApp(results.loops, model.apps).loops.find((row) => row.productId === app.productId) ?? null;
+  const resultsKnown = results.status === "live" || results.status === "stale";
+  const verdicts =
+    loop && verdictDue(loop)
+      ? [{ text: loop.hypotheses.find((h) => !h.placeholder)?.statement || `Did the last change to ${app.name} help?`, href: decideHref({ decision: productResultsDecision(app.productId) }) }]
+      : [];
   const work = appWorkModel(arr(workbench.value?.open), projectIndex.index, app.productId, nowMs);
   const labels = { work: "open work", apps: "your app list", inventory: "where each app's code lives" } as const;
   const keys = Object.keys(labels) as Array<keyof typeof labels>;
@@ -79,7 +90,7 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
         right={<FreshnessChip generatedAt={model.generatedAt} source={`compound product growth --product ${app.productId} --json`} />}
       />
 
-      <AppNeedsYou name={app.name} work={work} verdicts={[]} />
+      <AppNeedsYou name={app.name} work={work} verdicts={verdicts} />
 
       <AppNumbers app={app} />
 
@@ -103,6 +114,8 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
         </div>
         <NextMoves app={app} look={look} />
       </section>
+
+      <AppResults name={app.name} loop={loop} known={resultsKnown} />
 
       <AppAds app={app} />
 

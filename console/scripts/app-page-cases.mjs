@@ -12,6 +12,8 @@ import { AppWork, APP_WORK_SHOWN } from "../src/components/growth/AppWork.tsx";
 import { AppAds, AppNumbers, funnelSubtitle } from "../src/components/growth/AppNumbers.tsx";
 import { AppNeedsYou } from "../src/components/growth/AppNeedsYou.tsx";
 import { readFileSync } from "node:fs";
+import { ProductLoopCard } from "../src/components/products/ProductLoopCard.tsx";
+import { foldLoopsByApp, metricLabel, verdictDue } from "../src/lib/products.ts";
 import { KpiTile } from "../src/components/growth/GrowthKit.tsx";
 import { AdsPlatformCard } from "../src/components/ads/AdsPlatformCard.tsx";
 import { ADS_GOOD_DIRECTION, campaignStateLabel, hasPlaceholder, mapAdsProjection, mapTotals } from "../src/lib/ads.ts";
@@ -178,7 +180,7 @@ console.log("app page cases ok: numbers name their days, one proceeds figure, fu
 {
   const source = readFileSync(new URL("../src/app/apps/[slug]/page.tsx", import.meta.url), "utf8");
   const body = source.slice(source.indexOf("return (\n    <div className=\"flex flex-col gap-8\">"));
-  const order = ["<AppNeedsYou", "<AppNumbers", "<AppWork", 'id="app-next-steps"', "<AppAds", "<ProfileRow", "<GroupAudit"];
+  const order = ["<AppNeedsYou", "<AppNumbers", "<AppWork", 'id="app-next-steps"', "<AppResults", "<AppAds", "<ProfileRow", "<GroupAudit"];
   const at = order.map((mark) => body.indexOf(mark));
   assert.ok(at.every((i) => i >= 0), `every block is on the page: ${order.filter((_, i) => at[i] < 0)}`);
   assert.deepEqual([...at].sort((a, b) => a - b), at, "needs you, numbers, work, next steps, ads, then the profile and groups");
@@ -272,3 +274,47 @@ console.log("app page cases ok: the page leads with what needs you, then numbers
 }
 
 console.log("app page cases ok: ads colours follow meaning, quiet campaigns say since when, campaigns first, no placeholder commands");
+
+/* ---------- 5. Results: one card per app, a real verdict links its decision ---------- */
+{
+  const loop = (productId, extra = {}) => ({
+    productId, name: productId, aliases: [], hypotheses: [], signals: [], metricNames: [], hypothesisCount: 0, reviews: [],
+    sourceIssueCount: 0, freshness: { latestSignalAt: "", latestReviewAt: "", stale: false }, loopGaps: [], signalCount: 0, ...extra,
+  });
+  const signal = (metric, after, observedAt) => ({ signalId: `${metric}-${observedAt}`, provider: "app_store_connect", metric, before: null, after, observedAt, changeEvent: "", transitionRef: "" });
+  const draft = { id: "hyp_d", statement: "Daily metric snapshot observed.", expectedEffect: "OPERATOR MUST WRITE: what should it do?", metrics: [], window: "2030-01-01..2030-01-10", placeholder: true };
+  const real = { id: "hyp_r", statement: "A shorter subtitle lifts page views", expectedEffect: "Product page views rise 10%", metrics: ["app.impressions"], window: "2030-02-01..2030-02-28", placeholder: false };
+  const catalog = [
+    { productId: "product:pocket-log", name: "Pocket Log", aliases: ["product:pocket_log", "product:pocket_log_web"] },
+    { productId: "product:tide-chart", name: "Tide Chart", aliases: [] },
+    { productId: "product:never-measured", name: "Never Measured", aliases: [] },
+  ];
+  const rows = [
+    loop("product:pocket-log", { signals: [signal("app_store_connect_developer_proceeds_usd", 21.24, "2030-03-01T00:00:00Z")], signalCount: 1, hypotheses: [draft], loopGaps: ["review_ready"] }),
+    loop("product:pocket_log_web"),
+    loop("product:Pocket_Log"),
+    loop("product:tide-chart", { signals: [signal("app.impressions", 900, "2030-03-02T00:00:00Z")], signalCount: 1, hypotheses: [real], loopGaps: ["review_ready"] }),
+    loop("product:orphan_thing"),
+  ];
+  const { loops, missing } = foldLoopsByApp(rows, catalog);
+  assert.deepEqual(loops.map((l) => [l.productId, l.name]), [["product:pocket-log", "Pocket Log"], ["product:tide-chart", "Tide Chart"], ["product:orphan_thing", "Orphan Thing"]], "every spelling of an app is one card, named by the catalog");
+  assert.deepEqual(missing.map((a) => a.name), ["Never Measured"], "apps with no record are named, not dropped");
+  const pocket = loops[0];
+  assert.equal(verdictDue(pocket), false, "a draft nobody wrote is not a verdict waiting on him");
+  assert.equal(verdictDue(loops[1]), true);
+
+  const draftCard = renderToStaticMarkup(createElement(ProductLoopCard, { loop: pocket }));
+  const draftWords = text(draftCard);
+  assert.ok(!draftWords.includes("verdict due") && draftWords.includes("Nothing waits for you"), draftWords);
+  assert.ok(!draftCard.includes('href="/reviews"'), "never the general Decide list");
+  assert.ok(draftWords.includes("Developer proceeds in US dollars") && draftWords.includes("Mar 1, 2030"), "readings in words, with their date");
+  assert.equal(metricLabel("app_store_connect_units"), "Units");
+
+  const realCard = renderToStaticMarkup(createElement(ProductLoopCard, { loop: loops[1] }));
+  const realWords = text(realCard);
+  assert.ok(realWords.includes("A shorter subtitle lifts page views") && realWords.includes("Expected: Product page views rise 10%") && realWords.includes("Watched 2030-02-01 to 2030-02-28"), realWords);
+  assert.ok(realCard.includes('href="/reviews?decision=product-reviews%7Cproduct%3Atide-chart"'), "the verdict link opens that exact decision");
+  assert.ok(/<details[^>]*>.*For agents.*compound product doctor/s.test(realCard), "the command sits behind a disclosure for agents");
+}
+
+console.log("app page cases ok: results fold every spelling into one card, drafts never wait on him, a real verdict links its decision");
