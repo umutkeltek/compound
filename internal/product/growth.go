@@ -87,6 +87,11 @@ type GrowthKpi struct {
 	// in US dollars are converted by the collector); Note says how.
 	Estimate bool   `json:"estimate,omitempty"`
 	Note     string `json:"note,omitempty"`
+	// WindowStart and WindowEnd are the first and last day Value sums (a
+	// store KPI's window ends on the Sales report's newest final day), so a
+	// reader can print the dates instead of only "N days".
+	WindowStart string `json:"window_start"`
+	WindowEnd   string `json:"window_end"`
 }
 
 type GrowthPoint struct {
@@ -206,6 +211,11 @@ type GrowthAllocation struct {
 	Focus     string `json:"focus"`
 	Reason    string `json:"reason"`
 	Rule      string `json:"rule"`
+	// WindowStart and WindowEnd are the days the window_days proceeds in
+	// Reason cover: the same window as the proceeds_usd KPI, so the sentence
+	// and the tile give one amount. Reason's 90-day proceeds end on the same day.
+	WindowStart string `json:"window_start"`
+	WindowEnd   string `json:"window_end"`
 }
 
 type GrowthPortfolio struct {
@@ -841,15 +851,20 @@ type growthCtx struct {
 }
 
 type growthFacts struct {
-	hasAnyData  bool
-	proceeds90  float64
-	proceeds30  float64
-	clicks90    float64
-	adConv90    float64
-	salesLatest string
-	salesStale  bool
-	kind        string
-	areaStatus  map[string]string
+	hasAnyData bool
+	// proceeds30 (window_days long) and proceeds90 end on the proceeds KPI's
+	// window end, so the allocation sentence restates the tile's amount;
+	// proceedsFrom and proceedsTo are proceeds30's first and last day.
+	proceeds90   float64
+	proceeds30   float64
+	proceedsFrom string
+	proceedsTo   string
+	clicks90     float64
+	adConv90     float64
+	salesLatest  string
+	salesStale   bool
+	kind         string
+	areaStatus   map[string]string
 }
 
 func (c growthCtx) day(offset int) string { return growthDayStr(c.opts.AsOf.AddDate(0, 0, -offset)) }
@@ -887,9 +902,23 @@ func latestKey(m map[string]float64) string {
 	return latest
 }
 
+// windowEnd is how many days before as-of the window for a KPI key ends. A
+// store KPI's window ends on the Sales report's newest final day, so a day
+// Apple has not published (or may still correct) is neither counted nor read
+// as a missing day; every other window ends on as-of. Every number that
+// restates a store KPI (the allocation reason, the funnel) uses this end too.
+func (c growthCtx) windowEnd(key string) int {
+	if growthStoreKpis[key] {
+		return c.storeEnd
+	}
+	return 0
+}
+
 func (c growthCtx) kpiFor(key string, daily map[string]map[string]float64) GrowthKpi {
 	k := GrowthKpi{DaysInWindow: c.opts.WindowDays, Unit: growthKpiUnit[key]}
 	w := c.opts.WindowDays
+	end := c.windowEnd(key)
+	k.WindowStart, k.WindowEnd = c.day(end+w-1), c.day(end)
 	if key == "ad_cpa_usd" {
 		spend, conv := daily[growthKpiMetric["ad_spend_usd"]], daily[growthKpiMetric["ad_conversions"]]
 		s, sd := c.sumRange(spend, w-1, 0)
@@ -908,13 +937,7 @@ func (c growthCtx) kpiFor(key string, daily map[string]map[string]float64) Growt
 		return k
 	}
 	m := daily[growthKpiMetric[key]]
-	// A store KPI's window ends on the Sales report's newest final day, so a
-	// day Apple has not published (or may still correct) is neither counted
-	// nor read as a missing day; the previous window shifts the same way.
-	end := 0
-	if growthStoreKpis[key] {
-		end = c.storeEnd
-	}
+	// The previous window shifts with the current one.
 	v, d := c.sumRange(m, end+w-1, end)
 	p, pd := c.sumRange(m, end+2*w-1, end+w)
 	k.DaysReported = d
@@ -1158,8 +1181,10 @@ func (c growthCtx) buildApp(g *growthGroup) (GrowthApp, growthFacts) {
 		}
 	}
 	facts.hasAnyData = len(g.signals) > 0 || len(g.ranges) > 0 || g.adsRows > 0
-	facts.proceeds90, _ = c.sumRange(g.daily[growthKpiMetric["proceeds_usd"]], 89, 0)
-	facts.proceeds30, _ = c.sumRange(g.daily[growthKpiMetric["proceeds_usd"]], c.opts.WindowDays-1, 0)
+	proceedsEnd := c.windowEnd("proceeds_usd")
+	facts.proceeds90, _ = c.sumRange(g.daily[growthKpiMetric["proceeds_usd"]], proceedsEnd+89, proceedsEnd)
+	facts.proceeds30, _ = c.sumRange(g.daily[growthKpiMetric["proceeds_usd"]], proceedsEnd+c.opts.WindowDays-1, proceedsEnd)
+	facts.proceedsFrom, facts.proceedsTo = c.day(proceedsEnd+c.opts.WindowDays-1), c.day(proceedsEnd)
 	facts.clicks90, _ = c.sumRange(g.daily[growthKpiMetric["web_clicks"]], 89, 0)
 	facts.adConv90, _ = c.sumRange(g.daily[growthKpiMetric["ad_conversions"]], 89, 0)
 
@@ -1822,10 +1847,10 @@ func (c growthCtx) nextMove(g *growthGroup, spec growthAreaSpec, status, missing
 // ---------------------------------------------------------------------------
 // allocation
 
-const growthAllocationRule = "Last 90 days. fix_data: earned proceeds but sales data is stale. grow: proceeds in the window with fresh data. measure: has web clicks or ad conversions but no proceeds or blind activation. hold: little proceeds and traffic. Ranked by 90-day proceeds, then web clicks."
+const growthAllocationRule = "Last 90 days; proceeds end on the same day as the proceeds tile (the Sales report's newest final day). fix_data: earned proceeds but sales data is stale. grow: proceeds in the window with fresh data. measure: has web clicks or ad conversions but no proceeds or blind activation. hold: little proceeds and traffic. Ranked by 90-day proceeds, then web clicks."
 
 func (c growthCtx) allocate(app GrowthApp, f growthFacts) GrowthAllocation {
-	al := GrowthAllocation{ProductID: app.ProductID, Name: app.Name, Rule: growthAllocationRule}
+	al := GrowthAllocation{ProductID: app.ProductID, Name: app.Name, Rule: growthAllocationRule, WindowStart: f.proceedsFrom, WindowEnd: f.proceedsTo}
 	activationBlind := true
 	for _, a := range app.Audit {
 		if (a.AreaID == "activation_onboarding" || a.AreaID == "activation_time_to_value") && (a.Status == GrowthMeasured || a.Status == GrowthPartial || a.Status == GrowthStale) {
@@ -1839,7 +1864,7 @@ func (c growthCtx) allocate(app GrowthApp, f growthFacts) GrowthAllocation {
 		al.Reason = fmt.Sprintf("%s proceeds in 90 days, but sales data stopped on %s (%s ago). Refresh it before deciding.", growthUSD(f.proceeds90), f.salesLatest, growthDays(c.age(f.salesLatest)))
 	case f.proceeds30 > 0:
 		al.Focus = GrowthFocusGrow
-		al.Reason = fmt.Sprintf("%s proceeds in %s (%s in 90 days) with sales data fresh through %s.", growthUSD(f.proceeds30), growthDays(c.opts.WindowDays), growthUSD(f.proceeds90), f.salesLatest)
+		al.Reason = fmt.Sprintf("%s proceeds in %s, %s to %s (%s in 90 days), with sales data fresh through %s.", growthUSD(f.proceeds30), growthDays(c.opts.WindowDays), f.proceedsFrom, f.proceedsTo, growthUSD(f.proceeds90), f.salesLatest)
 	case traffic && (f.proceeds90 == 0 || activationBlind):
 		al.Focus = GrowthFocusMeasure
 		al.Reason = fmt.Sprintf("%s and %s in 90 days, with %s proceeds and activation not measured.", growthCount(f.clicks90, "web click", "web clicks"), growthCount(f.adConv90, "ad conversion", "ad conversions"), growthUSD(f.proceeds90))
