@@ -242,6 +242,13 @@ func printAttentionTextWithReceiptOnlyGrade(report attention.Report, receiptOnly
 		report.Counts.BlockedOnYou,
 		report.Counts.FallbackGroups,
 	)
+	if report.Totals.SetAside > 0 {
+		fmt.Printf("set aside as not yours: %d (closed without you: %d, waiting on others: %d) — view with --json\n",
+			report.Totals.SetAside,
+			report.Totals.ClosedWithoutYou,
+			report.Totals.SetAside-report.Totals.ClosedWithoutYou,
+		)
+	}
 	groups := report.Groups
 	receiptOnlyCount := 0
 	if receiptOnlyGrade != "" {

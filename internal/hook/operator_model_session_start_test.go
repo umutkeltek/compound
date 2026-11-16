@@ -71,12 +71,18 @@ func TestFixtureReplaySessionStartIgnoresOperatorModel(t *testing.T) {
 }
 
 // TestLiveSessionStartOversizeOperatorModelStaysBounded pins the worst-case
-// session-start payload: a full door-map block plus an operator model past its
-// cap. Each block keeps its own cap; the log line records the totals.
+// session-start payload: the full door-map block plus an operator model past
+// its budget. Every rule section arrives whole, even one that sits past the
+// old byte cap; only a background section is left out, and it is named. With
+// the rules inside the budget the whole payload stays under the 10,000
+// characters a harness may keep from hook output.
 func TestLiveSessionStartOversizeOperatorModelStaysBounded(t *testing.T) {
 	t.Setenv(SessionPackEnv, "full") // exact full-start payload; session_pack_test pins the minimal one
 	home := doorMapHome(t)
-	writeHookOperatorModel(t, home, strings.Repeat("- a standing preference line that repeats\n", 200))
+	decisions := "## Standing decisions\n" + strings.Repeat("- a standing decision line that the operator wrote\n", 30)
+	model := "# Operator model\n\n## Standing constraints\n" + strings.Repeat("- a standing constraint line that repeats\n", 60) +
+		"\n## Background\n" + strings.Repeat("- a background line that repeats\n", 200) + "\n" + decisions
+	writeHookOperatorModel(t, home, model)
 	deps := baseDeps()
 	deps.HomePath = home
 	res, err := Run(Fixture{Hook: "session-start", Harness: "codex", Cwd: "/repo/productX", RepoKind: "product", Live: true}, deps, fixedNow)
@@ -88,16 +94,17 @@ func TestLiveSessionStartOversizeOperatorModelStaysBounded(t *testing.T) {
 		t.Fatalf("operator model block missing from %q", res.ContextOutput)
 	}
 	doorPart, modelPart := res.ContextOutput[:idx], res.ContextOutput[idx+2:]
-	if len(doorPart) > tooltopology.MaxServedBytes {
+	if len(doorPart) > tooltopology.MaxServedBytes+200 {
 		t.Fatalf("door map part is %d bytes, cap %d", len(doorPart), tooltopology.MaxServedBytes)
 	}
-	header := "## Operator model (private, from config/operator-model.md)\n"
-	lastNL := strings.LastIndex(modelPart, "\n")
-	if !strings.HasPrefix(modelPart[lastNL+1:], "(truncated: ") {
-		t.Fatalf("oversize operator model must end with the truncation line, got %q", modelPart[lastNL+1:])
+	if !strings.Contains(modelPart, strings.TrimRight(decisions, "\n")) {
+		t.Fatalf("standing decisions past the old cap did not reach the session start whole")
 	}
-	if content := modelPart[len(header):lastNL]; len(content) > tooltopology.MaxOperatorModelBytes {
-		t.Fatalf("operator model content is %d bytes, cap %d", len(content), tooltopology.MaxOperatorModelBytes)
+	if strings.Contains(modelPart, "a background line") || !strings.Contains(modelPart, `"Background" (`) {
+		t.Fatalf("background section past the budget must be left out and named:\n%s", modelPart[len(modelPart)-300:])
+	}
+	if len(res.ContextOutput) >= 10000 {
+		t.Fatalf("session-start payload is %d characters, want under 10000", len(res.ContextOutput))
 	}
 	t.Logf("session-start ContextOutput=%d bytes (door map %d + separator 2 + operator model %d); pack summary=%d bytes",
 		len(res.ContextOutput), len(doorPart), len(modelPart), len(res.Summary))

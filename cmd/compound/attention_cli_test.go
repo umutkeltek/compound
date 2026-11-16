@@ -158,7 +158,7 @@ func TestAttentionCLIReceiptOnlyTidyFoldsLiveTextOnly(t *testing.T) {
 	defaultOutput := captureStdout(t, func() {
 		cmdAttention([]string{"--home", homePath})
 	})
-	if !strings.Contains(defaultOutput, "1 open work item is blocked on operator review.") {
+	if !strings.Contains(defaultOutput, "1 open work item is held for your answer.") {
 		t.Fatalf("default text dropped tidy needs_you group:\n%s", defaultOutput)
 	}
 	if strings.Contains(defaultOutput, "receipt-only") {
@@ -168,7 +168,7 @@ func TestAttentionCLIReceiptOnlyTidyFoldsLiveTextOnly(t *testing.T) {
 	receiptOnlyOutput := captureStdout(t, func() {
 		cmdAttention([]string{"--receipt-only-grade", attention.RiskGradeTidy, "--home", homePath})
 	})
-	if strings.Contains(receiptOnlyOutput, "1 open work item is blocked on operator review.") {
+	if strings.Contains(receiptOnlyOutput, "1 open work item is held for your answer.") {
 		t.Fatalf("receipt-only text retained tidy needs_you group:\n%s", receiptOnlyOutput)
 	}
 	if !strings.Contains(receiptOnlyOutput, "1 safe open work item can move.") {
@@ -340,4 +340,14 @@ func containsAttentionString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// The text view says how many records were set aside as not the operator's,
+// and how many of those are closed without him, so they never vanish from it.
+func TestAttentionCLITextSaysWhatWasSetAside(t *testing.T) {
+	report := attention.Report{Totals: attention.Totals{TotalRead: 5, LiveDecisions: 1, SetAside: 4, ClosedWithoutYou: 3}}
+	out := captureStdout(t, func() { printAttentionText(report) })
+	if !strings.Contains(out, "set aside as not yours: 4 (closed without you: 3, waiting on others: 1)") {
+		t.Fatalf("text view hides what was set aside:\n%s", out)
+	}
 }

@@ -37,6 +37,10 @@ const (
 	KindJobHealth     = "job_health"
 	KindProductMove   = "product_move"
 	KindActivity      = "activity"
+	// KindWaitingOnOthers is open work that waits on something outside the
+	// operator: another work item, an account, a device. It is shown, never
+	// counted as his.
+	KindWaitingOnOthers = "waiting_on_others"
 
 	BlastRead               = "read"
 	BlastLocalReversible    = "local_reversible"
@@ -70,6 +74,10 @@ type Inputs struct {
 	// every non-activity caller; Build is nil-safe on it. Defined HERE (not imported from
 	// internal/activity) to keep the import direction clean — the CLI builds it from activity outputs.
 	Activity *ActivityDayInput
+	// Probe is the read-only window the live-count checks use (record files,
+	// path existence, waiter processes). Nil means the real machine; tests
+	// inject a fake so no check depends on the host.
+	Probe Probe
 }
 
 // ActivityDayInput carries one day's pre-computed unaccounted activity blocks (from
@@ -91,12 +99,41 @@ type ActivityBlock struct {
 	CategoryMix string
 }
 
+// Report is the attention projection. Groups holds only live items: everything
+// that asked to be counted under needs_you but is not the operator's sits in
+// SetAside with its reason, and Totals shows the arithmetic. The fields after
+// Groups are additive to compound.attention.v0.1; readers that ignore them keep
+// working, and counts.needs_you now counts live items only.
 type Report struct {
-	SchemaVersion string  `json:"schema_version"`
-	GeneratedAt   string  `json:"generated_at"`
-	Counts        Counts  `json:"counts"`
-	Top           *Group  `json:"top"`
-	Groups        []Group `json:"groups"`
+	SchemaVersion string          `json:"schema_version"`
+	GeneratedAt   string          `json:"generated_at"`
+	Counts        Counts          `json:"counts"`
+	Top           *Group          `json:"top"`
+	Groups        []Group         `json:"groups"`
+	SetAside      []SetAside      `json:"set_aside"`
+	Totals        Totals          `json:"totals"`
+	Freshness     ReportFreshness `json:"freshness"`
+}
+
+// ReportFreshness says when each source was read and how new its newest
+// record is. AsOf is the oldest read among the sources: the whole report is
+// only as fresh as its stalest part.
+type ReportFreshness struct {
+	AsOf           string            `json:"as_of"`
+	AsOfAgeSeconds int64             `json:"as_of_age_seconds"`
+	OldestSource   string            `json:"oldest_source,omitempty"`
+	Sources        []SourceFreshness `json:"sources"`
+	MissingSources []string          `json:"missing_sources,omitempty"`
+	GeneratedAt    string            `json:"generated_at"`
+}
+
+// SourceFreshness is one source's stamp.
+type SourceFreshness struct {
+	Source         string `json:"source"`
+	ReadAt         string `json:"read_at"`
+	AgeSeconds     int64  `json:"age_seconds"`
+	NewestRecordAt string `json:"newest_record_at,omitempty"`
+	Records        int    `json:"records"`
 }
 
 type Counts struct {
@@ -126,6 +163,18 @@ type Group struct {
 	TerminalReason  string    `json:"terminal_reason"`
 	ItemIDs         []string  `json:"item_ids"`
 	Freshness       Freshness `json:"freshness"`
+	// RecordCount is how many stored records stand behind this group's live
+	// items once repeats are folded in (several files of one record, or the
+	// same question filed again). Zero when the group was not checked record
+	// by record.
+	RecordCount int `json:"record_count,omitempty"`
+	// PostponedUntil is the deferral date that brought this item back: it was
+	// put off earlier and its date passed, so it is not new.
+	PostponedUntil string `json:"postponed_until,omitempty"`
+	// NeedsWording marks a live group holding an open product record whose
+	// writer gave it no question: it stays counted so a real product ask is
+	// never hidden, and an agent should word it.
+	NeedsWording bool `json:"needs_wording,omitempty"`
 }
 
 type Action struct {
@@ -171,6 +220,7 @@ var knownAreaClassifications = map[string]areaClassification{
 	"route-remorse":                  {Kind: KindContradiction},
 	"lease-hygiene":                  {Kind: KindHygiene, BlastRadius: BlastLocalReversible, Reversibility: Reversible},
 	"activity-unaccounted":           {Kind: KindActivity, BlastRadius: BlastRead, Reversibility: Reversible},
+	"workbench-waiting-on-others":    {Kind: KindWaitingOnOthers, BlastRadius: BlastRead, Reversibility: Reversible},
 }
 
 func Build(in Inputs, now time.Time) Report {
@@ -182,9 +232,28 @@ func Build(in Inputs, now time.Time) Report {
 		SchemaVersion: SchemaVersion,
 		GeneratedAt:   generatedAt,
 		Groups:        []Group{},
+		SetAside:      []SetAside{},
 	}
+	reviewTotalRead, unchecked := 0, 0
 	if in.Reviews != nil {
-		report.Groups = append(report.Groups, groupsFromReviews(*in.Reviews, now)...)
+		projected := groupsFromReviews(*in.Reviews, now)
+		sources := map[string]Group{}
+		for _, g := range projected {
+			normalized := g
+			normalizeGroup(&normalized, generatedAt, now)
+			sources[g.Key] = normalized
+		}
+		live, setAside, totalRead, uncheckedReviews := reviewLiveness(*in.Reviews, projected, in.Probe, now)
+		for i := range setAside {
+			source := sources[setAside[i].SourceGroupKey]
+			setAside[i].Kind = source.Kind
+			setAside[i].Reversibility = source.Reversibility
+			setAside[i].RiskGrade = source.RiskGrade
+		}
+		sortSetAside(setAside)
+		report.Groups = append(report.Groups, live...)
+		report.SetAside = append(report.SetAside, setAside...)
+		reviewTotalRead, unchecked = totalRead, uncheckedReviews
 		report.Counts.FallbackGroups = fallbackGroupCount(*in.Reviews)
 	}
 	if in.Workbench != nil {
@@ -201,11 +270,131 @@ func Build(in Inputs, now time.Time) Report {
 	}
 	sortGroups(report.Groups)
 	report.Counts = countGroups(report.Groups, report.Counts.FallbackGroups)
+	report.Totals = buildTotals(report, reviewTotalRead, unchecked)
+	report.Freshness = buildFreshness(in, now)
 	if len(report.Groups) > 0 {
 		top := report.Groups[0]
 		report.Top = &top
 	}
 	return report
+}
+
+// buildTotals derives the headline arithmetic. Each source's Read is counted
+// from the inputs (every unit that asked to be counted under needs_you before
+// the live check), not from the result, so Live + SetAside + WaitingOnOthers
+// == Read is a real check, not a definition.
+func buildTotals(report Report, reviewTotalRead, unchecked int) Totals {
+	totals := Totals{
+		LiveDecisions:    report.Counts.NeedsYou,
+		SetAsideByReason: map[string]int{},
+		Unchecked:        unchecked,
+		BySource:         []SourceTotal{},
+	}
+	bySource := map[string]*SourceTotal{SourceReviews: {Source: SourceReviews, Read: reviewTotalRead}}
+	at := func(source string) *SourceTotal {
+		if bySource[source] == nil {
+			bySource[source] = &SourceTotal{Source: source}
+		}
+		return bySource[source]
+	}
+	for _, g := range report.Groups {
+		switch {
+		case g.Band == BandNeedsYou:
+			entry := at(g.Source)
+			entry.Live += g.Count
+			if g.Source != SourceReviews {
+				entry.Read += g.Count
+			}
+		case g.Kind == KindWaitingOnOthers:
+			entry := at(g.Source)
+			entry.Read += g.Count
+			entry.WaitingOnOthers += g.Count
+			totals.WaitingOnOthers += g.Count
+		}
+	}
+	for _, entry := range report.SetAside {
+		totals.SetAside += entry.Count
+		totals.SetAsideByReason[entry.Reason] += entry.Count
+		at(entry.Source).SetAside += entry.Count
+	}
+	totals.SetAsideReasons, totals.ClosedWithoutYou = setAsideReasonTotals(report.SetAside)
+	for _, source := range []string{SourceReviews, SourceWorkbench, SourceExecutor, SourceActivity} {
+		if entry := bySource[source]; entry != nil && entry.Read+entry.Live+entry.SetAside > 0 {
+			totals.TotalRead += entry.Read
+			totals.BySource = append(totals.BySource, *entry)
+			delete(bySource, source)
+		}
+	}
+	for _, source := range sortedSourceKeys(bySource) {
+		if entry := bySource[source]; entry.Read+entry.Live+entry.SetAside > 0 {
+			totals.TotalRead += entry.Read
+			totals.BySource = append(totals.BySource, *entry)
+		}
+	}
+	return totals
+}
+
+func sortedSourceKeys(m map[string]*SourceTotal) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func buildFreshness(in Inputs, now time.Time) ReportFreshness {
+	out := ReportFreshness{GeneratedAt: now.UTC().Format(time.RFC3339), Sources: []SourceFreshness{}}
+	add := func(source, readAt, newest string, records int) {
+		entry := SourceFreshness{Source: source, ReadAt: readAt, NewestRecordAt: newest, Records: records}
+		if at, ok := parseTime(readAt); ok {
+			entry.ReadAt = at.UTC().Format(time.RFC3339)
+			if age := now.UTC().Sub(at.UTC()); age > 0 {
+				entry.AgeSeconds = int64(age / time.Second)
+			}
+		}
+		out.Sources = append(out.Sources, entry)
+	}
+	if in.Reviews != nil {
+		newest := ""
+		for _, item := range in.Reviews.Items {
+			newest = newerTimestamp(newest, item.CreatedAt)
+		}
+		add(SourceReviews, in.Reviews.GeneratedAt, newest, len(in.Reviews.Items))
+	} else {
+		out.MissingSources = append(out.MissingSources, SourceReviews)
+	}
+	if in.Workbench != nil {
+		newest := ""
+		for _, item := range in.Workbench.Open {
+			newest = newerTimestamp(newest, item.ClaimedAt)
+			for _, obs := range item.RunObservations {
+				newest = newerTimestamp(newest, obs.GeneratedAt)
+			}
+		}
+		add(SourceWorkbench, in.Workbench.GeneratedAt, newest, len(in.Workbench.Open))
+	} else {
+		out.MissingSources = append(out.MissingSources, SourceWorkbench)
+	}
+	if in.Executors != nil {
+		add(SourceExecutor, in.Executors.GeneratedAt, "", len(in.Executors.Executors))
+	} else {
+		out.MissingSources = append(out.MissingSources, SourceExecutor)
+	}
+	if in.Activity != nil {
+		add(SourceActivity, in.Activity.GeneratedAt, "", len(in.Activity.UnaccountedBlocks))
+	}
+	var oldest time.Time
+	for _, entry := range out.Sources {
+		at, ok := parseTime(entry.ReadAt)
+		if !ok {
+			continue
+		}
+		if out.AsOf == "" || at.Before(oldest) {
+			oldest, out.AsOf, out.OldestSource, out.AsOfAgeSeconds = at, entry.ReadAt, entry.Source, entry.AgeSeconds
+		}
+	}
+	return out
 }
 
 func Class(g Group) string {
@@ -278,7 +467,14 @@ func groupsFromWorkbench(report work.WorkbenchReport, now time.Time) []Group {
 			Freshness:       freshness,
 		})
 	}
+	// Held work is the operator's valve: it stays until he releases or cancels
+	// it. Blocked work waits on something outside him (another item, an
+	// account, a device) and moves to its own visible group below, unless the
+	// work itself says it needs the operator.
 	blocked := filterWorkbenchItems(report.Open, func(item work.WorkbenchItem) bool {
+		if workbenchItemWaitsOnOthers(item) {
+			return false
+		}
 		return item.State == "held" || item.State == "blocked" || (workbenchItemCanMove(item) && workbenchItemNeedsOperator(item))
 	})
 	if len(blocked) > 0 {
@@ -290,13 +486,30 @@ func groupsFromWorkbench(report work.WorkbenchReport, now time.Time) []Group {
 			Source:          SourceWorkbench,
 			Kind:            KindGateAdmit,
 			Count:           len(blocked),
-			OperatorSummary: plural(len(blocked), "open work item is blocked on operator review.", "open work items are blocked on operator review."),
+			OperatorSummary: plural(len(blocked), "open work item is held for your answer.", "open work items are held for your answer."),
 			OperatorUnlock:  "Resolve the hold before executors can continue.",
 			BlastRadius:     blastRadius,
 			Reversibility:   reversibility,
 			OldestCreatedAt: oldestWorkbenchItemTime(blocked, freshness.GeneratedAt),
 			TerminalReason:  firstWorkbenchReason(blocked),
 			ItemIDs:         workbenchItemIDs(blocked),
+			Freshness:       freshness,
+		})
+	}
+	waiting := filterWorkbenchItems(report.Open, workbenchItemWaitsOnOthers)
+	if len(waiting) > 0 {
+		out = append(out, Group{
+			Key:             "workbench:waiting-on-others",
+			Area:            "workbench-waiting-on-others",
+			Band:            BandWatching,
+			Source:          SourceWorkbench,
+			Kind:            KindWaitingOnOthers,
+			Count:           len(waiting),
+			OperatorSummary: plural(len(waiting), "open work item waits on something outside you: another item, an account or a device.", "open work items wait on something outside you: another item, an account or a device."),
+			OperatorUnlock:  "Nothing is needed from you now. The work's owner continues it when what it waits on is ready.",
+			OldestCreatedAt: oldestWorkbenchItemTime(waiting, freshness.GeneratedAt),
+			TerminalReason:  firstWorkbenchReason(waiting),
+			ItemIDs:         workbenchItemIDs(waiting),
 			Freshness:       freshness,
 		})
 	}
@@ -931,6 +1144,14 @@ func workbenchItemNeedsOperator(item work.WorkbenchItem) bool {
 	if item.State == "held" || item.State == "blocked" {
 		return true
 	}
+	return workbenchItemNamesOperator(item)
+}
+
+// workbenchItemNamesOperator reads the work's own signals that it needs the
+// operator: an action context or review card that requires him, action text
+// that says so (or names a conflict), or an action whose reach is external or
+// high-blast.
+func workbenchItemNamesOperator(item work.WorkbenchItem) bool {
 	if item.ActionContext != nil && item.ActionContext.RequiresOperator {
 		return true
 	}
@@ -945,6 +1166,14 @@ func workbenchItemNeedsOperator(item work.WorkbenchItem) bool {
 	}
 	blast := deriveBlastRadius(Group{OperatorSummary: text}, BlastLocalReversible)
 	return blast == BlastExternalSideEffect || highBlast(blast)
+}
+
+// workbenchItemWaitsOnOthers reports blocked work that names no operator
+// need. The owner's own state split decides it (held is the operator's valve;
+// blocked waits on a dependency), and any signal that the work needs him keeps
+// it his: the same signals that gate ready work (workbenchItemNamesOperator).
+func workbenchItemWaitsOnOthers(item work.WorkbenchItem) bool {
+	return strings.TrimSpace(item.State) == "blocked" && !workbenchItemNamesOperator(item)
 }
 
 func workbenchGateRisk(items []work.WorkbenchItem) (string, string) {
@@ -1078,6 +1307,18 @@ func olderTimestamp(a, b string) string {
 	default:
 		return a
 	}
+}
+
+func newerTimestamp(a, b string) string {
+	bt, bOK := parseTime(b)
+	if !bOK {
+		return a
+	}
+	at, aOK := parseTime(a)
+	if !aOK || bt.After(at) {
+		return bt.UTC().Format(time.RFC3339)
+	}
+	return a
 }
 
 func parseTime(value string) (time.Time, bool) {

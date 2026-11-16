@@ -466,12 +466,18 @@ func newWorkbenchAttentionFixture(t *testing.T) string {
 	t.Helper()
 	homePath := initializedTestHome(t)
 	t.Setenv("COMPOUND_HOME", homePath)
+	// The record carries a readable question: attention counts only live
+	// decisions, and a record the queue marks "fallback" (no question) is set
+	// aside, which would leave this meter fixture with nothing to meter.
 	if _, err := reviewartifact.Write(homePath, "product-reviews", "prp_attention_meter", map[string]any{
-		"id":            "prp_attention_meter",
-		"status":        "review_required",
-		"product_id":    "product:fixture",
-		"hypothesis_id": "hyp_fixture",
-		"signal_id":     "sig_fixture",
+		"id":               "prp_attention_meter",
+		"status":           "review_required",
+		"product_id":       "product:fixture",
+		"hypothesis_id":    "hyp_fixture",
+		"signal_id":        "sig_fixture",
+		"operator_summary": "The fixture product has new evidence for its idea. Review the result?",
+		"context_label":    "fixture product",
+		"group_key":        "product-reviews|fixture",
 	}, " ", "# Product review\n"); err != nil {
 		t.Fatalf("write review fixture: %v", err)
 	}
