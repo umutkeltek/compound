@@ -148,4 +148,3 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
     </div>
   );
 }
-
