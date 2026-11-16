@@ -65,6 +65,22 @@ const reply = {
       qualifiers: { source: "brain-ledger" }, created_at: iso(140) },
   ] },
   "memory canon --json": { schema_version: "compound.memory.canon.v0.1", distribution: { decision: 4, principle: 1, status: 9, unclassified: 0 }, total: 14 },
+  // Rules: seven rows, six decisions. DEC-FX01 is listed twice (once as the
+  // decision record, its id in the claim slot; once as the accepted claim).
+  // Two distinct decisions share the title "Promotion".
+  "decisions standing-law --json": { schema_version: "compound.standing_law_view.v0.1", generated_at: iso(0), conflicts: [],
+    counts: { records: 7, rulings: 1, grants: 1, freezes: 0, superseded: 0, conflicts: 0 },
+    records: [
+      { claim_id: "claim_fxpolicya", decision_id: "DEC-FX01", kind: "policy", title: "Fixture policy A keeps builds reproducible", date: iso(140), corroboration_count: 0 },
+      { claim_id: "DEC-FX01", decision_id: "", kind: "policy", title: "Fixture policy A keeps builds reproducible", scope: "cross-agent", date: iso(141), corroboration_count: 0 },
+      { claim_id: "claim_fxpromo2", decision_id: "DEC-FX02", kind: "policy", title: "Promotion", date: iso(120), corroboration_count: 0 },
+      { claim_id: "claim_fxpromo3", decision_id: "DEC-FX03", kind: "policy", title: "Promotion", date: iso(119), corroboration_count: 0 },
+      { claim_id: "claim_fxruling", decision_id: "fx-ruling-01", kind: "ruling", title: "Fixture disks keep 150 GiB free", reviewed_by: "operator:example-via-claude_code",
+        source_path: "/home/example/.compound/decisions/operator/fx-ruling-01.md", falsifier: "A later decision replaces this one.", review_trigger: "Free space drops twice in a week.", date: iso(20), corroboration_count: 0 },
+      { claim_id: "claim_fxops", decision_id: "", kind: "operational", title: "Fixture weekly sync runs on Mondays", reviewed_by: "", source_path: "knowledge_page", date: iso(30), corroboration_count: 0 },
+      { claim_id: "claim_fxgrant", decision_id: "fx-grant-01", kind: "grant", title: "Agents may restart the fixture job on their own", reviewed_by: "operator", date: iso(10),
+        corroboration_count: 2, corroboration_evidence: ["ev_fxcorr1"] },
+    ] },
 };
 const value = reply[args];
 if (value) { console.log(JSON.stringify(value)); process.exit(0); }
@@ -81,6 +97,7 @@ console.log(JSON.stringify({ generated_at: iso(0) }));
   const compound = await import("../src/lib/compound.ts");
   const { BANNED_PHRASES, findBannedPhrases, MEMORY_CHOICE_HANDOFF } = await import("../src/lib/plain-words.ts");
   const { default: Memory } = await import("../src/app/memory/page.tsx");
+  const { default: Rules } = await import("../src/app/standing-law/page.tsx");
 
   const router = Object.fromEntries(["push", "replace", "refresh", "back", "forward", "prefetch"].map((k) => [k, () => {}]));
   const wrap = (path, element) =>
@@ -91,6 +108,7 @@ console.log(JSON.stringify({ generated_at: iso(0) }));
   // Pages never wait for compound: render, let the queued reads land, render again.
   const settled = async (render) => { await render(); await compound.settleProjectionReads(); return render(); };
   const renderMemory = async () => wrap("/memory", await Memory({ searchParams: Promise.resolve({}) }));
+  const renderRules = async () => wrap("/standing-law", await Rules());
   // What the person reads: tags out, the closed "For agents" disclosures out.
   const forAgents = /<details[^>]*>\s*<summary[^>]*>For agents[\s\S]*?<\/details>/g;
   const visible = (html) => html.replace(forAgents, " ").replace(/<[^>]+>/g, " ").replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/\s+/g, " ");
@@ -142,6 +160,60 @@ console.log(JSON.stringify({ generated_at: iso(0) }));
     }
 
     console.log("knowledge-pages cases ok: Memory");
+
+    /* ---------- Rules ---------- */
+    // KNOW-18: the proposed-rule count is unknown while its read loads or fails.
+    compound.invalidateRunJsonCache();
+    process.env.KNOWLEDGE_CASES_FAIL = "memory candidates --json --state parked";
+    const rulesCold = visible(await renderRules());
+    assert.match(rulesCold, /Proposed rules waiting for you .*— waiting/, "a loading count is —, not 0");
+    assert.match(rulesCold, /Reading proposed rules for the first time/);
+    assert.doesNotMatch(rulesCold, /\b0 waiting|No proposed rules wait for you/, "a loading read never says nothing waits");
+    await compound.settleProjectionReads();
+    const rulesFailed = visible(await renderRules());
+    assert.match(rulesFailed, /— waiting/);
+    assert.match(rulesFailed, /Could not read proposed rules/);
+    assert.doesNotMatch(rulesFailed, /\b0 waiting|No proposed rules wait for you/, "a failed read never says nothing waits");
+    delete process.env.KNOWLEDGE_CASES_FAIL;
+    compound.invalidateRunJsonCache();
+
+    const rules = await settled(renderRules);
+    const rulesText = visible(rules);
+    for (const phrase of findBannedPhrases(rulesText)) assert.fail(`Rules shows a banned phrase: ${phrase}`);
+    for (const re of [/standing law/i, /adjudicat/i, /\bcandidate/i, /\bparked\b/i, /falsifier/i, /provenance/i, /corroboration/i]) {
+      assert.doesNotMatch(rulesText, re, `Rules shows system jargon ${re}`);
+    }
+
+    // KNOW-10: each decision once; kind chips add up to the total; no zero restatements.
+    assert.match(rulesText, /6 rules in force/, "the duplicated decision counts once");
+    assert.doesNotMatch(rulesText, /7 (rules )?in force|\d+R · \d+G · \d+F/);
+    assert.match(rulesText, /6 all 3 policies 1 permission 1 operating note 1 your ruling/, "kind chips add up to the total");
+    assert.match(rulesText, /1 decision the source listed twice is shown once/);
+    assert.equal((rulesText.match(/Fixture policy A keeps builds reproducible/g) ?? []).length, 1, "the duplicate row is folded");
+    assert.equal((rulesText.match(/\bPromotion\b/g) ?? []).length, 2, "distinct decisions with one title stay distinct");
+    assert.match(rulesText, /applies to: cross-agent/, "the folded row keeps the other row's scope");
+    assert.match(rulesText, /restated 2 times/);
+    assert.doesNotMatch(rulesText, /0 corroborations|restated 0/);
+
+    // KNOW-11: where a rule came from, how it ends, how to change it; raw paths only for agents.
+    assert.match(rulesText, /This rule ends when A later decision replaces this one\./);
+    assert.match(rulesText, /Your ruling, recorded by you through Claude Code on \d{4}-\d{2}-\d{2}\./);
+    assert.match(rulesText, /Permission, recorded by you on/);
+    assert.match(rules, /href="\/map\/lineage\/claim_fxruling"[^>]*>Read its history/);
+    assert.match(rules, /href="\/map\/lineage\/ev_fxcorr1"/, "a restatement links to its evidence history");
+    assert.match(rulesText, /To change or retire a rule, ask an agent to record a new decision that replaces it/);
+    assert.doesNotMatch(rulesText, /\/home\/example|reviewed by operator|knowledge_page claim_/, "raw paths and ids stay behind For agents");
+    assert.match(rules, /source: \/home\/example\/\.compound\/decisions\/operator\/fx-ruling-01\.md/, "the raw path is still there for agents");
+
+    // KNOW-16 and KNOW-07 words: links land on the item; one name for a proposed rule.
+    assert.match(rules, /href="\/memory#memory-review"[^>]*>2 proposed rules wait for your choice on the Memory page/);
+    assert.match(rules, /href="\/memory#cand_fxrule01"[^>]*>Decide on the Memory page/);
+    assert.match(rulesText, /Proposed rule Fixture App release notes are reviewed before each build\./);
+    assert.match(rulesText, /Waiting for you/);
+    assert.match(rulesText, /2 waiting/);
+    assert.doesNotMatch(rulesText, /Adjudicate on|\/memory/);
+
+    console.log("knowledge-pages cases ok: Rules");
   } finally {
     await compound.settleProjectionReads();
     await rm(scratch, { recursive: true, force: true });

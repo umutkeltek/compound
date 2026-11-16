@@ -12,6 +12,7 @@
  */
 
 import type { Json } from "@/lib/compound";
+import { ruleKindWords } from "@/lib/plain-words";
 
 /* local pure accessors so this module imports NO runtime value (mirrors
  * work-trace.ts) — @/lib/compound's str/arr pull node builtins at import. */
@@ -64,12 +65,17 @@ export type StandingLawConflict = {
 };
 
 export type StandingLawCounts = {
+  /** rules in force, each decision once (after `duplicates` were folded) */
   records: number;
   rulings: number;
   grants: number;
   freezes: number;
   superseded: number;
   conflicts: number;
+  /** rows the projection listed twice for one decision, folded into one */
+  duplicates: number;
+  /** rules in force by kind, largest first; adds up to `records` */
+  byKind: { kind: string; count: number }[];
 };
 
 export type StandingLawModel = {
@@ -97,9 +103,7 @@ function mapRecord(raw: unknown): StandingLawRecord {
   const kind = s(o.kind);
   const title = s(o.title);
   const decisionId = s(o.decision_id);
-  const searchText = [title, scope, kind, decisionId, ...keywords, ...domains]
-    .join(" ")
-    .toLowerCase();
+  const searchText = searchTextOf({ title, scope, kind, decisionId, keywords, domains });
   return {
     claimId: s(o.claim_id),
     decisionId,
@@ -137,33 +141,95 @@ function mapConflict(raw: unknown): StandingLawConflict {
   };
 }
 
+/** One decision's key: its decision id, or (for a row that carries the
+ *  decision id in its claim slot) the claim id. */
+function decisionKey(record: StandingLawRecord): string {
+  return record.decisionId || record.claimId;
+}
+
+/** A real claim id (`claim_…`), not a decision id written in its place. */
+const hasClaim = (record: StandingLawRecord) => record.claimId.startsWith("claim_");
+
+function searchTextOf(r: Pick<StandingLawRecord, "title" | "scope" | "kind" | "decisionId" | "keywords" | "domains">): string {
+  return [r.title, r.scope, r.kind, ruleKindWords(r.kind).many, r.decisionId, ...r.keywords, ...r.domains].join(" ").toLowerCase();
+}
+
+/** Fill the kept row's empty text fields from the row folded into it. */
+function mergeRecord(kept: StandingLawRecord, other: StandingLawRecord): StandingLawRecord {
+  const out = { ...kept };
+  for (const field of ["kind", "title", "scope", "owner", "reviewedBy", "date", "falsifier", "reviewTrigger", "sourcePath", "decisionId"] as const) {
+    if (!out[field] && other[field]) out[field] = other[field];
+  }
+  out.keywords = [...new Set([...out.keywords, ...other.keywords])];
+  out.domains = [...new Set([...out.domains, ...other.domains])];
+  out.corroborationCount = Math.max(out.corroborationCount, other.corroborationCount);
+  out.corroborationEvidence = [...new Set([...out.corroborationEvidence, ...other.corroborationEvidence])];
+  if (!out.supersedes.length) out.supersedes = other.supersedes;
+  out.searchText = searchTextOf(out);
+  return out;
+}
+
+/**
+ * Each decision once. The projection can list one decision twice: once as
+ * the decision record (its id in the claim slot, no claim) and once as the
+ * accepted claim that carries the decision id. Rows with the same key fold
+ * into the one with a real claim id; its empty fields are filled from the
+ * other. Distinct decisions that share a title stay distinct.
+ */
+export function dedupeStandingLaw(records: readonly StandingLawRecord[]): { records: StandingLawRecord[]; duplicates: number } {
+  const byKey = new Map<string, StandingLawRecord>();
+  let duplicates = 0;
+  for (const record of records) {
+    const key = decisionKey(record);
+    const seen = key ? byKey.get(key) : undefined;
+    if (!seen) {
+      byKey.set(key || `row:${byKey.size}`, record);
+      continue;
+    }
+    duplicates += 1;
+    const keep = !hasClaim(seen) && hasClaim(record) ? record : seen;
+    byKey.set(key, mergeRecord(keep, keep === seen ? record : seen));
+  }
+  return { records: [...byKey.values()], duplicates };
+}
+
 /** Build the render model from the standing-law JSON projection. Defensive:
- *  a null/short payload yields an empty (never-crashing) model. */
+ *  a null/short payload yields an empty (never-crashing) model. Counts come
+ *  from the rows after duplicates are folded, never from the projection's own
+ *  total (which counts a duplicated decision twice). */
 export function buildStandingLaw(data: Json | null): StandingLawModel {
-  const records = a(data?.records)
-    .map(mapRecord)
+  const { records: unique, duplicates } = dedupeStandingLaw(a(data?.records).map(mapRecord));
+  const records = unique
     // Newest-first (the CLI already sorts; re-assert so the view never trusts
     // an unsorted upstream). ValidFrom is the record date; ties break on id.
     .sort((x, y) => (x.date !== y.date ? (x.date > y.date ? -1 : 1) : x.claimId > y.claimId ? -1 : 1));
   const conflicts = a(data?.conflicts).map(mapConflict);
   const countsRaw = (data?.counts ?? {}) as Json;
+  const kinds = new Map<string, number>();
+  for (const record of records) kinds.set(record.kind, (kinds.get(record.kind) ?? 0) + 1);
+  const byKind = [...kinds.entries()]
+    .map(([kind, count]) => ({ kind, count }))
+    .sort((x, y) => y.count - x.count || x.kind.localeCompare(y.kind));
   const counts: StandingLawCounts = {
-    records: n(countsRaw.records) || records.length,
-    rulings: n(countsRaw.rulings),
-    grants: n(countsRaw.grants),
-    freezes: n(countsRaw.freezes),
+    records: records.length,
+    rulings: kinds.get("ruling") ?? 0,
+    grants: kinds.get("grant") ?? 0,
+    freezes: kinds.get("freeze") ?? 0,
     superseded: n(countsRaw.superseded),
     conflicts: n(countsRaw.conflicts) || conflicts.length,
+    duplicates,
+    byKind,
   };
   return { records, conflicts, counts };
 }
 
 /** Client-side filter over title+scope+keywords (the <4-interaction journey:
  *  land → type → see the ruling). Empty query returns all records unchanged. */
-export function filterStandingLaw(records: StandingLawRecord[], query: string): StandingLawRecord[] {
+export function filterStandingLaw(records: StandingLawRecord[], query: string, kind = ""): StandingLawRecord[] {
+  const byKind = kind ? records.filter((r) => r.kind === kind) : records;
   const needle = query.trim().toLowerCase();
-  if (!needle) return records;
+  if (!needle) return byKind;
   // Every whitespace-separated term must match (AND) so "opus execution" narrows.
   const terms = needle.split(/\s+/).filter(Boolean);
-  return records.filter((r) => terms.every((t) => r.searchText.includes(t)));
+  return byKind.filter((r) => terms.every((t) => r.searchText.includes(t)));
 }

@@ -452,6 +452,38 @@ export const KNOWLEDGE_TERMS = {
   },
 } as const;
 
+/** Kinds of rule in force (`decisions standing-law` record kinds), in everyday words. */
+const RULE_KIND: Record<string, { one: string; many: string }> = {
+  ruling: { one: "your ruling", many: "your rulings" },
+  grant: { one: "permission", many: "permissions" },
+  freeze: { one: "freeze", many: "freezes" },
+  policy: { one: "policy", many: "policies" },
+  operational: { one: "operating note", many: "operating notes" },
+  doctrine: { one: "principle", many: "principles" },
+};
+
+export function ruleKindWords(kind: string): { one: string; many: string } {
+  const known = RULE_KIND[kind];
+  if (known) return known;
+  const word = (kind || "other").replace(/[_-]+/g, " ");
+  return { one: word, many: word.endsWith("s") ? word : `${word}s` };
+}
+
+/**
+ * Who recorded a rule (`reviewed_by`), in words: "operator" or
+ * "operator:<name>" is "you"; "operator:<name>-via-<agent>" is "you through
+ * <agent>"; anything else is shown as recorded. `agentName` turns an agent
+ * key into its name. Empty when nothing is on file.
+ */
+export function ruleRecordedBy(reviewedBy: string, agentName: (raw: string) => string): string {
+  const raw = (reviewedBy || "").trim();
+  if (!raw) return "";
+  const via = /^operator(?::[^\s]*?)?-via-(.+)$/.exec(raw);
+  if (via) return `you through ${agentName(via[1])}`;
+  if (raw === "operator" || raw.startsWith("operator:")) return "you";
+  return raw;
+}
+
 /** Kinds of accepted memory (the `memory canon` classes), plural, in everyday words. */
 const MEMORY_KIND: Record<string, string> = {
   decision: "decisions",
