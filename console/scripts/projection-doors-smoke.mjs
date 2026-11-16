@@ -20,9 +20,9 @@ const REQUIRE_CLI = process.env.CONSOLE_SMOKE_REQUIRE_CLI === "1";
 const MAX_BUFFER = 64 * 1024 * 1024;
 
 // The manifest is deliberately scoped to the six briefing doors. These other
-// literal read calls predate that contract and remain visible here so any new
-// literal runJson/runProjection/readProjection argv still fails the drift guard.
-const PREEXISTING_NON_BRIEFING_ARGV = new Set(
+// non-briefing reads are explicitly inventoried below. Projects adds the two
+// existing inventory readers; any unlisted literal read still fails the drift guard.
+const KNOWN_NON_BRIEFING_ARGV = new Set(
   [
     ["contract", "hooks-authority"],
     ["decisions", "authority", "--json"],
@@ -46,6 +46,9 @@ const PREEXISTING_NON_BRIEFING_ARGV = new Set(
     ["route", "evidence-authority", "--json"],
     ["route", "model-capabilities", "--json"],
     ["source", "connections", "--json"],
+    // Projects: observed product identities and their direct typed relationships.
+    ["system", "inventory", "--kind", "product", "--json"],
+    ["system", "graph", "--kind", "product", "--json"],
     ["work", "leases", "--json"],
     ["work", "list", "--json"],
     ["workbench", "--json"],
@@ -157,7 +160,7 @@ function assertDoorManifestCoversLiteralCalls() {
   }
 
   const missing = [...found.entries()]
-    .filter(([key]) => !declared.has(key) && !PREEXISTING_NON_BRIEFING_ARGV.has(key))
+    .filter(([key]) => !declared.has(key) && !KNOWN_NON_BRIEFING_ARGV.has(key))
     .map(([key, files]) => `${key} at ${files.join(", ")}`)
     .sort();
   assert.deepEqual(

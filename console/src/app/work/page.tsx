@@ -128,6 +128,7 @@ export default async function WorkPage({
         right={
           <>
             <ReadChip read={workbenchRead} />
+            <Link href="/projects" className="text-sm font-medium text-work hover:underline">Browse by project →</Link>
 
           </>
         }

@@ -652,3 +652,24 @@ exercise these seams, including cold page reads and stale or partial authority.
 
 Coordination also uses the existing background reader and refreshes while waiting;
 a cold read must not delay rendering or appear as an empty list of agents.
+
+
+## Connected project view
+
+Projects is a scope browser over the existing Work and System owners. It answers
+which recorded outcomes, work and evidence belong together; it creates no project registry.
+The Essentials entry opens a project/area selector with exact identity in the URL.
+Explicit project/product scope and declared canonical surfaces group work. Task prose,
+actor names and timing never create membership. Unlinked work remains visible.
+
+The selected work inspector and focused map share one work identity. The map draws at
+most twelve reference nodes; its table provides the same relationships without pan/zoom.
+An attached attempt or check is a reference, not activity or successful proof.
+Separate project goals and task prerequisites remain explicitly unprojected until an
+owned source supplies them. Inventory dependencies retain observed/declared/inferred
+confidence, carried evidence and observation age separately from read freshness.
+
+Projects reads only existing CLI projections: work list, workbench, product inventory
+and the product-filtered system graph. Each read preserves loading, stale and unavailable
+states. Registered product inventory can appear before work exists, without growth data.
+The current browser action boundary is unchanged; the inspector opens the owning Work page.

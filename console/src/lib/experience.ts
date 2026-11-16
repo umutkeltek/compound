@@ -42,6 +42,7 @@ export const NAV_GROUPS: NavGroup[] = [
       // the badges count with lib/counts.ts: Work = work items waiting for
       // your decision, Decide = decisions waiting for you.
       { label: "Today", href: "/", nextAction: { label: "Review decisions", href: "/reviews" }, icon: "home", description: "Start with what needs attention, then see what is moving." },
+      { label: "Projects", href: "/projects", nextAction: { label: "Choose a project", href: "#project-scope" }, icon: "grid", description: "Follow a project from its recorded goals to work, dependencies and evidence." },
       { label: "Work", href: "/work", nextAction: { label: "Review blocked work", href: "/work?lens=table&filter=blocked" }, icon: "board", match: ["/work/", "/flow"], badge: "work", description: "Follow progress and resolve what is holding work up." },
       { label: "Decide", href: "/reviews", nextAction: { label: "Review next decision", href: "#decision-queue" }, icon: "gavel", badge: "decide", description: "Review the recommendation, understand the tradeoff and choose the next step." },
       { label: "Live", href: "/live", nextAction: { label: "Review active work", href: "/work?lens=table&filter=running" }, icon: "pulse", description: "Follow the latest recorded activity from your agents." },

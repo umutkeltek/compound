@@ -1,4 +1,5 @@
-// Plain-pages cases: render the real Today, Work, Decide and Live pages
+import "./project-workspace-cases.mjs";
+// Plain-pages cases: render the real Today, Work, Decide, Live and Projects pages
 // against a synthetic compound binary and check what a person reads.
 //
 //  1. No banned system phrase (lib/plain-words.ts BANNED_PHRASES) and no raw
@@ -74,6 +75,9 @@ const groups = [
 ];
 const watching = { ...group("route-promotions|watch", "route-promotions", 2), band: "watching", operator_summary: "Not enough evidence yet. Still watching." };
 const reply = {
+  "work list --json": { schema_version: "compound.work_list_projection.v0.1", work: work.map((w, i) => ({ ...w, id: w.work_id, scope: { project_id: i < 3 ? "fixture-research" : "fixture-operations" }, ids: { context_pack_id: "ctx_fixture_exact" } })) },
+  "system inventory --kind product --json": { snapshot: { state: "fresh", observed_at: iso(0) }, resources: [{ id: "product:fixture-service", kind: "product", label: "Fixture service" }] },
+  "system graph --kind product --json": { snapshot: { state: "fresh", observed_at: iso(0) }, edge_list: [] },
   "attention --json": {
     schema_version: "compound.attention.v0.1", generated_at: iso(0),
     counts: { needs_you: 13, needs_you_groups: 7, actionable_now: 0, watching: 2, blocked_on_you: 1, fallback_groups: 0 },
@@ -137,6 +141,7 @@ const { default: Today } = await import("../src/app/page.tsx");
 const { default: Work } = await import("../src/app/work/page.tsx");
 const { default: Decide } = await import("../src/app/reviews/page.tsx");
 const { default: Live } = await import("../src/app/live/page.tsx");
+const { default: Projects } = await import("../src/app/projects/page.tsx");
 const { buildDecideGroups } = await import("../src/lib/decide-model.ts");
 const { agentNameFor, plainWhy, plainWorkStep, productTitle, standingLine } = await import("../src/lib/plain-words.ts");
 const { humanizeProductId } = await import("../src/lib/app-identity.ts");
@@ -239,6 +244,7 @@ const pages = {
   Work: { path: "/work", render: () => Work({ searchParams: Promise.resolve({}) }), question: "Work" },
   Decide: { path: "/reviews", render: () => Decide({ searchParams: Promise.resolve({}) }), question: "Decide" },
   Live: { path: "/live", render: () => Live(), question: "Live" },
+  Projects: { path: "/projects", render: () => Projects({ searchParams: Promise.resolve({}) }), question: "Projects" },
 };
 
 /** What a person reads: text content only (no scripts, styles or attributes). */
@@ -297,6 +303,15 @@ try {
   const warm = await renderAll();
   checkPlain(warm, "loaded");
 
+  assert.match(warm.Projects, /fixture research/);
+  assert.match(warm.Projects, /Fixture service/, "a registered project appears without growth measurements");
+  const projectHTML = wrap("/projects", await Projects({ searchParams: Promise.resolve({ scope: "project:fixture-research", work: "work_fx_check_old" }) }));
+  const projectText = visibleText(projectHTML);
+  assert.match(projectText, /Fixture check waits for its proof/);
+  assert.match(projectText, /ctx_fixture_exact/, "the inspector shows the actual context identity");
+  assert.doesNotMatch(projectText, /Fixture item on hold/, "another project's work is not pulled into this scope");
+  assert.match(projectHTML, /scope=project%3Afixture-research/, "scope survives work and view navigation");
+  assert.match(projectText, /Live process activity has not been checked/, "attempt references cannot become live activity");
   // One definition per number: the same fixture, the same numbers everywhere.
   for (const name of ["Today", "Work", "Live"]) {
     assert.match(warm[name], /4 work items are marked in progress/, `${name}: in progress uses the shared definition`);
@@ -400,7 +415,7 @@ try {
     assert.equal(group.evidence.length, 0, `${group.key}: list-only rows carry no evidence`);
   }
 
-  console.log(`plain-pages cases ok: 4 pages × 2 read states free of ${BANNED_PHRASES.length} banned phrases; shared counts agree; Decide sends one decision's detail; opened decision checks its own read (stale refused, A's read never enables B)`);
+  console.log(`plain-pages cases ok: 5 pages × 2 read states free of ${BANNED_PHRASES.length} banned phrases; shared counts agree; Decide sends one decision's detail; opened decision checks its own read (stale refused, A's read never enables B)`);
 } finally {
   await writeFile(releaseReads, "");
   await compound.settleProjectionReads();

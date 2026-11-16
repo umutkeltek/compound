@@ -75,7 +75,7 @@ export default async function CapabilitiesPage({
     <div className="flex flex-col gap-6">
       <PageHeader
         name="Map"
-        right={<FreshnessChip generatedAt={initial.generatedAt} source="compound capability graph --json" />}
+        right={<><FreshnessChip generatedAt={initial.generatedAt} source="compound capability graph --json" /><Link href="/projects?view=map" className="text-sm font-medium text-work hover:underline">Open a focused project map →</Link></>}
       />
 
       <CapabilityAttentionStrip items={capItems} />
