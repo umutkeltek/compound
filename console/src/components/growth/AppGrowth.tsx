@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { CopyButton } from "@/components/growth/CopyButton";
+import { hasPlaceholder } from "@/lib/ads";
 import { GrowthStatusChip, StatusMixBar } from "@/components/growth/GrowthKit";
 import {
   DIMENSION_META,
@@ -11,6 +12,7 @@ import {
   hasEvidence,
   isJudged,
   joinWords,
+  sharedMoves,
   unknownGates,
   valueLabel,
   type AuditRow,
@@ -66,14 +68,12 @@ function Dot() {
 function MoveMeta({ move }: { move: NextMove }) {
   // The kind is not repeated here: the CLI's titles already lead with it
   // ("Connect data: …", "Record the answer: …"). It stays on the number badge's tooltip.
+  // Workflow and skill names are for agents: they sit in the move's "For agents" disclosure.
   const parts: ReactNode[] = [];
   if (move.areaIds.length > 1) {
-    // A folded refresh covers several areas: its first area's pipeline and id would speak for all of them.
-    parts.push(<span key="areas">{move.areaIds.length} areas</span>);
-  } else {
-    if (move.branch) parts.push(<span key="branch">Pipeline: {branchLabel(move.branch)}</span>);
-    if (move.skills.length) parts.push(<span key="skills">Skills that can help: {move.skills.join(", ")}</span>);
-    if (move.areaId) parts.push(<a key="area" href={`#area-${move.areaId}`} className="mono hover:text-ink hover:underline">{move.areaId}</a>);
+    parts.push(<span key="areas">Covers {move.areaIds.length} areas</span>);
+  } else if (move.areaId) {
+    parts.push(<a key="area" href={`#area-${move.areaId}`} className="hover:text-ink hover:underline">See this area</a>);
   }
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-2xs text-faint">
@@ -107,6 +107,25 @@ function UnblockLine({ move, look }: { move: NextMove; look: Lookup }) {
   );
 }
 
+/** What an agent needs to start a move: its workflow, skills and read command. Never a command with a placeholder. */
+function ForAgents({ move }: { move: NextMove }) {
+  const lines = [
+    move.branch ? `Workflow: ${branchLabel(move.branch)}` : "",
+    move.skills.length ? `Skills: ${move.skills.join(", ")}` : "",
+  ].filter(Boolean);
+  const command = move.brief && !hasPlaceholder(move.brief) ? move.brief : "";
+  if (!lines.length && !command) return null;
+  return (
+    <details className="text-2xs text-faint">
+      <summary className="cursor-pointer">For agents</summary>
+      <div className="mt-1 flex flex-col gap-1">
+        {lines.map((line) => <span key={line}>{line}</span>)}
+        {command ? <CopyButton text={command} label="Copy the read command" /> : null}
+      </div>
+    </details>
+  );
+}
+
 /** The hero list: at most five moves, in the CLI's order. */
 export function NextMoves({ app, look }: { app: GrowthApp; look: Lookup }) {
   const moves = app.nextMoves.slice(0, 5);
@@ -124,13 +143,11 @@ export function NextMoves({ app, look }: { app: GrowthApp; look: Lookup }) {
             {i + 1}
           </span>
           <div className="flex min-w-0 flex-1 flex-col gap-1">
-            <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
-              <h3 className="min-w-0 text-md font-semibold text-ink">{move.title}</h3>
-              {move.brief ? <CopyButton text={move.brief} label={move.kind === "set_profile" ? "Copy import command" : "Copy brief command"} /> : null}
-            </div>
+            <h3 className="min-w-0 text-md font-semibold text-ink">{move.title}</h3>
             <p className="line-clamp-2 max-w-3xl text-sm text-muted" title={move.why}>{move.why}</p>
             <UnblockLine move={move} look={look} />
             <MoveMeta move={move} />
+            <ForAgents move={move} />
           </div>
         </li>
       ))}
@@ -200,7 +217,7 @@ export function ProfileRow({ app, areas, groups }: { app: GrowthApp; areas: Grow
           {sentence}{" "}
           {app.profile.unknown.length ? (
             <span className="text-muted">
-              To fill it in, add a <code className="mono text-xs">profile</code> block to the product contract and import it.
+              Nothing fills it in on its own yet: it is written in the app&apos;s product description file, which an agent can update when it works on this app.
             </span>
           ) : null}
         </p>
@@ -285,9 +302,7 @@ function AreaRow({ row, area, look, moveRank }: { row: AuditRow | undefined; are
           <p className="mt-0.5 font-medium text-ink">Needs {joinWords(row.blockedBy.map((id) => areaTitle(id, look)))} first.</p>
         ) : null}
         {row?.nextMove && judged && row.nextMove !== text ? <p className="mt-0.5 text-muted">Next: {row.nextMove}</p> : null}
-        {row?.skills.length && judged && status !== "measured" ? (
-          <p className="mt-0.5 text-2xs text-faint">Skills that can help: {row.skills.join(", ")}</p>
-        ) : null}
+
       </div>
     </li>
   );
@@ -371,4 +386,15 @@ export function GroupAudit({ app, groups, areas, look }: { app: GrowthApp; group
       })}
     </div>
   );
+}
+
+/** What the next steps are, said plainly: mostly shared data chores today, and nothing starts them on its own. */
+export function nextStepsSentence(app: GrowthApp, apps: readonly GrowthApp[]): string {
+  if (!app.nextMoves.length) return "No step is open: every area that applies is measured.";
+  const { shared, shown, appCount } = sharedMoves(app, apps);
+  const lead =
+    shared * 2 >= shown
+      ? `These are mostly data chores: ${shared} of these ${shown} steps also come up for most of your ${appCount} apps. They close gaps in what is measured; they do not yet say what to do about price, the store listing or ads.`
+      : "In this order: out-of-date data first, then the gaps that unblock the most other areas.";
+  return `${lead} Nothing starts them on its own: a step becomes work only when work is opened for it.`;
 }

@@ -538,9 +538,16 @@ The growth read moved to `compound.product_growth.v0.2`: a catalog of areas in 1
 profile that decides which areas apply, and ranked next moves. These rules replace the 25-area
 matrix and the pale red fill above.
 
-- **One question first.** `/apps/[slug]` opens with "What should I do next for <app>, and why?" and
-  the next moves (at most five, in the CLI's order). Each move says what to do, why in one line,
-  what it unblocks by name, and has a copy button for its brief command. `/growth` opens with "Where
+- **One question first.** `/apps/[slug]` is a short briefing about one app, with its own purpose
+  line and no header button: what needs you (its work on hold, a real verdict due), how it is
+  doing (dated numbers), all of its open work (the shared work-to-app index, on hold and not moved
+  first, "See all N in Work"), the next moves (at most five, in the CLI's order), whether the
+  changes helped, its ads, where it lives and runs (code, hosts and calls from the product graph,
+  matched by every id spelling, observed or declared, with the observation's age), then what
+  the product is and the 12 groups. Each move says what to do, why in one line and
+  what it unblocks by name. The section says when its steps are chores most apps share
+  (`sharedMoves`) and that nothing starts them on its own; there is no copy button, and workflow
+  and skill names sit in a closed "For agents" disclosure. `/growth` opens with "Where
   are we blind across the apps, group by group?" and a two- or three-sentence answer computed from
   the projection. Everything else sits below and is quieter.
 - **Never the full grid.** `/growth` draws 12 group rows × apps. One group opens at a time
@@ -551,6 +558,26 @@ matrix and the pale red fill above.
   carries all of them in `area_ids`: each covered area gets the "Next move N" badge and the grid
   dot, and each group holding one starts open. Its meta line says "3 areas" instead of the first
   area's pipeline and id, which would speak for all of them.
+- **Numbers carry their days.** Every tile, chart and funnel step names the days it covers
+  (`kpiPeriod`, `seriesPeriod`, `funnelPeriods` in `lib/growth.ts`): the exact range when the
+  CLI reports `window_start`/`window_end`, otherwise "last 30 days · newest data <day>", never a
+  guessed range. A page shows one 30-day proceeds figure: the ranking's sentence is shown only
+  when it carries its window, else it is rebuilt from the tile. Funnel steps that do not say their
+  days are not drawn as one funnel (no arrows, a plain sentence why); a `partial` step reads "at
+  least". One name per number on every page: "New downloads", "Ad installs" (Apple counts
+  re-downloads), "Cost per install" (never "CPA"). Ad tiles on an app page open its Ads view.
+  On Ads a change's colour follows what the number means (`ADS_GOOD_DIRECTION`: fewer installs is
+  red, less spend is green); a campaign is active only with spend or impressions in the last 3
+  days, else "quiet since <day>"; the campaign table comes first, apps link to their page, and
+  platforms with no report fold into one closed line. A command with a `<placeholder>` is never
+  shown; a runnable one sits in a closed "For agents" disclosure.
+- **One results card per app.** Results rows fold into the catalog's app by every id spelling
+  (`foldLoopsByApp`, `lib/products.ts`), named by the catalog; apps with no record are named in
+  one line. A card names the change, what it should do and the days it is watched, and each
+  reading carries its date. "Verdict due" means a real expected effect was written
+  (`verdictDue`): a machine draft with a placeholder effect never waits on the owner. A due
+  verdict links its exact decision (`decideHref`), never the general Decide list. The app page
+  shows its own card under "Did the changes help?" and puts a due verdict under "Needs you".
 - **Gaps are background.** "No data yet" is a pale neutral fill, the calmest filled state. "Not on
   file" is a dashed outline or hatch, "Set aside" a hatch on soft, "Does not apply" is left empty.
   Measured (green), out of date (amber) and the next-move mark (an ink dot or ring) are the only

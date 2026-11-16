@@ -1,5 +1,6 @@
 import { arr, num, runProjection, str, type Json, type ProjectionStatus } from "@/lib/compound";
 import type { Tone } from "@/components/kit/tone";
+import { humanizeProductId } from "@/lib/app-identity";
 
 /** Strict boolean read: only a JSON `true` is true (never "true", 1, or a truthy object). */
 const bool = (value: unknown): boolean => value === true;
@@ -89,6 +90,8 @@ export type AdsCampaignView = {
   status: "active" | "quiet";
   firstDate: string;
   lastDate: string;
+  /** The newest day with spend or impressions ("" when none in the window). From the CLI, or worked out from `daily` when an older CLI does not send it. */
+  lastActiveDate: string;
   totals: AdsTotals;
   previous: AdsTotals;
   daily: AdsDailyPoint[];
@@ -206,6 +209,79 @@ function mapPlatformStatus(v: unknown): AdsPlatformStatus {
 }
 
 export function mapAdsProjection(j: Json | null): AdsProjection | null {
+  const projection = mapAdsProjectionRaw(j);
+  return projection ? withCampaignActivity(projection, arr(rec(j).campaigns).map((c) => "last_active_date" in rec(c))) : null;
+}
+
+/** A campaign counts as active only with spend or impressions on a day this recent (the CLI's cutoff). */
+export const ADS_ACTIVE_WITHIN_DAYS = 3;
+
+/** The newest day in `daily` with spend or impressions above zero, or "". */
+export function lastActiveDay(daily: readonly AdsDailyPoint[]): string {
+  let best = "";
+  for (const d of daily) if (((d.spend ?? 0) > 0 || d.impressions > 0) && d.date > best) best = d.date;
+  return best;
+}
+
+function daysBetween(from: string, to: string): number {
+  const a = Date.parse(`${from.slice(0, 10)}T00:00:00Z`);
+  const b = Date.parse(`${to.slice(0, 10)}T00:00:00Z`);
+  return Number.isFinite(a) && Number.isFinite(b) ? Math.round((b - a) / 86_400_000) : Infinity;
+}
+
+/**
+ * An older CLI calls a campaign active when it has any row in the last days,
+ * even rows with no spend and no impressions, and sends no
+ * `last_active_date`. For those campaigns the day is worked out from the
+ * daily rows and the status follows the newer rule (spend or impressions in
+ * the last ADS_ACTIVE_WITHIN_DAYS days); the active counts are recounted
+ * when the campaign list is complete. A CLI that sends the field is trusted
+ * as is.
+ */
+function withCampaignActivity(p: AdsProjection, sent: boolean[]): AdsProjection {
+  if (p.campaigns.every((_, i) => sent[i])) return p;
+  const asOf = p.window.end || p.asOf;
+  const campaigns = p.campaigns.map((c, i): AdsCampaignView => {
+    if (sent[i]) return c;
+    const lastActiveDate = lastActiveDay(c.daily);
+    const active = c.status === "active" && !!lastActiveDate && daysBetween(lastActiveDate, asOf) <= ADS_ACTIVE_WITHIN_DAYS;
+    return { ...c, lastActiveDate, status: active ? "active" : "quiet" };
+  });
+  if (campaigns.length !== p.counts.campaigns) return { ...p, campaigns };
+  const activeOn = (platform: string) => campaigns.filter((c) => c.platform === platform && c.status === "active").length;
+  return {
+    ...p,
+    campaigns,
+    counts: { ...p.counts, campaignsActive: campaigns.filter((c) => c.status === "active").length },
+    platforms: p.platforms.map((x) => (campaigns.some((c) => c.platform === x.platform) ? { ...x, campaignsActive: activeOn(x.platform) } : x)),
+  };
+}
+
+/** Whether a rise in this number is good news: more people reached is good, more money spent per result is not. */
+export const ADS_GOOD_DIRECTION: Record<"spend" | "impressions" | "clicks" | "conversions" | "cpa" | "cpc", "up" | "down"> = {
+  spend: "down",
+  cpa: "down",
+  cpc: "down",
+  impressions: "up",
+  clicks: "up",
+  conversions: "up",
+};
+
+/** A command with a placeholder such as `<product:id>` cannot run as written: never shown to the owner. */
+export function hasPlaceholder(command: string): boolean {
+  return /<[^<>\s][^<>]*>/.test(command);
+}
+
+/** "active", or "quiet since Nov 6" / "quiet, no spend in this window". */
+export function campaignStateLabel(c: Pick<AdsCampaignView, "status" | "lastActiveDate">): string {
+  if (c.status === "active") return "active";
+  if (!c.lastActiveDate) return "quiet, no spend in this window";
+  const d = new Date(`${c.lastActiveDate.slice(0, 10)}T00:00:00Z`);
+  const day = Number.isNaN(d.getTime()) ? c.lastActiveDate : d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+  return `quiet since ${day}`;
+}
+
+function mapAdsProjectionRaw(j: Json | null): AdsProjection | null {
   if (!j) return null;
   const o = rec(j);
   const window = rec(o.window);
@@ -284,6 +360,7 @@ export function mapAdsProjection(j: Json | null): AdsProjection | null {
         status: str(x.status) === "active" ? "active" : "quiet",
         firstDate: str(x.first_date),
         lastDate: str(x.last_date),
+        lastActiveDate: str(x.last_active_date),
         totals: mapTotals(x.totals),
         previous: mapTotals(x.previous),
         daily: mapDaily(x.daily),
@@ -492,8 +569,9 @@ export function adsHeadline(p: AdsProjection): AdsHeadline {
   return { state: "live", text: parts.join(" · ") };
 }
 
+/** An app's name from its `product:` id ("product:pocket-log" → "Pocket Log"). */
 export function productDisplay(productId: string): string {
-  return productId.replace(/^product:/, "");
+  return humanizeProductId(productId);
 }
 
 export function sparkValues(daily: AdsDailyPoint[], key: "spend" | "conversions" | "clicks"): number[] {
