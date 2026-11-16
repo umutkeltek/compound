@@ -125,6 +125,9 @@ func CaptureApprovedDirectoryBatchWithOptions(ctx context.Context, homePath, fam
 		fragment := existing
 		fragment.Items = metadataOnly
 		err := withSourceManifestAuthorityLock(homePath, func() error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			var err error
 			result.SourceManifestReport, err = recordSourceManifestUnlocked(homePath, fragment)
 			return err
