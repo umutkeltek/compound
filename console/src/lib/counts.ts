@@ -12,12 +12,16 @@
  * this file. A count whose source has not been read is `null` at the call
  * site, never 0.
  *
- * Waiting for you (`waitingOnYou`): decisions (`groups`, one card each on
- * Decide), the items inside them (`items`), and the work items among them
- * (`workItems`, the sidebar Work badge). Units: decisions, items, work items.
+ * Waiting for you (`waitingOnYou`): only what is his. Decisions he can answer
+ * (`groups`, one card each on Decide), the items inside them (`items`), and
+ * the work items among them (`workItems`). Decisions an agent must word first,
+ * agent housekeeping (skill proposals), what closed without him and what waits
+ * on others are named apart and never added in. Units: decisions, items, work
+ * items. Today, Decide and the sidebar read `groups` under one name.
  */
 
-export { waitingOnYou, type WaitingOnYou } from "@/lib/attention";
+export { attentionShare, housekeepingGroups, waitingOnYou, yourDecisionGroups, type AttentionShare, type WaitingOnYou } from "@/lib/attention";
+import type { WaitingOnYou } from "@/lib/attention";
 
 import { isInProgress, isOnHold, isStale, isWaitingForCheck, STALE_AFTER_DAYS, timestampMs } from "@/lib/work-state";
 import { NO_AGENT_KEY, OPERATOR_AGENT_KEY } from "@/lib/harness-label";
@@ -275,4 +279,42 @@ export function countDecisions(
     if (group.standing && !group.standing.live) checkedEarlier += 1;
   }
   return { decisions: groups.length, items, readyNow, notYet: groups.length - readyNow, found, checkedEarlier };
+}
+
+/* ---------- waiting for you, in words ---------- */
+
+export type WaitingWords = {
+  /** "3 decisions wait for you" / "Nothing waits for your answer" */
+  headline: string;
+  /** quiet lines, each one plain sentence; "" when there is nothing to say */
+  wording: string;
+  housekeeping: string;
+  closedWithoutYou: string;
+  waitingOnOthers: string;
+};
+
+/**
+ * The waiting count in plain sentences, the same on Today, Decide and the
+ * sidebar's tooltip. Only `groups` is the number; every other line names what
+ * it counts and says why it is not his. A line whose number the projection
+ * did not give is "" (never "0 closed").
+ */
+export function describeWaiting(w: WaitingOnYou): WaitingWords {
+  const be = (n: number) => (n === 1 ? "is" : "are");
+  const headline = w.groups > 0
+    ? `${unit(w.groups, "decision")} ${w.groups === 1 ? "waits" : "wait"} for you`
+    : "Nothing waits for your answer";
+  const wording = w.wording > 0
+    ? `${unit(w.wording, "more decision")} ${be(w.wording)} yours once an agent words ${w.wording === 1 ? "it" : "them"} as a clear question.`
+    : "";
+  const housekeeping = w.housekeeping.groups > 0
+    ? `${unit(w.housekeeping.groups, "proposal")} to update agent skills ${be(w.housekeeping.groups)} agent housekeeping, not decisions for you, so ${w.housekeeping.groups === 1 ? "it is" : "they are"} not counted.`
+    : "";
+  const closedWithoutYou = w.closedWithoutYou && w.closedWithoutYou > 0
+    ? `${unit(w.closedWithoutYou, "record")} closed without you: nothing is left to decide.`
+    : "";
+  const waitingOnOthers = w.waitingOnOthers && w.waitingOnOthers.items > 0
+    ? `${unit(w.waitingOnOthers.items, "work item")} ${w.waitingOnOthers.items === 1 ? "waits" : "wait"} on something outside you, not on you.`
+    : "";
+  return { headline, wording, housekeeping, closedWithoutYou, waitingOnOthers };
 }

@@ -30,7 +30,7 @@ const releaseReads = join(scratch, "release-reads");
 
 // Synthetic home: 6 open work items. In progress = 4 (1 running, 1 picked up,
 // 2 waiting for a proof check); 2 of them picked up more than 7 days ago;
-// 1 on hold; 7 decisions wait, 13 items in all.
+// 1 on hold; 6 decisions are his (12 items), 1 more waits for wording, 2 skill proposals are housekeeping.
 await writeFile(bin, `#!/usr/bin/env bun
 import { existsSync } from "node:fs";
 const args = process.argv.slice(2).join(" ");
@@ -70,9 +70,13 @@ const groups = [
   group("git-index-lock|review", "git-index-lock", 2),
   group("bench|review", "bench", 1, { operator_summary: "product:fixture-app has a product hypothesis. Review it?", operator_unlock: "the product loop gets an evidence-shaped hypothesis" }),
   group("route-promotions|x", "route-promotions", 1, { terminal_reason: "actions are item-specific; no safe batch action exposed" }),
-  group("worktree-retirement|review", "worktree-retirement", 1),
+  group("worktree-retirement|review", "worktree-retirement", 1, { needs_wording: true }),
+  // Proposals to update agent skills: agent housekeeping, never counted as his.
+  group("capability-lifecycle-proposals|clp_a", "capability-lifecycle-proposals", 1, { operator_summary: "Review 12 recent fixture hook events." }),
+  group("capability-lifecycle-proposals|clp_b", "capability-lifecycle-proposals", 1, { operator_summary: "Review 30 recent fixture hook events." }),
 ];
 const watching = { ...group("route-promotions|watch", "route-promotions", 2), band: "watching", operator_summary: "Not enough evidence yet. Still watching." };
+const othersWait = { ...group("workbench:waiting-on-others", "workbench-waiting-on-others", 1), band: "watching", source: "workbench", kind: "waiting_on_others", item_ids: ["work_fx_ready"] };
 const reply = {
   "work list --json": { schema_version: "compound.work_list_projection.v0.1", work: work.map((w, i) => ({ ...w, id: w.work_id, scope: { project_id: i < 3 ? "fixture-research" : "fixture-operations" }, ids: { context_pack_id: "ctx_fixture_exact" } })) },
   "system inventory --kind product --json": { snapshot: { state: "fresh", observed_at: iso(0) }, resources: [{ id: "product:fixture-service", kind: "product", label: "Fixture service" }] },
@@ -80,8 +84,12 @@ const reply = {
   "product growth --json": { generated_at: iso(0), apps: [{ product_id: "product:fixture-app", name: "Fixture App", aliases: [] }] },
   "attention --json": {
     schema_version: "compound.attention.v0.1", generated_at: iso(0),
-    counts: { needs_you: 13, needs_you_groups: 7, actionable_now: 0, watching: 2, blocked_on_you: 1, fallback_groups: 0 },
-    top: groups[0], groups: [...groups, watching],
+    counts: { needs_you: 15, needs_you_groups: 9, actionable_now: 0, watching: 3, blocked_on_you: 1, fallback_groups: 0 },
+    top: groups[0], groups: [...groups, watching, othersWait],
+    totals: {
+      total_read: 25, live_decisions: 15, set_aside: 9, closed_without_you: 9, waiting_on_others: 1,
+      set_aside_reasons: [{ reason: "subject_gone", reason_text: "What it is about no longer exists.", count: 9, closed: true, next_step: "Nothing is left for you." }],
+    },
     operator_attention: { schema_version: "compound.operator_attention.v0.1", revision: "r1", total: 0, items: [] },
   },
   "executors --json": {
@@ -457,8 +465,29 @@ try {
   assert.match(header.text, /F Fixture App · Claude Code Fixture item on hold/);
   const css = (await import("node:fs")).readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
   assert.doesNotMatch(css, /\.work-focus-row::(before|after)/, "a generated box on a table row becomes an extra cell and shifts the columns");
-  assert.match(warm.Today, /7 decisions wait for you, with 13 items in all/);
-  assert.match(warm.Decide, /7 decisions waiting · 13 items to review/);
+  // One count, only what is his: Today's sentence, Decide's header and the
+  // sidebar badge say the same number under the same name. Skill proposals,
+  // an unworded record, what closed without him and what waits on others are
+  // named apart and never added in.
+  {
+    // The sidebar badge is NavContainer's `waitingOnYou(readAttention().report).groups`.
+    const { readAttention, waitingOnYou } = await import("../src/lib/attention.ts");
+    const sidebar = waitingOnYou((await readAttention()).report);
+    assert.equal(sidebar.groups, 6, "the sidebar badge counts only his six decisions");
+    for (const name of ["Today", "Decide"]) {
+      assert.match(warm[name], /6 decisions wait for you ?\./, `${name}: the one waiting count`);
+      assert.doesNotMatch(warm[name], /\b(9|15) decisions\b|13 items|15 items/, `${name}: no second count`);
+      assert.match(warm[name], /1 more decision is yours once an agent words it as a clear question\./, `${name}: the unworded record is named apart`);
+      assert.match(warm[name], /9 records closed without you: nothing is left to decide\./, `${name}: closed without you`);
+      assert.match(warm[name], /1 work item waits on something outside you, not on you\./, `${name}: waiting on others`);
+      assert.match(warm[name], /2 proposals to update agent skills are agent housekeeping, not decisions for you, so they are not counted\./, `${name}: skill proposals folded out`);
+      assert.equal(warm[name].split("To decide, tell an agent in chat.").length - 1, 1, `${name}: how a decision moves is said once`);
+      assert.doesNotMatch(warm[name], /Connect operator|Check console access/, `${name}: no way to decide that does not exist`);
+    }
+    assert.match(warm.Decide, /What it is about no longer exists\./, "Decide opens the reasons for what closed without him");
+    assert.doesNotMatch(warm.Decide, /fixture hook events/, "a skill proposal is never a card on Decide");
+    assert.doesNotMatch(warm.Today, /fixture hook events/, "a skill proposal is never a row on Today");
+  }
   assert.match(warm.Live, /1 work item waits for your decision/);
   assert.match(warm.Live, /2 agents hold 5 work items/, "agents count excludes the no-agent bucket and idle agents");
   // Work cards: the owner's agent named as Live names it, the lane id small;
@@ -468,7 +497,7 @@ try {
   assert.doesNotMatch(warm.Work, /commit:<full-sha>/, "a raw next-step instruction never reaches a card");
 
   // Today: at most five decisions, then one link to the rest; plain words for areas and reasons.
-  assert.match(warm.Today, /2 more decisions on Decide/);
+  assert.match(warm.Today, /1 more decision on Decide/);
   assert.match(warm.Today, /Repository cleanup/, "area path becomes its plain kind");
   assert.match(warm.Today, /blocked on your review/, "system wording 'operator review' becomes 'your review'");
   assert.match(warm.Today, /Why: Agents cannot go on until you lift the hold\./, "a known 'why' line reads in plain words");
@@ -498,7 +527,7 @@ try {
   // no button, so it is said once above the list, and the answer counts it.
   assert.match(warm.Decide, /Why none can be decided now/);
   assert.match(warm.Decide, /Needs follow-up before it can be applied/);
-  assert.match(warm.Decide, /7 have no button for their kind of decision yet\./);
+  assert.doesNotMatch(warm.Decide, /Recording actions is unavailable|Queue status/, "the buried queue-status note is gone: how a decision moves is said once, up top");
   assert.doesNotMatch(warm.Decide, /paused|pause while/i, "an old copy is only old: never 'paused'");
   // A title that starts with a product id leads with the product's name on
   // Decide too, as on Today; the id stays as small text.
@@ -521,8 +550,6 @@ try {
     "the opened decision shows its real standing from its own read",
   );
   assert.doesNotMatch(opened, /approval record is incomplete: each item/, "one action per item is not an incomplete record");
-  // The answer counts it apart: no button / incomplete record / item by item.
-  assert.match(opened, /6 have no button for their kind of decision yet and 1 is decided item by item/);
   assert.deepEqual(findBannedPhrases(opened), []);
   await scopedEvidenceCases();
 

@@ -20,7 +20,7 @@ process.env.COMPOUND_CONSOLE_OPERATOR_SESSION = "0";
 
 const [
   { default: ReviewsPage },
-  { getAttentionProjection, toAttentionReport },
+  { getAttentionProjection, housekeepingGroups, toAttentionReport, yourDecisionGroups },
   { NeedsYouList },
   { decisionSelectionHref, initialDecideIndex, initialDecideKey },
   { enrichAttentionGroups },
@@ -101,20 +101,30 @@ const decideKeys = queueKeys.flat();
 
 assert.equal(
   queues.length,
-  attentionKeys.length > 0 ? 1 : 0,
+  yourDecisionGroups(attention).length > 0 ? 1 : 0,
   "Reviews must render one Attention-ordered Decide queue (or none for a live-empty projection)",
 );
 assert.equal(new Set(decideKeys).size, decideKeys.length, "a decision key rendered in more than one Decide queue");
 
-const onlyInAttention = attentionKeys.filter((key) => !decideKeys.includes(key));
-const onlyInDecide = decideKeys.filter((key) => !attentionKeys.includes(key));
+// Decide lists only what is his (lib/attention.ts yourDecisionGroups): the
+// projection's needs-you groups minus agent housekeeping (skill proposals),
+// which fold into one quiet line. Every needs-you key is one or the other.
+const yourKeys = yourDecisionGroups(attention).map((group) => str(group.key));
+const housekeepingKeys = housekeepingGroups(attention).map((group) => str(group.key));
+assert.deepEqual(
+  [...yourKeys, ...housekeepingKeys].sort(),
+  [...attentionKeys].sort(),
+  "every Attention needs-you group is either his (a Decide card) or agent housekeeping (the folded line)",
+);
+const onlyInAttention = yourKeys.filter((key) => !decideKeys.includes(key));
+const onlyInDecide = decideKeys.filter((key) => !yourKeys.includes(key));
 assert.deepEqual(
   { onlyInAttention, onlyInDecide },
   { onlyInAttention: [], onlyInDecide: [] },
-  "Attention and Decide must have exactly the same needs-you membership",
+  "Decide must list exactly the needs-you groups that are his",
 );
 
-assert.deepEqual(decideKeys, attentionKeys, "Decide must preserve Attention's global group order exactly");
+assert.deepEqual(decideKeys, yourKeys, "Decide must keep the one shared order (Attention's, unworded last)");
 
 const syntheticAttention = toAttentionReport({
   schema_version: "compound.attention.v0.1",
@@ -157,9 +167,17 @@ assert.deepEqual(
 
 // Today's answer (NeedsYouList) shows at most five decisions in Attention's
 // order, each deep-linked to its exact key, then one link to the rest.
+// Today lists the decisions he can answer, in Decide's order: its rows are
+// Decide's top rows.
+const todayGroups = yourDecisionGroups(attention).filter((group) => !group.needs_wording);
+assert.deepEqual(
+  todayGroups.map((group) => str(group.key)),
+  decideKeys.slice(0, todayGroups.length),
+  "Today's rows must be Decide's top rows, in the same order",
+);
 const briefing = NeedsYouList({
-  groups: attentionGroups,
-  total: attentionGroups.length,
+  groups: todayGroups,
+  total: todayGroups.length,
   act: null,
   mutationsEnabled: false,
 });
@@ -177,8 +195,8 @@ collectHrefs(briefing);
 assert.deepEqual(
   briefingHrefs,
   [
-    ...attentionKeys.slice(0, 5).map((key) => `/reviews?decision=${encodeURIComponent(key)}`),
-    ...(attentionKeys.length > 5 ? ["/reviews"] : []),
+    ...todayGroups.slice(0, 5).map((group) => `/reviews?decision=${encodeURIComponent(str(group.key))}`),
+    ...(todayGroups.length > 5 ? ["/reviews"] : []),
   ],
   "every Today decision row must deep-link its exact Attention key, in Attention's order",
 );
@@ -263,8 +281,8 @@ assert.deepEqual(
   );
 }
 
-if (attentionKeys.length > 0) {
-  const requestedKey = attentionKeys.at(-1);
+if (yourKeys.length > 0) {
+  const requestedKey = yourKeys.at(-1);
   const selectedPage = await ReviewsPage({ searchParams: Promise.resolve({ decision: requestedKey }) });
   const selectedQueues = decideQueuesFromPage(selectedPage);
   assert.equal(
@@ -275,7 +293,7 @@ if (attentionKeys.length > 0) {
   const containingQueue = selectedQueues[0];
   assert.deepEqual(
     containingQueue.props.groups.map((group) => str(group.key)),
-    attentionKeys,
+    yourKeys,
     "deep-link rendering must preserve the complete Attention order",
   );
   assert.equal(
@@ -291,7 +309,7 @@ if (attentionKeys.length > 0) {
 
   assert.equal(
     initialDecideIndex(containingQueue.props.groups, requestedKey),
-    attentionKeys.length - 1,
+    yourKeys.length - 1,
     "the deep-linked queue must initialize its keyboard index to the requested decision",
   );
 

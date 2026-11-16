@@ -7,6 +7,7 @@ import { KnowsStrip } from "@/components/briefing/KnowsStrip";
 import { KpiStrip } from "@/components/briefing/KpiStrip";
 import { LatestMoment } from "@/components/briefing/LatestMoment";
 import { NeedsYouList } from "@/components/briefing/NeedsYouList";
+import { WaitingNotes } from "@/components/decide/WaitingNotes";
 import { PipelineStrip } from "@/components/briefing/PipelineStrip";
 import { SectionLabel } from "@/components/briefing/primitives";
 import { SelfHealingPanel } from "@/components/briefing/SelfHealingPanel";
@@ -14,7 +15,7 @@ import { normalizeExecutorProjection } from "@/components/agents/executor-normal
 import { OperatorCoordinationList } from "@/components/coordination/OperatorCoordinationList";
 import { hasCopy, ReadChip, ReadFailedBanner, ReadNotice, readsPending, type ReadView } from "@/components/kit";
 import { PendingRefresh } from "@/components/PendingRefresh";
-import { attentionNeedsYouGroups, readAttention } from "@/lib/attention";
+import { attentionShare, readAttention, yourDecisionGroups } from "@/lib/attention";
 import {
   autonomyPosture,
   deriveContinue,
@@ -98,8 +99,10 @@ export default async function Briefing() {
   // conjunction (scripts/mutation-readiness-consumers-smoke.mjs).
   const mutationsEnabled = computeConsoleMutationReadiness(consoleMutationsEnabled()).ready;
 
-  // Attention: ONE projection. Groups arrive leverage-sorted; never re-ranked here.
-  const needsYouGroups = attentionNeedsYouGroups(attention);
+  // Attention: ONE projection. Only his decisions, in the one order Decide
+  // shows too (lib/attention.ts yourDecisionGroups); never re-ranked here.
+  const allYours = yourDecisionGroups(attention);
+  const needsYouGroups = allYours.filter((group) => attentionShare(group) === "yours");
   const top = attention?.top ?? needsYouGroups[0] ?? null;
   const first = needsYouGroups[0] ?? null;
   const waiting = waitingOnYou(attention);
@@ -165,6 +168,7 @@ export default async function Briefing() {
         {waiting && waiting.groups > 0 ? (
           <NeedsYouList groups={needsYouGroups} total={waiting.groups} act={act} mutationsEnabled={mutationsEnabled} />
         ) : null}
+        {waiting ? <WaitingNotes waiting={waiting} totals={attention?.totals ?? null} detail={false} /> : null}
         {nothingWaits ? (
           <AgentsNow agents={agents} agentsRead={executorsRead} inProgress={inProgress} workRead={workbenchRead} prominent />
         ) : null}

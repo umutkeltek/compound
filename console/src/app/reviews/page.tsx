@@ -1,12 +1,13 @@
 import Link from "next/link";
 
 import { DecideQueue } from "@/components/decide/DecideQueue";
-import { CheckIcon, ClockIcon, hasCopy, PageHeader, plainAge, ReadChip, ReadFailedBanner, ReadNotice, readsPending } from "@/components/kit";
+import { WaitingNotes } from "@/components/decide/WaitingNotes";
+import { CheckIcon, ClockIcon, hasCopy, PageHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending } from "@/components/kit";
 import { PendingRefresh } from "@/components/PendingRefresh";
-import { attentionNeedsYouGroups, readAttention, type AttentionGroup } from "@/lib/attention";
+import { readAttention, yourDecisionGroups, type AttentionGroup } from "@/lib/attention";
 import { arr, HEAVY_PROJECTION_TIMEOUT_MS, num, readProjection, str, type Json, type LiveRead, type ProjectionStatus } from "@/lib/compound";
 import { ago } from "@/lib/time";
-import { countDecisions, type DecisionCount, unit, waitingOnYou } from "@/lib/counts";
+import { describeWaiting, unit, waitingOnYou } from "@/lib/counts";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { buildDecideGroups, type DecideAct, type DecideGroup, type ScopedDecisionEvidence } from "@/lib/decide-model";
@@ -80,35 +81,6 @@ function withoutDetail(act: DecideAct): DecideAct {
 
 function listOnly(group: DecideGroup): DecideGroup {
   return { ...group, members: [], evidence: [], brief: null, act: withoutDetail(group.act) };
-}
-
-/**
- * Why the rest wait, counted from what the last check of each decision found
- * (lib/counts.ts `countDecisions`), with that check's age when it is older
- * than the live window. Never "paused": an old check is only old.
- */
-function standingSentence(counted: DecisionCount, listAgeMs: number | null): string {
-  const n = (value: number) => value.toLocaleString("en-US");
-  const has = (value: number) => (value === 1 ? "has" : "have");
-  const is = (value: number) => (value === 1 ? "is" : "are");
-  const waitingOnTheCheck = Math.max(0, counted.found.decidable - counted.readyNow);
-  const parts = [
-    waitingOnTheCheck ? `${n(waitingOnTheCheck)} could be decided when last checked` : "",
-    counted.found.noButton ? `${n(counted.found.noButton)} ${has(counted.found.noButton)} no button for their kind of decision yet` : "",
-    counted.found.incomplete ? `${n(counted.found.incomplete)} ${has(counted.found.incomplete)} an incomplete approval record` : "",
-    counted.found.itemByItem ? `${n(counted.found.itemByItem)} ${is(counted.found.itemByItem)} decided item by item` : "",
-    counted.found.held ? `${n(counted.found.held)} ${is(counted.found.held)} held by the approval rules` : "",
-    counted.found.other ? `${n(counted.found.other)} wait for another reason, said on the row` : "",
-  ].filter(Boolean);
-  if (!parts.length) return "";
-  const list = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
-  if (counted.checkedEarlier === 0) return `${sentenceCase(list)}.`;
-  const age = listAgeMs !== null ? ` (${plainAge(listAgeMs)})` : "";
-  return `At the last check${age}: ${list}. Opening one checks it again in a few seconds.`;
-}
-
-function sentenceCase(value: string): string {
-  return value ? value[0].toUpperCase() + value.slice(1) : value;
 }
 
 /* ---------- the opened decision checks its own evidence ----------
@@ -200,7 +172,10 @@ export default async function Decide({
     ...arr(reviews?.groups).filter((group: Json) => bandOf(group) === "needs_you"),
     ...groupsForBand(reviews, "needs_you", attention),
   ];
-  const needsYou = attentionNeedsYouGroups(attention);
+  // Only his decisions, in the order Today shows them (lib/attention.ts).
+  // Proposals to update agent skills are agent housekeeping: one quiet line
+  // under the header, never a card and never counted.
+  const needsYou = yourDecisionGroups(attention);
   const orderedGroups = enrichAttentionGroups(needsYou, reviewEnrichmentGroups);
   const scoped = await scopedEvidence(needsYou.find((group) => group.key === requestedKey) ?? null, attentionRead.lastGoodAt);
   const decideGroups = buildDecideGroups(
@@ -220,7 +195,6 @@ export default async function Decide({
   // The open decision: the one asked for, else the first. Only it carries detail.
   const openKey = decideGroups.some((group) => group.key === requestedKey) ? requestedKey : decideGroups[0]?.key ?? "";
   const queueGroups = decideGroups.map((group) => (group.key === openKey ? group : listOnly(group)));
-  const counted = countDecisions(decideGroups);
 
   const watchingEntries: WatchingEntry[] = [...groupsForBand(reviews, "watching", attention), ...externalWatching]
     .map((row: Json) => ({
@@ -255,8 +229,8 @@ export default async function Decide({
   const panelDetailOpen = Boolean(decideGroups.find((group) => group.key === requestedKey)?.panel);
 
   const answer = !waiting ? <ReadNotice read={attentionRead} label="what waits for you" />
-    : waiting.groups <= 0 ? <p>Nothing is waiting for your decision.</p>
-    : <p><strong className="font-semibold text-seam">{unit(waiting.groups, TERMS.decision.name)}</strong> waiting · {unit(waiting.items, TERMS.item.name)} to review</p>;
+    : waiting.groups <= 0 ? <p>{describeWaiting(waiting).headline}.</p>
+    : <p><strong className="font-semibold text-seam">{describeWaiting(waiting).headline}</strong>.</p>;
 
   return (
     <div className={`flex flex-col ${panelDetailOpen ? "gap-3" : "gap-6"}`}>
@@ -269,7 +243,7 @@ export default async function Decide({
           right={<ReadChip read={attentionRead} />}
         />
       )}
-      {panelDetailOpen ? null : <p className="max-w-read text-sm text-muted">Review the recommendation and what each action changes. <Link href="/work?lens=table&filter=blocked" className="font-semibold text-work hover:underline">Open blocked work →</Link> <Link href="/memory#memory-review" className="ml-3 font-semibold text-work hover:underline">Review proposed memories →</Link></p>}
+      {panelDetailOpen || !waiting ? null : <WaitingNotes waiting={waiting} totals={attention?.totals ?? null} detail />}
 
       <section id="decision-queue" tabIndex={-1} className="scroll-mt-6 flex flex-col gap-3" aria-label="Decisions">
         {attentionKnown ? <ReadFailedBanner read={attentionRead} label="what waits for you" /> : null}
@@ -355,7 +329,6 @@ export default async function Decide({
           ) : null}
         </div>
       </details>
-      <details className="text-xs text-muted"><summary className="cursor-pointer">Queue status & browser access</summary><p className="mt-2 max-w-read">{standingSentence(counted, attentionRead.ageMs)} {mutationsEnabled ? "Actions appear only when their current owner permits them." : "Recording actions is unavailable in this browser. You can still inspect evidence and related work."} <Link href="/settings" className="font-semibold text-work hover:underline">Check console access →</Link></p></details>
     </div>
   );
 }

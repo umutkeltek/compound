@@ -66,6 +66,33 @@ export interface AttentionGroup {
   terminal_reason: string;
   item_ids: string[];
   freshness: AttentionFreshness;
+  /**
+   * The owner wrote no clear question for this record: it is his, but an agent
+   * must word it before it is put to him. False when the projection does not say.
+   */
+  needs_wording?: boolean;
+}
+
+/** One reason the projection set records aside instead of counting them as his. */
+export interface AttentionSetAsideReason {
+  reason: string;
+  reasonText: string;
+  count: number;
+  /** Nothing is left for anyone to decide. */
+  closed: boolean;
+  nextStep: string;
+}
+
+/**
+ * What the projection set aside, and why. Null when the projection does not
+ * carry these fields (an older tool): the page then says nothing about them,
+ * never zero.
+ */
+export interface AttentionTotals {
+  closedWithoutYou: number;
+  setAside: number;
+  waitingOnOthers: number;
+  reasons: AttentionSetAsideReason[];
 }
 
 export interface AttentionCounts {
@@ -87,6 +114,8 @@ export interface AttentionReport {
   groups: AttentionGroup[];
   /** Unresolved authority references; never folded into counts, top, or groups. */
   operatorAttention: OperatorCoordinationProjection;
+  /** What was set aside and why; null when the projection does not say. */
+  totals: AttentionTotals | null;
 }
 
 /* ---------- defensive normalizer (schemas evolve; never crash a surface) ---------- */
@@ -128,6 +157,25 @@ function toGroup(raw: unknown): AttentionGroup {
     terminal_reason: str(g.terminal_reason),
     item_ids: arr(g.item_ids).map(String),
     freshness: { generated_at: str(freshness.generated_at), source: str(freshness.source) },
+    needs_wording: g.needs_wording === true,
+  };
+}
+
+function toTotals(raw: unknown): AttentionTotals | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const t = raw as Json;
+  if (typeof t.closed_without_you !== "number") return null;
+  return {
+    closedWithoutYou: num(t.closed_without_you),
+    setAside: num(t.set_aside),
+    waitingOnOthers: num(t.waiting_on_others),
+    reasons: arr(t.set_aside_reasons).map((r: Json) => ({
+      reason: str(r.reason),
+      reasonText: str(r.reason_text),
+      count: num(r.count),
+      closed: r.closed === true,
+      nextStep: str(r.next_step),
+    })).filter((r) => r.count > 0),
   };
 }
 
@@ -148,6 +196,7 @@ export function toAttentionReport(raw: Json | null): AttentionReport | null {
     top: raw.top && typeof raw.top === "object" ? toGroup(raw.top) : null,
     groups: arr(raw.groups).map(toGroup),
     operatorAttention: normalizeOperatorCoordination(raw.operator_attention, true),
+    totals: toTotals(raw.totals),
   };
 }
 
@@ -188,23 +237,83 @@ export async function readAttention(): Promise<{ read: LiveRead; report: Attenti
 }
 
 /**
- * THE one definition of "waiting on you", used by the Today header, the
- * sidebar badges and the Work header so they can never disagree. Units are
- * named: `groups` are decision groups (one card each on Decide), `items` are
- * the items inside them, `workItems` are the work items among them. Returns
- * null when attention has not been read: unknown is never zero.
+ * Kinds of request that are agent housekeeping, not decisions for him:
+ * proposals to update agent skills, mined from agent logs. Until the
+ * projection moves the kind out, Today and Decide fold the whole kind into one
+ * quiet line outside every count.
  */
-export type WaitingOnYou = { groups: number; items: number; workItems: number };
+const AGENT_HOUSEKEEPING_AREAS = new Set(["capability-lifecycle-proposals"]);
+
+/** Whose a needs-you group is: his to answer, his once an agent words it, or agent housekeeping. */
+export type AttentionShare = "yours" | "wording" | "housekeeping";
+
+export function attentionShare(group: Pick<AttentionGroup, "area" | "needs_wording">): AttentionShare {
+  const head = (group.area || "").split("/")[0];
+  if (AGENT_HOUSEKEEPING_AREAS.has(head)) return "housekeeping";
+  return group.needs_wording ? "wording" : "yours";
+}
+
+/**
+ * THE one definition of "waiting for you", used by the Today sentence, the
+ * sidebar badge, Decide's header and Live so they can never disagree. Only
+ * what is his counts:
+ * - `groups`: decisions he can answer (one card each on Decide), `items` the
+ *   records inside them, `workItems` the work items among them;
+ * - `wording`: decisions that are his but carry no clear question yet, so an
+ *   agent must word them first (shown, never counted as waiting);
+ * - `housekeeping`: proposals to update agent skills (one quiet line, never counted);
+ * - `closedWithoutYou` / `waitingOnOthers`: what the projection set aside,
+ *   null when the projection does not say (an older tool).
+ * Returns null when attention has not been read: unknown is never zero.
+ */
+export type WaitingOnYou = {
+  groups: number;
+  items: number;
+  workItems: number;
+  wording: number;
+  housekeeping: { groups: number; items: number };
+  closedWithoutYou: number | null;
+  waitingOnOthers: { items: number; itemIds: string[] } | null;
+};
 
 export function waitingOnYou(report: AttentionReport | null): WaitingOnYou | null {
   if (!report) return null;
   const needsYou = attentionNeedsYouGroups(report);
-  const items = report.counts.needs_you || needsYou.reduce((sum, group) => sum + group.count, 0);
+  const yours = needsYou.filter((group) => attentionShare(group) === "yours");
+  const housekeeping = needsYou.filter((group) => attentionShare(group) === "housekeeping");
+  const others = arr(report.groups).filter((group) => group.kind === "waiting_on_others");
   return {
-    groups: report.counts.needs_you_groups || needsYou.length,
-    items,
-    workItems: needsYou.filter((group) => group.source === "workbench").reduce((sum, group) => sum + group.count, 0),
+    groups: yours.length,
+    items: yours.reduce((sum, group) => sum + group.count, 0),
+    workItems: yours.filter((group) => group.source === "workbench").reduce((sum, group) => sum + group.count, 0),
+    wording: needsYou.filter((group) => attentionShare(group) === "wording").length,
+    housekeeping: { groups: housekeeping.length, items: housekeeping.reduce((sum, group) => sum + group.count, 0) },
+    closedWithoutYou: report.totals ? report.totals.closedWithoutYou : null,
+    waitingOnOthers: others.length || report.totals
+      ? {
+          items: others.length ? others.reduce((sum, group) => sum + group.count, 0) : report.totals?.waitingOnOthers ?? 0,
+          itemIds: others.flatMap((group) => group.item_ids),
+        }
+      : null,
   };
+}
+
+/**
+ * His decisions in the one order Today and Decide share: the projection's
+ * own order, with the ones an agent must word first after the ones he can
+ * answer. Agent housekeeping is left out (see `housekeepingGroups`).
+ */
+export function yourDecisionGroups(report: AttentionReport | null): AttentionGroup[] {
+  const needsYou = attentionNeedsYouGroups(report);
+  return [
+    ...needsYou.filter((group) => attentionShare(group) === "yours"),
+    ...needsYou.filter((group) => attentionShare(group) === "wording"),
+  ];
+}
+
+/** The needs-you groups that are agent housekeeping, folded into one quiet line. */
+export function housekeepingGroups(report: AttentionReport | null): AttentionGroup[] {
+  return attentionNeedsYouGroups(report).filter((group) => attentionShare(group) === "housekeeping");
 }
 
 export function plural(n: number, one: string, many: string): string {

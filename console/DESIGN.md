@@ -615,9 +615,9 @@ the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line
 
 | Page | Question | First answer |
 |---|---|---|
-| Today | What needs you today? | "N decisions wait for you, with M items in all", then at most five decisions in the attention order, each with what to do, why, and one way in. When nothing waits, it says so and "What the agents are doing" becomes the answer. |
+| Today | What needs you today? | "N decisions wait for you", counting only what is his (`waitingOnYou`), then at most five of them in the order Decide shows (`yourDecisionGroups`), each with what to do, why, and one way in. Quiet lines name what is not counted: decisions an agent must word first, records closed without him, work waiting on others, and the skill proposals folded out as agent housekeeping. Then, once, how a decision moves today (`HOW_DECISIONS_MOVE`). When nothing waits, it says so and "What the agents are doing" becomes the answer. |
 | Work | What is being worked on, and what is stuck? | Work items marked in progress out of open work, the split, what is stuck (picked up 7+ days ago and still open; on hold), and work items waiting for a decision. |
-| Decide | What is waiting for your decision? | How many decisions and items wait, how many can be decided now, and why the rest wait, counted from the last check: no button for that kind yet, or an incomplete approval record. Those that can be decided come first; the rest are one quieter "Not yet" list, with the standing said once when it is the same for all. |
+| Decide | What is waiting for your decision? | The same "N decisions wait for you" as Today and the sidebar, the same quiet lines (here "closed without you" opens its reasons and next steps), and once per page how a decision moves today: he tells an agent in chat, the agent records it and carries it out, and deciding on the page is being built. No button, "connect" step or command is offered as a way to decide. Only his decisions are cards, in Today's order, the unworded ones last; proposals to update agent skills are one quiet line outside the count. |
 | Live | Who is working on what right now? | Agents holding work, the in-progress split and age, and a plain note when live run records are not visible, so "running" is the work record's word. |
 
 - **Words.** `lib/plain-words.ts` owns the names (decision, item, work item, agent, in progress,
@@ -637,6 +637,10 @@ the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line
   `running`/`in_progress`, `verifying`), picked up more than 7 days ago (from `claimed_at`: the
   projections carry no "last changed" time for open work), on hold (`held`, `blocked`), agents
   holding work, and decisions ready now. Pages and the sidebar call these, never their own count.
+  "Waiting for you" counts only what is his: agent housekeeping (skill proposals), records with no
+  clear question (`needs_wording`), what closed without him and work waiting on others are each
+  named apart (`describeWaiting`) and never added in; a number the projection does not give is left
+  out, never shown as 0.
   The rules for one work item (`isInProgress`, `isOnHold`, `isWaitingForCheck`, `isStale` and its
   threshold `STALE_AFTER_DAYS`) live in the client-safe `lib/work-state.ts`; `counts.ts` counts with
   them and re-exports them, so a client component asks the same question without its own copy.
