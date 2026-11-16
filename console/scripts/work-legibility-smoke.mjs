@@ -84,6 +84,8 @@ await import("./work-list-cases.mjs");
 // The menu, its tabs, search, not-found pages and the rule that nothing floats
 // over a page (scripts/shell-cases.mjs).
 await import("./shell-cases.mjs");
+// Memory, Rules and Sources in plain words, honest counts and no dead controls (runs itself as a child).
+await import("./knowledge-pages-cases.mjs");
 
 // Campaign previews are part of Work detail; keep their asset and rendered
 // state falsifiers in this existing canonical consumer.

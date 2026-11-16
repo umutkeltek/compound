@@ -1,14 +1,15 @@
-import { AdjudicationCard } from "@/components/memory/AdjudicationCard";
 import { EvidenceCard } from "@/components/memory/EvidenceCard";
 import { MemoryGraphPanel } from "@/components/memory/MemoryGraphPanel";
+import { AdjudicationCard } from "@/components/memory/AdjudicationCard";
 import { buildAdjudicationModel, type AdjudicationCardModel } from "@/components/memory/model";
 import { PendingRefresh } from "@/components/PendingRefresh";
 import { BrainIcon, DocIcon, EmptyState, hasCopy, PageHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending, SectionHeader } from "@/components/kit";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { countAcceptedMemories, countProposalRecords, unit } from "@/lib/counts";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
+import { decideHref } from "@/lib/links";
 import { readMemoryCanon, readProposedMemory, readStandingLawCandidates } from "@/lib/memory-data";
-import { memoryKindPlural, memoryRecordState, MEMORY_RECORD_STATE_ORDER } from "@/lib/plain-words";
+import { KNOWLEDGE_TERMS, memoryKindPlural, memoryRecordState, MEMORY_RECORD_STATE_ORDER } from "@/lib/plain-words";
 import { loadMemoryEgoGraph, type EgoGraph } from "@/lib/map/memory-graph";
 import Link from "next/link";
 
@@ -80,6 +81,7 @@ export default async function Memory({
       <PendingRefresh pending={readsPending(proposedRead, law.read, canonRead)} stamp={Date.now()} />
       <PageHeader
         name="Memory"
+        lead="Agents keep notes from documents and past work. Before a note is given to future agents, you choose whether they may rely on it."
         action={queueClean && !models.length ? { label: "Explore supporting evidence", href: "#memory-evidence" } : undefined}
         right={
           <>
@@ -92,13 +94,10 @@ export default async function Memory({
           </>
         }
       />
-      <p className="text-sm text-muted" style={{ maxWidth: "var(--read-max)" }}>
-        Decide what future agents may rely on. A proposed statement stays out of recall until accepted; setting it aside preserves it for later.
-      </p>
       <nav aria-label="Memory next steps" className="flex flex-wrap gap-x-5 gap-y-2 text-xs font-semibold text-work">
-        <Link href="/standing-law" className="hover:underline">Read standing rules →</Link>
-        <Link href="/sources" className="hover:underline">Manage evidence sources →</Link>
-        <Link href="/reviews" className="hover:underline">Review decisions →</Link>
+        <Link href="/standing-law" className="hover:underline">Read the rules agents follow →</Link>
+        <Link href="/sources" className="hover:underline">See where information comes from →</Link>
+        <Link href={decideHref()} className="hover:underline">Other decisions waiting for you →</Link>
       </nav>
 
       {/* 0 — what agents remember now: the memories, not the proposal records */}
@@ -126,8 +125,8 @@ export default async function Memory({
         <SectionHeader
           tone="memory"
           icon={<BrainIcon />}
-          label="Memories to review"
-          sub="Choose what to keep, set aside or reject."
+          label="Waiting for your choice"
+          sub={`Proposed rules first, then proposed memories. ${KNOWLEDGE_TERMS.proposedRule.means} ${KNOWLEDGE_TERMS.proposedMemory.means}`}
         />
         <MemoryRead read={law.read} label="proposed rules" />
         <MemoryRead read={proposedRead} label="proposed memories" />
@@ -139,7 +138,7 @@ export default async function Memory({
           </div>
         ) : queueClean ? (
           <EmptyState>
-            No proposed memories need review. <Link href="/standing-law" className="font-semibold text-work hover:underline">Read the rules already guiding agents →</Link>
+            No proposed memories or proposed rules wait for you. <Link href="/standing-law" className="font-semibold text-work hover:underline">Read the rules agents follow →</Link>
           </EmptyState>
         ) : null}
       </section>

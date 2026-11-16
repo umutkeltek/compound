@@ -92,11 +92,11 @@ try {
   assert.doesNotMatch(unavailableHome, /promoted · 0 awaiting · 0 parked/, "unknown counts must not become a zero summary");
   const coldPage = await renderPage();
   assert.match(coldPage, /Reading proposed memories for the first time/, "a memory read never landed is shown as being read");
-  assert.doesNotMatch(coldPage, /No proposed memories need review|No new supporting evidence/, "a cold page claims no empty queue");
+  assert.doesNotMatch(coldPage, /No proposed memories or proposed rules wait for you|No new supporting evidence/, "a cold page claims no empty queue");
   await joinRefreshes();
   const unavailable = await renderPage();
   assert.match(unavailable, /Could not read proposed memories/, "actual memory page discloses failed reads");
-  assert.doesNotMatch(unavailable, /Clean seam|No proposed memories need review|No new supporting evidence/, "failed page may not claim an empty queue or source set");
+  assert.doesNotMatch(unavailable, /Clean seam|No proposed memories or proposed rules wait for you|No new supporting evidence/, "failed page may not claim an empty queue or source set");
   assert.match(visible(unavailable), /Proposal records by state\s*unknown/, "unavailable counts are unknown, not zero");
   assert.match(visible(unavailable), /How many memories agents have is unknown/, "a failed memory count is unknown, never 0");
   assert.doesNotMatch(visible(unavailable), /Agents remember 0/);
@@ -111,7 +111,7 @@ try {
   assert.doesNotMatch(emptyHome, /Memory unavailable|Last known memory/);
   const liveEmpty = await renderPageSettled();
   assert.match(liveEmpty, /No new supporting evidence has been recorded/);
-  assert.match(liveEmpty, /No proposed memories need review/);
+  assert.match(liveEmpty, /No proposed memories or proposed rules wait for you/);
   assert.match(visible(liveEmpty), /Agents remember 0 accepted memories\./, "a real empty memory is zero");
   assert.doesNotMatch(liveEmpty, noFalseWarning);
 
@@ -161,7 +161,7 @@ try {
   const stalePage = await renderPageSettled();
   assert.match(stalePage,/Could not read proposed memories\. Last good copy is from/,"actual page marks last-good memory data after a failed refresh");
   assert.match(stalePage,/cand_action/,"the last good cards stay");
-  assert.doesNotMatch(stalePage,/Clean seam|No proposed memories need review|No new supporting evidence/);
+  assert.doesNotMatch(stalePage,/Clean seam|No proposed memories or proposed rules wait for you|No new supporting evidence/);
   // KNOW-03/13: the page never loads every candidate record to count them;
   // the split comes from the filtered read's counts.
   const argvLog = (await Bun.file(join(scratch, "argv.log")).text()).split("\n");

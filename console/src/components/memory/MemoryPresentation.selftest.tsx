@@ -15,11 +15,14 @@ export function runMemoryPresentationSelfTest(): number {
     id: "cand_0123456789ab", entity: "project:synthetic", predicate: "unknown_relation", object,
     state: "proposed", evidence_refs: ["ev_0123456789ab"], qualifiers: { source: "knowledge_page" },
   });
-  check(model?.headline === object && model.body === "", "Native object text leads without invented predicate translation");
-  check(model?.subject === "project:synthetic" && model.relation === "unknown_relation", "Exact raw subject and relation remain available");
-  check(model?.stateLabel === "Awaiting review" && model.consequences?.hold.includes("not added to agent recall"), "Candidate state and set-aside consequence remain explicit");
+  check(model?.headline === object, "Native object text leads without invented predicate translation");
+  const technical = Object.fromEntries((model?.technical ?? []).map((row) => [row.label, row.value]));
+  check(technical.Subject === "project:synthetic" && technical.Relation === "unknown_relation", "Exact raw subject and relation remain available for agents");
+  check(model?.stateLabel === "Waiting for you" && model.choices.find((c) => c.value === "park")?.means === "Keep it on file; agents won't be told.", "Card state and the set-aside consequence are plain");
   check(model?.formSpec.defaultOption === "park" && model.formSpec.options.some((o) => o.value === "promote"), "Presentation preserves registry action choices and conservative default");
   check(model?.evidence.includes("ev_0123456789ab") && !model.evidence.includes("knowledge_page"), "Provenance includes recorded refs, not source-kind labels");
+  check(model?.choices.every((c) => c.command.startsWith("compound memory adjudicate cand_0123456789ab --verdict ") && !/[<>]/.test(c.command)), "Every choice carries its exact command with the real id and no blank");
+  check(model?.about?.label === "project synthetic" && model.from.href === "/map/lineage/ev_0123456789ab", "The card says what it is about and links where it came from");
   const long = "Recorded statement. ".repeat(40);
   check(memoryStatement(long).full === long.trim() && memoryStatement(long).summary.length < long.length, "Long statement retains exact full text for disclosure");
   check(memoryStatement("").summary.includes("statement is missing"), "Missing claim text reports a gap rather than using its entity as the claim");

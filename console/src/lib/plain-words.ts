@@ -518,6 +518,13 @@ const MEMORY_CHOICE: Record<string, { memory: string; rule: string; means: { mem
   },
 };
 
+/**
+ * What happens next while the browser cannot record a choice: who records
+ * it. The exact commands sit behind "For agents" on each card.
+ */
+export const MEMORY_CHOICE_HANDOFF =
+  "Choosing from this page is not built yet. Tell an agent which choice you want; it records it for you.";
+
 export function memoryChoice(verdict: string, kind: MemoryChoiceFor): { label: string; means: string } {
   const choice = MEMORY_CHOICE[verdict];
   if (!choice) return { label: sentence(verdict.replace(/[_-]+/g, " ")), means: "" };
