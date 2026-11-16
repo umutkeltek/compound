@@ -190,9 +190,13 @@ type LessonProbe struct {
 var LessonTriggerProbes = []LessonProbe{
 	{Tool: "Bash", Input: `{"command":"ls"}`, Subject: "ls"},
 	{Tool: "Bash", Input: `{"command":"git status"}`, Subject: "git status"},
+	{Tool: "Bash", Input: `{"command":"ls -la"}`, Subject: "ls -la"},
+	{Tool: "Bash", Input: `{"command":"go test ./internal/... -count=1"}`, Subject: "go test ./internal/... -count=1"},
 	{Tool: "Bash", Input: `{}`, Subject: "{}"},
 	{Tool: "Read", Input: `{"file_path":"README.md"}`, Subject: `{"file_path":"README.md"}`},
 	{Tool: "Read", Input: `{}`, Subject: "{}"},
+	{Tool: "Write", Input: `{"file_path":"/repo/notes.txt","content":"hello"}`, Subject: `{"file_path":"/repo/notes.txt","content":"hello"}`},
+	{Tool: "Edit", Input: `{"file_path":"/repo/notes.txt","old_string":"a","new_string":"b"}`, Subject: `{"file_path":"/repo/notes.txt","old_string":"a","new_string":"b"}`},
 }
 
 // LessonBroadTriggerQualifier records that a lesson's author kept a trigger

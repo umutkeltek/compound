@@ -120,7 +120,8 @@ means a slow pattern can only delay patterns that cost more than it, so a cheap 
 a slower lesson that outranks it.
 
 **Rank and capacity.** The index is in rank order, most specific first, then newest: a lesson whose
-trigger fires on an ordinary call (`ls`, `git status`, an empty input, a plain Read; kept only with
+trigger fires on an ordinary call (`ls`, `git status`, `ls -la`, `go test ./internal/... -count=1`, an
+empty input, a plain Read, Write or Edit; kept only with
 `--allow-broad-trigger`) ranks after every other lesson; a lesson that names its tool ranks before one
 that matches any tool; within that, ledger lessons newest first, then skill-file and `--from` lines in
 the order read (their age is unknown, so they rank as oldest). A tool call serves the first two matches

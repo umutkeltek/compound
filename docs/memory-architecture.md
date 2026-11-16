@@ -421,8 +421,8 @@ being paged per item.
      most 1000 instructions, and must cost at most 400 µs per KiB on fixed
      worst-case inputs (6.4 ms on a 16 KiB command; the hook runs it on every
      call), and it may not
-     fire on ordinary calls (`ls`, `git status`, an empty input, a plain
-     Read) unless `--allow-broad-trigger` is given, which is recorded on the
+     fire on ordinary calls (`ls`, `git status`, `ls -la`, a long ordinary
+     command, an empty input, a plain Read, Write or Edit) unless `--allow-broad-trigger` is given, which is recorded on the
      lesson (`broad_trigger: allowed`) and ranks it last. Example:
      `Bash:proof-check.*\|.*jq`. `mem.LessonTrigger.Matches`
      is the reference matcher. A harness delivers hook context with the NEXT
