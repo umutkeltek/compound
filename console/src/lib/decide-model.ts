@@ -325,6 +325,8 @@ export type DecideGroup = {
   card?: DecisionCard;
   /** Held work: each item inline (title, app, recorded reason, since when). Open decision only. */
   heldWork?: HeldWorkRow[];
+  /** Title, app, question and wait, exactly as Today's row says them. */
+  headline?: DecisionHeadline;
 };
 
 /* ---------- one card per decision: what it is about and what would happen ---------- */
@@ -404,6 +406,62 @@ export function decisionCard(args: {
     card.silent = missing.length ? `The record does not say ${listWords(missing)}.` : "";
   }
   return card;
+}
+
+/**
+ * How long a decision has waited, in words ("4 days", "3 hours", "a moment");
+ * "" when the record carries no time. Today and Decide both use it.
+ */
+export function waitingAge(value: unknown, nowMs: number): string {
+  const ms = timestampMs(value);
+  if (ms === null) return "";
+  const minutes = Math.max(0, Math.floor((nowMs - ms) / 60_000));
+  if (minutes < 1) return "a moment";
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"}`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"}`;
+}
+
+/** The record's own words for what a decision is about, without tool framing or its trailing question. */
+function subjectOf(summary: string): string {
+  const text = productTitle(plainText(summary), humanizeProductId).text
+    .replace(/^Decision lifecycle has (?:a )?candidate (?:Ruling:? )?/i, "")
+    .replace(TRAILING_ASK, "")
+    .trim();
+  return /record needs your decision|review record needs/i.test(text) ? "" : text;
+}
+
+/**
+ * One decision's title, what it is about, its question and how long it has
+ * waited: the ONE function Today's rows and Decide's rows use, so the same
+ * decision reads the same on both pages. Works on an attention group alone
+ * (Today) or with its review sample (Decide), and always times the wait from
+ * the attention group's own `oldest_created_at`.
+ */
+export type DecisionHeadline = {
+  about: DecisionAbout | null;
+  /** the record's own words ("" when it carries only a template sentence) */
+  subject: string;
+  /** the kind's question ("" when an agent must word it first, or the kind is unknown) */
+  question: string;
+  needsWording: boolean;
+  /** "4 days"; "" when unknown */
+  waiting: string;
+};
+
+export function decisionHeadline(group: Json, sample: Json, nowMs: number): DecisionHeadline {
+  const area = str(group.area);
+  const summary = str(group.operator_summary);
+  const needsWording = group.needs_wording === true;
+  return {
+    about: aboutOf(area, sample, summary),
+    subject: subjectOf(summary),
+    question: needsWording ? "" : decisionKindWords(area)?.question ?? "",
+    needsWording,
+    waiting: waitingAge(group.oldest_created_at || sample.created_at, nowMs),
+  };
 }
 
 /** One held work item, inline on the "Work on hold" decision. */
@@ -1681,6 +1739,7 @@ export function buildDecideGroups(
       panel,
       brief,
       standing,
+      headline: decisionHeadline(group, sample, Date.now()),
       card: decisionCard({
         area,
         sample,

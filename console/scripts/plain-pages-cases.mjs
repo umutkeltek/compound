@@ -501,7 +501,7 @@ try {
   assert.match(warm.Today, /1 more decision on Decide/);
   assert.match(warm.Today, /Repository cleanup/, "area path becomes its plain kind");
   assert.match(warm.Today, /blocked on your review/, "system wording 'operator review' becomes 'your review'");
-  assert.match(warm.Today, /Why: Agents cannot go on until you lift the hold\./, "a known 'why' line reads in plain words");
+  assert.doesNotMatch(warm.Today, /Why: /, "the row asks the question instead of a second 'why' wording");
   assert.doesNotMatch(warm.Today, /executors can continue/, "system wording never reaches the why line");
   // This week: the autonomy level in one plain sentence, the level itself small.
   assert.match(warm.Today, /Autonomy L1 Agents suggest changes and ask you before they change files on this machine\./);
@@ -518,7 +518,7 @@ try {
   // Other spellings of a known agent find its label through the one agent key.
   assert.deepEqual(agentNameFor("harness:fixture-agent", new Map([["fixture_agent", "Fixture Studio"]])), { name: "Fixture Studio", lane: "harness:fixture-agent" });
   assert.deepEqual(agentNameFor("Fixture-Agent:lane-2", new Map([["fixture_agent", "Fixture Studio"]])), { name: "Fixture Studio", lane: "Fixture-Agent:lane-2" });
-  assert.match(warm.Today, /There is no button for this kind of decision yet/);
+  assert.match(warm.Today, /Let this held work continue, or stop it\?/, "a row asks its kind's question, as Decide's card does");
   assert.doesNotMatch(warm.Today, /compound reviews --area/, "a command is never the 'why'");
 
   // Decide: filed is a count plus kinds, not one chip per item; reasons in plain words.
@@ -533,7 +533,21 @@ try {
   // A title that starts with a product id leads with the product's name on
   // Decide too, as on Today; the id stays as small text.
   assert.match(warm.Decide, /Fixture App has a product hypothesis\./);
-  assert.match(warm.Today, /Fixture App has a product hypothesis\. Review it\?/);
+  assert.match(warm.Today, /Fixture App has a product hypothesis\./);
+  // Today and Decide agree: the same rows in the same order, each with the
+  // same title, app and wait (one function, decide-model decisionHeadline).
+  {
+    const rowsOf = (text) => [...text.matchAll(/waiting (\d+ (?:day|hour|minute)s?)/g)].map((m) => m[1]);
+    const todayRows = rowsOf(warm.Today.slice(warm.Today.indexOf("Start with the first one"), warm.Today.indexOf("more decision on Decide")));
+    const decideRows = rowsOf(warm.Decide.slice(warm.Decide.indexOf("Filter decisions") >= 0 ? warm.Decide.indexOf("Filter decisions") : 0));
+    assert.ok(todayRows.length >= 5, `Today shows its rows with their wait: ${todayRows.join(", ")}`);
+    assert.deepEqual(decideRows.slice(0, todayRows.length), todayRows, "Today's rows wait as long as Decide's top rows say");
+    for (const title of ["1 open work item is blocked on your review.", "Fixture App has a product hypothesis."]) {
+      assert.ok(warm.Today.includes(title) && warm.Decide.includes(title), `one title on both pages: ${title}`);
+    }
+    assert.doesNotMatch(warm.Today, /cannot be undone|Deletes or destroys/, "no aggregate destructive label on a row");
+    assert.doesNotMatch(warm.Today, /There is no button for this kind of decision yet/, "no dead-end reason on every row: how a decision moves is said once");
+  }
   assert.doesNotMatch(warm.Decide, /product:fixture-app has/, "a raw product id never leads a Decide title");
 
   // 5. The opened decision is a card, never a "checking" gate: no button

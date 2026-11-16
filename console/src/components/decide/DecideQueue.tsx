@@ -177,16 +177,16 @@ function DecisionRow({
             title={group.face.proposedAtLabel || "Proposal time unavailable"}
             className={`shrink-0 text-2xs tabular-nums ${group.old ? "font-semibold text-seam" : "text-faint"}`}
           >
-            {group.ageLabel}
+            {group.headline?.waiting ? `waiting ${group.headline.waiting}` : group.ageLabel}
           </time>
         </span>
-        {/* The row names what it is about (the app or thing) and the
-         * record's own words; the open card asks the question. */}
-        {group.card?.about ? <span className="mt-1 block truncate text-xs font-semibold text-muted">{group.card.about.label}</span> : null}
+        {/* The row says what Today's row says (decide-model decisionHeadline):
+         * the app or thing it is about and the record's own words. */}
+        {group.headline?.about ? <span className="mt-1 block truncate text-xs font-semibold text-muted">{group.headline.about.label}</span> : null}
         <span className="mt-1 line-clamp-2 block text-sm font-semibold leading-snug text-ink">
-          {group.card?.subject || group.card?.question || titled(group.objectText || group.title).text}
+          {group.headline?.subject || group.headline?.question || titled(group.objectText || group.title).text}
         </span>
-        {group.card?.needsWording ? <span className="mt-1 block text-2xs text-seam">An agent must word this first</span> : null}
+        {group.headline?.needsWording ? <span className="mt-1 block text-2xs text-seam">An agent must word this first</span> : null}
         {group.count > 1 ? <span className="mt-1 block text-2xs text-faint">{group.count} items</span> : null}
       </span>
     </button>
@@ -305,7 +305,7 @@ function DecisionDetail({ group }: { group: DecideGroup }) {
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-2xs text-faint">
           <span className="font-bold uppercase">{plainArea(group.area || group.areaLabel)}</span>
           {card?.about ? <span>· {card.about.app ? "App " : ""}<AboutLink about={card.about} /></span> : null}
-          <span>· waiting {group.ageLabel}</span>
+          <span>· waiting {group.headline?.waiting || group.ageLabel}</span>
           {group.count > 1 ? <span>· {group.count} items</span> : null}
         </div>
         {card?.needsWording ? (

@@ -188,7 +188,8 @@ const collectHrefs = (node) => {
     return;
   }
   if (!node || typeof node !== "object") return;
-  if (typeof node.props?.href === "string") briefingHrefs.push(node.props.href);
+  // A row may also link the app it is about; the decision links go to Decide.
+  if (typeof node.props?.href === "string" && node.props.href.startsWith("/reviews")) briefingHrefs.push(node.props.href);
   collectHrefs(node.props?.children);
 };
 collectHrefs(briefing);
