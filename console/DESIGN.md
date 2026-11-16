@@ -440,8 +440,9 @@ decision-relevant summary, then link to the owner; they do not create a second i
   live here. Work and Decide may open a contextual authority inspector for the active object.
 - **Outcomes owns external feedback.** Product signals, hypotheses, reviews, and learned next moves
   belong here; an internal Receipt is not an outcome merely because work completed.
-- **Ask Compound is a global read-only overlay, not an eighth destination.** It composes registered
-  views, cites their owners and freshness, and never invents authority or duplicate state.
+- **Search is the one global overlay, not a destination.** It finds pages, apps, decisions and work,
+  and its quick views replaced the Ask Compound box; it never invents authority or duplicate state,
+  and nothing floats over page content.
 
 Cross-surface navigation preserves object identity: a Live row opens the same WorkEnvelope in
 Work; a Today seam opens its decision or work owner; evidence opens its Knowledge source; authority
@@ -475,7 +476,8 @@ layout, invent activity to make the system feel alive, or persist prompt content
 
 ### 10.3 Generative view boundary (Tambo-ready)
 
-Ask Compound may translate natural language into registered view invocations. The model composes
+The read-only composition seam (`/api/ask`; no page calls it since Ask Compound's box became Search's
+quick views) may translate natural language into registered view invocations. The model composes
 the view; the registry owns rendering and every act. The current deterministic AI sandbox is a
 replaceable adapter boundary for Tambo or another model runtime. Replacing it MUST NOT grant the
 model mutation authority: registered actions still cross the existing policy, confirmation,
@@ -506,10 +508,10 @@ The operator supplied two references: a task-board workspace and a performance-o
 These deviations from §1–§10 follow from them.
 
 - **Shell.** The sidebar sits on a quiet frame (`--page`). The page lives in one white, rounded,
-  hairline panel (`.shell-panel`). The sidebar order is workspace switcher, search (opens ⌘K),
-  Essentials, Apps, Growth, then Knowledge and System. Knowledge and System collapse until one of
-  their pages is active. Every route stays one click away. Autonomy, freshness and instance identity
-  move from the top bar into the sidebar status card. Ask Compound floats at the bottom centre.
+  hairline panel (`.shell-panel`). The sidebar order is workspace, search (opens ⌘K), then the six
+  sections (see "Console clarity"), with the apps under Apps. Every route stays one click away, as
+  a section or a tab. Autonomy, freshness and instance identity move from the top bar into the
+  sidebar status card. Nothing floats over the content.
 - **Neutrals.** Light `--page/--ink/--muted/--faint/--hair` move from blue-grey to faintly warm
   grey. Dark mode is unchanged.
 - **Type.** Page titles use a new `--text-3xl` step (34px). A `PageHeader` stat strip reads

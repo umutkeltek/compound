@@ -12,7 +12,9 @@ import { decideHref, workListHref } from "@/lib/links";
  * Search (⌘K, or the sidebar's Search box). It finds every page and tab by
  * name, earlier name and purpose (lib/experience.ts), every app by name and
  * alias, waiting decisions by the words Today shows, and open work by its
- * title. Apps, decisions and work come from /api/search, asked once when
+ * title. Quick views (the most important decision, work on hold, work
+ * running now) replace the old "Ask Compound" box. Apps, decisions and work
+ * come from /api/search, asked once when
  * search opens: the reads the pages already cache, so typing starts no read.
  * A read still loading says so. Arrows move, Enter opens, Escape closes, and
  * focus stays inside while it is open. Results link through lib/links.ts.
@@ -20,7 +22,7 @@ import { decideHref, workListHref } from "@/lib/links";
 export type SearchRow = SearchEntry | { kind: "more"; label: string; sub: string; href: string; terms: string };
 
 export type SearchResultGroup = {
-  id: "pages" | "apps" | "decisions" | "work";
+  id: "views" | "pages" | "apps" | "decisions" | "work";
   heading: string;
   /** Said under the heading when the read behind it has no copy yet or failed. */
   note: string;
@@ -46,6 +48,32 @@ export const PAGE_ENTRIES: SearchEntry[] = searchablePages().map(({ section, pag
     .join(" ")
     .toLowerCase(),
 }));
+
+/**
+ * Quick views: the canned views "Ask Compound" used to give behind a text box,
+ * now named links to the pages that show them. The most important decision
+ * comes from the index (attention's top); the rest are fixed Work views.
+ */
+const FIXED_VIEWS: SearchEntry[] = [
+  {
+    kind: "view",
+    label: "Work on hold",
+    sub: "Work waiting for a decision or for another task",
+    href: workListHref({ filter: "blocked" }),
+    terms: "work on hold blocked held stuck why is work blocked waiting",
+  },
+  {
+    kind: "view",
+    label: "Work running now",
+    sub: "What agents are working on right now",
+    href: workListHref({ filter: "running" }),
+    terms: "work running now active in progress what agents are doing",
+  },
+];
+
+export function quickViews(index: SearchIndex | null): SearchEntry[] {
+  return index?.top ? [index.top, ...FIXED_VIEWS] : FIXED_VIEWS;
+}
 
 const LOADING: SearchGroup = { state: "loading", entries: [] };
 
@@ -77,7 +105,12 @@ function ranked(entries: SearchEntry[], query: string, tokens: string[]): Search
 export function searchResults(rawQuery: string, index: SearchIndex | null): SearchResultGroup[] {
   const query = rawQuery.trim().toLowerCase();
   const tokens = query.split(/\s+/).filter(Boolean);
-  if (!query) return [{ id: "pages", heading: "Pages", note: "", rows: PAGE_ENTRIES }];
+  if (!query) {
+    return [
+      { id: "views", heading: "Quick views", note: "", rows: quickViews(index) },
+      { id: "pages", heading: "Pages", note: "", rows: PAGE_ENTRIES },
+    ];
+  }
 
   const apps = index?.apps ?? LOADING;
   const decisions = index?.decisions ?? LOADING;
@@ -86,6 +119,9 @@ export function searchResults(rawQuery: string, index: SearchIndex | null): Sear
 
   const pages = ranked(PAGE_ENTRIES, query, tokens);
   if (pages.length) groups.push({ id: "pages", heading: "Pages", note: "", rows: pages.slice(0, 8) });
+
+  const views = ranked(quickViews(index), query, tokens);
+  if (views.length) groups.push({ id: "views", heading: "Quick views", note: "", rows: views });
 
   const appHits = ranked(apps.entries, query, tokens);
   const appNote = noteFor(apps.state, "your apps");

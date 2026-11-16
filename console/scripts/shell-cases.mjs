@@ -17,6 +17,10 @@
 //  6. A wrong address gets a console page with a way back to the right list
 //     (root, an unknown app, an unknown work item); a failed page offers
 //     "Try again"; the shared loading frame mirrors no single page.
+//  7. Nothing floats over the content: the Ask button and its free-text box
+//     are gone, and their canned views are named quick views in search.
+//  8. The browser connection left the top bar for Settings and says it is
+//     not used for anything yet, in the one shared sentence.
 //
 // Run: bun scripts/shell-cases.mjs
 import assert from "node:assert/strict";
@@ -297,5 +301,32 @@ const loadingFrame = render("/apps", createElement(await pageModule("loading.tsx
 has(loadingFrame, /data-skeleton="page"/, "the shared loading frame is the neutral page shape");
 hasNot(loadingFrame, /minmax\(300px,2fr\)/, "not an earlier Today layout");
 
-console.log("shell-cases ok: six sections in his words, every page placed with a tab, one sidebar count, current app shown, earlier header names kept, section › page › item breadcrumb; search finds pages, apps, decisions and work; wrong addresses and failures lead back");
+// ---------- 7. no floating Ask; quick views in search ----------
+const readSrc = (rel) => readFileSync(fileURLToPath(new URL(`../src/${rel}`, import.meta.url)), "utf8");
+const exists = (rel) => { try { statSync(fileURLToPath(new URL(`../src/${rel}`, import.meta.url))); return true; } catch { return false; } };
+const layoutSource = readSrc("app/layout.tsx");
+assert.ok(!exists("components/AskCompound.tsx"), "the Ask Compound button and its text box are gone");
+assert.doesNotMatch(layoutSource, /AskCompound/, "the layout mounts no Ask button");
+for (const rel of ["app/layout.tsx", "components/Nav.tsx", "components/NavContainer.tsx", "components/SystemBanner.tsx", "components/OperatorConnection.tsx", "components/RefreshControl.tsx"]) {
+  assert.doesNotMatch(readSrc(rel), /fixed (?:bottom|right|left)-\d/, `${rel} floats nothing over page content`);
+}
+const quick = searchResults("", index).find((g) => g.id === "views");
+assert.deepEqual(quick?.rows.map((r) => r.label), ["Most important decision", "Work on hold", "Work running now"], "search opens on the quick views");
+assert.equal(quick.rows[0].href, "/reviews?decision=fixture%3Adecision-one", "the most important decision opens that decision");
+assert.equal(quick.rows[0].sub, "Approve the new onboarding text for the weather app.", "and says which one");
+assert.ok(labelsOf(searchResults("why is work blocked", index), "views").includes("Work on hold"), "an old Ask question finds its quick view");
+assert.equal(searchResults("", null).find((g) => g.id === "views").rows.length, 2, "before the index lands, the fixed quick views still show");
+
+// ---------- 8. the browser connection lives on Settings ----------
+const header = layoutSource.slice(layoutSource.indexOf("<header"), layoutSource.indexOf("</header>"));
+assert.doesNotMatch(header, /OperatorConnection/, "the connect control left the top bar");
+const connection = readSrc("components/OperatorConnection.tsx");
+assert.match(connection, /pathname === "\/settings"/, "it shows on Settings");
+assert.match(connection, /not used for anything yet/, "it says honestly that the connection unlocks nothing");
+assert.doesNotMatch(connection, /Connect operator/, "no unexplained 'Connect operator'");
+const { CONSOLE_ACTS_SENTENCE } = await import("../src/components/OperatorConnection.tsx");
+assert.match(CONSOLE_ACTS_SENTENCE, /shows and explains/);
+assert.match(CONSOLE_ACTS_SENTENCE, /Acting from it is being built/);
+
+console.log("shell-cases ok: six sections in his words, every page placed with a tab, one sidebar count, current app shown, earlier header names kept, section › page › item breadcrumb; search finds pages, apps, decisions and work; wrong addresses and failures lead back; nothing floats, quick views in search; browser connection on Settings");
 console.log(table.join("\n"));

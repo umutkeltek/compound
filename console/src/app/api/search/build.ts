@@ -30,7 +30,13 @@ export type SearchEntry = {
 
 export type SearchGroup = { state: ReadState; entries: SearchEntry[] };
 
-export type SearchIndex = { apps: SearchGroup; decisions: SearchGroup; work: SearchGroup };
+export type SearchIndex = {
+  apps: SearchGroup;
+  decisions: SearchGroup;
+  work: SearchGroup;
+  /** The decision that matters most (attention's top), offered as a quick view; null when none waits or not read yet. */
+  top: SearchEntry | null;
+};
 
 export type SearchReads = {
   growth: { status: ReadState; value: Json | null };
@@ -102,10 +108,30 @@ function workGroup(read: SearchReads["work"], projects: WorkProjectIndex | null)
   return { state: read.status, entries };
 }
 
+/** The quick view "Most important decision": attention's top decision, as Today ranks it. */
+function topDecision(read: SearchReads["attention"], decisions: SearchGroup): SearchEntry | null {
+  const report = read.report;
+  if (!report) return null;
+  const waiting = attentionNeedsYouGroups(report);
+  const top = report.top && report.top.band === "needs_you" ? report.top : waiting[0];
+  if (!top) return null;
+  const href = decideHref({ decision: top.key });
+  const shown = decisions.entries.find((entry) => entry.href === href);
+  return {
+    kind: "view",
+    label: "Most important decision",
+    sub: shown?.label ?? "",
+    href,
+    terms: terms("most important decision top what needs me first", shown?.terms),
+  };
+}
+
 export function buildSearchIndex(reads: SearchReads): SearchIndex {
+  const decisions = decisionsGroup(reads.attention);
   return {
     apps: appsGroup(reads.growth),
-    decisions: decisionsGroup(reads.attention),
+    decisions,
     work: workGroup(reads.work, reads.projects),
+    top: topDecision(reads.attention, decisions),
   };
 }
