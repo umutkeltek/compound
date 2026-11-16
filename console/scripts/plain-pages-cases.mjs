@@ -630,6 +630,13 @@ try {
     const rowsAt = (query) => [...wrap("/reviews", createElement(DecideQueue, queue), query).matchAll(/data-decision-row="([^"]+)"/g)].map((m) => m[1]);
     assert.deepEqual(rowsAt("q=hypothesis"), ["bench|review"], "q filters to the rows that show the word");
     assert.deepEqual(rowsAt("area=launchd-repair"), ["launchd-repair|review"], "area filters to one kind");
+    // An unknown kind in the address is ignored, and the page says so (never 'No decision matches “”').
+    const unknownKind = visibleText(wrap("/reviews", createElement(DecideQueue, queue), "area=zz-no-such-kind"));
+    assert.equal(rowsAt("area=zz-no-such-kind").length, queue.groups.length, "an unknown kind shows every decision");
+    assert.match(unknownKind, /No decision of the kind “Zz no such kind” waits for you, so all kinds are shown\./);
+    assert.doesNotMatch(unknownKind, /No decision matches “”/);
+    // The counter counts what the header counts; the unworded decision is named apart.
+    assert.match(unknownKind, /6 of 6 decisions · 1 to be worded first/);
     assert.deepEqual(rowsAt("q=operator"), [], "search never matches hidden tool text (the row says 'your review')");
     assert.match(wrap("/reviews", createElement(DecideQueue, queue), "q=hypothesis"), /value="hypothesis"/, "the search box shows the address's text");
     const { decideFilterHref } = await import("../src/components/decide/DecideQueue.tsx");

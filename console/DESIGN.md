@@ -592,10 +592,13 @@ matrix and the pale red fill above.
 - **One results card per app.** Results rows fold into the catalog's app by every id spelling
   (`foldLoopsByApp`, `lib/products.ts`), named by the catalog; apps with no record are named in
   one line. A card names the change, what it should do and the days it is watched, and each
-  reading carries its date. "Verdict due" means a real expected effect was written
-  (`verdictDue`): a machine draft with a placeholder effect never waits on the owner. A due
-  verdict links its exact decision (`decideHref`), never the general Decide list. The app page
-  shows its own card under "Did the changes help?" and puts a due verdict under "Needs you".
+  reading carries its date. "Verdict due" means the waiting list asks for it (a `product_result`
+  item for that app or change, `productVerdict` in `lib/attention.ts`): the one definition the
+  Results page, the app page, Today and Decide share, so a draft or a change whose observation has
+  not started never waits on the owner. A due verdict links its exact item (`decideItemHref`);
+  a result the list counts under another decision links that decision; one it does not list asks
+  nothing, and while the list is unread the card says it is checking. The app page shows its own
+  card under "Did the changes help?" and puts a due verdict under "Needs you".
 - **Gaps are background.** "No data yet" is a pale neutral fill, the calmest filled state. "Not on
   file" is a dashed outline or hatch, "Set aside" a hatch on soft, "Does not apply" is left empty.
   Measured (green), out of date (amber) and the next-move mark (an ink dot or ring) are the only
@@ -615,9 +618,9 @@ the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line
 
 | Page | Question | First answer |
 |---|---|---|
-| Today | What needs you today? | "N decisions wait for you", counting only what is his (`waitingOnYou`), then at most five of them in the order Decide shows (`yourDecisionGroups`), so Today's rows are Decide's top rows; each row says what Decide's row says (the app it is about, the record's words, the kind's question and how long it has waited, from one function, `decisionHeadline`) and has one way in. No row carries a dead-end reason or an aggregate "cannot be undone" label. Quiet lines name what is not counted: decisions an agent must word first, records closed without him, work waiting on others, and the skill proposals folded out as agent housekeeping. Then, once, how a decision moves today (`HOW_DECISIONS_MOVE`). When nothing waits, it says so and "What the agents are doing" becomes the answer. Below, every number leads to its list: the stale line to the stale work list, the Learned tile to the memories that wait (its number holds while a copy is only older than the read window), the Autonomy tile to its settings, the latest change to its work; the Continue card names the next work, keeps no second "needs me" count and copies no command. |
+| Today | What needs you today? | "N decisions wait for you", counting only what is his (`waitingOnYou`), then at most five of them in the order Decide shows (`yourDecisionGroups`), so Today's rows are Decide's top rows; each row says what Decide's row says (the app it is about, the record's words, the kind's question and how long it has waited, from one function, `decisionHeadline`) and has one way in. No row carries a dead-end reason or an aggregate "cannot be undone" label. Quiet lines name what is not counted: decisions an agent must word first (each linked to its card), what a standing rule of his already covers ("Agents handle these under your rule: N"), what was set aside (all of it, and of those, what closed without him; "See why" opens Decide's section open), work waiting on others, and the skill proposals folded out as agent housekeeping. "N more decisions" opens the first decision Today does not show. Proposed memories open the Memory page's review section, the one place they are judged. Then, once, how a decision moves today (`HOW_DECISIONS_MOVE`). When nothing waits, it says so and "What the agents are doing" becomes the answer. Below, every number leads to its list: the stale line to the stale work list, the Learned tile to the memories that wait (its number holds while a copy is only older than the read window), the Autonomy tile to its settings, the latest change to its work; the Continue card names the next work, keeps no second "needs me" count and copies no command. |
 | Work | What is being worked on, and what is stuck? | Work items marked in progress out of open work, the split, what is stuck (picked up 7+ days ago and still open; on hold), and work items waiting for a decision. |
-| Decide | What is waiting for your decision? | The same "N decisions wait for you" as Today and the sidebar, the same quiet lines (here "closed without you" opens its reasons and next steps), and once per page how a decision moves today: he tells an agent in chat, the agent records it and carries it out, and deciding on the page is being built. No button, "connect" step or command is offered as a way to decide. Only his decisions are cards, in Today's order, the unworded ones last; proposals to update agent skills are one quiet line outside the count. Each card names the app (linked) or thing it is about, asks its kind's question in one sentence, and says what a yes and a no would cause and whether it can be undone, from `decisionKindWords` in `lib/decision-registry.ts` (the one owner of those words); what the record does not say is named once ("The record does not say …"), never as empty boxes. Held work lists each item inline: title, app, recorded reason, since when, linking its page. The record behind a card sits in a closed "For agents" disclosure. |
+| Decide | What is waiting for your decision? | The same "N decisions wait for you" as Today and the sidebar, the same quiet lines (here the set-aside line opens its reasons in two groups that each add up to their own number: closed without you, and not closed but not his now; the covered line names each rule and the waiting list's own sentence about who works those items; unread rules are said, never "no rule covers this"), and once per page how a decision moves today: he tells an agent in chat, the agent records it and carries it out, and deciding on the page is being built. No button, "connect" step or command is offered as a way to decide. Only his decisions are cards, in Today's order, the unworded ones last; proposals to update agent skills are one quiet line outside the count. Each card names the app (linked) or thing it is about, asks its kind's question in one sentence, and says what a yes and a no would cause and whether it can be undone, from `decisionKindWords` in `lib/decision-registry.ts` (the one owner of those words); what the record does not say is named once ("The record does not say …", with who has to write it), never as empty boxes; where the console can derive it (a no on a proposed rule keeps things as they are) it says that. A recommendation never shows its raw option code, and one that says the thing is already done replaces the yes and no lines. The list's counter counts what the header counts and names the unworded ones apart; an unknown kind in the address is ignored and said. Held work lists each item inline: title, app, recorded reason, since when, linking its page. The record behind a card sits in a closed "For agents" disclosure. |
 | Live | Who is working on what right now? | Agents holding work, the in-progress split and age, and a plain note when live run records are not visible, so "running" is the work record's word. |
 
 - **Words.** `lib/plain-words.ts` owns the names (decision, item, work item, agent, in progress,
@@ -638,9 +641,12 @@ the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line
   projections carry no "last changed" time for open work), on hold (`held`, `blocked`), agents
   holding work, and decisions ready now. Pages and the sidebar call these, never their own count.
   "Waiting for you" counts only what is his: agent housekeeping (skill proposals), records with no
-  clear question (`needs_wording`), what closed without him and work waiting on others are each
-  named apart (`describeWaiting`) and never added in; a number the projection does not give is left
-  out, never shown as 0.
+  clear question (`needs_wording`), what a standing rule covers (`covered_by_rule`), what was set
+  aside and work waiting on others are each named apart (`describeWaiting`) and never added in; a
+  number the projection does not give is left out, never shown as 0. The skill-proposal fold is a
+  stopgap: a group the waiting list reports under a rule is the rule's (`attentionShare` →
+  "covered"), so once the list moves the kind there the console rule matches nothing and can go
+  without a visible change; no item is counted twice or dropped from both.
   The rules for one work item (`isInProgress`, `isOnHold`, `isWaitingForCheck`, `isStale` and its
   threshold `STALE_AFTER_DAYS`) live in the client-safe `lib/work-state.ts`; `counts.ts` counts with
   them and re-exports them, so a client component asks the same question without its own copy.
@@ -648,7 +654,9 @@ the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line
   (`?decision=<key>` re-renders with that one's detail); filed is a count plus one row per kind
   (`?filed=<kind>` opens its newest 100). A filed row leads with its outcome (the recorded
   decision, else the record's own outcome line, else its status) and when it was decided (else
-  raised), and "Recent decisions" lists the newest decided records across kinds. A watching row
+  raised). Above the kinds, every recorded answer (`attention --json` `answered`) says what came
+  of it, newest first, with the work it started linked and its state (unknown said as unknown);
+  the newest ten show and the rest fold behind "Show more" (`?answers=<n>`). A watching row
   never says it waits on him under the "does not need you yet" heading, and links the list that
   holds its items when one exists. Live's timeline gets its six rows, and the list of
   agent-started sessions renders only at the Technical depth.
