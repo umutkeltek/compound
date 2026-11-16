@@ -363,3 +363,75 @@ func TestWhereContractsSharingARepositoryAreSeparateTargets(t *testing.T) {
 		t.Fatalf("got %s with %d targets (%v), want multiple with 2", got.Status, len(got.Targets), got.Conflicts)
 	}
 }
+
+// TestOneNamePerAppAcrossOwnerGrowthAndResults pins the one rule for an
+// app's name. A product registered under two spellings, where only one
+// spelling carries the deploy target, used to be named by the deploy target
+// in `where` (and so in the inventory and the graph), by the spelling signals
+// use on the app pages, and by both spellings in the results list. Now the
+// owner names the group once: `where` keeps the deploy target as product_id
+// and adds group_id, growth names the app by that group_id, and the results
+// list folds both spellings into one row under it.
+func TestOneNamePerAppAcrossOwnerGrowthAndResults(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range []Bundle{
+		registryBundle("product:tide-log", "Tide Log"),
+		deployedBundle("product:tide_log", "Tide Log", "place:build-host", "make deploy"),
+		registryBundle("product:sundial", "Sundial"),
+	} {
+		if _, err := Apply(home, store, b, b.Product.ID+".yaml", tProduct); err != nil {
+			t.Fatalf("apply %s: %v", b.Product.ID, err)
+		}
+	}
+	writeGrowthSignals(t, home,
+		growthRow{product: "product:tide-log", metric: growthSalesFirstDownloads, date: growthDay(1), value: 2},
+		growthRow{product: "product:tide-log", metric: growthSalesFirstDownloads, date: growthDay(2), value: 3},
+	)
+
+	one, err := Where(store, "tide_log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if one.ProductID != "product:tide_log" || one.Deployment.Command != "make deploy" {
+		t.Fatalf("where keeps the deploy target as product_id: %+v", one)
+	}
+	if one.GroupID != "product:tide-log" {
+		t.Fatalf("where group_id = %q, want the spelling signals use", one.GroupID)
+	}
+	all, err := WhereAll(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupIDs := map[string]bool{}
+	for _, r := range all {
+		groupIDs[r.GroupID] = true
+	}
+
+	growth := buildGrowthT(t, home, growthOpts())
+	if len(growth.Apps) != len(all) {
+		t.Fatalf("growth apps = %d, where groups = %d", len(growth.Apps), len(all))
+	}
+	for _, app := range growth.Apps {
+		if !groupIDs[app.ProductID] {
+			t.Errorf("growth names app %q; where group ids are %v", app.ProductID, groupIDs)
+		}
+	}
+
+	results, err := Authority(home, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range results.Products {
+		if item.ProductID == "product:tide_log" {
+			t.Fatalf("results list a second row for the other spelling: %+v", results.Products)
+		}
+	}
+	tide := findAuthorityProduct(results.Products, "product:tide-log")
+	if tide.ProductID == "" || strings.Join(tide.Aliases, ",") != "product:tide_log" || tide.SignalCount != 2 {
+		t.Fatalf("results row for the app = %+v, want one row naming both spellings and both signals", tide)
+	}
+}

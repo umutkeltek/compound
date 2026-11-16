@@ -41,9 +41,14 @@ type WhereTarget struct {
 // Deployment is filled only when the query selects exactly one target; every
 // recorded target is listed in Targets either way.
 type WhereReport struct {
-	Query      string        `json:"query,omitempty"`
-	Status     string        `json:"status"`
-	ProductID  string        `json:"product_id,omitempty"`
+	Query     string `json:"query,omitempty"`
+	Status    string `json:"status"`
+	ProductID string `json:"product_id,omitempty"`
+	// GroupID is the one name the product goes by everywhere: app pages,
+	// results, the inventory, the dependency graph, and the app a piece of
+	// work records. ProductID stays the deploy target the answer selected;
+	// a product with an app and a web side has one GroupID and two targets.
+	GroupID    string        `json:"group_id,omitempty"`
 	Members    []string      `json:"members,omitempty"`
 	Deployment Deployment    `json:"deployment"`
 	Targets    []WhereTarget `json:"targets,omitempty"`
@@ -123,6 +128,65 @@ type whereIndex struct {
 	parent   []int
 	// claims holds the latest current claim per entity and predicate.
 	claims map[string]map[string]mem.Claim
+	// signalRows counts product signal rows per lowercased product id; the
+	// main spelling of a group is the registered member signals name most.
+	signalRows map[string]int
+}
+
+// registeredEntity reports whether a product entity was registered with
+// identity facts, as opposed to a slug some writer only put a claim on.
+func registeredEntity(e mem.Entity) bool {
+	return e.CreatedAt != "" || len(e.Aliases) > 0 || len(e.Identifiers) > 0
+}
+
+// mainSpelling is the one rule that picks the name a product group goes by.
+// Among registered spellings, the one the product signal ledger names most
+// wins; ties go to the first in sort order. A group with no registered
+// spelling chooses among all of them the same way. Signal writers are the
+// longest-running writers of product ids, so this is the spelling the app
+// pages and results already show; a separator-variant registered later does
+// not take the name over. ids must be sorted.
+func mainSpelling(ids []string, registered func(string) bool, rows func(string) int) string {
+	best := ""
+	pick := func(candidate func(string) bool) {
+		for _, id := range ids {
+			if candidate(id) && (best == "" || rows(id) > rows(best)) {
+				best = id
+			}
+		}
+	}
+	pick(registered)
+	if best == "" {
+		pick(func(string) bool { return true })
+	}
+	return best
+}
+
+// signalSpellingRows counts the signal rows that name each product spelling,
+// with the same filter the growth projection applies to its signal rows.
+func signalSpellingRows(signals []Signal) map[string]int {
+	rows := map[string]int{}
+	for _, s := range signals {
+		metric := strings.TrimSpace(s.MetricName)
+		if strings.TrimSpace(s.ProductID) == "" || metric == "" || strings.HasPrefix(metric, "ads_") {
+			continue
+		}
+		rows[strings.ToLower(s.ProductID)]++
+	}
+	return rows
+}
+
+// groupID is the main spelling of the group rooted at root.
+func (idx *whereIndex) groupID(root int) string {
+	members := idx.memberIndexes(root)
+	ids := make([]string, 0, len(members))
+	registered := map[string]bool{}
+	for _, i := range members {
+		ids = append(ids, idx.entities[i].Slug)
+		registered[idx.entities[i].Slug] = registeredEntity(idx.entities[i])
+	}
+	sort.Strings(ids)
+	return mainSpelling(ids, func(id string) bool { return registered[id] }, func(id string) int { return idx.signalRows[strings.ToLower(id)] })
 }
 
 func loadWhereIndex(store *mem.Store) (*whereIndex, error) {
@@ -162,6 +226,14 @@ func loadWhereIndex(store *mem.Store) (*whereIndex, error) {
 	}
 	sort.Slice(idx.entities, func(i, j int) bool { return idx.entities[i].Slug < idx.entities[j].Slug })
 	idx.fold()
+	idx.signalRows = map[string]int{}
+	if home := store.HomePath(); home != "" {
+		signals, err := loadSignals(home)
+		if err != nil {
+			return nil, err
+		}
+		idx.signalRows = signalSpellingRows(signals)
+	}
 	return idx, nil
 }
 
@@ -423,6 +495,7 @@ func (idx *whereIndex) report(root int, selected map[string]bool) WhereReport {
 		report.Members = append(report.Members, idx.entities[i].Slug)
 	}
 	report.ProductID = report.Members[0]
+	report.GroupID = idx.groupID(root)
 
 	var surfaces []string
 	for _, slug := range report.Members {
