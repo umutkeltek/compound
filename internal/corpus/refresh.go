@@ -13,11 +13,24 @@ import (
 )
 
 type SourceConfig struct {
+	Roots        []string `json:"roots,omitempty" yaml:"roots,omitempty"`
+	RootsCommand []string `json:"roots_command,omitempty" yaml:"roots_command,omitempty"`
+
 	Root   string `json:"root" yaml:"root"`
 	Format string `json:"format" yaml:"format"`
 }
 type EmbedderFactory func(LaneConfig) (Embedder, error)
 type Coverage struct {
+	BodyBytesRead       int64 `json:"body_bytes_read"`
+	VectorBytesRead     int64 `json:"vector_bytes_read"`
+	IndexBytesWritten   int64 `json:"index_bytes_written"`
+	PreparedItems       int   `json:"prepared_items"`
+	ReusedItems         int   `json:"reused_items"`
+	NewEmbeddedChunks   int   `json:"new_embedded_chunks"`
+	RefreshMilliseconds int64 `json:"refresh_milliseconds"`
+	IndexUnchanged      bool  `json:"index_unchanged"`
+	Roots               int   `json:"roots"`
+
 	RefusedSymlinks    int    `json:"refused_symlinks,omitempty"`
 	IndexPendingChunks int    `json:"index_pending_chunks,omitempty"`
 	InventoryKnown     bool   `json:"inventory_known"`
@@ -83,6 +96,7 @@ func Refresh(ctx context.Context, homePath string, lanes []LaneConfig, factory E
 		if lane.Source == nil {
 			continue
 		}
+		laneStarted := time.Now()
 		c := Coverage{Lane: lane.Lane, Status: "ok", CheckedAt: now.UTC().Format(time.RFC3339Nano)}
 		if err := ctx.Err(); err != nil {
 			c.Status = "cancelled"
@@ -91,7 +105,31 @@ func Refresh(ctx context.Context, homePath string, lanes []LaneConfig, factory E
 			if err != nil {
 				c.Status = "invalid_config"
 			} else {
-				captured, err := sourceobs.CaptureApprovedDirectoryBatchWithOptions(ctx, homePath, valid.SourceFamily, valid.Source.Root, valid.Source.Format, now, sourceobs.CaptureOptions{ContinueAfterRefusedSymlink: true})
+				roots, rootErr := valid.Source.approvedRoots(ctx)
+				captured := sourceobs.CaptureBatchReport{}
+				err := rootErr
+				c.Roots = len(roots)
+				if err == nil {
+					for i, root := range roots {
+						ns := ""
+						if i > 0 || valid.Source.Root == "" {
+							ns = root
+						}
+						part, e := sourceobs.CaptureApprovedDirectoryBatchWithOptions(ctx, homePath, valid.SourceFamily, root, valid.Source.Format, now, sourceobs.CaptureOptions{ContinueAfterRefusedSymlink: true, SourceNamespace: ns})
+						if e != nil {
+							err = e
+							break
+						}
+						captured.RefusedSymlinks += part.RefusedSymlinks
+						captured.Missing += part.Missing
+						captured.Oversized += part.Oversized
+						captured.Deferred += part.Deferred
+						captured.Captured += part.Captured
+						captured.Unchanged += part.Unchanged
+						captured.Pending += part.Pending
+						captured.ItemCount = part.ItemCount
+					}
+				}
 				if err != nil {
 					c.Status = "capture_failed"
 				} else {
@@ -113,10 +151,17 @@ func Refresh(ctx context.Context, homePath string, lanes []LaneConfig, factory E
 						if err != nil {
 							c.Status = "embedder_unavailable"
 						} else {
-							indexed, err := Index(ctx, homePath, valid, embedder, IndexOptions{})
+							indexed, err := Index(ctx, homePath, valid, embedder, IndexOptions{Incremental: true})
 							if err != nil {
 								c.Status = "index_failed"
 							} else {
+								c.BodyBytesRead = indexed.BodyBytesRead
+								c.VectorBytesRead = indexed.IndexBytesRead
+								c.IndexBytesWritten = indexed.IndexBytesWritten
+								c.PreparedItems = indexed.PreparedItems
+								c.ReusedItems = indexed.ReusedItems
+								c.NewEmbeddedChunks = indexed.NewEmbeddedChunks
+								c.IndexUnchanged = indexed.Unchanged
 								c.IndexedAt = c.CheckedAt
 								c.Items = indexed.Items
 								c.Chunks = indexed.TotalChunks
@@ -129,12 +174,13 @@ func Refresh(ctx context.Context, homePath string, lanes []LaneConfig, factory E
 				}
 			}
 		}
-		if c.MissingFiles > 0 || c.OversizedFiles > 0 || c.DeferredFiles > 0 {
+		if (c.MissingFiles > 0 || c.OversizedFiles > 0 || c.DeferredFiles > 0) && !hardRefreshStatuses[c.Status] {
 			c.Status = "capture_incomplete"
 		}
 		if c.RefusedSymlinks > 0 && (c.Status == "ok" || c.Status == "empty" || c.Status == "backfilling") {
 			c.Status = "capture_incomplete"
 		}
+		c.RefreshMilliseconds = time.Since(laneStarted).Milliseconds()
 		path := refreshPath(homePath, lane)
 		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 			c.Status = "status_write_failed"
@@ -154,8 +200,13 @@ func Refresh(ctx context.Context, homePath string, lanes []LaneConfig, factory E
 	return report
 }
 func (s SourceConfig) validate() error {
-	if !filepath.IsAbs(s.Root) {
+	if s.Root != "" && !filepath.IsAbs(s.Root) || s.Root == "" && len(s.Roots) == 0 && len(s.RootsCommand) == 0 {
 		return fmt.Errorf("approved source root must be absolute")
+	}
+	for _, root := range s.Roots {
+		if !filepath.IsAbs(root) {
+			return fmt.Errorf("approved source roots must be absolute")
+		}
 	}
 	switch s.Format {
 	case "markdown", "claude", "codex":

@@ -16,12 +16,13 @@ import (
 )
 
 type sourceManifestFileSnapshot struct {
-	path      string
-	spoolPath string
-	fileHash  string
-	bodyBytes int64
-	modTime   time.Time
-	mode      os.FileMode
+	fingerprint string
+	path        string
+	spoolPath   string
+	fileHash    string
+	bodyBytes   int64
+	modTime     time.Time
+	mode        os.FileMode
 }
 
 type sourceManifestSnapshotBatch struct {
@@ -381,12 +382,13 @@ func spoolSourceManifestSnapshotContext(ctx context.Context, file *os.File, sour
 	}
 	removeSpool = false
 	return sourceManifestFileSnapshot{
-		path:      sourcePath,
-		spoolPath: spoolPath,
-		fileHash:  "sha256:" + hex.EncodeToString(hasher.Sum(nil)),
-		bodyBytes: written,
-		modTime:   after.ModTime(),
-		mode:      after.Mode(),
+		path:        sourcePath,
+		fingerprint: sourceFingerprint(after),
+		spoolPath:   spoolPath,
+		fileHash:    "sha256:" + hex.EncodeToString(hasher.Sum(nil)),
+		bodyBytes:   written,
+		modTime:     after.ModTime(),
+		mode:        after.Mode(),
 	}, nil
 }
 

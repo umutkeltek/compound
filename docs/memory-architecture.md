@@ -549,3 +549,35 @@ Claude SessionEnd after a correction and verifies both latest and history.
 It performs no manual indexing or ledger repair between those steps. The
 synthetic embedder proves wiring and privacy, not natural-language recall quality;
 real-history evaluation is a separate acceptance check.
+
+
+## Incremental conversation refresh
+
+Approved directory capture reconciles file metadata on every refresh; inode and
+change-time fingerprints detect replacements that preserve size and modification
+time. Large active transcripts retain the existing quiet/growth snapshot window.
+Missing native files are reported while their immutable owned versions remain
+available. Optional approved `roots` and `roots_command` source configuration
+extend the same family across account homes. The inventory command must return
+`{"roots":["/absolute/source/root"]}`; the adapter refuses relative, linked,
+overlapping, unavailable or oversized inventories. It never logs in, moves
+credentials, or copies native sessions between accounts.
+
+Refresh checkpoints prepared chunks by immutable body identity and embedding
+prefix. Mirrored bodies retain separate source references but share semantic
+vectors. Unchanged inputs read metadata, skip body/vector reads, and leave the
+committed index byte-identical. Changed inputs read only uncached bodies.
+SHA-256 addressed binary vector shards replace the monolithic JSON rewrite:
+only changed hash partitions are published. An atomic manifest is the commit
+point and carries pending/error state; a per-lane lock serializes both legacy and
+incremental writers. Successful embedding batches survive interruption and
+resume idempotently. Legacy vector files are retained for rollback.
+
+Refresh coverage reports body bytes read, vector bytes read, index bytes written,
+prepared/reused items, new embeddings, inventory roots and elapsed milliseconds.
+These are payload counters, excluding filesystem metadata and kernel caching.
+A configured-source `corpus index --lane L --rebuild` explicitly rereads and
+rechunks all owned bodies and reconciles the incremental result. Query and doctor
+verify referenced vector shard checksums; missing/corrupt shards are errors,
+never an empty successful search. Empty normalized transcripts are recorded as
+explicit empty-item checkpoints, not missing chunk records.

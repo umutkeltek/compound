@@ -62,6 +62,9 @@ func Doctor(homePath string, lane LaneConfig) (DoctorReport, error) {
 		return report, err
 	}
 	report.Items = len(manifest.Items)
+	if manifest.VectorPending > 0 || manifest.VectorError != "" {
+		report.Checks = append(report.Checks, doctorCheck("index_progress", false, fmt.Sprintf("pending=%d error=%s", manifest.VectorPending, manifest.VectorError)))
+	}
 	rawMissing, err := rawMissingChunkFields(filepath.Join(dir, "manifest.json"))
 	if err != nil {
 		return report, err
@@ -70,7 +73,7 @@ func Doctor(homePath string, lane LaneConfig) (DoctorReport, error) {
 	lossyOrder := 0
 	chunkHashes := map[string]string{}
 	for _, item := range manifest.Items {
-		if err := validateChunkRecords(item); err != nil {
+		if err := validateChunkRecords(item); err != nil && !manifest.EmptyItems[item.ID] {
 			lossyOrder++
 		}
 		for _, chunk := range item.Chunks {

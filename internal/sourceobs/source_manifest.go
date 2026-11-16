@@ -40,6 +40,9 @@ type SourceManifest struct {
 }
 
 type SourceManifestItem struct {
+	SourceNamespace   string `json:"source_namespace,omitempty"`
+	SourceFingerprint string `json:"source_fingerprint,omitempty"`
+
 	ID                 string                   `json:"id"`
 	SourceKey          string                   `json:"source_key,omitempty"`
 	VersionState       string                   `json:"version_state,omitempty"`

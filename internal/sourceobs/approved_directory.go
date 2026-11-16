@@ -13,6 +13,7 @@ import (
 )
 
 type CaptureOptions struct {
+	SourceNamespace string
 	// Refuse each link without reading it, while capturing regular files.
 	ContinueAfterRefusedSymlink bool
 }
@@ -45,7 +46,7 @@ func CaptureApprovedDirectoryBatchWithOptions(ctx context.Context, homePath, fam
 	}
 	current := map[string]SourceManifestItem{}
 	for _, item := range existing.Items {
-		if item.VersionState != "superseded" {
+		if item.VersionState != "superseded" && item.SourceNamespace == opts.SourceNamespace {
 			current[item.SourceKey] = item
 		}
 	}
@@ -54,16 +55,19 @@ func CaptureApprovedDirectoryBatchWithOptions(ctx context.Context, homePath, fam
 	seen := map[string]bool{}
 	choose := func(relative string, info os.FileInfo) bool {
 		key := idFor("source_", family, filepath.ToSlash(relative))
+		if opts.SourceNamespace != "" {
+			key = idFor("source_", family, opts.SourceNamespace, filepath.ToSlash(relative))
+		}
 		seen[key] = true
 		if info.Size() > 1<<30 {
 			result.Oversized++
 			return false
 		}
-		if old, ok := current[key]; ok && old.BodyPolicy == "owned_snapshot" && old.BodyBytes == info.Size() && old.SnapshotTime == info.ModTime().UTC().Format(time.RFC3339Nano) {
+		if old, ok := current[key]; ok && old.BodyPolicy == "owned_snapshot" && old.BodyBytes == info.Size() && old.SnapshotTime == info.ModTime().UTC().Format(time.RFC3339Nano) && (old.SourceFingerprint == "" || old.SourceFingerprint == sourceFingerprint(info)) {
 			result.Unchanged++
 			return false
 		}
-		if old, ok := current[key]; ok && old.BodyPolicy == "owned_snapshot" && !ownedVersionDue(old, info, now) {
+		if old, ok := current[key]; ok && old.BodyPolicy == "owned_snapshot" && !(old.SourceFingerprint != "" && old.SourceFingerprint != sourceFingerprint(info) && old.BodyBytes == info.Size() && old.SnapshotTime == info.ModTime().UTC().Format(time.RFC3339Nano)) && !ownedVersionDue(old, info, now) {
 			result.Pending++
 			return false
 		}
@@ -132,6 +136,11 @@ func CaptureApprovedDirectoryBatchWithOptions(ctx context.Context, homePath, fam
 		}
 		item.SnapshotTime = snapshots[item.SourceRef].modTime.UTC().Format(time.RFC3339Nano)
 		item.SourceKey = idFor("source_", family, filepath.ToSlash(rel))
+		item.SourceNamespace = opts.SourceNamespace
+		item.SourceFingerprint = snapshots[item.SourceRef].fingerprint
+		if opts.SourceNamespace != "" {
+			item.SourceKey = idFor("source_", family, opts.SourceNamespace, filepath.ToSlash(rel))
+		}
 		if format != "markdown" {
 			item.SourceKind = format + "_transcript_v1"
 		}

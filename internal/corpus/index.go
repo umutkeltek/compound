@@ -23,10 +23,20 @@ type Embedder interface {
 }
 
 type IndexOptions struct {
-	Rebuild bool
+	Rebuild     bool
+	Incremental bool
 }
 
 type IndexReport struct {
+	BodyBytesRead     int64 `json:"body_bytes_read"`
+	IndexBytesRead    int64 `json:"vector_bytes_read"`
+	IndexBytesWritten int64 `json:"index_bytes_written"`
+	PreparedItems     int   `json:"prepared_items"`
+	ReusedItems       int   `json:"reused_items"`
+	NewEmbeddedChunks int   `json:"new_embedded_chunks"`
+	WallMilliseconds  int64 `json:"wall_milliseconds"`
+	Unchanged         bool  `json:"unchanged"`
+
 	SchemaVersion    string `json:"schema_version"`
 	Lane             string `json:"lane"`
 	IndexDir         string `json:"index_dir"`
@@ -53,6 +63,11 @@ type IdentityFile struct {
 }
 
 type Manifest struct {
+	VectorShards  map[string]string `json:"vector_shards,omitempty"`
+	VectorPending int               `json:"vector_pending,omitempty"`
+	VectorError   string            `json:"vector_error,omitempty"`
+	EmptyItems    map[string]bool   `json:"empty_items,omitempty"`
+
 	SchemaVersion       string                         `json:"schema_version"`
 	Lane                string                         `json:"lane"`
 	SourceFamily        string                         `json:"source_family"`
@@ -98,7 +113,15 @@ func Index(ctx context.Context, homePath string, lane LaneConfig, embedder Embed
 	if err := validateEmbedder(lane, embedder); err != nil {
 		return IndexReport{}, err
 	}
+	if opts.Incremental || (opts.Rebuild && lane.Source != nil) {
+		return indexIncremental(ctx, homePath, lane, embedder, opts)
+	}
 	dir := IndexDir(homePath, lane)
+	unlock, err := lockCorpusIndex(ctx, dir)
+	if err != nil {
+		return IndexReport{}, err
+	}
+	defer unlock()
 	prepared, err := prepareIndexContext(ctx, homePath, lane)
 	if err != nil {
 		return IndexReport{}, err
@@ -394,6 +417,14 @@ func readManifest(dir string) (Manifest, error) {
 }
 
 func readVectors(dir string) (VectorFile, error) {
+	manifest, err := readManifest(dir)
+	if err != nil && !os.IsNotExist(err) {
+		return VectorFile{}, err
+	}
+	if manifest.VectorShards != nil {
+		return readShardedVectors(dir, manifest)
+	}
+
 	var out VectorFile
 	if err := readJSONFile(filepath.Join(dir, "vectors.json"), &out); err != nil {
 		return VectorFile{}, err
@@ -424,6 +455,11 @@ func writeJSONFile(path string, value any) error {
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(raw); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
 		tmp.Close()
 		_ = os.Remove(tmpName)
 		return err
