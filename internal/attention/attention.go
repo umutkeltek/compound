@@ -37,6 +37,10 @@ const (
 	KindJobHealth     = "job_health"
 	KindProductMove   = "product_move"
 	KindActivity      = "activity"
+	// KindWaitingOnOthers is open work that waits on something outside the
+	// operator: another work item, an account, a device. It is shown, never
+	// counted as his.
+	KindWaitingOnOthers = "waiting_on_others"
 
 	BlastRead               = "read"
 	BlastLocalReversible    = "local_reversible"
@@ -216,6 +220,7 @@ var knownAreaClassifications = map[string]areaClassification{
 	"route-remorse":                  {Kind: KindContradiction},
 	"lease-hygiene":                  {Kind: KindHygiene, BlastRadius: BlastLocalReversible, Reversibility: Reversible},
 	"activity-unaccounted":           {Kind: KindActivity, BlastRadius: BlastRead, Reversibility: Reversible},
+	"workbench-waiting-on-others":    {Kind: KindWaitingOnOthers, BlastRadius: BlastRead, Reversibility: Reversible},
 }
 
 func Build(in Inputs, now time.Time) Report {
@@ -420,7 +425,14 @@ func groupsFromWorkbench(report work.WorkbenchReport, now time.Time) []Group {
 			Freshness:       freshness,
 		})
 	}
+	// Held work is the operator's valve: it stays until he releases or cancels
+	// it. Blocked work waits on something outside him (another item, an
+	// account, a device) and moves to its own visible group below, unless the
+	// work itself says it needs the operator.
 	blocked := filterWorkbenchItems(report.Open, func(item work.WorkbenchItem) bool {
+		if workbenchItemWaitsOnOthers(item) {
+			return false
+		}
 		return item.State == "held" || item.State == "blocked" || (workbenchItemCanMove(item) && workbenchItemNeedsOperator(item))
 	})
 	if len(blocked) > 0 {
@@ -432,13 +444,30 @@ func groupsFromWorkbench(report work.WorkbenchReport, now time.Time) []Group {
 			Source:          SourceWorkbench,
 			Kind:            KindGateAdmit,
 			Count:           len(blocked),
-			OperatorSummary: plural(len(blocked), "open work item is blocked on operator review.", "open work items are blocked on operator review."),
+			OperatorSummary: plural(len(blocked), "open work item is held for your answer.", "open work items are held for your answer."),
 			OperatorUnlock:  "Resolve the hold before executors can continue.",
 			BlastRadius:     blastRadius,
 			Reversibility:   reversibility,
 			OldestCreatedAt: oldestWorkbenchItemTime(blocked, freshness.GeneratedAt),
 			TerminalReason:  firstWorkbenchReason(blocked),
 			ItemIDs:         workbenchItemIDs(blocked),
+			Freshness:       freshness,
+		})
+	}
+	waiting := filterWorkbenchItems(report.Open, workbenchItemWaitsOnOthers)
+	if len(waiting) > 0 {
+		out = append(out, Group{
+			Key:             "workbench:waiting-on-others",
+			Area:            "workbench-waiting-on-others",
+			Band:            BandWatching,
+			Source:          SourceWorkbench,
+			Kind:            KindWaitingOnOthers,
+			Count:           len(waiting),
+			OperatorSummary: plural(len(waiting), "open work item waits on something outside you: another item, an account or a device.", "open work items wait on something outside you: another item, an account or a device."),
+			OperatorUnlock:  "Nothing is needed from you now. The work's owner continues it when what it waits on is ready.",
+			OldestCreatedAt: oldestWorkbenchItemTime(waiting, freshness.GeneratedAt),
+			TerminalReason:  firstWorkbenchReason(waiting),
+			ItemIDs:         workbenchItemIDs(waiting),
 			Freshness:       freshness,
 		})
 	}
@@ -1073,6 +1102,14 @@ func workbenchItemNeedsOperator(item work.WorkbenchItem) bool {
 	if item.State == "held" || item.State == "blocked" {
 		return true
 	}
+	return workbenchItemNamesOperator(item)
+}
+
+// workbenchItemNamesOperator reads the work's own signals that it needs the
+// operator: an action context or review card that requires him, action text
+// that says so (or names a conflict), or an action whose reach is external or
+// high-blast.
+func workbenchItemNamesOperator(item work.WorkbenchItem) bool {
 	if item.ActionContext != nil && item.ActionContext.RequiresOperator {
 		return true
 	}
@@ -1087,6 +1124,14 @@ func workbenchItemNeedsOperator(item work.WorkbenchItem) bool {
 	}
 	blast := deriveBlastRadius(Group{OperatorSummary: text}, BlastLocalReversible)
 	return blast == BlastExternalSideEffect || highBlast(blast)
+}
+
+// workbenchItemWaitsOnOthers reports blocked work that names no operator
+// need. The owner's own state split decides it (held is the operator's valve;
+// blocked waits on a dependency), and any signal that the work needs him keeps
+// it his: the same signals that gate ready work (workbenchItemNamesOperator).
+func workbenchItemWaitsOnOthers(item work.WorkbenchItem) bool {
+	return strings.TrimSpace(item.State) == "blocked" && !workbenchItemNamesOperator(item)
 }
 
 func workbenchGateRisk(items []work.WorkbenchItem) (string, string) {

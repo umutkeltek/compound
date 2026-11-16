@@ -158,7 +158,7 @@ func TestAttentionCLIReceiptOnlyTidyFoldsLiveTextOnly(t *testing.T) {
 	defaultOutput := captureStdout(t, func() {
 		cmdAttention([]string{"--home", homePath})
 	})
-	if !strings.Contains(defaultOutput, "1 open work item is blocked on operator review.") {
+	if !strings.Contains(defaultOutput, "1 open work item is held for your answer.") {
 		t.Fatalf("default text dropped tidy needs_you group:\n%s", defaultOutput)
 	}
 	if strings.Contains(defaultOutput, "receipt-only") {
@@ -168,7 +168,7 @@ func TestAttentionCLIReceiptOnlyTidyFoldsLiveTextOnly(t *testing.T) {
 	receiptOnlyOutput := captureStdout(t, func() {
 		cmdAttention([]string{"--receipt-only-grade", attention.RiskGradeTidy, "--home", homePath})
 	})
-	if strings.Contains(receiptOnlyOutput, "1 open work item is blocked on operator review.") {
+	if strings.Contains(receiptOnlyOutput, "1 open work item is held for your answer.") {
 		t.Fatalf("receipt-only text retained tidy needs_you group:\n%s", receiptOnlyOutput)
 	}
 	if !strings.Contains(receiptOnlyOutput, "1 safe open work item can move.") {

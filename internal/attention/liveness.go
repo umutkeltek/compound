@@ -21,10 +21,15 @@ import (
 // Live count: an item counts under needs_you only when it is live. A review
 // record that is already decided, already reviewed, the paperwork of a change
 // that already ran, about something that no longer exists, test data, a file
-// kept inside another record's folder, held on something else, unable to say
-// what it asks, or a repeat of another counted item is SET ASIDE: it leaves the
+// kept inside another record's folder, held on something else, or a repeat of
+// another counted item with the same claim is SET ASIDE: it leaves the
 // needs_you count and is listed in Report.SetAside with its reason, so nothing
 // disappears silently and agents can see what to tidy.
+//
+// A record whose writer gave it only a template sentence is NOT set aside for
+// that alone: whole kinds of real requests (job repairs, lock clearing, copy
+// retirement) carry nothing else, so the rule would hide every future one. It
+// stays counted and its group is marked needs_wording.
 //
 // This is a read-only projection. It never writes, resolves or closes a record;
 // the record files stay exactly as the owners wrote them.
@@ -49,7 +54,6 @@ const (
 	SetAsideSubjectGone      = "subject_gone"
 	SetAsideNoLongerCurrent  = "no_longer_current"
 	SetAsideOnHold           = "on_hold"
-	SetAsideNoQuestion       = "no_question"
 	SetAsideDuplicate        = "duplicate"
 )
 
@@ -64,7 +68,6 @@ var setAsideReasonOrder = []string{
 	SetAsideSubjectGone,
 	SetAsideNoLongerCurrent,
 	SetAsideOnHold,
-	SetAsideNoQuestion,
 	SetAsideDuplicate,
 }
 
@@ -77,8 +80,7 @@ var setAsideReasonText = map[string]string{
 	SetAsideSubjectGone:      "What it is about no longer exists.",
 	SetAsideNoLongerCurrent:  "No longer matches the current state; it needs a fresh check first.",
 	SetAsideOnHold:           "Held or waiting on something other than you.",
-	SetAsideNoQuestion:       "Does not say what it is asking; an agent must word it first.",
-	SetAsideDuplicate:        "Repeat of another item that is still counted.",
+	SetAsideDuplicate:        "Asks the same thing as another item that is still counted.",
 }
 
 // SetAsideReasons returns the reason codes in check order.
@@ -133,6 +135,9 @@ type Probe interface {
 	ReadFile(path string, limit int64) ([]byte, error)
 	// ProcessState says whether a process id is still running.
 	ProcessState(pid int) SubjectState
+	// FileTime is when a file was last written. Review records are written
+	// once by their owners, so it stands in for a missing created_at.
+	FileTime(path string) (time.Time, bool)
 }
 
 // SubjectState is the answer of a cheap, read-only existence check.
@@ -190,6 +195,14 @@ func (osProbe) ReadFile(path string, limit int64) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(f, limit+1))
 }
 
+func (osProbe) FileTime(path string) (time.Time, bool) {
+	info, err := os.Stat(strings.TrimSpace(path))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return info.ModTime(), true
+}
+
 func (osProbe) ProcessState(pid int) SubjectState {
 	if pid <= 0 {
 		return SubjectUnknown
@@ -238,8 +251,11 @@ type liveness struct {
 	members  []reviewMember
 	areas    map[string]bool
 	finished map[string]map[string]bool
-	records  map[string]map[string]any
-	raw      map[string][]byte
+	// dismissed holds, per area and change key, the latest time a recorded
+	// dismissal closed one record of that change.
+	dismissed map[string]map[string]time.Time
+	records   map[string]map[string]any
+	raw       map[string][]byte
 }
 
 // reviewLiveness splits the projected review groups into live groups and
@@ -250,13 +266,14 @@ func reviewLiveness(report reviewartifact.QueueReport, projected []Group, probe 
 		probe = osProbe{}
 	}
 	l := &liveness{
-		probe:    probe,
-		now:      now,
-		report:   report,
-		areas:    map[string]bool{},
-		finished: map[string]map[string]bool{},
-		records:  map[string]map[string]any{},
-		raw:      map[string][]byte{},
+		probe:     probe,
+		now:       now,
+		report:    report,
+		areas:     map[string]bool{},
+		finished:  map[string]map[string]bool{},
+		dismissed: map[string]map[string]time.Time{},
+		records:   map[string]map[string]any{},
+		raw:       map[string][]byte{},
 	}
 	l.indexItems()
 	for i := range projected {
@@ -301,16 +318,63 @@ func (l *liveness) indexItems() {
 	for _, item := range l.report.Items {
 		area := strings.TrimSpace(item.Area)
 		l.areas[area] = true
+		if at, ok := closingDismissal(item); ok {
+			if l.dismissed[area] == nil {
+				l.dismissed[area] = map[string]time.Time{}
+			}
+			for _, key := range l.changeKeys(item) {
+				if prev, seen := l.dismissed[area][key]; !seen || at.After(prev) {
+					l.dismissed[area][key] = at
+				}
+			}
+		}
 		if !isFinishedMarker(item) {
 			continue
 		}
 		if l.finished[area] == nil {
 			l.finished[area] = map[string]bool{}
 		}
-		for _, key := range changeKeys(item) {
+		for _, key := range l.changeKeys(item) {
 			l.finished[area][key] = true
 		}
 	}
+}
+
+// closingDismissal reports a recorded "dismissed" resolution and when it was
+// made. Only a dismissal closes a change: "parked" postpones and "reviewed"
+// records a look, so neither speaks for the change's other records.
+func closingDismissal(item reviewartifact.QueueItem) (time.Time, bool) {
+	r := item.Resolution
+	if r == nil || strings.TrimSpace(r.Status) != "recorded" || strings.TrimSpace(r.Decision) != "dismissed" {
+		return time.Time{}, false
+	}
+	return parseTime(r.ResolvedAt)
+}
+
+// changeDismissed reports a record of a change whose other record was
+// dismissed AFTER this one was written: the dismissal was made with this
+// record on file, so it closed it too. A record written after the dismissal,
+// or one with no readable time, is new information and stays live. A record
+// with no created_at is timed by its file, which its owner writes once; a
+// rewrite after the dismissal makes it newer, which keeps it live.
+func (l *liveness) changeDismissed(item reviewartifact.QueueItem) bool {
+	marks := l.dismissed[strings.TrimSpace(item.Area)]
+	if len(marks) == 0 {
+		return false
+	}
+	created, ok := parseTime(item.CreatedAt)
+	if !ok {
+		created, ok = l.probe.FileTime(item.JSONPath)
+	}
+	if !ok {
+		return false
+	}
+	for _, key := range l.changeKeys(item) {
+		if at, seen := marks[key]; seen && !created.After(at) {
+			return true
+		}
+	}
+	return false
 }
 
 // membersOf returns the queue items that make up one review group, matched the
@@ -361,6 +425,10 @@ func (l *liveness) classify(item reviewartifact.QueueItem) string {
 		return SetAsideAlreadyReviewed
 	case l.changeFinished(item):
 		return SetAsideFinishedChange
+	case l.changeDismissed(item):
+		// After finished_change: an outcome on file is stronger evidence
+		// than a dismissal recorded on another record of the change.
+		return SetAsideAlreadyDecided
 	case l.insideRecordFolder(item.Area):
 		return SetAsideRecordFolderFile
 	case l.testData(item):
@@ -371,8 +439,6 @@ func (l *liveness) classify(item reviewartifact.QueueItem) string {
 		return SetAsideNoLongerCurrent
 	case strings.TrimSpace(item.Band) == reviewartifact.BandWatching:
 		return SetAsideOnHold
-	case noQuestion(item) && !productAsk(item):
-		return SetAsideNoQuestion
 	default:
 		return ""
 	}
@@ -430,7 +496,7 @@ func (l *liveness) changeFinished(item reviewartifact.QueueItem) bool {
 		return true
 	}
 	marks := l.finished[strings.TrimSpace(item.Area)]
-	for _, key := range changeKeys(item) {
+	for _, key := range l.changeKeys(item) {
 		if marks[key] {
 			return true
 		}
@@ -479,7 +545,8 @@ func (l *liveness) testData(item reviewartifact.QueueItem) bool {
 }
 
 // subjectGone checks the subjects a record names in a known field, cheaply and
-// read-only: a worktree path, a git root, or the process of a lock waiter.
+// read-only: a worktree path, a git root, the process of a lock waiter, or the
+// lock file a stale-lock plan was written to clear.
 func (l *liveness) subjectGone(item reviewartifact.QueueItem) bool {
 	record, ok := l.record(item.JSONPath)
 	if !ok {
@@ -496,22 +563,32 @@ func (l *liveness) subjectGone(item reviewartifact.QueueItem) bool {
 	if pid, ok := intField(record, "waiter_pid"); ok && pid > 0 && l.probe.ProcessState(pid) == SubjectGone {
 		return true
 	}
+	if path := lockFileOfPlan(record); path != "" && l.probe.PathState(path) == SubjectGone {
+		return true
+	}
 	return false
 }
 
-// noQuestion trusts only the queue's own "fallback" mark: no writer or
-// annotator could say what the record asks. A record with no summary source at
-// all is unknown and stays live.
-func noQuestion(item reviewartifact.QueueItem) bool {
-	return strings.TrimSpace(item.SummarySource) == reviewartifact.SummarySourceFallback
+// lockFileOfPlan names the lock file a stale-lock recovery plan was written to
+// clear: the plan snapshots the lock it found in a primary checkout
+// (state.snapshot.repo plus a lock identity), so the file is
+// <repo>/.git/index.lock. A lock that is still there keeps the plan live, even
+// if it is a newer lock: the projection never decides that one away.
+func lockFileOfPlan(record map[string]any) string {
+	state, _ := record["state"].(map[string]any)
+	snapshot, _ := state["snapshot"].(map[string]any)
+	repo := stringField(snapshot, "repo")
+	if _, hasLock := snapshot["lock"].(map[string]any); !hasLock || repo == "" || !filepath.IsAbs(repo) {
+		return ""
+	}
+	return filepath.Join(repo, ".git", "index.lock")
 }
 
-// productAsk keeps an open product record live even when its writer gave it no
-// question: product records reach the operator's apps and public output, and
-// a real one hidden from him costs more than an unworded card. Its group is
-// marked needs_wording so the gap is visible; the fix belongs to the writer.
-func productAsk(item reviewartifact.QueueItem) bool {
-	return strings.HasPrefix(strings.TrimSpace(item.Area), "product-") && strings.TrimSpace(item.Status) == "review_required"
+// noQuestion trusts only the queue's own "fallback" mark: no writer or
+// annotator could say what the record asks. It never sets a record aside; it
+// marks the live group needs_wording so an agent words it.
+func noQuestion(item reviewartifact.QueueItem) bool {
+	return strings.TrimSpace(item.SummarySource) == reviewartifact.SummarySourceFallback
 }
 
 // noLongerCurrent reads the source-control owner's own verdict on a dirty-plan
@@ -563,9 +640,12 @@ func (l *liveness) postponedUntil(item reviewartifact.QueueItem) string {
 
 // collapseDuplicates keeps one live representative per real-world question.
 // Two records are the same item when they share an id in one area (several
-// files of one record), or carry the same question in one area (the same ask
-// filed again). The oldest group and record win, so the representative is
-// stable from one read to the next.
+// files of one record), or carry the same claim in one area (the same ask
+// filed again). The claim is the writer's own statement of what the record
+// asks (decision_card.claim). A shared summary sentence is not enough: owners
+// stamp one template sentence on many different proposals, and folding those
+// would hide every proposal but one. The oldest group and record win, so the
+// representative is stable from one read to the next.
 func (l *liveness) collapseDuplicates() {
 	order := make([]int, 0, len(l.groups))
 	for i := range l.groups {
@@ -607,10 +687,10 @@ func (l *liveness) collapseDuplicates() {
 			key := l.groups[gi].group.Key
 			idKey := strings.TrimSpace(m.item.Area) + "\x00" + strings.TrimSpace(m.item.ID)
 			questionKey := ""
-			// A generic fallback sentence is the same words for different
-			// asks, so it never makes two records the same question.
-			if question := normalizeQuestion(m.item.OperatorSummary); question != "" && !noQuestion(m.item) {
-				questionKey = strings.TrimSpace(m.item.Area) + "\x00" + question + "\x00" + normalizeQuestion(m.item.ContextLabel)
+			if m.item.DecisionCard != nil {
+				if claim := normalizeQuestion(m.item.DecisionCard.Claim); claim != "" {
+					questionKey = strings.TrimSpace(m.item.Area) + "\x00" + claim + "\x00" + normalizeQuestion(m.item.ContextLabel)
+				}
 			}
 			if rep, ok := byID[idKey]; ok {
 				m.reason, m.dupOf = SetAsideDuplicate, rep
@@ -792,12 +872,20 @@ func isFinishedMarker(item reviewartifact.QueueItem) bool {
 }
 
 // changeKeys names the change a record belongs to: the leading token of its id
-// and of its file name. Owners write a change's records under one plan id, but
+// and of its file name, and the plan a review record names in its plan_id (or
+// request.plan_id) field. Owners write a change's records under one plan id, but
 // some name the file after the action and the id after the plan, or the
-// reverse, so both are kept.
-func changeKeys(item reviewartifact.QueueItem) []string {
+// reverse, so all are kept.
+func (l *liveness) changeKeys(item reviewartifact.QueueItem) []string {
+	values := []string{item.ID, recordStem(item.JSONPath)}
+	if record, ok := l.record(item.JSONPath); ok {
+		values = append(values, stringField(record, "plan_id"))
+		if request, ok := record["request"].(map[string]any); ok {
+			values = append(values, stringField(request, "plan_id"))
+		}
+	}
 	var out []string
-	for _, value := range []string{item.ID, recordStem(item.JSONPath)} {
+	for _, value := range values {
 		value = strings.TrimSpace(value)
 		if i := strings.Index(value, "."); i >= 0 {
 			value = value[:i]

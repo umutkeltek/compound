@@ -38,6 +38,9 @@ type liveRecord struct {
 	created   time.Time
 	body      map[string]any
 	sidecars  map[string]any // file name -> JSON body, written next to the record
+	claim     string         // decision-card claim: the record's real question
+	fileTime  time.Time      // when set, the record file's modification time
+	resolved  *reviewartifact.ReviewResolution
 }
 
 func liveFixture(t *testing.T, records ...liveRecord) *reviewartifact.QueueReport {
@@ -59,6 +62,11 @@ func liveFixture(t *testing.T, records ...liveRecord) *reviewartifact.QueueRepor
 		}
 		path := filepath.Join(dir, file)
 		writeJSONFile(t, path, body)
+		if !r.fileTime.IsZero() {
+			if err := os.Chtimes(path, r.fileTime, r.fileTime); err != nil {
+				t.Fatal(err)
+			}
+		}
 		var extras []string
 		names := make([]string, 0, len(r.sidecars))
 		for name := range r.sidecars {
@@ -86,7 +94,13 @@ func liveFixture(t *testing.T, records ...liveRecord) *reviewartifact.QueueRepor
 		if band == "" {
 			band = reviewartifact.BandForStatus(r.status, r.readiness)
 		}
+		var card *reviewartifact.DecisionCard
+		if r.claim != "" {
+			card = &reviewartifact.DecisionCard{Claim: r.claim}
+		}
 		report.Items = append(report.Items, reviewartifact.QueueItem{
+			DecisionCard:    card,
+			Resolution:      r.resolved,
 			Area:            r.area,
 			ID:              r.id,
 			Status:          r.status,
@@ -221,17 +235,17 @@ func TestLiveCountNeverCountsDismissedResolution(t *testing.T) {
 }
 
 // Case 2: one thing counted many times. Several files of one record collapse
-// to one item, and the same question filed in separate records collapses to
-// one item, each carrying how many records stand behind it.
+// to one item, and the same claim filed in separate records collapses to one
+// item, each carrying how many records stand behind it.
 func TestLiveCountCollapsesRepeatsToOneItem(t *testing.T) {
 	created := liveNow.Add(-48 * time.Hour)
 	report := Build(Inputs{Reviews: liveFixture(t,
 		liveRecord{area: "job-repair", id: "jr_1", file: "jr_1.plan.json", status: "review_required", summary: "Restart the sample sync job?", groupKey: "job-repair|sync", created: created},
 		liveRecord{area: "job-repair", id: "jr_1", file: "jr_1.request.json", status: "review_required", summary: "Restart the sample sync job?", groupKey: "job-repair|sync", created: created.Add(time.Minute)},
 		liveRecord{area: "job-repair", id: "jr_1", file: "jr_1.proposal.json", status: "review_required", summary: "Restart the sample sync job?", groupKey: "job-repair|sync", created: created.Add(2 * time.Minute)},
-		liveRecord{area: "skill-proposals", id: "sp_a", status: "review_required", summary: "Review the sample skill change?", context: "mined proposal", created: created},
-		liveRecord{area: "skill-proposals", id: "sp_b", status: "review_required", summary: "Review the sample skill change?", context: "mined proposal", created: created.Add(time.Hour)},
-		liveRecord{area: "skill-proposals", id: "sp_c", status: "review_required", summary: "Review the sample skill change?", context: "mined proposal", created: created.Add(2 * time.Hour)},
+		liveRecord{area: "skill-proposals", id: "sp_a", status: "review_required", summary: "Review the sample skill change?", context: "mined proposal", claim: "Review 40 recent events for one repeated tool gap.", created: created},
+		liveRecord{area: "skill-proposals", id: "sp_b", status: "review_required", summary: "Review the sample skill change?", context: "mined proposal", claim: "Review 40 recent events for one repeated tool gap.", created: created.Add(time.Hour)},
+		liveRecord{area: "skill-proposals", id: "sp_c", status: "review_required", summary: "Review the sample skill change?", context: "mined proposal", claim: "Review 40 recent events for one repeated tool gap.", created: created.Add(2 * time.Hour)},
 	)}, liveNow)
 
 	if report.Counts.NeedsYou != 2 || report.Counts.NeedsYouGroups != 2 {
@@ -305,7 +319,8 @@ func TestLiveCountSetsAsideRecordsWhoseSubjectIsGone(t *testing.T) {
 // counts; an open wait whose waiter has ended is set aside; an open wait whose
 // waiter still runs counts when its record carries a valid card. The helper's
 // current records carry no context label or group key, so the queue marks
-// them "fallback" and they wait in the set-aside list as "no question".
+// them "fallback": such a wait still counts while its waiter runs, and its
+// group is marked needs_wording instead of being hidden.
 func TestLiveCountLockWaitsFromTheReviewQueue(t *testing.T) {
 	homePath := t.TempDir()
 	dir := filepath.Join(homePath, "reviews", "lock-waits")
@@ -343,10 +358,9 @@ func TestLiveCountLockWaitsFromTheReviewQueue(t *testing.T) {
 	}
 	report := Build(Inputs{Reviews: &reviews}, liveNow)
 
-	wantIDs(t, "needs_you ids", needsYouIDs(report), "lockwait-sample-3")
+	wantIDs(t, "needs_you ids", needsYouIDs(report), "lockwait-sample-3", "lockwait-sample-4")
 	got := setAsideByReason(t, report)
 	wantIDs(t, "subject_gone", got["subject_gone"], "lockwait-sample-1")
-	wantIDs(t, "no_question", got["no_question"], "lockwait-sample-4")
 	for reason, ids := range got {
 		for _, id := range ids {
 			if id == "lockwait-sample-2" {
@@ -395,7 +409,7 @@ func TestLiveCountSetsAsideTestData(t *testing.T) {
 func TestLiveCountPostponedItemsComeBackOnceAndMarked(t *testing.T) {
 	created := liveNow.Add(-90 * 24 * time.Hour)
 	deferred := func(id string) liveRecord {
-		return liveRecord{area: "skill-proposals", id: id, status: "review_required", summary: "Review the sample skill change?", context: "mined proposal", created: created,
+		return liveRecord{area: "skill-proposals", id: id, status: "review_required", summary: "Review the sample skill change?", context: "mined proposal", claim: "Review 40 recent events for one repeated tool gap.", created: created,
 			sidecars: map[string]any{id + ".cld_1.decision.json": map[string]any{"status": "recorded", "decision": "defer", "defer_until": "2026-11-15T00:00:00Z"}}}
 	}
 	report := Build(Inputs{Reviews: liveFixture(t, deferred("sp_1"), deferred("sp_2"), deferred("sp_3"))}, liveNow)
@@ -412,24 +426,9 @@ func TestLiveCountPostponedItemsComeBackOnceAndMarked(t *testing.T) {
 	}
 }
 
-// Case 7: a record that cannot say what it is asking is not shown as a
-// decision; it waits in the set-aside list for an agent to word it.
-func TestLiveCountSetsAsideRecordsWithNoQuestion(t *testing.T) {
-	created := liveNow.Add(-3 * 24 * time.Hour)
-	report := Build(Inputs{Reviews: liveFixture(t,
-		liveRecord{area: "job-repair", id: "jr_blank", status: "unknown", summary: "A new job repair record needs your decision.", source: reviewartifact.SummarySourceFallback, groupKey: "job-repair|review", created: created},
-		liveRecord{area: "job-repair", id: "jr_blank_2", status: "unknown", summary: "A new job repair record needs your decision.", source: reviewartifact.SummarySourceFallback, groupKey: "job-repair|review", created: created},
-		liveRecord{area: "job-repair", id: "jr_asks", status: "review_required", summary: "Restart the sample sync job now?", created: created},
-	)}, liveNow)
-
-	wantIDs(t, "needs_you ids", needsYouIDs(report), "jr_asks")
-	got := setAsideByReason(t, report)
-	wantIDs(t, "no_question", got["no_question"], "jr_blank", "jr_blank_2")
-}
-
-// Case 7 (guard against hiding a real ask): an open product record whose
-// writer gave it no question stays counted and is marked needs_wording,
-// because a real product decision hidden from the operator costs more than an
+// Case 7 (guard against hiding a real ask): an open record whose writer gave
+// it no question stays counted and is marked needs_wording, whatever its
+// status, because a real decision hidden from the operator costs more than an
 // unworded card. Generic fallback words never make two records one question.
 func TestLiveCountKeepsUnwordedOpenProductAsksMarked(t *testing.T) {
 	created := liveNow.Add(-24 * time.Hour)
@@ -440,13 +439,14 @@ func TestLiveCountKeepsUnwordedOpenProductAsksMarked(t *testing.T) {
 		liveRecord{area: "product-content-queue", id: "pcq_stuck", status: "reconciliation_required", readiness: "needs_review", summary: generic, source: reviewartifact.SummarySourceFallback, groupKey: "product-content-queue|review", created: created},
 	)}, liveNow)
 
-	wantIDs(t, "needs_you ids", needsYouIDs(report), "pcq_new_posts", "pcq_other_posts")
+	wantIDs(t, "needs_you ids", needsYouIDs(report), "pcq_new_posts", "pcq_other_posts", "pcq_stuck")
 	group := wireOf(t, report)["groups"].([]any)[0].(map[string]any)
 	if group["needs_wording"] != true {
 		t.Fatalf("needs_wording = %v, want true on a group counted without a question", group["needs_wording"])
 	}
-	got := setAsideByReason(t, report)
-	wantIDs(t, "no_question", got["no_question"], "pcq_stuck")
+	if got := setAsideByReason(t, report); len(got) != 0 {
+		t.Fatalf("unworded open records set aside: %v", got)
+	}
 }
 
 // Case 8: the output says when each source was read and how new its newest
@@ -496,8 +496,8 @@ func TestLiveCountTotalsAddUpAndLiveItemsStillCount(t *testing.T) {
 		liveRecord{area: "content-queue", id: "cq_live", status: "review_required", summary: "Post the spring launch note?", groupKey: "content-queue|review", created: created},
 		liveRecord{area: "content-queue", id: "cq_done", status: "recorded", readiness: "needs_review", summary: "Post the winter note?", groupKey: "content-queue|review", created: created},
 		liveRecord{area: "job-repair", id: "jr_blank", status: "unknown", summary: "A new job repair record needs your decision.", source: reviewartifact.SummarySourceFallback, created: created},
-		liveRecord{area: "skill-proposals", id: "sp_a", status: "review_required", summary: "Review the sample skill change?", context: "mined", created: created},
-		liveRecord{area: "skill-proposals", id: "sp_b", status: "review_required", summary: "Review the sample skill change?", context: "mined", created: created.Add(time.Hour)},
+		liveRecord{area: "skill-proposals", id: "sp_a", status: "review_required", summary: "Review the sample skill change?", context: "mined", claim: "Review 40 recent events for one repeated tool gap.", created: created},
+		liveRecord{area: "skill-proposals", id: "sp_b", status: "review_required", summary: "Review the sample skill change?", context: "mined", claim: "Review 40 recent events for one repeated tool gap.", created: created.Add(time.Hour)},
 	)
 	readBefore := 0
 	for _, g := range reviews.Groups {
@@ -510,7 +510,7 @@ func TestLiveCountTotalsAddUpAndLiveItemsStillCount(t *testing.T) {
 		Workbench: &work.WorkbenchReport{GeneratedAt: liveNow.Format(time.RFC3339), Open: []work.WorkbenchItem{{WorkID: "work_held_sample", State: "held", OpenReason: "operator decision required"}}},
 	}, liveNow)
 
-	wantIDs(t, "needs_you ids", needsYouIDs(report), "cq_live", "sp_a", "work_held_sample")
+	wantIDs(t, "needs_you ids", needsYouIDs(report), "cq_live", "jr_blank", "sp_a", "work_held_sample")
 	totals, ok := wireOf(t, report)["totals"].(map[string]any)
 	if !ok {
 		t.Fatal("report carries no totals")
@@ -519,8 +519,8 @@ func TestLiveCountTotalsAddUpAndLiveItemsStillCount(t *testing.T) {
 	if read != readBefore+1 {
 		t.Fatalf("total_read = %d, want %d review records + 1 held work item", read, readBefore)
 	}
-	if live != report.Counts.NeedsYou || live != 3 {
-		t.Fatalf("live_decisions = %d, needs_you = %d, want both 3", live, report.Counts.NeedsYou)
+	if live != report.Counts.NeedsYou || live != 4 {
+		t.Fatalf("live_decisions = %d, needs_you = %d, want both 4", live, report.Counts.NeedsYou)
 	}
 	if live+setAside != read {
 		t.Fatalf("live %d + set aside %d != total read %d", live, setAside, read)
@@ -530,8 +530,8 @@ func TestLiveCountTotalsAddUpAndLiveItemsStillCount(t *testing.T) {
 	for _, n := range byReason {
 		sum += int(n.(float64))
 	}
-	if sum != setAside || int(byReason["already_decided"].(float64)) != 1 || int(byReason["no_question"].(float64)) != 1 || int(byReason["duplicate"].(float64)) != 1 {
-		t.Fatalf("set_aside_by_reason = %v (sum %d), want already_decided 1, no_question 1, duplicate 1 summing to %d", byReason, sum, setAside)
+	if sum != setAside || len(byReason) != 2 || int(byReason["already_decided"].(float64)) != 1 || int(byReason["duplicate"].(float64)) != 1 {
+		t.Fatalf("set_aside_by_reason = %v (sum %d), want already_decided 1, duplicate 1 summing to %d", byReason, sum, setAside)
 	}
 }
 
@@ -576,8 +576,8 @@ func TestLiveCountKeepsTheV01WireShapeForExistingReaders(t *testing.T) {
 	if opaque.Band != BandNeedsYou || opaque.Count != 2 {
 		t.Fatalf("unmatched group = %+v, want kept whole (band needs_you, count 2)", opaque)
 	}
-	if report.Counts.NeedsYou != 3 {
-		t.Fatalf("needs_you = %d, want 1 live record + 2 kept unchecked", report.Counts.NeedsYou)
+	if report.Counts.NeedsYou != 4 {
+		t.Fatalf("needs_you = %d, want 2 live records + 2 kept unchecked", report.Counts.NeedsYou)
 	}
 }
 
