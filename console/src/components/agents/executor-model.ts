@@ -9,8 +9,9 @@
  * rule both surfaces read, and the small formatting helpers.
  */
 
-import { agentDisplayName, agentKey, NO_AGENT_KEY } from "@/lib/harness-label";
-import { isInProgress, isOnHold } from "@/lib/work-state";
+// Relative .ts imports: the agents consistency smoke loads this file under node, which has no "@/" alias.
+import { agentDisplayName, agentKey, NO_AGENT_KEY } from "../../lib/harness-label.ts";
+import { isInProgress, isOnHold } from "../../lib/work-state.ts";
 
 /** DESIGN.md / plan Part 3: a lease older than this (and no projection-supplied
  *  threshold) is stale — a lane-health hygiene class. 48h in seconds. */
