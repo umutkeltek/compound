@@ -218,11 +218,12 @@ func growthSalesDayComplete(d ascSalesDayIndexRow, seriesRows int) bool {
 //     as-of, and the series must be complete for it (growthSalesDayComplete);
 //   - every store app id that names the app must name it alone: rows of an
 //     id two apps share are not applied to either, so the app may have sold
-//     under it on a day it has no row of its own; and the app must have
-//     daily sales data of its own, from the series or from the older ledger
-//     rows its import wrote, which shows the account's report lists it;
-//     zeros start on its first such day, because before that the app may not
-//     have been on sale;
+//     under it on a day it has no row of its own;
+//   - the Sales report must have listed the app: zeros start on its first
+//     series row, or on its first older ledger row with a value above zero.
+//     Apple's report never holds a zero row, so a zero ledger row was written
+//     by an import, not read from the report, and proves nothing. Before the
+//     first listing the app may not have been on sale;
 //   - a day on which the app has any sales data on file (a series row, or a
 //     ledger copy) is left as it is, so a row that lacks a field keeps that
 //     field unknown;
@@ -230,6 +231,10 @@ func growthSalesDayComplete(d ascSalesDayIndexRow, seriesRows int) bool {
 //     some row of that day must carry the field; on a day with no rows at all,
 //     the series must carry it on an earlier day. An older series without
 //     download kinds therefore never turns new downloads into zero.
+//
+// An app that passes the id rule but that no Sales report ever listed gets
+// no zero; g.salesUnlisted records the newest report day, so its sales
+// evidence reads as "not in any Sales report" rather than a feed to refresh.
 //
 // The index, the series and the ledger rows describe one account's report;
 // an app from an account the index does not cover must have no sales data
@@ -241,8 +246,12 @@ func applyGrowthASCSalesZeroDays(rows []growthSalesRow, index []ascSalesDayIndex
 	perDay := map[string]int{}              // series rows per day
 	carried := map[string]map[string]bool{} // day -> metric some row carries
 	firstCarried := map[string]string{}     // metric -> first day a row carries it
+	firstRow := map[string]string{}         // store app id -> its first series day
 	for _, r := range rows {
 		perDay[r.Date]++
+		if first, ok := firstRow[r.AppleIdentifier]; !ok || r.Date < first {
+			firstRow[r.AppleIdentifier] = r.Date
+		}
 		for _, mv := range growthASCSalesValues(r) {
 			if mv.v == nil {
 				continue
@@ -256,21 +265,33 @@ func applyGrowthASCSalesZeroDays(rows []growthSalesRow, index []ascSalesDayIndex
 			}
 		}
 	}
+	newestReport := ""
+	for _, d := range index {
+		if growthSalesDayExists[d.Status] && d.Date <= asOf && d.Date > newestReport {
+			newestReport = d.Date
+		}
+	}
 	metrics := growthASCSalesValues(growthSalesRow{})
-	groups := growthSalesSoleApps(ids)
-	for _, g := range groups {
-		// Days the app has sales data on file, and the first of them.
-		onFile := map[string]bool{}
+	for _, g := range growthSalesSoleApps(ids) {
+		// The first day the Sales report listed the app: its first series
+		// row under any of its ids, or its first ledger value above zero.
 		first := ""
+		for appID, groups := range ids {
+			if day, ok := firstRow[appID]; ok && groups[g] && (first == "" || day < first) {
+				first = day
+			}
+		}
+		onFile := map[string]bool{} // days the app has sales data on file
 		for _, mv := range metrics {
-			for d := range g.signals[mv.metric] {
+			for d, pv := range g.signals[mv.metric] {
 				onFile[d] = true
-				if first == "" || d < first {
+				if pv.v > 0 && (first == "" || d < first) {
 					first = d
 				}
 			}
 		}
 		if first == "" {
+			g.salesUnlisted = newestReport
 			continue
 		}
 		for _, d := range index {

@@ -100,37 +100,66 @@ func TestGrowthSalesZeroDaysNeverInventUncarriedFields(t *testing.T) {
 	}
 }
 
-// An app that sold nothing since the series began has no series row, but the
-// ledger holds the older daily rows its import wrote for it. Those rows show
-// the account's report lists the app, so its quiet days are zero and its
-// sales feed is current, not a feed to refresh.
+// The Sales report never holds a zero row, so a zero row in the ledger was
+// written by an older import and does not show the report lists the app. An
+// app known only from such rows stays unknown, and its advice says no Sales
+// report lists it, never "refresh". A ledger row above zero does show the
+// report listed the app: its quiet days from then on are zero.
 func TestGrowthSalesZeroDaysCoverAppsKnownFromTheLedger(t *testing.T) {
 	home := t.TempDir()
-	applyGrowthBundle(t, home, "product:quiet-app", iosProfile)
+	applyGrowthBundle(t, home, "product:unlisted-app", iosProfile)
+	applyGrowthBundle(t, home, "product:sold-app", iosProfile)
 	applyGrowthBundle(t, home, "product:busy-app", iosProfile)
 	ledger := []Signal{ascLedgerSignal("sig_busy", "product:busy-app", "900000051", "app_store_connect_review_count", growthDay(200), 1)}
-	for off := 80; off >= 50; off-- { // an older import wrote zeros for the quiet app until day 50
-		ledger = append(ledger, ascLedgerSignal("sig_quiet"+growthDay(off), "product:quiet-app", "900000052", "app_store_connect_developer_proceeds_usd", growthDay(off), 0))
+	for off := 80; off >= 50; off-- { // an older import wrote rows until day 50
+		ledger = append(ledger,
+			ascLedgerSignal("sig_unlisted"+growthDay(off), "product:unlisted-app", "900000052", "app_store_connect_developer_proceeds_usd", growthDay(off), 0))
+		v := 0.0
+		if off == 70 { // one real sale
+			v = 3
+		}
+		ledger = append(ledger,
+			ascLedgerSignal("sig_sold"+growthDay(off), "product:sold-app", "900000053", "app_store_connect_developer_proceeds_usd", growthDay(off), v))
 	}
 	writeASCLedger(t, home, ledger...)
 	yes := true
 	var series, index []string
-	for off := 40; off >= 1; off-- {
+	for off := 90; off >= 1; off-- {
 		series = append(series, salesKindsLine("900000051", growthDay(off), 3, 0, 0, 0, 2, &yes))
 		index = append(index, salesIndexLine(growthDay(off), "reported", 1))
 	}
 	writeASCSeries(t, home, series...)
 	writeASCDaysIndex(t, home, index...)
 
-	app := growthApp(t, buildGrowthT(t, home, growthOpts()), "product:quiet-app")
-	if p := app.Kpis["proceeds_usd"]; p.Value == nil || *p.Value != 0 || p.DaysReported != 30 {
-		t.Fatalf("proceeds = %+v, want 0 over 30 reported days", p)
+	g := buildGrowthT(t, home, growthOpts())
+	unlisted := growthApp(t, g, "product:unlisted-app")
+	if p := unlisted.Kpis["proceeds_usd"]; p.Value != nil || p.HasData || p.DaysReported != 0 {
+		t.Fatalf("unlisted proceeds = %+v, want unknown: no Sales report lists the app", p)
 	}
-	if ue := growthAudit(t, app, "operations_unit_economics"); ue.Status == GrowthStale || strings.Contains(ue.NextMove, "Refresh") {
-		t.Fatalf("unit economics = %s %q, want the sales feed current", ue.Status, ue.NextMove)
+	if v := growthPoint(t, unlisted.Series["proceeds_usd"], growthDay(10)); v != nil {
+		t.Fatalf("unlisted app day 10 = %v, want missing", *v)
 	}
-	if v := growthPoint(t, app.Series["proceeds_usd"], growthDay(45)); v != nil {
-		t.Fatalf("a day neither the ledger nor the index covers = %v, want missing", *v)
+	ue := growthAudit(t, unlisted, "operations_unit_economics")
+	if ue.Status == GrowthStale || strings.Contains(ue.NextMove, "Refresh") ||
+		!strings.Contains(ue.NextMove, "No App Store Connect Sales report lists this app") || !strings.Contains(ue.NextMove, growthDay(1)) {
+		t.Fatalf("unlisted unit economics = %s %q, want a statement that no Sales report lists it", ue.Status, ue.NextMove)
+	}
+	if got := growthRefreshTitles(unlisted); len(got) != 0 {
+		t.Fatalf("unlisted refresh moves = %v, want none", got)
+	}
+
+	sold := growthApp(t, g, "product:sold-app")
+	if p := sold.Kpis["proceeds_usd"]; p.Value == nil || *p.Value != 0 || p.DaysReported != 30 {
+		t.Fatalf("sold proceeds = %+v, want 0 over 30 reported days", p)
+	}
+	if ue := growthAudit(t, sold, "operations_unit_economics"); ue.Status == GrowthStale || strings.Contains(ue.NextMove, "Refresh") {
+		t.Fatalf("sold unit economics = %s %q, want the sales feed current", ue.Status, ue.NextMove)
+	}
+	if v := growthPoint(t, sold.Series["proceeds_usd"], growthDay(75)); v == nil || *v != 0 {
+		t.Fatalf("sold app day 75 (a ledger zero before its first sale) = %v, want the ledger's 0 kept", v)
+	}
+	if v := growthPoint(t, sold.Series["proceeds_usd"], growthDay(85)); v != nil {
+		t.Fatalf("sold app day 85 (before any ledger row) = %v, want missing", *v)
 	}
 }
 

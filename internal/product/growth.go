@@ -376,6 +376,12 @@ type growthGroup struct {
 	// account kept running. A feed is judged stale on this day, not on its
 	// newest value.
 	reported map[string]string
+	// salesUnlisted is the newest Sales report day when every store id of
+	// the app names it alone but no Sales report has ever listed it (no
+	// series row, no ledger value above zero); else empty. Its sales
+	// evidence then reads as not on sale in this account, not as a feed
+	// to refresh.
+	salesUnlisted string
 	// adsLast holds, per ad platform ("" for all of them), the newest day
 	// with an ad row and the newest day a row had spend or impressions.
 	adsLast   map[string]growthAdsLast
@@ -1690,8 +1696,15 @@ func (c growthCtx) metricStatus(g *growthGroup, spec growthAreaSpec, full, cappe
 		return GrowthBlind, "", nil, false
 	}
 	var quietEv []growthEv
+	// unlisted is sales evidence of an app no Sales report lists: its old
+	// rows did not stop arriving, they were never the store's report.
+	unlisted := func(e growthEv) bool {
+		return g.salesUnlisted != "" && growthMetricSource(e.Metric) == "App Store Connect sales"
+	}
 	judge := func(e growthEv) {
 		switch {
+		case c.age(e.fed()) > stale && unlisted(e):
+			quietEv = append(quietEv, e)
 		case c.age(e.fed()) > stale:
 			e.LatestDate = e.fed()
 			staleEv = append(staleEv, e)
@@ -1729,7 +1742,11 @@ func (c growthCtx) metricStatus(g *growthGroup, spec growthAreaSpec, full, cappe
 		switch {
 		case c.age(fed) > stale:
 			for _, e := range all {
-				if e.fed() == fed {
+				switch {
+				case e.fed() != fed:
+				case unlisted(e):
+					quietEv = append(quietEv, e)
+				default:
 					e.LatestDate = fed
 					staleEv = append(staleEv, e)
 				}
@@ -1812,6 +1829,9 @@ func (c growthCtx) quietNote(g *growthGroup, quiet []growthEv) string {
 		}
 		return fmt.Sprintf("No ad rows for this app since %s and %s, while the %s for its account reached %s. The campaign looks stopped: confirm it is paused or ended.",
 			last.row, ran, growthMetricSource(e.Metric), e.reported)
+	}
+	if g.salesUnlisted != "" && growthMetricSource(e.Metric) == "App Store Connect sales" {
+		return fmt.Sprintf("No App Store Connect Sales report lists this app: the account's daily reports through %s have no row for it. Confirm the app is on sale under this developer account.", g.salesUnlisted)
 	}
 	return fmt.Sprintf("%s reported this app through %s but has had no new value here since %s.", growthMetricSource(e.Metric), e.reported, e.LatestDate)
 }
