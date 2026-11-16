@@ -462,7 +462,12 @@ than explicit depth on the two overview surfaces.
 ### 10.2 Truthful Live visualization law
 
 Live renders a harness → WorkEnvelope graph from the executor, RunAttempt, traffic, and
-coordination projections. Configured harnesses are not activity. A node or edge animates only
+coordination projections. Configured harnesses are not activity. An agent is one agent key
+(`lib/harness-label.ts`): the console regroups the executors projection's rows by the key of who
+picked each item up, else its owner, which is the key the Work filter `owner=` compares, so an
+agent's count equals the list its link opens. Work nobody holds is "No agent" and work you hold
+is "You"; neither is counted as an agent. Working now, All agents and Today say the same
+sentences from `lib/counts.ts`, and every number links to its Work list. A node or edge animates only
 when heartbeat, RunAttempt, or work-state evidence reports a live run. Summary counts orient the
 operator, then the workfield is the **Understand-level hero**; the denser operations table belongs
 to Investigate. Each harness overview shows at most its two highest-signal work items while

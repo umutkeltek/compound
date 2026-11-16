@@ -1,3 +1,5 @@
+import { buildRoster } from "@/components/agents/agent-roster";
+import { AgentsAnswer } from "@/components/agents/AgentsAnswer";
 import { CostLanes } from "@/components/agents/CostLanes";
 import { DelegatedSessions } from "@/components/agents/DelegatedSessions";
 import { summarizeHygiene, type ExecutorProjection } from "@/components/agents/executor-model";
@@ -6,46 +8,22 @@ import { ExecutorTable } from "@/components/agents/ExecutorTable";
 import { HygieneBand } from "@/components/agents/HygieneBand";
 import { LeasePressure } from "@/components/agents/LeasePressure";
 import { LocalModelsTile } from "@/components/agents/LocalModelsTile";
-import { FreshnessChip, PageHeader } from "@/components/kit";
-import { getExecutors, getWorktreeInventory } from "@/lib/compound";
+import { hasCopy, PageHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending } from "@/components/kit";
+import { PendingRefresh } from "@/components/PendingRefresh";
+import { getWorktreeInventory } from "@/lib/compound";
+import { getTraffic } from "@/lib/traffic";
 import { WorktreeInventory } from "@/components/agents/WorktreeInventory";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Agents — "who is working, on what, at what cost, is anything stuck?"
- * (plan Part 3). One projection (`compound executors --json`) drives the whole
- * screen: a lease-hygiene band on top (the needs-you win), then the executor
- * table (compare → table, not cards), then cost/lane traffic + the local-model
- * lane. Every data section carries a freshness chip; the fleet reads true or
- * says why it can't.
+ * All agents: who holds what, how much is in progress, what has not moved,
+ * what needs you. The numbers are the ones Today and Working now show
+ * (components/agents/agent-roster.ts over lib/counts.ts), one row per agent
+ * key, and each number opens the Work list of exactly those items. The read
+ * is non-blocking (`readExecutors` through getTraffic): a cold page says it
+ * is reading, never shows an empty fleet.
  */
-
-function FleetSummary({ counts }: { counts: ExecutorProjection["counts"] }) {
-  const items: { label: string; value: number; seam?: boolean }[] = [
-    { label: "Executors", value: counts.total },
-    { label: "Running", value: counts.running },
-    { label: "Ready", value: counts.ready },
-    { label: "Assigned", value: counts.assigned },
-    { label: "Needs you", value: counts.needsMe, seam: true },
-    { label: "Leases", value: counts.leases },
-  ];
-  return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-      {items.map((item) => {
-        const emphasise = item.seam && item.value > 0;
-        return (
-          <div key={item.label} className="rounded-lg border border-hair bg-panel px-3 py-2.5 shadow-sm">
-            <div className={`text-2xs font-bold uppercase tracking-wide ${emphasise ? "text-seam" : "text-faint"}`}>
-              {item.label}
-            </div>
-            <div className={`mono mt-1 text-xl tabular-nums ${emphasise ? "text-seam" : "text-ink"}`}>{item.value}</div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
 
 function Provenance({ projection }: { projection: ExecutorProjection }) {
   return (
@@ -70,19 +48,23 @@ function Provenance({ projection }: { projection: ExecutorProjection }) {
 }
 
 export default async function AgentsPage() {
-  const [executors, worktrees] = await Promise.all([getExecutors(), getWorktreeInventory()]);
-  const projection = normalizeExecutorProjection(executors);
+  const [traffic, worktrees] = await Promise.all([getTraffic(), getWorktreeInventory()]);
+  const read = traffic.read!;
+  const projection = hasCopy(read) ? normalizeExecutorProjection(read.value) : null;
+  const roster = projection ? buildRoster(projection.executors, Date.now(), 6) : null;
 
   return (
     <div className="flex flex-col gap-6">
+      <PendingRefresh pending={readsPending(read)} stamp={Date.now()} />
       <PageHeader
-        name="Agents"
-        right={<FreshnessChip generatedAt={projection?.generatedAt} source="compound executors --json" />}
+        name="All agents"
+        answer={roster ? <AgentsAnswer roster={roster} runRecordsVisible={traffic.runAttemptsPresent} /> : <ReadNotice read={read} label="who works on what" />}
+        right={<ReadChip read={read} />}
       />
-      <p className="text-sm text-muted">Who is working, on what, at what cost — and is anything stuck?</p>
+      <ReadFailedBanner read={read} label="who works on what" />
       <WorktreeInventory {...worktrees} />
 
-      {projection ? (
+      {projection && roster ? (
         <>
           <HygieneBand
             summary={summarizeHygiene(projection)}
@@ -91,15 +73,18 @@ export default async function AgentsPage() {
             staleHistory={projection.counts.staleHistory}
           />
 
-          <FleetSummary counts={projection.counts} />
-
-          {projection.executors.length ? (
-            <ExecutorTable executors={projection.executors} staleAfterSeconds={projection.staleAfterSeconds} />
+          {roster.holders.length ? (
+            <ExecutorTable agents={roster.holders} />
           ) : (
             <div className="rounded-lg border border-dashed border-hair bg-page px-6 py-12 text-center">
-              <p className="text-sm text-muted">No executors in the projection yet.</p>
+              <p className="text-sm text-muted">No agent holds any work right now.</p>
             </div>
           )}
+          {roster.idle.length ? (
+            <p className="text-sm text-muted">
+              Set up but holding no work: {roster.idle.map((agent) => agent.name).join(", ")}.
+            </p>
+          ) : null}
 
           <LeasePressure executors={projection.executors} staleAfterSeconds={projection.staleAfterSeconds} />
 
@@ -112,14 +97,7 @@ export default async function AgentsPage() {
 
           <Provenance projection={projection} />
         </>
-      ) : (
-        <div className="rounded-lg border border-dashed border-hair bg-page px-6 py-12 text-center">
-          <p className="text-sm text-muted">
-            No executor projection available. The fleet reads from{" "}
-            <span className="mono text-muted">compound executors --json</span>.
-          </p>
-        </div>
-      )}
+      ) : null}
     </div>
   );
 }

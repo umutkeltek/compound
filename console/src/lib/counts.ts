@@ -20,7 +20,7 @@
 export { waitingOnYou, type WaitingOnYou } from "@/lib/attention";
 
 import { isInProgress, isOnHold, isStale, isWaitingForCheck, STALE_AFTER_DAYS, timestampMs } from "@/lib/work-state";
-import { NO_AGENT_KEY } from "@/lib/harness-label";
+import { NO_AGENT_KEY, OPERATOR_AGENT_KEY } from "@/lib/harness-label";
 
 // The per-item rules (in progress, on hold, waiting for a check, stale and its
 // threshold) live in the client-safe lib/work-state.ts; this file counts with
@@ -172,17 +172,27 @@ export type AgentCount = {
   heldItems: number;
   /** open work items whose owner matches no known agent */
   noAgentItems: number;
+  /** open work items you hold yourself (the operator's row): yours, not an agent's */
+  yourItems: number;
 };
 
 type AgentRow = { id: string; currentWork: readonly unknown[] };
 
-/** Count agents from the normalized executors rows. Unit: agents; items are work items. */
+/**
+ * Count agents from the normalized executors rows (one row per agent key,
+ * components/agents/executor-normalize.ts). Unit: agents; items are work
+ * items. The no-agent row and your own row are not agents.
+ */
 export function countAgents(rows: readonly AgentRow[]): AgentCount {
-  const out: AgentCount = { withWork: 0, idle: 0, heldItems: 0, noAgentItems: 0 };
+  const out: AgentCount = { withWork: 0, idle: 0, heldItems: 0, noAgentItems: 0, yourItems: 0 };
   for (const row of rows) {
     const items = row.currentWork.length;
     if (row.id === UNASSIGNED_AGENT_ID) {
       out.noAgentItems += items;
+      continue;
+    }
+    if (row.id === OPERATOR_AGENT_KEY) {
+      out.yourItems += items;
       continue;
     }
     if (items > 0) {
@@ -201,8 +211,9 @@ export function describeAgents(a: AgentCount): string {
     ? `${unit(a.withWork, "agent")} ${a.withWork === 1 ? "holds" : "hold"} ${unit(a.heldItems, "work item")}.`
     : "No agent holds any work.";
   const none = a.noAgentItems ? ` ${unit(a.noAgentItems, "more work item")} ${a.noAgentItems === 1 ? "has" : "have"} no agent.` : "";
+  const yours = a.yourItems ? ` ${unit(a.yourItems, "more work item")} ${a.yourItems === 1 ? "is" : "are"} held by you.` : "";
   const idle = a.idle ? ` ${unit(a.idle, "agent")} ${a.idle === 1 ? "has" : "have"} nothing to do.` : "";
-  return held + none + idle;
+  return held + none + yours + idle;
 }
 
 /* ---------- decisions ---------- */

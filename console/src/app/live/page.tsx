@@ -1,5 +1,7 @@
 import Link from "next/link";
 
+import { buildRoster } from "@/components/agents/agent-roster";
+import { AgentsAnswer } from "@/components/agents/AgentsAnswer";
 import { DelegatedSessions } from "@/components/agents/DelegatedSessions";
 import { normalizeExecutorProjection } from "@/components/agents/executor-normalize";
 import { CoordinationBoard, type ExecDetail } from "@/components/coordination/CoordinationBoard";
@@ -8,10 +10,10 @@ import { LiveOperationsTimeline } from "@/components/live/LiveOperationsTimeline
 import { PageHeader, PulseIcon, ReadChip, ReadFailedBanner, ReadNotice, readsPending, SectionHeader, StatusChip } from "@/components/kit";
 import { PendingRefresh } from "@/components/PendingRefresh";
 import { readAttention } from "@/lib/attention";
-import { arr, type Json } from "@/lib/compound";
 import { readCoordination } from "@/lib/coordination";
-import { countAgents, countInProgress, describeAgents, describeInProgress, unit, waitingOnYou } from "@/lib/counts";
+import { unit, waitingOnYou } from "@/lib/counts";
 import { depthShows, requestDepth } from "@/lib/depth";
+import { workListHref } from "@/lib/links";
 import { getTraffic, newestInFlight, trafficKnown } from "@/lib/traffic";
 
 export const dynamic = "force-dynamic";
@@ -57,30 +59,32 @@ export default async function LivePage() {
   const executorsRead = traffic.read!;
   const known = trafficKnown(traffic);
   const projection = normalizeExecutorProjection(executorsRead.value);
-  const lanes: LiveLane[] = traffic.lanes.map((lane) => {
-    const ranked = lane.inFlight.slice().sort((a, b) => {
-      const rank = (value: typeof a) => value.runStatus === "running" || value.state === "running" ? 0 : value.state === "verifying" ? 1 : value.state === "blocked" || value.state === "held" ? 2 : 3;
-      return rank(a) - rank(b);
-    });
-    return {
-      id: lane.agentId,
-      label: lane.agentLabel,
-      status: lane.agentStatus,
-      running: lane.running,
-      needsMe: lane.needsMe,
-      totalWork: lane.inFlight.length,
-      work: ranked.slice(0, 2).map((work) => ({
+  const nowMs = Date.now();
+  // One row per agent key, counted with lib/counts.ts (components/agents/agent-roster.ts):
+  // the same rows Today counts, and each row's numbers equal its Work list.
+  const roster = known && projection ? buildRoster(projection.executors, nowMs, 2) : null;
+  const runOf = new Map(traffic.lanes.flatMap((lane) => lane.inFlight.map((work) => [work.workId, work] as const)));
+  const lanes: LiveLane[] = (roster?.holders ?? []).map((agent) => ({
+    id: agent.key,
+    label: agent.name,
+    status: "",
+    running: agent.inProgress.total,
+    needsMe: agent.onHold,
+    totalWork: agent.items,
+    work: agent.top.map((work) => {
+      const run = runOf.get(work.workId);
+      return {
         workId: work.workId,
         title: work.title,
         state: work.state,
-        nextAction: work.nextAction,
-        harness: work.harness,
-        runStatus: work.runStatus,
-        actor: work.actor,
-        retryDepth: work.retryDepth,
-      })),
-    };
-  });
+        nextAction: work.next,
+        harness: run?.harness ?? "",
+        runStatus: run?.runStatus ?? "",
+        actor: run?.actor ?? "",
+        retryDepth: run?.retryDepth ?? 0,
+      };
+    }),
+  }));
 
   const execDetail: Record<string, ExecDetail> = {};
   for (const lane of traffic.lanes) {
@@ -95,43 +99,25 @@ export default async function LivePage() {
     }
   }
 
-  // One definition per number (lib/counts.ts), the same Today and Work use.
-  // In-progress counts take the raw executors rows: they carry `claimed_at`.
-  const rawWork: Json[] = known
-    ? arr(executorsRead.value?.executors).flatMap((row: Json) => arr(row.current_work))
-    : [];
-  const agents = known && projection ? countAgents(projection.executors) : null;
-  const inProgress = known ? countInProgress(rawWork, Date.now()) : null;
-  const progress = inProgress ? describeInProgress(inProgress) : null;
-
   // The browser gets only the six rows the timeline shows, not every item.
   const newest = newestInFlight(traffic, 6);
   const delegatedRunning = projection?.delegatedCounts.running ?? 0;
   const pending = readsPending(executorsRead, attentionLive.read);
 
-  const answer = !known || !agents || !progress ? (
+  const answer = !roster ? (
     <ReadNotice read={executorsRead} label="who works on what" />
   ) : (
-    <div className="flex flex-col gap-1.5">
-      <p>{describeAgents(agents)}</p>
-      <p className="text-base text-muted">
-        <span className="text-ink">{progress.headline}</span>
-        {progress.detail ? <>: {progress.detail}</> : "."}
-      </p>
-      {progress.age ? <p className="text-base text-seam">{progress.age}</p> : null}
-      {!traffic.runAttemptsPresent ? (
+    <AgentsAnswer
+      roster={roster}
+      runRecordsVisible={traffic.runAttemptsPresent}
+      extra={waiting && waiting.workItems > 0 ? (
         <p className="text-sm text-muted">
-          This page cannot see the live run records, so it cannot tell which of these an agent is running this minute.
-          &quot;Running&quot; is what the work record says.
+          <Link href={workListHref({ filter: "blocked" })} className="font-semibold text-work hover:underline">
+            {unit(waiting.workItems, "work item")} {waiting.workItems === 1 ? "waits" : "wait"} for your decision.
+          </Link>
         </p>
       ) : null}
-      {waiting && waiting.workItems > 0 ? (
-        <p className="text-sm text-muted">
-          {unit(waiting.workItems, "work item")} {waiting.workItems === 1 ? "waits" : "wait"} for your decision.{" "}
-          <Link href="/reviews" className="font-semibold text-work hover:underline">Open Decide →</Link>
-        </p>
-      ) : null}
-    </div>
+    />
   );
 
   return (
@@ -141,12 +127,7 @@ export default async function LivePage() {
         name="Live"
         lead="Follow the latest recorded activity from your agents."
         answer={answer}
-        right={
-          <>
-            <ReadChip read={executorsRead} />
-            <Link href="/traffic" className="text-xs font-semibold text-work hover:underline">Who waits on whom →</Link>
-          </>
-        }
+        right={<ReadChip read={executorsRead} />}
       />
 
       {known ? <ReadFailedBanner read={executorsRead} label="who works on what" /> : null}
