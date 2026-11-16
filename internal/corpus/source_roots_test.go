@@ -17,7 +17,7 @@ func TestRefreshMultipleRootsPreservesMirrorsAndDivergence(t *testing.T) {
 	one := t.TempDir()
 	two := t.TempDir()
 	native := func(text string) string {
-		return "{\"type\":\"user\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"message\":{\"role\":\"user\",\"content\":" + strconvQuote(text) + "}}\n"
+		return "{\"type\":\"user\",\"timestamp\":\"synthetic-time\",\"message\":{\"role\":\"user\",\"content\":" + strconvQuote(text) + "}}\n"
 	}
 	writeRaw(t, filepath.Join(one, "session.jsonl"), native("The synthetic comet archive has violet labels."))
 	writeRaw(t, filepath.Join(two, "session.jsonl"), native("The synthetic comet archive has violet labels."))
