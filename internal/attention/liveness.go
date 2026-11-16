@@ -56,6 +56,8 @@ const (
 	SetAsideNoLongerCurrent  = "no_longer_current"
 	SetAsideOnHold           = "on_hold"
 	SetAsideDuplicate        = "duplicate"
+	// SetAsidePlaceholderDraft, SetAsideWindowClosed and SetAsideAgentWork
+	// are declared in queues.go with the queues that first needed them.
 )
 
 // setAsideReasonOrder is the check order. The first reason that applies is the
@@ -66,9 +68,12 @@ var setAsideReasonOrder = []string{
 	SetAsideFinishedChange,
 	SetAsideRecordFolderFile,
 	SetAsideTestData,
+	SetAsidePlaceholderDraft,
 	SetAsideSubjectGone,
 	SetAsideNoLongerCurrent,
+	SetAsideWindowClosed,
 	SetAsideOnHold,
+	SetAsideAgentWork,
 	SetAsideDuplicate,
 }
 
@@ -82,6 +87,9 @@ var setAsideReasonText = map[string]string{
 	SetAsideNoLongerCurrent:  "No longer matches the current state; it needs a fresh check first.",
 	SetAsideOnHold:           "Held or waiting on something other than you.",
 	SetAsideDuplicate:        "Asks the same thing as another item that is still counted.",
+	SetAsidePlaceholderDraft: "Rests on a draft nobody wrote: its expected effect is still the placeholder text.",
+	SetAsideWindowClosed:     "A held action whose approval window has closed; it can no longer be approved.",
+	SetAsideAgentWork:        "Its next step needs nothing from you; an agent or job can do it.",
 }
 
 // setAsideClosed marks the reasons that leave nothing for anyone to decide:
@@ -95,6 +103,7 @@ var setAsideClosed = map[string]bool{
 	SetAsideTestData:         true,
 	SetAsideSubjectGone:      true,
 	SetAsideDuplicate:        true,
+	SetAsideWindowClosed:     true,
 }
 
 // setAsideNextStep says what happens next and who handles it. Nothing turns
@@ -109,6 +118,9 @@ var setAsideNextStep = map[string]string{
 	SetAsideNoLongerCurrent:  "Nothing yet: its owner must check the current state again before anyone can decide.",
 	SetAsideOnHold:           "Waits on someone other than you. Its owner continues it.",
 	SetAsideDuplicate:        "The same question is still counted once in your list.",
+	SetAsidePlaceholderDraft: "Not yours as it stands: nobody wrote what the change should do. Writing or rejecting the draft is agent work; none is scheduled yet.",
+	SetAsideWindowClosed:     "Nothing is left for you. If the agent still needs the action, it asks again and a new request appears.",
+	SetAsideAgentWork:        "Not yours: an agent or job can do this. This list cannot see whether one is set to do it.",
 }
 
 // SetAsideReasonClosed reports whether a reason leaves nothing to decide.
@@ -352,25 +364,28 @@ type liveness struct {
 	// grants holds the standing grants active now; empty when the rules
 	// were not read, so nothing is covered.
 	grants map[string]policy.StandingGrant
+	// placeholders are owners' unwritten-draft texts (Inputs.DraftPlaceholders).
+	placeholders []string
 }
 
 // reviewLiveness splits the projected review groups into live groups,
 // set-aside batches and batches his standing rules cover. projected[i] is the
 // attention group built from report.Groups[i].
-func reviewLiveness(report reviewartifact.QueueReport, projected []Group, probe Probe, rules *RulesInput, now time.Time) (live []Group, setAside []SetAside, covered []CoveredByRule, totalRead, unchecked int) {
+func reviewLiveness(report reviewartifact.QueueReport, projected []Group, probe Probe, rules *RulesInput, placeholders []string, now time.Time) (live []Group, setAside []SetAside, covered []CoveredByRule, asks map[string]string, totalRead, unchecked int) {
 	if probe == nil {
 		probe = osProbe{}
 	}
 	l := &liveness{
-		probe:     probe,
-		now:       now,
-		report:    report,
-		areas:     map[string]bool{},
-		finished:  map[string]map[string]bool{},
-		dismissed: map[string]map[string]time.Time{},
-		records:   map[string]map[string]any{},
-		raw:       map[string][]byte{},
-		grants:    rules.activeGrants(now),
+		probe:        probe,
+		now:          now,
+		report:       report,
+		areas:        map[string]bool{},
+		finished:     map[string]map[string]bool{},
+		dismissed:    map[string]map[string]time.Time{},
+		records:      map[string]map[string]any{},
+		raw:          map[string][]byte{},
+		grants:       rules.activeGrants(now),
+		placeholders: placeholders,
 	}
 	l.indexItems()
 	for i := range projected {
@@ -416,7 +431,30 @@ func reviewLiveness(report reviewartifact.QueueReport, projected []Group, probe 
 	}
 	setAside = l.setAsideBatches()
 	covered = l.coveredBatches()
-	return live, setAside, covered, totalRead, unchecked
+	return live, setAside, covered, l.liveHypothesisAsks(), totalRead, unchecked
+}
+
+// liveHypothesisAsks maps each product hypothesis a live review record asks
+// about (its hypothesis_id or candidate_id field) to that record's group, so
+// one hypothesis already in front of him through the review queue is not
+// counted a second time from the product owner.
+func (l *liveness) liveHypothesisAsks() map[string]string {
+	out := map[string]string{}
+	for _, m := range l.members {
+		if m.reason != "" || m.covered != nil {
+			continue
+		}
+		if record, ok := l.record(m.item.JSONPath); ok {
+			// A hypothesis review names it hypothesis_id; a hypothesis
+			// candidate's own approval card names it candidate_id.
+			for _, field := range []string{"hypothesis_id", "candidate_id"} {
+				if id := stringField(record, field); id != "" && out[id] == "" {
+					out[id] = l.groups[m.group].group.Key
+				}
+			}
+		}
+	}
+	return out
 }
 
 func (l *liveness) indexItems() {
@@ -538,6 +576,8 @@ func (l *liveness) classify(item reviewartifact.QueueItem) string {
 		return SetAsideRecordFolderFile
 	case l.testData(item):
 		return SetAsideTestData
+	case l.placeholderDraft(item):
+		return SetAsidePlaceholderDraft
 	case l.subjectGone(item):
 		return SetAsideSubjectGone
 	case noLongerCurrent(item):
@@ -647,6 +687,17 @@ func (l *liveness) testData(item reviewartifact.QueueItem) bool {
 		}
 	}
 	return false
+}
+
+// placeholderDraft reports a record whose expected effect is still an
+// owner's unwritten-draft placeholder: a review plan for a draft nobody wrote
+// asks him to judge a change nobody described.
+func (l *liveness) placeholderDraft(item reviewartifact.QueueItem) bool {
+	if len(l.placeholders) == 0 {
+		return false
+	}
+	record, ok := l.record(item.JSONPath)
+	return ok && placeholderText(stringField(record, "expected_effect"), l.placeholders)
 }
 
 // subjectGone checks the subjects a record names in a known field, cheaply and

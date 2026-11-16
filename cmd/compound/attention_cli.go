@@ -4,15 +4,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"compound/internal/activity"
 	"compound/internal/attention"
+	"compound/internal/candidates"
 	"compound/internal/home"
 	"compound/internal/hookplan"
+	"compound/internal/mem"
+	"compound/internal/observation"
 	"compound/internal/policy"
+	"compound/internal/product"
 	"compound/internal/work"
 )
 
@@ -82,13 +87,12 @@ func cmdAttention(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-	report := attention.Build(attention.Inputs{
+	report := attention.Build(attentionSources(attention.Inputs{
 		Reviews:   &reviews,
 		Workbench: &workbench,
 		Executors: &executors,
 		Activity:  activityAttentionInput(homePath, &workbench, now),
-		Rules:     attentionRules(homePath, now),
-	}, now)
+	}, homePath, now), now)
 	if jsonOut {
 		operatorAttention, err := hookplan.ReadOperatorAttention(hookplan.OperatorAttentionRequest{
 			HomePath: homePath,
@@ -129,6 +133,67 @@ func attentionRules(homePath string, now time.Time) *attention.RulesInput {
 		return nil
 	}
 	return &attention.RulesInput{StandingGrants: cfg.StandingGrants, Presence: cfg.OperatorPresence.Effective(now)}
+}
+
+// attentionSources adds his standing rules and the other places things wait
+// for him (memory proposals, product results ready to judge, hook approval
+// requests, data sources needing setup), each read through its owner's
+// reader. A failed read warns and leaves that input out, never fakes it.
+func attentionSources(in attention.Inputs, homePath string, now time.Time) attention.Inputs {
+	warn := func(what string, err error) { fmt.Fprintln(os.Stderr, "warning: "+what+" not read:", err) }
+	stamp := now.UTC().Format(time.RFC3339)
+	in.Rules = attentionRules(homePath, now)
+	in.DraftPlaceholders = []string{product.HypothesisDraftExpectedEffectPlaceholderPrefix}
+	if store, err := mem.OpenScan(homePath); err != nil {
+		warn("memory proposals", err)
+	} else if list, err := store.ListCandidates(now, mem.CandidateListOptions{State: "proposed"}); err != nil {
+		warn("memory proposals", err)
+	} else {
+		in.MemoryProposals = &attention.MemoryProposalsInput{GeneratedAt: list.GeneratedAt}
+		for _, c := range list.Items {
+			claim := strings.Join([]string{c.Entity, c.Predicate, c.Object}, " ")
+			in.MemoryProposals.Items = append(in.MemoryProposals.Items, attention.MemoryProposal{
+				ID: c.ID, Claim: strings.TrimSpace(claim), ClaimKey: c.Entity + "|" + c.Predicate + "|" + c.Object, Context: c.Entity,
+				CreatedAt: c.CreatedAt, AdjudicatedBy: c.AdjudicatedBy,
+				Path: filepath.Join(homePath, candidates.InboxDir(candidates.Memory), c.ID+".json"),
+			})
+		}
+	}
+	// No memory store: folding product spellings takes the memory lock,
+	// which would create a lock file in a home that has none.
+	if due, err := product.ResultsDue(homePath, nil, now); err != nil {
+		warn("product results", err)
+	} else {
+		in.ProductResults = &attention.ProductResultsInput{GeneratedAt: stamp}
+		for _, d := range due {
+			in.ProductResults.Items = append(in.ProductResults.Items, attention.ProductResult{ProductID: d.ProductID, HypothesisID: d.HypothesisID, ChangeEvent: d.ChangeEvent, ExpectedEffect: d.ExpectedEffect, CreatedAt: d.CreatedAt, SignalIDs: d.SignalIDs})
+		}
+	}
+	if frontier, err := policy.LoadOperatorApprovalFrontierFromHome(homePath); err != nil && !os.IsNotExist(err) {
+		warn("hook approval requests", err)
+	} else {
+		in.HookRequests = &attention.HookRequestsInput{GeneratedAt: stamp, Path: policy.OperatorApprovalFrontierPath(homePath)}
+		for _, r := range frontier.ActionApprovals {
+			in.HookRequests.Items = append(in.HookRequests.Items, attention.HookRequest{ID: r.ID, ActionIntentID: r.ActionIntentID, Action: r.Action, Capability: r.Capability, Harness: r.Harness, MintedAt: r.MintedAt, Status: r.Status})
+		}
+	}
+	if sources, err := observation.LoadSourceConnectionsProjection(homePath, now); err != nil {
+		warn("data sources", err)
+	} else {
+		in.DataSources = &attention.DataSourcesInput{GeneratedAt: sources.GeneratedAt}
+		for _, c := range sources.Connections {
+			// A source that never produced evidence is setup he may choose,
+			// not something in use that waits for him.
+			if c.EvidenceState == "never_seen" || strings.TrimSpace(c.LastSeen) == "" {
+				continue
+			}
+			switch c.Status {
+			case "stale", "blocked_private_config", "needs_private_input", "ready_preflight", "needs_review", "needs_mapping":
+				in.DataSources.Items = append(in.DataSources.Items, attention.DataSource{ID: c.ID, Label: c.Label, Status: c.Status, LastSeen: c.LastSeen, PrivateSetup: c.PrivateSetupNeeded, NextStep: c.NextSafeAction})
+			}
+		}
+	}
+	return in
 }
 
 // activityAttentionMaxAgeDays bounds how old the latest span day may be before the activity read
