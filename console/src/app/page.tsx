@@ -28,9 +28,9 @@ import {
 } from "@/lib/briefing";
 import { arr, HEAVY_PROJECTION_TIMEOUT_MS, readExecutors, readProjection, str } from "@/lib/compound";
 import { countAgents, countInProgress, waitingOnYou } from "@/lib/counts";
+import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { depthShows, requestDepth } from "@/lib/depth";
-import { cookies } from "next/headers";
-import { operatorSessionConfigured, operatorSessionReadiness } from "@/lib/operator-session";
+import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { moveTypeGroup, summarizeMoveTypeMix } from "@/lib/move-mix";
 import { agentNameFor } from "@/lib/plain-words";
 import { latestProofBackedChange } from "@/representation";
@@ -93,7 +93,10 @@ export default async function Briefing() {
   const workbench = workbenchRead.value;
 
   const now = new Date();
-  const mutationsEnabled = operatorSessionConfigured() && await operatorSessionReadiness((await cookies()).toString());
+  // Today renders no live action: a paired browser is a connection, not proof
+  // that a click is the operator's, so readiness is the shared projection-only
+  // conjunction (scripts/mutation-readiness-consumers-smoke.mjs).
+  const mutationsEnabled = computeConsoleMutationReadiness(consoleMutationsEnabled()).ready;
 
   // Attention: ONE projection. Groups arrive leverage-sorted; never re-ranked here.
   const needsYouGroups = attentionNeedsYouGroups(attention);
@@ -208,7 +211,7 @@ export default async function Briefing() {
       <section data-depth-min="investigate">
         <SectionLabel>Next work an agent can finish</SectionLabel>
         <Gate read={workbenchRead} label="open work">
-          <ContinueCard model={continueModel} mutationsReady={false} />
+          <ContinueCard model={continueModel} mutationsReady={mutationsEnabled} />
         </Gate>
       </section>
 
