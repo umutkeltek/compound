@@ -2,14 +2,14 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { NAV_GROUPS } from "@/lib/experience";
+import { searchablePages } from "@/lib/experience";
 
 type Item =
   | { kind: "nav"; label: string; href: string }
   | { kind: "cmd"; label: string; cmd: string };
 
 const ITEMS: Item[] = [
-  ...NAV_GROUPS.flatMap((group) => group.items.map((item): Item => ({ kind: "nav", label: item.label, href: item.href }))),
+  ...searchablePages().map(({ page }): Item => ({ kind: "nav", label: page.label, href: page.href })),
   { kind: "cmd", label: "Growth model (terminal)", cmd: "compound product growth" },
   { kind: "cmd", label: "Workbench (terminal)", cmd: "compound workbench" },
   { kind: "cmd", label: "Review queue (terminal)", cmd: "compound reviews" },

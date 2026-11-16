@@ -1,15 +1,18 @@
 import Link from "next/link";
-import { NAV_GROUPS } from "@/lib/experience";
+import { NavTabs } from "@/components/NavTabs";
+import { placeForName } from "@/lib/experience";
 import type { ReactNode } from "react";
 
 /**
- * The one page header (DESIGN.md §3): the page's sidebar label as the H1,
- * a small kicker only when the H1 is a question or an entity name, one plain
- * sentence saying why the page exists (`lead`), the page's live answer when
- * the page asks a question (`answer`), an optional stat strip, and a quiet
- * right slot for read age / one action. The visible breadcrumb in the panel
- * header comes from the same sidebar registry (lib/experience.ts), so the
- * names a person sees — sidebar, breadcrumb, title — cannot drift.
+ * The one page header (DESIGN.md §3): the page's name from the registry
+ * (lib/experience.ts) as the H1, the section's name as a small kicker when
+ * the H1 is an item (an app, a work item) or a question, one plain sentence
+ * saying why the page exists (`lead`), the page's live answer when the page
+ * asks a question (`answer`), an optional stat strip, a quiet right slot for
+ * read age, and last the row of the section's pages as tabs. `name` may be the
+ * page's current label or an earlier one ("Decide", "Portfolio", "Live"), so
+ * callers keep working while the names a person sees (sidebar, tabs,
+ * breadcrumb, title) come from one place and cannot drift.
  */
 export function PageHeader({
   name,
@@ -21,9 +24,9 @@ export function PageHeader({
   right,
   action,
 }: {
-  /** The sidebar label. Rendered small above the title when the title differs. */
+  /** The page's name in lib/experience.ts (its label or an earlier name). Picks the default H1, lead, button and tabs. */
   name?: string;
-  /** The H1. Defaults to the sidebar label; question pages pass their question. */
+  /** The H1. Defaults to the page's label; item and question pages pass their own. */
   title?: ReactNode;
   /** A quiet context line above the title; replaces the name kicker (Today's salutation). */
   meta?: ReactNode;
@@ -35,11 +38,13 @@ export function PageHeader({
   right?: ReactNode;
   action?: { label: string; href: string } | null;
 }) {
-  const page = NAV_GROUPS.flatMap((group) => group.items).find((item) => item.label === name);
+  const place = placeForName(name);
+  const page = place?.page;
   const next = action === undefined ? page?.nextAction : action;
   const description = lead ?? (answer ? null : page?.description);
-  const heading = title ?? name;
-  const kicker = !meta && name && title && title !== name ? name : null;
+  const label = page?.label ?? name;
+  const heading = title ?? label;
+  const kicker = !meta && place && title && title !== label ? place.section.label : null;
   return (
     <header className="flex flex-col gap-3">
       {meta ? <div className="text-sm text-faint">{meta}</div> : null}
@@ -54,6 +59,7 @@ export function PageHeader({
       {answer ? <div className="max-w-read text-lg leading-snug text-ink">{answer}</div> : null}
       {right ? <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted">{right}</div> : null}
       {stats ? <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted">{stats}</div> : null}
+      <NavTabs fallback={place?.section.id} />
     </header>
   );
 }

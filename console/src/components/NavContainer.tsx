@@ -14,12 +14,10 @@ import { appHue, appSlug, mapGrowthModel } from "@/lib/growth";
  * the non-blocking `readProjection` (a cached copy at once, or "loading"),
  * so the shell renders immediately on every page.
  *
- * Badge counts come from the ONE "waiting on you" definition
- * (`waitingOnYou` over `compound attention --json`), the same function the
- * Today header and the Work header use:
- * - Decide badge = decision groups waiting on you;
- * - Work badge = work items waiting on you.
- * Before attention has been read there is no badge (unknown is not zero).
+ * The sidebar's one count, on Today, comes from the ONE "waiting on you"
+ * definition (`waitingOnYou` over `compound attention --json`), the same
+ * function the Today header uses: decisions waiting for you. Before attention
+ * has been read there is no count (unknown is not zero).
  *
  * The Apps list reads `compound product growth --json` through the same
  * cache key `getGrowth` uses, and maps it with growth's own mapper.
@@ -107,7 +105,6 @@ export async function NavContainer({ variant = "desktop" }: { variant?: "desktop
     <>
       <Nav
         decideCount={waiting?.groups ?? null}
-        workCount={waiting?.workItems ?? null}
         variant={variant}
         apps={<NavApps />}
         status={<NavStatus />}

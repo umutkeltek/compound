@@ -612,9 +612,17 @@ the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line
 
 ## Console clarity and bounded reads
 
-- `lib/experience.ts` owns the sidebar, breadcrumb and command-palette route names.
+- `lib/experience.ts` owns every name a person sees for a place. The sidebar is
+  six sections named after his questions (Today, Apps, Work, Agents, Knowledge,
+  Settings) plus Search, with his apps listed under Apps and the app he is on
+  always shown. A section's pages are one row of tabs at the foot of the page
+  header, so each stays one click away; a one-page section has no row. The
+  breadcrumb reads section › page › item. A page that leaves the menu stays in
+  the registry as unlisted, so its address and breadcrumb keep working; pages
+  agents use sit in Settings' quiet back room. The sidebar has one count: what
+  waits for him, on Today; no page counts on groups and no Work count.
   Use `PageHeader` for the page label, a short lead or answer, and named freshness.
-  A question or product name may be the title when its section label stays visible.
+  An item or a question may be the title; the section's name stays above it.
 - Decide leads with the proposal and opens on **Next step**. Choices, status,
   history and evidence remain available without repeating the same blocked
   sentence on every row. Search matches the displayed area names; area filters
@@ -642,8 +650,8 @@ exercise these seams, including cold page reads and stale or partial authority.
 
 ## Page journeys (supersedes question-title and read-only fallback copy above)
 
-- Pages lead with their familiar navigation name, a short purpose or current
-  answer, and one useful primary link. `lib/experience.ts` owns default purposes
+- Pages lead with their registry name (the same words as their tab), a short
+  purpose or current answer, and one useful primary link. `lib/experience.ts` owns default purposes
   and destinations; `PageHeader` renders them. Dates and read status are secondary.
 - Primary links reach real content, filters, or relevant pages. Empty and loading
   states retain useful destinations. Work filters are shareable and respond to
@@ -656,8 +664,12 @@ exercise these seams, including cold page reads and stale or partial authority.
   task and starts nothing. Never claim that operator mode enables browser writes,
   that unavailable actions are queued for repair, or that Park/Dismiss works
   without checking its actual authority.
-- Results, Rules, Agents and Views are the navigation names. Supporting copy
-  explains consequences and next steps. Internal identifiers stay in detail.
+- Tab names are words he would say out loud: All decisions, All apps, Growth
+  gaps, Results, Ads, Working now, All agents, Waiting on each other, Memory,
+  Rules, Sources, Models and cost. Earlier names (Decide, Portfolio, Live,
+  Coordination, Routing, Map, Views) are aliases so `PageHeader name=` callers
+  keep working; they are not shown. Supporting copy explains consequences and
+  next steps. Internal identifiers stay in detail.
 
 Coordination also uses the existing background reader and refreshes while waiting;
 a cold read must not delay rendering or appear as an empty list of agents.
