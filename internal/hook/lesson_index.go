@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"compound/internal/mem"
 )
 
 // The lesson index is the pre-tool-use hook's only read: a small JSON file that
@@ -36,8 +38,19 @@ const (
 	LessonIndexMaxBytes = 256 << 10
 	// LessonMaxInjected caps how many lessons one tool call can surface.
 	LessonMaxInjected = 2
-	// lessonSubjectMaxBytes bounds the text a trigger regex scans.
+	// lessonSubjectMaxBytes bounds the shell command a trigger regex scans.
 	lessonSubjectMaxBytes = 16 << 10
+	// lessonInputSubjectMaxBytes bounds the compact JSON input of a non-shell
+	// tool (Write content, Agent prompts) a trigger regex scans.
+	lessonInputSubjectMaxBytes = 2 << 10
+	// LessonIndexLimitsVersion marks an index whose builder enforced
+	// mem.CheckLessonPattern on every entry. The reader re-checks the
+	// compiled size of every pattern in an index without it (one written by
+	// an older binary) instead of trusting it.
+	LessonIndexLimitsVersion = 1
+	// LessonMatchBudget is the most the spooled hook spends matching lessons
+	// on one tool call; past it the call gets no lessons and the hook logs it.
+	LessonMatchBudget = 100 * time.Millisecond
 )
 
 // Lesson is one trigger -> how-to-apply pair.
@@ -65,6 +78,7 @@ type LessonIndex struct {
 	SourceMemoryRevision string   `json:"source_memory_revision,omitempty"`
 	SourceLedgerSeq      int64    `json:"source_ledger_seq,omitempty"`
 	ExcludedLessonIDs    []string `json:"excluded_lesson_ids,omitempty"`
+	LimitsVersion        int      `json:"limits_version,omitempty"`
 }
 
 // LessonMatch is one lesson that fired for a tool call.
@@ -129,14 +143,18 @@ func LessonSubject(toolInput json.RawMessage) string {
 	}
 	var compact bytes.Buffer
 	if err := json.Compact(&compact, toolInput); err != nil {
-		return capLessonSubject(string(toolInput))
+		return capSubject(string(toolInput), lessonInputSubjectMaxBytes)
 	}
-	return capLessonSubject(compact.String())
+	return capSubject(compact.String(), lessonInputSubjectMaxBytes)
 }
 
 func capLessonSubject(s string) string {
-	if len(s) > lessonSubjectMaxBytes {
-		return s[:lessonSubjectMaxBytes]
+	return capSubject(s, lessonSubjectMaxBytes)
+}
+
+func capSubject(s string, max int) string {
+	if len(s) > max {
+		return s[:max]
 	}
 	return s
 }
@@ -149,7 +167,30 @@ const (
 	LessonIndexOversized     = "oversized"
 	LessonIndexCorrupt       = "corrupt"
 	LessonIndexUnknownSchema = "unknown_schema"
+	// LessonMatchTimeout: matching ran past LessonMatchBudget.
+	LessonMatchTimeout = "match_timeout"
 )
+
+// matchWithin returns match's result, or no lessons and LessonMatchTimeout if
+// deadline fires first. Go regexps cannot be cancelled, so a late match keeps
+// running in its goroutine; the spooled hook exits right after answering.
+func matchWithin(match func() ([]LessonMatch, string), deadline <-chan time.Time) ([]LessonMatch, string) {
+	type result struct {
+		matches []LessonMatch
+		state   string
+	}
+	done := make(chan result, 1)
+	go func() {
+		matches, state := match()
+		done <- result{matches, state}
+	}()
+	select {
+	case got := <-done:
+		return got.matches, got.state
+	case <-deadline:
+		return nil, LessonMatchTimeout
+	}
+}
 
 // MatchLessonsFile reads the index once and returns the lessons whose trigger
 // matches this tool call, in index order, at most LessonMaxInjected. Every
@@ -174,7 +215,8 @@ func MatchLessonsFileWithState(indexPath, tool string, toolInput json.RawMessage
 	if index.SchemaVersion != LessonIndexSchemaVersion {
 		return nil, LessonIndexUnknownSchema
 	}
-	return MatchLessons(index.Lessons, tool, LessonSubject(toolInput)), ""
+	checked := index.LimitsVersion >= LessonIndexLimitsVersion
+	return matchLessons(index.Lessons, tool, LessonSubject(toolInput), checked), ""
 }
 
 func readLessonIndexBytes(indexPath string) ([]byte, string) {
@@ -205,8 +247,15 @@ func readLessonIndexBytes(indexPath string) ([]byte, string) {
 	return data, ""
 }
 
-// MatchLessons applies already-loaded lessons to one tool call.
+// MatchLessons applies already-loaded lessons to one tool call. It checks
+// every pattern's compiled size, trusting nothing about where it came from.
 func MatchLessons(lessons []Lesson, tool, subject string) []LessonMatch {
+	return matchLessons(lessons, tool, subject, false)
+}
+
+// matchLessons skips a pattern over the length cap always, and one over the
+// compiled-size cap unless checked says the index builder already refused it.
+func matchLessons(lessons []Lesson, tool, subject string, checked bool) []LessonMatch {
 	if subject == "" {
 		return nil
 	}
@@ -218,7 +267,10 @@ func MatchLessons(lessons []Lesson, tool, subject string) []LessonMatch {
 		if lesson.Pattern == "" || lesson.Apply == "" || len(lesson.Apply) > LessonApplyMaxBytes {
 			continue
 		}
-		if !lessonToolMatches(lesson.Tools, tool) {
+		if !lessonToolMatches(lesson.Tools, tool) || len(lesson.Pattern) > mem.LessonPatternMaxBytes {
+			continue
+		}
+		if !checked && mem.CheckLessonPattern(lesson.Pattern) != nil {
 			continue
 		}
 		re, err := regexp.Compile(lesson.Pattern)
@@ -256,6 +308,9 @@ func ValidateLesson(lesson Lesson) error {
 	}
 	if _, err := regexp.Compile(lesson.Pattern); err != nil {
 		return fmt.Errorf("lesson %s pattern: %w", lesson.ID, err)
+	}
+	if err := mem.CheckLessonPattern(lesson.Pattern); err != nil {
+		return fmt.Errorf("lesson %s: %w", lesson.ID, err)
 	}
 	apply := strings.TrimSpace(lesson.Apply)
 	if apply == "" {
@@ -411,6 +466,7 @@ func BuildLessonIndex(lessons []Lesson, now time.Time) (LessonIndex, []error) {
 		SchemaVersion: LessonIndexSchemaVersion,
 		BuiltAt:       now.UTC().Format(time.RFC3339),
 		Lessons:       kept,
+		LimitsVersion: LessonIndexLimitsVersion,
 	}, problems
 }
 

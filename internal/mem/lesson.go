@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"regexp/syntax"
 	"sort"
 	"strings"
 	"time"
@@ -117,6 +118,53 @@ type LessonTrigger struct {
 
 var lessonTriggerTool = regexp.MustCompile(`^(\*|[A-Za-z][A-Za-z0-9_.-]*)$`)
 
+// The hook compiles and runs every trigger pattern on every tool call, so a
+// pattern's cost is bounded where it is written and where it is read.
+const (
+	// LessonTriggerMaxBytes caps the regex of a NEW trigger at the lesson
+	// door (write, amend). A moment-of-action trigger needs no more.
+	LessonTriggerMaxBytes = 256
+	// LessonPatternMaxBytes caps a pattern in the index; it is larger than
+	// the door cap so lessons written before the door cap keep serving.
+	LessonPatternMaxBytes = 1024
+	// LessonPatternMaxInsts caps the compiled program. Matching costs about
+	// program size times subject length; this keeps one pattern on the
+	// largest shell subject in the tens of milliseconds even in the worst
+	// shape, and the hook's match budget bounds the sum.
+	LessonPatternMaxInsts = 1000
+)
+
+// CheckLessonPattern refuses a pattern the hook should not run on every call:
+// longer than LessonPatternMaxBytes or compiling to more than
+// LessonPatternMaxInsts instructions. The hook index builder and reader call it
+// too, so the door and the index enforce one rule.
+func CheckLessonPattern(pattern string) error {
+	if len(pattern) > LessonPatternMaxBytes {
+		return fmt.Errorf("trigger regex is %d bytes; the limit is %d", len(pattern), LessonPatternMaxBytes)
+	}
+	parsed, err := syntax.Parse(pattern, syntax.Perl)
+	if err != nil {
+		return fmt.Errorf("trigger regex %q does not compile: %w", pattern, err)
+	}
+	prog, err := syntax.Compile(parsed.Simplify())
+	if err != nil {
+		return fmt.Errorf("trigger regex %q does not compile: %w", pattern, err)
+	}
+	if n := len(prog.Inst); n > LessonPatternMaxInsts {
+		return fmt.Errorf("trigger regex compiles to %d instructions; the limit is %d (nested or counted repeats make every tool call slow)", n, LessonPatternMaxInsts)
+	}
+	return nil
+}
+
+// checkNewLessonTrigger adds the door's tighter length cap to a trigger that
+// is being written or amended now.
+func checkNewLessonTrigger(trigger LessonTrigger) error {
+	if len(trigger.Pattern) > LessonTriggerMaxBytes {
+		return fmt.Errorf("trigger regex is %d bytes; a new trigger may be at most %d (match the step before the damage, not every variant)", len(trigger.Pattern), LessonTriggerMaxBytes)
+	}
+	return nil
+}
+
 // ParseLessonTrigger validates and splits a trigger. Empty input is no trigger.
 func ParseLessonTrigger(raw string) (LessonTrigger, bool, error) {
 	raw = strings.TrimSpace(raw)
@@ -133,6 +181,9 @@ func ParseLessonTrigger(raw string) (LessonTrigger, bool, error) {
 	}
 	if _, err := regexp.Compile(pattern); err != nil {
 		return LessonTrigger{}, false, fmt.Errorf("trigger regex %q does not compile: %w", pattern, err)
+	}
+	if err := CheckLessonPattern(pattern); err != nil {
+		return LessonTrigger{}, false, err
 	}
 	return LessonTrigger{Tool: tool, Pattern: pattern}, true, nil
 }
@@ -186,8 +237,14 @@ func normalizeLessonInput(in LessonInput) (LessonInput, error) {
 	if in.Skill != "" && strings.ContainsAny(in.Skill, `/\`+"\x00") {
 		return in, fmt.Errorf("skill %q must be a bare skill name", in.Skill)
 	}
-	if _, _, err := ParseLessonTrigger(in.Trigger); err != nil {
+	trigger, hasTrigger, err := ParseLessonTrigger(in.Trigger)
+	if err != nil {
 		return in, err
+	}
+	if hasTrigger {
+		if err := checkNewLessonTrigger(trigger); err != nil {
+			return in, err
+		}
 	}
 	evidence := make([]string, 0, len(in.Evidence))
 	for _, ref := range in.Evidence {

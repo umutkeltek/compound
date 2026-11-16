@@ -84,7 +84,15 @@ sources for the home's own index are recorded in `COMPOUND_HOME/config/hook-less
 and every later rebuild (automatic or with no flags) reads the ledger plus those sources. A lesson is
 `{id, tools[], pattern, apply, source}`. The builder also accepts the producer spellings `trigger`
 and `how_to_apply`. Limits: `apply` is one line of at most 300 bytes, at most 2 lessons per call, and
-an index file of at most 256 KiB (written as compact JSON).
+an index file of at most 256 KiB (written as compact JSON). The hook compiles and runs every pattern on
+every call, so pattern cost is bounded three ways. A new trigger (lesson write or amend) may be at most
+256 bytes; any pattern in the index at most 1024 bytes (so lessons written before the door cap keep
+serving) and at most 1000 compiled instructions (`mem.CheckLessonPattern`, enforced by the door, the
+builder and the reader). The builder marks the index `limits_version: 1`; the reader re-checks the
+compiled size of every pattern in an index without that mark (one written by an older binary) and drops
+an over-limit pattern instead of running it. A non-shell tool's input is matched on its first 2 KiB.
+Finally, matching on one tool call has a hard 100 ms budget: past it the call gets no lessons, the
+spool line records `lesson_index: "match_timeout"` and the hook logs it.
 
 **Rank and capacity.** The index is in rank order: ledger lessons newest first, then skill-file and
 `--from` lines in the order read (their age is unknown, so they rank as oldest). A tool call serves the

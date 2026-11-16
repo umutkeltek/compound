@@ -104,8 +104,14 @@ func (s *Store) AmendLesson(in LessonChangeInput, now time.Time) (LessonChangeRe
 	if len(in.How) > lessonTextMax {
 		return LessonChangeResult{}, fmt.Errorf("lesson how must be at most %d characters; put detail behind --evidence", lessonTextMax)
 	}
-	if _, _, err := ParseLessonTrigger(in.Trigger); err != nil {
+	trigger, hasTrigger, err := ParseLessonTrigger(in.Trigger)
+	if err != nil {
 		return LessonChangeResult{}, err
+	}
+	if hasTrigger {
+		if err := checkNewLessonTrigger(trigger); err != nil {
+			return LessonChangeResult{}, err
+		}
 	}
 	return s.changeLesson(in, LessonChangeAmended, now)
 }

@@ -416,7 +416,9 @@ being paged per item.
      `<tool>` is the harness tool name (`Bash`, `Edit`, `Write`, `Read`, ...)
      or `*`; it may not contain `:`. `<regex>` is Go RE2, matched against the
      tool call's primary input (the command for `Bash`, the file path for
-     file tools). Example: `Bash:proof-check.*\|.*jq`. `mem.LessonTrigger.Matches`
+     file tools). A new regex may be at most 256 bytes and must compile to at
+     most 1000 instructions (the hook runs it on every call). Example:
+     `Bash:proof-check.*\|.*jq`. `mem.LessonTrigger.Matches`
      is the reference matcher. A harness delivers hook context with the NEXT
      tool result, so match the step before the damage (the listing, dry-run
      or read call), not only the destructive one.
