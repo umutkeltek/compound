@@ -2,12 +2,18 @@ import { arr, num, reviewCommand, str, type Json, type ProjectionStatus } from "
 import { parseActionAuthorityBundle } from "@/lib/action-authority";
 import { ago, toDate } from "@/lib/time";
 import type { AttentionReport } from "@/lib/attention";
-import { type DecisionEffectKind, type DecisionOption, type FieldSpec, specFor } from "@/lib/decision-registry";
+import { decisionKindWords, type DecisionEffectKind, type DecisionOption, type FieldSpec, specFor } from "@/lib/decision-registry";
+import { humanizeProductId } from "@/lib/app-identity";
+import { appHref, workItemHref } from "@/lib/links";
+import { plainText, plainWorkStep, productTitle } from "@/lib/plain-words";
+import { workTitle } from "@/lib/work-title";
+import { timestampMs } from "@/lib/work-state";
 import { genericActionEffectKind, genericActionProjectionEligible, genericActionRevision, reviewResolutionRevision, OPERATOR_INPUTS } from "@/lib/generic-actions";
 import { areaPlain } from "@/lib/glossary";
 import { areaOf } from "@/lib/review-data";
 import { plainAge } from "@/components/kit/ReadState";
 import type { DecisionStanding } from "@/lib/plain-words";
+import type { WorkProjectIndex } from "@/lib/work-project";
 import type { AuthorityFace, ObjectFace } from "@/representation";
 
 /**
@@ -315,7 +321,141 @@ export type DecideGroup = {
    * optional so DecideGroup literals built elsewhere keep compiling.
    */
   standing?: DecisionStanding;
+  /** What it is about and what a yes and a no would cause, in his words. */
+  card?: DecisionCard;
+  /** Held work: each item inline (title, app, recorded reason, since when). Open decision only. */
+  heldWork?: HeldWorkRow[];
 };
+
+/* ---------- one card per decision: what it is about and what would happen ---------- */
+
+/** The app or thing a decision is about; `href` when it has its own page. */
+export type DecisionAbout = { label: string; href: string | null; app: boolean };
+
+export type DecisionCard = {
+  about: DecisionAbout | null;
+  /** the question, in one plain sentence (the kind's question; "" when unknown) */
+  question: string;
+  /** the record's own words for what it is about, without its trailing question */
+  subject: string;
+  yes: string | null;
+  no: string | null;
+  undo: string | null;
+  recommendation: string | null;
+  /** the record carries no clear question: an agent must word it first */
+  needsWording: boolean;
+  /** each item inside is decided on its own (held work) */
+  perItem: boolean;
+  /** what the record does not say, named once ("" when it says everything) */
+  silent: string;
+};
+
+/** A trailing "Review it?" / "Promote it?" the record asks in tool words: the card asks its own question. */
+const TRAILING_ASK = /\s*(?:—\s*)?(?:Review it|Review the result|Promote it|Tidy it|Approve it|Apply it|Clear it|Remove it)\?\s*$/i;
+
+function aboutOf(area: string, sample: Json, summary: string): DecisionAbout | null {
+  const label = str(sample.context_label).trim();
+  const productId = /^product:[\w.-]+$/.test(label) ? label : /^(product:[\w.-]+)\b/.exec(summary)?.[1] ?? "";
+  if (productId) return { label: humanizeProductId(productId), href: appHref(productId), app: true };
+  // A rule's context label is the rule itself (the subject), not what it is about.
+  if (!label || area.startsWith("decision-candidates") || /record needs your decision/i.test(label)) return null;
+  return { label, href: null, app: false };
+}
+
+function listWords(parts: string[]): string {
+  return parts.length <= 1 ? parts.join("") : `${parts.slice(0, -1).join(", ")} or ${parts[parts.length - 1]}`;
+}
+
+/**
+ * One decision's card from its kind's words (lib/decision-registry.ts, the one
+ * owner) and its own record. Nothing is invented: what neither says is named
+ * once in `silent`, never filled with boilerplate.
+ */
+export function decisionCard(args: {
+  area: string;
+  sample: Json;
+  summary: string;
+  objectText: string;
+  needsWording: boolean;
+  recommendation: string | null;
+}): DecisionCard {
+  const words = decisionKindWords(args.area);
+  const subject = productTitle(plainText(args.objectText || args.summary), humanizeProductId).text.replace(TRAILING_ASK, "").trim();
+  const card: DecisionCard = {
+    about: aboutOf(args.area, args.sample, args.summary),
+    question: args.needsWording ? "" : words?.question ?? "",
+    subject: /record needs your decision|review record needs/i.test(subject) ? "" : subject,
+    yes: args.needsWording ? null : words?.yes ?? null,
+    no: args.needsWording ? null : words?.no ?? null,
+    undo: args.needsWording ? null : words?.undo ?? null,
+    recommendation: args.recommendation,
+    needsWording: args.needsWording,
+    perItem: Boolean(words?.perItem),
+    silent: "",
+  };
+  if (!card.needsWording) {
+    const missing = [
+      !card.question ? "what it asks" : "",
+      !card.yes ? "what a yes does" : "",
+      !card.no ? "what a no does" : "",
+      !card.undo ? "whether it can be undone" : "",
+      !card.recommendation ? "what is recommended" : "",
+    ].filter(Boolean);
+    card.silent = missing.length ? `The record does not say ${listWords(missing)}.` : "";
+  }
+  return card;
+}
+
+/** One held work item, inline on the "Work on hold" decision. */
+export type HeldWorkRow = {
+  id: string;
+  title: string;
+  href: string;
+  app: DecisionAbout | null;
+  /** the recorded reason for the hold, in plain words; "" when none was recorded */
+  reason: string;
+  /** when it was put on hold (ISO), "" when unknown */
+  since: string;
+};
+
+function holdSince(step: Json | undefined): string {
+  const ms = timestampMs(step?.ts ?? step?.at);
+  return ms === null ? "" : new Date(ms).toISOString();
+}
+
+/**
+ * The held work items behind the "Work on hold" decision, from each item's
+ * own record (`work show`) and the work-to-app index. A record not read yet
+ * still lists its item, by its title from the list row when there is one.
+ */
+export function heldWorkRows(
+  ids: readonly string[],
+  shows: ReadonlyMap<string, Json | null>,
+  rows: ReadonlyMap<string, Json>,
+  index: Pick<WorkProjectIndex, "byWork" | "projects"> | null,
+): HeldWorkRow[] {
+  return ids.map((id) => {
+    const show = shows.get(id) ?? null;
+    const work = (show && typeof show.work === "object" && show.work ? show.work as Json : show) ?? rows.get(id) ?? { work_id: id };
+    const state = str(work.state);
+    const lifecycle = arr(work.lifecycle) as Json[];
+    const hold = [...lifecycle].reverse().find((step) => step && str(step.to) === (state || "held"));
+    const note = str(hold?.note).replace(/\s*\(policy [^)]*\)\s*$/, "");
+    const reason = plainWorkStep(str(work.blocking_reason) || (/^action recorded:|^created$/i.test(note) ? "" : note));
+    const projectId = index?.byWork[id] ?? "";
+    const project = projectId ? index?.projects.find((p) => p.id === projectId) ?? null : null;
+    return {
+      id,
+      title: workTitle({ ...rows.get(id), ...work }),
+      href: workItemHref(id),
+      app: project && project.kind !== "none"
+        ? { label: project.name, href: project.kind === "app" ? appHref(project.id) : null, app: project.kind === "app" }
+        : null,
+      reason,
+      since: holdSince(hold),
+    };
+  });
+}
 
 /* ---------- helpers ---------- */
 
@@ -1541,6 +1681,16 @@ export function buildDecideGroups(
       panel,
       brief,
       standing,
+      card: decisionCard({
+        area,
+        sample,
+        summary: str(group.operator_summary),
+        objectText,
+        needsWording: group.needs_wording === true,
+        recommendation: brief?.recommendation
+          ? [brief.options.find((option) => option.value === brief.recommendation?.option)?.label || brief.recommendation.option, brief.recommendation.rationale].filter(Boolean).join(": ")
+          : null,
+      }),
     };
   });
 }

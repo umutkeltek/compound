@@ -106,6 +106,7 @@ const reply = {
     ],
   },
   "workbench --json": { generated_at: iso(0), counts: { open: 6, in_progress: 4 }, open: work, recent: [] },
+  "work show work_fx_held --json": { ...work.find((w) => w.work_id === "work_fx_held"), id: "work_fx_held", lifecycle: [{ to: "claimed", ts: ns(5), note: "claimed" }, { to: "held", ts: ns(3), note: "Waits for a fixture account. (policy fixture)" }] },
   "workbench --json --recent 500": { generated_at: iso(0), counts: { open: 6, in_progress: 4 }, open: work, recent: [] },
   "reviews --json": {
     schema_version: "compound.review_queue.v0.1", generated_at: iso(0), groups: [],
@@ -531,35 +532,46 @@ try {
   assert.doesNotMatch(warm.Decide, /paused|pause while/i, "an old copy is only old: never 'paused'");
   // A title that starts with a product id leads with the product's name on
   // Decide too, as on Today; the id stays as small text.
-  assert.match(warm.Decide, /Fixture App has a product hypothesis\. Review it\?/);
+  assert.match(warm.Decide, /Fixture App has a product hypothesis\./);
   assert.match(warm.Today, /Fixture App has a product hypothesis\. Review it\?/);
   assert.doesNotMatch(warm.Decide, /product:fixture-app has/, "a raw product id never leads a Decide title");
 
-  // 5. The opened decision checks its own evidence (`reviews --json --area`):
-  // "Checking…" while that read runs, then its real standing from that read.
-  const openedPath = { decision: "route-promotions|x" };
-  const renderOpened = async () => visibleText(wrap("/reviews", await Decide({ searchParams: Promise.resolve(openedPath) })));
-  const checking = await renderOpened();
-  assert.match(checking, /Checking… \(takes a few seconds\)/, "the opened decision says it is being checked");
-  await compound.settleProjectionReads();
-  const opened = await renderOpened();
-  assert.doesNotMatch(opened, /Checking…/);
-  assert.match(
-    opened,
-    /Each item has its own action\. Open it to decide them one by one\./,
-    "the opened decision shows its real standing from its own read",
-  );
-  assert.doesNotMatch(opened, /approval record is incomplete: each item/, "one action per item is not an incomplete record");
+  // 5. The opened decision is a card, never a "checking" gate: no button
+  // waits on a recheck, so nothing on it changes when one runs.
+  const opened = visibleText(wrap("/reviews", await Decide({ searchParams: Promise.resolve({ decision: "route-promotions|x" }) })));
+  assert.doesNotMatch(opened, /Checking…|Not yet|Ready to review/);
   assert.deepEqual(findBannedPhrases(opened), []);
+  await compound.settleProjectionReads();
+  await scopedEvidenceCases();
   await scopedEvidenceCases();
 
-  // 6. The opened card: product name in the title, the id small, and the
-  // tool's "why" line in plain words in its "Why it matters" box.
-  const bench = visibleText(wrap("/reviews", await Decide({ searchParams: Promise.resolve({ decision: "bench|review" }) })));
-  assert.match(bench, /Fixture App has a product hypothesis\. Review it\?/);
-  assert.match(bench, /product:fixture-app/, "the id stays, as small text");
-  assert.match(bench, /The product gets an idea to test that rests on evidence\./);
-  assert.doesNotMatch(bench, /evidence-shaped/, "the tool's raw why line never reaches the card");
+  // 6. One card per decision: the app it is about (linked), the question in
+  // one sentence, what a yes and a no would cause and whether it can be
+  // undone, from the kind's words; what the record does not say, once.
+  const route = visibleText(wrap("/reviews", await Decide({ searchParams: Promise.resolve({ decision: "route-promotions|x" }) })));
+  assert.match(route, /Let agents use this model first for this kind of task\?/, "the kind's question");
+  assert.match(route, /If you say yes Agents try this model first for this kind of task\./);
+  assert.match(route, /If you say no Nothing changes/);
+  assert.match(route, /Can it be undone\? Yes: the first choice can be switched back\./);
+  assert.match(route, /The record does not say what is recommended\./, "what the record does not say, named once");
+  assert.doesNotMatch(route, /No recommendation is recorded|The system does not say|Connect operator|Copy task|Next step/, "no boilerplate and no dead control");
+  const bench = await Decide({ searchParams: Promise.resolve({ decision: "bench|review" }) });
+  const benchText = visibleText(wrap("/reviews", bench));
+  assert.match(benchText, /App Fixture App/, "the card names the app it is about");
+  assert.match(wrap("/reviews", bench), /href="\/apps\/fixture-app"/, "and links its page");
+  assert.match(benchText, /The record does not say what it asks, what a yes does, what a no does, whether it can be undone or what is recommended\./);
+  // Held work: each item inline with its title, app, recorded reason and since when.
+  const heldCold = await Decide({ searchParams: Promise.resolve({ decision: "workbench:blocked-on-you" }) });
+  await compound.settleProjectionReads();
+  const heldNow = await Decide({ searchParams: Promise.resolve({ decision: "workbench:blocked-on-you" }) });
+  const heldText = visibleText(wrap("/reviews", heldNow));
+  assert.ok(heldCold, "the held decision renders before its records are read");
+  assert.match(heldText, /Let this held work continue, or stop it\?/);
+  assert.match(heldText, /Fixture item on hold →/, "the held item by its title");
+  assert.match(heldText, /Fixture App · Waiting for a fixture device\./, "its app and the recorded reason (blocking_reason first, as on the work page)");
+  assert.match(heldText, /On hold since 3d ago/);
+  assert.match(wrap("/reviews", heldNow), /href="\/work\/work_fx_held"/, "it links the work page");
+  assert.doesNotMatch(heldText, /Deletes or destroys something/, "no aggregate destructive label");
 
   // 4. Decide sends only the open decision's detail.
   const page = await Decide({ searchParams: Promise.resolve({}) });

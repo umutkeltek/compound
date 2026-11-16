@@ -1319,3 +1319,101 @@ export function toFormSpec(spec: DecisionAreaSpec): DecisionFormSpec {
 export function specsForSource(source: DecisionAreaSpec["source"]): DecisionAreaSpec[] {
   return Object.values(REGISTRY).filter((spec) => spec.source === source);
 }
+
+/* ---------- what a yes and a no would cause, per kind ---------- */
+
+/**
+ * The real question behind each kind of decision, and what a yes and a no
+ * would cause in the world, in his words. This table is the one owner of
+ * those words: cards read them, components never write their own. `null`
+ * means the records of that kind do not say, and the card says so once.
+ * Only what the owner tools really do today is written here; when a yes
+ * cannot run yet, the sentence says that instead of promising it.
+ */
+export type DecisionKindWords = {
+  /** the question, in one plain sentence */
+  question: string;
+  /** what a yes would cause */
+  yes: string | null;
+  /** what a no would cause */
+  no: string | null;
+  /** whether it can be undone */
+  undo: string | null;
+  /** each item inside is decided on its own (held work) */
+  perItem?: boolean;
+};
+
+const KIND_WORDS: Record<string, DecisionKindWords> = {
+  "workbench-blocked-on-you": {
+    question: "Let this held work continue, or stop it?",
+    yes: "It goes back to ready, and an agent picks it up again.",
+    no: "It is closed as cancelled. Nothing is deleted; its record stays.",
+    undo: "A yes can be undone by holding it again. A no cannot: a cancelled item stays closed.",
+    perItem: true,
+  },
+  "decision-candidates": {
+    question: "Make this a standing rule for agents?",
+    yes: "Today a yes only starts an independent review of the rule. No step turns it into a rule yet.",
+    no: null,
+    undo: null,
+  },
+  "product-hypotheses": {
+    question: "Approve this idea so agents can test it?",
+    yes: "The idea is recorded as approved, so agents can build the change that tests it.",
+    no: "There is no way to record a no yet; the idea keeps waiting.",
+    undo: null,
+  },
+  "product-reviews": {
+    question: "Did this change work?",
+    yes: "The result is recorded as worked, and the idea it tested counts as supported.",
+    no: "The result is recorded as did not work, and the idea counts as refuted.",
+    undo: null,
+  },
+  "route-promotions": {
+    question: "Let agents use this model first for this kind of task?",
+    yes: "Agents try this model first for this kind of task. A yes needs a permission that is not installed yet, so it cannot run today.",
+    no: "Nothing changes: the current first choice stays, and your no is recorded.",
+    undo: "Yes: the first choice can be switched back.",
+  },
+  "harness-edit-proposals": {
+    question: "Let agents make these changes to their own setup?",
+    yes: "Each change you allow is approved; an agent still has to make it.",
+    no: "The change is turned down and not made.",
+    undo: "Yes: nothing changes until an agent makes it.",
+  },
+  "product-content-queue": {
+    question: "Approve these drafts for posting?",
+    yes: "The drafts go into the posting queue.",
+    no: "There is no way to withdraw a draft yet.",
+    undo: null,
+  },
+  "worktree-retirement": {
+    question: "Remove this finished copy of the code and its branch?",
+    yes: "The copy and its branch are removed.",
+    no: "They stay as they are.",
+    undo: "No.",
+  },
+  "git-index-lock": {
+    question: "Clear the stale lock file in this repository?",
+    yes: "The stale lock file is removed, so git works there again.",
+    no: "The lock stays, and git stays stuck there.",
+    undo: null,
+  },
+  "launchd-repair": {
+    question: "Apply the repair plan to this background job?",
+    yes: "The job is changed as the plan says.",
+    no: null,
+    undo: null,
+  },
+  "source-control-cleanup": {
+    question: "Tidy the uncommitted files in this repository?",
+    yes: null,
+    no: null,
+    undo: null,
+  },
+};
+
+/** The question and its consequences for one kind (area id or area path); null for a kind with no entry. */
+export function decisionKindWords(area: string): DecisionKindWords | null {
+  return KIND_WORDS[(area || "").split("/")[0]] ?? null;
+}

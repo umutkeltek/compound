@@ -5,12 +5,14 @@ import { WaitingNotes } from "@/components/decide/WaitingNotes";
 import { CheckIcon, ClockIcon, hasCopy, PageHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending } from "@/components/kit";
 import { PendingRefresh } from "@/components/PendingRefresh";
 import { readAttention, yourDecisionGroups, type AttentionGroup } from "@/lib/attention";
-import { arr, HEAVY_PROJECTION_TIMEOUT_MS, num, readProjection, str, type Json, type LiveRead, type ProjectionStatus } from "@/lib/compound";
+import { arr, HEAVY_PROJECTION_TIMEOUT_MS, num, readProjection, readWorkProjectIndex, str, type Json, type LiveRead, type ProjectionStatus } from "@/lib/compound";
 import { ago } from "@/lib/time";
 import { describeWaiting, unit, waitingOnYou } from "@/lib/counts";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
-import { buildDecideGroups, type DecideAct, type DecideGroup, type ScopedDecisionEvidence } from "@/lib/decide-model";
+import { buildDecideGroups, heldWorkRows, type DecideAct, type DecideGroup, type ScopedDecisionEvidence } from "@/lib/decide-model";
+import { workTitle } from "@/lib/work-title";
+import { decisionKindWords } from "@/lib/decision-registry";
 import { ATTENTION_SOURCED_GENERIC_AREAS } from "@/lib/generic-actions";
 import { areaOf, bandOf, enrichAttentionGroups, externalReviewRows, groupsForBand } from "@/lib/review-data";
 import { plainArea, plainText, TERMS } from "@/lib/plain-words";
@@ -194,7 +196,24 @@ export default async function Decide({
 
   // The open decision: the one asked for, else the first. Only it carries detail.
   const openKey = decideGroups.some((group) => group.key === requestedKey) ? requestedKey : decideGroups[0]?.key ?? "";
-  const queueGroups = decideGroups.map((group) => (group.key === openKey ? group : listOnly(group)));
+  // Held work is decided item by item: the open "Work on hold" decision lists
+  // each item inline from its own record (title, app, recorded reason, since
+  // when). The same records name the work that waits on others.
+  const openAttention = needsYou.find((group) => group.key === openKey) ?? null;
+  const heldIds = openAttention && decisionKindWords(openAttention.area)?.perItem ? openAttention.item_ids : [];
+  const otherIds = waiting?.waitingOnOthers?.itemIds ?? [];
+  const showIds = [...new Set([...heldIds, ...otherIds])].slice(0, 25);
+  const [showReads, projectIndex] = await Promise.all([
+    Promise.all(showIds.map((id) => readProjection(["work", "show", id, "--json"]))),
+    heldIds.length ? readWorkProjectIndex() : Promise.resolve(null),
+  ]);
+  const shows = new Map(showIds.map((id, index) => [id, showReads[index]?.value ?? null] as const));
+  const heldWork = heldIds.length ? heldWorkRows(heldIds, shows, new Map(), projectIndex?.index ?? null) : undefined;
+  const workTitles = new Map(otherIds.flatMap((id) => {
+    const show = shows.get(id);
+    return show && (str(show.state) || str(show.id)) ? [[id, workTitle(show)] as const] : [];
+  }));
+  const queueGroups = decideGroups.map((group) => (group.key === openKey ? { ...group, heldWork } : listOnly(group)));
 
   const watchingEntries: WatchingEntry[] = [...groupsForBand(reviews, "watching", attention), ...externalWatching]
     .map((row: Json) => ({
@@ -225,7 +244,7 @@ export default async function Decide({
 
   const attentionKnown = hasCopy(attentionRead);
   const reviewsKnown = hasCopy(reviewsRead);
-  const pending = readsPending(attentionRead, reviewsRead, scoped?.read ?? null);
+  const pending = readsPending(attentionRead, reviewsRead, scoped?.read ?? null, ...showReads, projectIndex?.reads.work ?? null);
   const panelDetailOpen = Boolean(decideGroups.find((group) => group.key === requestedKey)?.panel);
 
   const answer = !waiting ? <ReadNotice read={attentionRead} label="what waits for you" />
@@ -243,7 +262,7 @@ export default async function Decide({
           right={<ReadChip read={attentionRead} />}
         />
       )}
-      {panelDetailOpen || !waiting ? null : <WaitingNotes waiting={waiting} totals={attention?.totals ?? null} detail />}
+      {panelDetailOpen || !waiting ? null : <WaitingNotes waiting={waiting} totals={attention?.totals ?? null} workTitles={workTitles} detail />}
 
       <section id="decision-queue" tabIndex={-1} className="scroll-mt-6 flex flex-col gap-3" aria-label="Decisions">
         {attentionKnown ? <ReadFailedBanner read={attentionRead} label="what waits for you" /> : null}
