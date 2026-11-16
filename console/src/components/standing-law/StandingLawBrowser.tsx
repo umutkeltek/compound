@@ -1,25 +1,26 @@
 "use client";
 
+import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useMemo, useState } from "react";
 
 import { EmptyState } from "@/components/kit";
+import { EvidenceReference } from "@/components/memory/EvidenceReference";
+import { evidenceDestination } from "@/components/memory/presentation";
+import { ForAgents } from "@/components/settings/primitives";
+import { agentDisplayName } from "@/lib/harness-label";
+import { ruleKindWords, ruleRecordedBy, sentence } from "@/lib/plain-words";
 import { filterStandingLaw, type StandingLawKind, type StandingLawRecord } from "@/lib/standing-law";
 
 /*
- * The searchable standing-law list (slice B). Client-side so the <4-interaction
- * journey holds: land on the page → type → see the ruling (3 interactions, no
- * round-trip). Each row is the plain restatement (the record title) + a kind
- * badge + date + corroboration count; expanding one row discloses the verbatim
- * provenance, the supersession chain (dimmed, struck-through — never live law),
- * the falsifier + review trigger, and the corroboration evidence list.
+ * The searchable list of rules in force. Client-side so the <4-interaction
+ * journey holds: land on the page → type → see the rule (no round-trip).
+ * Kind chips filter and add up to the total; the chosen kind lives in the
+ * address (`?kind=`), so reload, Back and a pasted link keep it. Each row is
+ * the rule's own words + its kind + date; opening one shows what it
+ * replaces, when it ends, who recorded it and a link to its history. Raw
+ * paths and ids sit behind "For agents".
  */
-
-const KIND_LABEL: Record<string, string> = {
-  ruling: "ruling",
-  grant: "grant",
-  freeze: "freeze",
-  policy: "policy",
-};
 
 function KindBadge({ kind }: { kind: StandingLawKind }) {
   const tone =
@@ -31,10 +32,8 @@ function KindBadge({ kind }: { kind: StandingLawKind }) {
           ? "border-seam-line bg-seam-soft text-seam"
           : "border-hair bg-soft-2 text-muted";
   return (
-    <span
-      className={`inline-flex items-center rounded-pill border px-2 py-0.5 text-2xs font-bold uppercase tracking-wide ${tone}`}
-    >
-      {KIND_LABEL[kind] ?? kind}
+    <span className={`inline-flex shrink-0 items-center rounded-pill border px-2 py-0.5 text-2xs font-bold uppercase tracking-wide ${tone}`}>
+      {ruleKindWords(kind).one}
     </span>
   );
 }
@@ -42,163 +41,175 @@ function KindBadge({ kind }: { kind: StandingLawKind }) {
 function DisclosureRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1 sm:flex-row sm:gap-3">
-      <span className="w-32 shrink-0 text-2xs font-bold uppercase tracking-wide text-faint">{label}</span>
+      <span className="w-40 shrink-0 text-xs font-semibold text-faint">{label}</span>
       <div className="min-w-0 flex-1 text-xs text-muted">{children}</div>
     </div>
   );
 }
 
-function RecordCard({
-  record,
-  expanded,
-  onToggle,
-}: {
-  record: StandingLawRecord;
-  expanded: boolean;
-  onToggle: () => void;
-}) {
+function RecordCard({ record }: { record: StandingLawRecord }) {
   const date = record.date ? record.date.slice(0, 10) : "";
+  const recordedBy = ruleRecordedBy(record.reviewedBy, (raw) => agentDisplayName(raw));
+  const history = evidenceDestination(record.claimId) ?? evidenceDestination(record.decisionId);
+  const technical = [
+    record.sourcePath ? `source: ${record.sourcePath}` : "",
+    record.claimId ? `claim: ${record.claimId}` : "",
+    record.decisionId ? `decision: ${record.decisionId}` : "",
+    record.owner ? `owner: ${record.owner}` : "",
+    record.reviewedBy ? `recorded by: ${record.reviewedBy}` : "",
+  ].filter(Boolean);
+  // A native disclosure: its open state is the browser's, so an auto-refresh
+  // re-render never closes a row he opened.
   return (
-    <div className="card flex flex-col gap-3 p-4">
-      <div className="flex items-start gap-3">
+    <details className="card group p-4" id={record.claimId || undefined}>
+      <summary className="flex cursor-pointer list-none items-start gap-3">
         <KindBadge kind={record.kind} />
-        <button
-          type="button"
-          onClick={onToggle}
-          aria-expanded={expanded}
-          className="min-w-0 flex-1 text-left"
-        >
-          <div className="text-sm font-semibold leading-snug text-ink">{record.title || record.decisionId}</div>
-          <div className="mono mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs text-faint">
+        <span className="min-w-0 flex-1 text-left">
+          <span className="block text-sm font-semibold leading-snug text-ink">{record.title || "This rule has no recorded wording"}</span>
+          <span className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs text-faint">
             {date ? <span className="tabular-nums">{date}</span> : null}
-            {record.scope ? <span>scope: {record.scope}</span> : null}
-            <span className="tabular-nums" title="restatements of this ruling recorded as corroboration">
-              {record.corroborationCount} corroboration{record.corroborationCount === 1 ? "" : "s"}
-            </span>
-            {record.supersedes.length ? (
-              <span className="text-muted">supersedes {record.supersedes.length}</span>
+            {record.scope ? <span>applies to: {record.scope}</span> : null}
+            {record.corroborationCount > 0 ? (
+              <span className="tabular-nums" title="times this rule was restated later">
+                restated {record.corroborationCount === 1 ? "once" : `${record.corroborationCount} times`}
+              </span>
             ) : null}
-          </div>
-        </button>
-        <button
-          type="button"
-          onClick={onToggle}
-          aria-label={expanded ? "Collapse details" : "Expand details"}
-          className="shrink-0 rounded-md border border-hair px-2 py-0.5 text-2xs text-muted hover:bg-soft"
-        >
-          {expanded ? "hide" : "details"}
-        </button>
-      </div>
+            {record.supersedes.length ? <span className="text-muted">replaces {record.supersedes.length}</span> : null}
+          </span>
+        </span>
+        <span aria-hidden className="shrink-0 rounded-md border border-hair px-2 py-0.5 text-2xs text-muted group-open:hidden">details</span>
+        <span aria-hidden className="hidden shrink-0 rounded-md border border-hair px-2 py-0.5 text-2xs text-muted group-open:inline">hide</span>
+      </summary>
 
-      {expanded ? (
-        <div className="flex flex-col gap-3 border-t border-hair pt-3">
+        <div className="mt-3 flex flex-col gap-3 border-t border-hair pt-3">
           {record.supersedes.length ? (
-            <DisclosureRow label="supersedes">
+            <DisclosureRow label="Replaces">
               <ul className="flex flex-col gap-1">
                 {record.supersedes.map((sup) => (
-                  <li key={sup.decisionId} className="flex items-center gap-2">
-                    <span className="text-faint line-through">{sup.title || sup.decisionId}</span>
-                    <span className="mono text-2xs text-faint">({sup.decisionId})</span>
-                    <span className="rounded-pill border border-hair bg-soft px-1.5 text-2xs text-faint">
-                      superseded
-                    </span>
+                  <li key={sup.decisionId || sup.claimId} className="flex flex-wrap items-center gap-2">
+                    <span className="text-faint line-through">{sup.title || "an earlier rule"}</span>
+                    <span className="rounded-pill border border-hair bg-soft px-1.5 text-2xs text-faint">replaced</span>
                   </li>
                 ))}
               </ul>
             </DisclosureRow>
           ) : null}
 
-          {record.falsifier ? <DisclosureRow label="falsifier">{record.falsifier}</DisclosureRow> : null}
-          {record.reviewTrigger ? (
-            <DisclosureRow label="review trigger">{record.reviewTrigger}</DisclosureRow>
-          ) : null}
+          {record.falsifier ? <DisclosureRow label="This rule ends when">{record.falsifier}</DisclosureRow> : null}
+          {record.reviewTrigger ? <DisclosureRow label="Look at it again when">{record.reviewTrigger}</DisclosureRow> : null}
 
-          <DisclosureRow label="provenance">
-            <div className="flex flex-col gap-0.5">
-              {record.reviewedBy ? <span>reviewed by {record.reviewedBy}</span> : null}
-              {record.sourcePath ? (
-                <span className="mono break-all text-2xs text-faint">{record.sourcePath}</span>
+          <DisclosureRow label="Where it came from">
+            <div className="flex flex-col gap-1">
+              <span>
+                {sentence(ruleKindWords(record.kind).one)}
+                {date ? ` from ${date}` : ""}
+                {recordedBy ? `, recorded by ${recordedBy}.` : ". Who recorded it is not on file."}
+              </span>
+              {history ? (
+                <Link href={history.href} className="font-semibold text-work hover:underline">Read its history →</Link>
               ) : (
-                <span className="text-faint">no source path recorded</span>
+                <span className="text-faint">No history page exists for this record.</span>
               )}
-              <span className="mono text-2xs text-faint">{record.claimId}</span>
             </div>
           </DisclosureRow>
 
-          {record.corroborationCount ? (
-            <DisclosureRow label="corroboration">
-              <div className="flex flex-wrap gap-1.5">
-                {record.corroborationEvidence.length ? (
-                  record.corroborationEvidence.map((ev) => (
-                    <span key={ev} className="mono rounded-md border border-hair bg-soft px-1.5 py-0.5 text-2xs text-muted">
-                      {ev}
-                    </span>
-                  ))
-                ) : (
-                  <span className="text-faint">{record.corroborationCount} restatement(s) recorded</span>
-                )}
-              </div>
+          {record.corroborationEvidence.length ? (
+            <DisclosureRow label="Restated in">
+              <ul className="flex flex-col gap-1">
+                {record.corroborationEvidence.map((ev) => (
+                  <li key={ev}><EvidenceReference reference={ev} /></li>
+                ))}
+              </ul>
             </DisclosureRow>
           ) : null}
 
           {record.keywords.length || record.domains.length ? (
-            <DisclosureRow label="keywords">
-              {[...record.keywords, ...record.domains].join(", ")}
-            </DisclosureRow>
+            <DisclosureRow label="Keywords">{[...record.keywords, ...record.domains].join(", ")}</DisclosureRow>
           ) : null}
+
+          <ForAgents label="For agents: technical record">
+            {technical.length ? (
+              <ul className="mono flex flex-col gap-0.5 break-all text-2xs text-faint">
+                {technical.map((line) => <li key={line}>{line}</li>)}
+              </ul>
+            ) : null}
+          </ForAgents>
         </div>
-      ) : null}
-    </div>
+    </details>
   );
 }
 
-export function StandingLawBrowser({ records }: { records: StandingLawRecord[] }) {
+export function StandingLawBrowser({
+  records,
+  byKind,
+}: {
+  records: StandingLawRecord[];
+  byKind: { kind: string; count: number }[];
+}) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const kind = searchParams?.get("kind") ?? "";
   const [query, setQuery] = useState("");
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
-  const filtered = useMemo(() => filterStandingLaw(records, query), [records, query]);
+  const filtered = useMemo(() => filterStandingLaw(records, query, kind), [records, query, kind]);
 
-  function toggle(id: string) {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  function chooseKind(next: string) {
+    const params = new URLSearchParams(searchParams?.toString() ?? "");
+    if (next) params.set("kind", next);
+    else params.delete("kind");
+    const qs = params.toString();
+    router.replace(`${pathname ?? "/standing-law"}${qs ? `?${qs}` : ""}#accepted-rules`, { scroll: false });
   }
+
+  const chip = (value: string, label: string, count: number) => {
+    const active = kind === value;
+    return (
+      <button
+        key={value || "all"}
+        type="button"
+        aria-pressed={active}
+        onClick={() => chooseKind(active && value ? "" : value)}
+        className={`inline-flex items-center gap-1 rounded-pill border px-2.5 py-0.5 text-xs font-semibold transition-colors ${
+          active ? "border-strong bg-strong text-panel" : "border-hair bg-panel text-muted hover:bg-soft"
+        }`}
+      >
+        <span className="tabular-nums">{count.toLocaleString("en-US")}</span> {label}
+      </button>
+    );
+  };
 
   return (
     <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Show rules of one kind">
+        {chip("", "all", records.length)}
+        {byKind.map((row) => chip(row.kind, row.count === 1 ? ruleKindWords(row.kind).one : ruleKindWords(row.kind).many, row.count))}
+      </div>
       <div className="flex flex-wrap items-center gap-2">
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search standing law — did I already rule this?"
-          aria-label="Search standing law"
+          placeholder="Search rules — did I already decide this?"
+          aria-label="Search rules"
           className="w-full max-w-md rounded-lg border border-hair bg-panel px-3 py-1.5 text-sm text-ink outline-none placeholder:text-faint focus:border-ink/40 sm:w-80"
         />
-        <span className="mono text-2xs text-faint tabular-nums">
-          {filtered.length}/{records.length}
+        <span className="text-2xs text-faint tabular-nums">
+          {filtered.length.toLocaleString("en-US")} of {records.length.toLocaleString("en-US")} rules shown
         </span>
       </div>
 
       {filtered.length ? (
         <div className="flex flex-col gap-2.5">
           {filtered.map((record) => (
-            <RecordCard
-              key={record.claimId || record.decisionId}
-              record={record}
-              expanded={expanded.has(record.claimId || record.decisionId)}
-              onToggle={() => toggle(record.claimId || record.decisionId)}
-            />
+            <RecordCard key={record.claimId || record.decisionId} record={record} />
           ))}
         </div>
       ) : records.length ? (
-        <EmptyState>No standing law matches “{query.trim()}”. Clear the search to see every ruling.</EmptyState>
-      ) : (
         <EmptyState>
-          No accepted rulings, grants, or freezes yet. Settled law recorded via a decision record shows up here.
+          No rule matches{query.trim() ? ` “${query.trim()}”` : ""}{kind ? ` among ${ruleKindWords(kind).many}` : ""}. Clear the search{kind ? " or the kind" : ""} to see every rule.
         </EmptyState>
+      ) : (
+        <EmptyState>No rules are in force yet. A decision you record shows up here.</EmptyState>
       )}
     </div>
   );

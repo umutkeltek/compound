@@ -429,6 +429,148 @@ export function sentence(value: string): string {
   return v ? v[0].toUpperCase() + v.slice(1) : v;
 }
 
+/* ---------- knowledge: Memory, Rules, Sources ---------- */
+
+/**
+ * One name per thing on the Knowledge pages. A proposed rule is called a
+ * proposed rule on Memory and on Rules (not "standing law candidate" or
+ * "proposed standing rule"); a proposed memory is a note agents found that
+ * no agent is told until he accepts it.
+ */
+export const KNOWLEDGE_TERMS = {
+  memory: {
+    name: "memory",
+    plural: "memories",
+    means: "A statement agents can be told when it is relevant.",
+  },
+  rule: {
+    name: "rule",
+    plural: "rules",
+    means: "A statement every agent is told at the start of each task.",
+  },
+  proposedMemory: {
+    name: "proposed memory",
+    plural: "proposed memories",
+    means: "A note agents took from a document or past work. No agent is told it until you accept it.",
+  },
+  proposedRule: {
+    name: "proposed rule",
+    plural: "proposed rules",
+    means: "A decision on record that could become a rule every agent follows. It waits for your choice.",
+  },
+} as const;
+
+/** Kinds of rule in force (`decisions standing-law` record kinds), in everyday words. */
+const RULE_KIND: Record<string, { one: string; many: string }> = {
+  ruling: { one: "your ruling", many: "your rulings" },
+  grant: { one: "permission", many: "permissions" },
+  freeze: { one: "freeze", many: "freezes" },
+  policy: { one: "policy", many: "policies" },
+  operational: { one: "operating note", many: "operating notes" },
+  doctrine: { one: "principle", many: "principles" },
+};
+
+export function ruleKindWords(kind: string): { one: string; many: string } {
+  const known = RULE_KIND[kind];
+  if (known) return known;
+  const word = (kind || "other").replace(/[_-]+/g, " ");
+  return { one: word, many: word.endsWith("s") ? word : `${word}s` };
+}
+
+/**
+ * Who recorded a rule (`reviewed_by`), in words: "operator" or
+ * "operator:<name>" is "you"; "operator:<name>-via-<agent>" is "you through
+ * <agent>"; anything else is shown as recorded. `agentName` turns an agent
+ * key into its name. Empty when nothing is on file.
+ */
+export function ruleRecordedBy(reviewedBy: string, agentName: (raw: string) => string): string {
+  const raw = (reviewedBy || "").trim();
+  if (!raw) return "";
+  const via = /^operator(?::[^\s]*?)?-via-(.+)$/.exec(raw);
+  if (via) return `you through ${agentName(via[1])}`;
+  if (raw === "operator" || raw.startsWith("operator:")) return "you";
+  return raw;
+}
+
+/** Kinds of accepted memory (the `memory canon` classes), plural, in everyday words. */
+const MEMORY_KIND: Record<string, string> = {
+  decision: "decisions",
+  principle: "principles and preferences",
+  behavior: "ways of working",
+  product_fact: "app facts",
+  product_metric: "app numbers",
+  research_fact: "research findings",
+  status: "status notes",
+  unclassified: "not sorted by kind",
+};
+
+export function memoryKindPlural(kind: string): string {
+  return MEMORY_KIND[kind] ?? kind.replace(/[_-]+/g, " ");
+}
+
+/** States of a proposal record (`memory candidates` state), in everyday words. */
+const MEMORY_RECORD_STATE: Record<string, { label: string; means: string }> = {
+  proposed: { label: "Waiting for your choice", means: "No agent is told these yet." },
+  needs_review: { label: "Need another look", means: "Flagged for a second review." },
+  parked: { label: "Set aside", means: "Kept on file; agents are not told." },
+  no_promote: { label: "Not to be asked again", means: "Kept on file; their source is not put to you again." },
+  rejected: { label: "Discarded", means: "Marked wrong or noise; never used." },
+  promoted: { label: "Accepted through review", means: "Agents can be told these." },
+};
+
+export function memoryRecordState(state: string): { label: string; means: string } {
+  return MEMORY_RECORD_STATE[state] ?? { label: state ? sentence(state.replace(/[_-]+/g, " ")) : "State not recorded", means: "" };
+}
+
+/** The order the record states are listed in. */
+export const MEMORY_RECORD_STATE_ORDER = ["proposed", "needs_review", "parked", "no_promote", "rejected", "promoted"] as const;
+
+/**
+ * The four choices on a proposed memory or a proposed rule
+ * (`memory adjudicate --verdict promote|park|reject|no_promote`): what each
+ * is called and what happens after it, in his words.
+ */
+export type MemoryChoiceFor = "memory" | "rule";
+
+const MEMORY_CHOICE: Record<string, { memory: string; rule: string; means: { memory: string; rule: string } }> = {
+  promote: {
+    memory: "Accept",
+    rule: "Make it a rule",
+    means: {
+      memory: "Future agents will be told this when it is relevant.",
+      rule: "Every agent will be told this at the start of each task.",
+    },
+  },
+  park: {
+    memory: "Set aside",
+    rule: "Not now",
+    means: { memory: "Keep it on file; agents won't be told.", rule: "Keep it on file; agents won't be told." },
+  },
+  reject: {
+    memory: "Discard",
+    rule: "Discard",
+    means: { memory: "Wrong or noise; never use it.", rule: "Wrong or noise; never use it." },
+  },
+  no_promote: {
+    memory: "Stop asking",
+    rule: "Stop asking",
+    means: { memory: "Don't ask me about this source again.", rule: "Don't ask me about this source again." },
+  },
+};
+
+/**
+ * What happens next while the browser cannot record a choice: who records
+ * it. The exact commands sit behind "For agents" on each card.
+ */
+export const MEMORY_CHOICE_HANDOFF =
+  "Choosing from this page is not built yet. Tell an agent which choice you want; it records it for you.";
+
+export function memoryChoice(verdict: string, kind: MemoryChoiceFor): { label: string; means: string } {
+  const choice = MEMORY_CHOICE[verdict];
+  if (!choice) return { label: sentence(verdict.replace(/[_-]+/g, " ")), means: "" };
+  return { label: choice[kind], means: choice.means[kind] };
+}
+
 /* ---------- banned words ---------- */
 
 /**

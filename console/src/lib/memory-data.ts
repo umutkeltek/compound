@@ -222,6 +222,33 @@ export async function loadProposedMemorySplit(): Promise<{
 }
 
 /**
+ * The Memory page's read of what waits for the operator: the proposed set
+ * WITH evidence (about a dozen rows, so the per-row evidence lookup is
+ * cheap; the slow cost noted above was the whole set), through the
+ * non-blocking read queue. The page never waits for it: a missing copy is
+ * "loading", a failed refresh keeps the last good copy and says so. The
+ * same reply carries `counts.by_state` over EVERY candidate record (the
+ * CLI counts the full snapshot whatever the filter), so the page no longer
+ * loads all ~22k records just to count them.
+ */
+export const PROPOSED_MEMORY_ARGS = ["memory", "candidates", "--json", "--state", "proposed", "--include-evidence"];
+
+export async function readProposedMemory() {
+  const read = await readProjection(PROPOSED_MEMORY_ARGS, { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS });
+  const items = read.value
+    ? arr(read.value.items)
+        .map((item) => candidateWithId(asObject(item)))
+        .filter((item): item is MemoryCandidate => Boolean(item))
+    : [];
+  items.sort((a, b) => str(b.created_at).localeCompare(str(a.created_at)));
+  return {
+    actionable: items.filter(isActionableMemoryCandidate),
+    sourceEvidence: items.filter(isKnowledgeClassCandidate),
+    read,
+  };
+}
+
+/**
  * Parked standing-law candidates for the durable adjudication queue.
  *
  * Server-prefiltered with `--kind decision` (mem CandidateListOptions keys it on
@@ -256,18 +283,17 @@ export async function loadStandingLawCandidates(): Promise<MemoryCandidate[]> {
   return (await loadStandingLawCandidatesRead()).candidates;
 }
 
-export async function loadMemoryCountsRead(): Promise<{ counts: Record<string, number>; read: ProjectionRead }> {
-  const { candidates: all, read } = await loadMemoryCandidatesRead();
-  const counts: Record<string, number> = {};
-  for (const c of all) {
-    const s = str(c.state) || "unknown";
-    counts[s] = (counts[s] ?? 0) + 1;
-  }
-  return { counts, read };
-}
+/**
+ * What agents remember: the current accepted statements, counted by kind
+ * (`memory canon --json`, read-only, well under a second). This is the
+ * number of memories; candidate records are a different population (a
+ * statement can be recorded directly, without a proposal), so the page
+ * never derives "accepted" from candidate states.
+ */
+export const MEMORY_CANON_ARGS = ["memory", "canon", "--json"];
 
-export async function loadMemoryCounts(): Promise<Record<string, number>> {
-  return (await loadMemoryCountsRead()).counts;
+export async function readMemoryCanon() {
+  return readProjection(MEMORY_CANON_ARGS);
 }
 
 /**

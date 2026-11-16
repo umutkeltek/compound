@@ -1,14 +1,20 @@
 import { str } from "@/lib/compound";
 import { specFor, type DecisionFormSpec } from "@/lib/decision-registry";
+import { appHref, evidenceHistoryHref } from "@/lib/links";
 import type { MemoryCandidate } from "@/lib/memory-data";
-import { memoryStatement, memoryState } from "./presentation";
+import { KNOWLEDGE_TERMS, memoryChoice, sentence, type MemoryChoiceFor } from "@/lib/plain-words";
+import { memoryBasis, memorySource, memoryStatement, memorySubject } from "./presentation";
 
 /*
- * Server-only view-model for the Memory adjudication queue. It CONSUMES the
- * existing `memory-adjudicate` bespoke spec (decision-registry.ts) rather than
- * re-declaring options/fields/argv — the registry owns the act; this only
- * extracts its serializable projection so a client card can render + govern the
- * click through /api/decision/execute (same payload the Decide queue posts).
+ * Server-only view-model for the Memory review queue. It CONSUMES the
+ * existing `memory-adjudicate` / `standing-law-candidate` specs
+ * (decision-registry.ts) for the choices and their exact commands rather than
+ * re-declaring them; the words he reads come from lib/plain-words.ts.
+ *
+ * The browser cannot record a choice yet (the standard console is
+ * read-only), so the model carries, per choice, what happens after it and
+ * the exact command an agent runs to record it. `formSpec` is kept only for
+ * the live path, which renders when console readiness allows it.
  *
  * No node builtins imported here → safe from the server component; the returned
  * shape is fully serializable so it can cross into the client AdjudicationCard.
@@ -16,40 +22,46 @@ import { memoryStatement, memoryState } from "./presentation";
 
 const AREA = "memory-adjudicate";
 
+export type MemoryChoiceView = {
+  value: string;
+  label: string;
+  /** what happens after this choice, in one plain sentence */
+  means: string;
+  /** the exact command an agent runs to record it (real id, no blanks) */
+  command: string;
+};
+
 export type AdjudicationCardModel = {
   id: string;
+  kind: MemoryChoiceFor;
+  /** "Proposed memory" | "Proposed rule" */
+  kindLabel: string;
+  /** "Waiting for you" */
+  stateLabel: string;
   headline: string;
-  body: string;
-  chips: { label: string; tone: string }[];
+  fullStatement: string;
+  /** what it is about, in words; `href` is the app's page when the subject is an app */
+  about: { label: string; href: string | null; raw: string } | null;
+  /** where it came from, in one line; `href` opens the evidence or record history */
+  from: { text: string; href: string | null };
+  createdAt: string;
+  choices: MemoryChoiceView[];
+  /** raw qualities, behind the agents' disclosure */
+  technical: { label: string; value: string }[];
   evidence: string[];
-  consequences: { approve: string; hold: string } | null;
-  formSpec: DecisionFormSpec;
-  argvPreview: string[] | null;
   /** Entity slug (or claim id) to seed the embedded memory graph from this card. */
   seed: string;
-  createdAt: string;
-  /** Presentation, dual-encoded per area so the same card serves the proposed
-   * memory queue and the parked standing-law queue honestly (no "proposed" lie
-   * on a parked candidate; no raw "promote" in the consequence lead). */
-  glyph: string;
-  kindLabel: string;
-  stateLabel: string;
-  approveLabel: string;
-  fullStatement: string;
-  subject: string;
-  relation: string;
-  sourceLabel: string;
-  whyReview: string;
+  /** cards with the same subject and source group together */
+  groupKey: string;
+  /** live path only (console readiness): the registry's options and fields */
+  formSpec: DecisionFormSpec;
 };
 
-type Presentation = { kindLabel: string; approveLabel: string; defaultState: string };
-
-/** Per-area card chrome. glyph comes from the registry spec; these are the
- * dual-encoded words the operator reads (the affirmative verb + the eyebrow). */
-const PRESENTATION: Record<string, Presentation> = {
-  "memory-adjudicate": { kindLabel: "Proposed memory", approveLabel: "accept for recall", defaultState: "proposed" },
-  "standing-law-candidate": { kindLabel: "Proposed standing rule", approveLabel: "make it a standing rule", defaultState: "parked" },
-};
+function sourceText(candidate: MemoryCandidate): { text: string; href: string | null } {
+  const source = memorySource(candidate);
+  if (source) return { text: source.title, href: source.ref ? evidenceHistoryHref(source.ref) : evidenceHistoryHref(candidate.id) };
+  return { text: "No source was recorded with this proposal", href: evidenceHistoryHref(candidate.id) };
+}
 
 export function buildAdjudicationModel(
   candidate: MemoryCandidate,
@@ -61,46 +73,73 @@ export function buildAdjudicationModel(
   const options = spec.optionsFor ? spec.optionsFor(candidate) : spec.options;
   if (!options.length) return null;
 
+  const kind: MemoryChoiceFor = area === "standing-law-candidate" ? "rule" : "memory";
   const pl = spec.plainLanguage(candidate);
   const defaultOption = spec.defaultOption ?? options[0].value;
-  const argvPreview = spec.previewArgv
-    ? spec.previewArgv(candidate)
-    : options.find((o) => o.value === defaultOption)?.argv ?? null;
-  const presentation = PRESENTATION[area] ?? PRESENTATION[AREA];
   const statement = memoryStatement(candidate.object);
+  const subject = memorySubject(str(candidate.entity));
   const qualifiers = (candidate.qualifiers ?? {}) as Record<string, unknown>;
-  const source = str(qualifiers.source);
-  const sourceLabel = ({ knowledge_page: "Recorded page", knowledge_import: "Imported source", knowledge_extraction: "Extracted source", decision_ledger: "Decision record" } as Record<string, string>)[source] || (source ? "Recorded source" : "Source description unavailable");
   const refs = [...new Set([
     ...pl.evidence ?? [],
     ...(Array.isArray(candidate.evidence_refs) ? candidate.evidence_refs.filter((r): r is string => typeof r === "string") : []),
     str(qualifiers.source_ref),
-  ].filter((ref) => ref && ref !== source))];
+  ].filter((ref) => ref && ref !== str(qualifiers.source) && ref !== candidate.id))];
 
+  // A proposed rule's one provenance line is the registry's plain "where
+  // from" ("From a decision you confirmed, July 30"); a proposed memory's is
+  // the heading of the source it was taken from.
+  const from = kind === "rule"
+    ? { text: pl.body ? pl.body.replace(/^from\s+/i, "") : "No source was recorded with this proposal", href: evidenceHistoryHref(candidate.id) }
+    : sourceText(candidate);
+
+  const choices: MemoryChoiceView[] = options.map((option) => {
+    const words = memoryChoice(option.value, kind);
+    const argv = spec.buildArgv?.({ itemId: candidate.id, item: candidate, option: option.value, fields: {} }) ?? option.argv ?? null;
+    return { value: option.value, label: words.label, means: words.means, command: argv?.length ? `compound ${argv.join(" ")}` : "" };
+  });
+
+  const technical: { label: string; value: string }[] = [];
+  if (str(candidate.entity)) technical.push({ label: "Subject", value: str(candidate.entity) });
+  if (str(candidate.predicate)) technical.push({ label: "Relation", value: str(candidate.predicate) });
+  if (candidate.confidence != null && candidate.confidence !== "") technical.push({ label: "Confidence", value: String(candidate.confidence) });
+  if (str(candidate.derivation)) technical.push({ label: "How it was found", value: str(candidate.derivation) });
+  if (str(candidate.promotion_basis)) technical.push({ label: "Reason given", value: memoryBasis(str(candidate.promotion_basis)) });
+  if (str(candidate.visibility)) technical.push({ label: "Who may be told", value: str(candidate.visibility) });
+  if (str(candidate.state)) technical.push({ label: "Recorded state", value: str(candidate.state) });
+
+  const terms = kind === "rule" ? KNOWLEDGE_TERMS.proposedRule : KNOWLEDGE_TERMS.proposedMemory;
   return {
     id: candidate.id,
+    kind,
+    kindLabel: sentence(terms.name),
+    stateLabel: "Waiting for you",
     headline: statement.summary,
-    body: area === "standing-law-candidate" ? pl.body : "",
-    chips: (pl.chips ?? []).map((c) => ({ label: c.label, tone: String(c.tone) })),
-    evidence: refs,
-    consequences: area === "standing-law-candidate" ? pl.consequences ?? null : {
-      approve: "Agents may recall this statement as durable memory when its scope and visibility allow it.",
-      hold: "It remains evidence for later and is not added to agent recall.",
-    },
-    formSpec: { area: spec.area, options, fields: spec.fields, defaultOption },
-    argvPreview,
-    seed: str(candidate.entity) || candidate.id,
-    createdAt: str(candidate.created_at),
-    glyph: spec.glyph,
-    kindLabel: presentation.kindLabel,
-    stateLabel: memoryState(str(candidate.state) || presentation.defaultState),
-    approveLabel: presentation.approveLabel,
     fullStatement: statement.full,
-    subject: str(candidate.entity),
-    relation: str(candidate.predicate),
-    sourceLabel,
-    whyReview: area === "standing-law-candidate"
-      ? "Decide whether this recorded decision should guide future agents as a standing rule."
-      : "Decide whether future agents should rely on this statement. It has not been accepted into recall by this proposal.",
+    about: subject ? { label: subject.label, href: subject.app ? appHref(subject.app) : null, raw: subject.raw } : null,
+    from,
+    createdAt: str(candidate.created_at),
+    choices,
+    technical,
+    evidence: refs,
+    seed: str(candidate.entity) || candidate.id,
+    groupKey: kind === "rule" ? candidate.id : `${str(candidate.entity)}\u0000${from.text}`,
+    formSpec: { area: spec.area, options, fields: spec.fields, defaultOption },
   };
+}
+
+/**
+ * Proposed memories with the same subject and source, as one group (ten
+ * notes taken from one paper are one judgment, not ten scrolls). Proposed
+ * rules are never grouped: each is its own decision and its own link target.
+ * Order is kept: a group sits where its first card was.
+ */
+export function groupAdjudicationModels(models: readonly AdjudicationCardModel[]): AdjudicationCardModel[][] {
+  const groups = new Map<string, AdjudicationCardModel[]>();
+  for (const model of models) {
+    const key = model.kind === "rule" ? `rule\u0000${model.id}` : model.groupKey;
+    const list = groups.get(key);
+    if (list) list.push(model);
+    else groups.set(key, [model]);
+  }
+  return [...groups.values()];
 }

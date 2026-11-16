@@ -51,6 +51,69 @@ function text(value: unknown): string {
   return typeof value === "string" ? value : typeof value === "number" ? String(value) : "";
 }
 
+/* ---------- memory (the Memory page) ---------- */
+
+const isCount = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+
+/**
+ * Proposal records by their recorded state, from `memory candidates --json`
+ * `counts.by_state`. The CLI counts every record whatever the filter, so any
+ * filtered read carries the whole split. Unit: proposal records, not
+ * memories (an accepted statement is counted by `countAcceptedMemories`).
+ * `null` when the reply has no valid split: unknown, never zero.
+ */
+export function countProposalRecords(reply: unknown): Record<string, number> | null {
+  const counts = (reply as { counts?: { by_state?: unknown } } | null | undefined)?.counts?.by_state;
+  if (!counts || typeof counts !== "object" || Array.isArray(counts)) return null;
+  const out: Record<string, number> = {};
+  for (const [state, n] of Object.entries(counts)) {
+    if (!isCount(n)) return null;
+    out[state] = n;
+  }
+  return out;
+}
+
+/** Accepted memories: `total` and its split by kind, largest first, zero kinds left out. */
+export type AcceptedMemoryCount = { total: number; byKind: { kind: string; count: number }[] };
+
+/**
+ * Accepted memories: the current statements agents can be given, from
+ * `memory canon --json` (`total`, split by kind in `distribution`). Unit:
+ * memories. `null` when the reply is missing or malformed: unknown, never
+ * zero. The split is shown only when it adds up to the total.
+ */
+export function countAcceptedMemories(canon: unknown): AcceptedMemoryCount | null {
+  const reply = canon as { total?: unknown; distribution?: unknown } | null | undefined;
+  if (!reply || !isCount(reply.total)) return null;
+  const dist = reply.distribution;
+  let byKind: { kind: string; count: number }[] = [];
+  if (dist && typeof dist === "object" && !Array.isArray(dist)) {
+    const rows = Object.entries(dist as Record<string, unknown>);
+    if (rows.every(([, n]) => isCount(n))) {
+      byKind = rows
+        .map(([kind, n]) => ({ kind, count: n as number }))
+        .filter((row) => row.count > 0)
+        .sort((a, b) => b.count - a.count || a.kind.localeCompare(b.kind));
+      if (byKind.reduce((sum, row) => sum + row.count, 0) !== reply.total) byKind = [];
+    }
+  }
+  return { total: reply.total, byKind };
+}
+
+/* ---------- sources (the Sources page) ---------- */
+
+/**
+ * Sources by their one status (lib/sources.ts `sourceView`). Unit: sources.
+ * The statuses add up to `total`. A page whose connections read has no copy
+ * passes nothing and shows the counts as unknown, never 0.
+ */
+export function countSourcesByStatus(views: readonly { status: { key: string } }[]): { total: number; byStatus: Record<string, number> } {
+  const byStatus: Record<string, number> = {};
+  for (const view of views) byStatus[view.status.key] = (byStatus[view.status.key] ?? 0) + 1;
+  return { total: views.length, byStatus };
+}
+
 /* ---------- open work ---------- */
 
 /** Open work items: every item the work projection lists as not finished. Unit: work items. */

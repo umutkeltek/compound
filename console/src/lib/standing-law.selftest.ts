@@ -152,6 +152,40 @@ export function runStandingLawSelfTest(): { ok: boolean; details: string[] } {
   const model = buildStandingLaw(seededPayload());
   assertStandingLawModel(model, push);
 
+  // One decision listed twice (once as the decision record with its id in the
+  // claim slot, once as the accepted claim) counts once; the kept row is the
+  // one with a real claim id and takes the other row's scope. Two decisions
+  // sharing a title stay two. The kind split adds up to the total, which is
+  // never the projection's own (double-counting) total.
+  const dup = buildStandingLaw({
+    records: [
+      { claim_id: "claim_dup0001", decision_id: "DEC-0001", kind: "policy", title: "Shared title", date: "2026-06-30T00:00:00Z" },
+      { claim_id: "DEC-0001", decision_id: "", kind: "policy", title: "Shared title", scope: "cross-agent", date: "2026-06-29T00:00:00Z" },
+      { claim_id: "claim_dup0002", decision_id: "DEC-0002", kind: "policy", title: "Same words", date: "2026-06-30T00:00:00Z" },
+      { claim_id: "claim_dup0003", decision_id: "DEC-0003", kind: "policy", title: "Same words", date: "2026-06-30T00:00:00Z" },
+      { claim_id: "claim_ops0001", decision_id: "", kind: "operational", title: "A note", date: "2026-06-01T00:00:00Z" },
+    ],
+    counts: { records: 5 },
+  });
+  const kept = dup.records.find((r) => r.decisionId === "DEC-0001");
+  push(
+    "duplicate-decision-counted-once",
+    dup.records.length === 4 && dup.counts.records === 4 && dup.counts.duplicates === 1 &&
+      kept?.claimId === "claim_dup0001" && kept.scope === "cross-agent",
+    `records=${dup.records.length} counted=${dup.counts.records} duplicates=${dup.counts.duplicates} kept=${kept?.claimId} scope=${kept?.scope}`,
+  );
+  push(
+    "kind-split-adds-up",
+    (dup.counts.byKind ?? []).reduce((sum, row) => sum + row.count, 0) === dup.counts.records &&
+      dup.counts.byKind?.[0]?.kind === "policy" && dup.counts.byKind?.[0]?.count === 3,
+    `byKind=${JSON.stringify(dup.counts.byKind ?? null)}`,
+  );
+  push(
+    "kind-filter-narrows",
+    filterStandingLaw(dup.records, "", "operational").length === 1 && filterStandingLaw(dup.records, "operating note").length === 1,
+    `operational=${filterStandingLaw(dup.records, "", "operational").length}`,
+  );
+
   // Defensive: a null payload yields an empty, non-crashing model.
   const empty = buildStandingLaw(null);
   push(
