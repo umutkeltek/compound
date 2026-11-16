@@ -212,7 +212,7 @@ try {
     const { work, apps, inventory } = api.WORK_PROJECT_INDEX_READS;
     await put(work.args, { open: [
       { work_id: "work_rq_1", state: "held", canonical_surface: "product:fixture-app" },
-      { work_id: "work_rq_2", state: "running", claimed_at: String(BigInt(NOW - 9 * DAY) * 1_000_000n), target_worktree_root: "/home/fixture-user/Code/products/fixture-app/feature" },
+      { work_id: "work_rq_2", state: "running", claimed_at: String(BigInt(NOW - 9 * DAY) * 1_000_000n), target_worktree_root: "/home/example/Code/products/fixture-app/feature" },
       { work_id: "work_rq_3", state: "ready", canonical_surface: "-" },
     ] });
     await put(apps.args, { apps: [{ product_id: "product:fixture-app", name: "Fixture App", aliases: ["product:fixture_app"] }] });

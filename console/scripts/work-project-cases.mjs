@@ -17,7 +17,7 @@ const {
   appGroupsFromWhere, foldAppGroups, NOT_LINKED_PROJECT_ID,
 } = await import(modulePath);
 
-const HOME = "/home/fixture-user";
+const HOME = "/home/example";
 const CODE = `${HOME}/Code`;
 const LANES = "/srv/lanes";
 const DAY = 86_400_000;
@@ -148,8 +148,11 @@ test("temp-folder work is never placed by its folder", () => {
 });
 
 test("an operating-system home folder's owner name is never a project", () => {
-  assert.equal(place({ target_worktree_root: "/Users/pocketlog/scratch/notes" }).kind, "none");
-  assert.equal(place({ target_worktree_root: "/home/fixture-helper/scratch" }).kind, "none");
+  // The owner here is also the name of an app, so only the home-folder rule keeps it out.
+  const named = catalogFromGrowth({ apps: [{ product_id: "product:tester", name: "Tester", aliases: [] }] });
+  assert.equal(resolveProject({ target_worktree_root: "/Users/tester/scratch/notes" }, named, inventory).kind, "none");
+  assert.equal(resolveProject({ target_worktree_root: "/home/tester/scratch" }, named, inventory).kind, "none");
+  assert.equal(resolveProject({ target_worktree_root: "/srv/tester/scratch/notes" }, named, inventory).id, "product:tester", "outside a home folder the same name does place the work");
 });
 
 test("a name two apps both claim places nothing", () => {
