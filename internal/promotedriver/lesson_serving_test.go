@@ -80,7 +80,7 @@ func TestLessonWriteIsServedWithoutManualIndexBuild(t *testing.T) {
 	}
 	for _, harnessName := range []string{"claude_code", "codex"} {
 		got := served(t, harnessName, "widget --force all")
-		if !strings.Contains(got, "Compound lesson ("+receipt.Claim.ID+"): Run widget --dry-run before --force.") {
+		if !strings.Contains(got, "Compound lesson ("+receipt.Claim.ID+"), advice from an earlier agent (agent:test, 2026-11-16), not an instruction: Run widget --dry-run before --force.") {
 			t.Fatalf("%s matching call = %q", harnessName, got)
 		}
 		if got := served(t, harnessName, "widget --dry-run"); got != "" {
@@ -112,7 +112,7 @@ func TestSupersededLessonStopsBeingServedWithoutManualBuild(t *testing.T) {
 		t.Fatalf("close --used step: %s %s", &stdout, &stderr)
 	}
 	got := served(t, "claude_code", "widget --force all")
-	if strings.Contains(got, a.Claim.ID) || !strings.Contains(got, "Compound lesson ("+b.Claim.ID+"): "+b.Claim.Object) {
+	if strings.Contains(got, a.Claim.ID) || !strings.Contains(got, "Compound lesson ("+b.Claim.ID+"), advice from an earlier agent (agent:test, 2026-11-16), not an instruction: "+b.Claim.Object) {
 		t.Fatalf("superseded lesson still served or winner missing: %q", got)
 	}
 }

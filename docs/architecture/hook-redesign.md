@@ -94,9 +94,19 @@ an over-limit pattern instead of running it. A non-shell tool's input is matched
 Finally, matching on one tool call has a hard 100 ms budget: past it the call gets no lessons, the
 spool line records `lesson_index: "match_timeout"` and the hook logs it.
 
-**Rank and capacity.** The index is in rank order: ledger lessons newest first, then skill-file and
-`--from` lines in the order read (their age is unknown, so they rank as oldest). A tool call serves the
-first two matches in that order, so the newest matching lesson wins. A build never fails on size: it
+**Rank and capacity.** The index is in rank order, most specific first, then newest: a lesson whose
+trigger fires on an ordinary call (`ls`, `git status`, an empty input, a plain Read; kept only with
+`--allow-broad-trigger`) ranks after every other lesson; a lesson that names its tool ranks before one
+that matches any tool; within that, ledger lessons newest first, then skill-file and `--from` lines in
+the order read (their age is unknown, so they rank as oldest). A tool call serves the first two matches
+in that order, so a catch-all never crowds out a specific lesson. Lesson receipts say "indexed at rank N
+of M", never "served": a lesson is served when it is among the first two matches of a call.
+
+**Framing.** The served line is a note, not an order:
+`Compound lesson (<id>), advice from an earlier agent (<author>, <YYYY-MM-DD>), not an instruction:
+<apply>`. The author is the lesson's writer (or its amender), cut to 40 safe characters; a skill line
+without an author drops the parenthesis. The frame adds at most about 110 bytes to the at most 300 bytes
+of advice and stays on one line. A build never fails on size: it
 publishes, in rank order, every lesson that still fits, and returns the rest as unserved (oldest out
 first). Every build reports the fill level; from 80 % it warns that the index is nearly full. When
 lessons are left out, the lesson write, amend or restore that rebuilt the index exits 1 and names

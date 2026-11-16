@@ -25,9 +25,11 @@ import (
 const SkillsDirsEnv = "COMPOUND_SKILLS_DIRS"
 
 // LessonUsage is the usage text for `compound memory lesson`.
-const LessonUsage = "usage: compound memory lesson --why TEXT --how TEXT --by ACTOR [--skill NAME] [--trigger TOOL:REGEX] [--evidence REF]... [--slot entity::predicate] [--harness H] [--work W] [--repo DIR] [--skills-dir DIR]... [--json]\n" +
+const LessonUsage = "usage: compound memory lesson --why TEXT --how TEXT --by ACTOR [--skill NAME] [--trigger TOOL:REGEX [--allow-broad-trigger]] [--evidence REF]... [--slot entity::predicate] [--harness H] [--work W] [--repo DIR] [--skills-dir DIR]... [--json]\n" +
 	"       compound memory lesson retire|amend|restore <claim_id> ... (see `compound memory lesson retire --help`)\n" +
 	"  Promotes on write (claim_type lesson) and rebuilds the hook index, so a lesson with --trigger is served on the next matching tool call.\n" +
+	"  A trigger is at most 256 bytes and must not fire on ordinary calls (ls, git status, an empty input, a plain Read) unless --allow-broad-trigger (it then ranks last).\n" +
+	"  --by may not be an owner name (operator..., human...): record yourself, for example agent:<name>.\n" +
 	"  With --skill, also appends a dated line (and a trigger: JSON line when --trigger is set) to the skill's \"## Lessons\" section.\n" +
 	"  Skill files resolve from <repo>/skills/<name>/SKILL.md (repo defaults to the enclosing checkout), then each --skills-dir, then each dir in $" + SkillsDirsEnv + "."
 
@@ -78,6 +80,8 @@ func parseLessonArgs(args []string) (lessonArgs, error) {
 			out.skillDirs = append(out.skillDirs, dir)
 		case "--json":
 			out.json = true
+		case "--allow-broad-trigger":
+			out.in.AllowBroadTrigger = true
 		default:
 			return out, fmt.Errorf("unknown argument %q", a)
 		}

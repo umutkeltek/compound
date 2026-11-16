@@ -58,8 +58,10 @@ above for one kind of memory: the lesson.
   --reason "<why>" --by <you>` stops it at once (the hook line's id works);
   `lesson restore <claim_id> --by <you>` undoes it; `lesson amend <claim_id>
   [--how ...] [--trigger ...|--no-trigger] --by <you>` fixes text or a noisy
-  trigger. No work item; you are recorded as the actor; the old version stays
-  as history.
+  trigger. No work item; you are recorded as the actor (an owner name such as
+  `operator:` or `human:` is refused); the old version stays as history. The
+  hook shows a lesson as advice from an earlier agent, never as an order, and
+  a catch-all trigger needs `--allow-broad-trigger` and ranks last.
 - **Automatic candidate producers are opt-in** (`COMPOUND_CANDIDATE_PRODUCERS=1`).
   Explicit writes (`compound capture`, `compound memory candidate`,
   `compound memory lesson`) always work.

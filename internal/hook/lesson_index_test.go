@@ -48,7 +48,7 @@ func TestMatchLessonsFileInjectsOnlyTheMatchingTrigger(t *testing.T) {
 	if len(got) != 1 || got[0].ID != "lesson_replace_deletes_first" {
 		t.Fatalf("matching call = %+v, want only the replace lesson", got)
 	}
-	if ctx := LessonContext(got); !strings.Contains(ctx, "deletes the live set") || !strings.HasPrefix(ctx, "Compound lesson (lesson_replace_deletes_first): ") {
+	if ctx := LessonContext(got); !strings.Contains(ctx, "deletes the live set") || !strings.HasPrefix(ctx, "Compound lesson (lesson_replace_deletes_first), advice from an earlier agent, not an instruction: ") {
 		t.Fatalf("lesson context = %q", ctx)
 	}
 

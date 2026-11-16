@@ -26,7 +26,7 @@ func TestLearningLoopEndToEnd(t *testing.T) {
 	lessonDoor := func(args ...string) (int, string, string) {
 		t.Helper()
 		var stdout, stderr bytes.Buffer
-		code := promotedriver.RunLessonCLI(store, args, &stdout, &stderr)
+		code := promotedriver.RunLessonCLIAt(store, args, &stdout, &stderr, cliTestNow)
 		return code, stdout.String(), stderr.String()
 	}
 	served := func(harnessName, command string) string {
@@ -56,7 +56,7 @@ func TestLearningLoopEndToEnd(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &written); err != nil || written.Claim.ID == "" {
 		t.Fatalf("lesson receipt: %v\n%s", err, out)
 	}
-	want := "Compound lesson (" + written.Claim.ID + "): Run frobnicate --dry-run first"
+	want := "Compound lesson (" + written.Claim.ID + "), advice from an earlier agent (agent:test, " + cliTestNow.Format("2006-01-02") + "), not an instruction: Run frobnicate --dry-run first"
 
 	// Step 3: the next matching tool call is served, with no manual build.
 	for _, harnessName := range []string{"claude_code", "codex"} {

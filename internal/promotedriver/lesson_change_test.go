@@ -79,7 +79,7 @@ func TestRetireLessonStopsServingAndRestoreBringsItBack(t *testing.T) {
 	if restored.Prior.ID != retired.Claim.ID || !restored.Index.Indexed || !strings.HasPrefix(restored.Undo, "compound memory lesson retire "+restored.Claim.ID) {
 		t.Fatalf("restore receipt = %+v", restored)
 	}
-	if got := served(t, "claude_code", "widget --force all"); !strings.Contains(got, "Compound lesson ("+restored.Claim.ID+"): Run widget --dry-run before --force.") {
+	if got := served(t, "claude_code", "widget --force all"); !strings.Contains(got, "Compound lesson ("+restored.Claim.ID+"), advice from an earlier agent (agent:test, 2026-11-16), not an instruction: Run widget --dry-run before --force.") {
 		t.Fatalf("restored lesson not served: %q", got)
 	}
 	// Text output names the change, the undo and the index.

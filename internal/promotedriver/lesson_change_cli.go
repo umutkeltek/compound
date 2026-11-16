@@ -16,7 +16,7 @@ import (
 
 // LessonChangeUsage is the usage text for the lesson verbs.
 const LessonChangeUsage = "usage: compound memory lesson retire <claim_id> --reason TEXT --by ACTOR [--work W] [--json]\n" +
-	"       compound memory lesson amend <claim_id> [--how TEXT] [--trigger TOOL:REGEX | --no-trigger] [--reason TEXT] --by ACTOR [--work W] [--json]\n" +
+	"       compound memory lesson amend <claim_id> [--how TEXT] [--trigger TOOL:REGEX [--allow-broad-trigger] | --no-trigger] [--reason TEXT] --by ACTOR [--work W] [--json]\n" +
 	"       compound memory lesson restore <claim_id> [--reason TEXT] --by ACTOR [--work W] [--json]\n" +
 	"  One step each, no work item needed. Any id in the lesson's version chain works. Each change is a new version and\n" +
 	"  the old one stays as history; the hook index is rebuilt in the same command. Undo: retire <-> restore; amend back."
@@ -59,6 +59,8 @@ func parseLessonChangeArgs(verb string, args []string) (lessonChangeArgs, error)
 			out.in.Trigger, err = value(&i, a)
 		case a == "--no-trigger" && verb == mem.LessonChangeAmended:
 			out.in.DropTrigger = true
+		case a == "--allow-broad-trigger" && verb == mem.LessonChangeAmended:
+			out.in.AllowBroadTrigger = true
 		case !strings.HasPrefix(a, "-") && out.in.ID == "":
 			out.in.ID = a
 		default:

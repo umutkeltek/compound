@@ -417,7 +417,10 @@ being paged per item.
      or `*`; it may not contain `:`. `<regex>` is Go RE2, matched against the
      tool call's primary input (the command for `Bash`, the file path for
      file tools). A new regex may be at most 256 bytes and must compile to at
-     most 1000 instructions (the hook runs it on every call). Example:
+     most 1000 instructions (the hook runs it on every call), and it may not
+     fire on ordinary calls (`ls`, `git status`, an empty input, a plain
+     Read) unless `--allow-broad-trigger` is given, which is recorded on the
+     lesson (`broad_trigger: allowed`) and ranks it last. Example:
      `Bash:proof-check.*\|.*jq`. `mem.LessonTrigger.Matches`
      is the reference matcher. A harness delivers hook context with the NEXT
      tool result, so match the step before the damage (the listing, dry-run
@@ -463,7 +466,11 @@ Skill publication serializes the entire read/merge/rename for the canonical file
    `compound memory lesson retire <claim_id> --reason R --by A`,
    `lesson amend <claim_id> [--how H] [--trigger T | --no-trigger] --by A`,
    `lesson restore <claim_id> --by A`. No carrier work item, no owner
-   provenance: the actor that runs the verb is recorded on the new version
+   provenance, and owner names are refused: `--by` on the lesson door and
+   every verb may not be an actor Compound reads as owner provenance
+   (`operator`, `operator-…`, `operator:…`, `human-…`, `human:…`), so a typed
+   owner name never looks like owner approval. The actor that runs the verb is
+   recorded on the new version
    (`change`, `changed_by`, `changed_on`, `change_reason`). Each verb appends a
    new version of the lesson in the same slot that supersedes the head of its
    version chain (any id in the chain works), plus a `memory_delta`

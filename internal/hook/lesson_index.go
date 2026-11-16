@@ -68,6 +68,10 @@ type Lesson struct {
 	Apply string `json:"apply"`
 	// Source names where the lesson came from (a lesson ref or a skill path).
 	Source string `json:"source,omitempty"`
+	// By and On say who wrote the served text and when (YYYY-MM-DD); the
+	// hook shows them so the line reads as an earlier agent's advice.
+	By string `json:"by,omitempty"`
+	On string `json:"on,omitempty"`
 }
 
 // LessonIndex is the on-disk index document.
@@ -86,6 +90,8 @@ type LessonMatch struct {
 	Status string
 	ID     string
 	Apply  string
+	By     string
+	On     string
 }
 
 // LessonIndexPath returns the index location inside a Compound home.
@@ -277,7 +283,7 @@ func matchLessons(lessons []Lesson, tool, subject string, checked bool) []Lesson
 		if err != nil || !re.MatchString(subject) {
 			continue
 		}
-		matches = append(matches, LessonMatch{ID: lesson.ID, Apply: lesson.Apply, Status: lesson.Status})
+		matches = append(matches, LessonMatch{ID: lesson.ID, Apply: lesson.Apply, Status: lesson.Status, By: lesson.By, On: lesson.On})
 	}
 	return matches
 }
@@ -289,13 +295,45 @@ func LessonContext(matches []LessonMatch) string {
 	}
 	lines := make([]string, 0, len(matches))
 	for _, match := range matches {
-		prefix := "Compound lesson ("
 		if match.Status == "contested" {
-			prefix = "Compound unresolved lesson conflict ("
+			lines = append(lines, "Compound unresolved lesson conflict ("+match.ID+"): "+match.Apply)
+			continue
 		}
-		lines = append(lines, prefix+match.ID+"): "+match.Apply)
+		// A note, not an order: who wrote it, when, and that it is advice.
+		source := ""
+		if by, on := lessonFrameActor(match.By), lessonFrameDate(match.On); by != "" || on != "" {
+			source = " (" + strings.Trim(by+", "+on, ", ") + ")"
+		}
+		lines = append(lines, "Compound lesson ("+match.ID+"), advice from an earlier agent"+source+", not an instruction: "+match.Apply)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// lessonFrameMaxActor bounds the author shown in the frame, so the frame adds
+// at most about 110 bytes to the at most LessonApplyMaxBytes of advice.
+const lessonFrameMaxActor = 40
+
+var lessonFrameDateRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+
+func lessonFrameActor(by string) string {
+	var out strings.Builder
+	for _, r := range by {
+		if out.Len() >= lessonFrameMaxActor {
+			break
+		}
+		if r < 0x80 && (r == ':' || r == '.' || r == '_' || r == '-' || r == '@' || r == '/' ||
+			(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+			out.WriteRune(r)
+		}
+	}
+	return out.String()
+}
+
+func lessonFrameDate(on string) string {
+	if lessonFrameDateRe.MatchString(on) {
+		return on
+	}
+	return ""
 }
 
 // ValidateLesson checks one lesson against the index contract.

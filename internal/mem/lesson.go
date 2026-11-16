@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/policy"
 )
 
 const (
@@ -89,6 +90,9 @@ type LessonInput struct {
 	Actor    string   // who wrote it (required)
 	Harness  string   // which harness the writer ran in (provenance)
 	WorkID   string   // optional work id the lesson came from
+	// AllowBroadTrigger keeps a trigger that matches ordinary calls; the
+	// lesson then ranks last in the hook index.
+	AllowBroadTrigger bool
 }
 
 // LessonResult is the receipt for one WriteLesson call.
@@ -156,11 +160,80 @@ func CheckLessonPattern(pattern string) error {
 	return nil
 }
 
+// LessonProbe is one ordinary tool call a new trigger must not match: a
+// trigger that fires on it fires on almost every call and crowds out the
+// lessons that matter. Subject is what the hook matches for Input
+// (hook.LessonSubject); a hook test keeps the two in step.
+type LessonProbe struct {
+	Tool    string
+	Input   string
+	Subject string
+}
+
+// LessonTriggerProbes are the ordinary calls the lesson door tries a new
+// trigger on.
+var LessonTriggerProbes = []LessonProbe{
+	{Tool: "Bash", Input: `{"command":"ls"}`, Subject: "ls"},
+	{Tool: "Bash", Input: `{"command":"git status"}`, Subject: "git status"},
+	{Tool: "Bash", Input: `{}`, Subject: "{}"},
+	{Tool: "Read", Input: `{"file_path":"README.md"}`, Subject: `{"file_path":"README.md"}`},
+	{Tool: "Read", Input: `{}`, Subject: "{}"},
+}
+
+// LessonBroadTriggerQualifier records that a lesson's author kept a trigger
+// that matches ordinary calls (--allow-broad-trigger). Such a lesson ranks
+// last in the hook index.
+const LessonBroadTriggerQualifier = "broad_trigger"
+
+var lessonShellTools = map[string]bool{"bash": true, "shell": true, "exec_command": true, "local_shell": true}
+
+// IsShellToolName reports whether a native tool name is a shell tool; the
+// hook treats all of them as Bash.
+func IsShellToolName(tool string) bool {
+	return lessonShellTools[strings.ToLower(strings.TrimSpace(tool))]
+}
+
+// OrdinaryCallMatches lists the probe calls the trigger fires on.
+func (t LessonTrigger) OrdinaryCallMatches() []string {
+	re, err := regexp.Compile(t.Pattern)
+	if err != nil {
+		return nil
+	}
+	var hits []string
+	for _, probe := range LessonTriggerProbes {
+		toolHit := t.Tool == "*" || strings.EqualFold(t.Tool, probe.Tool) || (IsShellToolName(t.Tool) && IsShellToolName(probe.Tool))
+		if toolHit && re.MatchString(probe.Subject) {
+			hits = append(hits, probe.Tool+" "+probe.Input)
+		}
+	}
+	return hits
+}
+
+// checkLessonActor refuses the actor shapes Compound reads as owner
+// provenance. A later slice reads lesson provenance, and a typed owner name
+// must never look like owner approval; an agent records itself.
+func checkLessonActor(actor string) error {
+	if policy.HasOperatorProvenance(actor) {
+		return fmt.Errorf("actor %q is reserved for owner provenance (operator…, human…); record yourself, for example --by agent:<name>", actor)
+	}
+	return nil
+}
+
 // checkNewLessonTrigger adds the door's tighter length cap to a trigger that
 // is being written or amended now.
 func checkNewLessonTrigger(trigger LessonTrigger) error {
+	return checkNewLessonTriggerBroad(trigger, false)
+}
+
+// checkNewLessonTriggerBroad is checkNewLessonTrigger plus the ordinary-call
+// probe, which allowBroad skips.
+func checkNewLessonTriggerBroad(trigger LessonTrigger, allowBroad bool) error {
 	if len(trigger.Pattern) > LessonTriggerMaxBytes {
 		return fmt.Errorf("trigger regex is %d bytes; a new trigger may be at most %d (match the step before the damage, not every variant)", len(trigger.Pattern), LessonTriggerMaxBytes)
+	}
+	if hits := trigger.OrdinaryCallMatches(); len(hits) > 0 && !allowBroad {
+		return fmt.Errorf("trigger %s:%s fires on ordinary calls (%s), so it would crowd out specific lessons on almost every call; narrow it to the step before the damage, or pass --allow-broad-trigger to keep it (it then ranks last)",
+			trigger.Tool, trigger.Pattern, strings.Join(hits, "; "))
 	}
 	return nil
 }
@@ -242,9 +315,12 @@ func normalizeLessonInput(in LessonInput) (LessonInput, error) {
 		return in, err
 	}
 	if hasTrigger {
-		if err := checkNewLessonTrigger(trigger); err != nil {
+		if err := checkNewLessonTriggerBroad(trigger, in.AllowBroadTrigger); err != nil {
 			return in, err
 		}
+	}
+	if err := checkLessonActor(in.Actor); err != nil {
+		return in, err
 	}
 	evidence := make([]string, 0, len(in.Evidence))
 	for _, ref := range in.Evidence {
@@ -292,6 +368,9 @@ func (s *Store) WriteLesson(in LessonInput, now time.Time) (LessonResult, error)
 	}
 	if hasTrigger {
 		qualifiers["trigger"] = trigger.Tool + ":" + trigger.Pattern
+		if in.AllowBroadTrigger && len(trigger.OrdinaryCallMatches()) > 0 {
+			qualifiers[LessonBroadTriggerQualifier] = "allowed"
+		}
 	}
 	if in.WorkID != "" {
 		qualifiers["work_id"] = in.WorkID

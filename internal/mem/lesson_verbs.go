@@ -49,7 +49,9 @@ type LessonChangeInput struct {
 	How         string // amend: the new how; empty keeps the current one
 	Trigger     string // amend: the new trigger; empty keeps the current one
 	DropTrigger bool   // amend: remove the trigger (the lesson stays for recall)
-	WorkID      string // optional work id for the Transition
+	// AllowBroadTrigger keeps a new trigger that matches ordinary calls.
+	AllowBroadTrigger bool
+	WorkID            string // optional work id for the Transition
 }
 
 // LessonChangeResult is the receipt of one lesson verb.
@@ -109,7 +111,7 @@ func (s *Store) AmendLesson(in LessonChangeInput, now time.Time) (LessonChangeRe
 		return LessonChangeResult{}, err
 	}
 	if hasTrigger {
-		if err := checkNewLessonTrigger(trigger); err != nil {
+		if err := checkNewLessonTriggerBroad(trigger, in.AllowBroadTrigger); err != nil {
 			return LessonChangeResult{}, err
 		}
 	}
@@ -134,6 +136,8 @@ func normalizeLessonChangeInput(in LessonChangeInput) (LessonChangeInput, error)
 		return in, fmt.Errorf("name the lesson: compound memory lesson <retire|amend|restore> <claim_id>")
 	case in.Actor == "":
 		return in, fmt.Errorf("lesson change needs --by <actor>")
+	case checkLessonActor(in.Actor) != nil:
+		return in, checkLessonActor(in.Actor)
 	case len(in.Reason) > lessonTextMax:
 		return in, fmt.Errorf("reason must be at most %d characters", lessonTextMax)
 	}
@@ -204,12 +208,24 @@ func (s *Store) changeLesson(in LessonChangeInput, change string, now time.Time)
 			if NormalizeClaimValue(how) == NormalizeClaimValue(head.Object) && trigger == head.Qualifiers["trigger"] {
 				return fmt.Errorf("lesson %s already has this how and trigger; nothing to amend", head.ID)
 			}
+			newTrigger := trigger != head.Qualifiers["trigger"]
+			broad := false
+			if parsed, ok, _ := ParseLessonTrigger(trigger); ok {
+				broad = len(parsed.OrdinaryCallMatches()) > 0
+			}
 			mutate = func(n *Claim) {
 				stamp(n)
 				n.Object = how
 				delete(n.Qualifiers, "trigger")
 				if trigger != "" {
 					n.Qualifiers["trigger"] = trigger
+				}
+				// The broad-trigger record follows the trigger it describes.
+				if newTrigger {
+					delete(n.Qualifiers, LessonBroadTriggerQualifier)
+					if broad && in.AllowBroadTrigger {
+						n.Qualifiers[LessonBroadTriggerQualifier] = "allowed"
+					}
 				}
 			}
 		case LessonChangeRestored:

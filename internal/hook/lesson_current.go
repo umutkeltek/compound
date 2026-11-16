@@ -1,9 +1,11 @@
 package hook
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -89,18 +91,63 @@ func currentLessonInstructions(homePath string, lessons []Lesson) (lessonProject
 
 // rankedLesson is one index entry with what ranking needs.
 type rankedLesson struct {
-	lesson Lesson
-	seq    int64 // ledger sequence; 0 for a skill-file or --from line
+	lesson  Lesson
+	seq     int64 // ledger sequence; 0 for a skill-file or --from line
+	broad   bool
+	anyTool bool
 }
 
-// rankLessons orders the index: ledger lessons newest first, then skill-file
-// and --from lines in the order they were read (their age is unknown, so they
-// rank as oldest). Newest first because a newer lesson reflects more recent
-// reality; when the index is full the oldest lessons are the ones left out,
-// and every lesson command reports them until room is made.
+// lessonIsBroad reports whether the hook would fire the lesson on one of the
+// ordinary probe calls the lesson door refuses by default.
+func lessonIsBroad(lesson Lesson) bool {
+	re, err := regexp.Compile(lesson.Pattern)
+	if err != nil {
+		return false
+	}
+	for _, probe := range mem.LessonTriggerProbes {
+		if lessonToolMatches(lesson.Tools, probe.Tool) && re.MatchString(LessonSubject(json.RawMessage(probe.Input))) {
+			return true
+		}
+	}
+	return false
+}
+
+func lessonAnyTool(lesson Lesson) bool {
+	if len(lesson.Tools) == 0 {
+		return true
+	}
+	for _, tool := range lesson.Tools {
+		if strings.TrimSpace(tool) == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+// rankLessons orders the index, most specific first, then newest:
+//  1. a lesson whose trigger fires on an ordinary call (mem.LessonTriggerProbes,
+//     kept only with --allow-broad-trigger) ranks after every other lesson;
+//  2. a lesson that names its tool ranks before one that matches any tool;
+//  3. ledger lessons newest first, then skill-file and --from lines in the
+//     order they were read (their age is unknown, so they rank as oldest).
+//
+// A tool call serves the first two matches, so a catch-all never crowds out a
+// specific lesson. A newer lesson reflects more recent reality; when the index
+// is full the lowest-ranked lessons are the ones left out, and every lesson
+// command reports them until room is made.
 func rankLessons(entries []rankedLesson) []Lesson {
+	for i := range entries {
+		entries[i].broad = lessonIsBroad(entries[i].lesson)
+		entries[i].anyTool = lessonAnyTool(entries[i].lesson)
+	}
 	sort.SliceStable(entries, func(i, j int) bool {
 		a, b := entries[i], entries[j]
+		if a.broad != b.broad {
+			return b.broad
+		}
+		if a.anyTool != b.anyTool {
+			return b.anyTool
+		}
 		if (a.seq > 0) != (b.seq > 0) {
 			return a.seq > 0
 		}
@@ -140,7 +187,12 @@ func lessonFromClaim(claim mem.Claim) (Lesson, bool, error) {
 	if !present {
 		return Lesson{}, false, nil
 	}
-	lesson := Lesson{ID: claim.ID, Tools: []string{trigger.Tool}, Pattern: trigger.Pattern, Apply: claim.Object, Source: "lesson:" + claim.ID}
+	lesson := Lesson{ID: claim.ID, Tools: []string{trigger.Tool}, Pattern: trigger.Pattern, Apply: claim.Object, Source: "lesson:" + claim.ID,
+		By: claim.Qualifiers["written_by"], On: claim.Qualifiers["written_on"]}
+	if claim.Qualifiers["change"] == mem.LessonChangeAmended {
+		// An amend may have rewritten the text: credit whoever amended it.
+		lesson.By, lesson.On = claim.Qualifiers["changed_by"], claim.Qualifiers["changed_on"]
+	}
 	if claim.State == mem.ClaimStateNeedsReview {
 		lesson.Status = "contested"
 		lesson.Apply = "Conflicting lessons remain unresolved; inspect this lesson and its alternatives before choosing."
