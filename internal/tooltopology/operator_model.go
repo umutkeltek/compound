@@ -16,9 +16,13 @@ import (
 const (
 	// OperatorModelPath is the file, relative to COMPOUND_HOME.
 	OperatorModelPath = "config/operator-model.md"
-	// MaxOperatorModelBytes caps the served content. Content past the cap is
-	// cut at the last newline that fits and named by a truncation line.
-	MaxOperatorModelBytes = 3072
+	// MaxOperatorModelBytes is the session-start budget for the model. It
+	// keeps the whole start payload (the door map, capped at MaxServedBytes,
+	// plus this block) under the 10,000 characters a harness may keep from
+	// hook output. The budget only ever leaves out background sections:
+	// every rule section is served whole, even past it, and a section left
+	// out is named, never cut.
+	MaxOperatorModelBytes = 6144
 
 	operatorModelHeader  = "## Operator model (private, from " + OperatorModelPath + ")"
 	maxOperatorModelRead = 1 << 20
@@ -53,9 +57,61 @@ func ServeOperatorModel(home string) string {
 	return renderOperatorModel(string(data), unread)
 }
 
-// renderOperatorModel trims trailing whitespace, keeps at most
-// MaxOperatorModelBytes of content, and states how many bytes it left out.
-// unread counts file bytes past the read limit; they are omitted too.
+// operatorModelSection is one "## " section of the model, or the text before
+// the first one.
+type operatorModelSection struct {
+	heading string
+	text    string
+	rule    bool
+}
+
+// backgroundHeadingWords open a section heading that describes rather than
+// rules: who he is, background, notes. Every other section, including one
+// with a heading this list does not know, is a rule and is always served
+// whole, so a miss serves more, never less.
+var backgroundHeadingWords = []string{"who", "about", "background", "context", "notes", "history", "examples", "reference"}
+
+func isBackgroundHeading(heading string) bool {
+	words := strings.FieldsFunc(strings.ToLower(heading), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z')
+	})
+	if len(words) == 0 {
+		return false
+	}
+	for _, w := range backgroundHeadingWords {
+		if words[0] == w {
+			return true
+		}
+	}
+	return false
+}
+
+func splitOperatorModel(content string) []operatorModelSection {
+	var out []operatorModelSection
+	current := operatorModelSection{rule: true}
+	for _, line := range strings.SplitAfter(content, "\n") {
+		if strings.HasPrefix(line, "## ") {
+			if current.text != "" {
+				out = append(out, current)
+			}
+			heading := strings.TrimSpace(strings.TrimPrefix(line, "## "))
+			current = operatorModelSection{heading: heading, rule: !isBackgroundHeading(heading)}
+		}
+		current.text += line
+	}
+	if current.text != "" {
+		out = append(out, current)
+	}
+	return out
+}
+
+// renderOperatorModel trims trailing whitespace and serves the model whole
+// when it fits MaxOperatorModelBytes. When it does not, it keeps every rule
+// section (and the text before the first section) whole, adds background
+// sections in file order while they fit, and names each section it left
+// out, with its size, in one closing line. It never cuts inside a section.
+// unread counts file bytes past the read limit; the closing line names them
+// too.
 func renderOperatorModel(raw string, unread int64) string {
 	content := strings.TrimRight(raw, " \t\r\n\v\f")
 	if strings.TrimSpace(content) == "" {
@@ -64,24 +120,41 @@ func renderOperatorModel(raw string, unread int64) string {
 	if len(content) <= MaxOperatorModelBytes && unread == 0 {
 		return operatorModelHeader + "\n" + content
 	}
-	kept := content
-	if len(kept) > MaxOperatorModelBytes {
-		// The last newline at or before the cap ends the kept text; one line
-		// longer than the cap falls back to a byte cut on a rune boundary.
-		if nl := strings.LastIndexByte(content[:MaxOperatorModelBytes+1], '\n'); nl > 0 {
-			kept = content[:nl]
-		} else {
-			cut := MaxOperatorModelBytes
-			for cut > 0 && !isRuneStart(content[cut]) {
-				cut--
-			}
-			kept = content[:cut]
+	sections := splitOperatorModel(content)
+	used := 0
+	for _, section := range sections {
+		if section.rule {
+			used += len(section.text)
 		}
-		kept = strings.TrimRight(kept, " \t\r\n\v\f")
 	}
-	omitted := int64(len(content)-len(kept)) + unread
-	return operatorModelHeader + "\n" + kept + "\n(truncated: " + strconv.FormatInt(omitted, 10) +
-		" bytes omitted; full text in " + OperatorModelPath + ")"
+	keep := make([]bool, len(sections))
+	var left []string
+	for i, section := range sections {
+		switch {
+		case section.rule:
+			keep[i] = true
+		case used+len(section.text) <= MaxOperatorModelBytes:
+			keep[i] = true
+			used += len(section.text)
+		default:
+			left = append(left, strconv.Quote(section.heading)+" ("+strconv.Itoa(len(section.text))+" bytes)")
+		}
+	}
+	var b strings.Builder
+	for i, section := range sections {
+		if keep[i] {
+			b.WriteString(section.text)
+		}
+	}
+	out := operatorModelHeader + "\n" + strings.TrimRight(b.String(), " \t\r\n\v\f")
+	if unread > 0 {
+		left = append(left, strconv.FormatInt(unread, 10)+" bytes past the "+strconv.Itoa(maxOperatorModelRead)+"-byte read limit")
+	}
+	if len(left) == 0 {
+		return out
+	}
+	return out + "\n(not served here, to keep the session start within " + strconv.Itoa(MaxOperatorModelBytes) +
+		" bytes: " + strings.Join(left, ", ") + "; full text in " + OperatorModelPath + ")"
 }
 
 // ServeSessionStart is the one session-start payload every harness receives:
