@@ -3,8 +3,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +17,7 @@ import (
 	"compound/internal/home"
 	"compound/internal/hook"
 	"compound/internal/mem"
+	"compound/internal/product"
 	"compound/internal/routeev"
 	"compound/internal/routeevidence"
 	"compound/internal/runattempt"
@@ -114,9 +118,13 @@ type workVerbHelp struct {
 	Example string
 }
 
-const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|execution-authority|list|leases|active-packet-proof|proof-chain-doctor|reconcile-run-attempts|run-attempt-link|continue|dispatch-plan|dispatch-claim|dispatch-execute|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|delivery-capture|advance-plan|advance|delegate|steer|attach|collaborate|observe-run|land-check|verifier-verdict|proof-review|proof-manifest|proof-adopt|salvage-plan|private-source-publish|action-plan|act|close-plan|close|set-aside|sweep-stale|reseal> ..."
+const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|execution-authority|list|leases|active-packet-proof|proof-chain-doctor|reconcile-run-attempts|run-attempt-link|continue|dispatch-plan|dispatch-claim|dispatch-execute|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|delivery-capture|advance-plan|advance|delegate|steer|attach|collaborate|observe-run|land-check|verifier-verdict|proof-review|proof-manifest|proof-adopt|salvage-plan|private-source-publish|action-plan|act|close-plan|close|set-aside|sweep-stale|reseal|bind-app> ..."
 
 var workVerbHelpByName = map[string]workVerbHelp{
+	"bind-app": {
+		Usage:   workBindAppUsage,
+		Example: "compound work bind-app --json",
+	},
 	"execution-authority": {Usage: workExecutionAuthorityUsage, Example: "compound work execution-authority --work work_example --policy-decision pol_example --action-intent act_example --permission-mode plan --json"},
 	"proof-review":        {Usage: work.ProofAdoptionUsage, Example: "compound work proof-review work_example --actor executor --file review.md"},
 	"proof-manifest":      {Usage: work.ProofAdoptionUsage, Example: "compound work proof-manifest work_example --actor executor --file manifest.json"},
@@ -314,6 +322,9 @@ func previewDispatchClaim(store *work.Store, now time.Time, opts work.DispatchPl
 // The command owner parses any mixed read/write surface so invalid and read-only
 // requests cannot materialize the work habitat.
 func workCommandNeedsWritableStore(sub string, args []string) bool {
+	if sub == "bind-app" {
+		return slices.Contains(args, "--apply")
+	}
 	if sub == "execution-authority" {
 		return false
 	}
@@ -580,6 +591,13 @@ func cmdWork(args []string) {
 	}
 
 	switch sub {
+	case "bind-app":
+		if err := validateWorkArguments(rest, map[string]bool{"--by": true}, map[string]bool{"--apply": true, "--json": true}, 0); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, workBindAppUsage)
+			os.Exit(2)
+		}
+		os.Exit(runWorkBindApp(store, homePath, has("--apply"), flag("--by"), has("--json"), time.Now(), os.Stdout, os.Stderr))
 	case "proof-manifest", "proof-adopt", "proof-review":
 		if code := work.RunProofAdoptionCLI(store, sub, rest, os.Stdout, os.Stderr); code != 0 {
 			os.Exit(code)
@@ -2418,4 +2436,109 @@ func selectionFlagsFromCLI(store *work.Store, usage, actor, lp, effort string) (
 		os.Exit(2)
 	}
 	return
+}
+
+const workBindAppUsage = "usage: compound work bind-app [--apply --by <actor>] [--json]"
+
+// workAppScopeResolver asks the identity owner (internal/product) which app
+// or system a piece of work is for, reading the ledger once. Work cannot
+// import product, so the command layer adapts one to the other.
+func workAppScopeResolver(homePath string) (work.AppScopeResolver, error) {
+	store, err := mem.OpenScan(homePath)
+	if err != nil {
+		return nil, err
+	}
+	resolver, err := product.NewAppResolver(store)
+	if err != nil {
+		return nil, err
+	}
+	return func(keys work.AppScopeKeys) work.AppScopeAnswer {
+		b := resolver.Resolve(product.AppKeys{Surface: keys.Surface, Worktree: keys.Worktree, ContextFolder: keys.ContextFolder})
+		answer := work.AppScopeAnswer{Key: b.Key, Ambiguous: b.Status == product.AppAmbiguous, Candidates: b.Candidates, Reason: b.Reason}
+		if b.Status == product.AppBound {
+			answer.Scope = envelope.Scope{ProductID: b.ProductID, ProjectID: b.SystemID}
+		}
+		return answer
+	}, nil
+}
+
+// runWorkBindApp is `compound work bind-app`: for open work that records no
+// app yet, record the one app (or system) the identity owner resolves from
+// the work's own recorded keys. It is a dry run unless --apply is given;
+// apply binds each item through a same-state update with an ActionIntent and
+// a PolicyDecision, and never touches closed or claimed work.
+func runWorkBindApp(store *work.Store, homePath string, apply bool, actor string, asJSON bool, now time.Time, stdout, stderr io.Writer) int {
+	if apply && strings.TrimSpace(actor) == "" {
+		fmt.Fprintln(stderr, "error: --apply needs --by <actor> to record who bound the work")
+		fmt.Fprintln(stderr, workBindAppUsage)
+		return 2
+	}
+	resolve, err := workAppScopeResolver(homePath)
+	if err != nil {
+		fmt.Fprintln(stderr, "error: read app identity:", err)
+		return 1
+	}
+	plan, err := store.PlanScopeBinding(resolve, actor, now)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	if apply {
+		if plan, err = store.ApplyScopeBinding(plan, actor, now); err != nil {
+			fmt.Fprintln(stderr, "error:", err)
+			return 1
+		}
+	}
+	if asJSON {
+		blob, err := json.MarshalIndent(plan, "", "  ")
+		if err != nil {
+			fmt.Fprintln(stderr, "error:", err)
+			return 1
+		}
+		fmt.Fprintln(stdout, string(blob))
+		return 0
+	}
+	recorded, verb := plan.Counts[work.ScopeBindWouldBind], "would record"
+	if apply {
+		recorded, verb = plan.Counts[work.ScopeBindBound], "recorded"
+	}
+	refusedByPolicy := 0
+	for _, item := range plan.Items {
+		if item.Status == work.ScopeBindWouldBind && item.PolicyOutcome != "" && item.PolicyOutcome != "allow" && item.PolicyOutcome != "allow_with_obligations" {
+			refusedByPolicy++
+		}
+	}
+	if apply {
+		fmt.Fprintln(stdout, "Which app each open piece of work is for: recorded")
+	} else {
+		fmt.Fprintln(stdout, "Which app each open piece of work is for: dry run, nothing written")
+	}
+	fmt.Fprintf(stdout, "- open work: %d\n", plan.Open)
+	fmt.Fprintf(stdout, "- %s its app or system: %d, across %d apps and systems\n", verb, recorded, len(plan.Homes))
+	fmt.Fprintf(stdout, "- already named its app: %d\n", plan.Counts[work.ScopeBindAlreadyRecorded])
+	fmt.Fprintf(stdout, "- left empty, more than one app matches: %d\n", plan.Counts[work.ScopeBindAmbiguous])
+	fmt.Fprintf(stdout, "- left empty, nothing it records names an app: %d\n", plan.Counts[work.ScopeBindNone])
+	fmt.Fprintf(stdout, "- not changed while claimed or running: %d\n", plan.Counts[work.ScopeBindInFlight])
+	if apply {
+		fmt.Fprintf(stdout, "- refused (policy, or changed since read): %d\n", plan.Counts[work.ScopeBindRefused])
+	} else if refusedByPolicy > 0 {
+		fmt.Fprintf(stdout, "- policy would not allow: %d\n", refusedByPolicy)
+	}
+	homes := make([]string, 0, len(plan.Homes))
+	for home := range plan.Homes {
+		homes = append(homes, home)
+	}
+	sort.Slice(homes, func(i, j int) bool {
+		if plan.Homes[homes[i]] != plan.Homes[homes[j]] {
+			return plan.Homes[homes[i]] > plan.Homes[homes[j]]
+		}
+		return homes[i] < homes[j]
+	})
+	for _, home := range homes {
+		fmt.Fprintf(stdout, "  %s: %d\n", home, plan.Homes[home])
+	}
+	if !apply && recorded > 0 {
+		fmt.Fprintln(stdout, "Nothing was written. An agent records these with --apply --by <actor>.")
+	}
+	return 0
 }

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/envelope"
 	"compound/internal/home"
 )
 
@@ -1920,4 +1921,46 @@ func assertWorkbenchItem(t *testing.T, items []WorkbenchItem, workID, reason, ne
 		}
 	}
 	t.Fatalf("missing workbench item %s in %+v", workID, items)
+}
+
+// TestWorkbenchOpenRowsCarryTheRecordedApp: the console's index groups open
+// work by the app a record names in scope.product_id. Rows used to drop the
+// record's scope, so a reader of rows could not see the app even once it was
+// recorded. A row now carries the record's scope as-is, and a record with no
+// scope keeps a row with no scope.
+func TestWorkbenchOpenRowsCarryTheRecordedApp(t *testing.T) {
+	s := newStore(t)
+	bound, err := s.Create(CreateInput{Owner: "codex", SuccessPredicate: "work for one app"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unbound, err := s.Create(CreateInput{Owner: "codex", SuccessPredicate: "work for no app"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound.Scope = envelope.Scope{ProductID: "product:alpha-app"}
+	if err := s.writeJSON(s.workPath(bound.ID), &bound); err != nil {
+		t.Fatal(err)
+	}
+	report, err := s.Workbench(fixedNow, WorkbenchOptions{RecentLimit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := map[string]WorkbenchItem{}
+	for _, item := range report.Open {
+		rows[item.WorkID] = item
+	}
+	if got := rows[bound.ID].Scope; got == nil || got.ProductID != "product:alpha-app" {
+		t.Fatalf("row for bound work scope = %+v, want the recorded app", got)
+	}
+	if got := rows[unbound.ID].Scope; got != nil {
+		t.Fatalf("row for unbound work scope = %+v, want none", got)
+	}
+	blob, err := json.Marshal(rows[bound.ID])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(blob), `"scope":{"product_id":"product:alpha-app"}`) {
+		t.Fatalf("row JSON = %s, want the record's scope shape", blob)
+	}
 }

@@ -31,7 +31,10 @@ type AuthorityReport struct {
 }
 
 type ProductAuthorityItem struct {
-	ProductID            string   `json:"product_id"`
+	ProductID string `json:"product_id"`
+	// Aliases are the other spellings of the same product whose records are
+	// counted in this row; ProductID is the identity owner's one name.
+	Aliases              []string `json:"aliases,omitempty"`
 	Status               string   `json:"status"`
 	SignalCount          int      `json:"signal_count"`
 	HypothesisCount      int      `json:"hypothesis_count"`
@@ -69,35 +72,45 @@ func Authority(homePath string, store *mem.Store) (AuthorityReport, error) {
 		},
 		Status: "ok",
 	}
-	for _, productID := range productIDs {
-		tl, err := LoadTimeline(homePath, productID)
-		if err != nil {
-			return AuthorityReport{}, err
+	for _, group := range foldAuthorityProducts(store, productIDs) {
+		item := ProductAuthorityItem{ProductID: group.id, Status: "ok"}
+		var signals []Signal
+		latestTransition := TimelineTransition{}
+		for _, productID := range group.spellings {
+			if productID != group.id {
+				item.Aliases = append(item.Aliases, productID)
+			}
+			tl, err := LoadTimeline(homePath, productID)
+			if err != nil {
+				return AuthorityReport{}, err
+			}
+			doctor, err := Doctor(homePath, productID)
+			if err != nil {
+				return AuthorityReport{}, err
+			}
+			if doctor.Status != "ok" && item.Status == "ok" {
+				item.Status = doctor.Status
+			}
+			item.SignalCount += doctor.SignalCount
+			item.HypothesisCount += doctor.HypothesisCount
+			item.PendingReviewCount += doctor.PendingReviewCount
+			item.ReviewReadyCount += doctor.ReviewReadyCount
+			item.SourceIssueCount += doctor.SourceIssueCount
+			item.TransitionCount += len(tl.Transitions)
+			item.MissingEvidenceCount += len(doctor.MissingEvidenceRefs)
+			signals = append(signals, tl.Signals...)
+			if n := len(tl.Transitions); n > 0 {
+				last := tl.Transitions[n-1]
+				if latestTransition.ID == "" || last.CreatedAt > latestTransition.CreatedAt || (last.CreatedAt == latestTransition.CreatedAt && last.ID > latestTransition.ID) {
+					latestTransition = last
+				}
+			}
+			for _, ready := range doctor.ReviewReady {
+				item.ReviewPlanCommands = append(item.ReviewPlanCommands, ready.ReviewPlanCommand)
+			}
 		}
-		doctor, err := Doctor(homePath, productID)
-		if err != nil {
-			return AuthorityReport{}, err
-		}
-		item := ProductAuthorityItem{
-			ProductID:            productID,
-			Status:               doctor.Status,
-			SignalCount:          doctor.SignalCount,
-			HypothesisCount:      doctor.HypothesisCount,
-			PendingReviewCount:   doctor.PendingReviewCount,
-			ReviewReadyCount:     doctor.ReviewReadyCount,
-			SourceIssueCount:     doctor.SourceIssueCount,
-			TransitionCount:      len(tl.Transitions),
-			MissingEvidenceCount: len(doctor.MissingEvidenceRefs),
-		}
-		if len(tl.Signals) > 0 {
-			item.LatestSignalID = latestSignalID(tl.Signals)
-		}
-		if len(tl.Transitions) > 0 {
-			item.LatestTransitionID = tl.Transitions[len(tl.Transitions)-1].ID
-		}
-		for _, ready := range doctor.ReviewReady {
-			item.ReviewPlanCommands = append(item.ReviewPlanCommands, ready.ReviewPlanCommand)
-		}
+		item.LatestSignalID = latestSignalID(signals)
+		item.LatestTransitionID = latestTransition.ID
 		report.Products = append(report.Products, item)
 		report.SignalCount += item.SignalCount
 		report.HypothesisCount += item.HypothesisCount
@@ -161,6 +174,56 @@ func authorityProductIDs(homePath string, store *mem.Store) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+type authorityGroup struct {
+	id        string
+	spellings []string
+}
+
+// foldAuthorityProducts groups the product ids that records name by the
+// identity owner, so one app is one row under its one name however many
+// spellings its records use. An id the owner does not know stays its own row.
+func foldAuthorityProducts(store *mem.Store, productIDs []string) []authorityGroup {
+	byMember := map[string]string{}
+	byKey := map[string]string{}
+	if store != nil {
+		if idx, err := loadWhereIndex(store); err == nil {
+			for _, root := range idx.groups() {
+				id := idx.groupID(root)
+				for _, member := range idx.members(root) {
+					byMember[strings.ToLower(member)] = id
+					if key := identityKey(member); key != "" {
+						byKey[key] = id
+					}
+				}
+			}
+		}
+	}
+	groups := map[string]*authorityGroup{}
+	var order []string
+	for _, productID := range productIDs {
+		id := byMember[strings.ToLower(productID)]
+		if id == "" {
+			id = byKey[identityKey(productID)]
+		}
+		if id == "" {
+			id = productID
+		}
+		g := groups[id]
+		if g == nil {
+			g = &authorityGroup{id: id}
+			groups[id] = g
+			order = append(order, id)
+		}
+		g.spellings = append(g.spellings, productID)
+	}
+	sort.Strings(order)
+	out := make([]authorityGroup, 0, len(order))
+	for _, id := range order {
+		out = append(out, *groups[id])
+	}
+	return out
 }
 
 func productIDsFromSourceIssues(homePath string) ([]string, error) {

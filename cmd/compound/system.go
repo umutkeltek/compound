@@ -289,7 +289,8 @@ func cmdSystemGraph(verb string, args []string) {
 
 // systemProductResolver resolves inventory product references through the
 // owner of product identity (product.WhereAll / product.Where: separators,
-// renames, aliases and app identifiers fold to one product), read without
+// renames, aliases and app identifiers fold to one product, named by its one
+// group id, the same name the app pages use), read without
 // scaffolding the home. A home with no product ledger resolves nothing, and
 // the graph then shows every product reference as an unknown product.
 func systemProductResolver(homePath string) projection.InventoryProductResolver {
@@ -303,7 +304,7 @@ func systemProductResolver(homePath string) projection.InventoryProductResolver 
 				all, _ := product.WhereAll(store)
 				for _, r := range all {
 					for _, m := range r.Members {
-						members[m] = r.ProductID
+						members[m] = r.GroupID
 					}
 				}
 			}
@@ -315,10 +316,10 @@ func systemProductResolver(homePath string) projection.InventoryProductResolver 
 			return "", false
 		}
 		r, err := product.Where(store, strings.TrimPrefix(ref, projection.InventoryProductPrefix))
-		if err != nil || r.Status == product.WhereUnresolved || r.Status == product.WhereAmbiguous || r.ProductID == "" {
+		if err != nil || r.Status == product.WhereUnresolved || r.Status == product.WhereAmbiguous || r.GroupID == "" {
 			return "", false
 		}
-		return r.ProductID, true
+		return r.GroupID, true
 	}
 }
 

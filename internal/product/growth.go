@@ -799,7 +799,7 @@ func growthGroups(idx *whereIndex) ([]*growthGroup, map[string]*growthGroup) {
 			if c, ok := idx.claim(e.Slug, "release_app_store_connect_app_id"); ok && strings.TrimSpace(c.Object) != "" {
 				g.releaseAppIDs = appendUnique(g.releaseAppIDs, strings.TrimSpace(c.Object))
 			}
-			if e.CreatedAt != "" || len(e.Aliases) > 0 || len(e.Identifiers) > 0 {
+			if registeredEntity(e) {
 				g.registered[e.Slug] = true
 			}
 		}
@@ -812,22 +812,9 @@ func growthGroups(idx *whereIndex) ([]*growthGroup, map[string]*growthGroup) {
 
 func (g *growthGroup) finalize(idx *whereIndex) {
 	sort.Strings(g.ids)
-	best := ""
-	pick := func(candidates func(string) bool) {
-		for _, id := range g.ids {
-			if !candidates(id) {
-				continue
-			}
-			if best == "" || g.rows[strings.ToLower(id)] > g.rows[strings.ToLower(best)] {
-				best = id
-			}
-		}
-	}
-	pick(func(id string) bool { return g.registered[id] })
-	if best == "" {
-		pick(func(string) bool { return true })
-	}
-	g.canonical = best
+	// The identity owner's rule, so app pages, `product where` and the work
+	// a piece of work records all use one name per app.
+	g.canonical = mainSpelling(g.ids, func(id string) bool { return g.registered[id] }, func(id string) int { return g.rows[strings.ToLower(id)] })
 	for _, id := range g.ids {
 		facts := idx.claims[id]
 		if len(facts) == 0 {

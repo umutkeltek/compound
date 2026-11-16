@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/mem"
 	"compound/internal/runattempt"
 	"compound/internal/work"
 )
@@ -229,5 +231,68 @@ func TestWorkObserveRunWithoutAttributionFlagsEmitsNoKeys(t *testing.T) {
 	// attribution omitempty, not an empty record.
 	if !strings.Contains(string(raw), `"transcript_ref"`) {
 		t.Fatalf("expected an S2 transcript_ref on the record, got:\n%s", raw)
+	}
+}
+
+// TestWorkBindAppDryRunThenApplyRecordsTheOwnersOneName drives the command
+// end to end against a synthetic home: the dry run writes nothing and says how
+// many open items it would bind; apply refuses without an actor, then records
+// the identity owner's one name for the app (not the spelling the work used).
+func TestWorkBindAppDryRunThenApplyRecordsTheOwnersOneName(t *testing.T) {
+	homePath := t.TempDir()
+	memStore, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	if _, err := memStore.RegisterEntity(mem.Entity{Slug: "product:alpha-app", Kind: "product", Aliases: []string{"Alpha App"}}, now); err != nil {
+		t.Fatal(err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(work.CreateInput{Owner: "codex", SuccessPredicate: "fix the alpha app", CanonicalSurface: "product:alpha_app"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(homePath, "work", "work", w.ID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := runWorkBindApp(store, homePath, false, "", true, now, &stdout, &stderr); code != 0 {
+		t.Fatalf("dry run exit %d: %s", code, stderr.String())
+	}
+	var plan work.ScopeBindPlan
+	if err := json.Unmarshal(stdout.Bytes(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.Mode != "dry_run" || plan.Counts[work.ScopeBindWouldBind] != 1 || plan.Homes["product:alpha-app"] != 1 {
+		t.Fatalf("dry run = %s", stdout.String())
+	}
+	after, _ := os.ReadFile(filepath.Join(homePath, "work", "work", w.ID+".json"))
+	if !bytes.Equal(before, after) {
+		t.Fatal("dry run changed the work record")
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := runWorkBindApp(store, homePath, true, "", false, now, &stdout, &stderr); code != 2 {
+		t.Fatalf("apply without --by exit %d, want 2", code)
+	}
+	if code := runWorkBindApp(store, homePath, true, "operator:example", false, now, &stdout, &stderr); code != 0 {
+		t.Fatalf("apply exit %d: %s", code, stderr.String())
+	}
+	got, err := store.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Scope.ProductID != "product:alpha-app" {
+		t.Fatalf("bound scope = %+v, want the owner's one name", got.Scope)
+	}
+	if !strings.Contains(stdout.String(), "recorded its app or system: 1") {
+		t.Fatalf("apply output = %s", stdout.String())
 	}
 }
