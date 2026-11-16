@@ -404,10 +404,9 @@ export function deriveContinue(workbench: Json | null, open: Json[]): ContinueMo
       : null;
   } else if (operatorGateCount > 0) {
     headline = "Needs your decision";
-    body =
-      operatorGateCount === 1
-        ? "1 item needs judgment, private input, or an unblock step."
-        : `${operatorGateCount} items need judgment, private input, or an unblock step.`;
+    // One count of what waits for him lives at the top of Today
+    // (lib/counts.ts waitingOnYou); this card does not keep a second one.
+    body = "The next work waits on a decision. The count at the top of the page says how many wait for you.";
     tone = "seam";
   } else if (waitReason) {
     headline = "Waiting";
@@ -425,7 +424,6 @@ export function deriveContinue(workbench: Json | null, open: Json[]): ContinueMo
     chips: [
       { label: `${readyCount} ready`, active: readyCount > 0 },
       { label: `${intakeCount} inbox`, active: intakeCount > 0 },
-      { label: `${operatorGateCount} needs me`, active: operatorGateCount > 0 },
     ],
   };
 }
@@ -507,7 +505,10 @@ export function memoryBriefing(
     return { ...base, observation: "invalid" };
   }
   const change = weeklyChange(items, rowTsMs, item => str(item.state) === "promoted", now);
-  const live = read.status === "live";
+  // A copy that is only older than the read window is still the current
+  // copy: the weekly number holds until a refresh actually fails, so the tile
+  // does not flip between a number and "—" with cache age.
+  const live = read.status === "live" || (read.status === "stale" && !base.failed);
   return {
     ...base,
     totals: {

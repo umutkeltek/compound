@@ -1,3 +1,5 @@
+import Link from "next/link";
+import { memoryReviewHref, settingsHref, workListHref } from "@/lib/links";
 import type { ReactNode } from "react";
 
 import { Panel } from "@/components/briefing/primitives";
@@ -43,7 +45,10 @@ function KpiTile({
   delta,
   sub,
   children,
+  link,
 }: {
+  /** where the tile leads: the list behind its number */
+  link?: { label: string; href: string };
   label: string;
   dot?: string;
   value: ReactNode;
@@ -63,6 +68,7 @@ function KpiTile({
       </span>
       <span className="mt-1 text-xs leading-snug text-muted">{sub}</span>
       {children}
+      {link ? <Link href={link.href} className="mt-2 text-xs font-semibold text-work hover:underline">{link.label} →</Link> : null}
     </Panel>
   );
 }
@@ -86,6 +92,7 @@ function AutonomyTile({ autonomy }: { autonomy: AutonomyPosture }) {
       </span>
       <span className="mt-2 text-sm font-semibold leading-snug text-strong">{sentence || autonomy.posture}</span>
       {sentence ? null : <span className="mt-1 text-2xs leading-snug text-faint">{autonomy.detail}</span>}
+      <Link href={settingsHref("safety-permissions")} className="mt-2 text-xs font-semibold text-work hover:underline">See what agents may do →</Link>
     </Panel>
   );
 }
@@ -116,6 +123,7 @@ export function KpiStrip({
       ) : (
       <KpiTile
         label="Outside changes · 7 days"
+        link={{ label: "See all work", href: workListHref({ filter: "all" }) }}
         dot="bg-work"
         value={world.outward.toLocaleString("en-US")}
         delta={
@@ -144,6 +152,7 @@ export function KpiStrip({
 
       <KpiTile
         label="Learned · 7 days"
+        link={mind.totals && mind.totals.awaiting > 0 ? { label: `${mind.totals.awaiting.toLocaleString("en-US")} ${mind.totals.awaiting === 1 ? "memory waits" : "memories wait"} for review`, href: memoryReviewHref() } : { label: "See what it knows", href: "/memory" }}
         dot="bg-memory"
         value={mind.promotedThisWeek == null ? "—" : `${mind.promotedThisWeek > 0 ? "+" : ""}${mind.promotedThisWeek.toLocaleString("en-US")}`}
         delta={mind.delta != null ? <DeltaPill value={mind.delta} showZero title="promotions vs previous 7 days" /> : null}
@@ -154,7 +163,7 @@ export function KpiStrip({
           { value: mind.totals.awaiting, className: "bg-memory", label: "Awaiting" },
           { value: mind.totals.parked, className: "bg-faint", label: "Parked" },
         ]} /> : null}
-        {mind.observation === "stale" && mind.totals ? (
+        {mind.observation === "stale" && mind.failed && mind.totals ? (
           <span className="mt-2 text-xs text-seam">
             {memoryBriefingNotice(mind)}
             {mind.lastGoodAt ? <span className="block">Last read <time dateTime={mind.lastGoodAt}>{readAge(mind.lastGoodAt)}</time></span> : null}

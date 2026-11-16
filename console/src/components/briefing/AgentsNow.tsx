@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { ReadNotice, type ReadView } from "@/components/kit";
 import { describeAgents, describeInProgress, type AgentCount, type InProgressCount } from "@/lib/counts";
+import { workListHref } from "@/lib/links";
 
 /**
  * "What the agents are doing": who holds work, how much is marked in
@@ -24,6 +25,8 @@ export function AgentsNow({
   prominent?: boolean;
 }) {
   const progress = inProgress ? describeInProgress(inProgress) : null;
+  // The stale line links the list of exactly those items (same predicate).
+  const stale = (inProgress?.pickedUpOver7Days ?? 0) > 0;
   return (
     <section
       aria-label="What the agents are doing"
@@ -36,7 +39,11 @@ export function AgentsNow({
           <p>
             <span className="text-ink">{progress.headline}</span>
             {progress.detail ? <>: {progress.detail}</> : "."}
-            {progress.age ? <span className="block text-seam">{progress.age}</span> : null}
+            {progress.age ? (
+              stale ? (
+                <Link href={workListHref({ filter: "stale" })} className="block text-seam hover:underline">{progress.age} See them →</Link>
+              ) : <span className="block text-seam">{progress.age}</span>
+            ) : null}
           </p>
         ) : (
           <ReadNotice read={workRead} label="open work" />
@@ -44,7 +51,7 @@ export function AgentsNow({
       </div>
       <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs font-semibold">
         <Link href="/live" className="text-work hover:underline">See who works on what →</Link>
-        <Link href="/work" className="text-work hover:underline">Open all work →</Link>
+        <Link href={workListHref()} className="text-work hover:underline">Open all work →</Link>
       </div>
     </section>
   );

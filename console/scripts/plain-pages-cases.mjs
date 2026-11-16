@@ -640,6 +640,24 @@ try {
     assert.doesNotMatch(filed, /until you decide/);
   }
 
+  // Today's other parts: the stale line links its list; no second "needs me"
+  // count and no command to copy; the learned number holds while a copy is
+  // only older than the read window (it goes away only when a read fails).
+  {
+    const todayHTML = wrap("/", await Today());
+    assert.match(todayHTML, /href="\/work\?lens=table&amp;filter=stale"/, "the stale-work line links exactly those items");
+    assert.match(todayHTML, /href="\/memory#memory-review"[^>]*>1 memory waits for review →/, "the Learned tile leads to the memories that wait");
+    assert.match(todayHTML, /href="\/settings\?section=safety-permissions#settings-safety-permissions"/, "the Autonomy tile leads to its settings");
+    const todayText = visibleText(todayHTML);
+    assert.doesNotMatch(todayText, /\bneeds me\b|compound work continue/, "no second waiting count and no command on Today");
+    const { memoryBriefing } = await import("../src/lib/briefing.ts");
+    const NOW = Date.UTC(2031, 0, 10);
+    const value = { counts: { by_state: { promoted: 1 } }, items: [{ state: "promoted", created_at: new Date(NOW - 86_400_000).toISOString() }] };
+    const at = new Date(NOW - 60_000).toISOString();
+    assert.equal(memoryBriefing({ status: "stale", value, lastGoodAt: at, generatedAt: at, error: null }, NOW).promotedThisWeek, 1, "a merely older copy keeps its number");
+    assert.equal(memoryBriefing({ status: "stale", value, lastGoodAt: at, generatedAt: at, error: "read failed" }, NOW).promotedThisWeek, null, "a failed read is unknown, not a number");
+  }
+
   // A link to a decision that is gone says so and offers the filed list; a
   // skill-proposal link says it is agent housekeeping. Neither opens another
   // decision silently.
