@@ -78,6 +78,9 @@ type Inputs struct {
 	// path existence, waiter processes). Nil means the real machine; tests
 	// inject a fake so no check depends on the host.
 	Probe Probe
+	// Rules is the operator's standing grants as the policy owner loads
+	// them. Nil means not read: no item moves to the covered_by_rule band.
+	Rules *RulesInput
 }
 
 // ActivityDayInput carries one day's pre-computed unaccounted activity blocks (from
@@ -113,6 +116,12 @@ type Report struct {
 	SetAside      []SetAside      `json:"set_aside"`
 	Totals        Totals          `json:"totals"`
 	Freshness     ReportFreshness `json:"freshness"`
+	// CoveredByRule lists live items his standing rules already cover:
+	// not counted under needs_you, each batch naming its rule and whether
+	// anything works it (see covered.go).
+	CoveredByRule []CoveredByRule `json:"covered_by_rule"`
+	// Rules says whether his standing rules were read for this report.
+	Rules RulesState `json:"rules"`
 }
 
 // ReportFreshness says when each source was read and how new its newest
@@ -233,6 +242,10 @@ func Build(in Inputs, now time.Time) Report {
 		GeneratedAt:   generatedAt,
 		Groups:        []Group{},
 		SetAside:      []SetAside{},
+		CoveredByRule: []CoveredByRule{},
+	}
+	if in.Rules != nil {
+		report.Rules = RulesState{Read: true, ActiveStandingGrants: len(in.Rules.activeGrants(now))}
 	}
 	reviewTotalRead, unchecked := 0, 0
 	if in.Reviews != nil {
@@ -243,7 +256,11 @@ func Build(in Inputs, now time.Time) Report {
 			normalizeGroup(&normalized, generatedAt, now)
 			sources[g.Key] = normalized
 		}
-		live, setAside, totalRead, uncheckedReviews := reviewLiveness(*in.Reviews, projected, in.Probe, now)
+		live, setAside, covered, totalRead, uncheckedReviews := reviewLiveness(*in.Reviews, projected, in.Probe, in.Rules, now)
+		for i := range covered {
+			covered[i].Kind = sources[covered[i].SourceGroupKey].Kind
+		}
+		report.CoveredByRule = append(report.CoveredByRule, covered...)
 		for i := range setAside {
 			source := sources[setAside[i].SourceGroupKey]
 			setAside[i].Kind = source.Kind
@@ -282,7 +299,7 @@ func Build(in Inputs, now time.Time) Report {
 // buildTotals derives the headline arithmetic. Each source's Read is counted
 // from the inputs (every unit that asked to be counted under needs_you before
 // the live check), not from the result, so Live + SetAside + WaitingOnOthers
-// == Read is a real check, not a definition.
+// + CoveredByRule == Read is a real check, not a definition.
 func buildTotals(report Report, reviewTotalRead, unchecked int) Totals {
 	totals := Totals{
 		LiveDecisions:    report.Counts.NeedsYou,
@@ -317,16 +334,20 @@ func buildTotals(report Report, reviewTotalRead, unchecked int) Totals {
 		totals.SetAsideByReason[entry.Reason] += entry.Count
 		at(entry.Source).SetAside += entry.Count
 	}
+	for _, entry := range report.CoveredByRule {
+		totals.CoveredByRule += entry.Count
+		at(entry.Source).CoveredByRule += entry.Count
+	}
 	totals.SetAsideReasons, totals.ClosedWithoutYou = setAsideReasonTotals(report.SetAside)
 	for _, source := range []string{SourceReviews, SourceWorkbench, SourceExecutor, SourceActivity} {
-		if entry := bySource[source]; entry != nil && entry.Read+entry.Live+entry.SetAside > 0 {
+		if entry := bySource[source]; entry != nil && entry.Read+entry.Live+entry.SetAside+entry.CoveredByRule > 0 {
 			totals.TotalRead += entry.Read
 			totals.BySource = append(totals.BySource, *entry)
 			delete(bySource, source)
 		}
 	}
 	for _, source := range sortedSourceKeys(bySource) {
-		if entry := bySource[source]; entry.Read+entry.Live+entry.SetAside > 0 {
+		if entry := bySource[source]; entry.Read+entry.Live+entry.SetAside+entry.CoveredByRule > 0 {
 			totals.TotalRead += entry.Read
 			totals.BySource = append(totals.BySource, *entry)
 		}

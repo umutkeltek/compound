@@ -1314,6 +1314,7 @@ func applyAttentionMeter(reviewQueue *workbenchReviewQueue, store *work.Store, r
 		Reviews:   &reviews,
 		Workbench: &bench,
 		Executors: &executors,
+		Rules:     attentionRules(store.HomePath(), now),
 	}, now)
 	reviewQueue.Counts.ReviewRequired = report.Counts.NeedsYou
 	reviewQueue.BlockedOnYou = report.Counts.BlockedOnYou

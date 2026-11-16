@@ -141,7 +141,7 @@ func buildNarrateScript(homePath string, mood narrate.Mood, recent int, now time
 	if err != nil {
 		return narrate.Result{}, err
 	}
-	report := attention.Build(attention.Inputs{Reviews: &reviews, Workbench: &workbench, Executors: &executors}, now)
+	report := attention.Build(attention.Inputs{Reviews: &reviews, Workbench: &workbench, Executors: &executors, Rules: attentionRules(homePath, now)}, now)
 
 	currentSeq, err := maxClaimSeq(homePath)
 	if err != nil {

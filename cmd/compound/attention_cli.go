@@ -12,6 +12,7 @@ import (
 	"compound/internal/attention"
 	"compound/internal/home"
 	"compound/internal/hookplan"
+	"compound/internal/policy"
 	"compound/internal/work"
 )
 
@@ -86,6 +87,7 @@ func cmdAttention(args []string) {
 		Workbench: &workbench,
 		Executors: &executors,
 		Activity:  activityAttentionInput(homePath, &workbench, now),
+		Rules:     attentionRules(homePath, now),
 	}, now)
 	if jsonOut {
 		operatorAttention, err := hookplan.ReadOperatorAttention(hookplan.OperatorAttentionRequest{
@@ -115,6 +117,18 @@ func cmdAttention(args []string) {
 		return
 	}
 	printAttentionTextWithReceiptOnlyGrade(report, receiptOnlyGrade)
+}
+
+// attentionRules reads his standing grants the way the policy owner loads
+// them (policy.yaml plus the installed registry) for the covered_by_rule
+// band. A read failure warns and returns nil: nothing then leaves his list.
+func attentionRules(homePath string, now time.Time) *attention.RulesInput {
+	cfg, _, err := policy.LoadConfig(homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warning: standing rules not read:", err)
+		return nil
+	}
+	return &attention.RulesInput{StandingGrants: cfg.StandingGrants, Presence: cfg.OperatorPresence.Effective(now)}
 }
 
 // activityAttentionMaxAgeDays bounds how old the latest span day may be before the activity read
@@ -248,6 +262,9 @@ func printAttentionTextWithReceiptOnlyGrade(report attention.Report, receiptOnly
 			report.Totals.ClosedWithoutYou,
 			report.Totals.SetAside-report.Totals.ClosedWithoutYou,
 		)
+	}
+	if report.Totals.CoveredByRule > 0 {
+		fmt.Printf("covered by your standing rules, not counted: %d (nothing works them yet) — view with --json\n", report.Totals.CoveredByRule)
 	}
 	groups := report.Groups
 	receiptOnlyCount := 0
