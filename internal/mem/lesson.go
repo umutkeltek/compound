@@ -59,6 +59,21 @@ const (
 
 	// lessonTextMax bounds why/how. A lesson is one line; detail goes in evidence.
 	lessonTextMax = 600
+
+	// Bounds on every field that reaches the hook lesson index. The index has
+	// a fixed size, so no single lesson may take more than a small share of it.
+	// The door enforces these; the index builder enforces them again (and a
+	// per-entry size cap) for rows written before the door did.
+	//
+	// LessonActorMaxBytes bounds --by (written_by, changed_by; shown in the
+	// served line).
+	LessonActorMaxBytes = 64
+	// LessonToolMaxBytes bounds the trigger's tool name.
+	LessonToolMaxBytes = 64
+	// LessonServedHowMaxBytes bounds the how of a lesson with a trigger: it
+	// is the line the hook injects. A trigger-less lesson (recall only) may
+	// use up to lessonTextMax.
+	LessonServedHowMaxBytes = 300
 )
 
 // ErrStatusNeverPromotes is the typed refusal for a status-typed candidate on a
@@ -249,6 +264,9 @@ func ParseLessonTrigger(raw string) (LessonTrigger, bool, error) {
 	if !ok || tool == "" || pattern == "" {
 		return LessonTrigger{}, false, fmt.Errorf("trigger %q must be <tool>:<regex>, e.g. Bash:proof-check.*jq", raw)
 	}
+	if len(tool) > LessonToolMaxBytes {
+		return LessonTrigger{}, false, fmt.Errorf("trigger tool is %d bytes; the limit is %d", len(tool), LessonToolMaxBytes)
+	}
 	if !lessonTriggerTool.MatchString(tool) {
 		return LessonTrigger{}, false, fmt.Errorf("trigger tool %q must be a tool name or *", tool)
 	}
@@ -304,6 +322,8 @@ func normalizeLessonInput(in LessonInput) (LessonInput, error) {
 		return in, fmt.Errorf("lesson needs --how (what to do instead)")
 	case in.Actor == "":
 		return in, fmt.Errorf("lesson needs --by <actor>")
+	case len(in.Actor) > LessonActorMaxBytes:
+		return in, fmt.Errorf("--by is %d bytes; the limit is %d", len(in.Actor), LessonActorMaxBytes)
 	case len(in.Why) > lessonTextMax || len(in.How) > lessonTextMax:
 		return in, fmt.Errorf("lesson why/how must each be at most %d characters; put detail behind --evidence", lessonTextMax)
 	}
@@ -313,6 +333,9 @@ func normalizeLessonInput(in LessonInput) (LessonInput, error) {
 	trigger, hasTrigger, err := ParseLessonTrigger(in.Trigger)
 	if err != nil {
 		return in, err
+	}
+	if hasTrigger && len(in.How) > LessonServedHowMaxBytes {
+		return in, fmt.Errorf("a lesson with a trigger is injected as one line: --how is %d bytes, the limit is %d (put detail behind --evidence)", len(in.How), LessonServedHowMaxBytes)
 	}
 	if hasTrigger {
 		if err := checkNewLessonTriggerBroad(trigger, in.AllowBroadTrigger); err != nil {

@@ -31,7 +31,14 @@ const (
 	LessonIndexRelPath = "indexes/hook-lessons.json"
 	// LessonApplyMaxBytes caps one injected line. A lesson that needs more
 	// than this is a skill, not a moment-of-action reminder.
-	LessonApplyMaxBytes = 300
+	LessonApplyMaxBytes = mem.LessonServedHowMaxBytes
+	// LessonEntryMaxBytes caps one index entry as written (compact JSON), so
+	// no single lesson can take more than a small fixed share (under 1 %) of
+	// the index, whatever its fields contain. An over-size entry is left out
+	// and reported.
+	LessonEntryMaxBytes = 2 << 10
+	// lessonIDMaxBytes bounds a lesson id (a claim id is 18 bytes).
+	lessonIDMaxBytes = 128
 	// LessonIndexMaxBytes bounds the hook's single read. An index past this
 	// size is ignored by the hook (no injection) so a runaway build cannot
 	// turn the zero-wait path into a slow one.
@@ -309,9 +316,10 @@ func LessonContext(matches []LessonMatch) string {
 	return strings.Join(lines, "\n")
 }
 
-// lessonFrameMaxActor bounds the author shown in the frame, so the frame adds
-// at most about 110 bytes to the at most LessonApplyMaxBytes of advice.
-const lessonFrameMaxActor = 40
+// lessonFrameMaxActor bounds the author shown in the frame (and stored in an
+// index entry), so the frame adds at most about 170 bytes to the at most
+// LessonApplyMaxBytes of advice.
+const lessonFrameMaxActor = mem.LessonActorMaxBytes
 
 var lessonFrameDateRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
@@ -340,6 +348,9 @@ func lessonFrameDate(on string) string {
 func ValidateLesson(lesson Lesson) error {
 	if strings.TrimSpace(lesson.ID) == "" {
 		return fmt.Errorf("lesson needs an id")
+	}
+	if len(lesson.ID) > lessonIDMaxBytes || strings.IndexFunc(lesson.ID, func(r rune) bool { return r <= ' ' || r == 0x7f || r > 0x7e }) >= 0 {
+		return fmt.Errorf("lesson id %.40q... must be at most %d plain characters", lesson.ID, lessonIDMaxBytes)
 	}
 	if strings.TrimSpace(lesson.Pattern) == "" {
 		return fmt.Errorf("lesson %s needs a pattern", lesson.ID)
@@ -490,6 +501,11 @@ func BuildLessonIndex(lessons []Lesson, now time.Time) (LessonIndex, []error) {
 	for _, lesson := range lessons {
 		if err := ValidateLesson(lesson); err != nil {
 			problems = append(problems, err)
+			continue
+		}
+		lesson.By, lesson.On = lessonFrameActor(lesson.By), lessonFrameDate(lesson.On)
+		if encoded, err := json.Marshal(lesson); err != nil || len(encoded) > LessonEntryMaxBytes {
+			problems = append(problems, fmt.Errorf("lesson %s index entry is %d bytes; the limit is %d (one lesson may not crowd out the others)", lesson.ID, len(encoded), LessonEntryMaxBytes))
 			continue
 		}
 		if prior, ok := seen[lesson.ID]; ok {

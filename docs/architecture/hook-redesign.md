@@ -84,7 +84,13 @@ sources for the home's own index are recorded in `COMPOUND_HOME/config/hook-less
 and every later rebuild (automatic or with no flags) reads the ledger plus those sources. A lesson is
 `{id, tools[], pattern, apply, source}`. The builder also accepts the producer spellings `trigger`
 and `how_to_apply`. Limits: `apply` is one line of at most 300 bytes, at most 2 lessons per call, and
-an index file of at most 256 KiB (written as compact JSON). The hook compiles and runs every pattern on
+an index file of at most 256 KiB (written as compact JSON). Every field an entry carries is bounded so
+no single lesson can take more than a small share of the index: at the lesson door `--by` is at most 64
+bytes, the trigger tool at most 64, a new pattern at most 256, and the how of a lesson with a trigger at
+most 300 (a trigger-less lesson, recall only, keeps 600); the builder cleans the author shown in the
+frame to 64 safe characters, refuses an id over 128 bytes or one that is not plain text, refuses a
+lesson-backed skill line whose id is not a claim id, and leaves out (and reports) any entry over 2 KiB
+as written. The hook compiles and runs every pattern on
 every call, so pattern cost is bounded three ways. A new trigger (lesson write or amend) may be at most
 256 bytes; any pattern in the index at most 1024 bytes (so lessons written before the door cap keep
 serving) and at most 1000 compiled instructions (`mem.CheckLessonPattern`, enforced by the door, the

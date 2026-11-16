@@ -398,7 +398,8 @@ being paged per item.
    `written_by`, `written_on`, `harness`, `skill`, `trigger`). It emits the
    usual `memory_delta` Transition. No candidate, no adjudication step. Why,
    how and actor are required; each text is one line (detail goes behind
-   `--evidence`). `lesson` is not in the candidate `ClaimTypes`, and
+   `--evidence`). Bounds: why and how at most 600 bytes, the how of a lesson
+   with a trigger at most 300 (it is the injected line), `--by` at most 64. `lesson` is not in the candidate `ClaimTypes`, and
    `lesson_on_write` is not a candidate promotion basis, so no other path can
    mint a lesson.
    - **Slot.** Default slot is `skill:<name>` (or `lessons`) `::

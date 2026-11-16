@@ -73,6 +73,10 @@ func currentLessonInstructions(homePath string, lessons []Lesson) (lessonProject
 			ranked = append(ranked, rankedLesson{lesson: lesson})
 			continue
 		}
+		if !lessonClaimIDRe.MatchString(lesson.ID) {
+			result.problems = append(result.problems, fmt.Errorf("lesson %.40q from %.80s is not a claim id; skipped", lesson.ID, lesson.Source))
+			continue
+		}
 		if strings.HasPrefix(lesson.Source, "lesson:") && lesson.Source != "lesson:"+lesson.ID {
 			result.problems = append(result.problems, fmt.Errorf("lesson %s source %s does not name the same claim", lesson.ID, lesson.Source))
 			continue
@@ -88,6 +92,10 @@ func currentLessonInstructions(homePath string, lessons []Lesson) (lessonProject
 	result.lessons = rankLessons(ranked)
 	return result, nil
 }
+
+// lessonClaimIDRe is a well-formed claim id; a skill line that claims to be
+// lesson-backed must name one.
+var lessonClaimIDRe = regexp.MustCompile(`^claim_[0-9a-f]{6,64}$`)
 
 // rankedLesson is one index entry with what ranking needs.
 type rankedLesson struct {

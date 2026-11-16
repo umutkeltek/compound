@@ -138,6 +138,8 @@ func normalizeLessonChangeInput(in LessonChangeInput) (LessonChangeInput, error)
 		return in, fmt.Errorf("lesson change needs --by <actor>")
 	case checkLessonActor(in.Actor) != nil:
 		return in, checkLessonActor(in.Actor)
+	case len(in.Actor) > LessonActorMaxBytes:
+		return in, fmt.Errorf("--by is %d bytes; the limit is %d", len(in.Actor), LessonActorMaxBytes)
 	case len(in.Reason) > lessonTextMax:
 		return in, fmt.Errorf("reason must be at most %d characters", lessonTextMax)
 	}
@@ -204,6 +206,9 @@ func (s *Store) changeLesson(in LessonChangeInput, change string, now time.Time)
 			} else if in.Trigger != "" {
 				parsed, _, _ := ParseLessonTrigger(in.Trigger)
 				trigger = parsed.Tool + ":" + parsed.Pattern
+			}
+			if trigger != "" && len(how) > LessonServedHowMaxBytes {
+				return fmt.Errorf("a lesson with a trigger is injected as one line: its how is %d bytes, the limit is %d", len(how), LessonServedHowMaxBytes)
 			}
 			if NormalizeClaimValue(how) == NormalizeClaimValue(head.Object) && trigger == head.Qualifiers["trigger"] {
 				return fmt.Errorf("lesson %s already has this how and trigger; nothing to amend", head.ID)
