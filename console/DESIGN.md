@@ -703,8 +703,12 @@ exercise these seams, including cold page reads and stale or partial authority.
   keep working; they are not shown. Supporting copy explains consequences and
   next steps. Internal identifiers stay in detail.
 
-Coordination also uses the existing background reader and refreshes while waiting;
-a cold read must not delay rendering or appear as an empty list of agents.
+Coordination (Waiting on each other) also uses the existing background reader and refreshes while
+waiting; a cold read must not delay rendering or appear as an empty list of agents. It shows one
+paragraph, not a card per session: how many sessions wait, what most of them wait for in plain
+words and since when (the dates of their last capacity readings), then the agents whose sessions
+hold work, each linked to its Work list, and the same agent and in-progress sentences as Working
+now. One freshness chip; recorded coordination entries sit behind "For agents".
 
 
 ## Connected project view

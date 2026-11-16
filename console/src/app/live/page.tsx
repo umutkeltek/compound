@@ -4,7 +4,7 @@ import { buildRoster, latestPickedUp } from "@/components/agents/agent-roster";
 import { AgentsAnswer } from "@/components/agents/AgentsAnswer";
 import { DelegatedSessions } from "@/components/agents/DelegatedSessions";
 import { normalizeExecutorProjection } from "@/components/agents/executor-normalize";
-import { CoordinationBoard, type ExecDetail } from "@/components/coordination/CoordinationBoard";
+import { WaitingPanel } from "@/components/coordination/WaitingPanel";
 import { LiveHarnessCanvas, type LiveLane } from "@/components/live/LiveHarnessCanvas";
 import { LiveOperationsTimeline, type TimelineRow } from "@/components/live/LiveOperationsTimeline";
 import { PageHeader, PulseIcon, ReadChip, ReadFailedBanner, ReadNotice, readsPending, SectionHeader, StatusChip } from "@/components/kit";
@@ -21,23 +21,17 @@ export const dynamic = "force-dynamic";
 /** The most agents the canvas draws; it still fits the page at that size. */
 const CANVAS_LANES = 8;
 
-async function LiveCoordination({ execDetail, runAttemptsPresent }: { execDetail: Record<string, ExecDetail>; runAttemptsPresent: boolean }) {
+async function LiveCoordination() {
   const { view, read } = await readCoordination();
   return (
     <section data-depth-min="technical" className="flex flex-col gap-3">
-      <SectionHeader tone="route" icon={<PulseIcon />} label="Who waits on whom" sub="this session · other sessions · what each waits for" right={<ReadChip read={read} />} />
+      <SectionHeader tone="route" icon={<PulseIcon />} label="Who waits on whom" sub="agent sessions and what they wait for" right={<ReadChip read={read} />} />
       {read.status === "loading" || read.status === "unreachable" ? (
         <ReadNotice read={read} label="who waits on whom" />
       ) : (
         <>
           <ReadFailedBanner read={read} label="who waits on whom" />
-          <CoordinationBoard
-            view={view}
-            doorStatus={read.status}
-            doorError={read.error}
-            execDetail={execDetail}
-            runAttemptsPresent={runAttemptsPresent}
-          />
+          <WaitingPanel view={view} />
         </>
       )}
     </section>
@@ -111,18 +105,7 @@ export default async function LivePage() {
     harness: runOf.get(work.workId)?.harness ?? "",
   }));
 
-  const execDetail: Record<string, ExecDetail> = {};
-  for (const lane of traffic.lanes) {
-    for (const work of lane.inFlight) {
-      if (execDetail[work.workId]) continue;
-      execDetail[work.workId] = {
-        harness: work.harness,
-        runStatus: work.runStatus,
-        actor: work.actor,
-        retryDepth: work.retryDepth,
-      };
-    }
-  }
+
 
   const delegatedRunning = projection?.delegatedCounts.running ?? 0;
   const pending = readsPending(executorsRead, attentionLive.read);
@@ -182,7 +165,7 @@ export default async function LivePage() {
       </section>
 
       {showCoordination ? (
-        <LiveCoordination execDetail={execDetail} runAttemptsPresent={traffic.runAttemptsPresent} />
+        <LiveCoordination />
       ) : null}
 
       {/* Technical depth only, like coordination: the list holds every session

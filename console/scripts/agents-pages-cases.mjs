@@ -97,7 +97,18 @@ const fixtureWork = ${fixtureWork.toString()};
 const ns = ${ns.toString()};
 if (args === "version") { console.log("synthetic"); process.exit(0); }
 while (!existsSync(${JSON.stringify(releaseReads)})) await Bun.sleep(5);
+const lane = (stamp) => ({ state: "unknown", remaining: 0, confirmation_required: true, message: "lane capacity --confirm required: state=unknown data_row_timestamp=" + stamp + " data_ref=fixture" });
+const actor = (name, doing, stamp) => ({ actor: name, doing, can_continue: false, wait_reason: "capacity_confirmation_required", blocked_on: [], lane: lane(stamp), open: 10, in_progress: 7 });
 const reply = {
+  "coordination --json": {
+    schema_version: "compound.coordination.v0.1", generated_at: new Date(now).toISOString(), actor: "alpha_agent:lane-1",
+    me: actor("alpha_agent:lane-1", { work_id: "work_ap_alpha_new", title: "Fixture alpha new", state: "claimed" }, "2030-03-01T00:00:00Z"),
+    others: [
+      actor("beta_agent:fixture-lane", { work_id: "work_ap_beta_held", title: "Fixture beta held", state: "held" }, "2030-03-05T00:00:00Z"),
+      actor("fixture-scheduler", null, "unknown"),
+    ],
+    waits: [], integrity: [], operator_coordination: { items: [] },
+  },
   "executors --json": executorsJson(now),
   "attention --json": { schema_version: "compound.attention.v0.1", generated_at: new Date(now).toISOString(), counts: { needs_you: 1, needs_you_groups: 1, blocked_on_you: 1 }, groups: [] },
 };
@@ -123,6 +134,7 @@ const { parseWorkListParams } = await import("../src/lib/links.ts");
 const compound = await import("../src/lib/compound.ts");
 const { default: Live } = await import("../src/app/live/page.tsx");
 const { default: Agents } = await import("../src/app/executors/page.tsx");
+const { default: Waiting } = await import("../src/app/traffic/page.tsx");
 const { summarizeGrants, readableDate } = await import("../src/components/settings/grants.ts");
 const { AutonomySafety } = await import("../src/components/settings/AutonomySafety.tsx");
 const { PolicyGroup } = await import("../src/components/settings/PolicyGroup.tsx");
@@ -209,6 +221,20 @@ try {
     assert.ok(agentLinks.includes(href), `All agents links ${href}`);
   }
   assert.match(all, /Set up but holding no work: Local Box\./);
+
+  /* ---------- 4. waiting on each other: one sentence, holders linked, same numbers ---------- */
+  const coldWaiting = visibleText(wrap("/traffic", await Waiting({ searchParams: Promise.resolve({}) })));
+  assert.match(coldWaiting, /Reading [a-z ]+ for the first time/, "a cold read says it is reading, never an empty list");
+  await compound.settleProjectionReads();
+  const waitingHtml = wrap("/traffic", await Waiting({ searchParams: Promise.resolve({}) }));
+  const waiting = visibleText(waitingHtml);
+  assert.match(waiting, /3 agent sessions are waiting\. All of them wait for the same thing: a capacity check on its model that asks for a confirmation nobody gives yet\. Their last capacity readings date from 1 Mar 2030 to 5 Mar 2030; 1 has none at all\./);
+  assert.match(waiting, /Nothing in this console can give what they wait for/);
+  assert.ok(hrefs(waitingHtml).includes("/work?lens=table&filter=all&owner=alpha_agent"), "an agent whose session holds work links to its list");
+  assert.ok(hrefs(waitingHtml).includes("/work/work_ap_beta_held"), "each held item links to its page");
+  assert.doesNotMatch(waiting, /view as|shared queue|10 open|coordination stale|stream live|\bMe\b|Others/, "no per-card queue numbers, no 'Me', one freshness chip");
+  assert.ok(waiting.includes(pageLine), "the waiting page says the same agent count as Working now");
+  assert.ok(waiting.includes(`${pageProgress.headline}: ${pageProgress.detail}`), "and the same in-progress split");
 
   /* ---------- 3. motion, order and links on Working now and All agents ---------- */
   assert.equal(isActiveRun({ runStatus: "", state: "running" }), false, "a work record saying running does not animate");
