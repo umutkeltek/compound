@@ -71,6 +71,24 @@ export interface AttentionGroup {
    * must word it before it is put to him. False when the projection does not say.
    */
   needs_wording?: boolean;
+  /**
+   * Each item inside the group, from the sources that list them one by one
+   * (proposed memories, product results, held agent actions, data-source
+   * setup), so a page can name and link each one. Empty when the source does
+   * not list items (the review queue, held work).
+   */
+  items?: AttentionItemRef[];
+}
+
+/** One item of a group: what it is, what it is about (`context`), and where it lives. */
+export interface AttentionItemRef {
+  id: string;
+  title: string;
+  /** what it is about: `product:<id>` for a product result, an agent or a source label otherwise */
+  context: string;
+  ref: string;
+  path: string;
+  createdAt: string;
 }
 
 /** One reason the projection set records aside instead of counting them as his. */
@@ -90,6 +108,8 @@ export interface AttentionSetAsideReason {
  */
 export interface AttentionTotals {
   closedWithoutYou: number;
+  /** items a standing rule of his already allows, listed apart from his count; null when the source does not say */
+  coveredByRule: number | null;
   setAside: number;
   waitingOnOthers: number;
   reasons: AttentionSetAsideReason[];
@@ -116,6 +136,72 @@ export interface AttentionReport {
   operatorAttention: OperatorCoordinationProjection;
   /** What was set aside and why; null when the projection does not say. */
   totals: AttentionTotals | null;
+  /** batches a standing rule of his already allows; null when the source does not send the list (an older tool) */
+  coveredByRule: AttentionCoveredBatch[] | null;
+  /** whether his standing rules were read; null when the source does not say */
+  rules: AttentionRules | null;
+  /** what was set aside, batch by batch (with the decision a duplicate is counted under); null when not sent */
+  setAside: AttentionSetAsideBatch[] | null;
+  /** every recorded answer, newest first; null when the source does not send them */
+  answered: AttentionAnswer[] | null;
+}
+
+/** A standing rule (grant) of his that covers a batch. */
+export interface AttentionCoveringRule {
+  grantId: string;
+  capability: string;
+  expiresAt: string;
+}
+
+/** One batch of items a standing rule of his already allows: not counted as his. */
+export interface AttentionCoveredBatch {
+  key: string;
+  area: string;
+  source: string;
+  kind: string;
+  count: number;
+  summary: string;
+  itemIds: string[];
+  rules: AttentionCoveringRule[];
+  /** what works these items; "" when nothing does yet */
+  worker: string;
+  /** the source's own sentence: what happens next and who does it */
+  nextStep: string;
+}
+
+export interface AttentionRules {
+  read: boolean;
+  activeStandingGrants: number;
+}
+
+/** One batch the source set aside, and why. */
+export interface AttentionSetAsideBatch {
+  key: string;
+  area: string;
+  kind: string;
+  reason: string;
+  reasonText: string;
+  closed: boolean;
+  nextStep: string;
+  itemIds: string[];
+  /** a duplicate: the decision key the same question is still counted under */
+  duplicateOf: string;
+}
+
+/** One recorded answer and what came of it. */
+export interface AttentionAnswer {
+  area: string;
+  itemId: string;
+  question: string;
+  decision: string;
+  decidedAt: string;
+  decidedBy: string;
+  workId: string;
+  /** the work's state now; "" when there is no work, "unknown" when it could not be read */
+  workState: string;
+  stillWaiting: boolean;
+  /** what came of it, in one sentence */
+  outcome: string;
 }
 
 /* ---------- defensive normalizer (schemas evolve; never crash a surface) ---------- */
@@ -158,6 +244,14 @@ function toGroup(raw: unknown): AttentionGroup {
     item_ids: arr(g.item_ids).map(String),
     freshness: { generated_at: str(freshness.generated_at), source: str(freshness.source) },
     needs_wording: g.needs_wording === true,
+    items: arr(g.items).filter((item) => item && typeof item === "object").map((item: Json) => ({
+      id: str(item.id),
+      title: str(item.title),
+      context: str(item.context),
+      ref: str(item.ref),
+      path: str(item.path),
+      createdAt: str(item.created_at),
+    })),
   };
 }
 
@@ -167,6 +261,7 @@ function toTotals(raw: unknown): AttentionTotals | null {
   if (typeof t.closed_without_you !== "number") return null;
   return {
     closedWithoutYou: num(t.closed_without_you),
+    coveredByRule: typeof t.covered_by_rule === "number" ? t.covered_by_rule : null,
     setAside: num(t.set_aside),
     waitingOnOthers: num(t.waiting_on_others),
     reasons: arr(t.set_aside_reasons).map((r: Json) => ({
@@ -176,6 +271,58 @@ function toTotals(raw: unknown): AttentionTotals | null {
       closed: r.closed === true,
       nextStep: str(r.next_step),
     })).filter((r) => r.count > 0),
+  };
+}
+
+function isObject(value: unknown): value is Json {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function toCoveredBatch(raw: Json): AttentionCoveredBatch {
+  return {
+    key: str(raw.key),
+    area: str(raw.area),
+    source: str(raw.source),
+    kind: str(raw.kind),
+    count: num(raw.count) || arr(raw.item_ids).length,
+    summary: str(raw.operator_summary),
+    itemIds: arr(raw.item_ids).map(String),
+    rules: arr(raw.rules).filter(isObject).map((rule: Json) => ({
+      grantId: str(rule.grant_id),
+      capability: str(rule.capability),
+      expiresAt: str(rule.expires_at),
+    })),
+    worker: str(raw.worker),
+    nextStep: str(raw.next_step),
+  };
+}
+
+function toSetAsideBatch(raw: Json): AttentionSetAsideBatch {
+  return {
+    key: str(raw.key),
+    area: str(raw.area),
+    kind: str(raw.kind),
+    reason: str(raw.reason),
+    reasonText: str(raw.reason_text),
+    closed: raw.closed === true,
+    nextStep: str(raw.next_step),
+    itemIds: arr(raw.item_ids).map(String),
+    duplicateOf: str(raw.duplicate_of),
+  };
+}
+
+function toAnswer(raw: Json): AttentionAnswer {
+  return {
+    area: str(raw.area),
+    itemId: str(raw.item_id),
+    question: str(raw.question),
+    decision: str(raw.decision),
+    decidedAt: str(raw.decided_at),
+    decidedBy: str(raw.decided_by),
+    workId: str(raw.work_id),
+    workState: str(raw.work_state),
+    stillWaiting: raw.still_waiting === true,
+    outcome: str(raw.outcome),
   };
 }
 
@@ -197,6 +344,12 @@ export function toAttentionReport(raw: Json | null): AttentionReport | null {
     groups: arr(raw.groups).map(toGroup),
     operatorAttention: normalizeOperatorCoordination(raw.operator_attention, true),
     totals: toTotals(raw.totals),
+    coveredByRule: Array.isArray(raw.covered_by_rule) ? raw.covered_by_rule.filter(isObject).map(toCoveredBatch) : null,
+    rules: isObject(raw.rules) && typeof raw.rules.read === "boolean"
+      ? { read: raw.rules.read, activeStandingGrants: num(raw.rules.active_standing_grants) }
+      : null,
+    setAside: Array.isArray(raw.set_aside) ? raw.set_aside.filter(isObject).map(toSetAsideBatch) : null,
+    answered: Array.isArray(raw.answered) ? raw.answered.filter(isObject).map(toAnswer) : null,
   };
 }
 
@@ -245,12 +398,36 @@ export async function readAttention(): Promise<{ read: LiveRead; report: Attenti
 const AGENT_HOUSEKEEPING_AREAS = new Set(["capability-lifecycle-proposals"]);
 
 /** Whose a needs-you group is: his to answer, his once an agent words it, or agent housekeeping. */
-export type AttentionShare = "yours" | "wording" | "housekeeping";
+export type AttentionShare = "yours" | "wording" | "housekeeping" | "covered";
 
-export function attentionShare(group: Pick<AttentionGroup, "area" | "needs_wording">): AttentionShare {
+export function attentionShare(
+  group: Pick<AttentionGroup, "area" | "needs_wording"> & { item_ids?: readonly string[] },
+  covered?: ReadonlySet<string>,
+): AttentionShare {
+  // The source's own answer first: a group whose every item a standing rule
+  // of his already covers is listed under that rule, never as his and never
+  // in the console's housekeeping fold below.
+  const ids = group.item_ids ?? [];
+  if (covered && covered.size > 0 && ids.length > 0 && ids.every((id) => covered.has(id))) return "covered";
+  // Stopgap until the source reports skill proposals under a rule: the
+  // console folds that kind out of his count itself. Once the source lists
+  // them in `covered_by_rule`, they leave the needs-you band, this rule
+  // matches nothing, and it can be deleted without a visible change.
   const head = (group.area || "").split("/")[0];
   if (AGENT_HOUSEKEEPING_AREAS.has(head)) return "housekeeping";
   return group.needs_wording ? "wording" : "yours";
+}
+
+/** Every item id a standing rule of his already covers (empty when the source sends none). */
+export function coveredItemIds(report: AttentionReport | null): Set<string> {
+  return new Set((report?.coveredByRule ?? []).flatMap((batch) => batch.itemIds));
+}
+
+/** A group's items that are not covered by a rule (a group is counted once, its items never twice). */
+function uncoveredCount(group: AttentionGroup, covered: ReadonlySet<string>): number {
+  if (!covered.size) return group.count;
+  const overlap = group.item_ids.filter((id) => covered.has(id)).length;
+  return Math.max(0, group.count - overlap);
 }
 
 /**
@@ -273,21 +450,36 @@ export type WaitingOnYou = {
   wording: number;
   housekeeping: { groups: number; items: number };
   closedWithoutYou: number | null;
+  /** everything set aside (closed or not); null when the source does not say */
+  setAside: number | null;
   waitingOnOthers: { items: number; itemIds: string[] } | null;
+  /**
+   * Items a standing rule of his already allows (`covered_by_rule`), never
+   * counted as his; null when the source does not send the list.
+   */
+  coveredByRule: { items: number; batches: AttentionCoveredBatch[] } | null;
+  /** false when his standing rules could not be read; null when the source does not say */
+  rulesRead: boolean | null;
 };
 
 export function waitingOnYou(report: AttentionReport | null): WaitingOnYou | null {
   if (!report) return null;
+  const covered = coveredItemIds(report);
   const needsYou = attentionNeedsYouGroups(report);
-  const yours = needsYou.filter((group) => attentionShare(group) === "yours");
-  const housekeeping = needsYou.filter((group) => attentionShare(group) === "housekeeping");
+  const share = (group: AttentionGroup) => attentionShare(group, covered);
+  const yours = needsYou.filter((group) => share(group) === "yours");
+  const housekeeping = needsYou.filter((group) => share(group) === "housekeeping");
   const others = arr(report.groups).filter((group) => group.kind === "waiting_on_others");
+  const batches = report.coveredByRule;
   return {
     groups: yours.length,
-    items: yours.reduce((sum, group) => sum + group.count, 0),
-    workItems: yours.filter((group) => group.source === "workbench").reduce((sum, group) => sum + group.count, 0),
-    wording: needsYou.filter((group) => attentionShare(group) === "wording").length,
-    housekeeping: { groups: housekeeping.length, items: housekeeping.reduce((sum, group) => sum + group.count, 0) },
+    items: yours.reduce((sum, group) => sum + uncoveredCount(group, covered), 0),
+    workItems: yours.filter((group) => group.source === "workbench").reduce((sum, group) => sum + uncoveredCount(group, covered), 0),
+    wording: needsYou.filter((group) => share(group) === "wording").length,
+    housekeeping: { groups: housekeeping.length, items: housekeeping.reduce((sum, group) => sum + uncoveredCount(group, covered), 0) },
+    coveredByRule: batches ? { items: batches.reduce((sum, batch) => sum + batch.count, 0), batches } : null,
+    rulesRead: report.rules ? report.rules.read : null,
+    setAside: report.totals ? report.totals.setAside : null,
     closedWithoutYou: report.totals ? report.totals.closedWithoutYou : null,
     waitingOnOthers: others.length || report.totals
       ? {
@@ -304,16 +496,63 @@ export function waitingOnYou(report: AttentionReport | null): WaitingOnYou | nul
  * answer. Agent housekeeping is left out (see `housekeepingGroups`).
  */
 export function yourDecisionGroups(report: AttentionReport | null): AttentionGroup[] {
+  const covered = coveredItemIds(report);
   const needsYou = attentionNeedsYouGroups(report);
   return [
-    ...needsYou.filter((group) => attentionShare(group) === "yours"),
-    ...needsYou.filter((group) => attentionShare(group) === "wording"),
+    ...needsYou.filter((group) => attentionShare(group, covered) === "yours"),
+    ...needsYou.filter((group) => attentionShare(group, covered) === "wording"),
   ];
 }
 
 /** The needs-you groups that are agent housekeeping, folded into one quiet line. */
 export function housekeepingGroups(report: AttentionReport | null): AttentionGroup[] {
-  return attentionNeedsYouGroups(report).filter((group) => attentionShare(group) === "housekeeping");
+  const covered = coveredItemIds(report);
+  return attentionNeedsYouGroups(report).filter((group) => attentionShare(group, covered) === "housekeeping");
+}
+
+/* ---------- a product result: is his verdict due? ---------- */
+
+/** The waiting list's kind for "a product change's result waits for his verdict". */
+export const PRODUCT_RESULT_KIND = "product_result";
+
+/**
+ * Whether his verdict on one app's change is due, by the waiting list's own
+ * answer (the one definition: `/loops`, the app page, Today and Decide agree):
+ * - `due`: the list asks him (a `product_result` item for this app or one of
+ *   its changes); `href` opens that decision;
+ * - `asked_elsewhere`: the same question is counted once under another
+ *   decision (for example the idea itself); `href` opens that one;
+ * - `set_aside`: the list set it aside, with its own reason;
+ * - `not_listed`: the list does not ask him about this app;
+ * - `unknown`: the list has not been read yet.
+ */
+export type ProductVerdict =
+  | { state: "due"; decisionKey: string; itemId: string }
+  | { state: "asked_elsewhere"; decisionKey: string }
+  | { state: "set_aside"; reasonText: string; nextStep: string }
+  | { state: "not_listed" }
+  | { state: "unknown" };
+
+export function productVerdict(
+  report: AttentionReport | null,
+  productIds: readonly string[],
+  changeIds: readonly string[] = [],
+): ProductVerdict {
+  if (!report) return { state: "unknown" };
+  const products = new Set(productIds.filter(Boolean));
+  const changes = new Set(changeIds.filter(Boolean));
+  for (const group of attentionNeedsYouGroups(report)) {
+    if (group.kind !== PRODUCT_RESULT_KIND) continue;
+    const item = (group.items ?? []).find((entry) => products.has(entry.context) || changes.has(entry.id));
+    if (item) return { state: "due", decisionKey: group.key, itemId: item.id };
+  }
+  for (const batch of report.setAside ?? []) {
+    if (batch.kind !== PRODUCT_RESULT_KIND || !batch.itemIds.some((id) => changes.has(id))) continue;
+    if (batch.duplicateOf) return { state: "asked_elsewhere", decisionKey: batch.duplicateOf };
+    // A draft nobody wrote is already said by the results card itself.
+    if (batch.reason !== "placeholder_draft") return { state: "set_aside", reasonText: batch.reasonText, nextStep: batch.nextStep };
+  }
+  return { state: "not_listed" };
 }
 
 export function plural(n: number, one: string, many: string): string {

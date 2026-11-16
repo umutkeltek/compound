@@ -237,3 +237,39 @@ export function evidenceHistoryHref(id: string): string {
   const value = (id ?? "").trim();
   return value ? `/map/lineage/${encodeURIComponent(value)}` : "/map";
 }
+
+/* ---------- Decide's own sections (P9: the waiting list explains itself) ---------- */
+
+/** Where Decide lists what was set aside and why. */
+export const DECIDE_SET_ASIDE_ANCHOR = "set-aside";
+/** Where Decide lists what a standing rule of his already covers. */
+export const DECIDE_COVERED_ANCHOR = "covered-by-rule";
+/** Where Decide lists recorded answers and what came of them. */
+export const DECIDE_ANSWERED_ANCHOR = "answered";
+
+/** Decide with the set-aside reasons open: `/reviews?open=set-aside#set-aside`. */
+export function decideSetAsideHref(): string {
+  return withQuery("/reviews", [["open", DECIDE_SET_ASIDE_ANCHOR]], `#${DECIDE_SET_ASIDE_ANCHOR}`);
+}
+
+/** Decide at what a standing rule of his covers: `/reviews#covered-by-rule`. */
+export function decideCoveredHref(): string {
+  return `/reviews#${DECIDE_COVERED_ANCHOR}`;
+}
+
+/** One item inside a decision: `/reviews?decision=<key>#decision-item-<id>`. */
+export function decideItemHref(decisionKey: string, itemId: string): string {
+  const id = (itemId ?? "").trim();
+  return `${decideHref({ decision: decisionKey })}${id ? `#decision-item-${encodeURIComponent(id)}` : ""}`;
+}
+
+/** Decide's recorded answers with the first `shown` listed: `/reviews?answers=<n>#answered`. */
+export function decideAnsweredHref(shown: number): string {
+  const n = Number.isSafeInteger(shown) && shown > 0 ? String(shown) : "";
+  return withQuery("/reviews", [["answers", n]], `#${DECIDE_ANSWERED_ANCHOR}`);
+}
+
+/** Link to what agents remember (accepted memories) on the Memory page: `/memory#memory-accepted`. */
+export function memoryAcceptedHref(): string {
+  return "/memory#memory-accepted";
+}

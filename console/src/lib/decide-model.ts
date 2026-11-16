@@ -2,10 +2,11 @@ import { arr, num, reviewCommand, str, type Json, type ProjectionStatus } from "
 import { parseActionAuthorityBundle } from "@/lib/action-authority";
 import { ago, toDate } from "@/lib/time";
 import type { AttentionReport } from "@/lib/attention";
-import { decisionKindWords, type DecisionEffectKind, type DecisionOption, type FieldSpec, specFor } from "@/lib/decision-registry";
+import { decisionKindWords, recommendationSaysDone, recommendedOptionWords, type DecisionEffectKind, type DecisionOption, type FieldSpec, specFor } from "@/lib/decision-registry";
 import { humanizeProductId } from "@/lib/app-identity";
 import { appHref, workItemHref } from "@/lib/links";
-import { plainText, plainWorkStep, productTitle } from "@/lib/plain-words";
+import { plainArea as plainAreaWords, plainState, plainText, plainWorkStep, productTitle } from "@/lib/plain-words";
+import { metricLabel } from "@/lib/products";
 import { workTitle } from "@/lib/work-title";
 import { timestampMs } from "@/lib/work-state";
 import { genericActionEffectKind, genericActionProjectionEligible, genericActionRevision, reviewResolutionRevision, OPERATOR_INPUTS } from "@/lib/generic-actions";
@@ -68,6 +69,10 @@ const DOMAIN_BY_AREA: Record<string, DecideDomain> = {
   "autonomy-grant-mint": "work",
   "work-advance": "work",
   "workbench-needs-claim": "work",
+  "memory-proposals": "memory",
+  "product-results-due": "product",
+  "hook-approval-requests": "work",
+  "data-source-setup": "capability",
 };
 
 export function domainForArea(area: string): DecideDomain {
@@ -348,19 +353,35 @@ export type DecisionCard = {
   needsWording: boolean;
   /** each item inside is decided on its own (held work) */
   perItem: boolean;
-  /** what the record does not say, named once ("" when it says everything) */
+  /** what the record does not say, named once, with who has to write it ("" when it says everything) */
   silent: string;
+  /** where he answers it, when another page owns the choice (proposed memories: the Memory page) */
+  answerAt: { label: string; href: string } | null;
+  /** the items the waiting list names one by one, each with the app or thing it is about */
+  listed: DecisionListedItem[];
 };
 
-/** A trailing "Review it?" / "Promote it?" the record asks in tool words: the card asks its own question. */
-const TRAILING_ASK = /\s*(?:—\s*)?(?:Review it|Review the result|Promote it|Tidy it|Approve it|Apply it|Clear it|Remove it)\?\s*$/i;
+/** One item the waiting list names inside a decision. */
+export type DecisionListedItem = { id: string; title: string; about: DecisionAbout | null; createdAt: string };
 
-function aboutOf(area: string, sample: Json, summary: string): DecisionAbout | null {
+const TRAILING_ASK = /\s*(?:—\s*)?(?:Review it|Review the result|Review the edit|Promote it|Tidy it|Approve it|Apply it|Clear it|Remove it)\?\s*$/i;
+
+/** A `product:<id>` as the app it names, linked to its page. */
+function appAbout(productId: string): DecisionAbout {
+  return { label: humanizeProductId(productId), href: appHref(productId), app: true };
+}
+
+function aboutOf(area: string, sample: Json, summary: string, items: readonly Json[] = []): DecisionAbout | null {
   const label = str(sample.context_label).trim();
-  const productId = /^product:[\w.-]+$/.test(label) ? label : /^(product:[\w.-]+)\b/.exec(summary)?.[1] ?? "";
-  if (productId) return { label: humanizeProductId(productId), href: appHref(productId), app: true };
+  const listedApps = [...new Set(items.map((item) => str(item.context)).filter((context) => /^product:[\w.-]+$/.test(context)))];
+  const productId = /^product:[\w.-]+$/.test(label) ? label
+    : /^(product:[\w.-]+)\b/.exec(summary)?.[1] ?? (listedApps.length === 1 ? listedApps[0] : "");
+  if (productId) return appAbout(productId);
   // A rule's context label is the rule itself (the subject), not what it is about.
-  if (!label || area.startsWith("decision-candidates") || /record needs your decision/i.test(label)) return null;
+  const kindAbout = decisionKindWords(area)?.about;
+  if (!label || area.startsWith("decision-candidates") || /record needs your decision/i.test(label)) {
+    return kindAbout ? { label: kindAbout, href: null, app: false } : null;
+  }
   return { label, href: null, app: false };
 }
 
@@ -368,10 +389,46 @@ function listWords(parts: string[]): string {
   return parts.length <= 1 ? parts.join("") : `${parts.slice(0, -1).join(", ")} or ${parts[parts.length - 1]}`;
 }
 
+/** Raw snake_case ids in a title said as words ("fixture_signups moves" → "Signups moves"), the way Results names a metric. */
+function plainIdWords(text: string): string {
+  const out = text.replace(/\b[a-z0-9]+(?:_[a-z0-9]+)+\b/g, (token) => metricLabel(token).toLowerCase());
+  return out.charAt(0).toUpperCase() + out.slice(1);
+}
+
+/** The items a waiting-list group names one by one, each with what it is about. */
+export function listedItems(group: Json): DecisionListedItem[] {
+  return arr(group.items)
+    .filter((item): item is Json => Boolean(item) && typeof item === "object")
+    .map((item) => {
+      const context = str(item.context);
+      return {
+        id: str(item.id),
+        title: plainIdWords(cleanTitle(plainText(str(item.title)))),
+        about: /^product:[\w.-]+$/.test(context) ? appAbout(context) : context ? { label: context, href: null, app: false } : null,
+        createdAt: str(item.createdAt) || str(item.created_at),
+      };
+    });
+}
+
 /**
- * One decision's card from its kind's words (lib/decision-registry.ts, the one
- * owner) and its own record. Nothing is invented: what neither says is named
- * once in `silent`, never filled with boilerplate.
+ * A recommendation in words: the option's own label, else its plain words
+ * from the kind table, never the raw option code; then the reason.
+ */
+export function recommendationWords(brief: Pick<DecideBrief, "options" | "recommendation"> | null): string | null {
+  const rec = brief?.recommendation;
+  if (!rec || (!rec.option && !rec.rationale)) return null;
+  const label = brief?.options.find((option) => option.value === rec.option)?.label || recommendedOptionWords(rec.option);
+  const reason = plainText(rec.rationale);
+  const text = [label, reason].filter(Boolean).join(". ");
+  return text ? text.replace(/\.?\s*$/, ".") : null;
+}
+
+/**
+ * One decision's card from the kind's words (lib/decision-registry.ts, the one
+ * owner) and its own record. Nothing invented: what neither says is named once
+ * in `silent`, with who has to write it. A recommendation that says the thing
+ * is already done replaces the yes and no lines, so the card never claims a
+ * yes would run something that already ran.
  */
 export function decisionCard(args: {
   area: string;
@@ -380,20 +437,28 @@ export function decisionCard(args: {
   objectText: string;
   needsWording: boolean;
   recommendation: string | null;
+  /** the recommended option's code, when the record carries one */
+  recommendedOption?: string;
+  /** the group's items, when the waiting list names them */
+  items?: readonly Json[];
 }): DecisionCard {
   const words = decisionKindWords(args.area);
-  const subject = productTitle(plainText(args.objectText || args.summary), humanizeProductId).text.replace(TRAILING_ASK, "").trim();
+  const subject = cleanTitle(productTitle(plainText(args.objectText || args.summary), humanizeProductId).text.replace(TRAILING_ASK, "").trim());
+  const done = recommendationSaysDone(args.recommendedOption ?? "");
   const card: DecisionCard = {
-    about: aboutOf(args.area, args.sample, args.summary),
+    about: aboutOf(args.area, args.sample, args.summary, args.items),
     question: args.needsWording ? "" : words?.question ?? "",
     subject: /record needs your decision|review record needs/i.test(subject) ? "" : subject,
-    yes: args.needsWording ? null : words?.yes ?? null,
-    no: args.needsWording ? null : words?.no ?? null,
-    undo: args.needsWording ? null : words?.undo ?? null,
+    yes: args.needsWording ? null : done ? "It is closed as done. Nothing else runs: the change is already in place." : words?.yes ?? null,
+    no: args.needsWording ? null : done ? "It stays on your list, though nothing is left to run." : words?.no ?? null,
+    undo: args.needsWording ? null : done ? "Nothing to undo: closing it changes nothing else." : words?.undo ?? null,
     recommendation: args.recommendation,
     needsWording: args.needsWording,
     perItem: Boolean(words?.perItem),
     silent: "",
+    answerAt: words?.answerAt ?? null,
+    // A kind another page owns (proposed memories) is judged there: its items are not listed again here.
+    listed: args.items && !words?.answerAt ? listedItems({ items: args.items }) : [],
   };
   if (!card.needsWording) {
     const missing = [
@@ -403,7 +468,9 @@ export function decisionCard(args: {
       !card.undo ? "whether it can be undone" : "",
       !card.recommendation ? "what is recommended" : "",
     ].filter(Boolean);
-    card.silent = missing.length ? `The record does not say ${listWords(missing)}.` : "";
+    card.silent = missing.length
+      ? `The record does not say ${listWords(missing)}. Only the agent or tool that raised it can write that down.`
+      : "";
   }
   return card;
 }
@@ -424,19 +491,30 @@ export function waitingAge(value: unknown, nowMs: number): string {
   return `${days} day${days === 1 ? "" : "s"}`;
 }
 
-/** The record's own words for what a decision is about, without tool framing or its trailing question. */
+/**
+ * A title as the record wrote it, tidied without eating punctuation: an
+ * ellipsis the tool put before a full stop is one ellipsis ("…." → "…"), and a
+ * raw id the tool cut in half ("…has app_store_conn…") is never shown: the
+ * title is dropped so the row asks the kind's question instead.
+ */
+export function cleanTitle(text: string): string {
+  const tidy = (text || "").replace(/…\s*\.(?!\.)/g, "…").replace(/\.{3}\./g, "…").trim();
+  return /\b[A-Za-z0-9]+(?:[_:][A-Za-z0-9]*)+…/.test(tidy) ? "" : tidy;
+}
+
+/** The record's own words for what a decision is about, without tool framing or the trailing question. */
 function subjectOf(summary: string): string {
-  const text = productTitle(plainText(summary), humanizeProductId).text
+  const text = cleanTitle(productTitle(plainText(summary), humanizeProductId).text
     .replace(/^Decision lifecycle has (?:a )?candidate (?:Ruling:? )?/i, "")
     .replace(TRAILING_ASK, "")
-    .trim();
+    .trim());
   return /record needs your decision|review record needs/i.test(text) ? "" : text;
 }
 
 /**
  * One decision's title, what it is about, its question and how long it has
  * waited: the ONE function Today's rows and Decide's rows use, so the same
- * decision reads the same on both pages. Works on an attention group alone
+ * decision reads the same on both pages. Works on the attention group alone
  * (Today) or with its review sample (Decide), and always times the wait from
  * the attention group's own `oldest_created_at`.
  */
@@ -449,18 +527,26 @@ export type DecisionHeadline = {
   needsWording: boolean;
   /** "4 days"; "" when unknown */
   waiting: string;
+  /** what its items are called, with the count ("13 proposed memories"); "" when the kind does not say */
+  countLabel: string;
+  /** where he answers it, when another page owns the choice (the Memory page for proposed memories) */
+  answerAt: { label: string; href: string } | null;
 };
 
 export function decisionHeadline(group: Json, sample: Json, nowMs: number): DecisionHeadline {
   const area = str(group.area);
   const summary = str(group.operator_summary);
   const needsWording = group.needs_wording === true;
+  const words = decisionKindWords(area);
+  const count = num(group.count);
   return {
-    about: aboutOf(area, sample, summary),
+    about: aboutOf(area, sample, summary, arr(group.items) as Json[]),
     subject: subjectOf(summary),
-    question: needsWording ? "" : decisionKindWords(area)?.question ?? "",
+    question: needsWording ? "" : words?.question ?? "",
     needsWording,
     waiting: waitingAge(group.oldest_created_at || sample.created_at, nowMs),
+    countLabel: words?.unit && count > 0 ? `${count.toLocaleString("en-US")} ${count === 1 ? words.unit[0] : words.unit[1]}` : "",
+    answerAt: words?.answerAt ?? null,
   };
 }
 
@@ -1746,9 +1832,9 @@ export function buildDecideGroups(
         summary: str(group.operator_summary),
         objectText,
         needsWording: group.needs_wording === true,
-        recommendation: brief?.recommendation
-          ? [brief.options.find((option) => option.value === brief.recommendation?.option)?.label || brief.recommendation.option, brief.recommendation.rationale].filter(Boolean).join(": ")
-          : null,
+        recommendation: recommendationWords(brief),
+        recommendedOption: brief?.recommendation?.option ?? "",
+        items: arr(group.items) as Json[],
       }),
     };
   });
@@ -1805,5 +1891,45 @@ export function filedOutcome(item: Json): FiledOutcome {
     when: decidedAt || str(item.created_at),
     whenLabel: decidedAt ? "decided" : "raised",
     by: !actor ? "" : /^operator\b/.test(actor) ? "you" : "an agent",
+  };
+}
+
+/* ---------- recorded answers: what came of each one ---------- */
+
+export type AnsweredRow = {
+  key: string;
+  /** what came of it, in one sentence (the waiting list's own words) */
+  outcome: string;
+  /** what was asked, in the record's words ("" when it was only a template sentence) */
+  subject: string;
+  /** the kind, in plain words */
+  kind: string;
+  /** when it was answered (ISO), "" when unknown */
+  when: string;
+  /** "you", "an agent", or "" when the record does not say */
+  by: string;
+  /** the work it turned into, with that work's state now ("unknown" when it could not be read) */
+  work: { href: string; state: string } | null;
+  stillWaiting: boolean;
+};
+
+/** One recorded answer (`attention --json` `answered[]`) as Decide's Filed row. */
+export function answeredRow(answer: {
+  area: string; itemId: string; question: string; decidedAt: string; decidedBy: string;
+  workId: string; workState: string; stillWaiting: boolean; outcome: string;
+}): AnsweredRow {
+  const by = (answer.decidedBy || "").trim();
+  const state = (answer.workState || "").trim();
+  return {
+    key: `${answer.itemId}|${answer.decidedAt}`,
+    outcome: answer.outcome || "Recorded; the record does not say what came of it.",
+    subject: subjectOf(answer.question),
+    kind: plainAreaWords(answer.area),
+    when: answer.decidedAt,
+    by: !by ? "" : /^operator\b/.test(by) ? "you" : "an agent",
+    work: answer.workId
+      ? { href: workItemHref(answer.workId), state: !state || state === "unknown" ? "unknown" : plainState(state).toLowerCase() }
+      : null,
+    stillWaiting: answer.stillWaiting,
   };
 }

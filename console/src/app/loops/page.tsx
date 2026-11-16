@@ -2,6 +2,7 @@ import { PendingRefresh } from "@/components/PendingRefresh";
 import { ProductLoopCard, loopState } from "@/components/products/ProductLoopCard";
 import { EmptyState, FreshnessChip, LoopIcon, PageHeader, SectionHeader } from "@/components/kit";
 import Link from "next/link";
+import { productVerdict, readAttention, type ProductVerdict } from "@/lib/attention";
 import { readProjection } from "@/lib/compound";
 import { appHref } from "@/lib/links";
 import { foldLoopsByApp, getProductLoopsReport } from "@/lib/products";
@@ -41,10 +42,12 @@ function StatTile({
 }
 
 export default async function LoopsPage() {
-  const [report, growth] = await Promise.all([
+  const [report, growth, { report: attention }] = await Promise.all([
     getProductLoopsReport(),
     // The app catalog folds every spelling of an app into one card; same argv as every growth page, so one cached read.
     readProjection(["product", "growth", "--json"], { timeoutMs: 60_000 }),
+    // Whether a verdict is due is the waiting list's answer (one definition with Today, Decide and the app page).
+    readAttention(),
   ]);
   const { generatedAt, status, checking, error } = report;
   const catalog = growth.value ? catalogFromGrowth(growth.value) : null;
@@ -53,12 +56,20 @@ export default async function LoopsPage() {
 
   const withSignals = loops.filter((l) => l.signalCount > 0).length;
   const totalSignals = loops.reduce((n, l) => n + l.signalCount, 0);
-  const blockedOnYou = loops.filter((l) => loopState(l).blockedOnYou).length;
+  // Each card's verdict by the waiting list: every id of the app (the catalog's
+  // spellings too) and every change on the card. Unknown until the list is read.
+  const verdictOf = new Map<string, ProductVerdict>(loops.map((loop) => {
+    const app = catalog?.find((entry) => entry.productId === loop.productId);
+    const ids = [loop.productId, ...loop.aliases, ...(app?.aliases ?? [])];
+    return [loop.productId, productVerdict(attention, ids, loop.hypotheses.map((h) => h.id))];
+  }));
+  const verdictsKnown = attention !== null;
+  const blockedOnYou = loops.filter((l) => loopState(l, verdictOf.get(l.productId)).blockedOnYou).length;
 
   // Loops blocked on the operator float to the top; the rest keep the
   // signal-volume order the projection returns.
   const ordered = loops
-    .map((loop, index) => ({ loop, index, blocked: loopState(loop).blockedOnYou }))
+    .map((loop, index) => ({ loop, index, blocked: loopState(loop, verdictOf.get(loop.productId)).blockedOnYou }))
     .sort((a, b) => (a.blocked === b.blocked ? a.index - b.index : a.blocked ? -1 : 1))
     .map((entry) => entry.loop);
 
@@ -74,7 +85,7 @@ export default async function LoopsPage() {
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <StatTile label="Apps with a record" value={known ? loops.length : "—"} sub={catalog ? "one card per app" : "app list still loading: alternate ids may show apart"} />
         <StatTile label="With observations" value={known ? withSignals : "—"} sub={known ? `${totalSignals} readings recorded` : "Checking readings"} />
-        <StatTile label="Verdict due" value={known ? blockedOnYou : "—"} sub="a change measured against what it should do" seam />
+        <StatTile label="Verdict due" value={known && verdictsKnown ? blockedOnYou : "—"} sub={verdictsKnown ? "your waiting list asks: did the change work?" : "checking your waiting list"} seam />
         <StatTile label="Nothing measured" value={known ? loops.length - withSignals : "—"} sub="no reading yet" />
       </div>
 
@@ -106,7 +117,7 @@ export default async function LoopsPage() {
           />
           <div className="grid gap-4 lg:grid-cols-2">
             {ordered.map((loop) => (
-              <ProductLoopCard key={loop.productId} loop={loop} />
+              <ProductLoopCard key={loop.productId} loop={loop} verdict={verdictOf.get(loop.productId)} />
             ))}
           </div>
         </section>
@@ -126,7 +137,7 @@ export default async function LoopsPage() {
       ) : null}
 
       {status === "stale" ? <p className="text-xs text-seam">Showing the last successful read{checking ? "; checking for updates" : ""}. {error ? "The latest refresh failed." : ""}</p> : null}
-      <details className="text-xs text-muted"><summary className="cursor-pointer">Where these numbers come from</summary><p className="mt-2">One card per app; other ids of the same app are folded in. Readings are recorded observations, not proof that a change helped. Drafts made from a data snapshot with no expected effect written are not counted as a verdict due.</p><code className="mono mt-2 block">compound product loops --json</code></details>
+      <details className="text-xs text-muted"><summary className="cursor-pointer">Where these numbers come from</summary><p className="mt-2">One card per app; other ids of the same app are folded in. Readings are recorded observations, not proof that a change helped. A verdict is due only when your waiting list asks for it, the same list Today and Decide show; drafts with no expected effect written never are.</p><code className="mono mt-2 block">compound product loops --json</code></details>
     </div>
   );
 }

@@ -310,10 +310,11 @@ console.log("app page cases ok: ads colours follow meaning, quiet campaigns say 
   assert.ok(draftWords.includes("Developer proceeds in US dollars") && draftWords.includes("Mar 1, 2030"), "readings in words, with their date");
   assert.equal(metricLabel("app_store_connect_units"), "Units");
 
-  const realCard = renderToStaticMarkup(createElement(ProductLoopCard, { loop: loops[1] }));
+  // A verdict is due only when the waiting list asks for it (lib/attention.ts productVerdict).
+  const realCard = renderToStaticMarkup(createElement(ProductLoopCard, { loop: loops[1], verdict: { state: "due", decisionKey: "product:product-results-due", itemId: "hyp_r" } }));
   const realWords = text(realCard);
   assert.ok(realWords.includes("A shorter subtitle lifts page views") && realWords.includes("Expected: Product page views rise 10%") && realWords.includes("Watched 2030-02-01 to 2030-02-28"), realWords);
-  assert.ok(realCard.includes('href="/reviews?decision=product-reviews%7Cproduct%3Atide-chart"'), "the verdict link opens that exact decision");
+  assert.ok(realCard.includes('href="/reviews?decision=product%3Aproduct-results-due#decision-item-hyp_r"'), "the verdict link opens that exact item");
   assert.ok(/<details[^>]*>.*For agents.*compound product doctor/s.test(realCard), "the command sits behind a disclosure for agents");
 }
 

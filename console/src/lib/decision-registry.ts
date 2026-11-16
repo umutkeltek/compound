@@ -1,5 +1,7 @@
 import { arr, type Json, str } from "@/lib/compound";
+import { memoryReviewHref } from "@/lib/links";
 import { MOVE_TYPES } from "@/lib/move-types";
+import { memoryChoice } from "@/lib/plain-words";
 import { shortText, targetLabel, uniqueBoundaries } from "@/lib/plain-language";
 import { WORK_ID_PATTERN } from "@/lib/work-id";
 import { selectedContinueRevision, selectedContinueView } from "@/lib/work-selected-continue";
@@ -781,27 +783,27 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
       const defs: DecisionOption[] = [
         {
           value: "park",
-          label: "Park",
+          label: memoryChoice("park", "memory").label,
           tone: "orange",
-          description: "Keep as evidence for later. It will not enter ambient recall.",
+          description: memoryChoice("park", "memory").means,
         },
         {
           value: "no_promote",
-          label: "Do not promote",
+          label: memoryChoice("no_promote", "memory").label,
           tone: "gray",
-          description: "Keep the candidate, but block promotion from this source.",
+          description: memoryChoice("no_promote", "memory").means,
         },
         {
           value: "reject",
-          label: "Reject",
+          label: memoryChoice("reject", "memory").label,
           tone: "red",
-          description: "Mark the claim wrong or noisy so it is not reused.",
+          description: memoryChoice("reject", "memory").means,
         },
         {
           value: "promote",
-          label: "Promote",
+          label: memoryChoice("promote", "memory").label,
           tone: "green",
-          description: "Accept as durable memory. Pick the evidence basis below.",
+          description: `${memoryChoice("promote", "memory").means} Pick why you accept it below.`,
         },
       ];
       return defs.map((o) => ({
@@ -832,8 +834,8 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
         chips,
         consequences: {
           approve:
-            "promote → agents can recall this as durable memory (needs the reason you pick); park/reject → it never enters recall on its own",
-          hold: "it stays an untrusted candidate — visible here, invisible to agents",
+            `${memoryChoice("promote", "memory").label}: ${memoryChoice("promote", "memory").means} ${memoryChoice("park", "memory").label} or ${memoryChoice("reject", "memory").label.toLowerCase()}: agents are never told it.`,
+          hold: "It stays a proposal: you can see it here, agents are not told it.",
         },
       };
     },
@@ -842,7 +844,7 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
       {
         name: "basis",
         type: "select",
-        label: "Promotion reason",
+        label: "Why you accept it",
         required: true,
         defaultValue: "explicit_confirmation",
         options: [
@@ -917,8 +919,8 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
         chips,
         consequences: {
           approve:
-            "it becomes ambient standing law — orient cites it to every agent, so it is never re-litigated",
-          hold: "it stays parked here, waiting — invisible to agents until you rule",
+            `${memoryChoice("promote", "rule").label}: ${memoryChoice("promote", "rule").means}`,
+          hold: "It stays on file here; agents are not told it until you choose.",
         },
       };
     },
@@ -1209,10 +1211,13 @@ const JOB_HEALTH_DECISIONS: { value: string; label: string; tone: Accent; descri
  * spells a system verb (dual-encode: plain up front, grammar in the disclosure
  * argv). Consequence copy lives in `description`, matching the operator brief. */
 const STANDING_LAW_CHOICES: { value: string; label: string; tone: Accent; description: string }[] = [
-  { value: "promote", label: "Make it law", tone: "green", description: "It becomes ambient — cited to every agent at orient, so nobody re-litigates it." },
-  { value: "park", label: "Keep aside", tone: "orange", description: "Kept as evidence, not yet ambient; it resurfaces on its own when new evidence arrives." },
-  { value: "reject", label: "Discard", tone: "red", description: "Noise — dropped so it is never recalled, mined, or re-asked." },
-  { value: "no_promote", label: "Decline — stop asking", tone: "gray", description: "Records the decline so re-mining this source stops re-asking you about it." },
+  ...(["promote", "park", "reject", "no_promote"] as const).map((value) => ({
+    value,
+    // One wording owner (lib/plain-words.ts memoryChoice): Decide and Memory say the same thing.
+    label: memoryChoice(value, "rule").label,
+    tone: ({ promote: "green", park: "orange", reject: "red", no_promote: "gray" } as const)[value],
+    description: memoryChoice(value, "rule").means,
+  })),
 ];
 
 const PROVENANCE_MONTHS = [
@@ -1341,7 +1346,17 @@ export type DecisionKindWords = {
   undo: string | null;
   /** each item inside is decided on its own (held work) */
   perItem?: boolean;
+  /** the part of his setup it is about, when the record names no app */
+  about?: string;
+  /** what one item is called ("proposed memory"), so a count says what it counts */
+  unit?: readonly [one: string, many: string];
+  /** where he answers it, when another page already owns the choice */
+  answerAt?: { label: string; href: string };
 };
+
+const MEMORY_YES = memoryChoice("promote", "memory");
+const MEMORY_PARK = memoryChoice("park", "memory");
+const MEMORY_REJECT = memoryChoice("reject", "memory");
 
 const KIND_WORDS: Record<string, DecisionKindWords> = {
   "workbench-blocked-on-you": {
@@ -1350,17 +1365,20 @@ const KIND_WORDS: Record<string, DecisionKindWords> = {
     no: "It is closed as cancelled. Nothing is deleted; its record stays.",
     undo: "A yes can be undone by holding it again. A no cannot: a cancelled item stays closed.",
     perItem: true,
+    unit: ["held work item", "held work items"],
   },
   "decision-candidates": {
     question: "Make this a standing rule for agents?",
     yes: "Today a yes only starts an independent review of the rule. No step turns it into a rule yet.",
-    no: null,
+    // Derived: a no on a proposed rule keeps things as they are.
+    no: "Nothing changes: agents keep working as they do now, and the rule is not made.",
     undo: null,
+    about: "Every agent (a rule all of them follow)",
   },
   "product-hypotheses": {
     question: "Approve this idea so agents can test it?",
     yes: "The idea is recorded as approved, so agents can build the change that tests it.",
-    no: "There is no way to record a no yet; the idea keeps waiting.",
+    no: "The idea is not approved, so no agent builds or tests the change. It stays on your list until an agent records your no.",
     undo: null,
   },
   "product-reviews": {
@@ -1369,22 +1387,56 @@ const KIND_WORDS: Record<string, DecisionKindWords> = {
     no: "The result is recorded as did not work, and the idea counts as refuted.",
     undo: null,
   },
+  "product-results-due": {
+    question: "Did this change work?",
+    yes: "The result is recorded as worked, and the idea it tested counts as supported.",
+    no: "The result is recorded as did not work, and the idea counts as refuted. You can also say it is unclear.",
+    undo: null,
+    unit: ["change to judge", "changes to judge"],
+  },
+  "memory-proposals": {
+    question: "Should agents be told what these proposed memories say?",
+    yes: `${MEMORY_YES.label}: ${MEMORY_YES.means}`,
+    no: `${MEMORY_PARK.label}: ${MEMORY_PARK.means} Or ${MEMORY_REJECT.label.toLowerCase()}: ${MEMORY_REJECT.means}`,
+    undo: null,
+    about: "What agents know",
+    unit: ["proposed memory", "proposed memories"],
+    answerAt: { label: "Judge them on the Memory page", href: memoryReviewHref() },
+  },
+  "hook-approval-requests": {
+    question: "Let the agent go ahead with this held action?",
+    yes: "The agent runs the action while its approval window is open.",
+    no: "The agent does not run it; it waits or takes another way.",
+    undo: null,
+    about: "An agent's action, held for you",
+    unit: ["held action", "held actions"],
+  },
+  "data-source-setup": {
+    question: "Give this data source the private setup it needs?",
+    yes: "Once you add the account or key it names, the source reports again. Agents cannot add private setup for you.",
+    no: "The source stays out of date, and its numbers stop changing.",
+    undo: null,
+    about: "Your data sources",
+    unit: ["data source", "data sources"],
+  },
   "route-promotions": {
     question: "Let agents use this model first for this kind of task?",
     yes: "Agents try this model first for this kind of task. A yes needs a permission that is not installed yet, so it cannot run today.",
     no: "Nothing changes: the current first choice stays, and your no is recorded.",
     undo: "Yes: the first choice can be switched back.",
+    about: "Which model agents try first",
   },
   "harness-edit-proposals": {
     question: "Let agents make these changes to their own setup?",
     yes: "Each change you allow is approved; an agent still has to make it.",
     no: "The change is turned down and not made.",
     undo: "Yes: nothing changes until an agent makes it.",
+    about: "How agents find their tools",
   },
   "product-content-queue": {
     question: "Approve these drafts for posting?",
     yes: "The drafts go into the posting queue.",
-    no: "There is no way to withdraw a draft yet.",
+    no: "The drafts are not posted. They stay on your list until an agent records your no.",
     undo: null,
   },
   "worktree-retirement": {
@@ -1392,6 +1444,7 @@ const KIND_WORDS: Record<string, DecisionKindWords> = {
     yes: "The copy and its branch are removed.",
     no: "They stay as they are.",
     undo: "No.",
+    about: "Copies of code on this machine",
   },
   "git-index-lock": {
     question: "Clear the stale lock file in this repository?",
@@ -1402,16 +1455,43 @@ const KIND_WORDS: Record<string, DecisionKindWords> = {
   "launchd-repair": {
     question: "Apply the repair plan to this background job?",
     yes: "The job is changed as the plan says.",
-    no: null,
+    no: "Nothing changes: the background job stays as it is.",
     undo: null,
+    about: "A background job on this machine",
   },
   "source-control-cleanup": {
     question: "Tidy the uncommitted files in this repository?",
     yes: null,
-    no: null,
+    no: "Nothing changes: the files stay as they are.",
     undo: null,
   },
 };
+
+/**
+ * A recommendation names one of the record's own options. Codes that are not
+ * a plain yes or no are said in words here, never shown as the code; an
+ * unknown code is left out and only the reason is shown.
+ */
+const RECOMMENDED_OPTION_WORDS: Record<string, string> = {
+  resolve_reviewed: "Close it: the record says this is already done, so nothing is left to run",
+  approve: "Say yes",
+  promote: "Say yes",
+  accept: "Say yes",
+  reject: "Say no",
+  dismiss: "Say no",
+  park: "Not now",
+  defer: "Not now",
+};
+
+/** A recommended option in words ("" for a code with no plain words). */
+export function recommendedOptionWords(option: string): string {
+  return RECOMMENDED_OPTION_WORDS[(option || "").trim().toLowerCase()] ?? "";
+}
+
+/** Recommended options that mean the thing is already done: a yes or no would change nothing. */
+export function recommendationSaysDone(option: string): boolean {
+  return (option || "").trim().toLowerCase() === "resolve_reviewed";
+}
 
 /** The question and its consequences for one kind (area id or area path); null for a kind with no entry. */
 export function decisionKindWords(area: string): DecisionKindWords | null {

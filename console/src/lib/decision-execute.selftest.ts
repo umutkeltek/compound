@@ -1200,7 +1200,7 @@ export async function runDecisionExecuteSelfTest(): Promise<{ ok: boolean; detai
         law?.idPattern.test("cand_lawfixture01") === true &&
         law?.idPattern.test("cand_") === false &&
         values === ["no_promote", "park", "promote", "reject"].join(",") &&
-        labels === ["Make it law", "Keep aside", "Discard", "Decline — stop asking"].join("|") &&
+        labels === ["Make it a rule", "Not now", "Discard", "Stop asking"].join("|") &&
         labelLeaksVerb === false &&
         promoteArgv?.join(" ") === wantPromote.join(" ") &&
         noPromoteArgv?.join(" ") === ["memory", "adjudicate", "cand_lawfixture01", "--verdict", "no_promote"].join(" ") &&

@@ -7,12 +7,15 @@ import { AppNeedsYou } from "@/components/growth/AppNeedsYou";
 import { AppResults } from "@/components/products/AppResults";
 import { AppWhere } from "@/components/growth/AppWhere";
 import { appWhereModel } from "@/components/growth/app-where";
-import { decideHref } from "@/lib/links";
-import { foldLoopsByApp, getProductLoopsReport, productResultsDecision, verdictDue } from "@/lib/products";
+import { productVerdict, readAttention } from "@/lib/attention";
+import { decisionHeadline } from "@/lib/decide-model";
+import { decideHref, decideItemHref } from "@/lib/links";
+import { plainArea } from "@/lib/plain-words";
+import { foldLoopsByApp, getProductLoopsReport } from "@/lib/products";
 import { GroupAudit, NextMoves, ProfileRow, makeLookup, nextStepsSentence } from "@/components/growth/AppGrowth";
 import { AppGlyph, DegradedGrowth, FocusChip, StatusLegend, coverageCounts } from "@/components/growth/GrowthKit";
 import { OpenOnHash } from "@/components/growth/OpenOnHash";
-import { arr, HEAVY_PROJECTION_TIMEOUT_MS, readProjection, readWorkProjectIndex, WORK_PROJECT_INDEX_READS } from "@/lib/compound";
+import { arr, HEAVY_PROJECTION_TIMEOUT_MS, readProjection, readWorkProjectIndex, WORK_PROJECT_INDEX_READS, type Json } from "@/lib/compound";
 import { AppWork } from "@/components/growth/AppWork";
 import { appWorkModel } from "@/components/growth/app-work";
 import { findApp, getGrowth, valueLabel } from "@/lib/growth";
@@ -48,21 +51,29 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
 
   // The app's work: non-blocking reads that share the Work page's cache entries.
   const nowMs = Date.now();
-  const [projectIndex, workbench, results, graph] = await Promise.all([
+  const [projectIndex, workbench, results, graph, { report: attention }] = await Promise.all([
     readWorkProjectIndex({ nowMs }),
     readProjection([...WORK_PROJECT_INDEX_READS.work.args], { timeoutMs: WORK_PROJECT_INDEX_READS.work.timeoutMs }),
     getProductLoopsReport(),
     readProjection(["system", "graph", "--kind", "product", "--json"], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }),
+    readAttention(),
   ]);
   // The graph spells some apps differently: look the app up by its id, every alias and its group id when sent.
   const where = appWhereModel(graph.value, [app.productId, ...app.aliases, app.groupId].filter(Boolean), nowMs);
   // One results card per app: every spelling folds into the catalog's app.
   const loop = foldLoopsByApp(results.loops, model.apps).loops.find((row) => row.productId === app.productId) ?? null;
   const resultsKnown = results.status === "live" || results.status === "stale";
+  // A verdict is due only when the waiting list asks for it: the one
+  // definition Today, Decide and the Results card share. Null while unread.
+  const verdict = productVerdict(attention, [app.productId, ...app.aliases, app.groupId].filter(Boolean), loop?.hypotheses.map((h) => h.id) ?? []);
+  const elsewhere = verdict.state === "asked_elsewhere" ? attention?.groups.find((group) => group.key === verdict.decisionKey) ?? null : null;
+  const elsewhereWords = elsewhere ? decisionHeadline(elsewhere as unknown as Json, {}, nowMs) : null;
   const verdicts =
-    loop && verdictDue(loop)
-      ? [{ text: loop.hypotheses.find((h) => !h.placeholder)?.statement || `Did the last change to ${app.name} help?`, href: decideHref({ decision: productResultsDecision(app.productId) }) }]
-      : [];
+    verdict.state === "unknown" ? null
+      : verdict.state === "due" ? [{ lead: "Verdict due", text: `Did the last change to ${app.name} work? A result is ready.`, href: decideItemHref(verdict.decisionKey, verdict.itemId) }]
+      : verdict.state === "asked_elsewhere" && elsewhere
+        ? [{ lead: plainArea(elsewhere.area), text: elsewhereWords?.question || elsewhereWords?.subject || `A decision about ${app.name}`, href: decideHref({ decision: verdict.decisionKey }) }]
+        : [];
   const work = appWorkModel(arr(workbench.value?.open), projectIndex.index, app.productId, nowMs);
   const labels = { work: "open work", apps: "your app list", inventory: "where each app's code lives" } as const;
   const keys = Object.keys(labels) as Array<keyof typeof labels>;
@@ -116,7 +127,7 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
         <NextMoves app={app} look={look} />
       </section>
 
-      <AppResults name={app.name} loop={loop} known={resultsKnown} />
+      <AppResults name={app.name} loop={loop} known={resultsKnown} verdict={verdict} />
 
       <AppAds app={app} />
 

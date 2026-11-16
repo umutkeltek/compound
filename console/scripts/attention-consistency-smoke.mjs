@@ -25,6 +25,7 @@ const [
   { decisionSelectionHref, initialDecideIndex, initialDecideKey },
   { enrichAttentionGroups },
   { buildDecideGroups },
+  { decisionKindWords },
 ] = await Promise.all([
   import("../src/app/reviews/page.tsx"),
   import("../src/lib/attention.ts"),
@@ -32,6 +33,7 @@ const [
   import("../src/components/decide/DecideQueue.tsx"),
   import("../src/lib/review-data.ts"),
   import("../src/lib/decide-model.ts"),
+  import("../src/lib/decision-registry.ts"),
 ]);
 
 /*
@@ -188,18 +190,20 @@ const collectHrefs = (node) => {
     return;
   }
   if (!node || typeof node !== "object") return;
-  // A row may also link the app it is about; the decision links go to Decide.
-  if (typeof node.props?.href === "string" && node.props.href.startsWith("/reviews")) briefingHrefs.push(node.props.href);
+  // A row may also link the app it is about; the decision links go to Decide,
+  // or to the page that owns the choice (proposed memories: the Memory page).
+  if (typeof node.props?.href === "string" && /^\/(reviews|memory)\b/.test(node.props.href)) briefingHrefs.push(node.props.href);
   collectHrefs(node.props?.children);
 };
 collectHrefs(briefing);
 assert.deepEqual(
   briefingHrefs,
   [
-    ...todayGroups.slice(0, 5).map((group) => `/reviews?decision=${encodeURIComponent(str(group.key))}`),
-    ...(todayGroups.length > 5 ? ["/reviews"] : []),
+    ...todayGroups.slice(0, 5).map((group) => decisionKindWords(str(group.area))?.answerAt?.href ?? `/reviews?decision=${encodeURIComponent(str(group.key))}`),
+    // "N more" opens the first decision Today does not show, never plain Decide (which reopens row 1).
+    ...(todayGroups.length > 5 ? [`/reviews?decision=${encodeURIComponent(str(todayGroups[5].key))}`] : []),
   ],
-  "every Today decision row must deep-link its exact Attention key, in Attention's order",
+  "every Today decision row must deep-link its exact Attention key (or the page that owns its choice), in Attention's order",
 );
 
 const heroKey = "decision-candidates|fixture hero identity";

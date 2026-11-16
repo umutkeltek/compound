@@ -33,7 +33,7 @@ import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { depthShows, requestDepth } from "@/lib/depth";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { moveTypeGroup, summarizeMoveTypeMix } from "@/lib/move-mix";
-import { agentNameFor } from "@/lib/plain-words";
+import { agentNameFor, plainArea } from "@/lib/plain-words";
 import { latestProofBackedChange } from "@/representation";
 
 export const dynamic = "force-dynamic";
@@ -109,6 +109,10 @@ export default async function Briefing() {
   // The one-click act belongs to the first row; offered only when it is the top group.
   const act = first && top && first.key === top.key ? headlineAct(top, feed(attentionRead).status) : null;
   const oldest = oldestCreatedAt(needsYouGroups);
+  // The decisions an agent must word first, each linked to its card on Decide.
+  const wordingLinks = allYours
+    .filter((group) => attentionShare(group) === "wording")
+    .map((group) => ({ key: group.key, label: plainArea(group.area) }));
 
   // Agents and in-progress work: one definition each (lib/counts.ts). Unknown is null, never 0.
   const executors = hasCopy(executorsRead) ? normalizeExecutorProjection(executorsRead.value) : null;
@@ -168,7 +172,7 @@ export default async function Briefing() {
         {waiting && waiting.groups > 0 ? (
           <NeedsYouList groups={needsYouGroups} total={waiting.groups} act={act} mutationsEnabled={mutationsEnabled} />
         ) : null}
-        {waiting ? <WaitingNotes waiting={waiting} totals={attention?.totals ?? null} detail={false} /> : null}
+        {waiting ? <WaitingNotes waiting={waiting} totals={attention?.totals ?? null} detail={false} wordingLinks={wordingLinks} /> : null}
         {nothingWaits ? (
           <AgentsNow agents={agents} agentsRead={executorsRead} inProgress={inProgress} workRead={workbenchRead} prominent />
         ) : null}
