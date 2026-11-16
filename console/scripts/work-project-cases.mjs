@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 const modulePath = process.env.WORK_PROJECT_MODULE || "../src/lib/work-project.ts";
 const {
   resolveProject, resolveProjects, buildWorkProjectIndex, compareProjects, catalogFromGrowth, inventoryFromJson,
-  NOT_LINKED_PROJECT_ID,
+  appGroupsFromWhere, foldAppGroups, NOT_LINKED_PROJECT_ID,
 } = await import(modulePath);
 
 const HOME = "/home/fixture-user";
@@ -159,6 +159,47 @@ test("a name two apps both claim places nothing", () => {
   ] });
   assert.equal(resolveProject({ canonical_surface: "product:shared-fixture" }, twins, []).kind, "none");
   assert.equal(resolveProject({ canonical_surface: "product:alpha-fixture" }, twins, []).id, "product:alpha-fixture");
+});
+
+test("rule 0: the record's own scope.product_id wins over surface and folder", () => {
+  const work = {
+    scope: { product_id: "product:Fixture_Helper" },
+    canonical_surface: "product:pocketlog",
+    target_worktree_root: `${CODE}/products/tan-studio/app-swift`,
+  };
+  assert.deepEqual(place(work), { id: "product:fixture-helper", name: "Fixture Helper", kind: "app", via: "scope" });
+  assert.equal(place({ ...work, scope: {} }).id, "product:pocketlog", "an empty scope, as on today's records, falls through to the other rules");
+});
+
+test("rule 0: a recorded product the catalog does not list is its own group, never a guess from folders", () => {
+  const work = { scope: { product_id: "product:side-tool" }, target_worktree_root: `${CODE}/products/fixture-helper` };
+  assert.deepEqual(place(work), { id: "unlisted:sidetool", name: "side-tool", kind: "unlisted", via: "scope-unlisted" });
+  assert.equal(place({ scope: { product_id: "product:side_tool" } }).id, "unlisted:sidetool", "its spellings still fold together");
+  assert.equal(place({ scope: { product_id: "product:tan-studio" } }).kind, "unlisted", "a code folder's name is not a catalog id or alias");
+  const index = buildWorkProjectIndex([{ work_id: "work_sc_1", state: "ready", ...work }], catalog, inventory, NOW);
+  assert.deepEqual(index.projects.map((p) => [p.id, p.kind, p.open]), [["unlisted:sidetool", "unlisted", 1]]);
+});
+
+test("the identity owner's app groups: member spellings and folders join the catalog app, whose id stays", () => {
+  const where = [
+    { product_id: "product:fixture_helper", members: ["product:fixture_helper", "product:fixture-helper", "product:fxhelper"],
+      surfaces: ["${HOME}/Code/products/helper-ios", "https://fixture-helper.example", "appstore:1234567", "file://${HOME}/Code/products/helper-web/README.md", "make verify"] },
+    { product_id: "product:unknown-app", members: ["product:unknown-app"], surfaces: ["~/Code/products/unknown-app"] },
+    { product_id: "product:both", members: ["product:pocketlog", "product:honest-fixture"], surfaces: ["~/Code/products/contested"] },
+  ];
+  const groups = appGroupsFromWhere(where);
+  assert.equal(appGroupsFromWhere({ apps: [] }), null, "a payload that is not a list is unknown, not empty");
+  const folded = foldAppGroups(catalog, inventory, groups);
+  assert.deepEqual(folded.catalog.map((app) => app.productId), catalog.map((app) => app.productId), "the catalog's ids stay; no app is added");
+  const helper = (work) => resolveProject(work, folded.catalog, folded.inventory);
+  assert.deepEqual(helper({ canonical_surface: "product:fxhelper" }), { id: "product:fixture-helper", name: "Fixture Helper", kind: "app", via: "product-id" });
+  assert.equal(place({ canonical_surface: "product:fxhelper" }).kind, "none", "without the groups that spelling is unknown");
+  assert.deepEqual(helper({ target_worktree_root: `${CODE}/products/helper-ios/feature` }), { id: "product:fixture-helper", name: "Fixture Helper", kind: "app", via: "code-folder" });
+  assert.equal(place({ target_worktree_root: `${CODE}/products/helper-ios/feature` }).kind, "codebase", "without the groups that folder is a codebase");
+  assert.equal(helper({ canonical_surface: `${CODE}/products/helper-web/README.md` }).id, "product:fixture-helper", "a file surface counts as a folder");
+  assert.equal(helper({ target_worktree_root: `${CODE}/products/unknown-app` }).kind, "codebase", "a group no catalog app matches adds nothing");
+  assert.equal(helper({ target_worktree_root: `${CODE}/products/contested` }).kind, "codebase", "a group that matches two apps adds nothing");
+  assert.equal(helper({ scope: { product_id: "product:fxhelper" } }).via, "scope", "a recorded spelling the identity owner lists folds into the app");
 });
 
 test("index: one group per app or codebase plus not linked, counts that add up", () => {

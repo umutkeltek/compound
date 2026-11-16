@@ -10,9 +10,19 @@
  *  - an app from the catalog (`kind: "app"`, id = the catalog `product:` id);
  *  - a codebase: a folder directly under a projects group folder that is not
  *    an app (`kind: "codebase"`, id `codebase:<name>`);
+ *  - a product the record itself names that the catalog does not list
+ *    (`kind: "unlisted"`, id `unlisted:<name>`);
  *  - not linked (`kind: "none"`), when nothing on the record names either.
  *
+ * The product-identity owner's app groups (`compound product where --all
+ * --json`) can be folded in first (`foldAppGroups`): their id spellings join
+ * the catalog aliases and their folders join the code folders.
+ *
  * Rules, first match wins (`via` says which one placed the item):
+ *  0. `scope`: the record's own `scope.product_id`, folded through the
+ *     catalog ids and aliases. When it names no catalog app the record is
+ *     its own `unlisted` group (`scope-unlisted`): a recorded product is never
+ *     overruled by a guess from folders.
  *  1. `product-id`: a `product:<x>` surface whose id, compared lowercase
  *     without `-`/`_` and cut at a second `:`, is a catalog app's id or alias.
  *  2. `code-folder`: the worktree folder (`target_worktree_root`) or a folder
@@ -45,9 +55,16 @@ export type ProjectCatalogApp = { readonly productId: string; readonly name: str
 /** A product from the inventory with the folders its code lives in (`code_in` evidence). */
 export type ProjectInventoryProduct = { readonly id: string; readonly codeIn: readonly string[] };
 
-export type WorkProjectKind = "app" | "codebase" | "none";
+/**
+ * `app`: a catalog app. `codebase`: a folder under a projects group folder
+ * that is not an app. `unlisted`: a product the record itself names (its
+ * `scope.product_id`) that the catalog does not list. `none`: not linked.
+ */
+export type WorkProjectKind = "app" | "codebase" | "unlisted" | "none";
 
 export type WorkProjectVia =
+  | "scope"
+  | "scope-unlisted"
   | "product-id"
   | "code-folder"
   | "folder-name"
@@ -58,9 +75,9 @@ export type WorkProjectVia =
   | "none";
 
 export type WorkProject = {
-  /** a catalog `product:` id, `codebase:<name>`, or NOT_LINKED_PROJECT_ID */
+  /** a catalog `product:` id, `codebase:<name>`, `unlisted:<name>`, or NOT_LINKED_PROJECT_ID */
   id: string;
-  /** the catalog app's name, the codebase folder's name, or NOT_LINKED_PROJECT_NAME */
+  /** the catalog app's name, the codebase folder's name, the recorded product id, or NOT_LINKED_PROJECT_NAME */
   name: string;
   kind: WorkProjectKind;
   /** the rule that placed the item */
@@ -104,7 +121,9 @@ function folders(path: string): { names: string[]; lower: string[] } {
 }
 
 type Prepared = {
-  /** normalized id, alias, name or code-folder name → app; null when two apps claim it */
+  /** normalized catalog id, alias or name → app; null when two apps claim it */
+  catalogKeys: Map<string, ProjectCatalogApp | null>;
+  /** the catalog keys plus each app's code-folder names */
   apps: Map<string, ProjectCatalogApp | null>;
   /** inventory code folders (lowercase segments) of catalog apps */
   codeFolders: { segments: string[]; app: ProjectCatalogApp }[];
@@ -121,7 +140,7 @@ function prepare(catalog: readonly ProjectCatalogApp[], inventory: readonly Proj
   const cached = byInventory?.get(inventory);
   if (cached) return cached;
 
-  const apps = new Map<string, ProjectCatalogApp | null>();
+  const catalogKeys = new Map<string, ProjectCatalogApp | null>();
   const claim = (map: Map<string, ProjectCatalogApp | null>, key: string, app: ProjectCatalogApp) => {
     if (!key) return;
     const have = map.get(key);
@@ -129,10 +148,11 @@ function prepare(catalog: readonly ProjectCatalogApp[], inventory: readonly Proj
     else if (have !== null && have !== app) map.set(key, null);
   };
   for (const app of catalog) {
-    claim(apps, idKey(app.productId), app);
-    claim(apps, idKey(app.name), app);
-    for (const alias of app.aliases ?? []) claim(apps, idKey(alias), app);
+    claim(catalogKeys, idKey(app.productId), app);
+    claim(catalogKeys, idKey(app.name), app);
+    for (const alias of app.aliases ?? []) claim(catalogKeys, idKey(alias), app);
   }
+  const apps = new Map(catalogKeys);
 
   const groups = new Set<string>();
   for (const product of inventory) {
@@ -168,7 +188,7 @@ function prepare(catalog: readonly ProjectCatalogApp[], inventory: readonly Proj
   // A code folder's own name (`<group>/<name>`) also names its app, unless a catalog key already does.
   for (const [key, app] of folderNames) if (app && !apps.has(key)) apps.set(key, app);
 
-  const prepared: Prepared = { apps, codeFolders, rootTails, groups };
+  const prepared: Prepared = { catalogKeys, apps, codeFolders, rootTails, groups };
   const next = byInventory ?? new WeakMap<object, Prepared>();
   next.set(inventory, prepared);
   if (!byInventory) preparedCache.set(catalog, next);
@@ -251,8 +271,16 @@ function codebaseProject(name: string, via: WorkProjectVia): WorkProject {
   return { id: `codebase:${idKey(name)}`, name, kind: "codebase", via };
 }
 
-/** Rules 1-4 for one record. */
+/** Rules 0-4 for one record. */
 function resolveOne(work: Row, prepared: Prepared): WorkProject {
+  const recorded = str(record(work.scope).product_id);
+  const recordedKey = idKey(recorded);
+  if (recordedKey) {
+    const app = prepared.catalogKeys.get(recordedKey);
+    if (app) return appProject(app, "scope");
+    const name = recorded.replace(/^product:/i, "").trim();
+    return { id: `unlisted:${recordedKey}`, name, kind: "unlisted", via: "scope-unlisted" };
+  }
   const surface = str(work.canonical_surface);
   if (surface.toLowerCase().startsWith("product:")) {
     const app = prepared.apps.get(idKey(surface));
@@ -390,6 +418,77 @@ export function inventoryFromJson(inventory: unknown): ProjectInventoryProduct[]
       return { id: str(resource.id), codeIn };
     })
     .filter((product) => product.id);
+}
+
+/**
+ * One app as the product-identity owner groups it (`compound product where
+ * --all --json`): its id, every id spelling that folds into it (`members`),
+ * and what it claims (`surfaces`: folders, web addresses, store ids).
+ */
+export type ProjectAppGroup = { readonly productId: string; readonly members: readonly string[]; readonly surfaces: readonly string[] };
+
+/** The app groups from `compound product where --all --json` (a list); null when the payload is not a list. */
+export function appGroupsFromWhere(where: unknown): ProjectAppGroup[] | null {
+  if (!Array.isArray(where)) return null;
+  return where
+    .map((raw) => {
+      const group = record(raw);
+      return {
+        productId: str(group.product_id),
+        members: list(group.members).map(str).filter(Boolean),
+        surfaces: list(group.surfaces).map(str).filter(Boolean),
+      };
+    })
+    .filter((group) => group.productId);
+}
+
+/**
+ * A surface that is a folder or a file, as a path: `/abs/path`, `~/path`,
+ * `${HOME}/path` (written as `~/path`), `file://<path>`, `file-exists:<path>`.
+ * Web addresses, store ids, remotes and commands are not folders: "".
+ */
+function surfaceFolder(surface: string): string {
+  const path = surface.trim().replace(/^file-exists:/, "").replace(/^file:\/\//, "").replace(/^\$\{HOME\}(?=\/)/, "~");
+  return isAnchored(path) ? path : "";
+}
+
+/**
+ * Fold the identity owner's app groups into the catalog and inventory: every
+ * `members` spelling becomes an alias of the catalog app it folds into, and
+ * every folder in `surfaces` becomes one of that app's code folders. The
+ * catalog's id stays the app's id (app page addresses use it; the two sources
+ * pick different primary spellings for some apps). A group no catalog app
+ * matches is left out: the catalog is the list of apps.
+ */
+export function foldAppGroups(
+  catalog: readonly ProjectCatalogApp[],
+  inventory: readonly ProjectInventoryProduct[],
+  groups: readonly ProjectAppGroup[],
+): { catalog: ProjectCatalogApp[]; inventory: ProjectInventoryProduct[] } {
+  const keyed = new Map<string, number | null>();
+  catalog.forEach((app, index) => {
+    for (const key of [app.productId, ...(app.aliases ?? [])].map(idKey)) {
+      if (!key) continue;
+      const have = keyed.get(key);
+      keyed.set(key, have === undefined || have === index ? index : null);
+    }
+  });
+  const aliases = catalog.map((app) => new Set(app.aliases ?? []));
+  const folders: ProjectInventoryProduct[] = [];
+  for (const group of groups) {
+    const matches = new Set(
+      [group.productId, ...group.members].map((id) => keyed.get(idKey(id))).filter((index): index is number => typeof index === "number"),
+    );
+    if (matches.size !== 1) continue; // no catalog app, or two: place nothing
+    const index = [...matches][0];
+    for (const id of [group.productId, ...group.members]) if (id !== catalog[index].productId) aliases[index].add(id);
+    const codeIn = group.surfaces.map(surfaceFolder).filter(Boolean);
+    if (codeIn.length) folders.push({ id: catalog[index].productId, codeIn });
+  }
+  return {
+    catalog: catalog.map((app, index) => ({ ...app, aliases: [...aliases[index]] })),
+    inventory: [...inventory, ...folders],
+  };
 }
 
 /* ---------- the per-project index pages share ---------- */
