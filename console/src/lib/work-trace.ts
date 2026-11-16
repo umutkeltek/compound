@@ -26,6 +26,8 @@
  *  - Transition    — ids.transition_id (tr_…), present once the work closes
  */
 
+import { workTitle } from "@/lib/work-title";
+
 type WorkJson = Record<string, unknown>;
 
 export type TraceNodeStatus = "done" | "live" | "pending";
@@ -124,11 +126,9 @@ export function parseWorkShow(raw: string): { projection: WorkJson | null; lifec
   return { projection, lifecycle };
 }
 
-/** Best-effort human title from the projection (mirrors the board's rule). */
+/** The drawer shows the item's one title (lib/work-title.ts), the same as the board card. */
 function projectionTitle(p: WorkJson): string {
-  const surface = s(p.canonical_surface);
-  if (surface.startsWith("packet:")) return surface.slice("packet:".length).replace(/-/g, " ");
-  return s(p.success_predicate) || s(p.desired_outcome) || s(p.id) || "work item";
+  return workTitle(p);
 }
 
 /**

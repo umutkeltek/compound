@@ -488,17 +488,20 @@ registered owner of an action.
 
 ### 10.4 Work starts with intervention
 
-Work defaults to **Table → Needs focus**, ordered by blocked/held, running, verifying, claimed,
-then ready. It initially exposes 18 rows and expands deliberately so a 100-item backlog does not
-become the first screen. Search and state filters stay in the table. Flow answers lifecycle
-position by executor, Space answers harness ownership and current stage, and both open the same
-deep-linked trace. Space keeps its selected-work inspector visible while the lifecycle plane
-scrolls. Pipeline, Board, and Offered packets remain advanced lenses over the same projection.
+Work leads with what is stopped: the header names work on hold and work not moved in over a
+week first, then splits "in progress" into running, picked up and not started, and waiting for a
+proof check. Every number links to the List filtered to exactly those items (`filter=blocked`,
+`stale`, `progress`, `running`, `claimed`, `verifying`, `all`); the stale List is oldest first.
+The List's default filter is "On hold or not moved" (on hold, plus stale), led by on-hold items.
+It initially exposes 18 rows and expands deliberately. Filter, agent, app or group and search
+text live in the address. Every card and row links to the item's own page; a click elsewhere on
+it opens a short preview with the same recorded reason and "Open work page". Stages, Flow,
+By agent and Work packets are retired; their old `lens` values open the board.
 
-Table, Flow, and Space use the WorkEnvelope state for lifecycle filters, priority, color, status
-badges, and accessible work labels. Run status appears separately as execution evidence:
-a successful attempt does not complete work awaiting verification, and a running attempt does
-not override a held work item.
+The board and the List use the work item's state for filters, priority, color, status badges and
+accessible labels. Run status appears separately as execution evidence: a successful attempt
+does not complete work awaiting verification, and a running attempt does not override a held
+work item.
 
 ## 11. Workspace refresh (2026-11-12)
 
@@ -576,11 +579,20 @@ the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line
   secondary text), the plain reasons and next steps, and `BANNED_PHRASES`. The wired
   work-legibility smoke runs `scripts/plain-pages-cases.mjs`, which renders the four pages against
   a synthetic binary and fails on any banned phrase or raw area path in the visible text.
+  A work item has one title, from `lib/work-title.ts` (stated title, goal, success condition, else
+  words derived from the record; never a generic "Work details"), short on cards and lists and
+  whole on its page. An agent has one key and one name, from `lib/harness-label.ts` (`agentKey`,
+  `agentDisplayName`): every spelling of one agent groups and filters as one. Links to Work, a work
+  item, Decide, an app, Ads, a Settings section, Memory and evidence history come from
+  `lib/links.ts`, and the Work page reads its parameters through `parseWorkListParams`.
 - **Numbers.** `lib/counts.ts` holds one function per concept, with its unit in the label:
   waiting for you (decisions, items, work items), open work items, in progress (`claimed`,
   `running`/`in_progress`, `verifying`), picked up more than 7 days ago (from `claimed_at`: the
   projections carry no "last changed" time for open work), on hold (`held`, `blocked`), agents
   holding work, and decisions ready now. Pages and the sidebar call these, never their own count.
+  The rules for one work item (`isInProgress`, `isOnHold`, `isWaitingForCheck`, `isStale` and its
+  threshold `STALE_AFTER_DAYS`) live in the client-safe `lib/work-state.ts`; `counts.ts` counts with
+  them and re-exports them, so a client component asks the same question without its own copy.
 - **Send only what is shown.** Decide sends the full detail of the open decision only
   (`?decision=<key>` re-renders with that one's detail); filed is a count plus one row per kind
   (`?filed=<kind>` opens its newest 100). Live's timeline gets its six rows, and the list of
@@ -595,10 +607,11 @@ the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line
   kind of decision yet", "The approval record is incomplete: <the tool's reason>", or
   "Checking… (takes a few seconds)" while the opened decision's read runs. Evidence older than
   the live window says what it found and "checked N min ago"; it never says "paused".
-- **Work views.** The board by state is the default; List, Stages, Flow, By agent and Work packets
-  are quieter text tabs beside it. Board columns: Suggested · Ready to start · Running or picked up
-  · On hold · Waiting for a proof check · Done; the two middle in-progress columns add up to the
-  "in progress" number.
+- **Work views.** Three views: the board by state (default), the List, and By app. Board
+  columns: Suggested · Ready to start · Running or picked up · On hold · Waiting for a proof check
+  · Done, with On hold moved to the front whenever it has items; the two in-progress columns add
+  up to the "in progress" number. A card names its app and its agent on one line, and a title that
+  repeats in its column carries a hint that tells the cards apart.
 
 
 ## Console clarity and bounded reads
@@ -656,20 +669,26 @@ a cold read must not delay rendering or appear as an empty list of agents.
 
 ## Connected project view
 
-Projects is a scope browser over the existing Work and System owners. It answers
-which recorded outcomes, work and evidence belong together; it creates no project registry.
-The Essentials entry opens a project/area selector with exact identity in the URL.
-Explicit project/product scope groups work first. Exact repository fingerprints from Git delivery bindings group remaining source work. Simple declared area names remain available; file paths and URLs do not become projects. Task prose,
-actor names and timing never create membership. Unlinked work remains visible.
+There is no Projects page. "Which app is this work for, and what is stuck there?" is
+answered where the work already lives: Work's "By app" view (`/work?lens=project`) and
+each app's own page. The app catalog (`product growth --json`, with its aliases) is the
+registry for apps; the console adds none.
 
-The selected work inspector and focused map share one work identity. The map draws at
-most twelve reference nodes; its table provides the same relationships without pan/zoom.
-An attached attempt or check is a reference, not activity or successful proof.
-Separate project goals and task prerequisites remain explicitly unprojected until an
-owned source supplies them. Inventory dependencies retain observed/declared/inferred
-confidence, carried evidence and observation age separately from read freshness.
+One resolver (`lib/work-project.ts`) places every open work item in exactly one group:
+a catalog app, a codebase, an app the record names that the catalog does not list, or
+"Not linked to a project". The record's own product id wins; then folders the inventory
+says an app's code lives in (`code_in`), then folder and surface names. Task prose,
+actor names and timing never create membership, and nothing is guessed when unsure:
+work that names no app or codebase stays visible in "Not linked", sorted by the same
+rule as every other group.
 
-Projects reads only existing CLI projections: work list, workbench, product inventory
-and the product-filtered system graph. Each read preserves loading, stale and unavailable
-states. Registered product inventory can appear before work exists, without growth data.
-The current browser action boundary is unchanged; the inspector opens the owning Work page.
+"By app" lists each group with "N need you · N in progress · N waiting for a check ·
+N not moved in a week" from the shared item rules (`lib/work-state.ts`), groups that
+need you first. Each count opens the List of exactly those items (`app=<slug>` for an
+app, `project=<group id>` otherwise); an app row also links to its app page. The view
+reads the same three projections the index owns (`readWorkProjectIndex`) and keeps
+their loading, last-good and failed states: until all three hold a list, the grouping
+is unknown, never empty, and a List narrowed to an app says it is still being read.
+
+Old `/projects` addresses redirect: an app's scope to that app's page, an opened work
+item to its own page, anything else to "By app".

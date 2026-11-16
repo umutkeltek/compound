@@ -1,5 +1,4 @@
-import "./project-workspace-cases.mjs";
-// Plain-pages cases: render the real Today, Work, Decide, Live and Projects pages
+// Plain-pages cases: render the real Today, Work, Decide and Live pages
 // against a synthetic compound binary and check what a person reads.
 //
 //  1. No banned system phrase (lib/plain-words.ts BANNED_PHRASES) and no raw
@@ -43,7 +42,7 @@ const work = [
   { work_id: "work_fx_run_old", state: "running", owner: "codex", claimed_by: "codex", claimed_at: ns(9), success_predicate: "Fixture run is still going", next_action: "finish the run" },
   { work_id: "work_fx_claimed", state: "claimed", owner: "codex", claimed_by: "codex", claimed_at: ns(2), success_predicate: "Fixture item picked up recently", next_action: "start it" },
   { work_id: "work_fx_check_new", state: "verifying", owner: "claude_code", claimed_by: "claude_code:fixture-lane", claimed_at: ns(1), success_predicate: "Fixture check from yesterday", next_action: "attach the final verified candidate as commit:<full-sha>" },
-  { work_id: "work_fx_held", state: "held", owner: "claude_code", claimed_by: "claude_code", claimed_at: ns(3), success_predicate: "Fixture item on hold", next_action: "resolve the hold" },
+  { work_id: "work_fx_held", state: "held", owner: "claude_code", claimed_by: "claude_code", claimed_at: ns(3), success_predicate: "Fixture item on hold", next_action: "resolve the hold", canonical_surface: "product:fixture-app" },
   { work_id: "work_fx_ready", state: "ready", owner: "codex", success_predicate: "Fixture item ready to start", next_action: "claim before touching" },
 ];
 const group = (key, area, count, extra = {}) => ({
@@ -78,6 +77,7 @@ const reply = {
   "work list --json": { schema_version: "compound.work_list_projection.v0.1", work: work.map((w, i) => ({ ...w, id: w.work_id, scope: { project_id: i < 3 ? "fixture-research" : "fixture-operations" }, ids: { context_pack_id: "ctx_fixture_exact" } })) },
   "system inventory --kind product --json": { snapshot: { state: "fresh", observed_at: iso(0) }, resources: [{ id: "product:fixture-service", kind: "product", label: "Fixture service" }] },
   "system graph --kind product --json": { snapshot: { state: "fresh", observed_at: iso(0) }, edge_list: [] },
+  "product growth --json": { generated_at: iso(0), apps: [{ product_id: "product:fixture-app", name: "Fixture App", aliases: [] }] },
   "attention --json": {
     schema_version: "compound.attention.v0.1", generated_at: iso(0),
     counts: { needs_you: 13, needs_you_groups: 7, actionable_now: 0, watching: 2, blocked_on_you: 1, fallback_groups: 0 },
@@ -119,7 +119,28 @@ const reply = {
   "source connections --json": { schema_version: "compound.source_connections_projection.v0.2", generated_at: iso(0), counts: {}, connections: [] },
   "director propose --dry-run --json": { generated_at: iso(0), proposals: [] },
   "packets list --json": { schema_version: "compound.work.offered_packets.v0.1", counts: {}, items: [] },
+  "work leases --json": { leases: [] },
+  // One item's own record, with the lifecycle list \`work show --json\` returns.
+  "work show work_fx_held --json": {
+    id: "work_fx_held", state: "held", owner: "claude_code", created_at: iso(12), success_predicate: "Fixture item on hold",
+    canonical_surface: "product:fixture-app", evidence_refs: ["rec_fixture_one"],
+    lifecycle: [
+      { ts: ns(12), from: "", to: "ready", note: "created" },
+      { ts: ns(11), from: "ready", to: "claimed", by: "claude_code:fixture-lane", note: "claimed" },
+      { ts: ns(10), from: "claimed", to: "running", by: "claude_code:fixture-lane", note: "Started the fixture run." },
+      { ts: ns(3), from: "running", to: "held", by: "claude_code:fixture-lane", note: "Waiting for a fixture device. (policy allow_with_obligations)" },
+    ],
+  },
+  "work show work_fx_run_old --json": {
+    id: "work_fx_run_old", state: "running", owner: "codex", created_at: iso(10), success_predicate: "Fixture run is still going",
+    lifecycle: [
+      { ts: ns(10), from: "", to: "ready", note: "created" },
+      { ts: ns(9), from: "ready", to: "claimed", by: "codex", note: "claimed" },
+      { ts: ns(9), from: "claimed", to: "running", by: "codex", note: "Started." },
+    ],
+  },
 };
+if (args === "work show work_fx_missing --json") { console.error("error: not found: /fixture-home/work/work_fx_missing.json"); process.exit(1); }
 if (args === "version") { console.log("synthetic"); process.exit(0); }
 // The test releases all reads only after every cold page has rendered.
 while (!existsSync(${JSON.stringify(releaseReads)})) await Bun.sleep(5);
@@ -142,6 +163,8 @@ const { default: Work } = await import("../src/app/work/page.tsx");
 const { default: Decide } = await import("../src/app/reviews/page.tsx");
 const { default: Live } = await import("../src/app/live/page.tsx");
 const { default: Projects } = await import("../src/app/projects/page.tsx");
+const { default: WorkItem } = await import("../src/app/work/[id]/page.tsx");
+const { GET: previewGET } = await import("../src/app/api/work/trace/route.ts");
 const { buildDecideGroups } = await import("../src/lib/decide-model.ts");
 const { agentNameFor, plainWhy, plainWorkStep, productTitle, standingLine } = await import("../src/lib/plain-words.ts");
 const { humanizeProductId } = await import("../src/lib/app-identity.ts");
@@ -233,18 +256,36 @@ async function scopedEvidenceCases() {
 }
 
 const router = Object.fromEntries(["push", "replace", "refresh", "back", "forward", "prefetch"].map((k) => [k, () => {}]));
-const wrap = (path, element) =>
+const wrap = (path, element, query = "") =>
   renderToStaticMarkup(
     createElement(AppRouterContext.Provider, { value: router },
       createElement(PathnameContext.Provider, { value: path },
-        createElement(SearchParamsContext.Provider, { value: new URLSearchParams() }, element))));
+        createElement(SearchParamsContext.Provider, { value: new URLSearchParams(query) }, element))));
+
+/** Render the Work page at an address: the server reads `searchParams`, the client views read the same query. */
+async function renderWork(query) {
+  const params = Object.fromEntries(new URLSearchParams(query));
+  const html = wrap("/work", await Work({ searchParams: Promise.resolve(params) }), query);
+  return { html, text: visibleText(html) };
+}
+
+/** The address a retired page redirects to (Next throws NEXT_REDIRECT with it in `digest`). */
+async function redirectOf(render) {
+  try {
+    await render();
+  } catch (error) {
+    const match = /^NEXT_REDIRECT;[^;]*;([^;]+);/.exec(String(error?.digest ?? ""));
+    if (match) return match[1];
+    throw error;
+  }
+  throw new Error("expected a redirect");
+}
 
 const pages = {
   Today: { path: "/", render: () => Today(), question: "Today" },
   Work: { path: "/work", render: () => Work({ searchParams: Promise.resolve({}) }), question: "Work" },
   Decide: { path: "/reviews", render: () => Decide({ searchParams: Promise.resolve({}) }), question: "Decide" },
   Live: { path: "/live", render: () => Live(), question: "Live" },
-  Projects: { path: "/projects", render: () => Projects({ searchParams: Promise.resolve({}) }), question: "Projects" },
 };
 
 /** What a person reads: text content only (no scripts, styles or attributes). */
@@ -303,27 +344,120 @@ try {
   const warm = await renderAll();
   checkPlain(warm, "loaded");
 
-  assert.match(warm.Projects, /fixture research/);
-  assert.match(warm.Projects, /Fixture service/, "a registered project appears without growth measurements");
-  const projectHTML = wrap("/projects", await Projects({ searchParams: Promise.resolve({ scope: "project:fixture-research", work: "work_fx_check_old" }) }));
-  const projectText = visibleText(projectHTML);
-  assert.match(projectText, /Fixture check waits for its proof/);
-  assert.match(projectText, /ctx_fixture_exact/, "the inspector shows the actual context identity");
-  assert.doesNotMatch(projectText, /Fixture item on hold/, "another project's work is not pulled into this scope");
-  assert.match(projectHTML, /scope=project%3Afixture-research/, "scope survives work and view navigation");
-  assert.match(projectText, /Live process activity has not been checked/, "attempt references cannot become live activity");
+  // Work grouped by app (lens=project): one row per app and the "not linked"
+  // group, each count a link to exactly those items in that group.
+  const byApp = await renderWork("lens=project");
+  assert.deepEqual(findBannedPhrases(byApp.text), []);
+  assert.match(byApp.text, /2 groups hold open work/);
+  assert.match(byApp.text, /Fixture App App App page → 1 open work item 1 need you · 0 in progress · 0 waiting for a check · 0 not moved in a week/);
+  assert.match(byApp.text, /Not linked to a project Names no app or codebase 5 open work items 0 need you · 4 in progress · 2 waiting for a check · 2 not moved in a week/);
+  assert.ok(byApp.text.indexOf("Fixture App") < byApp.text.indexOf("Not linked to a project"), "the group that needs you comes first");
+  assert.match(byApp.html, /href="\/work\?lens=table&amp;filter=blocked&amp;app=fixture-app"/, "need you opens that app's on-hold list");
+  assert.match(byApp.html, /href="\/work\?lens=table&amp;filter=stale&amp;project=none"/, "not moved opens that group's stale list");
+  assert.match(byApp.html, /href="\/apps\/fixture-app"/, "an app row links to its app page");
+  // The List narrowed to one app shows only that app's work and names it.
+  const appList = await renderWork("lens=table&filter=all&app=fixture-app");
+  const appRows = appList.html.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1] ?? "";
+  assert.match(appRows, /work_fx_held/);
+  assert.doesNotMatch(appRows, /work_fx_check_old|work_fx_ready/, "another group's work is not in this app's list");
+  assert.match(appList.text, /Only work for Fixture App ?\. Show all work/);
+  // Every card and List row links to the item's own page.
+  const board = await renderWork("");
+  for (const id of ["work_fx_held", "work_fx_run_old", "work_fx_ready"]) {
+    assert.match(board.html, new RegExp(`href="/work/${id}"`), `board card ${id} links to its page`);
+  }
+  const allList = await renderWork("lens=table&filter=all");
+  assert.match(allList.html, /href="\/work\/work_fx_claimed"/, "a List row links to its page");
+
+  // The item page: what it is, how old, what happened, what it is connected to.
+  const held = visibleText(wrap("/work/work_fx_held", await WorkItem({ params: Promise.resolve({ id: "work_fx_held" }) })));
+  const heldHTML = wrap("/work/work_fx_held", await WorkItem({ params: Promise.resolve({ id: "work_fx_held" }) }));
+  assert.deepEqual(findBannedPhrases(held), []);
+  assert.match(held, /Created \d{1,2} \w{3} \d{4} · Picked up \d{1,2} \w{3} \d{4} \(3 days ago\) · Last changed \d{1,2} \w{3} \d{4} \(3 days ago\)/, "dates under the title");
+  assert.match(held, /Recorded reason On hold Waiting for a fixture device\. Nothing moves until the hold is lifted\./, "the recorded reason, without the policy suffix");
+  assert.doesNotMatch(held, /The assigned agent needs to check|See next step|Work details/, "no generic line, no button that only scrolls");
+  assert.doesNotMatch(held, /Review blocked work|Follow progress and resolve/, "the Work list's button and lead are not the item's");
+  assert.match(held, /Held by Claude Code/, "the agent by its one name");
+  assert.match(heldHTML, /href="\/apps\/fixture-app"/, "Related: its app page");
+  assert.match(heldHTML, /href="\/work\?lens=table&amp;filter=all&amp;owner=claude_code"/, "Related: its agent's work");
+  assert.match(heldHTML, /href="\/reviews\?decision=workbench%3Ablocked-on-you"/, "Related: the Decide entry that lists it");
+  assert.match(heldHTML, /href="\/map\/lineage\/rec_fixture_one"/, "Related: evidence links to its history page");
+  assert.match(held, /History Running → On hold by Claude Code/, "history, newest first, in plain words");
+  assert.ok(held.indexOf("Running → On hold") < held.indexOf("Created as Ready to start"), "newest first");
+  assert.match(held, /For agents: commands and technical record/, "commands sit behind a disclosure for agents");
+  assert.ok(held.indexOf("Recorded reason") < held.indexOf("For agents"), "the reason comes before anything for agents");
+  const stale = visibleText(wrap("/work/work_fx_run_old", await WorkItem({ params: Promise.resolve({ id: "work_fx_run_old" }) })));
+  assert.match(stale, /In progress for more than 7 days without finishing\./, "a stale item says so");
+  assert.doesNotMatch(held, /In progress for more than 7 days/, "an on-hold item is not stale");
+
+  // The preview drawer's data: the same next step and dates; a failed read is a sentence, never the tool's error text.
+  const preview = await (await previewGET(new Request("https://console.invalid/api/work/trace?id=work_fx_held"))).json();
+  assert.equal(preview.preview.nextStep.reason, "Waiting for a fixture device.");
+  assert.equal(preview.preview.nextStep.owner, "Claude Code");
+  assert.equal(preview.preview.stateLabel, "On hold");
+  assert.ok(preview.trace.lifecycle.length === 4, "the technical record carries the lifecycle from the JSON list");
+  const missing = await previewGET(new Request("https://console.invalid/api/work/trace?id=work_fx_missing"));
+  const missingBody = await missing.json();
+  assert.equal(missing.status, 404);
+  assert.doesNotMatch(JSON.stringify(missingBody), /fixture-home|\.json|not found:/, "no raw error text or path");
+
+  // The retired Projects page redirects: an app scope to the app's page, else to Work by app.
+  assert.equal(await redirectOf(() => Projects({ searchParams: Promise.resolve({ scope: "product:fixture-app" }) })), "/apps/fixture-app");
+  assert.equal(await redirectOf(() => Projects({ searchParams: Promise.resolve({ scope: "project:fixture-research", work: "work_fx_check_old" }) })), "/work/work_fx_check_old");
+  assert.equal(await redirectOf(() => Projects({ searchParams: Promise.resolve({}) })), "/work?lens=project");
   // One definition per number: the same fixture, the same numbers everywhere.
-  for (const name of ["Today", "Work", "Live"]) {
+  for (const name of ["Today", "Live"]) {
     assert.match(warm[name], /4 work items are marked in progress/, `${name}: in progress uses the shared definition`);
   }
   for (const name of ["Today", "Live"]) {
     assert.match(warm[name], /1 running, 1 picked up but not started, 2 waiting for a proof check/, `${name}: in-progress split`);
     assert.match(warm[name], /2 of them were picked up more than 7 days ago/, `${name}: age from claimed_at`);
   }
-  assert.match(warm.Work, /Stuck: 2 of them were picked up more than 7 days ago and are still not finished; 1 work item is on hold/);
+  // Work leads with what is stopped, splits in progress into its named parts,
+  // and every number opens the List of exactly those items.
+  assert.match(warm.Work, /1 on hold, waiting for you · 2 not moved in over 7 days 4 in progress ?: 1 running · 1 picked up, not started · 2 waiting for a proof check 6 open work items in all\./);
+  const header = await renderWork("");
+  const rowsOf = (html) => (html.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1] ?? "").match(/<tr\b/g)?.length ?? 0;
+  for (const [filter, n] of [["blocked", 1], ["stale", 2], ["progress", 4], ["running", 1], ["claimed", 1], ["verifying", 2], ["all", 6]]) {
+    assert.match(header.html, new RegExp(`href="/work\\?lens=table&amp;filter=${filter}"`), `the header links ${filter}`);
+    assert.equal(rowsOf((await renderWork(`lens=table&filter=${filter}`)).html), n, `the ${filter} list holds exactly the header's ${n}`);
+  }
+  assert.doesNotMatch(warm.Work, /wait for your decision|Open Decide/, "held work is one fact on Work, not two");
+  // The List: as many cells per row as header cells (no shifted columns), the
+  // tool's next step in plain words, no column that says nothing on every row.
+  const listAll = await renderWork("lens=table&filter=all");
+  const headCells = (listAll.html.match(/<thead>[\s\S]*?<\/thead>/)?.[0].match(/<th\b/g) ?? []).length;
+  for (const tr of (listAll.html.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1] ?? "").match(/<tr\b[\s\S]*?<\/tr>/g) ?? []) {
+    assert.equal((tr.match(/<td\b/g) ?? []).length, headCells, "each row has one cell per header");
+  }
+  assert.match(listAll.text, /Record the final checked commit for it\./, "Next in plain words, as on the board");
+  assert.doesNotMatch(listAll.text, /commit:<full-sha>|Execution detail unavailable/);
+  // One name per state: the List's badge uses the board's words.
+  assert.match(listAll.html, />On hold</, "the List says On hold, as the board does");
+  assert.doesNotMatch(listAll.html, />(held|verifying|claimed)</, "no raw state word in a badge");
+  // On hold is the first column on the board when it has items.
+  const columns = [...header.html.matchAll(/<section[^>]*aria-label="([^"]+)"/g)].map((m) => m[1]);
+  assert.equal(columns[0], "On hold", `on hold leads the board: ${columns.join(", ")}`);
+  // Retired views open the board; Work shows three views and no activity section.
+  for (const lens of ["pipeline", "flow", "space", "offered"]) {
+    const retired = await renderWork(`lens=${lens}`);
+    assert.match(retired.html, /aria-label="On hold"/, `lens=${lens} opens the board`);
+  }
+  assert.doesNotMatch(header.text, /Stages|By agent|Work packets|Recent activity/, "the retired views and the activity section left Work");
+  // The board's search and agent filter come from the address; a search with no match says so and offers a way out.
+  const noMatch = await renderWork("q=zz-nothing-matches");
+  assert.match(noMatch.text, /No work matches .zz-nothing-matches.\. Clear search/);
+  assert.match(noMatch.text, /No match in this column\./);
+  assert.match(noMatch.text, /0 of 6 open match/);
+  const byAgent = await renderWork("owner=claude-code");
+  assert.match(byAgent.text, /2 of 6 open match/, "the agent filter keeps that agent's cards in any spelling");
+  assert.match(header.text, /6 open(?! match)/, "one total, named");
+  // A card names its app and its agent on one line.
+  assert.match(header.text, /F Fixture App · Claude Code Fixture item on hold/);
+  const css = (await import("node:fs")).readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
+  assert.doesNotMatch(css, /\.work-focus-row::(before|after)/, "a generated box on a table row becomes an extra cell and shifts the columns");
   assert.match(warm.Today, /7 decisions wait for you, with 13 items in all/);
   assert.match(warm.Decide, /7 decisions waiting · 13 items to review/);
-  assert.match(warm.Work, /1 work item waits for your decision/);
   assert.match(warm.Live, /1 work item waits for your decision/);
   assert.match(warm.Live, /2 agents hold 5 work items/, "agents count excludes the no-agent bucket and idle agents");
   // Work cards: the owner's agent named as Live names it, the lane id small;
@@ -350,6 +484,9 @@ try {
   assert.equal(plainWhy("a reason nobody mapped"), "A reason nobody mapped.");
   assert.deepEqual(agentNameFor("claude_code:lane-x", new Map([["claude_code", "Claude Code"]])), { name: "Claude Code", lane: "claude_code:lane-x" });
   assert.deepEqual(agentNameFor("someone:else", new Map([["claude_code", "Claude Code"]])), { name: "someone:else", lane: "" });
+  // Other spellings of a known agent find its label through the one agent key.
+  assert.deepEqual(agentNameFor("harness:fixture-agent", new Map([["fixture_agent", "Fixture Studio"]])), { name: "Fixture Studio", lane: "harness:fixture-agent" });
+  assert.deepEqual(agentNameFor("Fixture-Agent:lane-2", new Map([["fixture_agent", "Fixture Studio"]])), { name: "Fixture Studio", lane: "Fixture-Agent:lane-2" });
   assert.match(warm.Today, /There is no button for this kind of decision yet/);
   assert.doesNotMatch(warm.Today, /compound reviews --area/, "a command is never the 'why'");
 
@@ -415,7 +552,7 @@ try {
     assert.equal(group.evidence.length, 0, `${group.key}: list-only rows carry no evidence`);
   }
 
-  console.log(`plain-pages cases ok: 5 pages × 2 read states free of ${BANNED_PHRASES.length} banned phrases; shared counts agree; Decide sends one decision's detail; opened decision checks its own read (stale refused, A's read never enables B)`);
+  console.log(`plain-pages cases ok: 4 pages × 2 read states, Work by app and the retired Projects redirect, free of ${BANNED_PHRASES.length} banned phrases; shared counts agree; Decide sends one decision's detail; opened decision checks its own read (stale refused, A's read never enables B)`);
 } finally {
   await writeFile(releaseReads, "");
   await compound.settleProjectionReads();

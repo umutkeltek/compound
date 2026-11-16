@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
 
-import { compoundFailure, runCompound, str } from "@/lib/compound";
+import { runCompound, str } from "@/lib/compound";
+import { plainState } from "@/lib/plain-words";
 import { findWorkbenchItem } from "@/lib/work-data";
 import { isWorkId } from "@/lib/work-id";
 import { buildActionRow } from "@/lib/work-pipeline";
+import { workDates, workHistory, plainDay } from "@/lib/work-history";
+import { workNextStep } from "@/lib/work-next-step";
 import { mapEnvelopeSpine, parseWorkShow } from "@/lib/work-trace";
 
 /*
@@ -28,10 +31,10 @@ export async function GET(request: Request) {
   try {
     const result = await runCompound(["work", "show", id, "--json"]);
     raw = result.stdout;
-  } catch (error) {
-    const failure = compoundFailure(error);
+  } catch {
+    // The tool's own error text can carry folder paths; the drawer gets a sentence.
     return NextResponse.json(
-      { error: failure.stderr || failure.message || `work ${id} not found` },
+      { error: "This work item could not be read. It may not be recorded yet." },
       { status: 404 },
     );
   }
@@ -44,12 +47,24 @@ export async function GET(request: Request) {
   const workbenchItem = await findWorkbenchItem(id);
   const receiptId = str(workbenchItem?.receipt_id);
 
-  const trace = mapEnvelopeSpine(projection, lifecycle, { receiptId });
+  // History comes from the JSON `lifecycle` list; `--json` prints no text trailer.
+  const history = workHistory(projection);
+  const historyLines = lifecycle.length
+    ? lifecycle
+    : [...history].reverse().map((entry) => [entry.atMs !== null ? plainDay(entry.atMs) : "", entry.what, entry.who, entry.note].filter(Boolean).join(" · "));
+  const trace = mapEnvelopeSpine(projection, historyLines, { receiptId });
+  const nowMs = Date.now();
 
-  // Contextual governed transitions for the current state — the buried-<details>
-  // fix. The mutation is still a human click through /api/decision/execute.
+  // The short preview leads (the same next step and dates as the item page);
+  // the technical record and the copy-only moves sit behind a disclosure.
   return NextResponse.json({
-    generatedAt: new Date().toISOString(),
+    generatedAt: new Date(nowMs).toISOString(),
+    nowMs,
+    preview: {
+      stateLabel: plainState(trace.state || "unknown"),
+      nextStep: workNextStep({ ...projection, claimed_by: str(workbenchItem?.claimed_by) || str(projection.claimed_by) }),
+      dates: workDates(projection, { nowMs, claimedAt: workbenchItem?.claimed_at }),
+    },
     trace,
     actionRow: buildActionRow(id, trace.state),
   });

@@ -8,6 +8,8 @@ import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { consoleChildEnv } from "./console-child-env.ts";
+import { buildWorkProjectIndex, catalogFromGrowth, inventoryFromJson } from "./work-project.ts";
+import type { WorkProjectIndex } from "./work-project.ts";
 
 const exec = promisify(execFile);
 
@@ -1108,6 +1110,82 @@ export async function getExecutors(): Promise<Json | null> {
 /** Non-blocking executors read for pages (see `readProjection`). */
 export async function readExecutors(opts?: { enabled?: boolean }): Promise<LiveRead> {
   return readProjection(EXECUTORS_ARGS, { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS, enabled: opts?.enabled });
+}
+
+/* ---------- open work grouped by app or codebase ----------
+ * One shared read for every page that groups work by project (the app page,
+ * a Work "by project" view). It joins three reads the pages already make, by
+ * the same argv, so it shares their cache entries and costs no extra
+ * `compound` run: the workbench's open work, the app catalog and the product
+ * inventory. Like every read here it never waits for `compound`: it returns
+ * at once with what the cache holds and queues refreshes (`readProjection`).
+ */
+
+export const WORK_PROJECT_INDEX_READS = {
+  work: { args: ["workbench", "--json"], timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS },
+  apps: { args: ["product", "growth", "--json"], timeoutMs: 60_000 },
+  inventory: { args: ["system", "inventory", "--kind", "product", "--json"], timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS },
+} as const;
+
+/** A read's state without its (large) value: safe for the read-state kit and for client components. */
+export type ReadInfo = Omit<LiveRead, "value">;
+
+export type WorkProjectIndexRead = {
+  /** the weakest of the three reads: unreachable, then loading, then stale, then live */
+  status: ReadState;
+  /**
+   * Open work grouped by app or codebase (lib/work-project.ts), built from the
+   * last good copy of each read. Null until all three reads hold a copy with
+   * its list: unknown, never empty.
+   */
+  index: WorkProjectIndex | null;
+  /** the reads that hold no usable list yet (no copy, or a copy without its list) */
+  missing: Array<keyof typeof WORK_PROJECT_INDEX_READS>;
+  /** each read's state, for ReadChip, ReadNotice and readsPending */
+  reads: { work: ReadInfo; apps: ReadInfo; inventory: ReadInfo };
+};
+
+const READ_STATE_RANK: Record<ReadState, number> = { unreachable: 0, loading: 1, stale: 2, live: 3 };
+
+/** The last index built, keyed by the three copies it was built from and the minute (stale counts move with the clock). */
+let workProjectIndexMemo: { work: unknown; apps: unknown; inventory: unknown; minute: number; index: WorkProjectIndex } | null = null;
+
+/**
+ * Open work grouped by app or codebase, with per-project counts (need you,
+ * in progress, waiting for a check, stale). Non-blocking. `nowMs` is the
+ * clock for the stale count; pass it in tests.
+ */
+export async function readWorkProjectIndex(opts?: { enabled?: boolean; nowMs?: number }): Promise<WorkProjectIndexRead> {
+  const { work: workArgs, apps: appArgs, inventory: inventoryArgs } = WORK_PROJECT_INDEX_READS;
+  const [work, apps, inventory] = await Promise.all([
+    readProjection([...workArgs.args], { timeoutMs: workArgs.timeoutMs, enabled: opts?.enabled }),
+    readProjection([...appArgs.args], { timeoutMs: appArgs.timeoutMs, enabled: opts?.enabled }),
+    readProjection([...inventoryArgs.args], { timeoutMs: inventoryArgs.timeoutMs, enabled: opts?.enabled }),
+  ]);
+  const nowMs = opts?.nowMs ?? Date.now();
+  const minute = Math.floor(nowMs / 60_000);
+  const open = Array.isArray(work.value?.open) ? (work.value!.open as Json[]) : null;
+  const memo = workProjectIndexMemo;
+  let index: WorkProjectIndex | null = null;
+  const missing: WorkProjectIndexRead["missing"] = [];
+  if (memo && memo.work === work.value && memo.apps === apps.value && memo.inventory === inventory.value && memo.minute === minute && open) {
+    index = memo.index;
+  } else {
+    const catalog = apps.value ? catalogFromGrowth(apps.value) : null;
+    const products = inventory.value ? inventoryFromJson(inventory.value) : null;
+    if (!open) missing.push("work");
+    if (!catalog) missing.push("apps");
+    if (!products) missing.push("inventory");
+    if (open && catalog && products) {
+      index = buildWorkProjectIndex(open, catalog, products, nowMs);
+      workProjectIndexMemo = { work: work.value, apps: apps.value, inventory: inventory.value, minute, index };
+    }
+  }
+  const status = [work.status, apps.status, inventory.status].reduce((weakest, next) =>
+    READ_STATE_RANK[next] < READ_STATE_RANK[weakest] ? next : weakest,
+  );
+  const info = ({ value: _value, ...rest }: LiveRead): ReadInfo => rest;
+  return { status, index, missing, reads: { work: info(work), apps: info(apps), inventory: info(inventory) } };
 }
 
 export async function getWorkList(): Promise<Json | null> {

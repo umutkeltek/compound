@@ -1,12 +1,14 @@
 "use client";
 
+import Link from "next/link";
 import type { KeyboardEvent } from "react";
 
 import { ClockIcon, IdRef, SegmentedProgress } from "@/components/kit";
 import { hashToneFor, TONE_FILL } from "@/components/kit/tone";
 import type { StateTone } from "@/components/kit/StateBadge";
 import type { BoardCard } from "@/lib/work-pipeline";
-import { appHue, humanizeProductId } from "@/lib/app-identity";
+import { appHue } from "@/lib/app-identity";
+import { workItemHref } from "@/lib/links";
 import { plainState } from "@/lib/plain-words";
 
 /**
@@ -72,12 +74,15 @@ export function WorkBoardCard({
       ? { label: "", cls: "border-hair bg-soft text-muted" }
       : STATE_CHIP[card.tone] ?? STATE_CHIP.queued;
   const chip = { cls: toneChip.cls, label: card.state ? plainState(card.state) : toneChip.label };
-  const app = card.surface.startsWith("product:") ? card.surface : "";
+  // The app or codebase from the shared resolver; nothing when it names
+  // neither or is not read yet (the List and "By app" say which).
+  const appName = card.projectKind && card.projectKind !== "none" ? card.projectName ?? "" : "";
   // The chip already carries the exact state; the old second state tag
   // (STATE_WORD) only repeated it in system words.
   const stateWord = card.state ? "" : STATE_WORD[card.state] ?? "";
   const owner = card.subtitle;
-  const overdue = card.tone === "seam" && /(\d+)\s*d/.test(card.ageLabel) && Number(card.ageLabel.match(/(\d+)\s*d/)?.[1]) >= 7;
+  // Red age: on hold for a week or more, or in progress and not moved for a week (lib/work-state.ts).
+  const overdue = card.stale || (card.tone === "seam" && /(\d+)\s*d/.test(card.ageLabel) && Number(card.ageLabel.match(/(\d+)\s*d/)?.[1]) >= 7);
 
   function open() {
     if (interactive) onOpen(card.workId);
@@ -98,7 +103,7 @@ export function WorkBoardCard({
       data-tone={card.tone}
       role={interactive ? "button" : undefined}
       tabIndex={interactive ? 0 : undefined}
-      aria-label={interactive ? `Open trace ${card.title}` : undefined}
+      aria-label={interactive ? `Preview ${card.title}` : undefined}
       onClick={open}
       onKeyDown={onKeyDown}
     >
@@ -109,38 +114,35 @@ export function WorkBoardCard({
         {stateWord && stateWord !== chip.label ? (
           <span className="inline-flex items-center rounded-md border border-hair px-1.5 py-0.5 text-2xs font-medium text-muted">{stateWord}</span>
         ) : null}
-        {card.moveType ? (
-          <span className="ml-auto truncate rounded-md border border-hair px-1.5 py-0.5 text-2xs font-medium text-muted">
-            {card.moveType.replace(/_/g, " ")}
-          </span>
-        ) : null}
+
       </div>
 
-      {app ? (
-        <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted">
-          <span
-            className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-2xs font-bold text-white"
-            style={{ backgroundColor: appHue(app) }}
-            aria-hidden
-          >
-            {humanizeProductId(app).charAt(0)}
-          </span>
-          <span className="truncate" title={app}>{humanizeProductId(app)}</span>
-        </div>
-      ) : owner ? (
-        <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted">
-          <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${TONE_FILL[hashToneFor(owner)]}`} aria-hidden />
-          {/* The agent's name, as Live names it; the lane id stays small. */}
-          <span className="shrink-0 font-medium text-ink" title={owner}>{card.agentName || owner}</span>
-          {card.agentName && card.lane ? <span className="mono min-w-0 truncate text-2xs text-faint" title={card.lane}>{card.lane}</span> : null}
-        </div>
-      ) : null}
+      {/* Which app it is for and who has it, on one line (lib/work-project.ts, lib/harness-label.ts). */}
+      <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted">
+        {appName ? (
+          <>
+            <span
+              className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-2xs font-bold text-white"
+              style={{ backgroundColor: appHue(card.projectId || appName) }}
+              aria-hidden
+            >
+              {appName.charAt(0).toUpperCase()}
+            </span>
+            <span className="min-w-0 truncate font-medium text-ink" title={appName}>{appName}</span>
+            <span className="text-faint" aria-hidden>·</span>
+          </>
+        ) : null}
+        <span className="shrink-0 truncate" title={owner || "No agent"}>{card.agentName || "No agent"}</span>
+        {card.lane ? <span className="mono min-w-0 truncate text-2xs text-faint" title={card.lane}>{card.lane}</span> : null}
+      </div>
 
       <span className="min-w-0 line-clamp-3 text-md font-semibold leading-snug text-ink" title={card.title}>
         {card.title}
       </span>
 
-      {card.note ? (
+      {card.repeatHint ? <p className="mono truncate text-2xs text-faint" title={card.repeatHint}>{card.repeatHint}</p> : null}
+
+      {card.note && card.tone !== "done" ? (
         <p className={`text-sm leading-snug text-muted ${compact ? "line-clamp-2" : "line-clamp-3"}`}>{card.note}</p>
       ) : null}
 
@@ -156,9 +158,19 @@ export function WorkBoardCard({
 
       <div className="mt-1 flex items-center gap-2 border-t border-hair-2 pt-2.5">
         <OwnerAvatar owner={owner} name={card.agentName} />
-        {card.displayId && !compact ? (
+        {card.traceable ? (
+          <Link
+            href={workItemHref(card.workId)}
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => event.stopPropagation()}
+            className="min-w-0 truncate text-xs font-medium text-work hover:underline"
+            title={card.workId}
+          >
+            Open work page
+          </Link>
+        ) : card.displayId && !compact ? (
           <span className="min-w-0 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
-            <IdRef id={card.displayId} kind={card.traceable ? "work" : "plan"} plain truncate />
+            <IdRef id={card.displayId} kind="plan" plain truncate />
           </span>
         ) : null}
         {card.ageLabel ? (

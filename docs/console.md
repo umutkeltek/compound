@@ -268,19 +268,17 @@ that target. Follow [Recovery](operations/recovery.md) before changing a live ho
 
 ## Projects and focused relationships
 
-The Projects entry connects a project or area to explicitly linked work. Choose a
-scope, then a work item; its recorded outcome, next step, success criterion, context
-identity and result references stay visible beside the work list or focused map.
-The page link preserves scope, work identity and the selected view.
+The Projects page is retired. Work's "By app" view groups all open work by app,
+codebase and "not linked", in one order (most items that need you first). Each group
+shows how many items need you, are in progress, wait for a proof check, and have not
+moved in a week; every count opens the Work List of exactly those items, and an app's
+row links to its app page. The List keeps the group in its address (`app=<slug>` or
+`project=<group id>`), so a filtered list is a link that can be shared and reloaded.
 
-Membership comes from explicit work scope, product/project canonical references, or an exact repository fingerprint from its Git delivery binding. File paths and URLs do not become projects. Observed product
-inventory adds projects with no work yet; no growth connection is required. Work
-without a scope remains in Unlinked work. This is a derived view, not a new registry,
-and a separate project goal is not inferred from task text.
+Membership comes from one resolver over the app catalog and product inventory: the
+record's own product id first, then the folders an app's code lives in, then folder
+and surface names. Task text never creates membership, and work that names no app or
+codebase stays visible in its own group instead of being dropped or guessed.
 
-The focused map is bounded to one task and its recorded references, with an equivalent
-relationship table. Shared infrastructure dependencies come from the existing
-product-filtered system graph. Confidence, retained observations, missing snapshots
-and source observation time remain visible. A check or attempt reference does not
-establish successful verification or live execution. Source details name the actual
-CLI readers; inaccessible data is unknown rather than an empty successful read.
+Old `/projects` links still work: an app's scope opens that app's page, an opened work
+item opens its work page, and anything else opens "By app".

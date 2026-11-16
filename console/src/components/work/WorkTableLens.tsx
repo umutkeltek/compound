@@ -1,33 +1,33 @@
 "use client";
 
+import Link from "next/link";
 import type { CSSProperties } from "react";
 import { useEffect, useMemo, useState } from "react";
 
 import { EmptyState, IdRef, StateBadge } from "@/components/kit";
+import { appSlug } from "@/lib/app-identity";
+import { agentDisplayName } from "@/lib/harness-label";
+import { appHref, workItemHref, type ParsedWorkListParams, type WorkFilter } from "@/lib/links";
+import { filterWorkList } from "@/lib/work-list";
+import { STALE_AFTER_DAYS } from "@/lib/work-state";
 import type { WorkLensItem } from "@/lib/work-views";
 
-const FILTERS = [
-  { id: "focus", label: "Needs focus" },
+/** The List's filters, in the board's words (lib/plain-words.ts). The URL value is the id. */
+const FILTERS: ReadonlyArray<{ id: WorkFilter; label: string }> = [
+  { id: "focus", label: "On hold or not moved" },
+  { id: "blocked", label: "On hold" },
+  { id: "stale", label: `Not moved in ${STALE_AFTER_DAYS} days` },
+  { id: "progress", label: "In progress" },
   { id: "running", label: "Running" },
-  { id: "blocked", label: "Blocked" },
-  { id: "verifying", label: "Checking results" },
+  { id: "claimed", label: "Picked up, not started" },
+  { id: "verifying", label: "Waiting for a proof check" },
   { id: "all", label: "All open" },
-] as const;
-type WorkFilter = (typeof FILTERS)[number]["id"];
+];
 const PAGE_SIZE = 18;
-
-function workPriority(item: WorkLensItem): number {
-  if (["blocked", "held"].includes(item.state)) return 0;
-  const state = item.state;
-  if (state === "running") return 1;
-  if (state === "verifying") return 2;
-  if (item.state === "claimed") return 3;
-  if (item.state === "ready") return 4;
-  return 5;
-}
 
 function rowAccent(item: WorkLensItem): string {
   if (["blocked", "held"].includes(item.state)) return "var(--seam-fg)";
+  if (item.stale) return "var(--crit-fg)";
   const state = item.state;
   if (state === "running") return "var(--work-fg)";
   if (state === "verifying") return "var(--memory-fg)";
@@ -35,38 +35,41 @@ function rowAccent(item: WorkLensItem): string {
   return "var(--hair)";
 }
 
-export function WorkTableLens({ items, onOpenTrace, initialFilter = "focus", onFilterChange }: {
-  items: WorkLensItem[]; onOpenTrace: (workId: string) => void; initialFilter?: string; onFilterChange?: (filter: string) => void;
+type ListParams = Pick<ParsedWorkListParams, "filter" | "owner" | "app" | "project" | "q">;
+
+export function WorkTableLens({ items, onOpenTrace, params, groups, onParamsChange }: {
+  items: WorkLensItem[];
+  onOpenTrace: (workId: string) => void;
+  params: ListParams;
+  /** the "by app" groups, or null while not read: names the group a filter shows */
+  groups: ReadonlyArray<{ id: string; name: string; kind: string }> | null;
+  onParamsChange?: (next: Partial<ListParams>, mode: "push" | "replace") => void;
 }) {
-  const [query, setQuery] = useState("");
-  const validFilter = (value: string): WorkFilter => FILTERS.some((entry) => entry.id === value) ? value as WorkFilter : "focus";
-  const [filter, updateFilter] = useState<WorkFilter>(validFilter(initialFilter));
-  useEffect(() => { updateFilter(validFilter(initialFilter)); }, [initialFilter]);
+  const filter = params.filter;
+  const [query, setQueryState] = useState(params.q);
+  useEffect(() => { setQueryState(params.q); }, [params.q]);
   function setFilter(value: WorkFilter) {
-    updateFilter(value);
-    onFilterChange?.(value);
+    onParamsChange?.({ filter: value }, "push");
+  }
+  function setQuery(value: string) {
+    setQueryState(value);
+    onParamsChange?.({ q: value }, "replace");
   }
   const [limit, setLimit] = useState(PAGE_SIZE);
-  const rows = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return items.filter((item) => {
-      const state = item.state;
-      const filterMatch =
-        filter === "all" ||
-        (filter === "focus"
-          ? ["running", "verifying"].includes(state) || ["blocked", "held"].includes(item.state)
-          : filter === "blocked"
-            ? ["blocked", "held"].includes(item.state)
-            : state === filter);
-      const queryMatch = !needle || `${item.title} ${item.workId} ${item.owner} ${item.laneLabel} ${item.harness}`.toLowerCase().includes(needle);
-      return filterMatch && queryMatch;
-    }).sort((a, b) => workPriority(a) - workPriority(b));
-  }, [filter, items, query]);
+  const { rows, waitingForGroups } = useMemo(
+    () => filterWorkList(items, { ...params, q: query }, { projectsKnown: groups !== null }),
+    [groups, items, params, query],
+  );
   const visibleRows = rows.slice(0, limit);
+  const group = params.app
+    ? groups?.find((g) => g.kind === "app" && appSlug(g.id).toLowerCase() === params.app.toLowerCase())
+    : params.project ? groups?.find((g) => g.id === params.project) : undefined;
+  const groupName = params.app || params.project ? group?.name ?? (params.app || params.project) : "";
+  const agentName = params.owner ? agentDisplayName(params.owner) : "";
 
   useEffect(() => {
     setLimit(PAGE_SIZE);
-  }, [filter, query]);
+  }, [filter, query, params.app, params.project, params.owner]);
 
   return (
     <section className="min-w-0 overflow-hidden rounded-xl border border-hair bg-panel shadow-sm">
@@ -80,15 +83,27 @@ export function WorkTableLens({ items, onOpenTrace, initialFilter = "focus", onF
         </div>
         <label className="ml-auto min-w-[220px] flex-1 sm:max-w-xs">
           <span className="sr-only">Filter work</span>
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a task or agent…" className="h-8 w-full rounded-md border border-hair bg-soft px-3 text-xs text-ink outline-none placeholder:text-faint focus:border-work-line" />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a task, app or agent…" className="h-8 w-full rounded-md border border-hair bg-soft px-3 text-xs text-ink outline-none placeholder:text-faint focus:border-work-line" />
         </label>
       </div>
+      {groupName || agentName ? (
+        <div className="flex flex-wrap items-center gap-2 border-b border-hair bg-soft/60 px-3 py-2 text-xs text-muted">
+          <span>
+            Only work {groupName ? <>for <strong className="font-semibold text-ink">{groupName}</strong></> : null}
+            {groupName && agentName ? " " : null}
+            {agentName ? <>held by <strong className="font-semibold text-ink">{agentName}</strong></> : null}.
+          </span>
+          <button type="button" className="font-semibold text-work hover:underline" onClick={() => onParamsChange?.({ app: "", project: "", owner: "" }, "push")}>
+            Show all work
+          </button>
+        </div>
+      ) : null}
 
       {rows.length ? (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[920px] border-collapse text-left">
             <thead><tr className="border-b border-hair bg-soft/70 text-2xs font-bold uppercase tracking-wide text-faint">
-              <th className="px-3 py-2.5">Work item</th><th className="px-3 py-2.5">Execution</th><th className="px-3 py-2.5">Status</th><th className="px-3 py-2.5">Owner</th><th className="px-3 py-2.5">Next</th>
+              <th className="px-3 py-2.5">Work item</th><th className="px-3 py-2.5">App</th><th className="px-3 py-2.5">Status</th><th className="px-3 py-2.5">Who has it</th><th className="px-3 py-2.5">Next</th>
             </tr></thead>
             <tbody>
               {visibleRows.map((item) => (
@@ -98,21 +113,23 @@ export function WorkTableLens({ items, onOpenTrace, initialFilter = "focus", onF
                   style={{ "--row-accent": rowAccent(item) } as CSSProperties}
                   tabIndex={0}
                   role="button"
-                  aria-label={`Open trace for ${item.title}`}
+                  aria-label={`Preview ${item.title}`}
                   onClick={() => onOpenTrace(item.workId)}
                   onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpenTrace(item.workId); } }}
                 >
-                  <td className="max-w-md px-3 py-3"><div className="line-clamp-2 text-sm font-semibold leading-snug text-ink">{item.title}</div><div className="mt-1"><IdRef id={item.workId} kind="work" plain truncate /></div></td>
-                  <td className="px-3 py-3"><div className="text-xs font-semibold text-ink">{item.laneLabel}</div><div className="mt-0.5 text-2xs text-faint" title={item.harness ? `Recorded harness: ${item.harness}` : undefined}>{item.harnessLabel}</div>{item.runStatus ? <div className="mt-1 text-2xs text-faint">Run status: {item.runStatus.replace(/_/g, " ")}</div> : null}</td>
-                  <td className="px-3 py-3"><StateBadge state={item.state} /><div className="mt-1 text-2xs tabular-nums text-faint">{item.ageLabel}</div></td>
-                  <td className="max-w-44 px-3 py-3"><div className="truncate text-xs text-muted" title={item.owner}>{item.owner}</div>{item.actor ? <div className="mono mt-0.5 truncate text-2xs text-faint">run by {item.actor}</div> : null}</td>
-                  <td className="max-w-xs px-3 py-3"><p className="line-clamp-2 text-xs leading-relaxed text-muted">{item.nextAction || "Open this task to check its latest activity."}</p></td>
+                  <td className="max-w-md px-3 py-3"><Link href={workItemHref(item.workId)} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} className="line-clamp-2 text-sm font-semibold leading-snug text-ink hover:underline">{item.title}</Link><Link href={workItemHref(item.workId)} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} className="mt-1 block w-fit hover:underline"><IdRef id={item.workId} kind="work" plain truncate /></Link></td>
+                  <td className="max-w-40 px-3 py-3 text-xs">{item.projectKind === "app" ? <Link href={appHref(item.projectId)} onClick={(event) => event.stopPropagation()} className="font-medium text-ink hover:underline">{item.projectName}</Link> : item.projectKind === "none" ? <span className="text-faint">Not linked</span> : item.projectName ? <span className="text-muted">{item.projectName}</span> : <span className="text-faint">Not read yet</span>}</td>
+                  <td className="px-3 py-3"><StateBadge state={item.state} /><div className={`mt-1 text-2xs tabular-nums ${item.stale ? "font-semibold text-crit" : "text-faint"}`}>{item.ageLabel}{item.stale ? " · not moved in a week" : ""}</div></td>
+                  <td className="max-w-44 px-3 py-3"><div className="truncate text-xs font-medium text-ink" title={item.owner}>{item.ownerName}</div>{item.owner && item.owner !== "Unassigned" && item.owner !== item.ownerName ? <div className="mono mt-0.5 truncate text-2xs text-faint" title={item.owner}>{item.owner}</div> : null}{item.runStatus ? <div className="mt-1 text-2xs text-faint">Run status: {item.runStatus.replace(/_/g, " ")}</div> : null}</td>
+                  <td className="max-w-xs px-3 py-3"><p className="line-clamp-2 text-xs leading-relaxed text-muted">{item.nextAction || "No next step recorded."}</p></td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-      ) : <div className="p-4"><EmptyState>No tasks match this view. <button type="button" className="font-semibold text-work underline" onClick={() => { setQuery(""); setFilter("all"); }}>Show all tasks</button></EmptyState></div>}
+      ) : waitingForGroups ? (
+        <div className="p-4"><EmptyState>Which app each work item belongs to is still being read, so this list cannot be narrowed to {groupName} yet. It fills in by itself.</EmptyState></div>
+      ) : <div className="p-4"><EmptyState>{query.trim() ? <>No work matches &ldquo;{query.trim()}&rdquo; here. </> : "No work in this list. "}<button type="button" className="font-semibold text-work underline" onClick={() => { setQueryState(""); onParamsChange?.({ q: "", filter: "all", app: "", project: "", owner: "" }, "push"); }}>Show all open work</button></EmptyState></div>}
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-hair px-3 py-2 text-2xs text-faint">
         <span>Showing {visibleRows.length} of {rows.length} matching · {items.length} open tasks</span>
         {visibleRows.length < rows.length ? (

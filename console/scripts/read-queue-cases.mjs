@@ -36,6 +36,8 @@ await Bun.sleep(Number(process.env.READ_QUEUE_SLEEP_MS ?? "800"));
 rmSync(join(state, "running", name), { force: true });
 const failFile = join(state, "fail");
 if (existsSync(failFile)) { console.error("stub failure"); process.exit(3); }
+const payloadFile = join(state, "payload", process.argv.slice(2).join("_") + ".json");
+if (existsSync(payloadFile)) { console.log(JSON.stringify({ generated_at: new Date().toISOString(), ...JSON.parse(readFileSync(payloadFile, "utf8")) })); process.exit(0); }
 console.log(JSON.stringify({ generated_at: new Date().toISOString(), argv: process.argv.slice(2), marker: "ok" }));
 `,
   "utf8",
@@ -190,7 +192,75 @@ try {
   assert.equal(otherRead.value, null, "a value read for one home must never be served for another");
   await other.settleProjectionReads();
 
-  console.log("read-queue-cases ok: non-blocking loading, <=2 compound reads at once, one run per read, due gap, failure keeps last good, out-of-date mark, home-keyed cache");
+  // 11. Open work grouped by app or codebase (readWorkProjectIndex): one read
+  // over the three cached projections the pages already make. It never waits
+  // for compound, a copy without its list is unknown (never an empty index),
+  // an unchanged set of copies reuses the built index, and a failed refresh
+  // keeps the last good index.
+  // Case 8 marked every copy out of date under a clock pinned ahead of real
+  // time, so this block runs on its own clock, past that mark.
+  const realClock = Date.now;
+  const shiftedFrom = realClock();
+  Date.now = () => realClock() + 10 * 60_000;
+  try {
+    assert.ok(Date.now() > shiftedFrom);
+    const DAY = 86_400_000;
+    const NOW = Date.UTC(2031, 6, 1, 12, 0, 0);
+    const payloads = join(state, "payload");
+    await mkdir(payloads, { recursive: true });
+    const put = (argv, body) => writeFile(join(payloads, argv.join("_") + ".json"), JSON.stringify(body));
+    const { work, apps, inventory } = api.WORK_PROJECT_INDEX_READS;
+    await put(work.args, { open: [
+      { work_id: "work_rq_1", state: "held", canonical_surface: "product:fixture-app" },
+      { work_id: "work_rq_2", state: "running", claimed_at: String(BigInt(NOW - 9 * DAY) * 1_000_000n), target_worktree_root: "/home/fixture-user/Code/products/fixture-app/feature" },
+      { work_id: "work_rq_3", state: "ready", canonical_surface: "-" },
+    ] });
+    await put(apps.args, { apps: [{ product_id: "product:fixture-app", name: "Fixture App", aliases: ["product:fixture_app"] }] });
+    // No inventory payload yet: the stub prints a copy that has no resource list.
+
+    const coldStart = performance.now();
+    const cold = await api.readWorkProjectIndex({ nowMs: NOW });
+    assert.ok(performance.now() - coldStart < 400, "the index read never waits for compound");
+    assert.equal(cold.status, "loading");
+    assert.equal(cold.index, null, "no copy yet: the index is unknown, not empty");
+    assert.deepEqual([...cold.missing].sort(), ["apps", "inventory", "work"]);
+    assert.equal("value" in cold.reads.work, false, "each read comes without its large value");
+    await api.settleProjectionReads();
+
+    const partial = await api.readWorkProjectIndex({ nowMs: NOW });
+    assert.equal(partial.status, "live");
+    assert.equal(partial.index, null, "a copy without its list is unknown, never an empty index");
+    assert.deepEqual(partial.missing, ["inventory"]);
+
+    await put(inventory.args, { resources: [{ id: "product:fixture_app", links: [{ rel: "code_in", evidence: "products/fixture-app" }] }] });
+    api.markRunJsonCacheOutOfDate();
+    const marked = await api.readWorkProjectIndex({ nowMs: NOW });
+    assert.equal(marked.status, "stale", "after an action the old copies show as out of date while they refresh");
+    await api.settleProjectionReads();
+    const built = await api.readWorkProjectIndex({ nowMs: NOW });
+    assert.equal(built.status, "live");
+    assert.deepEqual(built.missing, []);
+    assert.deepEqual(
+      built.index.projects.map((p) => [p.id, p.open, p.needYou, p.inProgress, p.stale]),
+      [["product:fixture-app", 2, 1, 1, 1], ["none", 1, 0, 0, 0]],
+    );
+    assert.equal(built.index.byWork.work_rq_2, "product:fixture-app");
+    assert.equal((await api.readWorkProjectIndex({ nowMs: NOW })).index, built.index, "unchanged copies reuse the built index");
+
+    await writeFile(join(state, "fail"), "1");
+    api.markRunJsonCacheOutOfDate();
+    await api.readWorkProjectIndex({ nowMs: NOW });
+    await api.settleProjectionReads();
+    const failed = await api.readWorkProjectIndex({ nowMs: NOW });
+    assert.equal(failed.status, "stale");
+    assert.ok(failed.reads.work.error && failed.reads.work.failedAt, "the failure is recorded on its read");
+    assert.deepEqual(failed.index?.total, built.index.total, "a failed refresh keeps the last good index");
+    await rm(join(state, "fail"), { force: true });
+  } finally {
+    Date.now = realClock;
+  }
+
+  console.log("read-queue-cases ok: non-blocking loading, <=2 compound reads at once, one run per read, due gap, failure keeps last good, out-of-date mark, home-keyed cache, work grouped by project from cached copies");
 } finally {
   await rm(scratch, { recursive: true, force: true });
 }
