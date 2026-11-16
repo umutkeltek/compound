@@ -30,7 +30,7 @@ const releaseReads = join(scratch, "release-reads");
 
 // Synthetic home: 6 open work items. In progress = 4 (1 running, 1 picked up,
 // 2 waiting for a proof check); 2 of them picked up more than 7 days ago;
-// 1 on hold; 7 decisions wait, 13 items in all.
+// 1 on hold; 6 decisions are his (12 items), 1 more waits for wording, 2 skill proposals are housekeeping.
 await writeFile(bin, `#!/usr/bin/env bun
 import { existsSync } from "node:fs";
 const args = process.argv.slice(2).join(" ");
@@ -70,9 +70,13 @@ const groups = [
   group("git-index-lock|review", "git-index-lock", 2),
   group("bench|review", "bench", 1, { operator_summary: "product:fixture-app has a product hypothesis. Review it?", operator_unlock: "the product loop gets an evidence-shaped hypothesis" }),
   group("route-promotions|x", "route-promotions", 1, { terminal_reason: "actions are item-specific; no safe batch action exposed" }),
-  group("worktree-retirement|review", "worktree-retirement", 1),
+  group("worktree-retirement|review", "worktree-retirement", 1, { needs_wording: true }),
+  // Proposals to update agent skills: agent housekeeping, never counted as his.
+  group("capability-lifecycle-proposals|clp_a", "capability-lifecycle-proposals", 1, { operator_summary: "Review 12 recent fixture hook events." }),
+  group("capability-lifecycle-proposals|clp_b", "capability-lifecycle-proposals", 1, { operator_summary: "Review 30 recent fixture hook events." }),
 ];
 const watching = { ...group("route-promotions|watch", "route-promotions", 2), band: "watching", operator_summary: "Not enough evidence yet. Still watching." };
+const othersWait = { ...group("workbench:waiting-on-others", "workbench-waiting-on-others", 1), band: "watching", source: "workbench", kind: "waiting_on_others", item_ids: ["work_fx_ready"] };
 const reply = {
   "work list --json": { schema_version: "compound.work_list_projection.v0.1", work: work.map((w, i) => ({ ...w, id: w.work_id, scope: { project_id: i < 3 ? "fixture-research" : "fixture-operations" }, ids: { context_pack_id: "ctx_fixture_exact" } })) },
   "system inventory --kind product --json": { snapshot: { state: "fresh", observed_at: iso(0) }, resources: [{ id: "product:fixture-service", kind: "product", label: "Fixture service" }] },
@@ -80,8 +84,12 @@ const reply = {
   "product growth --json": { generated_at: iso(0), apps: [{ product_id: "product:fixture-app", name: "Fixture App", aliases: [] }] },
   "attention --json": {
     schema_version: "compound.attention.v0.1", generated_at: iso(0),
-    counts: { needs_you: 13, needs_you_groups: 7, actionable_now: 0, watching: 2, blocked_on_you: 1, fallback_groups: 0 },
-    top: groups[0], groups: [...groups, watching],
+    counts: { needs_you: 15, needs_you_groups: 9, actionable_now: 0, watching: 3, blocked_on_you: 1, fallback_groups: 0 },
+    top: groups[0], groups: [...groups, watching, othersWait],
+    totals: {
+      total_read: 25, live_decisions: 15, set_aside: 9, closed_without_you: 9, waiting_on_others: 1,
+      set_aside_reasons: [{ reason: "subject_gone", reason_text: "What it is about no longer exists.", count: 9, closed: true, next_step: "Nothing is left for you." }],
+    },
     operator_attention: { schema_version: "compound.operator_attention.v0.1", revision: "r1", total: 0, items: [] },
   },
   "executors --json": {
@@ -98,13 +106,14 @@ const reply = {
     ],
   },
   "workbench --json": { generated_at: iso(0), counts: { open: 6, in_progress: 4 }, open: work, recent: [] },
+  "work show work_fx_held --json": { ...work.find((w) => w.work_id === "work_fx_held"), id: "work_fx_held", lifecycle: [{ to: "claimed", ts: ns(5), note: "claimed" }, { to: "held", ts: ns(3), note: "Waits for a fixture account. (policy fixture)" }] },
   "workbench --json --recent 500": { generated_at: iso(0), counts: { open: 6, in_progress: 4 }, open: work, recent: [] },
   "reviews --json": {
     schema_version: "compound.review_queue.v0.1", generated_at: iso(0), groups: [],
     items: [
       { id: "rev_fx_filed_1", area: "bench", band: "filed", status: "filed", operator_summary: "A filed bench record.", created_at: iso(5) },
-      { id: "rev_fx_filed_2", area: "bench", band: "filed", status: "filed", operator_summary: "Another filed bench record.", created_at: iso(6) },
-      { id: "rev_fx_filed_3", area: "source-control-cleanup/scr_99aa88bb.preimage", band: "filed", status: "filed", operator_summary: "A filed cleanup record.", created_at: iso(7) },
+      { id: "rev_fx_filed_2", area: "bench", band: "filed", status: "resolved", operator_summary: "Another filed bench record. Review it?", created_at: iso(6), resolution: { decision: "dismissed", actor: "operator:fixture", resolved_at: iso(2) } },
+      { id: "rev_fx_filed_3", area: "source-control-cleanup/scr_99aa88bb.preimage", band: "filed", status: "completed", operator_summary: "A filed cleanup record.", next_action: "cleanup proposal rejected and filed", created_at: iso(7) },
     ],
   },
   // The opened decision's own read (Decide ?decision=route-promotions|x): its
@@ -457,8 +466,29 @@ try {
   assert.match(header.text, /F Fixture App · Claude Code Fixture item on hold/);
   const css = (await import("node:fs")).readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
   assert.doesNotMatch(css, /\.work-focus-row::(before|after)/, "a generated box on a table row becomes an extra cell and shifts the columns");
-  assert.match(warm.Today, /7 decisions wait for you, with 13 items in all/);
-  assert.match(warm.Decide, /7 decisions waiting · 13 items to review/);
+  // One count, only what is his: Today's sentence, Decide's header and the
+  // sidebar badge say the same number under the same name. Skill proposals,
+  // an unworded record, what closed without him and what waits on others are
+  // named apart and never added in.
+  {
+    // The sidebar badge is NavContainer's `waitingOnYou(readAttention().report).groups`.
+    const { readAttention, waitingOnYou } = await import("../src/lib/attention.ts");
+    const sidebar = waitingOnYou((await readAttention()).report);
+    assert.equal(sidebar.groups, 6, "the sidebar badge counts only his six decisions");
+    for (const name of ["Today", "Decide"]) {
+      assert.match(warm[name], /6 decisions wait for you ?\./, `${name}: the one waiting count`);
+      assert.doesNotMatch(warm[name], /\b(9|15) decisions\b|13 items|15 items/, `${name}: no second count`);
+      assert.match(warm[name], /1 more decision is yours once an agent words it as a clear question\./, `${name}: the unworded record is named apart`);
+      assert.match(warm[name], /9 records closed without you: nothing is left to decide\./, `${name}: closed without you`);
+      assert.match(warm[name], /1 work item waits on something outside you, not on you\./, `${name}: waiting on others`);
+      assert.match(warm[name], /2 proposals to update agent skills are agent housekeeping, not decisions for you, so they are not counted\./, `${name}: skill proposals folded out`);
+      assert.equal(warm[name].split("To decide, tell an agent in chat.").length - 1, 1, `${name}: how a decision moves is said once`);
+      assert.doesNotMatch(warm[name], /Connect operator|Check console access/, `${name}: no way to decide that does not exist`);
+    }
+    assert.match(warm.Decide, /What it is about no longer exists\./, "Decide opens the reasons for what closed without him");
+    assert.doesNotMatch(warm.Decide, /fixture hook events/, "a skill proposal is never a card on Decide");
+    assert.doesNotMatch(warm.Today, /fixture hook events/, "a skill proposal is never a row on Today");
+  }
   assert.match(warm.Live, /1 work item waits for your decision/);
   assert.match(warm.Live, /2 agents hold 5 work items/, "agents count excludes the no-agent bucket and idle agents");
   // Work cards: the owner's agent named as Live names it, the lane id small;
@@ -468,10 +498,10 @@ try {
   assert.doesNotMatch(warm.Work, /commit:<full-sha>/, "a raw next-step instruction never reaches a card");
 
   // Today: at most five decisions, then one link to the rest; plain words for areas and reasons.
-  assert.match(warm.Today, /2 more decisions on Decide/);
+  assert.match(warm.Today, /1 more decision on Decide/);
   assert.match(warm.Today, /Repository cleanup/, "area path becomes its plain kind");
   assert.match(warm.Today, /blocked on your review/, "system wording 'operator review' becomes 'your review'");
-  assert.match(warm.Today, /Why: Agents cannot go on until you lift the hold\./, "a known 'why' line reads in plain words");
+  assert.doesNotMatch(warm.Today, /Why: /, "the row asks the question instead of a second 'why' wording");
   assert.doesNotMatch(warm.Today, /executors can continue/, "system wording never reaches the why line");
   // This week: the autonomy level in one plain sentence, the level itself small.
   assert.match(warm.Today, /Autonomy L1 Agents suggest changes and ask you before they change files on this machine\./);
@@ -488,7 +518,7 @@ try {
   // Other spellings of a known agent find its label through the one agent key.
   assert.deepEqual(agentNameFor("harness:fixture-agent", new Map([["fixture_agent", "Fixture Studio"]])), { name: "Fixture Studio", lane: "harness:fixture-agent" });
   assert.deepEqual(agentNameFor("Fixture-Agent:lane-2", new Map([["fixture_agent", "Fixture Studio"]])), { name: "Fixture Studio", lane: "Fixture-Agent:lane-2" });
-  assert.match(warm.Today, /There is no button for this kind of decision yet/);
+  assert.match(warm.Today, /Let this held work continue, or stop it\?/, "a row asks its kind's question, as Decide's card does");
   assert.doesNotMatch(warm.Today, /compound reviews --area/, "a command is never the 'why'");
 
   // Decide: filed is a count plus kinds, not one chip per item; reasons in plain words.
@@ -496,43 +526,66 @@ try {
   assert.match(warm.Decide, /Benchmark results/);
   // Where each decision stands, from the data: here every decision's kind has
   // no button, so it is said once above the list, and the answer counts it.
-  assert.match(warm.Decide, /Why none can be decided now/);
-  assert.match(warm.Decide, /Needs follow-up before it can be applied/);
-  assert.match(warm.Decide, /7 have no button for their kind of decision yet\./);
+  assert.doesNotMatch(warm.Decide, /Why none can be decided now|Ready to review|Needs a closer look/, "one still list: no readiness sections and no banner");
+  assert.doesNotMatch(warm.Decide, /Needs follow-up before it can be applied|Not yet/, "no gate state on rows: how a decision moves is said once");
+  assert.doesNotMatch(warm.Decide, /Recording actions is unavailable|Queue status/, "the buried queue-status note is gone: how a decision moves is said once, up top");
   assert.doesNotMatch(warm.Decide, /paused|pause while/i, "an old copy is only old: never 'paused'");
   // A title that starts with a product id leads with the product's name on
   // Decide too, as on Today; the id stays as small text.
-  assert.match(warm.Decide, /Fixture App has a product hypothesis\. Review it\?/);
-  assert.match(warm.Today, /Fixture App has a product hypothesis\. Review it\?/);
+  assert.match(warm.Decide, /Fixture App has a product hypothesis\./);
+  assert.match(warm.Today, /Fixture App has a product hypothesis\./);
+  // Today and Decide agree: the same rows in the same order, each with the
+  // same title, app and wait (one function, decide-model decisionHeadline).
+  {
+    const rowsOf = (text) => [...text.matchAll(/waiting (\d+ (?:day|hour|minute)s?)/g)].map((m) => m[1]);
+    const todayRows = rowsOf(warm.Today.slice(warm.Today.indexOf("Start with the first one"), warm.Today.indexOf("more decision on Decide")));
+    const decideRows = rowsOf(warm.Decide.slice(warm.Decide.indexOf("Filter decisions") >= 0 ? warm.Decide.indexOf("Filter decisions") : 0));
+    assert.ok(todayRows.length >= 5, `Today shows its rows with their wait: ${todayRows.join(", ")}`);
+    assert.deepEqual(decideRows.slice(0, todayRows.length), todayRows, "Today's rows wait as long as Decide's top rows say");
+    for (const title of ["1 open work item is blocked on your review.", "Fixture App has a product hypothesis."]) {
+      assert.ok(warm.Today.includes(title) && warm.Decide.includes(title), `one title on both pages: ${title}`);
+    }
+    assert.doesNotMatch(warm.Today, /cannot be undone|Deletes or destroys/, "no aggregate destructive label on a row");
+    assert.doesNotMatch(warm.Today, /There is no button for this kind of decision yet/, "no dead-end reason on every row: how a decision moves is said once");
+  }
   assert.doesNotMatch(warm.Decide, /product:fixture-app has/, "a raw product id never leads a Decide title");
 
-  // 5. The opened decision checks its own evidence (`reviews --json --area`):
-  // "Checking…" while that read runs, then its real standing from that read.
-  const openedPath = { decision: "route-promotions|x" };
-  const renderOpened = async () => visibleText(wrap("/reviews", await Decide({ searchParams: Promise.resolve(openedPath) })));
-  const checking = await renderOpened();
-  assert.match(checking, /Checking… \(takes a few seconds\)/, "the opened decision says it is being checked");
-  await compound.settleProjectionReads();
-  const opened = await renderOpened();
-  assert.doesNotMatch(opened, /Checking…/);
-  assert.match(
-    opened,
-    /Each item has its own action\. Open it to decide them one by one\./,
-    "the opened decision shows its real standing from its own read",
-  );
-  assert.doesNotMatch(opened, /approval record is incomplete: each item/, "one action per item is not an incomplete record");
-  // The answer counts it apart: no button / incomplete record / item by item.
-  assert.match(opened, /6 have no button for their kind of decision yet and 1 is decided item by item/);
+  // 5. The opened decision is a card, never a "checking" gate: no button
+  // waits on a recheck, so nothing on it changes when one runs.
+  const opened = visibleText(wrap("/reviews", await Decide({ searchParams: Promise.resolve({ decision: "route-promotions|x" }) })));
+  assert.doesNotMatch(opened, /Checking…|Not yet|Ready to review/);
   assert.deepEqual(findBannedPhrases(opened), []);
+  await compound.settleProjectionReads();
+  await scopedEvidenceCases();
   await scopedEvidenceCases();
 
-  // 6. The opened card: product name in the title, the id small, and the
-  // tool's "why" line in plain words in its "Why it matters" box.
-  const bench = visibleText(wrap("/reviews", await Decide({ searchParams: Promise.resolve({ decision: "bench|review" }) })));
-  assert.match(bench, /Fixture App has a product hypothesis\. Review it\?/);
-  assert.match(bench, /product:fixture-app/, "the id stays, as small text");
-  assert.match(bench, /The product gets an idea to test that rests on evidence\./);
-  assert.doesNotMatch(bench, /evidence-shaped/, "the tool's raw why line never reaches the card");
+  // 6. One card per decision: the app it is about (linked), the question in
+  // one sentence, what a yes and a no would cause and whether it can be
+  // undone, from the kind's words; what the record does not say, once.
+  const route = visibleText(wrap("/reviews", await Decide({ searchParams: Promise.resolve({ decision: "route-promotions|x" }) })));
+  assert.match(route, /Let agents use this model first for this kind of task\?/, "the kind's question");
+  assert.match(route, /If you say yes Agents try this model first for this kind of task\./);
+  assert.match(route, /If you say no Nothing changes/);
+  assert.match(route, /Can it be undone\? Yes: the first choice can be switched back\./);
+  assert.match(route, /The record does not say what is recommended\./, "what the record does not say, named once");
+  assert.doesNotMatch(route, /No recommendation is recorded|The system does not say|Connect operator|Copy task|Next step/, "no boilerplate and no dead control");
+  const bench = await Decide({ searchParams: Promise.resolve({ decision: "bench|review" }) });
+  const benchText = visibleText(wrap("/reviews", bench));
+  assert.match(benchText, /App Fixture App/, "the card names the app it is about");
+  assert.match(wrap("/reviews", bench), /href="\/apps\/fixture-app"/, "and links its page");
+  assert.match(benchText, /The record does not say what it asks, what a yes does, what a no does, whether it can be undone or what is recommended\./);
+  // Held work: each item inline with its title, app, recorded reason and since when.
+  const heldCold = await Decide({ searchParams: Promise.resolve({ decision: "workbench:blocked-on-you" }) });
+  await compound.settleProjectionReads();
+  const heldNow = await Decide({ searchParams: Promise.resolve({ decision: "workbench:blocked-on-you" }) });
+  const heldText = visibleText(wrap("/reviews", heldNow));
+  assert.ok(heldCold, "the held decision renders before its records are read");
+  assert.match(heldText, /Let this held work continue, or stop it\?/);
+  assert.match(heldText, /Fixture item on hold →/, "the held item by its title");
+  assert.match(heldText, /Fixture App · Waiting for a fixture device\./, "its app and the recorded reason (blocking_reason first, as on the work page)");
+  assert.match(heldText, /On hold since 3d ago/);
+  assert.match(wrap("/reviews", heldNow), /href="\/work\/work_fx_held"/, "it links the work page");
+  assert.doesNotMatch(heldText, /Deletes or destroys something/, "no aggregate destructive label");
 
   // 4. Decide sends only the open decision's detail.
   const page = await Decide({ searchParams: Promise.resolve({}) });
@@ -551,6 +604,70 @@ try {
   for (const group of queue.groups.slice(1)) {
     assert.equal(group.members.length, 0, `${group.key}: list-only rows carry no members`);
     assert.equal(group.evidence.length, 0, `${group.key}: list-only rows carry no evidence`);
+  }
+
+  // The queue holds still: one list in the one shared order. A decision whose
+  // check found something else (here: one turned "ready") stays where it was;
+  // no section regroups it and no banner appears.
+  {
+    const { DecideQueue } = await import("../src/components/decide/DecideQueue.tsx");
+    const flipped = queue.groups.map((group, index) => (index === 3 ? { ...group, face: { ...group.face, state: "ready" } } : group));
+    const html = wrap("/reviews", createElement(DecideQueue, { ...queue, groups: flipped }), `decision=${encodeURIComponent(queue.groups[0].key)}`);
+    const order = [...html.matchAll(/data-decision-row="([^"]+)"/g)].map((m) => m[1].replaceAll("&amp;", "&"));
+    assert.deepEqual(order, queue.groups.map((group) => group.key), "a recheck never reorders or regroups the list");
+    assert.doesNotMatch(html, /Ready to review|Needs a closer look|Why none can be decided now|cannot be decided now/);
+  }
+  // Search text and kind come from the address (`q`, `area`), so a reload or
+  // a pasted link keeps them, and search matches only what a row shows.
+  {
+    const { DecideQueue } = await import("../src/components/decide/DecideQueue.tsx");
+    const rowsAt = (query) => [...wrap("/reviews", createElement(DecideQueue, queue), query).matchAll(/data-decision-row="([^"]+)"/g)].map((m) => m[1]);
+    assert.deepEqual(rowsAt("q=hypothesis"), ["bench|review"], "q filters to the rows that show the word");
+    assert.deepEqual(rowsAt("area=launchd-repair"), ["launchd-repair|review"], "area filters to one kind");
+    assert.deepEqual(rowsAt("q=operator"), [], "search never matches hidden tool text (the row says 'your review')");
+    assert.match(wrap("/reviews", createElement(DecideQueue, queue), "q=hypothesis"), /value="hypothesis"/, "the search box shows the address's text");
+    const { decideFilterHref } = await import("../src/components/decide/DecideQueue.tsx");
+    assert.equal(decideFilterHref("/reviews", "decision=a&filed=Sources", { q: "hold", area: "" }), "/reviews?decision=a&filed=Sources&q=hold", "typing keeps the open decision and other parameters");
+  }
+
+  // What happened: filed items lead with their outcome and when it was
+  // decided; recent decisions read across kinds; watching rows never claim to
+  // wait on him under a heading that says they do not, and lead somewhere.
+  {
+    const filed = visibleText(wrap("/reviews", await Decide({ searchParams: Promise.resolve({ filed: "Repository cleanup" }) }), "filed=Repository+cleanup"));
+    assert.match(filed, /Recent decisions, newest first Dismissed · Another filed bench record\. Benchmark results · decided 2d ago by you/, "a recent decision leads with its outcome, date and who");
+    assert.match(filed, /Cleanup proposal rejected and filed · A filed cleanup record\. Repository cleanup · raised 7d ago/, "a filed row leads with the outcome the record carries");
+    assert.doesNotMatch(filed, /until you decide/);
+  }
+
+  // Today's other parts: the stale line links its list; no second "needs me"
+  // count and no command to copy; the learned number holds while a copy is
+  // only older than the read window (it goes away only when a read fails).
+  {
+    const todayHTML = wrap("/", await Today());
+    assert.match(todayHTML, /href="\/work\?lens=table&amp;filter=stale"/, "the stale-work line links exactly those items");
+    assert.match(todayHTML, /href="\/memory#memory-review"[^>]*>1 memory waits for review →/, "the Learned tile leads to the memories that wait");
+    assert.match(todayHTML, /href="\/settings\?section=safety-permissions#settings-safety-permissions"/, "the Autonomy tile leads to its settings");
+    const todayText = visibleText(todayHTML);
+    assert.doesNotMatch(todayText, /\bneeds me\b|compound work continue/, "no second waiting count and no command on Today");
+    const { memoryBriefing } = await import("../src/lib/briefing.ts");
+    const NOW = Date.UTC(2031, 0, 10);
+    const value = { counts: { by_state: { promoted: 1 } }, items: [{ state: "promoted", created_at: new Date(NOW - 86_400_000).toISOString() }] };
+    const at = new Date(NOW - 60_000).toISOString();
+    assert.equal(memoryBriefing({ status: "stale", value, lastGoodAt: at, generatedAt: at, error: null }, NOW).promotedThisWeek, 1, "a merely older copy keeps its number");
+    assert.equal(memoryBriefing({ status: "stale", value, lastGoodAt: at, generatedAt: at, error: "read failed" }, NOW).promotedThisWeek, null, "a failed read is unknown, not a number");
+  }
+
+  // A link to a decision that is gone says so and offers the filed list; a
+  // skill-proposal link says it is agent housekeeping. Neither opens another
+  // decision silently.
+  for (const [key, said] of [
+    ["route-promotions|gone", /That decision is no longer waiting for you: it was answered or closed\. See filed items →/],
+    ["capability-lifecycle-proposals|clp_a", /That link opens a proposal to update agent skills\. It is agent housekeeping, not a decision for you/],
+  ]) {
+    const html = wrap("/reviews", await Decide({ searchParams: Promise.resolve({ decision: key }) }), `decision=${encodeURIComponent(key)}`);
+    assert.match(visibleText(html), said, key);
+    assert.match(html, /href="#filed"/, `${key}: offers the filed list`);
   }
 
   console.log(`plain-pages cases ok: 4 pages × 2 read states, Work by app and the retired Projects redirect, free of ${BANNED_PHRASES.length} banned phrases; shared counts agree; Decide sends one decision's detail; opened decision checks its own read (stale refused, A's read never enables B)`);

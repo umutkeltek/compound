@@ -365,11 +365,18 @@ one-off where an atom exists is a review reject.** New atom → this table first
 Every tunable the system has (or will grow) is exactly one of:
 
 1. **Authority view** — file-owned truth (policy.yaml, lanes, criteria, lens prompts). Read-only
-   card + provenance chip `file-owned` + the exact `compound … import-…` command. Never editable
-   in-console.
-2. **Governed toggle** — one-click through the decision registry with receipt + undo path
-   (kill-switch arm/halt, grant revoke, hygiene repair). Provenance chip `governed`; always
-   ConfirmDialog'd; dangerous ones type-to-confirm.
+   card that says in one plain sentence what the setting controls, its value now and who changes
+   it ("changed only in its settings file; nothing in this console changes it"). Raw keys and the
+   exact command sit behind a closed "For agents" disclosure (`ForAgents` in
+   `components/settings/primitives.tsx`); a command with a blank such as `<file>` is never shown.
+   Never editable in-console.
+2. **Governed toggle** — one-click through the decision registry with receipt + undo path. None
+   is built yet, so no card shows this kind. Stopping all agents (`policy autonomy-halt`) exists
+   only as a command: the Settings card states whether agents are stopped, says stopping them
+   from here is not built yet and what the stop does, and shows no button or type-to-confirm.
+   Standing permissions open with one sentence ("Agents may do N things without asking; M of them
+   cannot be undone"), list those in force with the ones that cannot be undone and never expire
+   first, and fold expired ones behind their count.
 3. **View preference** — client-only (theme, density, default lenses, collapsed sections).
    localStorage, provenance chip `local`, zero governance.
 
@@ -462,14 +469,25 @@ than explicit depth on the two overview surfaces.
 ### 10.2 Truthful Live visualization law
 
 Live renders a harness → WorkEnvelope graph from the executor, RunAttempt, traffic, and
-coordination projections. Configured harnesses are not activity. A node or edge animates only
-when heartbeat, RunAttempt, or work-state evidence reports a live run. Summary counts orient the
-operator, then the workfield is the **Understand-level hero**; the denser operations table belongs
-to Investigate. Each harness overview shows at most its two highest-signal work items while
-retaining exact running, in-flight, and waiting totals. Codex, Claude, Scripts, and
-Switchback/API retain distinct semantic identity colors. Selecting a node updates a persistent
-inspector beside the workfield; deeper coordination and delegated-session identity remain below
-the canvas.
+coordination projections. Configured harnesses are not activity. An agent is one agent key
+(`lib/harness-label.ts`): the console regroups the executors projection's rows by the key of who
+picked each item up, else its owner, which is the key the Work filter `owner=` compares, so an
+agent's count equals the list its link opens. Work nobody holds is "No agent" and work you hold
+is "You"; neither is counted as an agent. Working now, All agents and Today say the same
+sentences from `lib/counts.ts`, and every number links to its Work list. A node or edge animates only
+when a run record (RunAttempt or heartbeat) says an agent is running it now; the work record's own
+state, `running` included, never animates. While the console cannot read run records nothing on the
+page moves, and the answer says so: the page shows the work records as last read, not a live feed.
+Each item shows when it was picked up and is marked "not moved in a week" past the shared stale
+rule (`lib/work-state.ts`). Summary counts orient the operator, then the workfield is the
+**Understand-level hero**; the latest work picked up (newest first, the only real time open work
+carries, next steps in plain words, each row linked to its page) belongs to Investigate. Each agent
+shows at most its two most urgent items (on hold, then not moved longest) while keeping its exact
+totals as links, and the canvas draws at most eight agents; the rest are named on All agents. The
+canvas fits in view on load, the scroll wheel scrolls the page, and there is no minimap. Codex,
+Claude, Scripts, and Switchback/API retain distinct semantic identity colors. Selecting a node
+updates a persistent inspector beside the workfield; deeper coordination and delegated-session
+identity remain below the canvas.
 
 The canvas is a projection, never an authority surface. It does not infer work ownership from
 layout, invent activity to make the system feel alive, or persist prompt content.
@@ -538,9 +556,16 @@ The growth read moved to `compound.product_growth.v0.2`: a catalog of areas in 1
 profile that decides which areas apply, and ranked next moves. These rules replace the 25-area
 matrix and the pale red fill above.
 
-- **One question first.** `/apps/[slug]` opens with "What should I do next for <app>, and why?" and
-  the next moves (at most five, in the CLI's order). Each move says what to do, why in one line,
-  what it unblocks by name, and has a copy button for its brief command. `/growth` opens with "Where
+- **One question first.** `/apps/[slug]` is a short briefing about one app, with its own purpose
+  line and no header button: what needs you (its work on hold, a real verdict due), how it is
+  doing (dated numbers), all of its open work (the shared work-to-app index, on hold and not moved
+  first, "See all N in Work"), the next moves (at most five, in the CLI's order), whether the
+  changes helped, its ads, where it lives and runs (code, hosts and calls from the product graph,
+  matched by every id spelling, observed or declared, with the observation's age), then what
+  the product is and the 12 groups. Each move says what to do, why in one line and
+  what it unblocks by name. The section says when its steps are chores most apps share
+  (`sharedMoves`) and that nothing starts them on its own; there is no copy button, and workflow
+  and skill names sit in a closed "For agents" disclosure. `/growth` opens with "Where
   are we blind across the apps, group by group?" and a two- or three-sentence answer computed from
   the projection. Everything else sits below and is quieter.
 - **Never the full grid.** `/growth` draws 12 group rows × apps. One group opens at a time
@@ -551,6 +576,26 @@ matrix and the pale red fill above.
   carries all of them in `area_ids`: each covered area gets the "Next move N" badge and the grid
   dot, and each group holding one starts open. Its meta line says "3 areas" instead of the first
   area's pipeline and id, which would speak for all of them.
+- **Numbers carry their days.** Every tile, chart and funnel step names the days it covers
+  (`kpiPeriod`, `seriesPeriod`, `funnelPeriods` in `lib/growth.ts`): the exact range when the
+  CLI reports `window_start`/`window_end`, otherwise "last 30 days · newest data <day>", never a
+  guessed range. A page shows one 30-day proceeds figure: the ranking's sentence is shown only
+  when it carries its window, else it is rebuilt from the tile. Funnel steps that do not say their
+  days are not drawn as one funnel (no arrows, a plain sentence why); a `partial` step reads "at
+  least". One name per number on every page: "New downloads", "Ad installs" (Apple counts
+  re-downloads), "Cost per install" (never "CPA"). Ad tiles on an app page open its Ads view.
+  On Ads a change's colour follows what the number means (`ADS_GOOD_DIRECTION`: fewer installs is
+  red, less spend is green); a campaign is active only with spend or impressions in the last 3
+  days, else "quiet since <day>"; the campaign table comes first, apps link to their page, and
+  platforms with no report fold into one closed line. A command with a `<placeholder>` is never
+  shown; a runnable one sits in a closed "For agents" disclosure.
+- **One results card per app.** Results rows fold into the catalog's app by every id spelling
+  (`foldLoopsByApp`, `lib/products.ts`), named by the catalog; apps with no record are named in
+  one line. A card names the change, what it should do and the days it is watched, and each
+  reading carries its date. "Verdict due" means a real expected effect was written
+  (`verdictDue`): a machine draft with a placeholder effect never waits on the owner. A due
+  verdict links its exact decision (`decideHref`), never the general Decide list. The app page
+  shows its own card under "Did the changes help?" and puts a due verdict under "Needs you".
 - **Gaps are background.** "No data yet" is a pale neutral fill, the calmest filled state. "Not on
   file" is a dashed outline or hatch, "Set aside" a hatch on soft, "Does not apply" is left empty.
   Measured (green), out of date (amber) and the next-move mark (an ink dot or ring) are the only
@@ -570,9 +615,9 @@ the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line
 
 | Page | Question | First answer |
 |---|---|---|
-| Today | What needs you today? | "N decisions wait for you, with M items in all", then at most five decisions in the attention order, each with what to do, why, and one way in. When nothing waits, it says so and "What the agents are doing" becomes the answer. |
+| Today | What needs you today? | "N decisions wait for you", counting only what is his (`waitingOnYou`), then at most five of them in the order Decide shows (`yourDecisionGroups`), so Today's rows are Decide's top rows; each row says what Decide's row says (the app it is about, the record's words, the kind's question and how long it has waited, from one function, `decisionHeadline`) and has one way in. No row carries a dead-end reason or an aggregate "cannot be undone" label. Quiet lines name what is not counted: decisions an agent must word first, records closed without him, work waiting on others, and the skill proposals folded out as agent housekeeping. Then, once, how a decision moves today (`HOW_DECISIONS_MOVE`). When nothing waits, it says so and "What the agents are doing" becomes the answer. Below, every number leads to its list: the stale line to the stale work list, the Learned tile to the memories that wait (its number holds while a copy is only older than the read window), the Autonomy tile to its settings, the latest change to its work; the Continue card names the next work, keeps no second "needs me" count and copies no command. |
 | Work | What is being worked on, and what is stuck? | Work items marked in progress out of open work, the split, what is stuck (picked up 7+ days ago and still open; on hold), and work items waiting for a decision. |
-| Decide | What is waiting for your decision? | How many decisions and items wait, how many can be decided now, and why the rest wait, counted from the last check: no button for that kind yet, or an incomplete approval record. Those that can be decided come first; the rest are one quieter "Not yet" list, with the standing said once when it is the same for all. |
+| Decide | What is waiting for your decision? | The same "N decisions wait for you" as Today and the sidebar, the same quiet lines (here "closed without you" opens its reasons and next steps), and once per page how a decision moves today: he tells an agent in chat, the agent records it and carries it out, and deciding on the page is being built. No button, "connect" step or command is offered as a way to decide. Only his decisions are cards, in Today's order, the unworded ones last; proposals to update agent skills are one quiet line outside the count. Each card names the app (linked) or thing it is about, asks its kind's question in one sentence, and says what a yes and a no would cause and whether it can be undone, from `decisionKindWords` in `lib/decision-registry.ts` (the one owner of those words); what the record does not say is named once ("The record does not say …"), never as empty boxes. Held work lists each item inline: title, app, recorded reason, since when, linking its page. The record behind a card sits in a closed "For agents" disclosure. |
 | Live | Who is working on what right now? | Agents holding work, the in-progress split and age, and a plain note when live run records are not visible, so "running" is the work record's word. |
 
 - **Words.** `lib/plain-words.ts` owns the names (decision, item, work item, agent, in progress,
@@ -592,23 +637,35 @@ the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line
   `running`/`in_progress`, `verifying`), picked up more than 7 days ago (from `claimed_at`: the
   projections carry no "last changed" time for open work), on hold (`held`, `blocked`), agents
   holding work, and decisions ready now. Pages and the sidebar call these, never their own count.
+  "Waiting for you" counts only what is his: agent housekeeping (skill proposals), records with no
+  clear question (`needs_wording`), what closed without him and work waiting on others are each
+  named apart (`describeWaiting`) and never added in; a number the projection does not give is left
+  out, never shown as 0.
   The rules for one work item (`isInProgress`, `isOnHold`, `isWaitingForCheck`, `isStale` and its
   threshold `STALE_AFTER_DAYS`) live in the client-safe `lib/work-state.ts`; `counts.ts` counts with
   them and re-exports them, so a client component asks the same question without its own copy.
 - **Send only what is shown.** Decide sends the full detail of the open decision only
   (`?decision=<key>` re-renders with that one's detail); filed is a count plus one row per kind
-  (`?filed=<kind>` opens its newest 100). Live's timeline gets its six rows, and the list of
+  (`?filed=<kind>` opens its newest 100). A filed row leads with its outcome (the recorded
+  decision, else the record's own outcome line, else its status) and when it was decided (else
+  raised), and "Recent decisions" lists the newest decided records across kinds. A watching row
+  never says it waits on him under the "does not need you yet" heading, and links the list that
+  holds its items when one exists. Live's timeline gets its six rows, and the list of
   agent-started sessions renders only at the Technical depth.
 - **Decide standing (2026-11-13).** A button needs owner evidence read in the last 25 seconds;
   that gate is unchanged. The list (`attention --json`) takes about a minute to read, so the
   opened decision also reads its own area (`reviews --json --area <area>`, about a second, the
   read the action path resolves against) through the non-blocking read, and that copy is its
-  evidence when it is fresher than the list's. It applies to that one decision only. Each row
-  says its standing from its freshest evidence (`lib/decide-model.ts` `standing`, words in
-  `lib/plain-words.ts` `standingLine`): "You can decide this now", "No button exists for this
-  kind of decision yet", "The approval record is incomplete: <the tool's reason>", or
-  "Checking… (takes a few seconds)" while the opened decision's read runs. Evidence older than
-  the live window says what it found and "checked N min ago"; it never says "paused".
+  evidence when it is fresher than the list's. It applies to that one decision only. Since no
+  decision can be recorded from the browser yet (2026-11-17), neither rows nor cards show that
+  standing: no "Ready to review" / "Needs a closer look" sections, no "Not yet" or "Checking…"
+  badge and no banner, so a recheck never moves, regroups or rebuilds anything. The list is one
+  list in the one shared order; the open card is keyed by its decision, so an open disclosure or
+  typed filter survives a recheck. A link to a decision that is not listed says why (answered or
+  closed, or a skill proposal folded out as housekeeping) and offers the filed list; the first
+  decision still opens beside the note, and the address keeps the link. Search text and kind live
+  in the address (`q`, `area`, written after a typing pause, other parameters kept), and search
+  matches only what a row shows.
 - **Work views.** Three views: the board by state (default), the List, and By app. Board
   columns: Suggested · Ready to start · Running or picked up · On hold · Waiting for a proof check
   · Done, with On hold moved to the front whenever it has items; the two in-progress columns add
@@ -644,9 +701,14 @@ the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line
   singleton, revision-bound registry workflow can describe the owner's options;
   this does not grant the browser permission to execute them.
 - Settings opens one section through `?section=`. Unopened panels do not render
-  their bodies. Settings, Feedback loops and Standing law use the existing
-  background read queue, preserve last-good/failure/loading states, and refresh
-  while reads are pending. Unknown counts are shown as unknown, never zero.
+  their bodies. Settings, Feedback loops, Standing law, Memory and Sources use the
+  existing background read queue, preserve last-good/failure/loading states, and
+  refresh while reads are pending. Unknown counts are shown as unknown, never zero. A copy
+  past the 25-second cache window is the last good read, not a fault: a page warns
+  only when a refresh failed or the copy is older than ten minutes, so it does not
+  flip between "live" and a warning on every auto-refresh. Sources shows one status
+  per source derived from the date it shows (`lib/sources.ts`: one 72-hour window for
+  every feed, imports not judged by age), so a label never contradicts its date.
 - Loop cards summarize observations, hypotheses and reviews. Metric disclosure
   shows the latest observation per provider and metric; it does not render the
   whole event history. A rising number is not automatically a good result.
@@ -685,8 +747,12 @@ exercise these seams, including cold page reads and stale or partial authority.
   keep working; they are not shown. Supporting copy explains consequences and
   next steps. Internal identifiers stay in detail.
 
-Coordination also uses the existing background reader and refreshes while waiting;
-a cold read must not delay rendering or appear as an empty list of agents.
+Coordination (Waiting on each other) also uses the existing background reader and refreshes while
+waiting; a cold read must not delay rendering or appear as an empty list of agents. It shows one
+paragraph, not a card per session: how many sessions wait, what most of them wait for in plain
+words and since when (the dates of their last capacity readings), then the agents whose sessions
+hold work, each linked to its Work list, and the same agent and in-progress sentences as Working
+now. One freshness chip; recorded coordination entries sit behind "For agents".
 
 
 ## Connected project view

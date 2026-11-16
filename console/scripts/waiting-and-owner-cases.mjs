@@ -43,7 +43,39 @@ const report = toAttentionReport({
   ],
 });
 const waiting = waitingOnYou(report);
-assert.deepEqual(waiting, { groups: 22, items: 245, workItems: 20 });
+assert.deepEqual(
+  { groups: waiting.groups, items: waiting.items, workItems: waiting.workItems },
+  { groups: 3, items: 245, workItems: 20 },
+  "the count is the groups that are his, not the projection's own total",
+);
+assert.equal(waiting.closedWithoutYou, null, "a projection that does not say what closed without him is unknown, not 0");
+assert.equal(waiting.waitingOnOthers, null);
+
+// Only what is his: skill proposals are agent housekeeping and an unworded
+// record waits for an agent first; neither is counted. What closed without
+// him and what waits on others come from the projection's own totals.
+const honest = waitingOnYou(toAttentionReport({
+  schema_version: "compound.attention.v0.1",
+  counts: { needs_you: 40, needs_you_groups: 34 },
+  groups: [
+    { key: "held", area: "workbench-blocked-on-you", band: "needs_you", source: "workbench", count: 2, item_ids: ["work_a", "work_b"] },
+    ...Array.from({ length: 30 }, (_, i) => ({ key: `clp_${i}`, area: "capability-lifecycle-proposals", band: "needs_you", source: "reviews", count: 1, item_ids: [] })),
+    { key: "rule", area: "decision-candidates", band: "needs_you", source: "reviews", count: 1, item_ids: [] },
+    { key: "drafts", area: "product-content-queue", band: "needs_you", source: "reviews", count: 4, needs_wording: true, item_ids: [] },
+    { key: "waits", area: "workbench-waiting-on-others", band: "watching", source: "workbench", kind: "waiting_on_others", count: 1, item_ids: ["work_c"] },
+  ],
+  totals: { closed_without_you: 95, set_aside: 102, waiting_on_others: 1, set_aside_reasons: [] },
+}));
+assert.deepEqual(
+  honest,
+  {
+    groups: 2, items: 3, workItems: 2, wording: 1,
+    housekeeping: { groups: 30, items: 30 },
+    closedWithoutYou: 95,
+    waitingOnOthers: { items: 1, itemIds: ["work_c"] },
+  },
+  "34 needs-you groups hold 2 decisions that are his",
+);
 
 // One stale rule (lib/work-state.ts): in progress and picked up more than
 // STALE_AFTER_DAYS days before the clock that is passed in. The count on

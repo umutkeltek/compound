@@ -4,7 +4,7 @@ import { arr, num, str, type Json, type ProjectionRead } from "@/lib/compound";
 import { FeedDegraded } from "@/components/kit/FeedDegraded";
 import { PlugIcon } from "@/components/kit";
 
-import { Card, CountChip, DoctrineNote, KV, SettingsSection } from "./primitives";
+import { Card, CountChip, DoctrineNote, ForAgents, KV, SettingsSection } from "./primitives";
 
 /**
  * Group 5 — Harnesses & hooks. Harness capability facts (parsed from the text
@@ -25,21 +25,32 @@ export function HarnessesHooks({
   const hookHarnesses = arr(value?.harnesses).map(String);
   const readiness = arr(value?.pre_tool_use_readiness);
   const runtimeReadiness = arr(value?.hook_readiness);
+  const gated = readiness.filter((row: Json) => str(row.status) === "native_blocking" && row.native_block === true && row.installed === true).length;
 
   return (
     <SettingsSection
       index={5}
       icon={<PlugIcon />}
       tone="capability"
-      title="Harnesses & hooks"
-      question="Which harnesses can compound govern, and where must the adapter enforce the gate?"
+      title="Agent connections"
+      question="Which agent tools are connected, and where Compound can stop a risky step before it runs."
       source="compound contract hooks-authority"
       generatedAt={hooks.status === "live" && known ? generatedAt : undefined}
     >
-      <Link href="/executors" className="text-sm font-semibold text-work hover:underline">Open connected agents and their sessions →</Link>
+      <Link href="/executors" className="text-sm font-semibold text-work hover:underline">See what each agent holds →</Link>
       <Card title="Installed-hooks lock" badge={known ? <CountChip n={hookCount} label={hooks.status === "stale" ? "last-known hooks" : "hooks"} tone="muted" /> : undefined}>
         {!known ? <FeedDegraded label="Hook authority" source="compound contract hooks-authority" lastGoodAt={hooks.lastGoodAt} /> : null}
         {hooks.status === "stale" ? <p className="mb-3 text-sm text-seam">Last-known hook configuration. Current installation is unconfirmed.</p> : null}
+        {known ? (
+          <p className="text-sm leading-relaxed text-ink">
+            {`${hookHarnesses.length.toLocaleString("en-US")} agent ${hookHarnesses.length === 1 ? "tool is" : "tools are"} connected. `}
+            {readiness.length
+              ? `On ${gated.toLocaleString("en-US")} of ${readiness.length.toLocaleString("en-US")} Compound can stop a risky step before it runs; on the rest it only watches.`
+              : "Whether Compound can stop a risky step before it runs is not recorded."}{" "}
+            Connections change when an agent installs them; nothing in this console changes them.
+          </p>
+        ) : null}
+        <ForAgents label="For agents: technical record">
         <KV k="installed harnesses" v={hookHarnesses.length ? hookHarnesses.join(", ") : "—"} mono={false} />
         {readiness.length ? (
           <div className="mt-2 overflow-x-auto">
@@ -94,6 +105,7 @@ export function HarnessesHooks({
             A guarded profile needs behavioral proof for its exact launch configuration; delegate execution readiness is a separate check.
           </DoctrineNote>
         </div>
+        </ForAgents>
       </Card>
     </SettingsSection>
   );

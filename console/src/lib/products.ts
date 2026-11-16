@@ -1,4 +1,5 @@
 import { HEAVY_PROJECTION_TIMEOUT_MS, arr, num, readProjection, runJson, str, type ReadState } from "@/lib/compound";
+import { humanizeProductId } from "@/lib/app-identity";
 import type { Accent } from "@/components/ui";
 
 /*
@@ -27,9 +28,24 @@ export type ProductReview = {
   reviewedAt: string;
 };
 
+/** An open idea about a product: what was changed, what it should do, and over which days it is watched. */
+export type ProductHypothesis = {
+  id: string;
+  statement: string;
+  expectedEffect: string;
+  metrics: string[];
+  /** "2030-01-01..2030-01-28" as recorded */
+  window: string;
+  /** a machine draft whose expected effect nobody wrote: nothing to judge */
+  placeholder: boolean;
+};
+
 export type ProductLoop = {
   productId: string;
   name: string;
+  /** other ids the CLI folded into this row (newer CLIs); the page also folds through the app catalog */
+  aliases: string[];
+  hypotheses: ProductHypothesis[];
   signals: ProductSignal[];
   metricNames: string[];
   hypothesisCount: number;
@@ -67,6 +83,28 @@ function mapSignal(s: Record<string, unknown>): ProductSignal {
   };
 }
 
+/**
+ * A draft hypothesis made from a data snapshot carries a placeholder expected
+ * effect that a person was meant to write. Approving refuses it, so it is
+ * never a verdict that waits for anyone.
+ */
+export function isPlaceholderHypothesis(h: { expectedEffect: string }): boolean {
+  const effect = h.expectedEffect.trim();
+  return !effect || /^OPERATOR MUST WRITE\b/i.test(effect);
+}
+
+function mapHypothesis(raw: unknown): ProductHypothesis {
+  const o = (raw ?? {}) as Record<string, unknown>;
+  const h = {
+    id: str(o.id),
+    statement: str(o.statement),
+    expectedEffect: str(o.expected_effect),
+    metrics: arr(o.metrics).map(str).filter(Boolean),
+    window: str(o.observation_window),
+  };
+  return { ...h, placeholder: isPlaceholderHypothesis(h) };
+}
+
 function mapLoop(p: Record<string, unknown>): ProductLoop {
   const byMetric = (p.signals_by_metric ?? {}) as Record<string, unknown>;
   const signals: ProductSignal[] = [];
@@ -79,6 +117,8 @@ function mapLoop(p: Record<string, unknown>): ProductLoop {
   return {
     productId: str(p.product_id),
     name: str(p.name) || str(p.product_id),
+    aliases: arr(p.aliases).map(str).filter(Boolean),
+    hypotheses: arr(p.open_hypotheses).map(mapHypothesis),
     signals,
     metricNames: metricNames.sort(),
     hypothesisCount: arr(p.open_hypotheses).length,
@@ -166,6 +206,72 @@ export function latestProductSignals(signals: ProductSignal[]): ProductSignal[] 
   return [...latest.values()];
 }
 
+/* ---------- one card per app ---------- */
+
+/** An app from the catalog (`compound product growth --json` apps): its id, name and other ids. */
+export type LoopCatalogApp = { readonly productId: string; readonly name: string; readonly aliases?: readonly string[] };
+
+/** Lowercase letters and digits of an id, `product:` dropped: "product:Pocket_Log" → "pocketlog". */
+function loopKey(id: string): string {
+  return id.trim().toLowerCase().replace(/^product:/, "").replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+/**
+ * One card per app. Rows whose id or aliases name the same catalog app (by
+ * any spelling) fold into one, named and keyed by the catalog. Rows no
+ * catalog app claims stay as they are. `missing` lists catalog apps with no
+ * row at all, so the page can say so instead of leaving them out silently.
+ */
+export function foldLoopsByApp(loops: readonly ProductLoop[], catalog: readonly LoopCatalogApp[] | null): { loops: ProductLoop[]; missing: LoopCatalogApp[] } {
+  const byKey = new Map<string, LoopCatalogApp>();
+  for (const app of catalog ?? []) for (const id of [app.productId, app.name, ...(app.aliases ?? [])]) if (loopKey(id) && !byKey.has(loopKey(id))) byKey.set(loopKey(id), app);
+  const groups = new Map<string, { app: LoopCatalogApp | null; rows: ProductLoop[] }>();
+  for (const loop of loops) {
+    const app = [loop.productId, ...loop.aliases].map((id) => byKey.get(loopKey(id))).find(Boolean) ?? null;
+    const key = app ? app.productId : loopKey(loop.productId) || loop.productId;
+    const group = groups.get(key) ?? { app, rows: [] };
+    group.rows.push(loop);
+    groups.set(key, group);
+  }
+  const folded = [...groups.values()].map(({ app, rows }) => {
+    const signals = rows.flatMap((r) => r.signals);
+    const reviews = rows.flatMap((r) => r.reviews).sort((a, b) => b.reviewedAt.localeCompare(a.reviewedAt));
+    const latest = (pick: (r: ProductLoop) => string) => rows.map(pick).filter(Boolean).sort().at(-1) ?? "";
+    const ids = [...new Set(rows.flatMap((r) => [r.productId, ...r.aliases]))];
+    const productId = app?.productId ?? rows[0].productId;
+    return {
+      productId,
+      name: app?.name ?? (rows[0].name === rows[0].productId ? humanizeProductId(rows[0].productId) : rows[0].name),
+      aliases: ids.filter((id) => id !== productId),
+      hypotheses: rows.flatMap((r) => r.hypotheses),
+      signals,
+      metricNames: [...new Set(rows.flatMap((r) => r.metricNames))].sort(),
+      hypothesisCount: rows.reduce((n, r) => n + r.hypothesisCount, 0),
+      reviews,
+      sourceIssueCount: rows.reduce((n, r) => n + r.sourceIssueCount, 0),
+      freshness: {
+        latestSignalAt: latest((r) => r.freshness.latestSignalAt),
+        latestReviewAt: latest((r) => r.freshness.latestReviewAt),
+        stale: rows.filter((r) => r.signalCount > 0).every((r) => r.freshness.stale),
+      },
+      loopGaps: [...new Set(rows.flatMap((r) => r.loopGaps))],
+      signalCount: signals.length,
+    } satisfies ProductLoop;
+  });
+  const present = new Set(folded.map((l) => l.productId));
+  return { loops: folded, missing: (catalog ?? []).filter((app) => !present.has(app.productId)) };
+}
+
+/** A real verdict waits: the CLI says one is ready and at least one open idea has an expected effect someone wrote. */
+export function verdictDue(loop: ProductLoop): boolean {
+  return loop.loopGaps.includes("review_ready") && loop.hypotheses.some((h) => !h.placeholder);
+}
+
+/** The Decide address of an app's product results decision. */
+export function productResultsDecision(productId: string): string {
+  return `product-reviews|${productId}`;
+}
+
 /* ---------- display helpers (plain language, never system slugs) ---------- */
 
 export function productDisplayName(productId: string): string {
@@ -209,8 +315,18 @@ const AD_PLATFORM_LABEL: Record<string, string> = {
   other: "Ads",
 };
 
+/**
+ * A metric in words. Known metrics have a name; others drop the source prefix
+ * (the card already shows the source) and say "US dollars" for `_usd`.
+ */
 export function metricLabel(metric: string): string {
-  return METRIC_LABEL[metric] ?? metric.replace(/_/g, " ");
+  if (METRIC_LABEL[metric]) return METRIC_LABEL[metric];
+  const bare = metric
+    .replace(/^(app_store_connect|app_store|app|gsc|ga4|ads|posthog|revenuecat)[._]/, "")
+    .replace(/_usd$/, " in US dollars")
+    .replace(/[._]+/g, " ")
+    .trim();
+  return bare ? bare.charAt(0).toUpperCase() + bare.slice(1) : metric;
 }
 
 export function metricSurface(metric: string, provider: string): { label: string; accent: Accent } {
@@ -297,34 +413,30 @@ export function groupSignalsByLens(
   }));
 }
 
-/** The doctor is the "what's my next move" engine — turn loop gaps into a plain
- *  sentence + the exact command that reveals/executes the next step. */
+/**
+ * What happens next for one app's results, in one plain sentence: who acts,
+ * or that nothing waits. No command: commands live behind a disclosure for
+ * agents, and never with a placeholder.
+ */
 export function nextMove(loop: ProductLoop): { text: string; cmd: string } {
-  const id = loop.productId;
-  const doctor = `compound product doctor ${id}`;
+  const doctor = `compound product doctor ${loop.productId}`;
   if (loop.signalCount === 0) {
-    return {
-      text: "Connected, but no signal yet — feed it a metric to start the loop.",
-      cmd: `compound product signal --asc-datapoints <daily.json> --product ${id} --app-id <asc_id>`,
-    };
+    return { text: "Nothing measured yet. Results start once a data source reports for this app.", cmd: "" };
+  }
+  if (verdictDue(loop)) {
+    return { text: "A change was measured against what it was expected to do. Your verdict is due.", cmd: doctor };
   }
   if (loop.loopGaps.includes("review_ready")) {
     return {
-      text: "A signal and hypothesis are matched — record the verdict to close the loop.",
+      text: "Nothing waits for you. The only open ideas are drafts made from a data snapshot, with no expected effect written, so there is no change to judge.",
       cmd: doctor,
     };
   }
   if (loop.loopGaps.includes("signals_without_hypothesis")) {
-    return {
-      text: `${loop.signalCount} signals with no hypothesis yet — form one to turn evidence into a loop.`,
-      cmd: doctor,
-    };
+    return { text: `${loop.signalCount} observations, but no change with an expected effect is recorded, so there is nothing to judge yet.`, cmd: doctor };
   }
   if (loop.loopGaps.includes("hypothesis_without_signal")) {
-    return {
-      text: "A hypothesis is waiting for a matching signal.",
-      cmd: doctor,
-    };
+    return { text: "An idea waits for its first matching measurement.", cmd: doctor };
   }
-  return { text: "Loop is current — no open gap.", cmd: doctor };
+  return { text: "Up to date: nothing open.", cmd: doctor };
 }

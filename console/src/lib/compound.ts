@@ -106,6 +106,19 @@ export async function runCompound(args: string[]): Promise<CompoundRunResult> {
   return { stdout, stderr };
 }
 
+/** A read whose answer is bytes, not text (an image a projection serves).
+ * It goes through this door like every other read, so a route never names
+ * the home itself. The caller states the size and time it accepts. */
+export async function runCompoundBytes(args: string[], opts: { timeoutMs: number; maxBytes: number }): Promise<Uint8Array> {
+  const { stdout } = await exec(COMPOUND_BIN, args, {
+    env: consoleChildEnv({ COMPOUND_HOME }),
+    encoding: "buffer",
+    timeout: opts.timeoutMs,
+    maxBuffer: opts.maxBytes,
+  });
+  return new Uint8Array(stdout);
+}
+
 export function compoundFailure(error: unknown): CompoundRunFailure {
   const err = error as Partial<CompoundRunFailure> & {
     stdout?: unknown;

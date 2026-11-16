@@ -21,6 +21,19 @@ for (const [name, result] of suites) {
     ok = false;
   }
 }
+// The pages under Agents and Settings, rendered against a synthetic binary
+// (scripts/agents-pages-cases.mjs). It owns its scratch home and cache and
+// moves the read layer's global state, so it runs in its own process.
+{
+  const { fileURLToPath } = await import("node:url");
+  const { spawnSync } = await import("node:child_process");
+  const cases = fileURLToPath(new URL("./agents-pages-cases.mjs", import.meta.url));
+  const run = spawnSync(process.execPath, [cases], { stdio: "inherit", env: process.env, timeout: 240_000 });
+  if (run.status !== 0) {
+    console.error("[agents-pages] cases FAILED");
+    ok = false;
+  }
+}
 if (!ok) {
   console.error("traffic-board smoke FAILED");
   process.exit(1);

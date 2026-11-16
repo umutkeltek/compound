@@ -1,93 +1,17 @@
 "use client";
 
-import { isOperatorActionSupported } from "@/lib/operator-action";
-import { fetchWithOperatorSession } from "@/lib/operator-session-client";
-import { AgentHandoff } from "@/components/AgentHandoff";
-
-import * as Dialog from "@radix-ui/react-dialog";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { CopyCmd } from "@/components/CopyCmd";
-import { AuthorityFaceDetails } from "@/components/authority/AuthorityFaceDetails";
-import { Button, FreshnessChip, StateBadge, Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/kit";
-import {
-  decideReadinessSections,
-  enumerableAuthorityFaces,
-  queueSystemicBlocker,
-  remainingDecideMembers,
-  type EnumerableAuthorityFace,
-  type SystemicBlocker,
-} from "@/lib/decide-members";
-import { genericReviewResolutionActs } from "@/lib/decide-resolution-acts";
-import type { DecideBrief, DecideBriefOption, DecideDomain, DecideGroup, DecideMember } from "@/lib/decide-model";
-import type { DecisionEffectKind } from "@/lib/decision-registry";
-import { buildEnumerableActionRequest, decideActIdentity, RATIONALE_REQUIRED_MESSAGE } from "@/lib/governed-action-client";
-import { OPERATOR_INPUTS } from "@/lib/operator-inputs";
-import { ownerUnavailableMessage } from "@/lib/glossary";
+import { FreshnessChip } from "@/components/kit";
+import type { DecideDomain, DecideGroup, DecideMember, DecisionAbout, HeldWorkRow } from "@/lib/decide-model";
+import { ago } from "@/lib/time";
 import { humanizeProductId } from "@/lib/app-identity";
-import { plainArea, plainDecisionState, plainNextStep, plainReach, plainReason, plainText, plainWhy, productTitle, standingLine } from "@/lib/plain-words";
-import { GovernedAct, type ExecuteResult } from "./GovernedAct";
-import { DecisionContext } from "./DecisionContext";
-import { EvidenceReference } from "@/components/memory/EvidenceReference";
-
-/** Decide's two lists, in plain words (the split itself is decide-members' face-state rule). */
-const SECTION_COPY: Record<"act_now" | "needs_context", { label: string; description: string }> = {
-  act_now: { label: "Ready to review", description: "An owner workflow is available." },
-  needs_context: { label: "Needs a closer look", description: "Open a decision to see the next step." },
-};
-
-/** The system's reason in plain words (lib/plain-words.ts owns the mapping). */
-const blockedReasonPlain = plainReason;
+import { plainArea, plainText, productTitle } from "@/lib/plain-words";
 import { PanelProofContinuity } from "./PanelProofContinuity";
-
-const STANDING_DOT: Record<"good" | "seam" | "muted", string> = {
-  good: "bg-good",
-  seam: "bg-seam",
-  muted: "bg-faint",
-};
-
-/**
- * Where one decision stands, in one line: what its freshest check found, and
- * when that check ran if it is older than the live window. The standing is
- * computed on the server (lib/decide-model.ts); a group without one (built
- * outside the model) falls back to its face label and reason.
- */
-function standingOf(group: DecideGroup): { text: string; tone: "good" | "seam" | "muted" } {
-  if (group.standing) return standingLine(group.standing);
-  const reason = group.face.primaryAction ? "" : blockedReasonPlain(group.face.unavailableReason);
-  return {
-    text: [plainDecisionState(group.face.stateLabel), reason].filter(Boolean).join(": "),
-    tone: group.face.state === "ready" ? "good" : "muted",
-  };
-}
-
-function StandingText({ group, className = "" }: { group: DecideGroup; className?: string }) {
-  const { text, tone } = standingOf(group);
-  return (
-    <span className={`flex items-start gap-1.5 text-2xs leading-snug text-muted ${className}`} data-standing={group.standing?.kind ?? ""}>
-      <span aria-hidden className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${STANDING_DOT[tone]}`} />
-      <span className="line-clamp-3">{text}</span>
-    </span>
-  );
-}
-
-/**
- * Said once above the list when every decision that cannot be decided now
- * stands the same way (same words); the rows then stay quiet. Mixed reasons
- * get no banner: each row says its own.
- */
-function standingBanner(groups: DecideGroup[]): { title: string; text: string } | null {
-  const waiting = groups.filter((group) => group.face.state !== "ready");
-  if (waiting.length < 2) return null;
-  const texts = waiting.map((group) => standingOf(group).text);
-  if (!texts.every((text) => text === texts[0]) || !texts[0]) return null;
-  return {
-    title: waiting.length === groups.length ? "Why none can be decided now" : `Why ${waiting.length} of ${groups.length} cannot be decided now`,
-    text: texts[0],
-  };
-}
+import { EvidenceReference } from "@/components/memory/EvidenceReference";
 
 /* Domain hue is accent-only (glyph tile + dot); the needs-you seam is amber. */
 const DOMAIN_TILE: Record<DecideDomain, string> = {
@@ -116,25 +40,6 @@ function titled(value: string): { text: string; id: string } {
   return productTitle(operatorText(value), humanizeProductId);
 }
 
-function TitleId({ id, className = "" }: { id: string; className?: string }) {
-  return id ? <span className={`mono block truncate text-2xs font-normal text-faint ${className}`} title={id}>{id}</span> : null;
-}
-
-function actorLabel(value: string): string {
-  return value
-    .split(/[_-]+/)
-    .filter(Boolean)
-    .map((part) => {
-      const lower = part.toLowerCase();
-      if (lower === "api") return "API";
-      if (lower === "codex") return "Codex";
-      if (lower === "claude") return "Claude";
-      if (lower === "switchback") return "Switchback";
-      return part.charAt(0).toUpperCase() + part.slice(1);
-    })
-    .join(" ");
-}
-
 function GlyphTile({ domain, glyph }: { domain: DecideDomain; glyph: string }) {
   return (
     <span
@@ -146,402 +51,7 @@ function GlyphTile({ domain, glyph }: { domain: DecideDomain; glyph: string }) {
   );
 }
 
-function ConsequencePair({ approve, hold }: { approve: string; hold: string }) {
-  return (
-    <div className="mt-2 rounded-md bg-soft px-3 py-2 text-xs leading-relaxed">
-      <div className="text-ink">
-        <span className="font-semibold text-good">if you act</span>
-        <span className="text-faint"> → </span>
-        {approve}
-      </div>
-      <div className="mt-0.5 text-muted">
-        <span className="font-semibold">if you wait</span>
-        <span> → </span>
-        {hold}
-      </div>
-    </div>
-  );
-}
-
-/* ---------- decision-brief translation (propose-only; display-only) ----------
- * Renders ONLY when a card's group carries a prepared, already-validated
- * `brief` (see decide-model.ts groupBrief — scans every group member, not
- * just group.sample). Un-briefed cards render with `group.brief` undefined/
- * null, so this whole block is absent and every byte above/below it is
- * exactly what rendered before this packet (the frozen-markup guarantee).
- * `command_argv` is copy/display material ONLY — never wired to a fetch, so
- * a brief can never introduce a new execution path (see AGENTS.md boundary:
- * "Do not wire brief-sourced argv into /api/decision/execute").
- */
-function BriefOptionRow({ option, recommended }: { option: DecideBriefOption; recommended: boolean }) {
-  const argv = option.commandArgv;
-  const copyCmd = argv && argv.length ? (argv[0] === "compound" ? argv.join(" ") : `compound ${argv.join(" ")}`) : "";
-  return (
-    <div
-      className={`rounded-md border px-3 py-2 text-xs leading-relaxed ${
-        recommended ? "border-good/40 bg-good/5" : "border-hair bg-soft"
-      }`}
-    >
-      <div className="flex items-center gap-1.5">
-        <span className="font-semibold text-ink">{option.label || option.value}</span>
-        {recommended ? (
-          <span className="rounded-pill bg-good/15 px-1.5 py-0.5 text-2xs font-semibold text-good">recommended</span>
-        ) : null}
-      </div>
-      {option.consequenceApprove ? (
-        <div className="mt-1 text-ink">
-          <span className="font-semibold text-good">if chosen</span>
-          <span className="text-faint"> → </span>
-          {option.consequenceApprove}
-        </div>
-      ) : null}
-      {option.consequenceHold ? (
-        <div className="mt-0.5 text-muted">
-          <span className="font-semibold">if not</span>
-          <span> → </span>
-          {option.consequenceHold}
-        </div>
-      ) : null}
-      {copyCmd ? (
-        <div className="mt-1.5">
-          <CopyCmd cmd={copyCmd} compact />
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function BriefPanel({ brief }: { brief: DecideBrief }) {
-  return (
-    <div className="mt-3 rounded-md border border-hair bg-page px-3 py-2.5">
-      <div className="flex items-start justify-between gap-2">
-        <div className="text-sm font-semibold leading-snug text-ink">{brief.headline}</div>
-        <span
-          className="shrink-0 rounded-pill border border-hair bg-soft px-2 py-0.5 text-2xs font-medium text-muted"
-          title="This translation was prepared by an agent session for you — not the operator, not auto-applied."
-        >
-          prepared by {actorLabel(brief.preparedBy)}
-        </span>
-      </div>
-      {brief.whatThisIs ? <p className="mt-1 text-xs leading-relaxed text-muted">{brief.whatThisIs}</p> : null}
-      {brief.findings.length ? (
-        <ul className="mt-2 flex flex-col gap-1">
-          {brief.findings.map((f, i) => (
-            <li key={i} className="text-xs leading-relaxed text-ink">
-              <span>{f.finding}</span>{" "}
-              {f.evidenceRef ? (
-                <code className="mono text-2xs text-faint" title={f.evidenceRef}>
-                  {f.evidenceRef}
-                </code>
-              ) : null}
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      {brief.options.length ? (
-        <div className="mt-2 flex flex-col gap-1.5">
-          {brief.options.map((o, i) => (
-            <BriefOptionRow
-              key={o.value || i}
-              option={o}
-              recommended={Boolean(brief.recommendation.option) && o.value === brief.recommendation.option}
-            />
-          ))}
-        </div>
-      ) : null}
-      {brief.recommendation.rationale ? (
-        <p className="mt-2 text-2xs leading-relaxed text-faint">
-          <span className="font-semibold text-muted">why this lean</span> — {brief.recommendation.rationale}
-          {brief.recommendation.confidence ? ` (confidence ${Math.round(brief.recommendation.confidence * 100)}%)` : ""}
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
 /* ---------- enumerable batch: per-member checkboxes + exclusion ---------- */
-
-const ENUMERABLE_ACTION_COPY: Record<DecisionEffectKind, {
-  imperative: string;
-  progressive: string;
-  past: string;
-  completed: string;
-  confirmationLead: string;
-}> = {
-  apply: {
-    imperative: "Apply",
-    progressive: "Applying",
-    past: "Applied",
-    completed: "applied",
-    confirmationLead: "Applies the selected action to",
-  },
-  record: {
-    imperative: "Record",
-    progressive: "Recording",
-    past: "Recorded",
-    completed: "recorded",
-    confirmationLead: "Records the reviewed decision for",
-  },
-  track: {
-    imperative: "Plan",
-    progressive: "Planning",
-    past: "Planned",
-    completed: "planned",
-    confirmationLead: "Plans the tracked step for",
-  },
-};
-
-function EnumerableApply({
-  area,
-  members,
-  excluded,
-  onToggle,
-  mutationsEnabled,
-  requiresConfirmation,
-  requiresRationale,
-  effectKind,
-  policyNote,
-  label,
-  authorityBound,
-  representedCount,
-  unavailableCount,
-}: {
-  area: string;
-  members: DecideMember[];
-  excluded: Set<string>;
-  onToggle: (id: string) => void;
-  mutationsEnabled: boolean;
-  requiresConfirmation: boolean;
-  requiresRationale: boolean;
-  effectKind: DecisionEffectKind;
-  policyNote: string;
-  label: string;
-  authorityBound: boolean;
-  representedCount: number;
-  unavailableCount: number;
-}) {
-  const router = useRouter();
-  const [open, setOpen] = useState(false);
-  const [running, setRunning] = useState(false);
-  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [rationale, setRationale] = useState("");
-  const [completed, setCompleted] = useState<Set<string>>(() => new Set());
-
-  const included = remainingDecideMembers(members, excluded, completed);
-  const sessionActionsReady = included.every((member) => isOperatorActionSupported(buildEnumerableActionRequest(area, member, false, "")));
-  // Operator-input areas label the confirm textarea from the shared spec
-  // (Rationale for review-record areas; Expected effect for hypothesis
-  // approval) instead of hardcoding the rationale wording.
-  const operatorInput = OPERATOR_INPUTS[area];
-  const actionCopy = ENUMERABLE_ACTION_COPY[effectKind];
-  const isSingleton = representedCount === 1 && members.length === 1;
-  const singletonMember = isSingleton ? members[0] : null;
-  const scopeLabel = `${members.length} ready of ${representedCount}`;
-  const unchangedLabel = unavailableCount > 0
-    ? `${unavailableCount} unavailable ${unavailableCount === 1 ? "member remains" : "members remain"} unchanged.`
-    : "";
-  const selectedAuthorityFaces = authorityBound ? enumerableAuthorityFaces(included) : [];
-  const authorityFacesComplete = selectedAuthorityFaces !== null;
-
-  const apply = useCallback(async (operatorRationale: string) => {
-    if (!mutationsEnabled || running || included.length === 0 || !authorityFacesComplete || !sessionActionsReady) return;
-    if (requiresRationale && !operatorRationale.trim()) {
-      setError(RATIONALE_REQUIRED_MESSAGE);
-      return;
-    }
-    setRunning(true);
-    setError(null);
-    setProgress({ done: 0, total: included.length });
-    let failed = "";
-    let completedThisRun = 0;
-    for (let i = 0; i < included.length; i++) {
-      const member = included[i];
-      try {
-        const response = await fetchWithOperatorSession("/api/decision/execute", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(buildEnumerableActionRequest(
-            area,
-            member,
-            requiresConfirmation,
-            operatorRationale.trim(),
-          )),
-        });
-        const body = (await response.json().catch(() => null)) as { ok?: boolean; stderr?: string } | null;
-        if (!response.ok || !body?.ok) {
-          failed = body?.stderr || `member ${member.id} failed (${response.status})`;
-          break;
-        }
-      } catch (e) {
-        failed = e instanceof Error ? e.message : "request failed";
-        break;
-      }
-      completedThisRun = i + 1;
-      setCompleted((previous) => new Set(previous).add(member.id));
-      setProgress({ done: completedThisRun, total: included.length });
-    }
-    setRunning(false);
-    if (failed) {
-      setProgress({ done: completedThisRun, total: included.length });
-      setError(completedThisRun > 0 ? `${actionCopy.past} ${completedThisRun} of ${included.length}; ${failed}. Refreshing owner truth.` : failed);
-      router.refresh();
-    }
-    else {
-      setOpen(false);
-      router.refresh();
-    }
-  }, [actionCopy.past, area, authorityFacesComplete, included, sessionActionsReady, mutationsEnabled, requiresConfirmation, requiresRationale, running, router]);
-
-  const trigger = useCallback(() => {
-    if (!mutationsEnabled || running || included.length === 0 || !authorityFacesComplete || !sessionActionsReady) return;
-    setError(null);
-    if (requiresConfirmation) {
-      setOpen(true);
-      return;
-    }
-    void apply("");
-  }, [apply, authorityFacesComplete, included.length, sessionActionsReady, mutationsEnabled, requiresConfirmation, running]);
-
-  return (
-    <div className="flex flex-col gap-2">
-      {unavailableCount > 0 ? (
-        <section className="rounded-md border border-seam-line bg-seam-soft px-3 py-2" aria-label="Executable member scope">
-          <div className="text-xs font-semibold text-seam">{scopeLabel}</div>
-          <p className="mt-0.5 text-2xs leading-relaxed text-muted">{unchangedLabel}</p>
-        </section>
-      ) : null}
-      <ul className="flex flex-col gap-1">
-        {members.map((m) => {
-          const isCompleted = completed.has(m.id);
-          const isIncluded = !excluded.has(m.id) && !isCompleted;
-          return (
-            <li key={m.id}>
-              <label
-                title={m.id}
-                className={`flex min-h-8 cursor-pointer items-center gap-2 rounded-sm px-2 py-1 ${isCompleted ? "cursor-default opacity-60" : "hover:bg-soft"}`}
-              >
-                <input
-                  type="checkbox"
-                  checked={isIncluded}
-                  disabled={isCompleted}
-                  onChange={() => onToggle(m.id)}
-                  className="h-4 w-4 shrink-0 accent-work"
-                />
-                <span className="min-w-0 flex-1" title={m.label}>
-                  <span className="line-clamp-2 block text-xs leading-snug text-muted">
-                    {m.label}{isCompleted ? ` · ${actionCopy.completed}` : ""}
-                  </span>
-                  {m.proposedAtLabel ? (
-                    <time dateTime={m.proposedAt} className="mt-0.5 block text-2xs tabular-nums text-faint">
-                      Proposed {m.proposedAtLabel}
-                    </time>
-                  ) : null}
-                </span>
-              </label>
-            </li>
-          );
-        })}
-      </ul>
-      {authorityBound && selectedAuthorityFaces ? (
-        <EnumerableAuthorityList members={selectedAuthorityFaces} />
-      ) : null}
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          variant="primary"
-          disabled={!mutationsEnabled || running || included.length === 0 || !authorityFacesComplete || !sessionActionsReady}
-          onClick={trigger}
-          title={mutationsEnabled ? undefined : "Launch via 'compound console --operator' to act from a pinned console."}
-        >
-          {running
-            ? isSingleton
-              ? `${actionCopy.progressive}…`
-              : `${actionCopy.progressive} ${progress?.done ?? 0}/${progress?.total ?? included.length}…`
-            : isSingleton
-              ? label
-              : unavailableCount > 0
-                ? requiresConfirmation
-                  ? `Review ${included.length} ready of ${representedCount}`
-                  : `${actionCopy.imperative} ${included.length} ready of ${representedCount}`
-              : requiresConfirmation
-              ? `Review ${included.length} of ${members.length}`
-              : `${actionCopy.imperative} ${included.length} of ${members.length}`}
-        </Button>
-        <span className="text-2xs text-faint">
-          {unavailableCount > 0
-            ? `Only ready members can run. ${unchangedLabel}`
-            : isSingleton && policyNote
-            ? policyNote
-            : `Each member is ${actionCopy.completed} on its own; excluded members are skipped.`}
-        </span>
-      </div>
-      {!open && error ? <span role="alert" className="text-2xs leading-snug text-crit">{error}</span> : null}
-      {authorityBound && !authorityFacesComplete ? (
-        <span role="alert" className="text-2xs leading-snug text-crit">
-          Current member authority is incomplete. Refresh before acting.
-        </span>
-      ) : null}
-
-      <Dialog.Root open={open} onOpenChange={(next) => { if (!running) setOpen(next); }}>
-        <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 z-50 bg-strong/35 backdrop-blur-sm motion-reduce:backdrop-blur-none" />
-          <Dialog.Content className="fixed top-1/2 left-1/2 z-50 max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-y-auto overscroll-contain rounded-lg border border-hair bg-panel p-5 shadow-lg focus:outline-none">
-            <Dialog.Title className="text-md font-semibold text-ink">Confirm {label}</Dialog.Title>
-            <Dialog.Description className="mt-2 text-sm leading-relaxed text-muted">
-              {isSingleton ? (
-                <>This will run <span className="font-medium text-ink">“{label}”</span> for {singletonMember?.label ?? "this item"}.</>
-              ) : (
-                <>{actionCopy.confirmationLead} {included.length} selected ready members of {representedCount}, one at a time. {unchangedLabel || "Excluded members remain unchanged."} Completed members are not retried.</>
-              )}
-              {policyNote ? (
-                <span className="mt-3 block rounded-md border border-hair bg-soft px-3 py-2 text-xs leading-relaxed text-muted">
-                  <span className="font-semibold text-ink">Owner note:</span> {policyNote}
-                </span>
-              ) : null}
-            </Dialog.Description>
-            {authorityBound && selectedAuthorityFaces ? (
-              <EnumerableAuthorityList members={selectedAuthorityFaces} className="mt-4" />
-            ) : null}
-            {requiresRationale ? (
-              <label className="mt-3 flex flex-col gap-1">
-                <span className="text-2xs font-bold uppercase text-faint">{operatorInput?.label ?? "Rationale"} <span className="text-crit">*</span></span>
-                <textarea
-                  value={rationale}
-                  onChange={(event) => { setRationale(event.target.value); setError(null); }}
-                  required
-                  placeholder={operatorInput?.placeholder ?? "Why is this the right reviewed action? This becomes decision provenance."}
-                  className="min-h-24 resize-y rounded-md border border-hair bg-panel px-3 py-2 text-sm text-ink outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
-                />
-              </label>
-            ) : null}
-            {error ? (
-              <div role="alert" aria-live="assertive" className="mt-3 rounded-md border border-crit-line bg-crit-soft px-3 py-2 text-xs leading-relaxed text-crit">
-                {error}
-              </div>
-            ) : null}
-            <div className="mt-4 flex justify-end gap-2">
-              <Dialog.Close asChild><Button variant="secondary" disabled={running}>Cancel</Button></Dialog.Close>
-              <Button
-                variant="primary"
-                disabled={running}
-                onClick={() => void apply(rationale)}
-                title={requiresRationale && !rationale.trim() ? RATIONALE_REQUIRED_MESSAGE : undefined}
-              >
-                {running
-                  ? isSingleton
-                    ? `${actionCopy.progressive}…`
-                    : `${actionCopy.progressive} ${progress?.done ?? 0}/${progress?.total ?? included.length}…`
-                  : isSingleton
-                    ? `Confirm ${label}`
-                    : `Confirm ${included.length}`}
-              </Button>
-            </div>
-          </Dialog.Content>
-        </Dialog.Portal>
-      </Dialog.Root>
-    </div>
-  );
-}
 
 /* ---------- read-only member list (atomic-run / bespoke / copy) ---------- */
 
@@ -581,52 +91,6 @@ function ReadonlyMembers({ members, atomic }: { members: DecideMember[]; atomic:
   );
 }
 
-const CAPABILITY_TONE: Record<DecideGroup["capability"]["kind"], string> = {
-  apply: "border-good-line bg-good-soft text-good",
-  record: "border-hair bg-soft text-muted",
-  track: "border-work-line bg-work-soft text-work",
-  unavailable: "border-seam-line bg-seam-soft text-seam",
-};
-
-function CapabilityStatus({ group, compact = false }: { group: DecideGroup; compact?: boolean }) {
-  // The compact badge stays terse by design (a status pill, not a sentence);
-  // the hover title carries the named-owner detail so even the list row
-  // never leaves an operator with just the bare "Owner action unavailable"
-  // label and nothing else.
-  const detail = group.capability.kind === "unavailable" && group.reviewResolutionItemId
-    ? ownerUnavailableMessage(group.area)
-    : group.capability.detail;
-  return (
-    <span
-      className={`inline-flex shrink-0 items-center rounded-pill border font-semibold ${CAPABILITY_TONE[group.capability.kind]} ${
-        compact ? "px-2 py-0.5 text-2xs" : "px-2.5 py-1 text-xs"
-      }`}
-      title={detail}
-    >
-      {group.capability.label}
-    </span>
-  );
-}
-
-function EnumerableAuthorityList({
-  members,
-  className = "",
-}: {
-  members: EnumerableAuthorityFace[];
-  className?: string;
-}) {
-  return (
-    <section className={`${className} flex flex-col gap-3`} aria-label="Selected member authorities">
-      {members.map((member) => (
-        <div key={member.id} className="rounded-md border border-hair bg-soft p-2">
-          <div className="mb-2 text-xs font-semibold leading-snug text-ink">{member.label}</div>
-          <AuthorityFaceDetails authority={member.authority} embedded />
-        </div>
-      ))}
-    </section>
-  );
-}
-
 function DecisionRow({
   group,
   selected,
@@ -634,7 +98,6 @@ function DecisionRow({
   onActivate,
   onFocus,
   onKeyDown,
-  demoteBlockedStamp,
 }: {
   group: DecideGroup;
   selected: boolean;
@@ -642,16 +105,13 @@ function DecisionRow({
   onActivate: () => void;
   onFocus: () => void;
   onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => void;
-  /** True when the banner above the list already says this row's exact
-   * standing once for the whole queue — the row goes quiet instead of
-   * repeating it. */
-  demoteBlockedStamp: boolean;
 }) {
   return (
     <button
       ref={rowRef}
       type="button"
       aria-pressed={selected}
+      data-decision-row={group.key}
       onClick={onActivate}
       onFocus={onFocus}
       onKeyDown={onKeyDown}
@@ -668,24 +128,17 @@ function DecisionRow({
             title={group.face.proposedAtLabel || "Proposal time unavailable"}
             className={`shrink-0 text-2xs tabular-nums ${group.old ? "font-semibold text-seam" : "text-faint"}`}
           >
-            {group.ageLabel}
+            {group.headline?.waiting ? `waiting ${group.headline.waiting}` : group.ageLabel}
           </time>
         </span>
-        {/* Row headline is the real object text, not a category template —
-         * the same WHAT the detail card leads with (decide-model.ts's
-         * objectText). Falls back to the title for the (common) areas where
-         * title already carries the real headline. */}
+        {/* The row says what Today's row says (decide-model decisionHeadline):
+         * the app or thing it is about and the record's own words. */}
+        {group.headline?.about ? <span className="mt-1 block truncate text-xs font-semibold text-muted">{group.headline.about.label}</span> : null}
         <span className="mt-1 line-clamp-2 block text-sm font-semibold leading-snug text-ink">
-          {titled(group.objectText || group.title).text}
+          {group.headline?.subject || group.headline?.question || titled(group.objectText || group.title).text}
         </span>
-        <TitleId id={titled(group.objectText || group.title).id} className="mt-0.5" />
-        {demoteBlockedStamp || (!selected && group.standing?.kind === "no_button") ? null : <StandingText group={group} className="mt-2" />}
-        {group.count > 1 ? <span className="mono mt-1 block text-2xs text-faint">{group.count} items</span> : null}
-        {group.face.primaryAction ? (
-          <span className="mt-1.5 block truncate text-2xs font-semibold text-muted" title={group.face.primaryAction.label}>
-            Next: {group.face.primaryAction.label}
-          </span>
-        ) : null}
+        {group.headline?.needsWording ? <span className="mt-1 block text-2xs text-seam">An agent must word this first</span> : null}
+        {group.count > 1 ? <span className="mt-1 block text-2xs text-faint">{group.count} items</span> : null}
       </span>
     </button>
   );
@@ -749,281 +202,126 @@ function HistoryPanel({ group }: { group: DecideGroup }) {
             </p>
           </div>
         </li>
-        <li className="grid grid-cols-[auto_1fr] gap-3 rounded-md border border-hair bg-soft px-3 py-2.5">
-          <span aria-hidden className="mt-1 h-2 w-2 rounded-full bg-work" />
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs font-semibold text-ink">Where it stands now</span>
-              <StateBadge state={group.face.state} label={plainDecisionState(group.face.stateLabel)} />
-            </div>
-            <p className="mt-1 text-xs text-muted">This is the latest available status. A complete activity history is not included in this review.</p>
-          </div>
-        </li>
       </ol>
       {group.members.length > 1 ? <ReadonlyMembers members={group.members} atomic={group.act.mode === "batch-atomic"} /> : null}
     </div>
   );
 }
 
-function ComparePanel({ group }: { group: DecideGroup }) {
-  const preparedOptions = group.brief?.options ?? [];
-  const genericPaths = [
-    {
-      key: "act",
-      label: group.face.primaryAction?.label || "Act now",
-      consequence: group.consequences?.approve || "",
-      tone: "good",
-    },
-    {
-      key: "wait",
-      label: "Wait",
-      consequence: group.consequences?.hold || "",
-      tone: "memory",
-    },
-  ];
-  return (
-    <div className="grid gap-4">
-      <div>
-        <div className="text-2xs font-bold uppercase tracking-wide text-faint">Your choices</div>
-        <p className="mt-1 text-xs leading-relaxed text-muted">
-          What each choice does, in the system&apos;s own words. Where it says nothing, the result is unknown.
-        </p>
-      </div>
-      {preparedOptions.length ? (
-        <div className="grid gap-3 md:grid-cols-2">
-          {preparedOptions.map((option) => {
-            const recommended = group.brief?.recommendation.option === option.value;
-            return <div key={option.value} className={`rounded-lg border px-3 py-3 ${recommended ? "border-good-line bg-good-soft/45" : "border-hair bg-soft"}`}>
-              <div className="flex items-center justify-between gap-2"><div className="text-sm font-semibold text-ink">{option.label || option.value}</div>{recommended ? <span className="rounded-pill bg-good-soft px-2 py-0.5 text-2xs font-semibold text-good">prepared recommendation</span> : null}</div>
-              <div className="mt-3"><div className="section-label">If chosen</div><p className="mt-1 text-xs leading-relaxed text-ink">{option.consequenceApprove || "The system does not say."}</p></div>
-              <div className="mt-3"><div className="section-label">If not chosen</div><p className="mt-1 text-xs leading-relaxed text-muted">{option.consequenceHold || "The system does not say."}</p></div>
-            </div>;
-          })}
-        </div>
-      ) : (
-        <div className="grid gap-3 md:grid-cols-2">
-          {genericPaths.map((path) => <div key={path.key} className={`rounded-xl border px-4 py-4 ${path.tone === "good" ? "border-good-line bg-good-soft/45" : "border-memory-line bg-memory-soft/45"}`}>
-            <div className={`text-md font-semibold ${path.tone === "good" ? "text-good" : "text-memory"}`}>{path.label}</div>
-            <div className="mt-3 section-label">What happens</div>
-            <p className="mt-1 text-sm leading-relaxed text-ink">{path.consequence || "The system does not say."}</p>
-          </div>)}
-        </div>
-      )}
-      <div className="grid gap-3 sm:grid-cols-3">
-        <div className="rounded-md border border-hair bg-panel px-3 py-2"><div className="section-label">What it can touch</div><div className="mt-1 text-xs font-semibold text-ink" title={group.blastRadius || undefined}>{plainReach(group.blastRadius ?? "")}</div></div>
-        <div className="rounded-md border border-hair bg-panel px-3 py-2"><div className="section-label">Can it be undone?</div><div className="mt-1 text-xs font-semibold text-ink">{group.reversibility === "reversible" ? "Yes" : group.reversibility === "irreversible" ? "No" : "Not stated"}</div></div>
-        <div className="rounded-md border border-hair bg-panel px-3 py-2"><div className="section-label">Evidence</div><div className="mono mt-1 text-xs text-ink">{group.evidence.length} {group.evidence.length === 1 ? "record" : "records"}</div></div>
-      </div>
-      {group.brief?.recommendation.rationale ? <div className="rounded-md border border-hair bg-page px-3 py-2.5"><div className="section-label">Prepared rationale</div><p className="mt-1 text-xs leading-relaxed text-muted">{group.brief.recommendation.rationale}</p></div> : null}
-    </div>
+function AboutLink({ about }: { about: DecisionAbout }) {
+  return about.href ? (
+    <Link href={about.href} className="font-semibold text-work hover:underline">{about.label}</Link>
+  ) : (
+    <span className="font-semibold text-muted">{about.label}</span>
   );
 }
 
-function decisionIdentity(group: DecideGroup): string {
-  const { act } = group;
-  if (act.mode === "bespoke") {
-    return `${group.key}:${act.mode}:${act.itemId}:${act.expectedRevision}:${act.options.map((option) => option.value).join(",")}`;
-  }
-  if (act.mode === "generic") return `${group.key}:${act.mode}:${act.itemId}:${act.actionId}:${act.expectedRevision}:${act.actionIntentId ?? ""}:${act.expectedAuthorityRevision ?? ""}:${act.requiresConfirmation}:${act.effectKind}`;
-  if (act.mode === "batch-atomic") return `${group.key}:${act.mode}:${act.itemId}:${act.option}:${act.argv?.join(" ") ?? ""}`;
-  if (act.mode === "batch-enumerable") {
-    return `${group.key}:${act.mode}:${act.representedCount}:${act.unavailableCount}:${act.requiresConfirmation}:${act.requiresRationale}:${act.effectKind}:${act.members.map((member) => `${member.id}:${member.actionId}:${member.expectedRevision}:${member.actionIntentId ?? ""}:${member.expectedAuthorityRevision ?? ""}`).join("|")}`;
-  }
-  return `${group.key}:${act.mode}:${act.command}`;
+/** Held work, inline: each item with its title, app, recorded reason and since when, linking its page. */
+function HeldWorkList({ rows }: { rows: HeldWorkRow[] }) {
+  return (
+    <ul className="mt-3 divide-y divide-hair rounded-md border border-hair" aria-label="Held work items">
+      {rows.map((row) => (
+        <li key={row.id} className="grid gap-0.5 px-3 py-2.5">
+          <Link href={row.href} className="text-sm font-semibold text-work hover:underline">{row.title} →</Link>
+          <span className="text-xs text-muted">
+            {row.app ? <><AboutLink about={row.app} /> · </> : null}
+            {row.reason || "No reason was recorded for the hold."}
+          </span>
+          {row.since ? <span className="text-2xs text-faint">On hold since {ago(row.since)}</span> : null}
+        </li>
+      ))}
+    </ul>
+  );
 }
 
-function DecisionDetail({
-  group,
-  mutationsEnabled,
-  excluded,
-  onToggleMember,
-  retainedOutcome,
-  onExecuted,
-}: {
-  group: DecideGroup;
-  mutationsEnabled: boolean;
-  excluded: Set<string>;
-  onToggleMember: (id: string) => void;
-  retainedOutcome?: ExecuteResult | null;
-  onExecuted: (result: ExecuteResult) => void;
-}) {
-  const { act } = group;
-  const [tab, setTab] = useState<"summary" | "compare" | "action" | "history" | "evidence">(
-    "action",
-  );
-  const effectKind = group.capability.kind === "unavailable" ? "apply" : group.capability.kind;
-  const reviewResolutionActs = genericReviewResolutionActs(group);
+/**
+ * One decision as one card: the app or thing it is about, the question in
+ * one sentence, what a yes and a no would cause, whether it can be undone and
+ * what is recommended, from the kind's words (lib/decision-registry.ts) and
+ * the record. What the record does not say is named once. There is no button:
+ * how a decision moves today is said once at the top of the page. The record
+ * behind it sits in a closed disclosure for agents.
+ */
+function DecisionDetail({ group }: { group: DecideGroup }) {
+  const card = group.card;
+  const rows: { label: string; text: string | null }[] = card ? [
+    { label: "If you say yes", text: card.yes },
+    { label: "If you say no", text: card.no },
+    { label: "Can it be undone?", text: card.undo },
+    { label: "Recommended", text: card.recommendation },
+  ] : [];
   return (
-    <article className="decision-focus overflow-hidden rounded-xl border border-hair bg-panel">
+    <article className="decision-focus overflow-hidden rounded-xl border border-hair bg-panel" data-decision-card={group.key}>
       <header className="px-4 py-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="flex min-w-0 items-start gap-3">
-            <GlyphTile domain={group.domain} glyph={group.glyph} />
-            <div className="min-w-0 text-2xs font-bold uppercase text-faint">{group.face.kind}</div>
-          </div>
-          <StateBadge
-            state={group.face.state}
-            label={group.standing?.checking ? "Checking…" : group.face.state === "ready" ? "Ready" : "Not yet"}
-          />
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-2xs text-faint">
+          <span className="font-bold uppercase">{plainArea(group.area || group.areaLabel)}</span>
+          {card?.about ? <span>· {card.about.app ? "App " : ""}<AboutLink about={card.about} /></span> : null}
+          <span>· waiting {group.headline?.waiting || group.ageLabel}</span>
+          {group.count > 1 ? <span>· {group.count} items</span> : null}
         </div>
-
-        {/* 1. WHAT is being decided — the full object text, quoted, first and
-         * visually primary. Never gated behind a tab: this must read in the
-         * first three seconds regardless of which tab happens to be open. */}
-        <blockquote className="mt-3 max-w-read border-l-2 border-work-line pl-3 text-lg font-semibold leading-snug text-ink">
-          {group.objectText ? titled(group.objectText).text : "The system has not written down what this decision is about yet."}
-        </blockquote>
-        <TitleId id={titled(group.objectText).id} className="mt-1 pl-3.5" />
-        {group.title && group.title !== group.objectText ? (
-          <p className="mt-1 max-w-read text-xs font-medium text-muted">{titled(group.title).text}</p>
-        ) : null}
-
-        {/* 2. WHAT changes if approved — one sentence when derivable; the row
-         * is simply absent (no placeholder filler) when it is not. */}
-        {group.consequences?.approve ? (
-          <p className="mt-2 max-w-read text-sm leading-relaxed text-ink">
-            <span className="font-semibold text-good">What this action changes</span>
-            <span className="text-faint"> → </span>
-            {group.consequences.approve}
-          </p>
-        ) : null}
-
-        <p className="mt-2 text-sm text-muted"><span className="font-semibold text-ink">Why now: </span>{plainWhy(operatorText(group.face.whyNow)) || "The review source did not record why this needs attention now. Inspect its evidence before acting."}</p>
-        <StandingText group={group} className="mt-2" />
-        <DecisionContext group={group} />
-        <details className="mt-3 text-xs text-muted"><summary className="cursor-pointer">Status, owner & timing</summary>
-        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-2xs text-faint">
-          <span className="inline-flex items-center gap-1.5">
-            <span>Proposed</span>
-            {group.face.proposedAtLabel ? (
-              <time dateTime={group.face.proposedAt} className="font-semibold tabular-nums text-muted">
-                {group.face.proposedAtLabel} ({group.ageLabel})
-              </time>
-            ) : <strong className="font-semibold text-muted">Time unavailable</strong>}
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span>List read</span>
-            <FreshnessChip generatedAt={group.face.freshness.generatedAt} source={group.face.freshness.source} />
-          </span>
-          {group.face.confidence ? <span className="tabular-nums">{group.face.confidence.label}</span> : null}
-        </div>
-        </details>
-      </header>
-
-      {group.face.authority ? <AuthorityFaceDetails authority={group.face.authority} /> : null}
-
-      <Tabs value={tab} onValueChange={(value) => setTab(value as typeof tab)} className="border-t border-hair">
-        <div className="overflow-x-auto px-4 py-3">
-          <TabsList label="Decision face">
-            <TabsTrigger value="action">Next step</TabsTrigger>
-            <TabsTrigger value="compare" count={group.brief?.options.length}>Choices</TabsTrigger>
-            <TabsTrigger value="summary">Summary</TabsTrigger>
-            <TabsTrigger value="history">History</TabsTrigger>
-            <TabsTrigger value="evidence" count={group.evidence.length}>Evidence</TabsTrigger>
-          </TabsList>
-        </div>
-
-        <TabsContent value="summary">
-          <section className="border-t border-hair px-4 py-4">
-            {group.body ? <p className="max-w-read text-sm leading-relaxed text-muted">{productTitle(group.body, humanizeProductId).text}</p> : (
-              <p className="text-sm leading-relaxed text-muted">This decision is waiting for you. The system wrote no longer summary.</p>
-            )}
-            {group.consequences ? <ConsequencePair approve={group.consequences.approve} hold={group.consequences.hold} /> : null}
-            {group.brief ? (
-              <details className="group mt-4 border-t border-hair pt-3">
-                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-xs font-semibold text-muted marker:hidden">
-                  <span>Prepared analysis</span>
-                  <span aria-hidden className="text-sm text-faint transition-transform group-open:rotate-90">›</span>
-                </summary>
-                <div className="mt-3"><BriefPanel brief={group.brief} /></div>
-              </details>
+        {card?.needsWording ? (
+          <>
+            {card.subject ? <p className="mt-3 max-w-read text-lg font-semibold leading-snug text-ink">{card.subject}</p> : null}
+            <p className="mt-2 max-w-read text-sm text-seam">An agent must word this as a clear question first. Nothing is asked of you until then.</p>
+          </>
+        ) : (
+          <>
+            <h3 className="mt-3 max-w-read text-lg font-semibold leading-snug text-ink">{card?.question || titled(group.objectText || group.title).text}</h3>
+            {card?.question && card.subject ? (
+              <blockquote className="mt-2 max-w-read border-l-2 border-work-line pl-3 text-sm leading-relaxed text-muted">{card.subject}</blockquote>
             ) : null}
-          </section>
-        </TabsContent>
-
-        <TabsContent value="compare">
-          <section className="border-t border-hair px-4 py-4"><ComparePanel group={group} /></section>
-        </TabsContent>
-
-        <TabsContent value="action">
-          <section className="border-t border-hair bg-soft/60 px-4 py-4">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <div className="text-2xs font-bold uppercase tracking-wide text-faint">What you can do</div>
-                <div className="mt-0.5 text-sm font-semibold text-ink">{group.members.some((member) => member.href) ? "Open a held work item" : group.face.primaryAction?.label || "Inspect this decision"}</div>
-                {group.face.primaryAction?.description ? (
-                  <p className="mt-1 max-w-read text-xs leading-relaxed text-muted">{group.face.primaryAction.description}</p>
-                ) : null}
-              </div>
-              <CapabilityStatus group={group} />
-            </div>
-            {act.mode === "copy" ? (
-              <div className="grid gap-3 border-l-2 border-seam-line pl-3">
-                <div>
-                  <p className="text-sm font-semibold text-seam">
-                    {group.members.some((member) => member.href) ? "Review each work item separately." : group.reviewResolutionItemId ? ownerUnavailableMessage(group.area) : standingOf(group).text}
-                  </p>
-                  <p className="mt-1 text-xs leading-relaxed text-muted">{group.members.some((member) => member.href) ? "Open an item for its hold reason and the action needed to continue." : plainNextStep(group.face.unblockPath)}</p>
-                </div>
-                {reviewResolutionActs.map((resolutionAct) => (
-                  <GovernedAct
-                    key={resolutionAct.actionId}
-                    act={resolutionAct}
-                    mutationsEnabled={mutationsEnabled}
-                    effectKind="record"
-                  />
+            {rows.some((row) => row.text) ? (
+              <dl className="mt-3 grid max-w-read gap-2 text-sm">
+                {rows.filter((row) => row.text).map((row) => (
+                  <div key={row.label}>
+                    <dt className="text-2xs font-bold uppercase tracking-wide text-faint">{row.label}</dt>
+                    <dd className="mt-0.5 leading-relaxed text-ink">{row.text}</dd>
+                  </div>
                 ))}
-                <div className="flex flex-wrap gap-2">{group.members.filter((member) => member.href).map((member) => <Link key={member.id} href={member.href!} title={member.id} className="max-w-full break-words rounded-md border border-work-line bg-work-soft px-3 py-2 text-xs font-semibold text-work">{member.label === member.id ? member.id.replace(/^work_/, "").replace(/_\d{8}$/, "").replaceAll("_", " ") : member.label} →</Link>)}</div>
-                {!group.members.some((member) => member.href) && reviewResolutionActs.length === 0 ? <AgentHandoff title={group.face.label} context={plainNextStep(group.face.unblockPath)} reference={`${group.area}: ${group.reviewResolutionItemId || group.key}`} /> : null}
-                <details className="text-xs text-muted"><summary className="cursor-pointer">Technical reference</summary><div><span className="mb-1 block text-xs font-semibold text-muted">Inspect current details</span><CopyCmd cmd={group.members[0]?.href?.startsWith("/work/") ? `compound work show ${group.members[0].id} --json` : `compound reviews --area '${group.area.replaceAll("'", "'\\''")}' --json`} /></div></details>
-                {!group.authorityBound ? (
-                  <details className="text-xs text-muted">
-                    <summary className="cursor-pointer font-semibold">Advanced command</summary>
-                    <div className="mt-2"><CopyCmd cmd={act.command} compact /></div>
-                    {act.reason ? <p className="mt-2 leading-relaxed text-faint">{act.reason}</p> : null}
-                  </details>
-                ) : null}
-              </div>
-            ) : act.mode === "batch-enumerable" && !mutationsEnabled ? (
-              <div className="grid gap-3"><p className="text-sm text-muted">These items have separate actions. Review each with Compound.</p><ReadonlyMembers members={act.members} atomic={false} /><CopyCmd cmd={group.members[0]?.href?.startsWith("/work/") ? `compound work show ${group.members[0].id} --json` : `compound reviews --area '${group.area.replaceAll("'", "'\\''")}' --json`} /></div>
-            ) : act.mode === "batch-enumerable" ? (
-              <EnumerableApply
-                area={act.area}
-                members={act.members}
-                excluded={excluded}
-                onToggle={onToggleMember}
-                mutationsEnabled={mutationsEnabled}
-                requiresConfirmation={act.requiresConfirmation}
-                requiresRationale={act.requiresRationale}
-                effectKind={act.effectKind}
-                policyNote={act.policyNote}
-                label={group.face.primaryAction?.label || act.label}
-                authorityBound={group.authorityBound === true}
-                representedCount={act.representedCount}
-                unavailableCount={act.unavailableCount}
-              />
-            ) : (
-              <GovernedAct
-                key={decideActIdentity(act)}
-                act={act}
-                authority={group.face.authority}
-                mutationsEnabled={mutationsEnabled}
-                onExecuted={onExecuted}
-                retainedOutcome={retainedOutcome}
-                effectKind={effectKind}
-              />
-            )}
-          </section>
-        </TabsContent>
-
-        <TabsContent value="history"><section className="border-t border-hair px-4 py-4"><HistoryPanel group={group} /></section></TabsContent>
-        <TabsContent value="evidence"><section className="border-t border-hair px-4 py-4"><EvidencePanel group={group} /></section></TabsContent>
-      </Tabs>
+              </dl>
+            ) : null}
+            {card?.silent ? <p className="mt-3 max-w-read text-xs text-faint">{card.silent}</p> : null}
+          </>
+        )}
+        {card?.perItem && group.heldWork?.length ? <HeldWorkList rows={group.heldWork} /> : null}
+      </header>
+      <details className="border-t border-hair px-4 py-3 text-xs text-muted">
+        <summary className="cursor-pointer font-semibold">For agents: the record behind it</summary>
+        <div className="mt-3 grid gap-4">
+          <HistoryPanel group={group} />
+          {group.evidence.length ? <EvidencePanel group={group} /> : null}
+          <CopyCmd cmd={group.members[0]?.href?.startsWith("/work/") ? `compound work show ${group.members[0].id} --json` : `compound reviews --area '${group.area.replaceAll("'", "'\\''")}' --json`} compact />
+        </div>
+      </details>
     </article>
   );
 }
 
-type RetainedDecision = { group: DecideGroup; result: ExecuteResult; identity: string };
+/** The kind part of an area path ("source-control-cleanup/scr_…" → "source-control-cleanup"). */
+function areaHead(area: string): string {
+  return (area || "").split("/")[0].trim();
+}
+
+/**
+ * What a row and its card show, and nothing else: search matches only text
+ * he can see (the app, the record's words, the question, the kind).
+ */
+export function shownText(group: DecideGroup): string {
+  const h = group.headline;
+  return [h?.about?.label, h?.subject, h?.question, plainArea(group.area), h?.subject || h?.question ? "" : titled(group.objectText || group.title).text]
+    .filter(Boolean).join(" ");
+}
+
+/** Decide's address with its search text and kind set; other parameters stay. */
+export function decideFilterHref(pathname: string, currentSearch: string, filters: { q: string; area: string }): string {
+  const params = new URLSearchParams(currentSearch);
+  for (const [name, value] of [["q", filters.q], ["area", filters.area]] as const) {
+    if (value) params.set(name, value);
+    else params.delete(name);
+  }
+  const query = params.toString();
+  return query ? `${pathname}?${query}` : pathname;
+}
 
 export function initialDecideIndex(
   groups: ReadonlyArray<Pick<DecideGroup, "key">>,
@@ -1055,7 +353,6 @@ export function DecideQueue({
   mutationsEnabled,
   keyboardShortcuts = true,
   initialSelectedKey = "",
-  systemicBlockerReason = null,
 }: {
   groups: DecideGroup[];
   /**
@@ -1068,20 +365,16 @@ export function DecideQueue({
   mutationsEnabled: boolean;
   keyboardShortcuts?: boolean;
   initialSelectedKey?: string;
-  /** Feature-detected queue-level reason (a `systemic_blocker` projection
-   * field may land separately); the all-identical-reasons case is always
-   * computed from `groups` too, so the banner works even when this is null. */
-  systemicBlockerReason?: string | null;
 }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const [filter, setFilter] = useState("");
-  const [areaFilter, setAreaFilter] = useState("");
+  // Search text and kind live in the address (`q`, `area`; lib/links.ts
+  // decideHref's names), so a reload, Back or a pasted link keeps them.
+  const [filter, setFilter] = useState(() => searchParams.get("q") ?? "");
+  const [areaFilter, setAreaFilter] = useState(() => areaHead(searchParams.get("area") ?? ""));
   const [focused, setFocused] = useState(() => Math.max(0, initialDecideIndex(groups, initialSelectedKey)));
   const [selectedKey, setSelectedKey] = useState(() => initialDecideKey(groups, initialSelectedKey));
-  const [excluded, setExcluded] = useState<Record<string, Set<string>>>({});
-  const [retained, setRetained] = useState<Record<string, RetainedDecision>>({});
 
   const filterRef = useRef<HTMLInputElement | null>(null);
   const rowRefs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -1093,34 +386,23 @@ export function DecideQueue({
     router.replace(decisionSelectionHref(pathname, searchParams.toString(), key), { scroll: false });
   }, [pathname, router, searchParams]);
 
-  const areas = useMemo(() => [...new Set(groups.map((group) => plainArea(group.area)))]
-    .sort((a, b) => a.localeCompare(b)), [groups]);
+  const areas = useMemo(() => [...new Set(groups.map((group) => areaHead(group.area)))]
+    .sort((a, b) => plainArea(a).localeCompare(plainArea(b))), [groups]);
   const visible = useMemo(() => {
     const query = filter.trim().toLowerCase();
-    return groups.filter((group) => (!areaFilter || plainArea(group.area) === areaFilter) &&
-      (!query || `${group.title} ${group.objectText} ${titled(group.title).text} ${plainArea(group.area)} ${group.areaLabel} ${group.body}`.toLowerCase().includes(query)));
+    return groups.filter((group) => (!areaFilter || areaHead(group.area) === areaFilter) &&
+      (!query || shownText(group).toLowerCase().includes(query)));
   }, [groups, filter, areaFilter]);
-  const readinessSections = useMemo(() => decideReadinessSections(visible), [visible]);
-  const visibleIndexByKey = useMemo(() => new Map(visible.map((group, index) => [group.key, index])), [visible]);
-  // The whole queue's decidability, not just the filtered view — a search
-  // shouldn't change whether the systemic-blocker fact is true.
-  // A queue-level reason the projection states itself wins; otherwise the
-  // banner appears only when every waiting decision stands the same way.
-  const systemicBlocker: SystemicBlocker | null = useMemo(
-    () => (systemicBlockerReason ? queueSystemicBlocker(groups, systemicBlockerReason) : null),
-    [groups, systemicBlockerReason],
-  );
-  const banner = useMemo(
-    () => systemicBlocker
-      ? {
-          title: systemicBlocker.totalCount - systemicBlocker.blockedCount === 0
-            ? "Why none can be decided now"
-            : `Why ${systemicBlocker.blockedCount} of ${systemicBlocker.totalCount} cannot be decided now`,
-          text: blockedReasonPlain(systemicBlocker.reason),
-        }
-      : standingBanner(groups),
-    [groups, systemicBlocker],
-  );
+
+  // Write search and kind to the address after a typing pause, so each
+  // keystroke neither rewrites the address nor reloads the open decision.
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const href = decideFilterHref(pathname, searchParams.toString(), { q: filter.trim(), area: areaFilter });
+      if (href !== `${pathname}${searchParams.toString() ? `?${searchParams.toString()}` : ""}`) router.replace(href, { scroll: false });
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [areaFilter, filter, pathname, router, searchParams]);
 
   useEffect(() => {
     const selectedIsCurrent = groups.some((group) => group.key === selectedKey);
@@ -1132,13 +414,13 @@ export function DecideQueue({
       const nextKey = visible[0]?.key ?? "";
       setSelectedKey(nextKey);
       replaceSelectionInURL(nextKey);
-    } else if (selectedKey && !selectedIsCurrent && !retained[selectedKey]) {
+    } else if (selectedKey && !selectedIsCurrent) {
       const nextKey = visible[0]?.key ?? "";
       setSelectedKey(nextKey);
       replaceSelectionInURL(nextKey);
     }
     if (focused > visible.length - 1) setFocused(Math.max(0, visible.length - 1));
-  }, [focused, groups, replaceSelectionInURL, retained, selectedKey, visible]);
+  }, [focused, groups, replaceSelectionInURL, selectedKey, visible]);
 
   const requestedIndex = initialDecideIndex(groups, initialSelectedKey);
   const requestedExists = Boolean(
@@ -1158,8 +440,10 @@ export function DecideQueue({
   }, [initialSelectedKey, requestedExists, requestedIndex]);
 
   useEffect(() => {
-    if (!requestedExists && selectedKey) replaceSelectionInURL(selectedKey);
-  }, [replaceSelectionInURL, requestedExists, selectedKey]);
+    // A link to a decision that is gone keeps its address, so the page can
+    // say so; only a page opened with no decision writes the open one.
+    if (!initialSelectedKey && selectedKey) replaceSelectionInURL(selectedKey);
+  }, [initialSelectedKey, replaceSelectionInURL, selectedKey]);
 
   useEffect(() => {
     if (!keyboardShortcuts) return;
@@ -1204,17 +488,15 @@ export function DecideQueue({
     }
   }
 
-  const selected = visible.find((group) => group.key === selectedKey) ?? retained[selectedKey]?.group ?? visible[0] ?? null;
+  const selected = visible.find((group) => group.key === selectedKey) ?? visible[0] ?? null;
   // The queue only renders with groups, so "nothing selected" means the
   // filter hides them all - never that nothing waits.
   const liveMessage = selected ? `Selected decision: ${titled(selected.title).text}` : "No decision matches this filter.";
-  const selectedIdentity = selected ? decisionIdentity(selected) : "";
-  const selectedRetained = selected ? retained[selected.key] : undefined;
   const panelGroups = groups.filter((group) => Boolean(group.panel));
   // A group sent without its detail shows "Opening…" until the server sends
   // it (selecting it already replaced `?decision=`, which re-renders the page).
   const detailSet = detailKeys ? new Set(detailKeys) : null;
-  const selectedHasDetail = !selected || !detailSet || detailSet.has(selected.key) || Boolean(retained[selected.key]);
+  const selectedHasDetail = !selected || !detailSet || detailSet.has(selected.key);
 
   // A selected Panel group gets the proof-continuity treatment once its
   // detail is here; until then the queue below shows "Opening…".
@@ -1246,12 +528,6 @@ export function DecideQueue({
   return (
     <div className="grid gap-3">
       <div aria-live="polite" className="sr-only">{liveMessage}</div>
-      {banner ? (
-        <div role="status" className="rounded-lg border border-seam-line bg-seam-soft px-4 py-3">
-          <div className="text-sm font-semibold text-seam">{banner.title}</div>
-          <p className="mt-1 text-xs leading-relaxed text-muted">{banner.text}</p>
-        </div>
-      ) : null}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <input
           ref={filterRef}
@@ -1263,8 +539,8 @@ export function DecideQueue({
           aria-label="Filter decisions"
           className="w-full rounded-md border border-hair bg-panel px-3 py-2 text-sm text-ink outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus sm:max-w-xs"
         />
-        <select aria-label="Filter by area" value={areaFilter} onChange={(event) => setAreaFilter(event.target.value)} className="min-h-10 max-w-full rounded-md border border-hair bg-panel px-3 py-2 text-sm text-ink">
-          <option value="">All areas</option>{areas.map((area) => <option key={area} value={area}>{area} ({groups.filter((group) => plainArea(group.area) === area).length})</option>)}
+        <select aria-label="Filter by kind" value={areaFilter} onChange={(event) => setAreaFilter(event.target.value)} className="min-h-10 max-w-full rounded-md border border-hair bg-panel px-3 py-2 text-sm text-ink">
+          <option value="">All kinds</option>{areas.map((area) => <option key={area} value={area}>{plainArea(area)} ({groups.filter((group) => areaHead(group.area) === area).length})</option>)}
         </select>
         <span className="mono text-2xs tabular-nums text-faint">{visible.length} of {groups.length} decisions</span>
         {filter || areaFilter ? <button type="button" onClick={() => { setFilter(""); setAreaFilter(""); }} className="text-xs font-semibold text-work hover:underline">Clear filters</button> : null}
@@ -1272,36 +548,22 @@ export function DecideQueue({
 
       <div className="grid items-start gap-4 lg:grid-cols-5">
         <div ref={listRef} className="scroll-mt-16 max-h-[52vh] overflow-y-auto rounded-lg border border-hair bg-panel lg:col-span-2 lg:max-h-[70vh] lg:overflow-y-auto">
-          {visible.length ? readinessSections.map((section) => (
-            <section
-              key={section.key}
-              aria-label={SECTION_COPY[section.key].label}
-              className="border-b border-hair last:border-b-0"
-            >
-              <div className={`px-3 py-2.5 ${section.key === "act_now" ? "bg-good-soft" : "bg-soft"}`}>
-                <div className="flex items-center justify-between gap-2">
-                  <h3 className={`text-xs font-bold uppercase tracking-wide ${section.key === "act_now" ? "text-good" : "text-muted"}`}>{SECTION_COPY[section.key].label}</h3>
-                  <span className="mono rounded-pill border border-hair bg-panel px-2 py-0.5 text-2xs text-muted">{section.groups.length}</span>
-                </div>
-                <p className="mt-0.5 text-2xs text-muted">{SECTION_COPY[section.key].description}</p>
-              </div>
-              {section.groups.map((group) => {
-                const index = visibleIndexByKey.get(group.key) ?? 0;
-                return (
+          {visible.length ? (
+            <ol aria-label="Your decisions" className="list-none">
+              {visible.map((group, index) => (
+                <li key={group.key}>
                   <DecisionRow
-                    key={group.key}
                     group={group}
                     selected={selected?.key === group.key}
-                    demoteBlockedStamp={Boolean(systemicBlocker) || Boolean(banner && group.face.state !== "ready" && standingOf(group).text === banner.text)}
                     rowRef={(element) => { rowRefs.current[index] = element; }}
                     onActivate={() => select(group, index, true)}
                     onFocus={() => select(group, index)}
                     onKeyDown={(event) => onRowKey(event, index, group)}
                   />
-                );
-              })}
-            </section>
-          )) : (
+                </li>
+              ))}
+            </ol>
+          ) : (
             <p className="border-dashed px-4 py-8 text-center text-sm text-muted">No decision matches “{filter}”.</p>
           )}
         </div>
@@ -1327,22 +589,7 @@ export function DecideQueue({
                   <p className="mt-3 text-sm text-muted">Opening this decision…</p>
                 </div>
               ) : (
-              <DecisionDetail
-                key={selectedIdentity}
-                group={selected}
-                mutationsEnabled={mutationsEnabled}
-                excluded={excluded[selected.key] ?? new Set()}
-                onToggleMember={(id) => setExcluded((previous) => {
-                  const next = new Set(previous[selected.key] ?? []);
-                  if (next.has(id)) next.delete(id); else next.add(id);
-                  return { ...previous, [selected.key]: next };
-                })}
-                retainedOutcome={selectedRetained?.identity === selectedIdentity ? selectedRetained.result : null}
-                onExecuted={(result) => setRetained((previous) => ({
-                  ...previous,
-                  [selected.key]: { group: selected, result, identity: selectedIdentity },
-                }))}
-              />
+              <DecisionDetail key={selected.key} group={selected} />
               )}
             </div>
           ) : (

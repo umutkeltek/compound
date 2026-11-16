@@ -1,4 +1,7 @@
+import Link from "next/link";
+
 import { DeltaPill, Sparkline, StatusChip } from "@/components/kit";
+import { appHref } from "@/lib/links";
 import { ago } from "@/lib/time";
 import {
   formatCount,
@@ -13,6 +16,8 @@ import {
   productDisplay,
   sparkValues,
   windowDelta,
+  ADS_GOOD_DIRECTION,
+  campaignStateLabel,
   type AdsCampaignView,
   type AdsImport,
   type AdsProductView,
@@ -39,11 +44,11 @@ export function AdsProductTable({ products, windowDays }: { products: AdsProduct
       <table className="w-full border-collapse">
         <thead className="border-b border-hair bg-soft">
           <tr>
-            <th className={TH}>Product</th>
+            <th className={TH}>App</th>
             <th className={`${TH} text-right`}>Spend</th>
             <th className={TH}>vs prev.</th>
-            <th className={`${TH} text-right`}>Conv.</th>
-            <th className={`${TH} text-right`}>CPA</th>
+            <th className={`${TH} text-right`}>Installs</th>
+            <th className={`${TH} text-right`} title="Spend ÷ installs">Cost per install</th>
             <th className={`${TH} text-right`}>ROAS</th>
             <th className={TH}>Split by platform</th>
             <th className={TH}>Trend</th>
@@ -54,12 +59,14 @@ export function AdsProductTable({ products, windowDays }: { products: AdsProduct
             const delta = windowDelta(p.totals, p.previous, "spend");
             return (
               <tr key={p.productId} className="border-b border-hair last:border-0">
-                <td className={`${TD} font-medium text-ink`}>{productDisplay(p.productId)}</td>
+                <td className={`${TD} font-medium text-ink`}>
+                  <Link href={appHref(p.productId)} className="hover:underline">{productDisplay(p.productId)}</Link>
+                </td>
                 <td className={NUM}>
                   <Spend totals={p.totals} />
                 </td>
                 <td className={TD}>
-                  {delta != null ? <DeltaPill value={delta} suffix="%" goodDirection="down" title={`vs previous ${windowDays} days`} showZero /> : <span className="text-faint">—</span>}
+                  {delta != null ? <DeltaPill value={delta} suffix="%" goodDirection={ADS_GOOD_DIRECTION.spend} title={`vs the ${windowDays} days before`} showZero /> : <span className="text-faint">—</span>}
                 </td>
                 <td className={NUM}>{formatCount(p.totals.conversions)}</td>
                 <td className={NUM}>{formatCpa(p.totals)}</td>
@@ -99,15 +106,15 @@ export function AdsCampaignTable({ campaigns, windowDays }: { campaigns: AdsCamp
           <tr>
             <th className={TH}>Campaign</th>
             <th className={TH}>Platform</th>
-            <th className={TH}>Product</th>
+            <th className={TH}>App</th>
             <th className={TH}>State</th>
             <th className={`${TH} text-right`}>Spend</th>
             <th className={TH}>vs prev.</th>
             <th className={`${TH} text-right`}>Impr.</th>
             <th className={`${TH} text-right`}>CTR</th>
-            <th className={`${TH} text-right`}>Conv.</th>
-            <th className={`${TH} text-right`}>CPA</th>
-            <th className={TH}>Last row</th>
+            <th className={`${TH} text-right`}>Installs</th>
+            <th className={`${TH} text-right`} title="Spend ÷ installs">Cost per install</th>
+            <th className={TH}>Last spend or impressions</th>
             <th className={TH}>Trend</th>
           </tr>
         </thead>
@@ -117,31 +124,29 @@ export function AdsCampaignTable({ campaigns, windowDays }: { campaigns: AdsCamp
             const key = `${c.platform}:${c.productId}:${c.account}:${c.campaignId}`;
             return (
               <tr key={key} className="border-b border-hair last:border-0">
-                <td className={`${TD} max-w-[22ch]`}>
-                  <div className="truncate font-medium text-ink" title={c.campaignName}>
+                <td className={`${TD} min-w-[24ch]`}>
+                  <div className="font-medium text-ink" title={`Campaign ${c.campaignId}${c.account ? ` · account ${c.account}` : ""}`}>
                     {c.campaignName}
-                  </div>
-                  <div className="mono truncate text-2xs text-faint" title={c.sourceRef}>
-                    {c.campaignId}
-                    {c.account ? ` · ${c.account}` : ""}
                   </div>
                 </td>
                 <td className={`${TD} text-muted`}>{c.label}</td>
-                <td className={`${TD} text-muted`}>{productDisplay(c.productId)}</td>
+                <td className={`${TD} text-muted`}>
+                  <Link href={appHref(c.productId)} className="hover:underline">{productDisplay(c.productId)}</Link>
+                </td>
                 <td className={TD}>
-                  <StatusChip tone={c.status === "active" ? "good" : "muted"} label={c.status} />
+                  <StatusChip tone={c.status === "active" ? "good" : "muted"} label={campaignStateLabel(c)} />
                 </td>
                 <td className={NUM}>
                   <Spend totals={c.totals} />
                 </td>
                 <td className={TD}>
-                  {delta != null ? <DeltaPill value={delta} suffix="%" goodDirection="down" title={`vs previous ${windowDays} days`} showZero /> : <span className="text-faint">—</span>}
+                  {delta != null ? <DeltaPill value={delta} suffix="%" goodDirection={ADS_GOOD_DIRECTION.spend} title={`vs the ${windowDays} days before`} showZero /> : <span className="text-faint">—</span>}
                 </td>
                 <td className={NUM}>{formatCount(c.totals.impressions)}</td>
                 <td className={NUM}>{formatCtr(c.totals)}</td>
                 <td className={NUM}>{formatCount(c.totals.conversions)}</td>
                 <td className={NUM}>{formatCpa(c.totals)}</td>
-                <td className={`${TD} mono text-faint`}>{c.lastDate}</td>
+                <td className={`${TD} mono text-faint`}>{c.lastActiveDate || "none in window"}</td>
                 <td className={`${TD} text-work`}>
                   <Sparkline values={sparkValues(c.daily, "spend")} width={72} height={18} />
                 </td>

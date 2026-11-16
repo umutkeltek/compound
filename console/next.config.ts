@@ -22,10 +22,19 @@ const nextConfig: NextConfig = {
   // Retired routes → permanent redirects (308) so bookmarks / old nav / stale
   // links still land somewhere honest.
   //   /flow        → Work's advanced Flow lens.
-  //   /map/memory  → the memory ego-graph now lives embedded in /memory.
+  //   /map/memory  → the memory ego-graph now lives embedded in /memory. The
+  //                  old page read its seed from `?seed=`; /memory reads
+  //                  `?graph=`, so a seeded old link opens the graph on the
+  //                  same seed (the first matching rule wins).
   async redirects() {
     return [
       { source: "/flow", destination: "/work?lens=flow", permanent: true },
+      {
+        source: "/map/memory",
+        has: [{ type: "query", key: "seed", value: "(?<seed>.+)" }],
+        destination: "/memory?graph=:seed#memory-graph",
+        permanent: true,
+      },
       { source: "/map/memory", destination: "/memory", permanent: true },
     ];
   },

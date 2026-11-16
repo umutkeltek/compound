@@ -1,15 +1,19 @@
 import Link from "next/link";
 
 import { DecideQueue } from "@/components/decide/DecideQueue";
-import { CheckIcon, ClockIcon, hasCopy, PageHeader, plainAge, ReadChip, ReadFailedBanner, ReadNotice, readsPending } from "@/components/kit";
+import { WaitingNotes } from "@/components/decide/WaitingNotes";
+import { CheckIcon, ClockIcon, hasCopy, PageHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending } from "@/components/kit";
 import { PendingRefresh } from "@/components/PendingRefresh";
-import { attentionNeedsYouGroups, readAttention, type AttentionGroup } from "@/lib/attention";
-import { arr, HEAVY_PROJECTION_TIMEOUT_MS, num, readProjection, str, type Json, type LiveRead, type ProjectionStatus } from "@/lib/compound";
+import { housekeepingGroups, readAttention, yourDecisionGroups, type AttentionGroup } from "@/lib/attention";
+import { arr, HEAVY_PROJECTION_TIMEOUT_MS, num, readProjection, readWorkProjectIndex, str, type Json, type LiveRead, type ProjectionStatus } from "@/lib/compound";
 import { ago } from "@/lib/time";
-import { countDecisions, type DecisionCount, unit, waitingOnYou } from "@/lib/counts";
+import { describeWaiting, unit, waitingOnYou } from "@/lib/counts";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
-import { buildDecideGroups, type DecideAct, type DecideGroup, type ScopedDecisionEvidence } from "@/lib/decide-model";
+import { buildDecideGroups, filedOutcome, heldWorkRows, type DecideAct, type DecideGroup, type ScopedDecisionEvidence } from "@/lib/decide-model";
+import { workTitle } from "@/lib/work-title";
+import { workItemHref, workListHref } from "@/lib/links";
+import { decisionKindWords } from "@/lib/decision-registry";
 import { ATTENTION_SOURCED_GENERIC_AREAS } from "@/lib/generic-actions";
 import { areaOf, bandOf, enrichAttentionGroups, externalReviewRows, groupsForBand } from "@/lib/review-data";
 import { plainArea, plainText, TERMS } from "@/lib/plain-words";
@@ -18,6 +22,20 @@ export const dynamic = "force-dynamic";
 
 /** Filed items shown when one kind is open. */
 const FILED_SHOWN = 100;
+/** Recent decisions shown across kinds. */
+const RECENT_SHOWN = 12;
+
+function FiledRow({ item, filed }: { item: Json; filed: ReturnType<typeof filedOutcome> }) {
+  return (
+    <li className="grid gap-0.5 px-3 py-2">
+      <span className="text-sm text-ink"><strong className="font-semibold">{filed.outcome}</strong>{filed.subject ? <span className="text-muted"> · {filed.subject}</span> : null}</span>
+      <span className="text-2xs text-faint">
+        {plainArea(areaOf(item) || "")} · {filed.when ? `${filed.whenLabel} ${ago(filed.when)}` : `${filed.whenLabel} at an unknown time`}{filed.by ? ` by ${filed.by}` : ""}
+        <span className="mono"> · {str(item.id) || str(item.review_id)}</span>
+      </span>
+    </li>
+  );
+}
 
 /* ---------- item index + sample resolution (unchanged data contract) ----------
  * The Decide page renders the SAME ordered needs-you group set as
@@ -82,35 +100,6 @@ function listOnly(group: DecideGroup): DecideGroup {
   return { ...group, members: [], evidence: [], brief: null, act: withoutDetail(group.act) };
 }
 
-/**
- * Why the rest wait, counted from what the last check of each decision found
- * (lib/counts.ts `countDecisions`), with that check's age when it is older
- * than the live window. Never "paused": an old check is only old.
- */
-function standingSentence(counted: DecisionCount, listAgeMs: number | null): string {
-  const n = (value: number) => value.toLocaleString("en-US");
-  const has = (value: number) => (value === 1 ? "has" : "have");
-  const is = (value: number) => (value === 1 ? "is" : "are");
-  const waitingOnTheCheck = Math.max(0, counted.found.decidable - counted.readyNow);
-  const parts = [
-    waitingOnTheCheck ? `${n(waitingOnTheCheck)} could be decided when last checked` : "",
-    counted.found.noButton ? `${n(counted.found.noButton)} ${has(counted.found.noButton)} no button for their kind of decision yet` : "",
-    counted.found.incomplete ? `${n(counted.found.incomplete)} ${has(counted.found.incomplete)} an incomplete approval record` : "",
-    counted.found.itemByItem ? `${n(counted.found.itemByItem)} ${is(counted.found.itemByItem)} decided item by item` : "",
-    counted.found.held ? `${n(counted.found.held)} ${is(counted.found.held)} held by the approval rules` : "",
-    counted.found.other ? `${n(counted.found.other)} wait for another reason, said on the row` : "",
-  ].filter(Boolean);
-  if (!parts.length) return "";
-  const list = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
-  if (counted.checkedEarlier === 0) return `${sentenceCase(list)}.`;
-  const age = listAgeMs !== null ? ` (${plainAge(listAgeMs)})` : "";
-  return `At the last check${age}: ${list}. Opening one checks it again in a few seconds.`;
-}
-
-function sentenceCase(value: string): string {
-  return value ? value[0].toUpperCase() + value.slice(1) : value;
-}
-
 /* ---------- the opened decision checks its own evidence ----------
  * The list (`attention --json`) takes about a minute to read, and the gate
  * shows a button only from evidence read in the last 25 seconds, so a button
@@ -150,7 +139,26 @@ async function scopedEvidence(
 }
 
 /* ---------- watching (informational — no buttons, on purpose) ---------- */
-type WatchingEntry = { key: string; area: string; summary: string; count: number; createdAt: string };
+type WatchingEntry = { key: string; area: string; summary: string; count: number; createdAt: string; href: string };
+
+/**
+ * A watching row's words and where it leads. A summary that says it waits on
+ * him contradicts the "does not need you yet" heading, so it says what is
+ * true instead; a row leads to the list that holds its items when there is one.
+ */
+function watchingOf(row: Json): Pick<WatchingEntry, "summary" | "href"> {
+  const area = areaOf(row);
+  const raw = plainText(str(row.operator_summary));
+  const summary = !raw ? "Still watching." : /until you decide|needs your decision|waits? for you/i.test(raw)
+    ? "Watched for now; nothing is asked of you yet."
+    : raw;
+  const ids = arr(row.item_ids).map(String);
+  const href = str(row.kind) === "waiting_on_others" && ids.length === 1 ? workItemHref(ids[0])
+    : str(row.source) === "workbench" ? workListHref()
+    : area.startsWith("route-") ? "/routing"
+    : "";
+  return { summary, href };
+}
 
 function WatchingRow({ entry }: { entry: WatchingEntry }) {
   return (
@@ -200,7 +208,10 @@ export default async function Decide({
     ...arr(reviews?.groups).filter((group: Json) => bandOf(group) === "needs_you"),
     ...groupsForBand(reviews, "needs_you", attention),
   ];
-  const needsYou = attentionNeedsYouGroups(attention);
+  // Only his decisions, in the order Today shows them (lib/attention.ts).
+  // Proposals to update agent skills are agent housekeeping: one quiet line
+  // under the header, never a card and never counted.
+  const needsYou = yourDecisionGroups(attention);
   const orderedGroups = enrichAttentionGroups(needsYou, reviewEnrichmentGroups);
   const scoped = await scopedEvidence(needsYou.find((group) => group.key === requestedKey) ?? null, attentionRead.lastGoodAt);
   const decideGroups = buildDecideGroups(
@@ -211,22 +222,33 @@ export default async function Decide({
     attentionRead.status === "loading" ? "unreachable" : attentionRead.status,
     scoped?.evidence ?? null,
   );
-  // Feature-detect a queue-level `systemic_blocker` reason the projection
-  // may start carrying directly; DecideQueue also computes the
-  // all-identical-reasons case itself from decideGroups, so the banner is
-  // correct with or without this field.
-  const systemicBlockerReason = str(reviews?.systemic_blocker) || null;
 
   // The open decision: the one asked for, else the first. Only it carries detail.
   const openKey = decideGroups.some((group) => group.key === requestedKey) ? requestedKey : decideGroups[0]?.key ?? "";
-  const queueGroups = decideGroups.map((group) => (group.key === openKey ? group : listOnly(group)));
-  const counted = countDecisions(decideGroups);
+  // Held work is decided item by item: the open "Work on hold" decision lists
+  // each item inline from its own record (title, app, recorded reason, since
+  // when). The same records name the work that waits on others.
+  const openAttention = needsYou.find((group) => group.key === openKey) ?? null;
+  const heldIds = openAttention && decisionKindWords(openAttention.area)?.perItem ? openAttention.item_ids : [];
+  const otherIds = waiting?.waitingOnOthers?.itemIds ?? [];
+  const showIds = [...new Set([...heldIds, ...otherIds])].slice(0, 25);
+  const [showReads, projectIndex] = await Promise.all([
+    Promise.all(showIds.map((id) => readProjection(["work", "show", id, "--json"]))),
+    heldIds.length ? readWorkProjectIndex() : Promise.resolve(null),
+  ]);
+  const shows = new Map(showIds.map((id, index) => [id, showReads[index]?.value ?? null] as const));
+  const heldWork = heldIds.length ? heldWorkRows(heldIds, shows, new Map(), projectIndex?.index ?? null) : undefined;
+  const workTitles = new Map(otherIds.flatMap((id) => {
+    const show = shows.get(id);
+    return show && (str(show.state) || str(show.id)) ? [[id, workTitle(show)] as const] : [];
+  }));
+  const queueGroups = decideGroups.map((group) => (group.key === openKey ? { ...group, heldWork } : listOnly(group)));
 
   const watchingEntries: WatchingEntry[] = [...groupsForBand(reviews, "watching", attention), ...externalWatching]
     .map((row: Json) => ({
       key: str(row.key) || str(row.id) || str(row.review_id),
       area: areaOf(row),
-      summary: plainText(str(row.operator_summary)) || "Still watching.",
+      ...watchingOf(row),
       count: num(row.count) || arr(row.item_ids).length || 1,
       createdAt: groupCreatedAt(row, itemByID),
     }))
@@ -246,17 +268,29 @@ export default async function Decide({
   const filedOfKind = filedKind
     ? filedItems
         .filter((item) => plainArea(areaOf(item) || "") === filedKind)
-        .sort((a, b) => str(b.created_at).localeCompare(str(a.created_at)))
+        .map((item) => ({ item, filed: filedOutcome(item) }))
+        .sort((a, b) => b.filed.when.localeCompare(a.filed.when))
     : [];
+  // What happened lately, across kinds: the newest recorded decisions.
+  const recentDecisions = filedItems
+    .map((item) => ({ item, filed: filedOutcome(item) }))
+    .filter((row) => row.filed.whenLabel === "decided")
+    .sort((a, b) => b.filed.when.localeCompare(a.filed.when))
+    .slice(0, RECENT_SHOWN);
 
   const attentionKnown = hasCopy(attentionRead);
+  // A link to a decision that is not listed says why, never opens another
+  // one silently (the first decision still opens beside the note).
+  const requestedGone: "" | "gone" | "housekeeping" = requestedKey && attentionKnown && !decideGroups.some((group) => group.key === requestedKey)
+    ? housekeepingGroups(attention).some((group) => group.key === requestedKey) ? "housekeeping" : "gone"
+    : "";
   const reviewsKnown = hasCopy(reviewsRead);
-  const pending = readsPending(attentionRead, reviewsRead, scoped?.read ?? null);
+  const pending = readsPending(attentionRead, reviewsRead, scoped?.read ?? null, ...showReads, projectIndex?.reads.work ?? null);
   const panelDetailOpen = Boolean(decideGroups.find((group) => group.key === requestedKey)?.panel);
 
   const answer = !waiting ? <ReadNotice read={attentionRead} label="what waits for you" />
-    : waiting.groups <= 0 ? <p>Nothing is waiting for your decision.</p>
-    : <p><strong className="font-semibold text-seam">{unit(waiting.groups, TERMS.decision.name)}</strong> waiting · {unit(waiting.items, TERMS.item.name)} to review</p>;
+    : waiting.groups <= 0 ? <p>{describeWaiting(waiting).headline}.</p>
+    : <p><strong className="font-semibold text-seam">{describeWaiting(waiting).headline}</strong>.</p>;
 
   return (
     <div className={`flex flex-col ${panelDetailOpen ? "gap-3" : "gap-6"}`}>
@@ -269,9 +303,17 @@ export default async function Decide({
           right={<ReadChip read={attentionRead} />}
         />
       )}
-      {panelDetailOpen ? null : <p className="max-w-read text-sm text-muted">Review the recommendation and what each action changes. <Link href="/work?lens=table&filter=blocked" className="font-semibold text-work hover:underline">Open blocked work →</Link> <Link href="/memory#memory-review" className="ml-3 font-semibold text-work hover:underline">Review proposed memories →</Link></p>}
+      {panelDetailOpen || !waiting ? null : <WaitingNotes waiting={waiting} totals={attention?.totals ?? null} workTitles={workTitles} detail />}
 
       <section id="decision-queue" tabIndex={-1} className="scroll-mt-6 flex flex-col gap-3" aria-label="Decisions">
+        {requestedGone ? (
+          <p role="status" className="rounded-lg border border-hair bg-soft px-4 py-3 text-sm text-muted">
+            {requestedGone === "housekeeping"
+              ? "That link opens a proposal to update agent skills. It is agent housekeeping, not a decision for you, so it is not listed here."
+              : "That decision is no longer waiting for you: it was answered or closed."}{" "}
+            <Link href="#filed" className="font-semibold text-work hover:underline">See filed items →</Link>
+          </p>
+        ) : null}
         {attentionKnown ? <ReadFailedBanner read={attentionRead} label="what waits for you" /> : null}
         {attentionKnown && decideGroups.length > 0 ? (
           <DecideQueue
@@ -279,7 +321,6 @@ export default async function Decide({
             detailKeys={openKey ? [openKey] : []}
             mutationsEnabled={mutationsEnabled}
             initialSelectedKey={requestedKey}
-            systemicBlockerReason={systemicBlockerReason}
           />
         ) : null}
       </section>
@@ -313,6 +354,14 @@ export default async function Decide({
           <span aria-hidden className="text-sm text-faint transition-transform group-open:rotate-90">›</span>
         </summary>
         <div className="border-t border-hair px-4 py-3">
+          {reviewsKnown && recentDecisions.length ? (
+            <div className="mb-4">
+              <div className="text-xs font-semibold text-ink">Recent decisions, newest first</div>
+              <ul className="mt-2 divide-y divide-hair rounded-md border border-hair">
+                {recentDecisions.map(({ item, filed }, index) => <FiledRow key={str(item.id) || index} item={item} filed={filed} />)}
+              </ul>
+            </div>
+          ) : null}
           {!reviewsKnown ? (
             <ReadNotice read={reviewsRead} label="filed items" />
           ) : filedKinds.length ? (
@@ -336,17 +385,11 @@ export default async function Decide({
           {filedKind && reviewsKnown ? (
             <div className="mt-4">
               <div className="text-xs font-semibold text-ink">
-                {filedKind} · showing {Math.min(FILED_SHOWN, filedOfKind.length).toLocaleString("en-US")} of {unit(filedOfKind.length, "item")}, newest first
+                {filedKind} · showing {Math.min(FILED_SHOWN, filedOfKind.length).toLocaleString("en-US")} of {unit(filedOfKind.length, "item")}, newest decided or raised first
               </div>
               <ul className="mt-2 divide-y divide-hair rounded-md border border-hair">
-                {filedOfKind.slice(0, FILED_SHOWN).map((item, index) => (
-                  <li key={str(item.id) || index} className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 px-3 py-2">
-                    <span className="min-w-0 flex-1 text-sm text-muted">
-                      {plainText(str(item.operator_summary) || str(item.next_action) || str(item.title)) || "No summary was written for this item."}
-                    </span>
-                    <span className="shrink-0 text-2xs tabular-nums text-faint">{str(item.created_at) ? ago(str(item.created_at)) : ""}</span>
-                    <span className="mono w-full truncate text-2xs text-faint">{str(item.id) || str(item.review_id)}</span>
-                  </li>
+                {filedOfKind.slice(0, FILED_SHOWN).map(({ item, filed }, index) => (
+                  <FiledRow key={str(item.id) || index} item={item} filed={filed} />
                 ))}
               </ul>
             </div>
@@ -355,7 +398,6 @@ export default async function Decide({
           ) : null}
         </div>
       </details>
-      <details className="text-xs text-muted"><summary className="cursor-pointer">Queue status & browser access</summary><p className="mt-2 max-w-read">{standingSentence(counted, attentionRead.ageMs)} {mutationsEnabled ? "Actions appear only when their current owner permits them." : "Recording actions is unavailable in this browser. You can still inspect evidence and related work."} <Link href="/settings" className="font-semibold text-work hover:underline">Check console access →</Link></p></details>
     </div>
   );
 }

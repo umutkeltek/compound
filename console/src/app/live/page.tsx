@@ -1,38 +1,37 @@
 import Link from "next/link";
 
+import { buildRoster, latestPickedUp } from "@/components/agents/agent-roster";
+import { AgentsAnswer } from "@/components/agents/AgentsAnswer";
 import { DelegatedSessions } from "@/components/agents/DelegatedSessions";
 import { normalizeExecutorProjection } from "@/components/agents/executor-normalize";
-import { CoordinationBoard, type ExecDetail } from "@/components/coordination/CoordinationBoard";
+import { WaitingPanel } from "@/components/coordination/WaitingPanel";
 import { LiveHarnessCanvas, type LiveLane } from "@/components/live/LiveHarnessCanvas";
-import { LiveOperationsTimeline } from "@/components/live/LiveOperationsTimeline";
+import { LiveOperationsTimeline, type TimelineRow } from "@/components/live/LiveOperationsTimeline";
 import { PageHeader, PulseIcon, ReadChip, ReadFailedBanner, ReadNotice, readsPending, SectionHeader, StatusChip } from "@/components/kit";
 import { PendingRefresh } from "@/components/PendingRefresh";
 import { readAttention } from "@/lib/attention";
-import { arr, type Json } from "@/lib/compound";
 import { readCoordination } from "@/lib/coordination";
-import { countAgents, countInProgress, describeAgents, describeInProgress, unit, waitingOnYou } from "@/lib/counts";
+import { unit, waitingOnYou } from "@/lib/counts";
 import { depthShows, requestDepth } from "@/lib/depth";
-import { getTraffic, newestInFlight, trafficKnown } from "@/lib/traffic";
+import { workListHref } from "@/lib/links";
+import { getTraffic, trafficKnown } from "@/lib/traffic";
 
 export const dynamic = "force-dynamic";
 
-async function LiveCoordination({ execDetail, runAttemptsPresent }: { execDetail: Record<string, ExecDetail>; runAttemptsPresent: boolean }) {
+/** The most agents the canvas draws; it still fits the page at that size. */
+const CANVAS_LANES = 8;
+
+async function LiveCoordination() {
   const { view, read } = await readCoordination();
   return (
     <section data-depth-min="technical" className="flex flex-col gap-3">
-      <SectionHeader tone="route" icon={<PulseIcon />} label="Who waits on whom" sub="this session · other sessions · what each waits for" right={<ReadChip read={read} />} />
+      <SectionHeader tone="route" icon={<PulseIcon />} label="Who waits on whom" sub="agent sessions and what they wait for" right={<ReadChip read={read} />} />
       {read.status === "loading" || read.status === "unreachable" ? (
         <ReadNotice read={read} label="who waits on whom" />
       ) : (
         <>
           <ReadFailedBanner read={read} label="who waits on whom" />
-          <CoordinationBoard
-            view={view}
-            doorStatus={read.status}
-            doorError={read.error}
-            execDetail={execDetail}
-            runAttemptsPresent={runAttemptsPresent}
-          />
+          <WaitingPanel view={view} />
         </>
       )}
     </section>
@@ -57,81 +56,74 @@ export default async function LivePage() {
   const executorsRead = traffic.read!;
   const known = trafficKnown(traffic);
   const projection = normalizeExecutorProjection(executorsRead.value);
-  const lanes: LiveLane[] = traffic.lanes.map((lane) => {
-    const ranked = lane.inFlight.slice().sort((a, b) => {
-      const rank = (value: typeof a) => value.runStatus === "running" || value.state === "running" ? 0 : value.state === "verifying" ? 1 : value.state === "blocked" || value.state === "held" ? 2 : 3;
-      return rank(a) - rank(b);
-    });
-    return {
-      id: lane.agentId,
-      label: lane.agentLabel,
-      status: lane.agentStatus,
-      running: lane.running,
-      needsMe: lane.needsMe,
-      totalWork: lane.inFlight.length,
-      work: ranked.slice(0, 2).map((work) => ({
+  const nowMs = Date.now();
+  // One row per agent key, counted with lib/counts.ts (components/agents/agent-roster.ts):
+  // the same rows Today counts, and each row's numbers equal its Work list.
+  const roster = known && projection ? buildRoster(projection.executors, nowMs, 2) : null;
+  const runOf = new Map(traffic.lanes.flatMap((lane) => lane.inFlight.map((work) => [work.workId, work] as const)));
+  // The canvas holds the agents that hold the most; the rest are on All agents.
+  const shown = (roster?.holders ?? []).slice(0, CANVAS_LANES);
+  const hiddenHolders = (roster?.holders.length ?? 0) - shown.length;
+  const lanes: LiveLane[] = shown.map((agent) => ({
+    id: agent.key,
+    label: agent.name,
+    totalWork: agent.items,
+    running: agent.inProgress.total,
+    needsMe: agent.onHold,
+    stale: agent.stale,
+    href: agent.href,
+    work: agent.top.map((work) => {
+      const run = runOf.get(work.workId);
+      return {
         workId: work.workId,
         title: work.title,
         state: work.state,
-        nextAction: work.nextAction,
-        harness: work.harness,
-        runStatus: work.runStatus,
-        actor: work.actor,
-        retryDepth: work.retryDepth,
-      })),
-    };
-  });
-
-  const execDetail: Record<string, ExecDetail> = {};
-  for (const lane of traffic.lanes) {
-    for (const work of lane.inFlight) {
-      if (execDetail[work.workId]) continue;
-      execDetail[work.workId] = {
-        harness: work.harness,
-        runStatus: work.runStatus,
-        actor: work.actor,
-        retryDepth: work.retryDepth,
+        stateLabel: work.stateLabel,
+        nextAction: work.next,
+        pickedUpAgo: work.pickedUpAgo,
+        stale: work.stale,
+        href: work.href,
+        harness: run?.harness ?? "",
+        runStatus: run?.runStatus ?? "",
+        actor: run?.actor ?? "",
+        retryDepth: run?.retryDepth ?? 0,
       };
-    }
-  }
+    }),
+  }));
+  const latest = known && projection ? latestPickedUp(projection.executors, nowMs, 6) : null;
+  const timelineRows: TimelineRow[] = (latest?.rows ?? []).map((work) => ({
+    workId: work.workId,
+    title: work.title,
+    state: work.state,
+    stateLabel: work.stateLabel,
+    next: work.next,
+    pickedUpAgo: work.pickedUpAgo,
+    stale: work.stale,
+    href: work.href,
+    agentName: work.agentName,
+    runStatus: runOf.get(work.workId)?.runStatus ?? "",
+    harness: runOf.get(work.workId)?.harness ?? "",
+  }));
 
-  // One definition per number (lib/counts.ts), the same Today and Work use.
-  // In-progress counts take the raw executors rows: they carry `claimed_at`.
-  const rawWork: Json[] = known
-    ? arr(executorsRead.value?.executors).flatMap((row: Json) => arr(row.current_work))
-    : [];
-  const agents = known && projection ? countAgents(projection.executors) : null;
-  const inProgress = known ? countInProgress(rawWork, Date.now()) : null;
-  const progress = inProgress ? describeInProgress(inProgress) : null;
 
-  // The browser gets only the six rows the timeline shows, not every item.
-  const newest = newestInFlight(traffic, 6);
+
   const delegatedRunning = projection?.delegatedCounts.running ?? 0;
   const pending = readsPending(executorsRead, attentionLive.read);
 
-  const answer = !known || !agents || !progress ? (
+  const answer = !roster ? (
     <ReadNotice read={executorsRead} label="who works on what" />
   ) : (
-    <div className="flex flex-col gap-1.5">
-      <p>{describeAgents(agents)}</p>
-      <p className="text-base text-muted">
-        <span className="text-ink">{progress.headline}</span>
-        {progress.detail ? <>: {progress.detail}</> : "."}
-      </p>
-      {progress.age ? <p className="text-base text-seam">{progress.age}</p> : null}
-      {!traffic.runAttemptsPresent ? (
+    <AgentsAnswer
+      roster={roster}
+      runRecordsVisible={traffic.runAttemptsPresent}
+      extra={waiting && waiting.workItems > 0 ? (
         <p className="text-sm text-muted">
-          This page cannot see the live run records, so it cannot tell which of these an agent is running this minute.
-          &quot;Running&quot; is what the work record says.
+          <Link href={workListHref({ filter: "blocked" })} className="font-semibold text-work hover:underline">
+            {unit(waiting.workItems, "work item")} {waiting.workItems === 1 ? "waits" : "wait"} for your decision.
+          </Link>
         </p>
       ) : null}
-      {waiting && waiting.workItems > 0 ? (
-        <p className="text-sm text-muted">
-          {unit(waiting.workItems, "work item")} {waiting.workItems === 1 ? "waits" : "wait"} for your decision.{" "}
-          <Link href="/reviews" className="font-semibold text-work hover:underline">Open Decide →</Link>
-        </p>
-      ) : null}
-    </div>
+    />
   );
 
   return (
@@ -141,12 +133,7 @@ export default async function LivePage() {
         name="Live"
         lead="Follow the latest recorded activity from your agents."
         answer={answer}
-        right={
-          <>
-            <ReadChip read={executorsRead} />
-            <Link href="/traffic" className="text-xs font-semibold text-work hover:underline">Who waits on whom →</Link>
-          </>
-        }
+        right={<ReadChip read={executorsRead} />}
       />
 
       {known ? <ReadFailedBanner read={executorsRead} label="who works on what" /> : null}
@@ -156,23 +143,29 @@ export default async function LivePage() {
           tone="work"
           icon={<PulseIcon />}
           label="Who holds what"
-          sub="each agent and its two most active work items · pick one for details"
+          sub="each agent and its two most urgent work items · pick one for details"
         />
         {known ? <LiveHarnessCanvas lanes={lanes} /> : <ReadNotice read={executorsRead} label="who holds what" />}
+        {hiddenHolders > 0 ? (
+          <p className="text-sm text-muted">
+            {unit(hiddenHolders, "more agent")} {hiddenHolders === 1 ? "holds" : "hold"} less work and {hiddenHolders === 1 ? "is" : "are"} listed on{" "}
+            <Link href="/executors" className="font-semibold text-work hover:underline">All agents</Link>.
+          </p>
+        ) : null}
       </section>
 
       <section data-depth-min="investigate" className="flex flex-col gap-3">
         <SectionHeader
           tone="work"
           icon={<PulseIcon />}
-          label="Latest work steps"
-          sub="newest first · when each was last seen and what comes next"
+          label="Latest work picked up"
+          sub="newest first · who holds it and what comes next"
         />
-        {known ? <LiveOperationsTimeline report={newest.report} total={newest.total} /> : <ReadNotice read={executorsRead} label="the latest work steps" />}
+        {known ? <LiveOperationsTimeline rows={timelineRows} total={latest?.total ?? 0} allHref={workListHref({ filter: "all" })} /> : <ReadNotice read={executorsRead} label="the latest work picked up" />}
       </section>
 
       {showCoordination ? (
-        <LiveCoordination execDetail={execDetail} runAttemptsPresent={traffic.runAttemptsPresent} />
+        <LiveCoordination />
       ) : null}
 
       {/* Technical depth only, like coordination: the list holds every session

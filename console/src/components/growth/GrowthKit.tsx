@@ -11,6 +11,7 @@ import {
   formatKpi,
   kpiDelta,
   kpiLowerIsBetter,
+  kpiPeriod,
   shortDate,
   type Coverage,
   type GrowthApp,
@@ -72,17 +73,25 @@ export function DeltaLine({ kpi, lowerIsBetter = false }: { kpi: Kpi | undefined
         {up ? "↗" : "↘"} {up ? "+" : "−"}
         {Math.abs(delta * 100).toFixed(1)}%
       </span>{" "}
-      vs. prior period
+      vs. the {kpi?.daysInWindow || 30} days before
     </span>
   );
 }
 
-export function KpiTile({ kpiKey, kpi, color, label }: { kpiKey: KpiKey; kpi: Kpi | undefined; color: string; label?: string }) {
+/**
+ * One number with the days it covers under its name (`kpiPeriod`), how many
+ * of those days reported, and the change against the same number of days
+ * before. With `href` the whole tile opens the page that explains it.
+ */
+export function KpiTile({ kpiKey, kpi, color, label, href }: { kpiKey: KpiKey; kpi: Kpi | undefined; color: string; label?: string; href?: string }) {
   const meta = KPI_META[kpiKey];
   const partial = kpi ? windowHasGap(kpi) : false;
-  return (
-    <div className="flex min-w-0 flex-col gap-3 rounded-2xl border border-hair bg-panel p-4" title={meta.hint}>
-      <div className="text-sm text-muted">{label ?? meta.label}</div>
+  const body = (
+    <>
+      <div>
+        <div className="text-sm text-muted">{label ?? meta.label}</div>
+        <div className="text-xs text-faint" data-kpi-period>{kpiPeriod(kpi)}</div>
+      </div>
       <div className="text-2xl font-semibold tracking-tight text-ink tabular-nums">{formatKpi(kpi)}</div>
       <DayMeter reported={kpi?.daysReported ?? 0} total={kpi?.daysInWindow || 30} color={color} />
       <div className="flex flex-col gap-0.5">
@@ -96,6 +105,17 @@ export function KpiTile({ kpiKey, kpi, color, label }: { kpiKey: KpiKey; kpi: Kp
           </span>
         ) : null}
       </div>
+      {href ? <span className="text-xs font-medium text-work">Open →</span> : null}
+    </>
+  );
+  const box = "flex min-w-0 flex-col gap-3 rounded-2xl border border-hair bg-panel p-4";
+  return href ? (
+    <Link href={href} className={`${box} hover:border-work-line`} title={meta.hint}>
+      {body}
+    </Link>
+  ) : (
+    <div className={box} title={meta.hint}>
+      {body}
     </div>
   );
 }

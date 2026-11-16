@@ -12,15 +12,19 @@
  * this file. A count whose source has not been read is `null` at the call
  * site, never 0.
  *
- * Waiting for you (`waitingOnYou`): decisions (`groups`, one card each on
- * Decide), the items inside them (`items`), and the work items among them
- * (`workItems`, the sidebar Work badge). Units: decisions, items, work items.
+ * Waiting for you (`waitingOnYou`): only what is his. Decisions he can answer
+ * (`groups`, one card each on Decide), the items inside them (`items`), and
+ * the work items among them (`workItems`). Decisions an agent must word first,
+ * agent housekeeping (skill proposals), what closed without him and what waits
+ * on others are named apart and never added in. Units: decisions, items, work
+ * items. Today, Decide and the sidebar read `groups` under one name.
  */
 
-export { waitingOnYou, type WaitingOnYou } from "@/lib/attention";
+export { attentionShare, housekeepingGroups, waitingOnYou, yourDecisionGroups, type AttentionShare, type WaitingOnYou } from "@/lib/attention";
+import type { WaitingOnYou } from "@/lib/attention";
 
 import { isInProgress, isOnHold, isStale, isWaitingForCheck, STALE_AFTER_DAYS, timestampMs } from "@/lib/work-state";
-import { NO_AGENT_KEY } from "@/lib/harness-label";
+import { NO_AGENT_KEY, OPERATOR_AGENT_KEY } from "@/lib/harness-label";
 
 // The per-item rules (in progress, on hold, waiting for a check, stale and its
 // threshold) live in the client-safe lib/work-state.ts; this file counts with
@@ -45,6 +49,69 @@ export function unit(n: number, one: string, many = `${one}s`): string {
 
 function text(value: unknown): string {
   return typeof value === "string" ? value : typeof value === "number" ? String(value) : "";
+}
+
+/* ---------- memory (the Memory page) ---------- */
+
+const isCount = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+
+/**
+ * Proposal records by their recorded state, from `memory candidates --json`
+ * `counts.by_state`. The CLI counts every record whatever the filter, so any
+ * filtered read carries the whole split. Unit: proposal records, not
+ * memories (an accepted statement is counted by `countAcceptedMemories`).
+ * `null` when the reply has no valid split: unknown, never zero.
+ */
+export function countProposalRecords(reply: unknown): Record<string, number> | null {
+  const counts = (reply as { counts?: { by_state?: unknown } } | null | undefined)?.counts?.by_state;
+  if (!counts || typeof counts !== "object" || Array.isArray(counts)) return null;
+  const out: Record<string, number> = {};
+  for (const [state, n] of Object.entries(counts)) {
+    if (!isCount(n)) return null;
+    out[state] = n;
+  }
+  return out;
+}
+
+/** Accepted memories: `total` and its split by kind, largest first, zero kinds left out. */
+export type AcceptedMemoryCount = { total: number; byKind: { kind: string; count: number }[] };
+
+/**
+ * Accepted memories: the current statements agents can be given, from
+ * `memory canon --json` (`total`, split by kind in `distribution`). Unit:
+ * memories. `null` when the reply is missing or malformed: unknown, never
+ * zero. The split is shown only when it adds up to the total.
+ */
+export function countAcceptedMemories(canon: unknown): AcceptedMemoryCount | null {
+  const reply = canon as { total?: unknown; distribution?: unknown } | null | undefined;
+  if (!reply || !isCount(reply.total)) return null;
+  const dist = reply.distribution;
+  let byKind: { kind: string; count: number }[] = [];
+  if (dist && typeof dist === "object" && !Array.isArray(dist)) {
+    const rows = Object.entries(dist as Record<string, unknown>);
+    if (rows.every(([, n]) => isCount(n))) {
+      byKind = rows
+        .map(([kind, n]) => ({ kind, count: n as number }))
+        .filter((row) => row.count > 0)
+        .sort((a, b) => b.count - a.count || a.kind.localeCompare(b.kind));
+      if (byKind.reduce((sum, row) => sum + row.count, 0) !== reply.total) byKind = [];
+    }
+  }
+  return { total: reply.total, byKind };
+}
+
+/* ---------- sources (the Sources page) ---------- */
+
+/**
+ * Sources by their one status (lib/sources.ts `sourceView`). Unit: sources.
+ * The statuses add up to `total`. A page whose connections read has no copy
+ * passes nothing and shows the counts as unknown, never 0.
+ */
+export function countSourcesByStatus(views: readonly { status: { key: string } }[]): { total: number; byStatus: Record<string, number> } {
+  const byStatus: Record<string, number> = {};
+  for (const view of views) byStatus[view.status.key] = (byStatus[view.status.key] ?? 0) + 1;
+  return { total: views.length, byStatus };
 }
 
 /* ---------- open work ---------- */
@@ -172,17 +239,27 @@ export type AgentCount = {
   heldItems: number;
   /** open work items whose owner matches no known agent */
   noAgentItems: number;
+  /** open work items you hold yourself (the operator's row): yours, not an agent's */
+  yourItems: number;
 };
 
 type AgentRow = { id: string; currentWork: readonly unknown[] };
 
-/** Count agents from the normalized executors rows. Unit: agents; items are work items. */
+/**
+ * Count agents from the normalized executors rows (one row per agent key,
+ * components/agents/executor-normalize.ts). Unit: agents; items are work
+ * items. The no-agent row and your own row are not agents.
+ */
 export function countAgents(rows: readonly AgentRow[]): AgentCount {
-  const out: AgentCount = { withWork: 0, idle: 0, heldItems: 0, noAgentItems: 0 };
+  const out: AgentCount = { withWork: 0, idle: 0, heldItems: 0, noAgentItems: 0, yourItems: 0 };
   for (const row of rows) {
     const items = row.currentWork.length;
     if (row.id === UNASSIGNED_AGENT_ID) {
       out.noAgentItems += items;
+      continue;
+    }
+    if (row.id === OPERATOR_AGENT_KEY) {
+      out.yourItems += items;
       continue;
     }
     if (items > 0) {
@@ -201,8 +278,9 @@ export function describeAgents(a: AgentCount): string {
     ? `${unit(a.withWork, "agent")} ${a.withWork === 1 ? "holds" : "hold"} ${unit(a.heldItems, "work item")}.`
     : "No agent holds any work.";
   const none = a.noAgentItems ? ` ${unit(a.noAgentItems, "more work item")} ${a.noAgentItems === 1 ? "has" : "have"} no agent.` : "";
+  const yours = a.yourItems ? ` ${unit(a.yourItems, "more work item")} ${a.yourItems === 1 ? "is" : "are"} held by you.` : "";
   const idle = a.idle ? ` ${unit(a.idle, "agent")} ${a.idle === 1 ? "has" : "have"} nothing to do.` : "";
-  return held + none + idle;
+  return held + none + yours + idle;
 }
 
 /* ---------- decisions ---------- */
@@ -264,4 +342,42 @@ export function countDecisions(
     if (group.standing && !group.standing.live) checkedEarlier += 1;
   }
   return { decisions: groups.length, items, readyNow, notYet: groups.length - readyNow, found, checkedEarlier };
+}
+
+/* ---------- waiting for you, in words ---------- */
+
+export type WaitingWords = {
+  /** "3 decisions wait for you" / "Nothing waits for your answer" */
+  headline: string;
+  /** quiet lines, each one plain sentence; "" when there is nothing to say */
+  wording: string;
+  housekeeping: string;
+  closedWithoutYou: string;
+  waitingOnOthers: string;
+};
+
+/**
+ * The waiting count in plain sentences, the same on Today, Decide and the
+ * sidebar's tooltip. Only `groups` is the number; every other line names what
+ * it counts and says why it is not his. A line whose number the projection
+ * did not give is "" (never "0 closed").
+ */
+export function describeWaiting(w: WaitingOnYou): WaitingWords {
+  const be = (n: number) => (n === 1 ? "is" : "are");
+  const headline = w.groups > 0
+    ? `${unit(w.groups, "decision")} ${w.groups === 1 ? "waits" : "wait"} for you`
+    : "Nothing waits for your answer";
+  const wording = w.wording > 0
+    ? `${unit(w.wording, "more decision")} ${be(w.wording)} yours once an agent words ${w.wording === 1 ? "it" : "them"} as a clear question.`
+    : "";
+  const housekeeping = w.housekeeping.groups > 0
+    ? `${unit(w.housekeeping.groups, "proposal")} to update agent skills ${be(w.housekeeping.groups)} agent housekeeping, not decisions for you, so ${w.housekeeping.groups === 1 ? "it is" : "they are"} not counted.`
+    : "";
+  const closedWithoutYou = w.closedWithoutYou && w.closedWithoutYou > 0
+    ? `${unit(w.closedWithoutYou, "record")} closed without you: nothing is left to decide.`
+    : "";
+  const waitingOnOthers = w.waitingOnOthers && w.waitingOnOthers.items > 0
+    ? `${unit(w.waitingOnOthers.items, "work item")} ${w.waitingOnOthers.items === 1 ? "waits" : "wait"} on something outside you, not on you.`
+    : "";
+  return { headline, wording, housekeeping, closedWithoutYou, waitingOnOthers };
 }

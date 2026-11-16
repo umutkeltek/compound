@@ -21,13 +21,14 @@ function finalize(checks: Check[]): { ok: boolean; details: string[] } {
 }
 
 function mkWork(over: Partial<ExecutorWorkRef> = {}): ExecutorWorkRef {
-  return { workId: "work_x", title: "do the thing", state: "running", nextAction: "run it", ...over };
+  return { workId: "work_x", title: "do the thing", state: "running", nextAction: "run it", owner: "", claimedBy: "", claimedAt: "", ...over };
 }
 
 function mkRow(over: Partial<ExecutorRow> = {}): ExecutorRow {
   return {
     id: "codex",
     label: "Codex",
+    aliases: [],
     status: "available",
     statusSource: "profile_guide",
     waitReason: "",

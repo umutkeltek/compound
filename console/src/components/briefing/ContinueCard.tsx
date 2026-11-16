@@ -1,4 +1,5 @@
-import { ContinueButton } from "@/components/ContinueButton";
+import Link from "next/link";
+import { workListHref } from "@/lib/links";
 import { formatBlockedRef } from "@/lib/work-labels";
 import type { ContinueModel, ContinueTone } from "@/lib/briefing";
 
@@ -33,7 +34,7 @@ function CountChip({ label, active }: { label: string; active: boolean }) {
   );
 }
 
-export function ContinueCard({ model, mutationsReady }: { model: ContinueModel; mutationsReady: boolean }) {
+export function ContinueCard({ model }: { model: ContinueModel; mutationsReady: boolean }) {
   return (
     <section
       className="rounded-lg border border-hair bg-panel px-5 py-4 shadow-sm"
@@ -54,7 +55,8 @@ export function ContinueCard({ model, mutationsReady }: { model: ContinueModel; 
       </div>
 
       <div className="mt-3">
-        <ContinueButton request={model.request} mutationsReady={mutationsReady} />
+        {/* No command to copy: an agent picks this up; he only reads where it stands. */}
+        <Link href={workListHref()} className="text-xs font-semibold text-work hover:underline">See the work →</Link>
       </div>
 
       {model.blockedOn.length > 0 ? (

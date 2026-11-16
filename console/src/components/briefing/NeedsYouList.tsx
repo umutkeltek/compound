@@ -4,11 +4,13 @@ import { HeadlineAct } from "@/components/briefing/HeadlineAct";
 import { domainForArea } from "@/components/briefing/primitives";
 import type { AttentionGroup } from "@/lib/attention";
 import type { HeadlineActDescriptor } from "@/lib/briefing";
-import { humanAge, isOld } from "@/lib/briefing";
+import { isOld } from "@/lib/briefing";
 import { unit } from "@/lib/counts";
 import { headlineActIdentity } from "@/lib/governed-action-client";
-import { humanizeProductId } from "@/lib/app-identity";
-import { areaDetail, plainArea, plainReason, plainText, plainWhy, productTitle } from "@/lib/plain-words";
+import type { Json } from "@/lib/compound";
+import { decisionHeadline } from "@/lib/decide-model";
+import { decideHref } from "@/lib/links";
+import { plainArea } from "@/lib/plain-words";
 
 const DOT: Record<ReturnType<typeof domainForArea>, string> = {
   work: "bg-work",
@@ -17,16 +19,6 @@ const DOT: Record<ReturnType<typeof domainForArea>, string> = {
   route: "bg-route",
   product: "bg-product",
 };
-
-/**
- * The owner's own one-line summary of what the decision asks. A summary that
- * starts with a product id leads with the product's name instead (named the
- * way the apps pages name it); the id comes back apart for small text.
- */
-function whatToDo(group: AttentionGroup): { text: string; id: string } {
-  const titled = productTitle(plainText(group.operator_summary || ""), humanizeProductId);
-  return titled.text ? titled : { text: "Open it to see what it asks.", id: "" };
-}
 
 /**
  * Today's answer: at most five decisions, most urgent first (the attention
@@ -40,6 +32,7 @@ export function NeedsYouList({
   total,
   act,
   mutationsEnabled,
+  nowMs,
 }: {
   groups: AttentionGroup[];
   /** every decision waiting (for the "N more" link) */
@@ -47,19 +40,19 @@ export function NeedsYouList({
   /** the one-click act for the FIRST row, when the owner offers one */
   act: HeadlineActDescriptor | null;
   mutationsEnabled: boolean;
+  /** the clock, passed in */
+  nowMs?: number;
 }) {
+  const now = nowMs ?? Date.now();
   const shown = groups.slice(0, 5);
   const more = Math.max(0, total - shown.length);
   return (
     <section aria-label="What needs you" className="overflow-hidden rounded-xl border border-hair bg-panel shadow-sm">
       <ol className="divide-y divide-hair">
         {shown.map((group, index) => {
-          const why = plainWhy(group.operator_unlock);
-          const blocked = !group.action ? plainReason(group.terminal_reason) : "";
-          const age = humanAge(group.oldest_created_at);
-          const detail = areaDetail(group.area);
-          const what = whatToDo(group);
-          const href = `/reviews?decision=${encodeURIComponent(group.key)}`;
+          // The same title, app, question and wait as Decide's row (one function).
+          const headline = decisionHeadline(group as unknown as Json, {}, now);
+          const href = decideHref({ decision: group.key });
           return (
             <li key={group.key || index} className="flex flex-col gap-2 px-4 py-3.5 sm:flex-row sm:items-start sm:gap-4">
               <span
@@ -74,15 +67,16 @@ export function NeedsYouList({
                     <span className={`h-1.5 w-1.5 rounded-full ${DOT[domainForArea(group.area)]}`} aria-hidden />
                     {plainArea(group.area)}
                   </span>
+                  {headline.about ? (
+                    headline.about.href
+                      ? <Link href={headline.about.href} className="font-semibold text-work hover:underline">{headline.about.label}</Link>
+                      : <span className="font-semibold text-muted">{headline.about.label}</span>
+                  ) : null}
                   {group.count > 1 ? <span className="tabular-nums">{unit(group.count, "item")}</span> : null}
-                  {age ? <span className={isOld(group.oldest_created_at) ? "text-seam" : ""}>waiting {age}</span> : null}
-                  {group.reversibility === "irreversible" ? <span className="text-seam">cannot be undone</span> : null}
-                  {detail ? <span className="mono truncate" title={group.area} style={{ maxWidth: "24ch" }}>{detail}</span> : null}
-                  {what.id ? <span className="mono truncate" title={what.id} style={{ maxWidth: "24ch" }}>{what.id}</span> : null}
+                  {headline.waiting ? <span className={isOld(group.oldest_created_at) ? "text-seam" : ""}>waiting {headline.waiting}</span> : null}
                 </div>
-                <p className="mt-1 text-md font-semibold leading-snug text-strong">{what.text}</p>
-                {why ? <p className="mt-0.5 text-sm leading-snug text-muted">Why: {why}</p> : null}
-                {blocked ? <p className="mt-0.5 text-xs leading-snug text-faint">{blocked}</p> : null}
+                <p className="mt-1 text-md font-semibold leading-snug text-strong">{headline.subject || headline.question || plainArea(group.area)}</p>
+                {headline.subject && headline.question ? <p className="mt-0.5 text-sm leading-snug text-muted">{headline.question}</p> : null}
               </div>
               <div className="flex shrink-0 flex-wrap items-center gap-3 sm:pt-0.5">
                 {index === 0 && act ? <HeadlineAct key={headlineActIdentity(act)} act={act} mutationsEnabled={mutationsEnabled} /> : null}
@@ -99,7 +93,7 @@ export function NeedsYouList({
       </ol>
       {more > 0 ? (
         <Link
-          href="/reviews"
+          href={decideHref()}
           className="flex items-center justify-between gap-3 border-t border-hair bg-soft px-4 py-2.5 text-sm text-muted hover:text-ink"
         >
           <span>{unit(more, "more decision")} on Decide</span>

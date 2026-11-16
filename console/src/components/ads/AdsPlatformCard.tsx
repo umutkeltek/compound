@@ -2,6 +2,7 @@ import { CopyCmd } from "@/components/CopyCmd";
 import { DeltaPill, Sparkline, StatusChip } from "@/components/kit";
 import { ago } from "@/lib/time";
 import {
+  ADS_GOOD_DIRECTION,
   formatCount,
   formatCpa,
   formatCpc,
@@ -11,6 +12,7 @@ import {
   formatRoas,
   roasExplanation,
   platformStatusLabel,
+  hasPlaceholder,
   productDisplay,
   sparkValues,
   windowDelta,
@@ -67,7 +69,7 @@ export function AdsPlatformCard({ view, windowDays }: { view: AdsPlatformView; w
               <div className="mono mt-0.5 flex items-baseline gap-2 text-xl tabular-nums text-ink">
                 <span className="truncate">{spendLabel}</span>
                 {spendDelta != null ? (
-                  <DeltaPill value={spendDelta} suffix="%" goodDirection="down" title={`vs previous ${windowDays} days`} showZero />
+                  <DeltaPill value={spendDelta} suffix="%" goodDirection={ADS_GOOD_DIRECTION.spend} title={`vs the ${windowDays} days before`} showZero />
                 ) : null}
               </div>
             </div>
@@ -79,10 +81,10 @@ export function AdsPlatformCard({ view, windowDays }: { view: AdsPlatformView; w
           <div className="grid grid-cols-4 gap-2 rounded-md border border-hair bg-soft px-3 py-2">
             <Metric label="Impr." value={formatCount(t.impressions)} />
             <Metric label="Clicks" value={formatCount(t.clicks)} title="taps / link clicks as the platform reports them" />
-            <Metric label="Conv." value={formatCount(t.conversions)} title="installs / results / conversions as the platform reports them" />
+            <Metric label="Installs" value={formatCount(t.conversions)} title="installs or results as the platform reports them" />
             <Metric label="CTR" value={formatCtr(t)} />
             <Metric label="CPC" value={formatCpc(t)} />
-            <Metric label="CPA" value={formatCpa(t)} title="spend ÷ conversions — reads — with no conversions" />
+            <Metric label="Per install" value={formatCpa(t)} title="Cost per install: spend ÷ installs; — with no installs" />
             <Metric label="ROAS" value={formatRoas(t)} title={roasExplanation(t)} />
             <Metric label="CPM" value={formatCpm(t)} />
           </div>
@@ -103,11 +105,18 @@ export function AdsPlatformCard({ view, windowDays }: { view: AdsPlatformView; w
         <p className="text-xs leading-relaxed text-muted">{view.exportHint}</p>
       )}
 
-      <div className="rounded-md border border-hair bg-soft px-3 py-2.5">
-        <div className="section-label mb-1.5">Next move</div>
-        <p className="mb-2 text-xs text-ink">{view.nextMove.text}</p>
-        {view.nextMove.command ? <CopyCmd cmd={view.nextMove.command} /> : null}
-      </div>
+      {view.status !== "connected" && view.nextMove.text ? (
+        <div className="rounded-md border border-hair bg-soft px-3 py-2.5">
+          <div className="section-label mb-1.5">What happens next</div>
+          <p className="text-xs text-ink">{view.nextMove.text}</p>
+          {view.nextMove.command && !hasPlaceholder(view.nextMove.command) ? (
+            <details className="mt-1.5 text-xs text-muted">
+              <summary className="cursor-pointer text-2xs">For agents</summary>
+              <CopyCmd cmd={view.nextMove.command} />
+            </details>
+          ) : null}
+        </div>
+      ) : null}
     </article>
   );
 }

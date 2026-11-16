@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { workItemHref } from "@/lib/links";
 
 import { EmptyDoctrine, Panel } from "@/components/briefing/primitives";
 import { FeedDegraded, plainAge, type FeedProjectionStatus } from "@/components/kit";
@@ -74,6 +75,7 @@ export function LatestMoment({
             {when ? <> · <time dateTime={moment.occurredAt}>{when}</time></> : null}
           </span>
           {lastGood ? <span className="text-faint">last read {lastGood}</span> : null}
+          {moment.workId ? <Link href={workItemHref(moment.workId)} className="font-semibold text-work hover:underline">Open the work →</Link> : null}
         </div>
       </div>
 
@@ -116,7 +118,7 @@ export function LatestMoment({
               <div className="text-2xs font-semibold text-muted">Transition</div>
               {moment.workId ? (
                 <Link
-                  href={`/work/${moment.workId}`}
+                  href={workItemHref(moment.workId)}
                   className="text-2xs font-semibold text-work hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
                 >
                   Open trace →
