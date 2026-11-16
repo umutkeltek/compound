@@ -297,6 +297,32 @@ function DecisionDetail({ group }: { group: DecideGroup }) {
   );
 }
 
+/** The kind part of an area path ("source-control-cleanup/scr_…" → "source-control-cleanup"). */
+function areaHead(area: string): string {
+  return (area || "").split("/")[0].trim();
+}
+
+/**
+ * What a row and its card show, and nothing else: search matches only text
+ * he can see (the app, the record's words, the question, the kind).
+ */
+export function shownText(group: DecideGroup): string {
+  const h = group.headline;
+  return [h?.about?.label, h?.subject, h?.question, plainArea(group.area), h?.subject || h?.question ? "" : titled(group.objectText || group.title).text]
+    .filter(Boolean).join(" ");
+}
+
+/** Decide's address with its search text and kind set; other parameters stay. */
+export function decideFilterHref(pathname: string, currentSearch: string, filters: { q: string; area: string }): string {
+  const params = new URLSearchParams(currentSearch);
+  for (const [name, value] of [["q", filters.q], ["area", filters.area]] as const) {
+    if (value) params.set(name, value);
+    else params.delete(name);
+  }
+  const query = params.toString();
+  return query ? `${pathname}?${query}` : pathname;
+}
+
 export function initialDecideIndex(
   groups: ReadonlyArray<Pick<DecideGroup, "key">>,
   requestedKey = "",
@@ -343,8 +369,10 @@ export function DecideQueue({
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const [filter, setFilter] = useState("");
-  const [areaFilter, setAreaFilter] = useState("");
+  // Search text and kind live in the address (`q`, `area`; lib/links.ts
+  // decideHref's names), so a reload, Back or a pasted link keeps them.
+  const [filter, setFilter] = useState(() => searchParams.get("q") ?? "");
+  const [areaFilter, setAreaFilter] = useState(() => areaHead(searchParams.get("area") ?? ""));
   const [focused, setFocused] = useState(() => Math.max(0, initialDecideIndex(groups, initialSelectedKey)));
   const [selectedKey, setSelectedKey] = useState(() => initialDecideKey(groups, initialSelectedKey));
 
@@ -358,13 +386,23 @@ export function DecideQueue({
     router.replace(decisionSelectionHref(pathname, searchParams.toString(), key), { scroll: false });
   }, [pathname, router, searchParams]);
 
-  const areas = useMemo(() => [...new Set(groups.map((group) => plainArea(group.area)))]
-    .sort((a, b) => a.localeCompare(b)), [groups]);
+  const areas = useMemo(() => [...new Set(groups.map((group) => areaHead(group.area)))]
+    .sort((a, b) => plainArea(a).localeCompare(plainArea(b))), [groups]);
   const visible = useMemo(() => {
     const query = filter.trim().toLowerCase();
-    return groups.filter((group) => (!areaFilter || plainArea(group.area) === areaFilter) &&
-      (!query || `${group.title} ${group.objectText} ${titled(group.title).text} ${plainArea(group.area)} ${group.areaLabel} ${group.body}`.toLowerCase().includes(query)));
+    return groups.filter((group) => (!areaFilter || areaHead(group.area) === areaFilter) &&
+      (!query || shownText(group).toLowerCase().includes(query)));
   }, [groups, filter, areaFilter]);
+
+  // Write search and kind to the address after a typing pause, so each
+  // keystroke neither rewrites the address nor reloads the open decision.
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const href = decideFilterHref(pathname, searchParams.toString(), { q: filter.trim(), area: areaFilter });
+      if (href !== `${pathname}${searchParams.toString() ? `?${searchParams.toString()}` : ""}`) router.replace(href, { scroll: false });
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [areaFilter, filter, pathname, router, searchParams]);
 
   useEffect(() => {
     const selectedIsCurrent = groups.some((group) => group.key === selectedKey);
@@ -501,8 +539,8 @@ export function DecideQueue({
           aria-label="Filter decisions"
           className="w-full rounded-md border border-hair bg-panel px-3 py-2 text-sm text-ink outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus sm:max-w-xs"
         />
-        <select aria-label="Filter by area" value={areaFilter} onChange={(event) => setAreaFilter(event.target.value)} className="min-h-10 max-w-full rounded-md border border-hair bg-panel px-3 py-2 text-sm text-ink">
-          <option value="">All areas</option>{areas.map((area) => <option key={area} value={area}>{area} ({groups.filter((group) => plainArea(group.area) === area).length})</option>)}
+        <select aria-label="Filter by kind" value={areaFilter} onChange={(event) => setAreaFilter(event.target.value)} className="min-h-10 max-w-full rounded-md border border-hair bg-panel px-3 py-2 text-sm text-ink">
+          <option value="">All kinds</option>{areas.map((area) => <option key={area} value={area}>{plainArea(area)} ({groups.filter((group) => areaHead(group.area) === area).length})</option>)}
         </select>
         <span className="mono text-2xs tabular-nums text-faint">{visible.length} of {groups.length} decisions</span>
         {filter || areaFilter ? <button type="button" onClick={() => { setFilter(""); setAreaFilter(""); }} className="text-xs font-semibold text-work hover:underline">Clear filters</button> : null}

@@ -617,6 +617,19 @@ try {
     assert.deepEqual(order, queue.groups.map((group) => group.key), "a recheck never reorders or regroups the list");
     assert.doesNotMatch(html, /Ready to review|Needs a closer look|Why none can be decided now|cannot be decided now/);
   }
+  // Search text and kind come from the address (`q`, `area`), so a reload or
+  // a pasted link keeps them, and search matches only what a row shows.
+  {
+    const { DecideQueue } = await import("../src/components/decide/DecideQueue.tsx");
+    const rowsAt = (query) => [...wrap("/reviews", createElement(DecideQueue, queue), query).matchAll(/data-decision-row="([^"]+)"/g)].map((m) => m[1]);
+    assert.deepEqual(rowsAt("q=hypothesis"), ["bench|review"], "q filters to the rows that show the word");
+    assert.deepEqual(rowsAt("area=launchd-repair"), ["launchd-repair|review"], "area filters to one kind");
+    assert.deepEqual(rowsAt("q=operator"), [], "search never matches hidden tool text (the row says 'your review')");
+    assert.match(wrap("/reviews", createElement(DecideQueue, queue), "q=hypothesis"), /value="hypothesis"/, "the search box shows the address's text");
+    const { decideFilterHref } = await import("../src/components/decide/DecideQueue.tsx");
+    assert.equal(decideFilterHref("/reviews", "decision=a&filed=Sources", { q: "hold", area: "" }), "/reviews?decision=a&filed=Sources&q=hold", "typing keeps the open decision and other parameters");
+  }
+
   // A link to a decision that is gone says so and offers the filed list; a
   // skill-proposal link says it is agent housekeeping. Neither opens another
   // decision silently.

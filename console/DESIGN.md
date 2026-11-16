@@ -659,7 +659,9 @@ the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line
   list in the one shared order; the open card is keyed by its decision, so an open disclosure or
   typed filter survives a recheck. A link to a decision that is not listed says why (answered or
   closed, or a skill proposal folded out as housekeeping) and offers the filed list; the first
-  decision still opens beside the note, and the address keeps the link.
+  decision still opens beside the note, and the address keeps the link. Search text and kind live
+  in the address (`q`, `area`, written after a typing pause, other parameters kept), and search
+  matches only what a row shows.
 - **Work views.** Three views: the board by state (default), the List, and By app. Board
   columns: Suggested · Ready to start · Running or picked up · On hold · Waiting for a proof check
   · Done, with On hold moved to the front whenever it has items; the two in-progress columns add
