@@ -45,6 +45,7 @@ func CaptureApprovedDirectoryBatchWithOptions(ctx context.Context, homePath, fam
 		return result, loadErr
 	}
 	current := map[string]SourceManifestItem{}
+	metadataOnly := []SourceManifestItem{}
 	for _, item := range existing.Items {
 		if item.VersionState != "superseded" && item.SourceNamespace == opts.SourceNamespace {
 			current[item.SourceKey] = item
@@ -64,6 +65,10 @@ func CaptureApprovedDirectoryBatchWithOptions(ctx context.Context, homePath, fam
 			return false
 		}
 		if old, ok := current[key]; ok && old.BodyPolicy == "owned_snapshot" && old.BodyBytes == info.Size() && old.SnapshotTime == info.ModTime().UTC().Format(time.RFC3339Nano) && (old.SourceFingerprint == "" || old.SourceFingerprint == sourceFingerprint(info)) {
+			if old.SourceFingerprint == "" {
+				old.SourceFingerprint = sourceFingerprint(info)
+				metadataOnly = append(metadataOnly, old)
+			}
 			result.Unchanged++
 			return false
 		}
@@ -116,6 +121,16 @@ func CaptureApprovedDirectoryBatchWithOptions(ctx context.Context, homePath, fam
 			result.Missing++
 		}
 	}
+	if len(batch.files) == 0 && len(metadataOnly) > 0 {
+		fragment := existing
+		fragment.Items = metadataOnly
+		err := withSourceManifestAuthorityLock(homePath, func() error {
+			var err error
+			result.SourceManifestReport, err = recordSourceManifestUnlocked(homePath, fragment)
+			return err
+		})
+		return result, err
+	}
 	if len(batch.files) == 0 {
 		result.SourceManifestReport = SourceManifestReport{ManifestID: existing.ID, ManifestPath: SourceManifestPath(homePath, family), AuthorityRef: SourceManifestAuthorityRef(family), ItemCount: len(existing.Items)}
 		return result, nil
@@ -158,6 +173,7 @@ func CaptureApprovedDirectoryBatchWithOptions(ctx context.Context, homePath, fam
 		}
 		// The same bytes can be observed again after a correction. Body identity
 		// remains content-addressed; the new occurrence must not resurrect an old ID.
+		owned.Items = append(owned.Items, metadataOnly...)
 		latest, loadErr := LoadSourceManifest(homePath, family)
 		if loadErr != nil && !os.IsNotExist(loadErr) {
 			return loadErr

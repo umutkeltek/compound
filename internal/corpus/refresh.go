@@ -140,7 +140,7 @@ func Refresh(ctx context.Context, homePath string, lanes []LaneConfig, factory E
 					c.MissingFiles = captured.Missing
 					c.OversizedFiles = captured.Oversized
 					c.DeferredFiles = captured.Deferred
-					c.FreshnessBasis = "size_and_nanosecond_mtime; capture hashes changed bytes"
+					c.FreshnessBasis = "inode_size_mtime_ctime; capture hashes changed bytes"
 					c.CapturedFiles = captured.Captured
 					c.UnchangedFiles = captured.Unchanged
 					c.PendingFiles = captured.Pending
