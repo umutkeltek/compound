@@ -20,6 +20,8 @@ export type ReadView = {
   error: string | null;
   failedAt: string | null;
   updating: boolean;
+  /** waits in the queue behind other reads; none of its own runs yet (lib/compound.ts `LiveRead.queued`) */
+  queued?: boolean;
   outOfDate: boolean;
   warn: boolean;
   ageMs: number | null;
@@ -67,23 +69,34 @@ function firstLine(text: string | null): string {
   return line.length > 140 ? `${line.slice(0, 139)}…` : line;
 }
 
-/** Plain age chip for a read: "updated 3 min ago · updating…". */
+/**
+ * Plain age chip for a read: "updated 3 min ago · updating…" while its read
+ * runs, "· waiting for another read" while it only waits in the queue (a
+ * read that has not started is not updating, however long it waits).
+ */
 export function ReadChip({ read }: { read: ReadView }) {
   if (read.status === "loading") {
     return (
       <span title={`source: ${read.source}`} className="mono inline-flex items-center gap-1.5 rounded-pill border border-hair bg-soft px-2.5 py-0.5 text-2xs font-semibold text-faint">
         <span className="h-1.5 w-1.5 rounded-full bg-faint" aria-hidden />
-        reading…
+        {read.queued ? "waiting for another read…" : "reading…"}
       </span>
     );
   }
-  return (
+  const chip = (
     <FreshnessChip
       generatedAt={read.generatedAt ?? read.lastGoodAt ?? undefined}
       source={read.source}
-      updating={read.updating}
+      updating={read.updating && !read.queued}
       failed={Boolean(read.error)}
     />
+  );
+  if (!read.queued) return chip;
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1.5" data-read-state="queued">
+      {chip}
+      <span className="text-2xs text-faint">waiting for another read</span>
+    </span>
   );
 }
 
@@ -106,9 +119,9 @@ export function ReadNotice({ read, label, className = "" }: { read: ReadView; la
   }
   const how = read.lastRunMs ? `Last time it took ${aboutDuration(read.lastRunMs)}.` : "This can take a minute or two.";
   return (
-    <div className={`rounded-lg border border-dashed border-hair bg-page px-4 py-4 text-sm text-muted ${className}`} data-read-state="loading">
+    <div className={`rounded-lg border border-dashed border-hair bg-page px-4 py-4 text-sm text-muted ${className}`} data-read-state={read.queued ? "queued" : "loading"}>
       <p className="leading-relaxed">
-        Reading {label} for the first time. {how}
+        Reading {label} for the first time.{read.queued ? " It waits for another read to finish first." : ""} {how}
       </p>
       <p className="mono mt-1 text-2xs text-faint" title={read.source}>{read.source}</p>
     </div>

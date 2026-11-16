@@ -756,6 +756,12 @@ export type LiveRead = {
   failedAt: string | null;
   /** a read for this value is queued or running now. */
   updating: boolean;
+  /**
+   * the read for this value waits in the queue behind other reads: none of
+   * its own is running yet (at most READ_QUEUE_LIMIT run at once). A page
+   * says "waiting for another read", not "updating", while this is true.
+   */
+  queued?: boolean;
   /** an action happened after this copy was read. */
   outOfDate: boolean;
   /** the copy is older than 10 minutes, or the last refresh failed. */
@@ -866,6 +872,7 @@ export async function readProjection(
   if (opts?.enabled !== false && readIsDue(key, entry, now)) enqueueRead(key, args, queueTimeoutMs, entry);
 
   const updating = runJsonInflight.has(key) || runJsonGlobals.queued.has(key);
+  const queued = runJsonGlobals.queued.has(key) && !runJsonInflight.has(key);
   const source = `compound ${args.join(" ")}`;
   const hasValue = !!entry && entry.storedAt !== null;
   const failedSinceSuccess =
@@ -884,6 +891,7 @@ export async function readProjection(
     error: failedSinceSuccess ? entry!.lastError : null,
     failedAt: failedSinceSuccess && entry!.lastErrorAt !== null ? new Date(entry!.lastErrorAt).toISOString() : null,
     updating,
+    queued,
     outOfDate: hasValue ? entryOutOfDate(entry!) : false,
     warn: failedSinceSuccess || (ageMs !== null && ageMs > READ_WARN_AGE_MS),
     ageMs,

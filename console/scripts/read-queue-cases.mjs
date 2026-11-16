@@ -74,7 +74,26 @@ try {
   // 2. The same read is never started twice; 3. at most two heavy reads at once.
   await api.readProjection(["alpha", "--json"], { timeoutMs: HEAVY });
   await api.runProjection(["alpha", "--json"], { timeoutMs: HEAVY }); // a blocking caller joins it
-  for (const name of ["beta", "gamma", "delta", "epsilon"]) await api.readProjection([name, "--json"], { timeoutMs: HEAVY });
+  const waiting = [];
+  for (const name of ["beta", "gamma", "delta", "epsilon"]) waiting.push(await api.readProjection([name, "--json"], { timeoutMs: HEAVY }));
+  // A read that only waits in the queue says so; one that runs does not (the page then says "waiting for another read", not "updating").
+  assert.equal((await api.readProjection(["alpha", "--json"], { timeoutMs: HEAVY })).queued, false, "a running read is not queued");
+  assert.ok(waiting.some((read) => read.queued === true && read.updating === true), "a read behind the two running ones is queued, not running");
+  {
+    const { createElement } = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { ReadChip, ReadNotice } = await import("../src/components/kit/ReadState.tsx");
+    const queuedRead = waiting.find((read) => read.queued);
+    const chip = renderToStaticMarkup(createElement(ReadChip, { read: queuedRead }));
+    assert.match(chip, /waiting for another read/, "a queued first read says it waits for another read");
+    assert.doesNotMatch(chip, /reading…/);
+    const withCopy = { ...queuedRead, status: "live", generatedAt: new Date().toISOString(), lastGoodAt: new Date().toISOString() };
+    const copyChip = renderToStaticMarkup(createElement(ReadChip, { read: withCopy }));
+    assert.match(copyChip, /waiting for another read/);
+    assert.doesNotMatch(copyChip, /updating…/, "a queued refresh is not shown as updating");
+    assert.match(renderToStaticMarkup(createElement(ReadChip, { read: { ...withCopy, queued: false } })), /updating…/, "a running refresh is");
+    assert.match(renderToStaticMarkup(createElement(ReadNotice, { read: queuedRead, label: "fixture data" })), /Reading fixture data for the first time\. It waits for another read to finish first\./);
+  }
   const snapshot = api.readQueueSnapshot();
   assert.ok(snapshot.active.heavy + snapshot.active.light <= 2, `queue over its 2-process limit: ${JSON.stringify(snapshot)}`);
   // Quick reads go first: a light read queued behind heavy ones starts at the next free slot.
