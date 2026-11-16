@@ -79,10 +79,10 @@ export function AdsPlatformCard({ view, windowDays }: { view: AdsPlatformView; w
           <div className="grid grid-cols-4 gap-2 rounded-md border border-hair bg-soft px-3 py-2">
             <Metric label="Impr." value={formatCount(t.impressions)} />
             <Metric label="Clicks" value={formatCount(t.clicks)} title="taps / link clicks as the platform reports them" />
-            <Metric label="Conv." value={formatCount(t.conversions)} title="installs / results / conversions as the platform reports them" />
+            <Metric label="Installs" value={formatCount(t.conversions)} title="installs or results as the platform reports them" />
             <Metric label="CTR" value={formatCtr(t)} />
             <Metric label="CPC" value={formatCpc(t)} />
-            <Metric label="CPA" value={formatCpa(t)} title="spend ÷ conversions — reads — with no conversions" />
+            <Metric label="Per install" value={formatCpa(t)} title="Cost per install: spend ÷ installs; — with no installs" />
             <Metric label="ROAS" value={formatRoas(t)} title={roasExplanation(t)} />
             <Metric label="CPM" value={formatCpm(t)} />
           </div>

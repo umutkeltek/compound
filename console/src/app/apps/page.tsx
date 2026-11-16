@@ -10,7 +10,8 @@ import {
   Panel,
   ShareBars,
 } from "@/components/growth/GrowthKit";
-import { appHue, appSlug, formatKpi, formatValue, getGrowth, shortDate, valueLabel, type GrowthApp, type SeriesPoint } from "@/lib/growth";
+import { allocationWhy, appHue, appSlug, formatKpi, formatValue, getGrowth, kpiPeriod, seriesPeriod, shortDate, valueLabel, type GrowthApp, type SeriesPoint } from "@/lib/growth";
+import { adsHref } from "@/lib/links";
 
 export const dynamic = "force-dynamic";
 
@@ -60,6 +61,7 @@ export default async function PortfolioPage() {
   const otherValue = byProceeds.slice(4).reduce((sum, row) => sum + row.value, 0);
   const proceeds90 = byProceeds.reduce((sum, row) => sum + row.value, 0);
   const allocationById = new Map(allocation.map((row) => [row.productId, row]));
+  const appById = new Map(model.apps.map((app) => [app.productId, app]));
   const appsSorted = [...model.apps].sort(
     (a, b) => (allocationById.get(a.productId)?.rank ?? 999) - (allocationById.get(b.productId)?.rank ?? 999),
   );
@@ -82,9 +84,8 @@ export default async function PortfolioPage() {
           <>
             <HeaderStat value={model.apps.length} label="registered apps" />
             <HeaderStat value={withData.length} label="with data" />
-            <HeaderStat value={formatKpi(totals.proceeds_usd)} label={`proceeds, last ${model.windowDays} days`} />
-            <HeaderStat value={formatKpi(totals.web_clicks)} label="web search clicks" />
-            <HeaderStat value={formatKpi(totals.ad_spend_usd)} label="ad spend" />
+            <HeaderStat value={formatKpi(totals.proceeds_usd)} label={`proceeds, ${kpiPeriod(totals.proceeds_usd, model.windowDays)}`} />
+            <HeaderStat value={formatKpi(totals.ad_spend_usd)} label={`ad spend, ${kpiPeriod(totals.ad_spend_usd, model.windowDays)}`} />
           </>
         }
         right={
@@ -108,25 +109,25 @@ export default async function PortfolioPage() {
         <KpiTile kpiKey="proceeds_usd" kpi={totals.proceeds_usd} color="var(--viz-1)" />
         <KpiTile kpiKey="units" kpi={totals.units} color="var(--viz-2)" />
         <KpiTile kpiKey="web_clicks" kpi={totals.web_clicks} color="var(--cap-fg)" />
-        <KpiTile kpiKey="ad_cpa_usd" kpi={totals.ad_cpa_usd} color="var(--memory-fg)" />
+        <KpiTile kpiKey="ad_cpa_usd" kpi={totals.ad_cpa_usd} color="var(--memory-fg)" href={adsHref({ window: 30 })} />
       </div>
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
         <Panel
           className="xl:col-span-2"
-          title="Downloads and purchases"
-          subtitle={`App Store units per day next to Apple Search Ads conversions · last ${model.seriesDays} days. Ad conversions also count re-downloads, so they can exceed units.`}
-          right={<Legend items={[{ label: "App Store units", color: "var(--viz-2)" }, { label: "Ad conversions", color: "var(--viz-1)" }]} />}
+          title="Downloads and ad installs"
+          subtitle={`New downloads per day next to ad installs · ${seriesPeriod(series.units) || `last ${model.seriesDays} days`}. Apple counts re-downloads as ad installs, so they can exceed new downloads.`}
+          right={<Legend items={[{ label: "New downloads", color: "var(--viz-2)" }, { label: "Ad installs", color: "var(--viz-1)" }]} />}
         >
           <LineChart
             unit="count"
             series={[
-              { key: "units", label: "App Store units", color: "var(--viz-2)", points: series.units ?? [] },
-              { key: "ads", label: "Ad conversions", color: "var(--viz-1)", points: series.ad_conversions ?? [] },
+              { key: "units", label: "New downloads", color: "var(--viz-2)", points: series.units ?? [] },
+              { key: "ads", label: "Ad installs", color: "var(--viz-1)", points: series.ad_conversions ?? [] },
             ]}
           />
         </Panel>
-        <Panel title="Proceeds by app" subtitle="Last 90 days of reported data">
+        <Panel title="Proceeds by app" subtitle={`90 days, ${seriesPeriod(series.proceeds_usd, 90) || "of reported data"}`}>
           <div className="mb-5 text-3xl font-semibold tracking-tight text-ink tabular-nums">{formatValue(proceeds90, "usd")}</div>
           {top.length ? (
             <ShareBars
@@ -145,14 +146,14 @@ export default async function PortfolioPage() {
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <Panel
           title="Money in and out"
-          subtitle="Proceeds per day above the line, ad spend below · USD"
+          subtitle={`Proceeds per day above the line, ad spend below · US dollars · ${seriesPeriod(series.proceeds_usd) || `last ${model.seriesDays} days`}`}
           right={<Legend items={[{ label: "Proceeds", color: "var(--viz-1)" }, { label: "Ad spend", color: "var(--viz-2)" }]} />}
         >
           <DivergingBars up={series.proceeds_usd ?? []} down={series.ad_spend_usd ?? []} upLabel="Proceeds" downLabel="Ad spend" unit="usd" />
         </Panel>
         <Panel
           title="Web search clicks"
-          subtitle={`Google Search Console clicks per day for the ${topWeb.length === 1 ? "top site" : `top ${topWeb.length} sites`} · ${formatKpi(totals.web_clicks)} clicks across all sites in ${model.windowDays} days`}
+          subtitle={`Google Search Console clicks per day for the ${topWeb.length === 1 ? "top site" : `top ${topWeb.length} sites`} · ${formatKpi(totals.web_clicks)} clicks across all sites, ${kpiPeriod(totals.web_clicks, model.windowDays)}`}
           right={topWeb.length > 1 ? <Legend items={topWeb.map((row, i) => ({ label: row.app.name, color: i === 0 ? "var(--viz-2)" : "var(--viz-1)" }))} /> : undefined}
         >
           <LineChart
@@ -188,7 +189,7 @@ export default async function PortfolioPage() {
                   <td className="py-2.5 pr-3 tabular-nums text-faint">{row.rank}</td>
                   <td className="py-2.5 pr-3"><AppLink app={{ productId: row.productId, name: row.name }} /></td>
                   <td className="py-2.5 pr-3"><FocusChip focus={row.focus} /></td>
-                  <td className="py-2.5 text-muted">{row.reason}</td>
+                  <td className="py-2.5 text-muted">{allocationWhy(row, appById.get(row.productId))}</td>
                 </tr>
               ))}
             </tbody>
@@ -205,7 +206,7 @@ export default async function PortfolioPage() {
               <tr className="border-b border-hair text-xs text-faint">
                 <th className="py-2 pr-3 font-medium">App</th>
                 <th className="py-2 pr-3 text-right font-medium">Proceeds</th>
-                <th className="py-2 pr-3 text-right font-medium">Units</th>
+                <th className="py-2 pr-3 text-right font-medium">New downloads</th>
                 <th className="py-2 pr-3 text-right font-medium">Web clicks</th>
                 <th className="py-2 pr-3 font-medium" title="Growth areas by status: measured, partly measured, out of date, no data yet, not on file">What we know</th>
                 <th className="py-2 font-medium">Data</th>
@@ -248,7 +249,9 @@ export default async function PortfolioPage() {
             . Registered in Compound, but no App Store, web or ads source reports for them.
           </p>
         ) : null}
-        <p className="mt-3 text-xs text-faint">Proceeds, units and clicks cover the last {model.windowDays} days. Source: compound product growth --json.</p>
+        <p className="mt-3 text-xs text-faint">
+          Proceeds and new downloads: {kpiPeriod(totals.proceeds_usd, model.windowDays)}. Web clicks: {kpiPeriod(totals.web_clicks, model.windowDays)}.
+        </p>
       </Panel>
     </div>
   );

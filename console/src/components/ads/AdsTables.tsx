@@ -42,8 +42,8 @@ export function AdsProductTable({ products, windowDays }: { products: AdsProduct
             <th className={TH}>Product</th>
             <th className={`${TH} text-right`}>Spend</th>
             <th className={TH}>vs prev.</th>
-            <th className={`${TH} text-right`}>Conv.</th>
-            <th className={`${TH} text-right`}>CPA</th>
+            <th className={`${TH} text-right`}>Installs</th>
+            <th className={`${TH} text-right`} title="Spend ÷ installs">Cost per install</th>
             <th className={`${TH} text-right`}>ROAS</th>
             <th className={TH}>Split by platform</th>
             <th className={TH}>Trend</th>
@@ -105,8 +105,8 @@ export function AdsCampaignTable({ campaigns, windowDays }: { campaigns: AdsCamp
             <th className={TH}>vs prev.</th>
             <th className={`${TH} text-right`}>Impr.</th>
             <th className={`${TH} text-right`}>CTR</th>
-            <th className={`${TH} text-right`}>Conv.</th>
-            <th className={`${TH} text-right`}>CPA</th>
+            <th className={`${TH} text-right`}>Installs</th>
+            <th className={`${TH} text-right`} title="Spend ÷ installs">Cost per install</th>
             <th className={TH}>Last row</th>
             <th className={TH}>Trend</th>
           </tr>

@@ -163,8 +163,8 @@ function AdsBody({ projection, windowDays, product, stale }: { projection: AdsPr
           <StatTile label="Spend" value={spendValue} sub={t.mixedCurrency ? "mixed currencies — not summed" : `${t.rows} rows · ${t.days} days with data`} delta={windowDelta(t, projection.previous, "spend")} windowDays={windowDays} />
           <StatTile label="Impressions" value={formatCount(t.impressions)} delta={windowDelta(t, projection.previous, "impressions")} windowDays={windowDays} />
           <StatTile label="Clicks" value={formatCount(t.clicks)} sub={formatCtr(t) === "—" ? "no impressions" : `CTR ${formatCtr(t)}`} delta={windowDelta(t, projection.previous, "clicks")} windowDays={windowDays} />
-          <StatTile label="Conversions" value={formatCount(t.conversions)} sub="installs / results as reported" delta={windowDelta(t, projection.previous, "conversions")} windowDays={windowDays} />
-          <StatTile label="CPA" value={formatCpa(t)} sub={!comparableSpend(t) ? "currency unresolved" : t.conversions > 0 ? "spend ÷ conversions" : "no conversions"} windowDays={windowDays} />
+          <StatTile label="Installs" value={formatCount(t.conversions)} sub="as the ad platform reports them (Apple counts re-downloads too)" delta={windowDelta(t, projection.previous, "conversions")} windowDays={windowDays} />
+          <StatTile label="Cost per install" value={formatCpa(t)} sub={!comparableSpend(t) ? "currency unresolved" : t.conversions > 0 ? "spend ÷ installs" : "no installs"} windowDays={windowDays} />
           <StatTile label="ROAS" value={formatRoas(t)} sub={roasExplanation(t)} windowDays={windowDays} />
         </div>
       )}

@@ -551,6 +551,14 @@ matrix and the pale red fill above.
   carries all of them in `area_ids`: each covered area gets the "Next move N" badge and the grid
   dot, and each group holding one starts open. Its meta line says "3 areas" instead of the first
   area's pipeline and id, which would speak for all of them.
+- **Numbers carry their days.** Every tile, chart and funnel step names the days it covers
+  (`kpiPeriod`, `seriesPeriod`, `funnelPeriods` in `lib/growth.ts`): the exact range when the
+  CLI reports `window_start`/`window_end`, otherwise "last 30 days · newest data <day>", never a
+  guessed range. A page shows one 30-day proceeds figure: the ranking's sentence is shown only
+  when it carries its window, else it is rebuilt from the tile. Funnel steps that do not say their
+  days are not drawn as one funnel (no arrows, a plain sentence why); a `partial` step reads "at
+  least". One name per number on every page: "New downloads", "Ad installs" (Apple counts
+  re-downloads), "Cost per install" (never "CPA"). Ad tiles on an app page open its Ads view.
 - **Gaps are background.** "No data yet" is a pale neutral fill, the calmest filled state. "Not on
   file" is a dashed outline or hatch, "Set aside" a hatch on soft, "Does not apply" is left empty.
   Measured (green), out of date (amber) and the next-move mark (an ink dot or ring) are the only

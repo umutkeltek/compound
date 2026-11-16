@@ -35,6 +35,9 @@ export type Kpi = {
   daysInWindow: number;
   unit: "usd" | "count" | "ratio" | string;
   note?: string;
+  /** First and last day the value sums ("" from a CLI that does not report them). */
+  windowStart: string;
+  windowEnd: string;
 };
 
 export type SeriesPoint = { date: string; value: number | null };
@@ -89,6 +92,11 @@ export type FunnelStep = {
   asOf: string;
   status: GrowthStatus;
   note: string;
+  /** The days a window total sums; "" when the value is one reading or the CLI does not report it. */
+  windowStart: string;
+  windowEnd: string;
+  /** Days of that window with data; 0 when not reported. */
+  daysReported: number;
 };
 
 export type NextMoveKind =
@@ -160,7 +168,17 @@ export type GrowthApp = {
   nextMoves: NextMove[];
 };
 
-export type Allocation = { productId: string; name: string; rank: number; focus: FocusClass | string; reason: string; rule: string };
+export type Allocation = {
+  productId: string;
+  name: string;
+  rank: number;
+  focus: FocusClass | string;
+  reason: string;
+  rule: string;
+  /** The days of the 30-day proceeds in `reason`; "" from a CLI whose reason may use another window than the tile. */
+  windowStart: string;
+  windowEnd: string;
+};
 
 export type CatalogInfo = {
   schemaVersion: string;
@@ -223,6 +241,8 @@ function mapKpi(v: unknown): Kpi {
     daysInWindow: n(o.days_in_window),
     unit: s(o.unit),
     note: s(o.note),
+    windowStart: s(o.window_start),
+    windowEnd: s(o.window_end),
   };
 }
 
@@ -325,7 +345,17 @@ function mapApp(v: unknown): GrowthApp {
     series: mapSeries(o.series),
     funnel: list(o.funnel).map((x) => {
       const r = rec(x);
-      return { id: s(r.id), label: s(r.label), value: nOrNull(r.value), asOf: s(r.as_of), status: status(r.status), note: s(r.note) };
+      return {
+        id: s(r.id),
+        label: s(r.label),
+        value: nOrNull(r.value),
+        asOf: s(r.as_of),
+        status: status(r.status),
+        note: s(r.note),
+        windowStart: s(r.window_start),
+        windowEnd: s(r.window_end),
+        daysReported: n(r.days_reported),
+      };
     }),
     profile: mapProfile(o.profile),
     audit: list(o.audit).map(mapAudit),
@@ -408,7 +438,16 @@ export function mapGrowthModel(j: unknown): GrowthModel | null {
       series: mapSeries(p.series),
       allocation: list(p.allocation).map((x) => {
         const r = rec(x);
-        return { productId: s(r.product_id), name: s(r.name), rank: n(r.rank), focus: s(r.focus), reason: s(r.reason), rule: s(r.rule) };
+        return {
+          productId: s(r.product_id),
+          name: s(r.name),
+          rank: n(r.rank),
+          focus: s(r.focus),
+          reason: s(r.reason),
+          rule: s(r.rule),
+          windowStart: s(r.window_start),
+          windowEnd: s(r.window_end),
+        };
       }),
     },
     apps: list(o.apps).map(mapApp),
@@ -629,13 +668,13 @@ export const FOCUS_META: Record<string, { label: string; chip: string; meaning: 
 
 export const KPI_META: Record<KpiKey, { label: string; hint: string }> = {
   proceeds_usd: { label: "Proceeds", hint: "App Store developer proceeds (estimated in US dollars)" },
-  units: { label: "Downloads", hint: "New downloads in the Sales report (no redownloads, updates or in-app purchases)" },
+  units: { label: "New downloads", hint: "New downloads in the Sales report (no redownloads, updates or in-app purchases)" },
   first_time_downloads: { label: "First-time downloads", hint: "App Store analytics (noised)" },
   web_clicks: { label: "Web search clicks", hint: "Google Search Console clicks" },
   web_impressions: { label: "Web search impressions", hint: "Google Search Console impressions" },
-  ad_spend_usd: { label: "Ad spend", hint: "Apple Search Ads spend" },
-  ad_conversions: { label: "Ad installs", hint: "Apple Search Ads conversions" },
-  ad_cpa_usd: { label: "Cost per install", hint: "Ad spend ÷ ad installs" },
+  ad_spend_usd: { label: "Ad spend", hint: "What the ads cost, as the ad platform reports it" },
+  ad_conversions: { label: "Ad installs", hint: "Installs the ad platform credits to ads. Apple counts re-downloads too, so this can exceed new downloads." },
+  ad_cpa_usd: { label: "Cost per install", hint: "Ad spend ÷ ad installs, over the same days" },
   iap_units: { label: "In-app purchases", hint: "In-app purchase units in the Sales report" },
   updates: { label: "Updates", hint: "App updates in the Sales report" },
   redownloads: { label: "Redownloads", hint: "Downloads by people who had the app before" },
@@ -667,6 +706,76 @@ export function kpiDelta(kpi: Kpi | undefined): number | null {
 /** "Lower is better" KPIs flip the delta colour. */
 export function kpiLowerIsBetter(key: KpiKey): boolean {
   return key === "ad_cpa_usd" || key === "ad_spend_usd";
+}
+
+/** "Oct 15 – Nov 13"; one date when both ends are the same day; "" when either is missing. */
+export function dateRange(start: string, end: string): string {
+  if (!start || !end) return "";
+  return start.slice(0, 10) === end.slice(0, 10) ? shortDate(start) : `${shortDate(start)} – ${shortDate(end)}`;
+}
+
+/**
+ * The days a KPI covers, in words. With the CLI's window fields it is the
+ * exact range ("Oct 15 – Nov 13"); an older CLI reports only the newest day
+ * with data, which is not always the window's last day, so the words say
+ * that instead of guessing the range.
+ */
+export function kpiPeriod(kpi: Kpi | undefined, windowDays = 30): string {
+  const days = kpi?.daysInWindow || windowDays;
+  if (kpi?.windowStart && kpi.windowEnd) return dateRange(kpi.windowStart, kpi.windowEnd);
+  if (kpi?.latestDate) return `last ${days} days · newest data ${shortDate(kpi.latestDate)}`;
+  return `last ${days} days`;
+}
+
+/**
+ * The days each funnel step covers. `shared` is the one range every window
+ * total sums (the subtitle names it once); `steps` gives each step its own
+ * words: the range when it differs from the shared one, "one reading, <day>"
+ * for a step that is a single reading. `undated` is true when no step with a
+ * value says which days it covers (an older CLI): the steps may then cover
+ * different days and must not be read as a funnel.
+ */
+export function funnelPeriods(steps: readonly FunnelStep[]): { shared: string; undated: boolean; steps: string[] } {
+  const valued = steps.filter((step) => step.value != null);
+  const ranges = new Set(valued.filter((step) => step.windowStart && step.windowEnd).map((step) => dateRange(step.windowStart, step.windowEnd)));
+  const shared = ranges.size === 1 ? [...ranges][0] : "";
+  const undated = valued.length > 0 && ranges.size === 0;
+  return {
+    shared,
+    undated,
+    steps: steps.map((step) => {
+      if (step.value == null) return "";
+      if (step.windowStart && step.windowEnd) {
+        const range = dateRange(step.windowStart, step.windowEnd);
+        return range === shared ? "" : range;
+      }
+      return step.asOf ? `one reading, ${shortDate(step.asOf)}` : "one reading";
+    }),
+  };
+}
+
+/**
+ * The "why" of one ranking row, never quoting a second 30-day proceeds
+ * figure. A CLI that reports the row's window (`window_start`) computes its
+ * proceeds over the tile's days, so its reason is shown as written. An older
+ * CLI's reason can sum other days than the tile; for an app ranked on its
+ * money the sentence is then rebuilt from the tile (the same figure as the
+ * app's row and page) with its days.
+ */
+export function allocationWhy(row: Allocation, app: GrowthApp | undefined): string {
+  if (row.windowStart && row.windowEnd) return row.reason;
+  const proceeds = app?.kpis.proceeds_usd;
+  if ((row.focus === "grow" || row.focus === "fix_data") && proceeds?.value != null) {
+    return `${formatValue(proceeds.value, "usd")} proceeds, ${kpiPeriod(proceeds)}. ${FOCUS_META[row.focus]?.meaning ?? ""}`.trim();
+  }
+  return /\bin 30 days\b/.test(row.reason) ? FOCUS_META[row.focus]?.meaning ?? "" : row.reason;
+}
+
+/** The first and last day of a daily series' last `days` points: "Aug 18 – Nov 16". */
+export function seriesPeriod(points: readonly SeriesPoint[] | undefined, days?: number): string {
+  const slice = days ? (points ?? []).slice(-days) : [...(points ?? [])];
+  const dated = slice.filter((p) => p.date);
+  return dated.length ? dateRange(dated[0].date, dated[dated.length - 1].date) : "";
 }
 
 export function shortDate(iso: string): string {
