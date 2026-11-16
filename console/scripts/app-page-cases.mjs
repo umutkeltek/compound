@@ -342,3 +342,16 @@ console.log("app page cases ok: results fold every spelling into one card, draft
 }
 
 console.log("app page cases ok: next steps say they are shared chores, no copy-a-command, agent details folded");
+
+/* ---------- 7. Overview and growth gaps: counts name what they count ---------- */
+{
+  const portfolio = readFileSync(new URL("../src/app/apps/page.tsx", import.meta.url), "utf8");
+  const gaps = readFileSync(new URL("../src/app/growth/page.tsx", import.meta.url), "utf8");
+  assert.ok(portfolio.includes('label="with a data feed"') && !portfolio.includes('label="with data"'), "the overview says what its count counts");
+  assert.ok(gaps.includes('label="with any evidence on file"') && !gaps.includes('label="with data"'), "growth gaps says what its count counts");
+  assert.ok(portfolio.includes('row.focus !== "hold"'), "the ranking lists only where an hour could go");
+  assert.ok(portfolio.includes("#app-next-steps") && !portfolio.includes("Rule: {"), "each row leads to the app's next steps; the rule is in plain words");
+  assert.ok(gaps.includes("not a to-do list"), "growth gaps says plainly it is a coverage map");
+}
+
+console.log("app page cases ok: overview and growth gaps name their counts, the ranking leads to each app's next steps");

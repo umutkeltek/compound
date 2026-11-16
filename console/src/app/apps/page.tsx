@@ -10,8 +10,8 @@ import {
   Panel,
   ShareBars,
 } from "@/components/growth/GrowthKit";
-import { allocationWhy, appHue, appSlug, formatKpi, formatValue, getGrowth, kpiPeriod, seriesPeriod, shortDate, valueLabel, type GrowthApp, type SeriesPoint } from "@/lib/growth";
-import { adsHref } from "@/lib/links";
+import { FOCUS_META, allocationWhy, appHue, appSlug, formatKpi, formatValue, getGrowth, kpiPeriod, seriesPeriod, shortDate, valueLabel, type GrowthApp, type SeriesPoint } from "@/lib/growth";
+import { adsHref, appHref } from "@/lib/links";
 
 export const dynamic = "force-dynamic";
 
@@ -62,6 +62,9 @@ export default async function PortfolioPage() {
   const proceeds90 = byProceeds.reduce((sum, row) => sum + row.value, 0);
   const allocationById = new Map(allocation.map((row) => [row.productId, row]));
   const appById = new Map(model.apps.map((app) => [app.productId, app]));
+  // "Hold" rows are apps not worth time now: the table lists only where an hour could go.
+  const focusRows = allocation.filter((row) => row.focus !== "hold").slice(0, 10);
+  const holdCount = allocation.filter((row) => row.focus === "hold").length;
   const appsSorted = [...model.apps].sort(
     (a, b) => (allocationById.get(a.productId)?.rank ?? 999) - (allocationById.get(b.productId)?.rank ?? 999),
   );
@@ -83,7 +86,7 @@ export default async function PortfolioPage() {
         stats={
           <>
             <HeaderStat value={model.apps.length} label="registered apps" />
-            <HeaderStat value={withData.length} label="with data" />
+            <HeaderStat value={withData.length} label="with a data feed" />
             <HeaderStat value={formatKpi(totals.proceeds_usd)} label={`proceeds, ${kpiPeriod(totals.proceeds_usd, model.windowDays)}`} />
             <HeaderStat value={formatKpi(totals.ad_spend_usd)} label={`ad spend, ${kpiPeriod(totals.ad_spend_usd, model.windowDays)}`} />
           </>
@@ -171,7 +174,7 @@ export default async function PortfolioPage() {
 
       <Panel
         title="Where the next hour should go"
-        subtitle="Ranked by 90-day proceeds, then web traffic. Each call names its numbers; the rule is shown under the table."
+        subtitle="Apps ranked by proceeds over the last 90 days, then web search clicks. Apps with little money or traffic are left out. Each name opens that app's next steps."
       >
         <div className="overflow-x-auto">
           <table className="w-full min-w-xl text-left text-sm">
@@ -184,10 +187,12 @@ export default async function PortfolioPage() {
               </tr>
             </thead>
             <tbody>
-              {allocation.slice(0, 10).map((row) => (
+              {focusRows.map((row) => (
                 <tr key={row.productId} className="border-b border-hair-2 align-top last:border-0">
                   <td className="py-2.5 pr-3 tabular-nums text-faint">{row.rank}</td>
-                  <td className="py-2.5 pr-3"><AppLink app={{ productId: row.productId, name: row.name }} /></td>
+                  <td className="py-2.5 pr-3">
+                    <Link href={`${appHref(row.productId)}#app-next-steps`} className="font-medium text-ink hover:underline">{row.name}</Link>
+                  </td>
                   <td className="py-2.5 pr-3"><FocusChip focus={row.focus} /></td>
                   <td className="py-2.5 text-muted">{allocationWhy(row, appById.get(row.productId))}</td>
                 </tr>
@@ -195,11 +200,18 @@ export default async function PortfolioPage() {
             </tbody>
           </table>
         </div>
-        {allocation[0]?.rule ? <p className="mt-3 text-xs text-faint">Rule: {allocation[0].rule}</p> : null}
+        <ul className="mt-3 flex flex-col gap-0.5 text-xs text-muted">
+          {(["grow", "fix_data", "measure"] as const).map((focus) => (
+            <li key={focus}>
+              <span className="font-medium text-ink">{FOCUS_META[focus].label}:</span> {FOCUS_META[focus].meaning}
+            </li>
+          ))}
+          {holdCount ? <li>{holdCount} more {holdCount === 1 ? "app is" : "apps are"} left out as {FOCUS_META.hold.label}: {FOCUS_META.hold.meaning}</li> : null}
+        </ul>
       </Panel>
 
       <div id="apps-list" tabIndex={-1} className="scroll-mt-6" />
-      <Panel title="All apps" subtitle={`${withData.length} apps with data${noData.length ? ` · ${noData.length} registered with no data yet` : ""}`}>
+      <Panel title="All apps" subtitle={`${withData.length} apps with a data feed${noData.length ? ` · ${noData.length} with none yet` : ""}`}>
         <div className="overflow-x-auto">
           <table className="w-full min-w-3xl text-left text-sm">
             <thead>

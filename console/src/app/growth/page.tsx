@@ -125,7 +125,7 @@ export default async function GrowthPage({ searchParams }: { searchParams: Promi
             <HeaderStat value={model.groups.length} label="groups" />
             <HeaderStat value={model.areas.length} label="areas" />
             <HeaderStat value={apps.length + noData.length} label="registered apps" />
-            <HeaderStat value={apps.length} label="with data" />
+            <HeaderStat value={apps.length} label="with any evidence on file" />
           </>
         }
         right={<FreshnessChip generatedAt={model.generatedAt} source="compound product growth --json" />}
@@ -137,7 +137,7 @@ export default async function GrowthPage({ searchParams }: { searchParams: Promi
         </h2>
         <p className="max-w-4xl text-md text-ink">{answer}</p>
         <p className="max-w-4xl text-sm text-muted">
-          Each cell is one app in one group. The bar shows what we know there. A number appears only where something is fully measured. Open a group to see its areas.
+          This is a map of what is measured, not a to-do list: each app&apos;s own page lists what to do next. Each cell is one app in one group. The bar shows what we know there. A number appears only where something is fully measured. Open a group to see its areas.
         </p>
       </section>
 
