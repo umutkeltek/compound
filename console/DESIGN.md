@@ -543,7 +543,9 @@ matrix and the pale red fill above.
   doing (dated numbers), all of its open work (the shared work-to-app index, on hold and not moved
   first, "See all N in Work"), the next moves (at most five, in the CLI's order), its ads, then what
   the product is and the 12 groups. Each move says what to do, why in one line and
-  what it unblocks by name. `/growth` opens with "Where
+  what it unblocks by name. The section says when its steps are chores most apps share
+  (`sharedMoves`) and that nothing starts them on its own; there is no copy button, and workflow
+  and skill names sit in a closed "For agents" disclosure. `/growth` opens with "Where
   are we blind across the apps, group by group?" and a two- or three-sentence answer computed from
   the projection. Everything else sits below and is quieter.
 - **Never the full grid.** `/growth` draws 12 group rows × apps. One group opens at a time

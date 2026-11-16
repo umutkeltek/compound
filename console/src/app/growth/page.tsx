@@ -312,7 +312,10 @@ export default async function GrowthPage({ searchParams }: { searchParams: Promi
         </p>
       ) : null}
 
-      <p className="text-xs text-faint">{model.boundary}</p>
+      <details className="text-xs text-faint">
+        <summary className="cursor-pointer">Where these numbers come from</summary>
+        <p className="mt-1">Imported App Store, web search and ad reports and the product descriptions, read by <code className="mono">compound product growth --json</code>. This page only reads; it changes nothing.</p>
+      </details>
     </div>
   );
 }

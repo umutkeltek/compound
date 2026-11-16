@@ -7,7 +7,7 @@ import { AppNeedsYou } from "@/components/growth/AppNeedsYou";
 import { AppResults } from "@/components/products/AppResults";
 import { decideHref } from "@/lib/links";
 import { foldLoopsByApp, getProductLoopsReport, productResultsDecision, verdictDue } from "@/lib/products";
-import { GroupAudit, NextMoves, ProfileRow, makeLookup } from "@/components/growth/AppGrowth";
+import { GroupAudit, NextMoves, ProfileRow, makeLookup, nextStepsSentence } from "@/components/growth/AppGrowth";
 import { AppGlyph, DegradedGrowth, FocusChip, StatusLegend, coverageCounts } from "@/components/growth/GrowthKit";
 import { OpenOnHash } from "@/components/growth/OpenOnHash";
 import { arr, readProjection, readWorkProjectIndex, WORK_PROJECT_INDEX_READS } from "@/lib/compound";
@@ -104,13 +104,9 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
       <section id="app-next-steps" className="flex scroll-mt-24 flex-col gap-3" aria-labelledby="next-question">
         <div>
           <h2 id="next-question" className="text-lg font-semibold tracking-tight text-ink">
-            Recommended next steps
+            Next steps
           </h2>
-          <p className="mt-1 max-w-3xl text-sm text-muted">
-            {app.nextMoves.length
-              ? "In this order. Out-of-date data comes first, then the gaps that unblock the most other areas."
-              : "Nothing is open right now."}
-          </p>
+          <p className="mt-1 max-w-3xl text-sm text-muted">{nextStepsSentence(app, model.apps)}</p>
         </div>
         <NextMoves app={app} look={look} />
       </section>
@@ -136,9 +132,13 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
         <GroupAudit app={app} groups={model.groups} areas={model.areas} look={look} />
       </section>
 
-      <p className="text-xs text-faint">
-        {model.boundary}. Catalog: {model.catalog.areas} areas in {model.catalog.groups} groups.
-      </p>
+      <details className="text-xs text-faint">
+        <summary className="cursor-pointer">Where these numbers come from</summary>
+        <p className="mt-1">
+          Imported App Store, web search and ad reports, read by <code className="mono">compound product growth --json</code>. This page only reads; it changes nothing. The growth catalog has {model.catalog.areas} areas in {model.catalog.groups} groups.
+        </p>
+      </details>
     </div>
   );
 }
+

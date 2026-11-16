@@ -318,3 +318,27 @@ console.log("app page cases ok: ads colours follow meaning, quiet campaigns say 
 }
 
 console.log("app page cases ok: results fold every spelling into one card, drafts never wait on him, a real verdict links its decision");
+
+/* ---------- 6. Next steps said honestly: no copy-a-command, no internal words ---------- */
+{
+  const { NextMoves, makeLookup, nextStepsSentence } = await import("../src/components/growth/AppGrowth.tsx");
+  const move = (kind, area, extra = {}) => ({
+    area_id: area, area_ids: area ? [area] : [], kind, title: `${kind} ${area}`, why: "Nothing measures this today.", unblocks: 0, blocked_by: [],
+    branch: "ux", skills: ["fixture-skill"], brief: `compound product growth --product product:x --area ${area}`, ...extra,
+  });
+  const chores = [move("connect_data", "flows"), move("record_answer", "audience"), move("set_profile", "", { brief: "compound product import <product.yaml> (add a profile block: objectives)" })];
+  const apps = ["a", "b", "c"].map((id) => ({ product_id: `product:${id}`, name: id.toUpperCase(), next_moves: chores }));
+  const m = mapGrowthModel({ schema_version: "compound.product_growth.v0.2", apps, areas: [{ id: "flows", title: "Main tasks", group: "g" }, { id: "audience", title: "Who it is for", group: "g" }] });
+  const app = m.apps[0];
+  const html = renderToStaticMarkup(createElement(NextMoves, { app, look: makeLookup(app, m.areas) }));
+  const words = text(html);
+  assert.ok(!/Copy (brief|import) command/.test(words), "no copy-a-command action");
+  assert.ok(!words.includes("<product.yaml>") && !html.includes("&lt;product.yaml&gt;"), "a command with a placeholder is never shown");
+  assert.ok(!/Pipeline:|Skills that can help/.test(words), "internal words stay out of the visible line");
+  assert.ok(words.includes("See this area") && /<details[^>]*>.*For agents.*Workflow: UX/s.test(html), "agent details sit in a closed disclosure");
+  const sentence = nextStepsSentence(app, m.apps);
+  assert.ok(sentence.startsWith("These are mostly data chores: 3 of these 3 steps also come up for most of your 3 apps."), sentence);
+  assert.ok(sentence.includes("Nothing starts them on its own"), sentence);
+}
+
+console.log("app page cases ok: next steps say they are shared chores, no copy-a-command, agent details folded");

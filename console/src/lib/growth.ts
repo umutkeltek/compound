@@ -771,6 +771,21 @@ export function allocationWhy(row: Allocation, app: GrowthApp | undefined): stri
   return /\bin 30 days\b/.test(row.reason) ? FOCUS_META[row.focus]?.meaning ?? "" : row.reason;
 }
 
+/**
+ * How many of an app's next moves are chores most apps share: the same kind
+ * of move on the same areas appears for at least half of the apps that have
+ * moves. Today the ranking fills the list with these, so the page says so.
+ */
+export function sharedMoves(app: GrowthApp, apps: readonly GrowthApp[]): { shared: number; shown: number; appCount: number } {
+  const key = (m: NextMove) => `${m.kind}|${m.areaIds.join(",")}`;
+  const withMoves = apps.filter((a) => a.nextMoves.length > 0);
+  const counts = new Map<string, number>();
+  for (const a of withMoves) for (const k of new Set(a.nextMoves.slice(0, 5).map(key))) counts.set(k, (counts.get(k) ?? 0) + 1);
+  const shown = app.nextMoves.slice(0, 5);
+  const shared = shown.filter((m) => (counts.get(key(m)) ?? 0) * 2 >= withMoves.length && withMoves.length > 1).length;
+  return { shared, shown: shown.length, appCount: withMoves.length };
+}
+
 /** The first and last day of a daily series' last `days` points: "Aug 18 – Nov 16". */
 export function seriesPeriod(points: readonly SeriesPoint[] | undefined, days?: number): string {
   const slice = days ? (points ?? []).slice(-days) : [...(points ?? [])];
