@@ -273,7 +273,7 @@ scope, then a work item; its recorded outcome, next step, success criterion, con
 identity and result references stay visible beside the work list or focused map.
 The page link preserves scope, work identity and the selected view.
 
-Membership comes from work scope or a declared canonical surface. Observed product
+Membership comes from explicit work scope, product/project canonical references, or an exact repository fingerprint from its Git delivery binding. File paths and URLs do not become projects. Observed product
 inventory adds projects with no work yet; no growth connection is required. Work
 without a scope remains in Unlinked work. This is a derived view, not a new registry,
 and a separate project goal is not inferred from task text.

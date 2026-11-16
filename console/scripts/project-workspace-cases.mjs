@@ -21,6 +21,11 @@ assert.equal(model.unlinked, 1, "task prose must never assign a scope");
 assert.equal(model.projects.find((p) => p.id === "product:fixture-service").total, 0, "registered empty projects survive");
 assert.deepEqual(workScopeRefs({ scope: { project_id: "research", product_id: "fixture-service" } }), ["project:research", "product:fixture-service"]);
 assert.deepEqual(workScopeRefs({ canonical_surface: "packet:fixture" }), []);
+assert.deepEqual(workScopeRefs({ canonical_surface: "/example/project/src/task.ts" }), [], "a file is not a project");
+assert.deepEqual(workScopeRefs({ canonical_surface: "https://fixture.invalid/path" }), [], "a URL is not a project");
+assert.deepEqual(workScopeRefs({ canonical_surface: "/example/project/src/task.ts", git_delivery: { repository_fingerprint: "a".repeat(64), target_worktree_root: "/example/project" } }), ["repository:" + "a".repeat(64)], "an exact repository binding groups source work");
+assert.deepEqual(workScopeRefs({ scope: { project_id: "research" }, git_delivery: { repository_fingerprint: "a".repeat(64), target_worktree_root: "/example/project" } }), ["project:research"], "explicit project identity takes precedence over a repository grouping");
+
 assert.equal(buildWorkspace({ work }, {}, {}, "project:research", "work_d").selected, null, "cross-project IDs must not select another task");
 assert.equal(buildWorkspace({ work }, {}, {}, "project:research", "work_missing").requestedMissing, true);
 assert.equal(buildWorkspace({ work }, {}, {}, UNLINKED_SCOPE).work[0].id, "work_c");

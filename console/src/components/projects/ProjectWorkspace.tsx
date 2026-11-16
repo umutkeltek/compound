@@ -21,6 +21,10 @@ export function ProjectWorkspace({ model, scope, view, inventory, dependencies, 
   const router = useRouter();
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(18);
+  const [projectLimit, setProjectLimit] = useState(18);
+  const [projectQuery, setProjectQuery] = useState("");
+  const [includeCompleted, setIncludeCompleted] = useState(false);
+  const visibleProjects = model.projects.filter((p) => (includeCompleted || p.open > 0 || p.kind === "product" || !model.workKnown) && (p.label + " " + p.kind + " " + p.id).toLocaleLowerCase().includes(projectQuery.toLocaleLowerCase()));
   const project = model.project;
   const selected = model.selected;
   const links = dependencyLinks(dependencies, scope);
@@ -50,13 +54,14 @@ export function ProjectWorkspace({ model, scope, view, inventory, dependencies, 
         <section aria-label="Projects and areas" className="flex flex-col gap-3">
           <div><h2 className="text-lg font-semibold text-ink">Projects and areas</h2><p className="mt-1 text-sm text-muted">Choose one to see the work and evidence that explicitly belong to it.</p></div>
           {!inventoryKnown ? <ReadNotice read={reads.inventory} label="project inventory" /> : null}
-          {model.projects.length ? <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {model.projects.map((p) => <Link key={p.id} href={projectHref(p.id)} className="group rounded-xl border border-hair bg-panel p-5 transition-colors hover:border-work focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus">
+          <div className="flex flex-wrap items-center gap-3"><label className="sr-only" htmlFor="project-search">Search projects</label><input id="project-search" value={projectQuery} onChange={(event) => { setProjectQuery(event.target.value); setProjectLimit(18); }} placeholder="Find a project or area…" className="rounded-lg border border-hair bg-panel px-3 py-2 text-sm" /><label className="flex items-center gap-2 text-xs text-muted"><input type="checkbox" checked={includeCompleted} onChange={(event) => { setIncludeCompleted(event.target.checked); setProjectLimit(18); }} />Include completed areas</label></div>
+          {visibleProjects.length ? <><div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {visibleProjects.slice(0, projectLimit).map((p) => <Link key={p.id} href={projectHref(p.id)} className="group rounded-xl border border-hair bg-panel p-5 transition-colors hover:border-work focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus">
               <div className="mb-3 text-xs text-faint">{p.kind}</div><h3 className="text-base font-semibold text-ink group-hover:text-work">{p.label}</h3>
               <p className="mt-3 text-sm text-muted">{model.workKnown ? p.open + " open" : "Work totals unknown"}{model.workKnown && p.attention ? " · " + p.attention + " need attention" : ""}</p>
               <span className="mt-4 inline-block text-xs font-semibold text-work">Open project →</span>
             </Link>)}
-          </div> : model.workKnown && inventoryKnown ? <div className="rounded-xl border border-dashed border-hair p-6"><h3 className="font-semibold text-ink">No linked projects yet</h3><p className="mt-2 max-w-read text-sm text-muted">Choose a project when creating work, or connect a source with a product record. No app or growth connection is required.</p><Link href="/sources" className="mt-3 inline-block text-sm font-medium text-work">Review sources →</Link></div> : null}
+          </div>{visibleProjects.length > projectLimit ? <button onClick={() => setProjectLimit((n) => n + 18)} className="self-start rounded-lg border border-hair px-3 py-2 text-sm font-medium text-ink">Show more projects ({visibleProjects.length - projectLimit} remaining)</button> : null}</> : model.projects.length ? <p className="text-sm text-muted">No projects match these filters. Search another name or include completed areas.</p> : model.workKnown && inventoryKnown ? <div className="rounded-xl border border-dashed border-hair p-6"><h3 className="font-semibold text-ink">No linked projects yet</h3><p className="mt-2 max-w-read text-sm text-muted">Choose a project when creating work, or connect a source with a product record. No app or growth connection is required.</p><Link href="/sources" className="mt-3 inline-block text-sm font-medium text-work">Review sources →</Link></div> : null}
         </section>
       ) : !project ? <div role="status" className="rounded-xl border border-hair p-5 text-sm text-muted">This project is not present in the available records. <Link className="font-medium text-work" href="/projects">Choose another project</Link>.</div> : (
         <>

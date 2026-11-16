@@ -32,7 +32,7 @@ export default async function ProjectsPage({ searchParams }: {
         inventory={inventory.value} dependencies={dependencies.value}
         reads={{ work: viewOf(work), inventory: viewOf(inventory), dependencies: viewOf(dependencies), bench: viewOf(bench) }} />
       <p className="text-xs leading-relaxed text-muted">
-        Projects and areas come from explicit work scope, declared surfaces and observed product inventory.
+        Projects and areas come from explicit work scope, recorded repository bindings and observed product inventory.
         Work without a link stays visible. <Link href="/sources" className="font-medium text-work hover:underline">Review sources</Link>
         {" · "}<Link href="/work" className="font-medium text-work hover:underline">All work</Link>
       </p>

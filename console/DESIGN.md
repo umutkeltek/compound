@@ -659,7 +659,7 @@ a cold read must not delay rendering or appear as an empty list of agents.
 Projects is a scope browser over the existing Work and System owners. It answers
 which recorded outcomes, work and evidence belong together; it creates no project registry.
 The Essentials entry opens a project/area selector with exact identity in the URL.
-Explicit project/product scope and declared canonical surfaces group work. Task prose,
+Explicit project/product scope groups work first. Exact repository fingerprints from Git delivery bindings group remaining source work. Simple declared area names remain available; file paths and URLs do not become projects. Task prose,
 actor names and timing never create membership. Unlinked work remains visible.
 
 The selected work inspector and focused map share one work identity. The map draws at

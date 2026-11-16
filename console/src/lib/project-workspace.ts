@@ -26,7 +26,7 @@ export function projectLabel(id: string): string {
   if (id === UNLINKED_SCOPE) return "Unlinked work";
   const value = id.replace(/^(product|project):/, "").replace(/\\/g, "/");
   const leaf = value.includes("/") ? value.split("/").filter(Boolean).at(-1) || value : value;
-  return leaf.replace(/[-_]/g, " ");
+  return leaf.replace(/[-_]/g, " ").trim() || id;
 }
 
 /** Explicit scope and declared surfaces only. Names and task prose never assign a project. */
@@ -38,7 +38,16 @@ export function workScopeRefs(work: RecordValue): string[] {
     if (value) refs.push(value.includes(":") ? value : prefix + value);
   }
   const surface = text(work.canonical_surface);
-  if (surface && !surface.startsWith("packet:")) refs.push(surface);
+  if (/^(product|project):[^/\\]+$/.test(surface)) refs.push(surface);
+  if (!refs.length) {
+    const delivery = object(work.git_delivery);
+    const fingerprint = text(delivery.repository_fingerprint);
+    if (/^[a-f0-9]{64}$/.test(fingerprint) && text(delivery.target_worktree_root)) {
+      refs.push("repository:" + fingerprint);
+    } else if (/^[\p{L}\p{N}_ -]{1,80}$/u.test(surface) || /^(system|source):[^/\\]+$/.test(surface)) {
+      refs.push(surface);
+    }
+  }
   return [...new Set(refs)].filter((ref) => !/[\p{Cc}]/u.test(ref));
 }
 
@@ -83,7 +92,7 @@ export function buildWorkspace(
     if (current) { if (label) current.label = label; return; }
     projects.set(id, {
       id, label: label || projectLabel(id),
-      kind: kind || (id.startsWith("product:") ? "product" : id.startsWith("project:") ? "project" : "area"),
+      kind: kind || (id.startsWith("product:") ? "product" : id.startsWith("project:") ? "project" : id.startsWith("repository:") ? "repository" : "area"),
       total: 0, open: 0, attention: 0, completed: 0,
     });
   };
@@ -97,7 +106,13 @@ export function buildWorkspace(
     const refs = workScopeRefs(work);
     if (!refs.length) unlinked++;
     for (const ref of refs.length ? refs : [UNLINKED_SCOPE]) {
-      add(ref);
+      if (ref.startsWith("repository:")) {
+        const target = text(object(work.git_delivery).target_worktree_root);
+        const label = projectLabel(target);
+        add(ref);
+        const current = projects.get(ref)!;
+        if (current.label.startsWith("repository:") || label.length < current.label.length) current.label = label;
+      } else add(ref);
       const project = projects.get(ref)!;
       const state = text(work.state);
       project.total++;
