@@ -7,8 +7,8 @@ import { attentionNeedsYouGroups, readAttention, type AttentionGroup } from "@/l
 import { arr, HEAVY_PROJECTION_TIMEOUT_MS, num, readProjection, str, type Json, type LiveRead, type ProjectionStatus } from "@/lib/compound";
 import { ago } from "@/lib/time";
 import { countDecisions, type DecisionCount, unit, waitingOnYou } from "@/lib/counts";
-import { cookies } from "next/headers";
-import { operatorSessionConfigured, operatorSessionReadiness } from "@/lib/operator-session";
+import { consoleMutationsEnabled } from "@/lib/console-mutations";
+import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { buildDecideGroups, type DecideAct, type DecideGroup, type ScopedDecisionEvidence } from "@/lib/decide-model";
 import { ATTENTION_SOURCED_GENERIC_AREAS } from "@/lib/generic-actions";
 import { areaOf, bandOf, enrichAttentionGroups, externalReviewRows, groupsForBand } from "@/lib/review-data";
@@ -185,7 +185,10 @@ export default async function Decide({
   const { read: attentionRead, report: attention } = attentionProjection;
   const waiting = waitingOnYou(attention);
   const itemByID = buildItemIndex(reviews);
-  const mutationsEnabled = operatorSessionConfigured() && await operatorSessionReadiness((await cookies()).toString());
+  // No live decision button: a paired browser is a connection, not proof that a
+  // click is the operator's, so readiness is the shared projection-only
+  // conjunction (scripts/mutation-readiness-consumers-smoke.mjs).
+  const mutationsEnabled = computeConsoleMutationReadiness(consoleMutationsEnabled()).ready;
   const requestedKey = Array.isArray(params.decision) ? str(params.decision[0]) : str(params.decision);
 
   const externalRows = externalReviewRows(reviews);

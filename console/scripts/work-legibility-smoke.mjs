@@ -81,6 +81,9 @@ await import("./work-project-cases.mjs");
 // What the Work List keeps for each filter, agent, app and search, and where
 // a retired Projects address goes (scripts/work-list-cases.mjs).
 await import("./work-list-cases.mjs");
+// The menu, its tabs, search, not-found pages and the rule that nothing floats
+// over a page (scripts/shell-cases.mjs).
+await import("./shell-cases.mjs");
 
 // Campaign previews are part of Work detail; keep their asset and rendered
 // state falsifiers in this existing canonical consumer.
