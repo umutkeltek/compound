@@ -4,7 +4,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { NextRequest } from "next/server";
 
-// Native replay/expiry/concurrency are tested by internal/console. This fixture
+// Executed in an isolated child by decision-execute-smoke.mjs. Native
+// replay/expiry/concurrency are tested by internal/console. This fixture
 // falsifies the HTTP adapter's independent boundaries and credential handling.
 const dir = mkdtempSync("/tmp/cc-operator-adapter-");
 const socket = join(dir, "broker.sock");

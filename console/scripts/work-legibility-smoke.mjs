@@ -75,6 +75,23 @@ if (failures.length) {
 await import("./waiting-and-owner-cases.mjs");
 await import("./work-next-step-cases.mjs");
 
+// Campaign previews are part of Work detail; keep their asset and rendered
+// state falsifiers in this existing canonical consumer.
+const { runVisualCampaignsSelfTest } = await import("../src/lib/visual-campaigns.selftest.tsx");
+console.log(`visual-campaigns checks ok: ${await runVisualCampaignsSelfTest()} discovery, rendered-state and asset-response checks`);
+
+// Cold-detail rendering mocks the shared read layer and runs in its own process.
+{
+  const { fileURLToPath } = await import("node:url");
+  const { spawnSync } = await import("node:child_process");
+  const cases = fileURLToPath(new URL("../src/lib/work-data.test.mjs", import.meta.url));
+  const run = spawnSync(process.execPath, ["test", cases], { stdio: "inherit", env: process.env, timeout: 30_000 });
+  if (run.status !== 0) {
+    console.error(`work-legibility-smoke FAILED: cold detail cases exited ${run.status ?? run.signal}`);
+    process.exit(1);
+  }
+}
+
 // The four main pages in plain words (scripts/plain-pages-cases.mjs): render
 // Today, Work, Decide and Live against a synthetic binary and fail on any
 // banned system phrase, a count that differs between pages, or a zero shown

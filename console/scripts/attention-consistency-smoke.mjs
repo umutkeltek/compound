@@ -14,6 +14,10 @@ if (!process.versions.bun) {
   process.exit(0);
 }
 
+// Standalone renders model an unpaired, read-only browser. Never inherit a
+// supervisor's session posture or ask Next for cookies outside a request.
+process.env.COMPOUND_CONSOLE_OPERATOR_SESSION = "0";
+
 const [
   { default: ReviewsPage },
   { getAttentionProjection, toAttentionReport },

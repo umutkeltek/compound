@@ -30,7 +30,7 @@ import { arr, HEAVY_PROJECTION_TIMEOUT_MS, readExecutors, readProjection, str } 
 import { countAgents, countInProgress, waitingOnYou } from "@/lib/counts";
 import { depthShows, requestDepth } from "@/lib/depth";
 import { cookies } from "next/headers";
-import { operatorSessionReadiness } from "@/lib/operator-session";
+import { operatorSessionConfigured, operatorSessionReadiness } from "@/lib/operator-session";
 import { moveTypeGroup, summarizeMoveTypeMix } from "@/lib/move-mix";
 import { agentNameFor } from "@/lib/plain-words";
 import { latestProofBackedChange } from "@/representation";
@@ -93,7 +93,7 @@ export default async function Briefing() {
   const workbench = workbenchRead.value;
 
   const now = new Date();
-  const mutationsEnabled = await operatorSessionReadiness((await cookies()).toString());
+  const mutationsEnabled = operatorSessionConfigured() && await operatorSessionReadiness((await cookies()).toString());
 
   // Attention: ONE projection. Groups arrive leverage-sorted; never re-ranked here.
   const needsYouGroups = attentionNeedsYouGroups(attention);

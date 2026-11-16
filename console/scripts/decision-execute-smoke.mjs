@@ -28,3 +28,16 @@ if (!selectedContinue.ok) {
   console.error("decision-execute smoke FAILED: selected-work continuation");
   process.exit(1);
 }
+
+// Browser session admission feeds the same execution owner. Isolate its
+// synthetic broker, environment and module mocks from the owner self-tests.
+{
+  const { fileURLToPath } = await import("node:url");
+  const { spawnSync } = await import("node:child_process");
+  const cases = fileURLToPath(new URL("./operator-session-cases.mjs", import.meta.url));
+  const run = spawnSync(process.execPath, [cases], { stdio: "inherit", env: process.env, timeout: 30_000 });
+  if (run.status !== 0) {
+    console.error(`decision-execute smoke FAILED: operator session cases exited ${run.status ?? run.signal}`);
+    process.exit(1);
+  }
+}

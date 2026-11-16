@@ -127,6 +127,7 @@ await chmod(bin, 0o755);
 process.env.COMPOUND_BIN = bin;
 process.env.COMPOUND_HOME = join(scratch, "home");
 process.env.COMPOUND_CONSOLE_MUTATIONS = "0";
+process.env.COMPOUND_CONSOLE_OPERATOR_SESSION = "0";
 process.env.COMPOUND_CONSOLE_CACHE_DIR = join(scratch, "cache");
 process.env.TMPDIR = scratch;
 

@@ -8,7 +8,7 @@ import { arr, HEAVY_PROJECTION_TIMEOUT_MS, num, readProjection, str, type Json, 
 import { ago } from "@/lib/time";
 import { countDecisions, type DecisionCount, unit, waitingOnYou } from "@/lib/counts";
 import { cookies } from "next/headers";
-import { operatorSessionReadiness } from "@/lib/operator-session";
+import { operatorSessionConfigured, operatorSessionReadiness } from "@/lib/operator-session";
 import { buildDecideGroups, type DecideAct, type DecideGroup, type ScopedDecisionEvidence } from "@/lib/decide-model";
 import { ATTENTION_SOURCED_GENERIC_AREAS } from "@/lib/generic-actions";
 import { areaOf, bandOf, enrichAttentionGroups, externalReviewRows, groupsForBand } from "@/lib/review-data";
@@ -185,7 +185,7 @@ export default async function Decide({
   const { read: attentionRead, report: attention } = attentionProjection;
   const waiting = waitingOnYou(attention);
   const itemByID = buildItemIndex(reviews);
-  const mutationsEnabled = await operatorSessionReadiness((await cookies()).toString());
+  const mutationsEnabled = operatorSessionConfigured() && await operatorSessionReadiness((await cookies()).toString());
   const requestedKey = Array.isArray(params.decision) ? str(params.decision[0]) : str(params.decision);
 
   const externalRows = externalReviewRows(reviews);

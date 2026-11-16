@@ -30,6 +30,7 @@ await chmod(bin, 0o755);
 process.env.COMPOUND_BIN = bin;
 process.env.COMPOUND_HOME = join(scratch, "home");
 process.env.COMPOUND_CONSOLE_MUTATIONS = "0";
+process.env.COMPOUND_CONSOLE_OPERATOR_SESSION = "0";
 // Disk cache is fixture-owned, never the operator console cache.
 process.env.TMPDIR = scratch;
 await Bun.spawn([bin,"version"],{stdout:"ignore",stderr:"ignore"}).exited;
@@ -91,7 +92,7 @@ try {
   assert.match(emptyHome, /promoted · 0 awaiting · 0 parked/, "real empty memory remains zero");
   assert.doesNotMatch(emptyHome, /Memory unavailable|Last known memory/);
   const liveEmpty = await renderPage();
-  assert.match(liveEmpty, /No proposed source evidence/);
+  assert.match(liveEmpty, /No new supporting evidence has been recorded/);
   assert.doesNotMatch(liveEmpty, /unreachable|previously read/);
 
   process.env.MEMORY_READ_SMOKE_MODE = "data";
