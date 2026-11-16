@@ -21,9 +21,9 @@
  */
 
 export { attentionShare, housekeepingGroups, waitingOnYou, yourDecisionGroups, type AttentionShare, type WaitingOnYou } from "@/lib/attention";
-import type { WaitingOnYou } from "@/lib/attention";
+import { attentionShare, waitingOnYou, yourDecisionGroups, type WaitingOnYou } from "@/lib/attention";
 
-import { isInProgress, isOnHold, isPickedUp, isStale, isWaitingForCheck, STALE_AFTER_DAYS, timestampMs } from "@/lib/work-state";
+import { isInProgress, isOnHold, isPickedUp, isStale, isWaitingForCheck, STALE_AFTER_DAYS, timestampMs, waitsOn, type WaitingWorkIds } from "@/lib/work-state";
 import { NO_AGENT_KEY, OPERATOR_AGENT_KEY } from "@/lib/harness-label";
 
 // The per-item rules (in progress, on hold, waiting for a check, stale and its
@@ -39,6 +39,9 @@ export {
   ON_HOLD_STATES,
   STALE_AFTER_DAYS,
   timestampMs,
+  waitsOn,
+  type WaitingWorkIds,
+  type WaitsOn,
 } from "@/lib/work-state";
 
 type Row = Record<string, unknown>;
@@ -206,6 +209,43 @@ export function describeInProgress(c: InProgressCount): { headline: string; deta
     }
   }
   return { headline, detail, age };
+}
+
+/**
+ * The waiting list's own sorting of open work, as ids (lib/work-state.ts
+ * `WaitingWorkIds`): `you` are the work items inside the decisions that are
+ * yours (the "held for your answer" group Today and Decide count), `others`
+ * the work blocked on something outside you. Null when attention has not
+ * been read: pages then fall back to the state rule (`waitsOn`).
+ */
+export function waitingWork(report: Parameters<typeof waitingOnYou>[0]): WaitingWorkIds | null {
+  if (!report) return null;
+  const you = new Set(
+    yourDecisionGroups(report)
+      .filter((group) => group.source === "workbench" && attentionShare(group) === "yours")
+      .flatMap((group) => group.item_ids),
+  );
+  return { you, others: new Set(waitingOnYou(report)?.waitingOnOthers?.itemIds ?? []) };
+}
+
+/**
+ * Open work by whom it waits on (`waitsOn` over the same rows the Work List
+ * filters), so "waiting for you" and "waits on something else" each equal
+ * the list they open. Unit: work items.
+ */
+export function countWaitingWork(items: readonly Row[], waiting: WaitingWorkIds | null): { you: number; others: number } {
+  const seen = new Set<string>();
+  const out = { you: 0, others: 0 };
+  for (const item of items) {
+    const id = text(item.work_id);
+    if (id) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+    }
+    const on = waitsOn(item, waiting);
+    if (on) out[on] += 1;
+  }
+  return out;
 }
 
 /** Items on hold or blocked: waiting, not in progress. Unit: work items. */

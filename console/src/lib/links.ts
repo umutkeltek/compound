@@ -35,9 +35,11 @@ const WORK_LENS_ALIASES: Readonly<Record<string, WorkLens>> = { list: "table" };
  * `progress` is every item in progress (`isInProgress`); `picked` is every
  * item an agent or you hold (`isPickedUp`: in progress or on hold), the
  * population the Agents pages count; `queued` is open work nobody has
- * picked up yet (suggested or ready to start).
+ * picked up yet (suggested or ready to start). `blocked` is the work
+ * waiting for your answer and `others` the work blocked on something outside
+ * you, both as the waiting list sorts them (lib/work-state.ts `waitsOn`).
  */
-export const WORK_FILTERS = ["focus", "running", "blocked", "verifying", "stale", "all", "claimed", "progress", "picked", "queued"] as const;
+export const WORK_FILTERS = ["focus", "running", "blocked", "verifying", "stale", "all", "claimed", "progress", "picked", "queued", "others"] as const;
 export type WorkFilter = (typeof WORK_FILTERS)[number];
 export const DEFAULT_WORK_FILTER: WorkFilter = "focus";
 

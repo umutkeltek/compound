@@ -19,7 +19,7 @@ import {
   type SearchParamsInput,
   type WorkFilter,
 } from "@/lib/links";
-import { isInProgress, isOnHold, isPickedUp, isWaitingForCheck } from "@/lib/work-state";
+import { isInProgress, isOnHold, isPickedUp, isWaitingForCheck, type WaitsOn } from "@/lib/work-state";
 
 /** What the List needs from a row (lib/work-views.ts `WorkLensItem` carries it). */
 export type WorkListRow = {
@@ -38,17 +38,34 @@ export type WorkListRow = {
   readonly stale: boolean;
   /** pick-up time in epoch ms, or null when unknown */
   readonly pickedUpMs: number | null;
+  /**
+   * whom it waits on (lib/work-state.ts `waitsOn`); absent on a row built
+   * without it, which then falls back to the state rule (on hold = yours)
+   */
+  readonly waitsOn?: WaitsOn;
 };
 
-/** Does one row belong to a List filter? `focus` is what needs a look: on hold, or not moved in a week. */
-export function matchesWorkFilter(row: Pick<WorkListRow, "state" | "stale">, filter: WorkFilter): boolean {
+/** Whom a row waits on: its own `waitsOn`, else the state rule. */
+function rowWaitsOn(row: Pick<WorkListRow, "state" | "waitsOn">): WaitsOn {
+  return row.waitsOn ?? (isOnHold(row.state) ? "you" : "");
+}
+
+/**
+ * Does one row belong to a List filter? `focus` is what needs a look:
+ * waiting for you, or not moved in a week. `blocked` is waiting for you (the
+ * waiting list's "held for your answer", the number Today and Decide show);
+ * `others` is blocked on something outside you.
+ */
+export function matchesWorkFilter(row: Pick<WorkListRow, "state" | "stale" | "waitsOn">, filter: WorkFilter): boolean {
   switch (filter) {
     case "all":
       return true;
     case "focus":
-      return isOnHold(row.state) || row.stale;
+      return rowWaitsOn(row) === "you" || row.stale;
     case "blocked":
-      return isOnHold(row.state);
+      return rowWaitsOn(row) === "you";
+    case "others":
+      return rowWaitsOn(row) === "others";
     case "running":
       return row.state === "running" || row.state === "in_progress";
     case "claimed":

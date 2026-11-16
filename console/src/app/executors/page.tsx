@@ -10,6 +10,8 @@ import { ForAgents } from "@/components/settings/primitives";
 import { hasCopy, PageHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending } from "@/components/kit";
 import { PendingRefresh } from "@/components/PendingRefresh";
 import { getWorktreeInventory } from "@/lib/compound";
+import { readAttention } from "@/lib/attention";
+import { waitingWork } from "@/lib/counts";
 import { readAgentsWork } from "@/lib/traffic";
 import { WorktreeInventory } from "@/components/agents/WorktreeInventory";
 
@@ -33,17 +35,18 @@ function Provenance({ projection }: { projection: ExecutorProjection }) {
 }
 
 export default async function AgentsPage() {
-  const [agentsWork, worktrees] = await Promise.all([readAgentsWork(), getWorktreeInventory()]);
+  const [agentsWork, worktrees, attention] = await Promise.all([readAgentsWork(), getWorktreeInventory(), readAttention()]);
   const { traffic, executorsRead: read, workRead, open, projection } = agentsWork;
   const nowMs = Date.now();
   // Every number is counted over the Work page's own open list, so it equals the Work list it opens.
-  const roster = projection ? buildRoster(projection.executors, nowMs, 6, open) : null;
+  // "Need you" is the waiting list's own sorting (lib/counts.ts `waitingWork`), as on Today, Decide and Work.
+  const roster = projection ? buildRoster(projection.executors, nowMs, 6, { openWork: open, waiting: waitingWork(attention.report) }) : null;
   // The read still missing when the numbers cannot be counted yet: the open work first.
   const missingRead = hasCopy(workRead) ? read : workRead;
 
   return (
     <div className="flex flex-col gap-6">
-      <PendingRefresh pending={readsPending(read, workRead)} stamp={Date.now()} />
+      <PendingRefresh pending={readsPending(read, workRead, attention.read)} stamp={Date.now()} />
       <PageHeader
         name="All agents"
         answer={roster ? <AgentsAnswer roster={roster} runRecordsVisible={traffic.runAttemptsPresent} /> : <ReadNotice read={missingRead} label="who works on what" />}

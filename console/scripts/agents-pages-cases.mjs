@@ -93,8 +93,30 @@ function fixtureOpen(now) {
     ...items,
     extra("work_ap_alpha_lane", "running", { claimed_by: "alpha-agent-fixture-lane" }, 3),
     extra("work_ap_alpha_queued", "ready", { owner: "alpha_agent" }, null),
+    extra("work_ap_alpha_blocked", "blocked", { claimed_by: "alpha_agent" }, 2),
     extra("work_ap_yours_suggested", "proposed", { owner: "operator:fixture-person" }, null),
   ];
+}
+
+/**
+ * The waiting list: of the two open items on hold, one is held for your
+ * answer and one is blocked on something outside you. The CLI decides which
+ * from more of the record than the open list carries.
+ */
+function attentionJson(now) {
+  const at = new Date(now).toISOString();
+  const group = (key, band, kind, ids, summary) => ({
+    key: `workbench:${key}`, area: `workbench-${key}`, band, source: "workbench", kind, count: ids.length, item_ids: ids,
+    operator_summary: summary, operator_unlock: "", blast_radius: "local_reversible", reversibility: "reversible", leverage: 1,
+    oldest_created_at: at, action: null, terminal_reason: "", freshness: { generated_at: at, source: "workbench" },
+  });
+  return {
+    schema_version: "compound.attention.v0.1", generated_at: at, counts: { needs_you: 1, needs_you_groups: 1, blocked_on_you: 1 },
+    groups: [
+      group("blocked-on-you", "needs_you", "gate_admit", ["work_ap_beta_held"], "1 open work item is held for your answer."),
+      group("waiting-on-others", "watching", "waiting_on_others", ["work_ap_alpha_blocked"], "1 open work item waits on something outside you."),
+    ],
+  };
 }
 
 function executorsJson(now) {
@@ -123,6 +145,7 @@ const now = Date.now();
 const executorsJson = ${executorsJson.toString()};
 const fixtureWork = ${fixtureWork.toString()};
 const fixtureOpen = ${fixtureOpen.toString()};
+const attentionJson = ${attentionJson.toString()};
 const ns = ${ns.toString()};
 if (args === "version") { console.log("synthetic"); process.exit(0); }
 while (!existsSync(${JSON.stringify(releaseReads)})) await Bun.sleep(5);
@@ -140,7 +163,7 @@ const reply = {
   },
   "executors --json": executorsJson(now),
   "workbench --json": { generated_at: new Date(now).toISOString(), open: fixtureOpen(now), recent: [] },
-  "attention --json": { schema_version: "compound.attention.v0.1", generated_at: new Date(now).toISOString(), counts: { needs_you: 1, needs_you_groups: 1, blocked_on_you: 1 }, groups: [] },
+  "attention --json": attentionJson(now),
 };
 console.log(JSON.stringify(reply[args] ?? { generated_at: new Date(now).toISOString() }));
 `);
@@ -156,7 +179,8 @@ process.env.TMPDIR = scratch;
 const { normalizeExecutorProjection } = await import("../src/components/agents/executor-normalize.ts");
 const { buildRoster, latestPickedUp, oldestNotMoved } = await import("../src/components/agents/agent-roster.ts");
 const { isActiveRun } = await import("../src/components/live/LiveHarnessCanvas.tsx");
-const { countAgents, countInProgress, describeAgents, describeInProgress } = await import("../src/lib/counts.ts");
+const { countAgents, countInProgress, countWaitingWork, describeAgents, describeInProgress, waitingWork } = await import("../src/lib/counts.ts");
+const { toAttentionReport } = await import("../src/lib/attention.ts");
 const { buildTraffic } = await import("../src/lib/traffic.ts");
 const { buildWorkLensItems } = await import("../src/lib/work-views.ts");
 const { filterWorkList } = await import("../src/lib/work-list.ts");
@@ -165,6 +189,7 @@ const compound = await import("../src/lib/compound.ts");
 const { default: Live } = await import("../src/app/live/page.tsx");
 const { default: Agents } = await import("../src/app/executors/page.tsx");
 const { default: Waiting } = await import("../src/app/traffic/page.tsx");
+const { default: Work } = await import("../src/app/work/page.tsx");
 const { summarizeGrants, readableDate } = await import("../src/components/settings/grants.ts");
 const { AutonomySafety } = await import("../src/components/settings/AutonomySafety.tsx");
 const { PolicyGroup } = await import("../src/components/settings/PolicyGroup.tsx");
@@ -206,15 +231,15 @@ try {
   const openList = fixtureOpen(NOW);
   const projection = normalizeExecutorProjection(raw, openList);
   const byId = Object.fromEntries(projection.executors.map((row) => [row.id, row.currentWork.length]));
-  assert.deepEqual(byId, { alpha_agent: 4, beta_agent: 2, fixture_scheduler: 1, fixture_relay: 1, operator: 1, local_box: 0 },
+  assert.deepEqual(byId, { alpha_agent: 5, beta_agent: 2, fixture_scheduler: 1, fixture_relay: 1, operator: 1, local_box: 0 },
     "counted over the open list: the lane spelled with hyphens folds into its agent, the item that moved on counts where it is now");
   assert.equal(projection.executors.find((row) => row.id === "operator").label, "You");
   assert.equal(projection.executors.find((row) => row.id === "beta_agent").label, "Beta Agent", "the projection's label stays the name");
 
   const agents = countAgents(projection.executors, openList);
-  assert.deepEqual(agents, { withWork: 4, idle: 1, heldItems: 8, noAgentItems: 0, yourItems: 1, notPickedUp: 4 });
+  assert.deepEqual(agents, { withWork: 4, idle: 1, heldItems: 9, noAgentItems: 0, yourItems: 1, notPickedUp: 4 });
   const agentsLine = describeAgents(agents);
-  assert.equal(agentsLine, "4 agents hold 8 work items. 1 more work item is held by you. 4 more open work items are suggested or ready to start: nobody has picked them up yet. 1 agent has nothing to do.");
+  assert.equal(agentsLine, "4 agents hold 9 work items. 1 more work item is held by you. 4 more open work items are suggested or ready to start: nobody has picked them up yet. 1 agent has nothing to do.");
 
   // Every number on a row equals the Work list its link opens (the real List filter over the same open list).
   const workRows = buildWorkLensItems(openList, buildTraffic(projection, null), { nowMs: NOW });
@@ -235,6 +260,19 @@ try {
   assert.equal(inProgress.pickedUpOver7Days, 3);
   const beta = roster.holders.find((a) => a.key === "beta_agent");
   assert.deepEqual(beta.top.map((w) => w.workId), ["work_ap_beta_held", "work_ap_beta_check"], "on hold first, then not moved");
+
+  // "Need you" is the waiting list's own sorting: held for your answer, not blocked on something else.
+  const waitingIds = waitingWork(toAttentionReport(attentionJson(NOW)));
+  assert.deepEqual({ you: [...waitingIds.you], others: [...waitingIds.others] }, { you: ["work_ap_beta_held"], others: ["work_ap_alpha_blocked"] });
+  assert.deepEqual(countWaitingWork(openList, waitingIds), { you: 1, others: 1 });
+  assert.deepEqual(countWaitingWork(openList, null), { you: 2, others: 0 }, "before the waiting list is read, on hold counts by state");
+  const waitRows = buildWorkLensItems(openList, buildTraffic(projection, null), { nowMs: NOW, waiting: waitingIds });
+  const waitListSize = (href) => filterWorkList(waitRows, parseWorkListParams(new URL(href, "https://console.invalid").searchParams), { projectsKnown: true }).rows.length;
+  const waitRoster = buildRoster(projection.executors, NOW, 6, { openWork: openList, waiting: waitingIds });
+  for (const agent of waitRoster.holders) assert.equal(waitListSize(agent.href.onHold), agent.onHold, `${agent.name}: need you = its list`);
+  assert.equal(waitRoster.holders.find((a) => a.key === "alpha_agent").onHold, 0, "work blocked on something else does not need you");
+  assert.equal(waitListSize(workListHref({ filter: "blocked" })), 1);
+  assert.equal(waitListSize(workListHref({ filter: "others" })), 1);
 
   /* ---------- page renders: Working now and All agents say the same ---------- */
   const coldAgents = visibleText(wrap("/executors", await Agents()));
@@ -261,18 +299,36 @@ try {
     }
   }
   // Every number that links to the Work List equals the length of the list it opens, over the page's own open list.
-  const pageRows = buildWorkLensItems(pageOpen, buildTraffic(pageProjection, null), { nowMs: Date.now() });
+  const pageWaiting = waitingWork(toAttentionReport(await compound.runJson(["attention", "--json"])));
+  const pageRows = buildWorkLensItems(pageOpen, buildTraffic(pageProjection, null), { nowMs: Date.now(), waiting: pageWaiting });
   const pageListSize = (href) => filterWorkList(pageRows, parseWorkListParams(new URL(href, "https://console.invalid").searchParams), { projectsKnown: true }).rows.length;
   const linkedNumbers = (html) => [...html.matchAll(/<a [^>]*href="(\/work\?[^"]+)"[^>]*>([\s\S]*?)<\/a>/g)]
     .map((m) => ({ href: m[1].replace(/&amp;/g, "&"), text: visibleText(m[2]).trim() }))
     .map((link) => ({ ...link, n: (link.text.match(/^(?:See all )?(\d[\d,]*)\b/) ?? link.text.match(/^\+\d[\d,]* more: all (\d[\d,]*)\b/))?.[1] }))
     .filter((link) => link.n !== undefined);
+  assert.match(live, /1 work item waits for your decision\. 1 more work item waits on something else, not on you\./, "Working now names the two apart");
   for (const [name, html] of [["Working now", liveHtml], ["All agents", agentsHtml]]) {
     const numbers = linkedNumbers(html);
     assert.ok(numbers.length >= 8, `${name}: its numbers link to Work lists`);
     for (const link of numbers) {
       assert.equal(pageListSize(link.href), Number(link.n.replace(/,/g, "")), `${name}: "${link.text}" opens ${link.href}, a list of the same length`);
     }
+  }
+  // Work's header: the same split as Today and Decide (waiting for you apart from waiting on something else), each number its list.
+  await Work({ searchParams: Promise.resolve({}) });
+  await compound.settleProjectionReads();
+  const workHtml = wrap("/work", await Work({ searchParams: Promise.resolve({}) }));
+  const work = visibleText(workHtml);
+  assert.match(work, /1 on hold, waiting for you · 1 waits on something else, not on you/, "Work names the two apart");
+  const workNumbers = linkedNumbers(workHtml);
+  assert.ok(workNumbers.length >= 6, "Work's header numbers link to their lists");
+  for (const link of workNumbers) {
+    assert.equal(pageListSize(link.href), Number(link.n.replace(/,/g, "")), `Work: "${link.text}" opens ${link.href}, a list of the same length`);
+  }
+  // The same numbers on Work and on the Agents pages.
+  for (const [filter, words] of [["running", "running"], ["claimed", "picked up"], ["verifying", "waiting for a proof check"]]) {
+    const n = pageListSize(`/work?lens=table&filter=${filter}`);
+    assert.ok(work.includes(`${n} ${words}`) && live.includes(`${n} ${words}`) && all.includes(`${n} ${words}`), `${words}: ${n} on Work, Working now and All agents`);
   }
   assert.doesNotMatch(all, /Executors|Paused|Assg|\bRunning 8\b/, "no tile counts in-progress work as running or the catch-all as an agent");
   const agentLinks = hrefs(agentsHtml);

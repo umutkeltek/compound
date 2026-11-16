@@ -6,7 +6,8 @@ import { WorkLenses } from "@/components/work/WorkLenses";
 import type { WorkByAppModel } from "@/components/work/WorkByAppLens";
 import { arr, readWorkProjectIndex } from "@/lib/compound";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
-import { countInProgress, countOnHold, countOpenWork, STALE_AFTER_DAYS, UNASSIGNED_AGENT_ID } from "@/lib/counts";
+import { readAttention } from "@/lib/attention";
+import { countInProgress, countOpenWork, countWaitingWork, STALE_AFTER_DAYS, UNASSIGNED_AGENT_ID, waitingWork } from "@/lib/counts";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { parseWorkListParams, workListHref, type WorkFilter } from "@/lib/links";
 import { getTraffic, readOpenWork } from "@/lib/traffic";
@@ -31,14 +32,18 @@ export default async function WorkPage({
 }) {
   const params = parseWorkListParams(await searchParams);
   const nowMs = Date.now();
-  const [workbenchRead, traffic, projectIndex] = await Promise.all([
+  const [workbenchRead, traffic, projectIndex, attention] = await Promise.all([
     // The open work read every Agents page counts from too (lib/traffic.ts).
     readOpenWork(),
     getTraffic(),
     // Which app, codebase or "not linked" group each item is in. It shares
     // the workbench read above (same argv) and adds the app list and inventory.
     readWorkProjectIndex({ nowMs }),
+    // Which work waits for you and which waits on something else: the
+    // waiting list's own sorting, the one Today and Decide count.
+    readAttention(),
   ]);
+  const waiting = waitingWork(attention.report);
   const workbench = workbenchRead.value;
   const open = arr(workbench?.open);
   const recent = arr(workbench?.recent);
@@ -54,7 +59,7 @@ export default async function WorkPage({
   const columns = decorateBoard(nameCardOwners(buildBoard(open, recent), agentByWork, agentNames), open, { nowMs, groupOf });
 
   const mutationsReady = computeConsoleMutationReadiness(consoleMutationsEnabled()).ready;
-  const items = buildWorkLensItems(open, traffic, { nowMs, groupOf });
+  const items = buildWorkLensItems(open, traffic, { nowMs, groupOf, waiting });
   const readLabels = { work: "work", apps: "your app list", inventory: "where each app's code lives" } as const;
   const byApp: WorkByAppModel = {
     groups: index ? index.projects.map((group) => ({ ...group })) : null,
@@ -64,8 +69,9 @@ export default async function WorkPage({
   const workbenchKnown = hasCopy(workbenchRead);
   // One definition per number (lib/counts.ts), shared with Today, Live and the sidebar.
   const inProgress = workbenchKnown ? countInProgress(open, nowMs) : null;
-  const onHold = workbenchKnown ? countOnHold(open) : null;
-  const pending = readsPending(workbenchRead, traffic.read, projectIndex.reads.apps, projectIndex.reads.inventory);
+  // Counted with the rule the List filters by (lib/work-state.ts `waitsOn`), over the same rows.
+  const waits = workbenchKnown ? countWaitingWork(open, waiting) : null;
+  const pending = readsPending(workbenchRead, traffic.read, projectIndex.reads.apps, projectIndex.reads.inventory, attention.read);
 
   // The header leads with what is stopped: on hold (waits for a decision) and
   // not moved (in progress, picked up more than a week ago). In progress is
@@ -81,7 +87,14 @@ export default async function WorkPage({
   ) : (
     <div className="flex flex-col gap-1.5">
       <p className="text-lg">
-        {countLink(onHold ?? 0, `on hold, waiting for you`, "blocked", "text-seam")}
+        {/* Before the waiting list is read, on hold is counted by state and not called "waiting for you". */}
+        {countLink(waits?.you ?? 0, waiting ? "on hold, waiting for you" : "on hold", "blocked", "text-seam")}
+        {waiting && waits && waits.others > 0 ? (
+          <>
+            {" · "}
+            {countLink(waits.others, waits.others === 1 ? "waits on something else, not on you" : "wait on something else, not on you", "others")}
+          </>
+        ) : null}
         {" · "}
         {inProgress.pickedUpOver7Days === null
           ? <span className="text-muted">how long work has sat is unknown: the records carry no pick-up time</span>
@@ -97,7 +110,7 @@ export default async function WorkPage({
       </p>
       <p className="text-sm text-muted">
         {countLink(countOpenWork(open), countOpenWork(open) === 1 ? "open work item" : "open work items", "all")} in all.
-        {!onHold && !inProgress.pickedUpOver7Days ? <span className="text-good"> Nothing is on hold or stuck.</span> : null}
+        {!waits?.you && !inProgress.pickedUpOver7Days ? <span className="text-good"> Nothing is on hold or stuck.</span> : null}
       </p>
     </div>
   );

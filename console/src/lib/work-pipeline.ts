@@ -265,7 +265,7 @@ export function buildBoard(open: Json[], recent: Json[]): BoardColumnModel[] {
     { key: "inbox", label: "Suggested", description: "Proposed work waiting to be accepted.", tone: "draft", states: ["proposed", "admitted"], empty: "Nothing suggested." },
     { key: "ready", label: "Ready to start", description: "Waiting for an agent to pick it up.", tone: "queued", states: ["ready"], empty: "Nothing ready to start." },
     { key: "running", label: "Running or picked up", description: "In progress: an agent picked it up; it may not have started.", tone: "live", states: ["claimed", "in_progress", "running"], empty: "Nothing running." },
-    { key: "needs-me", label: "On hold", description: "Stopped until you decide what happens next.", tone: "seam", states: ["blocked", "held"], empty: "Nothing is on hold." },
+    { key: "needs-me", label: "On hold", description: "Stopped: held for your answer, or blocked on something outside you. The List's \"Waiting for you\" and \"Waiting on something else\" split them.", tone: "seam", states: ["blocked", "held"], empty: "Nothing is on hold." },
     { key: "review", label: "Waiting for a proof check", description: "In progress: the agent says it is done; the proof is not accepted yet.", tone: "live", states: ["verifying"], empty: "Nothing waits for a proof check." },
   ];
   const board: BoardColumnModel[] = columns.map((col) => ({

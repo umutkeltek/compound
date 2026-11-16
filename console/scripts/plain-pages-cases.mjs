@@ -425,10 +425,11 @@ try {
   }
   // Work leads with what is stopped, splits in progress into its named parts,
   // and every number opens the List of exactly those items.
-  assert.match(warm.Work, /1 on hold, waiting for you · 2 not moved in over 7 days 4 in progress ?: 1 running · 1 picked up, not started · 2 waiting for a proof check 6 open work items in all\./);
+  // Waiting for you and waiting on something else are the waiting list's own sorting, named apart as Today and Decide name them.
+  assert.match(warm.Work, /1 on hold, waiting for you · 1 waits on something else, not on you · 2 not moved in over 7 days 4 in progress ?: 1 running · 1 picked up, not started · 2 waiting for a proof check 6 open work items in all\./);
   const header = await renderWork("");
   const rowsOf = (html) => (html.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1] ?? "").match(/<tr\b/g)?.length ?? 0;
-  for (const [filter, n] of [["blocked", 1], ["stale", 2], ["progress", 4], ["running", 1], ["claimed", 1], ["verifying", 2], ["all", 6]]) {
+  for (const [filter, n] of [["blocked", 1], ["others", 1], ["stale", 2], ["progress", 4], ["running", 1], ["claimed", 1], ["verifying", 2], ["all", 6]]) {
     assert.match(header.html, new RegExp(`href="/work\\?lens=table&amp;filter=${filter}"`), `the header links ${filter}`);
     assert.equal(rowsOf((await renderWork(`lens=table&filter=${filter}`)).html), n, `the ${filter} list holds exactly the header's ${n}`);
   }

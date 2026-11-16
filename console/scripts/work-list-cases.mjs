@@ -50,6 +50,16 @@ assert.deepEqual(ids(list({ filter: "all", q: "fixture app" })), ["work_a_held",
 assert.deepEqual(ids(list({ filter: "picked" })).sort(), ["work_a_held", "work_b_run_old", "work_c_check_older", "work_d_claimed", "work_f_blocked"]);
 assert.deepEqual(ids(list({ filter: "queued" })), ["work_e_ready"], "suggested or ready work is not picked up yet");
 
+// Waiting for you and waiting on something else, as the waiting list sorts them; a row without it falls back to its state.
+{
+  const sorted = rows.map((r) => ({ ...r, waitsOn: r.workId === "work_f_blocked" ? "others" : r.state === "held" ? "you" : "" }));
+  const sortedList = (query) => ids(filterWorkList(sorted, parseWorkListParams(query), { projectsKnown: true }));
+  assert.deepEqual(sortedList({ filter: "blocked" }), ["work_a_held"], "blocked on something else is not waiting for you");
+  assert.deepEqual(sortedList({ filter: "others" }), ["work_f_blocked"]);
+  assert.deepEqual(sortedList({}), ["work_a_held", "work_c_check_older", "work_b_run_old"], "focus: waiting for you or not moved");
+  assert.equal(matchesWorkFilter({ state: "blocked", stale: false }, "blocked"), true, "no sorting read yet: on hold counts as yours");
+}
+
 // A lane spelled with hyphens folds into the agent it extends, whichever spelling the address carries.
 {
   const laneRows = [...rows, row("work_g_lane", "running", { owner: "fixture-agent-night-lane", pickedUpMs: NOW - DAY })];

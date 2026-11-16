@@ -10,7 +10,7 @@ import { hasCopy, PageHeader, PulseIcon, ReadChip, ReadFailedBanner, ReadNotice,
 import { PendingRefresh } from "@/components/PendingRefresh";
 import { readAttention } from "@/lib/attention";
 import { readCoordination } from "@/lib/coordination";
-import { unit, waitingOnYou } from "@/lib/counts";
+import { countWaitingWork, unit, waitingWork } from "@/lib/counts";
 import { depthShows, requestDepth } from "@/lib/depth";
 import { workListHref } from "@/lib/links";
 import { readAgentsWork } from "@/lib/traffic";
@@ -51,7 +51,11 @@ export default async function LivePage() {
   // skipped entirely when hidden.
   const [agentsWork, depth, attentionLive] = await Promise.all([readAgentsWork(), requestDepth(), readAttention()]);
   const { traffic, executorsRead, workRead, open, projection } = agentsWork;
-  const waiting = waitingOnYou(attentionLive.report);
+  // Which open work waits for you and which on something else: the waiting
+  // list's own sorting (Today and Decide count it), counted over the same open
+  // list the Work filters show, so each number equals the list it opens.
+  const waitingIds = waitingWork(attentionLive.report);
+  const waits = waitingIds && open ? countWaitingWork(open, waitingIds) : null;
   const showCoordination = depthShows(depth, "technical");
   const known = projection !== null;
   // The read still missing when the numbers cannot be counted yet: the open work first.
@@ -59,7 +63,7 @@ export default async function LivePage() {
   const nowMs = Date.now();
   // One row per agent key, counted with lib/counts.ts (components/agents/agent-roster.ts)
   // over the Work page's own open list, so each number equals the Work list it opens.
-  const roster = projection ? buildRoster(projection.executors, nowMs, 2, open) : null;
+  const roster = projection ? buildRoster(projection.executors, nowMs, 2, { openWork: open, waiting: waitingIds }) : null;
   const runOf = new Map(traffic.lanes.flatMap((lane) => lane.inFlight.map((work) => [work.workId, work] as const)));
   // The canvas holds the agents that hold the most; the rest are on All agents.
   const shown = (roster?.holders ?? []).slice(0, CANVAS_LANES);
@@ -116,11 +120,19 @@ export default async function LivePage() {
     <AgentsAnswer
       roster={roster}
       runRecordsVisible={traffic.runAttemptsPresent}
-      extra={waiting && waiting.workItems > 0 ? (
+      extra={waits && waits.you + waits.others > 0 ? (
         <p className="text-sm text-muted">
-          <Link href={workListHref({ filter: "blocked" })} className="font-semibold text-work hover:underline">
-            {unit(waiting.workItems, "work item")} {waiting.workItems === 1 ? "waits" : "wait"} for your decision.
-          </Link>
+          {waits.you > 0 ? (
+            <Link href={workListHref({ filter: "blocked" })} className="font-semibold text-work hover:underline">
+              {unit(waits.you, "work item")} {waits.you === 1 ? "waits" : "wait"} for your decision.
+            </Link>
+          ) : null}
+          {waits.you > 0 && waits.others > 0 ? " " : null}
+          {waits.others > 0 ? (
+            <Link href={workListHref({ filter: "others" })} className="font-semibold text-work hover:underline">
+              {unit(waits.others, waits.you > 0 ? "more work item" : "work item", waits.you > 0 ? "more work items" : "work items")} {waits.others === 1 ? "waits" : "wait"} on something else, not on you.
+            </Link>
+          ) : null}
         </p>
       ) : null}
     />

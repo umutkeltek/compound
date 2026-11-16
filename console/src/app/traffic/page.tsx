@@ -22,7 +22,7 @@ export default async function WaitingPage() {
   const [coordination, agentsWork] = await Promise.all([readCoordination(), readAgentsWork()]);
   const { executorsRead: executors, workRead, open, projection } = agentsWork;
   // Counted over the Work page's own open list, as Working now and All agents count.
-  const roster = projection ? buildRoster(projection.executors, Date.now(), 0, open) : null;
+  const roster = projection ? buildRoster(projection.executors, Date.now(), 0, { openWork: open }) : null;
 
   return (
     <div className="flex flex-col gap-6">
