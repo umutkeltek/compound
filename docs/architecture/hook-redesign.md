@@ -116,6 +116,13 @@ against the compact JSON input for every other tool. A lesson naming `Bash` also
 tool names other harnesses use. In a skill file, a trigger is one line: `trigger: {<lesson JSON>}`.
 The builder rejects invalid lessons, keeps the valid subset, and exits 1 so automation notices.
 
+**Cutover.** A home whose index was built by hand before sources were recorded has no
+`config/hook-lesson-sources.json`, so its first automatic rebuild would read the ledger only: a
+skill-file line with no ledger claim would drop out, and every current ledger lesson with a trigger
+would be served. Run `compound hook lessons-index --skills DIR` once, naming every folder the last
+hand build named; it records them, and every later rebuild keeps those lines. A rebuild that drops a
+skill-file or `--from` line the previous index served reports it and names this command.
+
 For a lesson-backed entry (`claim_*` id or `lesson:` source) the ledger wins over a skill line: a
 current lesson is served once with its ledger text and trigger, and a line whose claim is superseded,
 retired or without a trigger is excluded and listed in `excluded_lesson_ids`. Historical Markdown

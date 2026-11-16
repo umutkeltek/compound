@@ -188,11 +188,43 @@ func CompileLessonIndex(homePath, out string, sources LessonSources, now time.Ti
 	if err != nil {
 		return build, err
 	}
+	build.Problems = append(build.Problems, droppedSkillLines(out, fitted, unserved)...)
 	if err := WriteLessonIndex(out, fitted); err != nil {
 		return build, err
 	}
 	build.Index, build.Unserved, build.Bytes = fitted, unserved, size
 	return build, nil
+}
+
+// droppedSkillLines reports skill-file and --from lines that the index at
+// path serves now but the new index will not, because no recorded source
+// carries them any more. The first automatic rebuild on a home whose index
+// was built by hand from skill folders (and has no recorded sources) would
+// otherwise drop those lines silently.
+func droppedSkillLines(path string, next LessonIndex, unserved []string) []error {
+	data, state := readLessonIndexBytes(path)
+	if state != "" {
+		return nil
+	}
+	var previous LessonIndex
+	if json.Unmarshal(data, &previous) != nil {
+		return nil
+	}
+	kept := map[string]bool{}
+	for _, lesson := range next.Lessons {
+		kept[lesson.ID] = true
+	}
+	for _, id := range unserved {
+		kept[id] = true
+	}
+	var problems []error
+	for _, lesson := range previous.Lessons {
+		if kept[lesson.ID] || strings.HasPrefix(lesson.Source, "lesson:") || strings.HasPrefix(lesson.ID, "claim_") {
+			continue
+		}
+		problems = append(problems, fmt.Errorf("lesson %s (from %s) was served but is in no recorded source now; record its folder with `%s --skills DIR` to keep it", lesson.ID, lesson.Source, LessonIndexRepairCommand))
+	}
+	return problems
 }
 
 // RemoveLessonsFromIndex drops ids from the published index without a full
