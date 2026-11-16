@@ -1,3 +1,5 @@
+import { Suspense } from "react";
+import { WorkVisuals } from "@/components/products/VisualCampaigns";
 import Link from "next/link";
 import { PageHeader } from "@/components/kit";
 import { AgentHandoff } from "@/components/AgentHandoff";
@@ -110,6 +112,8 @@ export default async function WorkDetail({ params }: { params: Promise<{ id: str
           <div className="mt-3 max-w-read"><AgentHandoff title={str(work.desired_outcome) || packet?.title || id} context={nextStep.reason} reference={id} /></div>
         </details> : null}
       </section>
+
+      {arr(work.artifact_ids).some((ref) => String(ref).startsWith("visual-campaign:")) ? <Suspense fallback={<p className="text-sm text-muted">Loading visual outputs…</p>}><WorkVisuals workId={id} /></Suspense> : null}
 
       <div className="grid gap-4 lg:grid-cols-2">
         <section className="rounded-xl border border-hair bg-panel p-5">

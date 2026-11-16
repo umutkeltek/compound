@@ -1,3 +1,4 @@
+import { ProductVisuals } from "@/components/products/VisualCampaigns";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
@@ -124,6 +125,8 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
         </div>
         <NextMoves app={app} look={look} />
       </section>
+
+      <Suspense fallback={<p className="text-sm text-muted">Loading visual work…</p>}><ProductVisuals productIds={[app.productId, ...app.aliases]} /></Suspense>
 
       <ProfileRow app={app} areas={model.areas} groups={model.groups} />
 
@@ -252,7 +255,7 @@ async function AppWork({ ids }: { ids: string[] }) {
             const when = str(w.claimed_at) || str(w.created_at);
             return (
               <li key={id} className="flex items-start justify-between gap-4 py-2.5">
-                <Link href={`/work?trace=${encodeURIComponent(id)}`} className="min-w-0 text-sm font-medium text-ink hover:underline">
+                <Link href={`/work/${encodeURIComponent(id)}`} className="min-w-0 text-sm font-medium text-ink hover:underline">
                   <span className="line-clamp-2">{str(w.success_predicate) || str(w.desired_outcome) || id}</span>
                 </Link>
                 <span className="shrink-0 text-xs text-muted">{str(w.state)}{when ? ` · ${ago(when)}` : ""}</span>

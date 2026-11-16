@@ -2,6 +2,8 @@
 import { AgentHandoff } from "@/components/AgentHandoff";
 
 import Link from "next/link";
+import { isOperatorActionSupported } from "@/lib/operator-action";
+import { fetchWithOperatorSession } from "@/lib/operator-session-client";
 import { useRouter } from "next/navigation";
 import { useEffect, useId, useRef, useState } from "react";
 
@@ -177,7 +179,7 @@ export function DecisionOutcome({
 export function GovernedAct({
   act,
   authority,
-  mutationsEnabled,
+  mutationsEnabled: connectionReady,
   registerTrigger,
   onExecuted,
   retainedOutcome,
@@ -191,6 +193,7 @@ export function GovernedAct({
   retainedOutcome?: ExecuteResult | null;
   effectKind: OutcomeKind;
 }) {
+  const mutationsEnabled = connectionReady && isOperatorActionSupported(buildDecideActionRequest(act, "", {}, "direct"));
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [state, setState] = useState<ActState>("idle");
@@ -265,7 +268,7 @@ export function GovernedAct({
     kind: GovernedSubmitKind,
     fieldValues: Record<string, string> = collectedFields(),
   ): Promise<ExecuteResult> {
-    const response = await fetch("/api/decision/execute", {
+    const response = await fetchWithOperatorSession("/api/decision/execute", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(buildDecideActionRequest(act, selectedOption, fieldValues, kind)),
@@ -355,13 +358,12 @@ export function GovernedAct({
     );
   }
 
-  // The standard browser never receives the execution capability. Offer an
-  // honest owner read command instead of a form whose submit can never work.
+  // A connection alone cannot make an unsupported owner action executable.
   if (!mutationsEnabled) {
     const inspect = `compound reviews --area '${act.area.replaceAll("'", "'\\''")}' --json`;
     return (
       <div className="grid gap-3">
-        <p className="text-sm text-muted">Review the options below. Applying a decision requires an authorized agent; this page does not start one.</p>
+        <p className="text-sm text-muted">{connectionReady ? "This action still needs a current executable step from its owner. Review the linked work and evidence below." : "Connect this browser using Connect operator in the header to apply supported decisions. You can review the evidence before connecting."}</p>
         {options.length ? <ul className="grid gap-2">{options.map((option) => (
           <li key={option.value} className="rounded-md border border-hair bg-panel px-3 py-2">
             <div className="text-sm font-semibold text-ink">{option.label}</div>

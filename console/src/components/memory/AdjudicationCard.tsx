@@ -7,6 +7,7 @@ import { useMemo, useRef, useState } from "react";
 import { Button, Field, FreshnessChip, IdRef } from "@/components/kit";
 import { ago } from "@/lib/time";
 import type { AdjudicationCardModel } from "./model";
+import { EvidenceReference } from "./EvidenceReference";
 
 /*
  * One governed memory-adjudication decision. The candidate is proposed (a
@@ -90,7 +91,6 @@ export function AdjudicationCard({
         if (!String(value ?? "").trim()) {
           setState("error");
           setMessage(`${f.label} is required.`);
-          window.setTimeout(() => setState("idle"), 1600);
           return;
         }
       }
@@ -118,11 +118,9 @@ export function AdjudicationCard({
       }
       setState("error");
       setMessage(result.stderr || result.stdout || "Command failed.");
-      window.setTimeout(() => setState("idle"), 1600);
     } catch (error) {
       setState("error");
       setMessage(error instanceof Error ? error.message : "Request failed.");
-      window.setTimeout(() => setState("idle"), 1600);
     }
   }
 
@@ -150,12 +148,24 @@ export function AdjudicationCard({
               <span className="text-2xs font-bold uppercase tracking-wide text-faint">{model.kindLabel}</span>
             </div>
             <h3 className="mt-0.5 text-md font-semibold leading-snug text-ink">{model.headline}</h3>
+            {model.fullStatement !== model.headline && model.fullStatement ? (
+              <details className="mt-2 text-sm text-muted"><summary className="cursor-pointer font-medium">Read full statement</summary><p className="mt-2 whitespace-pre-wrap leading-relaxed">{model.fullStatement}</p></details>
+            ) : null}
           </div>
         </div>
         <span className="shrink-0 rounded-pill border border-hair bg-transparent px-2.5 py-0.5 text-xs font-semibold text-muted">
           {model.stateLabel}
         </span>
       </div>
+
+      <p className="mt-2 max-w-read text-xs leading-relaxed text-muted">{model.whyReview}</p>
+
+      <section className="mt-3 rounded-md border border-hair bg-soft px-3 py-2" aria-label="Where this memory came from">
+        <p className="text-xs font-semibold text-ink">{model.sourceLabel}</p>
+        {model.evidence.length ? <ul className="mt-1 grid gap-1">{model.evidence.slice(0, 2).map((ref) => <li key={ref}><EvidenceReference reference={ref} /></li>)}</ul> : (
+          <p className="mt-1 text-xs text-muted">No source reference was returned in this summary. <Link className="font-semibold text-work hover:underline" href={`/map/lineage/${encodeURIComponent(model.id)}`}>Inspect this proposal’s history →</Link></p>
+        )}
+      </section>
 
       {model.body ? (
         <p className="mt-2 text-sm leading-relaxed text-muted" style={{ maxWidth: "var(--read-max)" }}>
@@ -174,12 +184,12 @@ export function AdjudicationCard({
       {model.consequences ? (
         <div className="mt-2 rounded-md bg-soft px-3 py-2 text-xs leading-relaxed">
           <div className="text-ink">
-            <span className="font-semibold text-good">if you {model.approveLabel}</span>
+            <span className="font-semibold text-good">If you {model.approveLabel}</span>
             <span className="text-faint"> → </span>
             {model.consequences.approve}
           </div>
           <div className="mt-0.5 text-muted">
-            <span className="font-semibold">if you wait</span>
+            <span className="font-semibold">If you set it aside</span>
             <span> → </span>
             {model.consequences.hold}
           </div>
@@ -188,7 +198,7 @@ export function AdjudicationCard({
 
       {/* verdict selector — one primary act, options never auto-fire */}
       <div className="mt-3 flex flex-col gap-1.5">
-        <span className="text-2xs font-bold uppercase tracking-wide text-faint">Verdict</span>
+        <span className="text-2xs font-bold uppercase tracking-wide text-faint">Choose what happens to this memory</span>
         <div className="grid gap-1.5 sm:grid-cols-2">
           {formSpec.options.map((opt) => {
             const isSel = opt.value === option;
@@ -204,7 +214,7 @@ export function AdjudicationCard({
               >
                 <span className="flex items-center gap-1.5">
                   <span className={`h-2 w-2 shrink-0 rounded-full ${DOT_TONE[opt.tone] ?? DOT_TONE.gray}`} />
-                  <span className="text-sm font-semibold text-ink">{opt.label}</span>
+                  <span className="text-sm font-semibold text-ink">{opt.value === "promote" ? "Accept for recall" : opt.value === "park" ? "Set aside" : opt.label}</span>
                 </span>
                 <span className="text-xs leading-snug text-muted">{opt.description}</span>
               </button>
@@ -221,10 +231,15 @@ export function AdjudicationCard({
       </form>
 
       {captionArgv?.length ? (
-        <pre className="mono mt-3 overflow-x-auto rounded-md border border-hair bg-soft px-3 py-2 text-2xs leading-relaxed text-muted">
+        <details className="mt-3 text-xs text-muted"><summary className="cursor-pointer">Command and recorded fields</summary>
+        <p className="mono mt-2 break-all text-2xs">Subject: {model.subject || "not recorded"}<br />Relation: {model.relation || "not recorded"}</p>
+        <pre className="mono mt-2 overflow-x-auto rounded-md border border-hair bg-soft px-3 py-2 text-2xs leading-relaxed text-muted">
           compound {captionArgv.join(" ")}
         </pre>
+        </details>
       ) : null}
+
+      {!mutationsEnabled ? <p className="mt-3 text-xs text-muted">Recording a verdict is unavailable in this browser. <Link href="/settings" className="font-semibold text-work hover:underline">Check console access →</Link> You can still inspect the statement and its history.</p> : null}
 
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
@@ -246,13 +261,13 @@ export function AdjudicationCard({
             className={stateClass}
             title={mutationsEnabled ? undefined : "Launch via 'compound console --operator' to act from a pinned console."}
           >
-            {state === "pending" ? "Recording…" : `Record · ${selected?.label ?? option}`}
+            {state === "pending" ? "Recording…" : state === "confirmed" ? "Verdict recorded" : `Record · ${selected?.value === "promote" ? "Accept for recall" : selected?.value === "park" ? "Set aside" : selected?.label ?? option}`}
           </Button>
         </div>
       </div>
 
       {state === "error" && message ? (
-        <p className="mt-1.5 text-2xs leading-snug text-crit">{message}</p>
+        <p role="alert" className="mt-1.5 break-words text-xs leading-snug text-crit">{message}</p>
       ) : null}
 
       <div className="mt-2 flex items-center justify-between gap-2 border-t border-hair pt-2">
@@ -264,8 +279,8 @@ export function AdjudicationCard({
             </summary>
             <ul className="mt-1 flex flex-col gap-0.5">
               {model.evidence.map((ref, i) => (
-                <li key={i} className="mono truncate text-2xs text-faint" title={ref}>
-                  {ref}
+                <li key={i}>
+                  <EvidenceReference reference={ref} />
                 </li>
               ))}
             </ul>

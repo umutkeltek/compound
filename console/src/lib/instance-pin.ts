@@ -40,7 +40,7 @@ export type InstancePin = {
 export type ConsoleMutationReadiness = {
   flagEnabled: boolean;
   instancePinned: boolean;
-  /** The standard browser never receives the server capability. */
+  /** Default browser posture; a separately paired operator uses native session readiness. */
   standardClientAuthorized: false;
   ready: boolean;
 };
@@ -63,11 +63,13 @@ export function computeInstancePin(env: NodeJS.ProcessEnv = process.env): Instan
 export const INSTANCE_PIN: InstancePin = computeInstancePin(process.env);
 
 /**
- * The one render-time mutation readiness contract for the standard browser.
+ * Default render-time mutation readiness for the unpaired public browser.
  * The public-alpha UI never receives the server's out-of-band capability, so
  * it remains projection-only even when an operator configures the unsupported
  * local API extension. Direct extension callers authenticate separately at
- * the request gate in console-mutations.ts.
+ * the request gate in console-mutations.ts. Explicitly paired operators use
+ * operatorSessionReadiness and a separate independently verified request gate;
+ * this function never turns on legacy/bespoke controls for that connection.
  */
 export function computeConsoleMutationReadiness(
   flagEnabled: boolean,

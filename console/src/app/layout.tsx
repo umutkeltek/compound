@@ -6,6 +6,7 @@ import { RefreshControl } from "@/components/RefreshControl";
 import { SystemBanner } from "@/components/SystemBanner";
 import { AskCompound } from "@/components/AskCompound";
 import { ExperienceBar } from "@/components/ExperienceBar";
+import { OperatorConnection } from "@/components/OperatorConnection";
 import { Breadcrumb, ThemeToggle } from "@/components/kit";
 
 export const metadata: Metadata = {
@@ -43,6 +44,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 <div className="min-w-0"><Breadcrumb /></div>
                 <div className="hidden min-w-0 2xl:block"><SystemBanner /></div>
                 <div className="ml-auto flex shrink-0 items-center gap-1 sm:gap-2">
+                  <OperatorConnection />
                   <RefreshControl responsive />
                   <ThemeToggle responsive />
                 </div>

@@ -27,10 +27,10 @@ import {
   weeklyChange,
 } from "@/lib/briefing";
 import { arr, HEAVY_PROJECTION_TIMEOUT_MS, readExecutors, readProjection, str } from "@/lib/compound";
-import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { countAgents, countInProgress, waitingOnYou } from "@/lib/counts";
 import { depthShows, requestDepth } from "@/lib/depth";
-import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
+import { cookies } from "next/headers";
+import { operatorSessionReadiness } from "@/lib/operator-session";
 import { moveTypeGroup, summarizeMoveTypeMix } from "@/lib/move-mix";
 import { agentNameFor } from "@/lib/plain-words";
 import { latestProofBackedChange } from "@/representation";
@@ -93,7 +93,7 @@ export default async function Briefing() {
   const workbench = workbenchRead.value;
 
   const now = new Date();
-  const mutationsEnabled = computeConsoleMutationReadiness(consoleMutationsEnabled()).ready;
+  const mutationsEnabled = await operatorSessionReadiness((await cookies()).toString());
 
   // Attention: ONE projection. Groups arrive leverage-sorted; never re-ranked here.
   const needsYouGroups = attentionNeedsYouGroups(attention);
@@ -208,7 +208,7 @@ export default async function Briefing() {
       <section data-depth-min="investigate">
         <SectionLabel>Next work an agent can finish</SectionLabel>
         <Gate read={workbenchRead} label="open work">
-          <ContinueCard model={continueModel} mutationsReady={mutationsEnabled} />
+          <ContinueCard model={continueModel} mutationsReady={false} />
         </Gate>
       </section>
 

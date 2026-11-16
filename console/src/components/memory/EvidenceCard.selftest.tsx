@@ -45,8 +45,9 @@ export function runEvidenceCardRenderSelfTest(): { ok: boolean; details: string[
     });
     const html = renderToStaticMarkup(createElement(EvidenceCard, { candidate }));
     const visible = html.slice(0, html.indexOf("<details"));
+    const visibleText = visible.replace(/<[^>]*>/g, "");
     push(checks, "closed-card-keeps-record-identifiers-in-details",
-      !visible.includes("cand_fixture") && !visible.includes("paid_invoice"), visible);
+      !visibleText.includes("cand_fixture") && !visibleText.includes("paid_invoice"), visible);
     push(checks, "closed-card-explains-evidence-without-queue-machinery",
       visible.includes("Source record") && !visible.includes("decision reference") && !visible.includes("review queue"), visible);
     push(

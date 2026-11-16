@@ -6,9 +6,9 @@ import { PendingRefresh } from "@/components/PendingRefresh";
 import { attentionNeedsYouGroups, readAttention, type AttentionGroup } from "@/lib/attention";
 import { arr, HEAVY_PROJECTION_TIMEOUT_MS, num, readProjection, str, type Json, type LiveRead, type ProjectionStatus } from "@/lib/compound";
 import { ago } from "@/lib/time";
-import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { countDecisions, type DecisionCount, unit, waitingOnYou } from "@/lib/counts";
-import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
+import { cookies } from "next/headers";
+import { operatorSessionReadiness } from "@/lib/operator-session";
 import { buildDecideGroups, type DecideAct, type DecideGroup, type ScopedDecisionEvidence } from "@/lib/decide-model";
 import { ATTENTION_SOURCED_GENERIC_AREAS } from "@/lib/generic-actions";
 import { areaOf, bandOf, enrichAttentionGroups, externalReviewRows, groupsForBand } from "@/lib/review-data";
@@ -185,7 +185,7 @@ export default async function Decide({
   const { read: attentionRead, report: attention } = attentionProjection;
   const waiting = waitingOnYou(attention);
   const itemByID = buildItemIndex(reviews);
-  const mutationsEnabled = computeConsoleMutationReadiness(consoleMutationsEnabled()).ready;
+  const mutationsEnabled = await operatorSessionReadiness((await cookies()).toString());
   const requestedKey = Array.isArray(params.decision) ? str(params.decision[0]) : str(params.decision);
 
   const externalRows = externalReviewRows(reviews);
@@ -266,6 +266,7 @@ export default async function Decide({
           right={<ReadChip read={attentionRead} />}
         />
       )}
+      {panelDetailOpen ? null : <p className="max-w-read text-sm text-muted">Review the recommendation and what each action changes. <Link href="/work?lens=table&filter=blocked" className="font-semibold text-work hover:underline">Open blocked work →</Link> <Link href="/memory#memory-review" className="ml-3 font-semibold text-work hover:underline">Review proposed memories →</Link></p>}
 
       <section id="decision-queue" tabIndex={-1} className="scroll-mt-6 flex flex-col gap-3" aria-label="Decisions">
         {attentionKnown ? <ReadFailedBanner read={attentionRead} label="what waits for you" /> : null}
@@ -327,7 +328,7 @@ export default async function Decide({
               ))}
             </ul>
           ) : (
-            <p className="text-xs text-faint">Nothing is filed yet.</p>
+            <p className="text-xs text-faint">Nothing is filed yet. <Link href="/work" className="font-semibold text-work hover:underline">Follow current work →</Link></p>
           )}
           {filedKind && reviewsKnown ? (
             <div className="mt-4">
@@ -351,7 +352,7 @@ export default async function Decide({
           ) : null}
         </div>
       </details>
-      <details className="text-xs text-muted"><summary className="cursor-pointer">Queue status & browser access</summary><p className="mt-2 max-w-read">{standingSentence(counted, attentionRead.ageMs)} This browser is read-only. Use the owner links and commands to continue with Compound.</p></details>
+      <details className="text-xs text-muted"><summary className="cursor-pointer">Queue status & browser access</summary><p className="mt-2 max-w-read">{standingSentence(counted, attentionRead.ageMs)} {mutationsEnabled ? "Actions appear only when their current owner permits them." : "Recording actions is unavailable in this browser. You can still inspect evidence and related work."} <Link href="/settings" className="font-semibold text-work hover:underline">Check console access →</Link></p></details>
     </div>
   );
 }

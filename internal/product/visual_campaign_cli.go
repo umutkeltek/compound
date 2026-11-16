@@ -9,7 +9,7 @@ import (
 )
 
 func CampaignUsage() string {
-	return "campaign prompts|check <campaign.json> | campaign measure <campaign.json> <observation.json> [--signal]"
+	return "campaign prompts|check <campaign.json> | campaign measure <campaign.json> <observation.json> [--signal] | " + campaignViewUsage
 }
 
 // RunCampaignCLI is read-only. JSON results are work artifacts; preparation does

@@ -2,6 +2,8 @@ import { ago } from "@/lib/time";
 import { IdRef } from "@/components/kit";
 import type { MemoryCandidate } from "@/lib/memory-data";
 import { buildEvidenceCardObservation, evidenceProvenanceGapNotice } from "@/lib/evidence-card";
+import Link from "next/link";
+import { EvidenceReference } from "./EvidenceReference";
 
 /*
  * A source-evidence row (knowledge imports / extractions). These stay OUT of
@@ -47,6 +49,7 @@ export function EvidenceCard({ candidate }: { candidate: MemoryCandidate }) {
       </div>
 
       <p className="mt-2 text-2xs leading-relaxed text-muted">{view.note}</p>
+      <Link href={`/map/lineage/${encodeURIComponent(candidate.id)}`} className="mt-2 inline-flex text-xs font-semibold text-work hover:underline">Trace this record and its uses →</Link>
 
       {view.provenanceMissing ? (
         <p className="mt-1 text-2xs leading-relaxed text-crit">{evidenceProvenanceGapNotice}</p>
@@ -61,8 +64,8 @@ export function EvidenceCard({ candidate }: { candidate: MemoryCandidate }) {
           {view.refs.length > 0 ? (
             <ul className="mt-1 flex flex-col gap-0.5">
               {view.refs.map((ref) => (
-                <li key={ref} className="mono break-all text-2xs text-faint">
-                  {ref}
+                <li key={ref}>
+                  <EvidenceReference reference={ref} />
                 </li>
               ))}
             </ul>

@@ -45,6 +45,11 @@ func inspectCampaignImage(base string, file CampaignFile, limit int64) (campaign
 	if int64(len(b)) > limit {
 		return out, fmt.Errorf("image grew past size limit")
 	}
+	return inspectCampaignImageBytes(b, file)
+}
+
+func inspectCampaignImageBytes(b []byte, file CampaignFile) (campaignImage, error) {
+	var out campaignImage
 	h := sha256.Sum256(b)
 	if hex.EncodeToString(h[:]) != file.SHA256 {
 		return out, fmt.Errorf("image bytes changed: SHA256 mismatch")
@@ -90,8 +95,14 @@ type CampaignCheck struct {
 }
 
 func CheckVisualCampaign(c VisualCampaign, base string, now time.Time) (CampaignCheck, error) {
+	return checkVisualCampaign(c, now, func(file CampaignFile, limit int64) (campaignImage, error) {
+		return inspectCampaignImage(base, file, limit)
+	})
+}
+
+func checkVisualCampaign(c VisualCampaign, now time.Time, inspect func(CampaignFile, int64) (campaignImage, error)) (CampaignCheck, error) {
 	out := CampaignCheck{CampaignSHA256: campaignDigest(c), Issues: []string{}, ReviewBasis: "Dimensions, file integrity and attachment identity are checked mechanically. Taste, translation, UI truth, native detail and platform-specific content rules require the named evidence-backed reviewer attestations; they are not inferred from resolution."}
-	packet, err := CompileCampaignPrompts(c, base, now)
+	packet, err := compileCampaignPrompts(c, now, inspect)
 	if err != nil {
 		return out, err
 	}
@@ -117,7 +128,7 @@ func CheckVisualCampaign(c VisualCampaign, base string, now time.Time) (Campaign
 		if limit > 64<<20 {
 			limit = 64 << 20
 		}
-		im, e := inspectCampaignImage(base, a.File, limit)
+		im, e := inspect(a.File, limit)
 		if e != nil {
 			issue(e.Error())
 		} else if im.Width != p.Export.Width || im.Height != p.Export.Height || im.Format != p.Export.Format || (!p.Export.AllowAlpha && im.Alpha) {

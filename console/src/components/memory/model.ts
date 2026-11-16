@@ -1,6 +1,7 @@
 import { str } from "@/lib/compound";
 import { specFor, type DecisionFormSpec } from "@/lib/decision-registry";
 import type { MemoryCandidate } from "@/lib/memory-data";
+import { memoryStatement, memoryState } from "./presentation";
 
 /*
  * Server-only view-model for the Memory adjudication queue. It CONSUMES the
@@ -34,6 +35,11 @@ export type AdjudicationCardModel = {
   kindLabel: string;
   stateLabel: string;
   approveLabel: string;
+  fullStatement: string;
+  subject: string;
+  relation: string;
+  sourceLabel: string;
+  whyReview: string;
 };
 
 type Presentation = { kindLabel: string; approveLabel: string; defaultState: string };
@@ -41,8 +47,8 @@ type Presentation = { kindLabel: string; approveLabel: string; defaultState: str
 /** Per-area card chrome. glyph comes from the registry spec; these are the
  * dual-encoded words the operator reads (the affirmative verb + the eyebrow). */
 const PRESENTATION: Record<string, Presentation> = {
-  "memory-adjudicate": { kindLabel: "Memory · adjudicate", approveLabel: "promote", defaultState: "proposed" },
-  "standing-law-candidate": { kindLabel: "Standing law · candidate", approveLabel: "make it law", defaultState: "parked" },
+  "memory-adjudicate": { kindLabel: "Proposed memory", approveLabel: "accept for recall", defaultState: "proposed" },
+  "standing-law-candidate": { kindLabel: "Proposed standing rule", approveLabel: "make it a standing rule", defaultState: "parked" },
 };
 
 export function buildAdjudicationModel(
@@ -61,21 +67,40 @@ export function buildAdjudicationModel(
     ? spec.previewArgv(candidate)
     : options.find((o) => o.value === defaultOption)?.argv ?? null;
   const presentation = PRESENTATION[area] ?? PRESENTATION[AREA];
+  const statement = memoryStatement(candidate.object);
+  const qualifiers = (candidate.qualifiers ?? {}) as Record<string, unknown>;
+  const source = str(qualifiers.source);
+  const sourceLabel = ({ knowledge_page: "Recorded page", knowledge_import: "Imported source", knowledge_extraction: "Extracted source", decision_ledger: "Decision record" } as Record<string, string>)[source] || (source ? "Recorded source" : "Source description unavailable");
+  const refs = [...new Set([
+    ...pl.evidence ?? [],
+    ...(Array.isArray(candidate.evidence_refs) ? candidate.evidence_refs.filter((r): r is string => typeof r === "string") : []),
+    str(qualifiers.source_ref),
+  ].filter((ref) => ref && ref !== source))];
 
   return {
     id: candidate.id,
-    headline: pl.headline || candidate.id,
-    body: pl.body,
+    headline: statement.summary,
+    body: area === "standing-law-candidate" ? pl.body : "",
     chips: (pl.chips ?? []).map((c) => ({ label: c.label, tone: String(c.tone) })),
-    evidence: pl.evidence ?? [],
-    consequences: pl.consequences ?? null,
+    evidence: refs,
+    consequences: area === "standing-law-candidate" ? pl.consequences ?? null : {
+      approve: "Agents may recall this statement as durable memory when its scope and visibility allow it.",
+      hold: "It remains evidence for later and is not added to agent recall.",
+    },
     formSpec: { area: spec.area, options, fields: spec.fields, defaultOption },
     argvPreview,
     seed: str(candidate.entity) || candidate.id,
     createdAt: str(candidate.created_at),
     glyph: spec.glyph,
     kindLabel: presentation.kindLabel,
-    stateLabel: str(candidate.state) || presentation.defaultState,
+    stateLabel: memoryState(str(candidate.state) || presentation.defaultState),
     approveLabel: presentation.approveLabel,
+    fullStatement: statement.full,
+    subject: str(candidate.entity),
+    relation: str(candidate.predicate),
+    sourceLabel,
+    whyReview: area === "standing-law-candidate"
+      ? "Decide whether this recorded decision should guide future agents as a standing rule."
+      : "Decide whether future agents should rely on this statement. It has not been accepted into recall by this proposal.",
   };
 }

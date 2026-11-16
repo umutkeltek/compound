@@ -257,7 +257,7 @@ export function runDecideDecisionFeedbackSelfTest(): SelfTestResult {
   // The face's own state label, shown through the plain-words mapping.
     if (!/StateBadge state=\{group\.face\.state\} label=\{plainDecisionState\(group\.face\.stateLabel\)\}/.test(src)) {
       fail("Decision face does not render the shared state vocabulary from group.face");
-    } else if (!/Owner<\/span>[\s\S]*group\.face\.owner/.test(src)) {
+} else if (!src.includes("<DecisionContext group={group} />") || !/Current owner[\s\S]*group\.face\.owner/.test(read("components/decide/DecisionContext.tsx"))) {
       fail("Decision face does not expose the human owner before technical evidence");
     } else if (!/FreshnessChip[\s\S]*group\.face\.freshness\.generatedAt/.test(src)) {
       fail("Decision face does not expose projection freshness in its primary header");

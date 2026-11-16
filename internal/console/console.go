@@ -68,18 +68,19 @@ const (
 // process. CapabilityRequired is reported so the operator can see *that* a
 // capability was required, but the value itself never appears.
 type LaunchPlan struct {
-	SchemaVersion      string            `json:"schema_version"`
-	GeneratedAt        string            `json:"generated_at"`
-	Mode               string            `json:"mode"`
-	Lifecycle          string            `json:"lifecycle"`
-	ConsoleDir         string            `json:"console_dir"`
-	Command            []string          `json:"command"`
-	Env                map[string]string `json:"env"`
-	MutationsEnabled   bool              `json:"mutations_enabled"`
-	PrivateFallbacks   bool              `json:"private_fallbacks"`
-	CapabilityRequired bool              `json:"capability_required"`
-	DryRun             bool              `json:"dry_run"`
-	validated          bool
+	SchemaVersion          string            `json:"schema_version"`
+	GeneratedAt            string            `json:"generated_at"`
+	Mode                   string            `json:"mode"`
+	Lifecycle              string            `json:"lifecycle"`
+	ConsoleDir             string            `json:"console_dir"`
+	Command                []string          `json:"command"`
+	Env                    map[string]string `json:"env"`
+	MutationsEnabled       bool              `json:"mutations_enabled"`
+	PrivateFallbacks       bool              `json:"private_fallbacks"`
+	CapabilityRequired     bool              `json:"capability_required"`
+	OperatorSessionEnabled bool              `json:"operator_session_enabled,omitempty"`
+	DryRun                 bool              `json:"dry_run"`
+	validated              bool
 }
 
 // MarshalJSON makes capability removal part of the live serialization path,
@@ -312,10 +313,14 @@ func ValidateProductionBuild(consoleDir string) error {
 // stripped before the exact validated posture is added.
 func LaunchEnv(plan LaunchPlan) []string {
 	blockedAmbient := map[string]struct{}{
-		CapabilityEnv:       {},
-		LegacySessionEnv:    {},
-		MutationsEnv:        {},
-		PrivateFallbacksEnv: {},
+		OperatorSessionEnv:   {},
+		OperatorSocketEnv:    {},
+		OperatorBrokerKeyEnv: {},
+		OperatorInstanceEnv:  {},
+		CapabilityEnv:        {},
+		LegacySessionEnv:     {},
+		MutationsEnv:         {},
+		PrivateFallbacksEnv:  {},
 	}
 	env := make([]string, 0, len(os.Environ())+len(plan.Env)+3)
 	for _, entry := range os.Environ() {
@@ -357,36 +362,38 @@ func LaunchEnv(plan LaunchPlan) []string {
 // jsonMarshalNoCapability is the implementation behind LaunchPlan.MarshalJSON.
 func jsonMarshalNoCapability(p LaunchPlan) ([]byte, error) {
 	type envAlias struct {
-		SchemaVersion      string            `json:"schema_version"`
-		GeneratedAt        string            `json:"generated_at"`
-		Mode               string            `json:"mode"`
-		Lifecycle          string            `json:"lifecycle"`
-		ConsoleDir         string            `json:"console_dir"`
-		Command            []string          `json:"command"`
-		Env                map[string]string `json:"env"`
-		MutationsEnabled   bool              `json:"mutations_enabled"`
-		PrivateFallbacks   bool              `json:"private_fallbacks"`
-		CapabilityRequired bool              `json:"capability_required"`
-		DryRun             bool              `json:"dry_run"`
+		SchemaVersion          string            `json:"schema_version"`
+		GeneratedAt            string            `json:"generated_at"`
+		Mode                   string            `json:"mode"`
+		Lifecycle              string            `json:"lifecycle"`
+		ConsoleDir             string            `json:"console_dir"`
+		Command                []string          `json:"command"`
+		Env                    map[string]string `json:"env"`
+		MutationsEnabled       bool              `json:"mutations_enabled"`
+		PrivateFallbacks       bool              `json:"private_fallbacks"`
+		CapabilityRequired     bool              `json:"capability_required"`
+		OperatorSessionEnabled bool              `json:"operator_session_enabled,omitempty"`
+		DryRun                 bool              `json:"dry_run"`
 	}
 	env := make(map[string]string, len(p.Env))
 	for k, v := range p.Env {
-		if k == CapabilityEnv {
+		if k == CapabilityEnv || k == LegacySessionEnv || k == OperatorBrokerKeyEnv || k == OperatorSocketEnv || k == OperatorInstanceEnv {
 			continue
 		}
 		env[k] = v
 	}
 	return json.Marshal(envAlias{
-		SchemaVersion:      p.SchemaVersion,
-		GeneratedAt:        p.GeneratedAt,
-		Mode:               p.Mode,
-		Lifecycle:          p.Lifecycle,
-		ConsoleDir:         p.ConsoleDir,
-		Command:            p.Command,
-		Env:                env,
-		MutationsEnabled:   p.MutationsEnabled,
-		PrivateFallbacks:   p.PrivateFallbacks,
-		CapabilityRequired: p.CapabilityRequired,
-		DryRun:             p.DryRun,
+		SchemaVersion:          p.SchemaVersion,
+		GeneratedAt:            p.GeneratedAt,
+		Mode:                   p.Mode,
+		Lifecycle:              p.Lifecycle,
+		ConsoleDir:             p.ConsoleDir,
+		Command:                p.Command,
+		Env:                    env,
+		MutationsEnabled:       p.MutationsEnabled,
+		PrivateFallbacks:       p.PrivateFallbacks,
+		CapabilityRequired:     p.CapabilityRequired,
+		OperatorSessionEnabled: p.OperatorSessionEnabled,
+		DryRun:                 p.DryRun,
 	})
 }

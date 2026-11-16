@@ -66,6 +66,10 @@ func cmdConsole(args []string) {
 		cmdConsoleStatus(args[1:])
 		return
 	}
+	if args[0] == "pair" {
+		cmdConsolePair(args[1:])
+		return
+	}
 	lifecycle := consoleLifecycleDev
 	if args[0] == consoleLifecycleDev || args[0] == consoleLifecycleBuild || args[0] == consoleLifecycleServe {
 		lifecycle = args[0]
@@ -73,6 +77,7 @@ func cmdConsole(args []string) {
 	}
 	operator := false
 	mutations := false
+	operatorSession := false
 	privateFallbacks := false
 	dryRun := false
 	jsonOut := false
@@ -84,6 +89,8 @@ func cmdConsole(args []string) {
 			operator = true
 		case "--mutations":
 			mutations = true
+		case "--operator-session":
+			operatorSession = true
 		case "--private-fallbacks":
 			privateFallbacks = true
 		case "--dry-run":
@@ -113,9 +120,19 @@ func cmdConsole(args []string) {
 		os.Exit(1)
 	}
 	plan, err := buildConsoleLifecycleLaunchPlan(lifecycle, consoleDirFlag, mutations, privateFallbacks, dryRun)
+	if operatorSession && !mutations {
+		plan, err = console.BuildOperatorSessionLaunchPlan(lifecycle, consoleDirFlag, privateFallbacks, dryRun)
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
+	}
+	if operatorSession {
+		plan, err = console.EnableOperatorSession(plan)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 	}
 	if jsonOut {
 		printJSON(plan)
@@ -266,7 +283,7 @@ func reserveConsolePort(address string) (net.Listener, error) {
 }
 
 func consoleUsage() string {
-	return "usage: compound console [dev|build|serve] --operator [--require-explicit-home] [--console-dir DIR] [--mutations] [--private-fallbacks] [--dry-run] [--json] | compound console status [--json]"
+	return "usage: compound console [dev|build|serve] --operator [--require-explicit-home] [--console-dir DIR] [--mutations] [--operator-session] [--private-fallbacks] [--dry-run] [--json] | compound console status [--json] | compound console pair [--out NEW_PRIVATE_FILE]"
 }
 
 func consoleCommandSummary(plan consoleLaunchPlan) string {
@@ -294,6 +311,17 @@ func runConsoleSupervisedCommand(plan consoleLaunchPlan, command []string, signa
 	cmd := exec.Command(command[0], command[1:]...)
 	cmd.Dir = plan.ConsoleDir
 	cmd.Env = consoleLaunchEnv(plan)
+	if plan.OperatorSessionEnabled {
+		if _, err := console.EnableOperatorSession(plan); err != nil {
+			return err
+		}
+		broker, err := console.StartOperatorSessionBroker(plan.Env["COMPOUND_HOME"])
+		if err != nil {
+			return err
+		}
+		defer broker.Close()
+		cmd.Env = broker.ChildEnv(cmd.Env)
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin

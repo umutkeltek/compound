@@ -1,7 +1,10 @@
 "use client";
 
+import { isOperatorActionSupported } from "@/lib/operator-action";
+import { fetchWithOperatorSession } from "@/lib/operator-session-client";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import Link from "next/link";
 
 import { CliCaption } from "@/components/CopyCmd";
 import { Button } from "@/components/kit/Button";
@@ -43,14 +46,14 @@ export function HeadlineAct({
     ? authoritySummarySegments(authority).join(" · ")
     : "Runs the current owner action through Compound; the adapter revalidates the target and policy before execution.";
 
-  if (!mutationsEnabled) {
+  if (!mutationsEnabled || !isOperatorActionSupported(buildHeadlineActionRequest(act, "", "direct"))) {
     // Honest fallback: no live button when mutations are gated off — the exact
     // command to run, and the seat in Decide where it's governed.
     return (
       <div className="flex flex-col items-start gap-1.5">
-        <span className="rounded-md border border-hair bg-soft px-3 py-2 text-xs font-semibold text-muted">
-          Terminal-only — enable the operator console to act
-        </span>
+        <Link href="/reviews" className="rounded-md border border-hair bg-soft px-3 py-2 text-xs font-semibold text-muted hover:underline">
+          Open Decisions to review the available next step →
+        </Link>
         <CliCaption argv={preview} />
       </div>
     );
@@ -61,7 +64,7 @@ export function HeadlineAct({
     setMessage(null);
     const payload = buildHeadlineActionRequest(act, rationale, kind);
     try {
-      const response = await fetch("/api/decision/execute", {
+      const response = await fetchWithOperatorSession("/api/decision/execute", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),

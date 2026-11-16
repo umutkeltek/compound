@@ -43,10 +43,10 @@ export function MemoryGraphPanel({
             ✦
           </span>
           <span className="text-md font-semibold text-ink">Memory graph</span>
-          <span className="text-xs text-faint">the dense web — claims linked by supports / contradicts / supersedes</span>
+          <span className="text-xs text-faint">See what supports or contradicts a statement</span>
         </span>
         <span className="mono shrink-0 text-2xs text-faint">
-          {seed ? (graph?.found ? "live" : "no match") : "seed to load"}
+          {seed ? (graph?.found ? "Relationships found" : "No match") : "Search to explore"}
         </span>
       </summary>
 
@@ -72,8 +72,7 @@ export function MemoryGraphPanel({
 
         {!seed ? (
           <div className="rounded-md border border-dashed border-hair bg-page px-4 py-10 text-center text-sm text-muted">
-            Seed a claim or entity to see its web. Every belief is a node; typed edges show what
-            supports, contradicts, or supersedes it.
+            Search for a claim or subject above, or choose “Show in graph” on a proposal. The graph shows supporting, conflicting, and replaced statements.
           </div>
         ) : graph?.found ? (
           <div className="flex flex-col gap-2">

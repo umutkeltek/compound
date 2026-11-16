@@ -292,13 +292,19 @@ func validateCampaignBrief(c VisualCampaign, now time.Time) error {
 }
 
 func CompileCampaignPrompts(c VisualCampaign, base string, now time.Time) (CampaignPromptPacket, error) {
+	return compileCampaignPrompts(c, now, func(file CampaignFile, limit int64) (campaignImage, error) {
+		return inspectCampaignImage(base, file, limit)
+	})
+}
+
+func compileCampaignPrompts(c VisualCampaign, now time.Time, inspect func(CampaignFile, int64) (campaignImage, error)) (CampaignPromptPacket, error) {
 	var out CampaignPromptPacket
 	if err := validateCampaignBrief(c, now); err != nil {
 		return out, err
 	}
 	refs := map[string]CampaignReference{}
 	for _, r := range c.References {
-		if _, err := inspectCampaignImage(base, r.File, 64<<20); err != nil {
+		if _, err := inspect(r.File, 64<<20); err != nil {
 			return out, fmt.Errorf("reference %s: %w", r.ID, err)
 		}
 		refs[r.ID] = r

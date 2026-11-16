@@ -186,6 +186,14 @@ func cmdProduct(args []string) {
 		return
 	}
 	if args[0] == "campaign" {
+		if len(args) > 1 && args[1] == "view" {
+			homePath, err := home.Resolve("")
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "product campaign view: home is unavailable")
+				os.Exit(1)
+			}
+			os.Exit(product.RunCampaignViewCLI(args[2:], homePath, os.Stdout, os.Stderr, time.Now()))
+		}
 		os.Exit(product.RunCampaignCLI(args[1:], os.Stdout, os.Stderr, time.Now()))
 	}
 	if args[0] == "reports" {

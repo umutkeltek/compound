@@ -8,6 +8,7 @@ import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { loadMemoryCountsRead, loadProposedMemorySplit, loadStandingLawCandidatesRead } from "@/lib/memory-data";
 import type { ProjectionRead } from "@/lib/compound";
 import { loadMemoryEgoGraph, type EgoGraph } from "@/lib/map/memory-graph";
+import Link from "next/link";
 
 export const dynamic = "force-dynamic";
 
@@ -22,11 +23,11 @@ export const dynamic = "force-dynamic";
  */
 
 const STAT_STATES: { key: string; label: string }[] = [
-  { key: "promoted", label: "Promoted" },
-  { key: "parked", label: "Parked" },
+  { key: "promoted", label: "Accepted for recall" },
+  { key: "parked", label: "Set aside" },
   { key: "rejected", label: "Rejected" },
-  { key: "no_promote", label: "No-promote" },
-  { key: "proposed", label: "Proposed" },
+  { key: "no_promote", label: "Kept out of recall" },
+  { key: "proposed", label: "Awaiting review" },
 ];
 
 function MemoryReadNotice({ label, source, read }: { label: string; source: string; read: ProjectionRead }) {
@@ -45,6 +46,7 @@ function MemoryReadNotice({ label, source, read }: { label: string; source: stri
         <p>Source generated: {read.generatedAt ?? "unknown"}</p>
         {read.error ? <p className="mono">{read.error}</p> : null}
       </details>
+      <p className="mt-2 text-xs text-muted">The source read must recover before this list can confirm what needs review. <Link className="font-semibold text-work hover:underline" href="/settings">Check connection and access →</Link></p>
     </div>
   );
 }
@@ -96,8 +98,13 @@ export default async function Memory({
         }
       />
       <p className="text-sm text-muted" style={{ maxWidth: "var(--read-max)" }}>
-        Review proposed memories before Compound uses them. Supporting evidence stays available below.
+        Decide what future agents may rely on. A proposed statement stays out of recall until accepted; setting it aside preserves it for later.
       </p>
+      <nav aria-label="Memory next steps" className="flex flex-wrap gap-x-5 gap-y-2 text-xs font-semibold text-work">
+        <Link href="/standing-law" className="hover:underline">Read standing rules →</Link>
+        <Link href="/sources" className="hover:underline">Manage evidence sources →</Link>
+        <Link href="/reviews" className="hover:underline">Review decisions →</Link>
+      </nav>
 
       {/* 1 — adjudication queue (the operator's gate) */}
       <section id="memory-review" tabIndex={-1} className="scroll-mt-6 flex flex-col gap-3">
@@ -117,7 +124,7 @@ export default async function Memory({
           </div>
         ) : queueLive ? (
           <EmptyState>
-            No proposed memories need review. You can explore the stored evidence below.
+            No proposed memories need review. <Link href="/standing-law" className="font-semibold text-work hover:underline">Read the rules already guiding agents →</Link>
           </EmptyState>
         ) : null}
       </section>
@@ -130,8 +137,8 @@ export default async function Memory({
         <SectionHeader
           tone="memory"
           icon={<DatabaseIcon />}
-          label="Stored memories"
-          sub="How previous proposals were handled"
+          label="Proposal history"
+          sub="Counts of candidate records by their recorded state. Accepted records may be recalled when relevant; set-aside records are evidence for later."
         />
         <MemoryReadNotice label="memory counts" source="compound memory candidates --json" read={countRead.read} />
         <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-hair bg-hair sm:grid-cols-5">
@@ -159,7 +166,7 @@ export default async function Memory({
             ))}
           </div>
         ) : proposedRead.status === "live" ? (
-          <EmptyState>No new supporting evidence has been recorded.</EmptyState>
+          <EmptyState>No new supporting evidence has been recorded. <Link href="/sources" className="font-semibold text-work hover:underline">Check evidence sources →</Link></EmptyState>
         ) : null}
         {sourceEvidence.length > 24 ? (
           <p className="mono text-2xs text-faint">+{sourceEvidence.length - 24} more not shown.</p>

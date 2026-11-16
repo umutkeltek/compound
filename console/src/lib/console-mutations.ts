@@ -59,8 +59,8 @@ function capabilityBlockedResponse(request: Request, label: string): Response | 
   return null;
 }
 
-/** API-extension flag only. Standard browser readiness adds a permanent
- * projection-only client boundary in instance-pin.ts. */
+/** Mutation transport flag. Default browser readiness remains projection-only;
+ * a native operator session authenticates through its separate request gate. */
 export function consoleMutationsEnabled(): boolean {
   return process.env[CONSOLE_MUTATIONS_ENV] === "1";
 }

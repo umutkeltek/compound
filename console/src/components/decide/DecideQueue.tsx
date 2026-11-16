@@ -1,4 +1,7 @@
 "use client";
+
+import { isOperatorActionSupported } from "@/lib/operator-action";
+import { fetchWithOperatorSession } from "@/lib/operator-session-client";
 import { AgentHandoff } from "@/components/AgentHandoff";
 
 import * as Dialog from "@radix-ui/react-dialog";
@@ -26,6 +29,8 @@ import { ownerUnavailableMessage } from "@/lib/glossary";
 import { humanizeProductId } from "@/lib/app-identity";
 import { plainArea, plainDecisionState, plainNextStep, plainReach, plainReason, plainText, plainWhy, productTitle, standingLine } from "@/lib/plain-words";
 import { GovernedAct, type ExecuteResult } from "./GovernedAct";
+import { DecisionContext } from "./DecisionContext";
+import { EvidenceReference } from "@/components/memory/EvidenceReference";
 
 /** Decide's two lists, in plain words (the split itself is decide-members' face-state rule). */
 const SECTION_COPY: Record<"act_now" | "needs_context", { label: string; description: string }> = {
@@ -324,6 +329,7 @@ function EnumerableApply({
   const [completed, setCompleted] = useState<Set<string>>(() => new Set());
 
   const included = remainingDecideMembers(members, excluded, completed);
+  const sessionActionsReady = included.every((member) => isOperatorActionSupported(buildEnumerableActionRequest(area, member, false, "")));
   // Operator-input areas label the confirm textarea from the shared spec
   // (Rationale for review-record areas; Expected effect for hypothesis
   // approval) instead of hardcoding the rationale wording.
@@ -339,7 +345,7 @@ function EnumerableApply({
   const authorityFacesComplete = selectedAuthorityFaces !== null;
 
   const apply = useCallback(async (operatorRationale: string) => {
-    if (!mutationsEnabled || running || included.length === 0 || !authorityFacesComplete) return;
+    if (!mutationsEnabled || running || included.length === 0 || !authorityFacesComplete || !sessionActionsReady) return;
     if (requiresRationale && !operatorRationale.trim()) {
       setError(RATIONALE_REQUIRED_MESSAGE);
       return;
@@ -352,7 +358,7 @@ function EnumerableApply({
     for (let i = 0; i < included.length; i++) {
       const member = included[i];
       try {
-        const response = await fetch("/api/decision/execute", {
+        const response = await fetchWithOperatorSession("/api/decision/execute", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(buildEnumerableActionRequest(
@@ -385,17 +391,17 @@ function EnumerableApply({
       setOpen(false);
       router.refresh();
     }
-  }, [actionCopy.past, area, authorityFacesComplete, included, mutationsEnabled, requiresConfirmation, requiresRationale, running, router]);
+  }, [actionCopy.past, area, authorityFacesComplete, included, sessionActionsReady, mutationsEnabled, requiresConfirmation, requiresRationale, running, router]);
 
   const trigger = useCallback(() => {
-    if (!mutationsEnabled || running || included.length === 0 || !authorityFacesComplete) return;
+    if (!mutationsEnabled || running || included.length === 0 || !authorityFacesComplete || !sessionActionsReady) return;
     setError(null);
     if (requiresConfirmation) {
       setOpen(true);
       return;
     }
     void apply("");
-  }, [apply, authorityFacesComplete, included.length, mutationsEnabled, requiresConfirmation, running]);
+  }, [apply, authorityFacesComplete, included.length, sessionActionsReady, mutationsEnabled, requiresConfirmation, running]);
 
   return (
     <div className="flex flex-col gap-2">
@@ -443,7 +449,7 @@ function EnumerableApply({
       <div className="flex flex-wrap items-center gap-2">
         <Button
           variant="primary"
-          disabled={!mutationsEnabled || running || included.length === 0 || !authorityFacesComplete}
+          disabled={!mutationsEnabled || running || included.length === 0 || !authorityFacesComplete || !sessionActionsReady}
           onClick={trigger}
           title={mutationsEnabled ? undefined : "Launch via 'compound console --operator' to act from a pinned console."}
         >
@@ -695,8 +701,8 @@ function EvidencePanel({ group }: { group: DecideGroup }) {
             {evidence.sourceKind ? <span className="rounded-pill border border-hair bg-soft px-2 py-0.5 text-2xs text-faint">{evidence.sourceKind}</span> : null}
           </div>
           {evidence.summary ? <p className="text-xs leading-relaxed text-muted">{evidence.summary}</p> : null}
-          {evidence.ref ? <code className="mono break-all text-2xs text-faint">{evidence.ref}</code> : null}
-          {evidence.openCommand ? <div><CopyCmd cmd={evidence.openCommand} compact /></div> : null}
+          {evidence.ref ? <EvidenceReference reference={evidence.ref} /> : null}
+          {evidence.openCommand ? <details className="text-xs text-muted"><summary className="cursor-pointer">Source command</summary><div className="mt-2"><CopyCmd cmd={evidence.openCommand} compact /></div></details> : null}
         </div>
       ))}
     </div>
@@ -721,7 +727,7 @@ function EvidencePanel({ group }: { group: DecideGroup }) {
       </div>
       {group.evidence.length ? rows : (
         <p className="rounded-md border border-dashed border-hair px-3 py-6 text-center text-xs text-muted">
-          No other evidence is attached to this decision.
+          No other evidence is attached to this decision. <Link href="/sources" className="font-semibold text-work hover:underline">Check evidence sources →</Link>
         </p>
       )}
     </div>
@@ -876,13 +882,15 @@ function DecisionDetail({
          * is simply absent (no placeholder filler) when it is not. */}
         {group.consequences?.approve ? (
           <p className="mt-2 max-w-read text-sm leading-relaxed text-ink">
-            <span className="font-semibold text-good">If approved</span>
+            <span className="font-semibold text-good">What this action changes</span>
             <span className="text-faint"> → </span>
             {group.consequences.approve}
           </p>
         ) : null}
 
-        <p className="mt-2 text-sm text-muted">{plainWhy(operatorText(group.face.whyNow)) || "Review the evidence before choosing the next step."}</p>
+        <p className="mt-2 text-sm text-muted"><span className="font-semibold text-ink">Why now: </span>{plainWhy(operatorText(group.face.whyNow)) || "The review source did not record why this needs attention now. Inspect its evidence before acting."}</p>
+        <StandingText group={group} className="mt-2" />
+        <DecisionContext group={group} />
         <details className="mt-3 text-xs text-muted"><summary className="cursor-pointer">Status, owner & timing</summary>
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-2xs text-faint">
           <span className="inline-flex items-center gap-1.5">
@@ -893,7 +901,6 @@ function DecisionDetail({
               </time>
             ) : <strong className="font-semibold text-muted">Time unavailable</strong>}
           </span>
-          <span className="inline-flex items-center gap-1.5"><span>Owner</span><strong className="font-semibold text-muted">{group.face.owner}</strong></span>
           <span className="inline-flex items-center gap-1.5">
             <span>List read</span>
             <FreshnessChip generatedAt={group.face.freshness.generatedAt} source={group.face.freshness.source} />
@@ -1339,7 +1346,7 @@ export function DecideQueue({
               )}
             </div>
           ) : (
-            <div className="rounded-lg border border-dashed border-hair bg-page px-4 py-10 text-center text-sm text-muted">No decision matches this filter.</div>
+            <div className="rounded-lg border border-dashed border-hair bg-page px-4 py-10 text-center text-sm text-muted">No decision matches this filter. Clear the search above, or <Link href="/work?lens=table&filter=blocked" className="font-semibold text-work hover:underline">review blocked work →</Link></div>
           )}
         </div>
       </div>

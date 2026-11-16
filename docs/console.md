@@ -8,7 +8,9 @@
 > API-extension opt-in; even then, mutation routes require a same-origin
 > localhost request carrying an out-of-band 64-hex-character capability in
 > `x-compound-console-capability`. The standard browser never receives that
-> capability and remains projection-only. Direct private document reads are
+> capability and remains projection-only by default. An explicit local operator
+> connection can use a separate, bounded browser session as described below.
+> Direct private document reads are
 > unavailable; use a Compound-owned projection or scoped CLI read surface.
 
 ## Setup
@@ -69,6 +71,63 @@ in the `x-compound-console-capability` header on a same-origin loopback request.
 The standard browser never receives it; Compound issues no capability cookies
 and omits the value from launch JSON. Missing or malformed configuration fails
 closed. This extension is not needed for ordinary dashboard setup.
+
+### Optional local operator connection
+
+`--operator-session` adds a separate browser connection to an explicit dev or
+serve lifecycle. It does not change the default launch, policy decisions,
+standing grants, or confirmation requirements. It requires an explicit home
+and uses the native broker without a legacy capability:
+
+```sh
+compound console serve --operator --operator-session --require-explicit-home
+```
+
+Open **http://127.0.0.1:3777**. In an interactive terminal with the same explicit
+`COMPOUND_HOME`, run `compound console pair`, then enter its one-use code in
+**Connect operator**. The launcher never prints pairing codes into its service
+logs. Redirected pair output is refused; an explicit `--out NEW_PRIVATE_FILE`
+creates a new private file and refuses an existing file or symlink. Codes expire
+after five minutes, and at most three may be outstanding. Run `pair` again when
+a code expires or after disconnecting.
+
+The supervisor owns pairing and sessions behind a user-owned Unix socket. All
+Next workers share that owner, so concurrent code redemption has one winner.
+The browser receives a fresh opaque HttpOnly, SameSite=Strict cookie, never the
+server capability or broker credential. Each session is bound to the pinned home,
+exact loopback origin and supervisor instance, expires after one hour without
+extension, and can be revoked with **Disconnect**. Restarting the supervisor
+invalidates all codes and sessions. At most four sessions can be outstanding.
+An action already admitted before disconnect may finish; later admissions fail.
+
+The new browser transport accepts only current owner-issued `generic-action-v2`
+actions carrying their exact ActionIntent and authority revision. Every submit
+independently checks the live native session, exact Host and Origin, browser
+fetch context, CSRF token and fresh native action authority. A connected label
+alone grants no permission. Unsupported legacy forms, memory promotion, grant
+editing and unstamped controls remain unavailable through this connection.
+The existing capability extension keeps its separate authentication gate. Adding
+`--mutations` explicitly opts into that extension too and requires its configured
+capability; session-only launches strip any ambient legacy capability.
+
+The runtime socket directory and lock are owner-only temporary transport state;
+no capability or session descriptor is persisted. Shutdown removes the owned
+socket and destroys all in-memory authentication state, while retaining the
+empty lock primitive so a concurrent process cannot create a second owner by
+replacing its lockfile. A stopped or unreachable broker fails closed.
+
+### Work-attached visual campaigns
+
+App and work detail pages read visual campaigns attached to native WorkEnvelope
+artifacts. Discovery covers open and recent work, so a campaign remains findable
+after its work closes. Images are served through the campaign asset adapter,
+which checks their declared hashes and confines paths to the campaign's owned
+artifact directory. Missing or changed images remain explicit gaps.
+
+Campaign material stays draft when localization, release evidence or required
+tests are incomplete. A visible image or a completed generation run does not
+claim the app was released or the campaign improved results; those outcomes
+still need their own native evidence and checks.
 
 ## What you'll see
 
