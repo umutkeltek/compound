@@ -144,9 +144,14 @@ func TestGrowthStoreKpisEndOnNewestFinalDay(t *testing.T) {
 	// A no-sales day in the days index is final too, even with no series row.
 	writeASCSeries(t, home, salesKindsLine("900000001", growthDay(6), 1, 0, 0, 0, 1, &yes))
 	writeASCDaysIndex(t, home, `{"date":"`+growthDay(4)+`","status":"no_sales","final":true}`, `{"date":"`+growthDay(1)+`","status":"reported","final":false}`)
-	u = growthApp(t, buildGrowthT(t, home, growthOpts()), "product:example-app").Kpis["units"]
-	if u.LatestDate != growthDay(4) || *u.Value != 1 || u.DaysReported != 1 {
-		t.Fatalf("index final day: units = %+v, want the window to end on %s", u, growthDay(4))
+	app := growthApp(t, buildGrowthT(t, home, growthOpts()), "product:example-app")
+	u = app.Kpis["units"]
+	// The no-sales day is a known zero, so it counts as reported: day 6 (1) and day 4 (0).
+	if u.LatestDate != growthDay(4) || *u.Value != 1 || u.DaysReported != 2 {
+		t.Fatalf("index final day: units = %+v, want the window to end on %s with 2 days reported", u, growthDay(4))
+	}
+	if v := growthPoint(t, app.Series["units"], growthDay(4)); v == nil || *v != 0 {
+		t.Fatalf("no-sales day = %v, want 0", v)
 	}
 }
 

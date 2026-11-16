@@ -541,6 +541,7 @@ func loadGrowthWorld(homePath string, opts GrowthOptions) (*growthWorld, error) 
 	}
 	ascAppIDs := storeAppGroups(identity)
 	applyGrowthASCSales(ascSales, ascAppIDs, asOfStr)
+	applyGrowthASCSalesZeroDays(ascSales, salesDays, ascAppIDs, asOfStr)
 	ascFunnel, err := loadGrowthASCFunnelSeries(homePath)
 	if err != nil {
 		return nil, err

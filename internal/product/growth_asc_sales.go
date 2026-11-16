@@ -159,6 +159,100 @@ func growthStoreWindowEnd(rows []growthSalesRow, index []ascSalesDayIndexRow, as
 	return age
 }
 
+// growthSalesDayExists names the days index statuses that mean Apple's Sales
+// report for the whole account exists for the day. Any other status says
+// nothing about the day.
+var growthSalesDayExists = map[string]bool{"reported": true, "no_sales": true}
+
+// applyGrowthASCSalesZeroDays writes a zero for an app on a day the Sales
+// report exists but lists no row for the app. Apple's Sales report lists every
+// app that had a unit or proceeds that day, so no row means nothing happened:
+// the day is zero, not missing. Only a day nobody fetched stays missing.
+//
+// The rule holds within these limits, and outside them a day stays missing:
+//   - the days index must list the day as reported or no sales, on or before
+//     as-of; when it counts the day's series rows, the series must hold
+//     exactly that many, else the series for the day is incomplete;
+//   - the app id must map to exactly one app and have a series row of its
+//     own, which shows the account's report lists it; zeros start on its
+//     first row, because before that the app may not have been on sale;
+//   - a field is filled only where the series carries it: on a day with rows,
+//     some row of that day must carry the field; on a day with no rows at all,
+//     the series must carry it on an earlier day. An older series without
+//     download kinds therefore never turns new downloads into zero;
+//   - a value already on file for the app and day (a ledger copy) is kept.
+//
+// The index and the series describe one account's report; an app from an
+// account the index does not cover must not have series rows here.
+func applyGrowthASCSalesZeroDays(rows []growthSalesRow, index []ascSalesDayIndexRow, ids map[string]map[*growthGroup]bool, asOf string) {
+	if len(index) == 0 || len(rows) == 0 {
+		return
+	}
+	perDay := map[string]int{}              // series rows per day
+	carried := map[string]map[string]bool{} // day -> metric some row carries
+	firstCarried := map[string]string{}     // metric -> first day a row carries it
+	firstRow := map[string]string{}         // app id -> its first series day
+	hasRow := map[string]map[string]bool{}  // app id -> days it has a row
+	for _, r := range rows {
+		perDay[r.Date]++
+		if first, ok := firstRow[r.AppleIdentifier]; !ok || r.Date < first {
+			firstRow[r.AppleIdentifier] = r.Date
+		}
+		if hasRow[r.AppleIdentifier] == nil {
+			hasRow[r.AppleIdentifier] = map[string]bool{}
+		}
+		hasRow[r.AppleIdentifier][r.Date] = true
+		for _, mv := range growthASCSalesValues(r) {
+			if mv.v == nil {
+				continue
+			}
+			if carried[r.Date] == nil {
+				carried[r.Date] = map[string]bool{}
+			}
+			carried[r.Date][mv.metric] = true
+			if first, ok := firstCarried[mv.metric]; !ok || r.Date < first {
+				firstCarried[mv.metric] = r.Date
+			}
+		}
+	}
+	metrics := growthASCSalesValues(growthSalesRow{})
+	for _, d := range index {
+		if !growthSalesDayExists[d.Status] || d.Date > asOf {
+			continue
+		}
+		if d.SeriesRows != nil && *d.SeriesRows != perDay[d.Date] {
+			continue
+		}
+		for _, appID := range growthSortedKeys(firstRow) {
+			if d.Date < firstRow[appID] || hasRow[appID][d.Date] || len(ids[appID]) != 1 {
+				continue
+			}
+			var g *growthGroup
+			for only := range ids[appID] {
+				g = only
+			}
+			for _, mv := range metrics {
+				known := carried[d.Date][mv.metric]
+				if perDay[d.Date] == 0 {
+					first, ok := firstCarried[mv.metric]
+					known = ok && first <= d.Date
+				}
+				if !known {
+					continue
+				}
+				byDate := g.signals[mv.metric]
+				if byDate == nil {
+					byDate = map[string]growthPV{}
+					g.signals[mv.metric] = byDate
+				}
+				if _, onFile := byDate[d.Date]; !onFile {
+					byDate[d.Date] = growthPV{}
+				}
+			}
+		}
+	}
+}
+
 // applyGrowthASCSales folds series rows into the groups' periodic signals.
 // Only an app id that maps to exactly one app is used; an unknown or
 // ambiguous id is skipped rather than guessed. The series is the source the
