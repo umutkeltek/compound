@@ -19,12 +19,23 @@
 
 export { waitingOnYou, type WaitingOnYou } from "@/lib/attention";
 
+import { isInProgress, isOnHold, isStale, isWaitingForCheck, STALE_AFTER_DAYS, timestampMs } from "@/lib/work-state";
+
+// The per-item rules (in progress, on hold, waiting for a check, stale and its
+// threshold) live in the client-safe lib/work-state.ts; this file counts with
+// them and re-exports them for the pages that already import them from here.
+export {
+  IN_PROGRESS_STATES,
+  isInProgress,
+  isOnHold,
+  isStale,
+  isWaitingForCheck,
+  ON_HOLD_STATES,
+  STALE_AFTER_DAYS,
+  timestampMs,
+} from "@/lib/work-state";
+
 type Row = Record<string, unknown>;
-
-const DAY_MS = 86_400_000;
-
-/** Work items older than this since they were picked up count as "not moved". */
-export const STALE_AFTER_DAYS = 7;
 
 /** `n` with its unit, singular or plural: `unit(22, "decision")` → "22 decisions". */
 export function unit(n: number, one: string, many = `${one}s`): string {
@@ -33,25 +44,6 @@ export function unit(n: number, one: string, many = `${one}s`): string {
 
 function text(value: unknown): string {
   return typeof value === "string" ? value : typeof value === "number" ? String(value) : "";
-}
-
-/**
- * A timestamp as epoch milliseconds. The work projections write `claimed_at`
- * as epoch nanoseconds in a string ("1794426104261463000"); other fields use
- * ISO text. Unknown or unparseable → null (never "now", never 0).
- */
-export function timestampMs(value: unknown): number | null {
-  const raw = text(value).trim();
-  if (!raw) return null;
-  if (/^\d+$/.test(raw)) {
-    const n = Number(raw);
-    if (!Number.isFinite(n) || n <= 0) return null;
-    if (raw.length >= 16) return n / 1e6; // nanoseconds
-    if (raw.length >= 12) return n; // milliseconds
-    return n * 1000; // seconds
-  }
-  const parsed = Date.parse(raw);
-  return Number.isFinite(parsed) ? parsed : null;
 }
 
 /* ---------- open work ---------- */
@@ -63,19 +55,11 @@ export function countOpenWork(open: readonly Row[]): number {
 
 /* ---------- in progress ---------- */
 
-/**
- * "In progress" means an agent has picked the item up and it is not finished:
- * it is running, picked up but not started, or finished running and waiting
- * for a proof check. These are the work states `claimed`, `running`
- * (`in_progress`) and `verifying` - the same set `executors --json` counts as
- * `running` and `workbench --json` counts as `in_progress`. Held and blocked
- * items are waiting, not in progress.
+/*
+ * "In progress" (IN_PROGRESS_STATES, isInProgress) is defined in
+ * lib/work-state.ts: claimed, running (in_progress) and verifying. Held and
+ * blocked items are waiting, not in progress.
  */
-export const IN_PROGRESS_STATES = ["claimed", "in_progress", "running", "verifying"] as const;
-
-export function isInProgress(state: unknown): boolean {
-  return (IN_PROGRESS_STATES as readonly string[]).includes(text(state));
-}
 
 export type InProgressCount = {
   /** work items marked in progress */
@@ -115,12 +99,12 @@ export function countInProgress(items: readonly Row[], nowMs: number): InProgres
     if (!isInProgress(state)) continue;
     out.total += 1;
     if (state === "claimed") out.pickedUp += 1;
-    else if (state === "verifying") out.checking += 1;
+    else if (isWaitingForCheck(state)) out.checking += 1;
     else out.running += 1;
     const claimed = timestampMs(item.claimed_at);
     if (claimed !== null) {
       out.withPickupTime += 1;
-      if (nowMs - claimed > STALE_AFTER_DAYS * DAY_MS) out.pickedUpOver7Days = (out.pickedUpOver7Days ?? 0) + 1;
+      if (isStale(item, nowMs)) out.pickedUpOver7Days = (out.pickedUpOver7Days ?? 0) + 1;
     }
   }
   if (out.withPickupTime === 0) out.pickedUpOver7Days = null;
@@ -165,8 +149,7 @@ export function countOnHold(items: readonly Row[]): number {
       if (seen.has(id)) continue;
       seen.add(id);
     }
-    const state = text(item.state);
-    if (state === "held" || state === "blocked") n += 1;
+    if (isOnHold(item.state)) n += 1;
   }
   return n;
 }
