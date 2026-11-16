@@ -7,10 +7,6 @@ export function memoryStatement(object: unknown): { summary: string; full: strin
   return { summary: full.length > 420 ? `${full.slice(0, 420).trimEnd()}…` : full, full };
 }
 
-export function memoryState(state: string): string {
-  return ({ proposed: "Awaiting review", parked: "Set aside", promoted: "Accepted for recall", rejected: "Rejected", no_promote: "Kept out of recall" } as Record<string, string>)[state] ?? (state || "State not recorded");
-}
-
 export function evidenceDestination(ref: string): { href: string; label: string } | null {
   // Only known record identities have an owner view. A path or arbitrary URI
   // must never become an invented destination or an executable browser URL.
