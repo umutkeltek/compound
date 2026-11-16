@@ -161,7 +161,10 @@ const result = decisionHeadline(report.groups[2], {}, NOW);
 assert.deepEqual(result.about, { label: "Fixture App", href: "/apps/fixture-app", app: true }, "a product result names its app and links its page");
 const card = decisionCard({ area: "memory-proposals", sample: {}, summary: report.groups[1].operator_summary, objectText: "", needsWording: false, recommendation: null, items: raw.groups[1].items });
 assert.ok(card.yes.includes(memoryChoice("promote", "memory").means), "the yes uses the Memory page's words");
-assert.equal(card.listed.length, 3);
+assert.equal(card.listed.length, 0, "proposed memories are judged on the Memory page, not listed again here");
+const resultCard = decisionCard({ area: "product-results-due", sample: {}, summary: report.groups[2].operator_summary, objectText: "", needsWording: false, recommendation: null, items: raw.groups[2].items });
+assert.equal(resultCard.listed[0].title, "Fixture signups moves in response to the new screen", "a raw metric id in an item reads as words");
+assert.equal(resultCard.listed[0].about.href, "/apps/fixture-app");
 
 // 7. D4: no raw option code, no contradiction, a derived no, and who writes what is missing.
 const doneBrief = { options: [], recommendation: { option: "resolve_reviewed", confidence: 0.9, rationale: "Both fixture changes are already live." } };

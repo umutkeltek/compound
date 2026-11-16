@@ -6,6 +6,7 @@ import { decisionKindWords, recommendationSaysDone, recommendedOptionWords, type
 import { humanizeProductId } from "@/lib/app-identity";
 import { appHref, workItemHref } from "@/lib/links";
 import { plainArea as plainAreaWords, plainState, plainText, plainWorkStep, productTitle } from "@/lib/plain-words";
+import { metricLabel } from "@/lib/products";
 import { workTitle } from "@/lib/work-title";
 import { timestampMs } from "@/lib/work-state";
 import { genericActionEffectKind, genericActionProjectionEligible, genericActionRevision, reviewResolutionRevision, OPERATOR_INPUTS } from "@/lib/generic-actions";
@@ -388,6 +389,12 @@ function listWords(parts: string[]): string {
   return parts.length <= 1 ? parts.join("") : `${parts.slice(0, -1).join(", ")} or ${parts[parts.length - 1]}`;
 }
 
+/** Raw snake_case ids in a title said as words ("fixture_signups moves" → "Signups moves"), the way Results names a metric. */
+function plainIdWords(text: string): string {
+  const out = text.replace(/\b[a-z0-9]+(?:_[a-z0-9]+)+\b/g, (token) => metricLabel(token).toLowerCase());
+  return out.charAt(0).toUpperCase() + out.slice(1);
+}
+
 /** The items a waiting-list group names one by one, each with what it is about. */
 export function listedItems(group: Json): DecisionListedItem[] {
   return arr(group.items)
@@ -396,7 +403,7 @@ export function listedItems(group: Json): DecisionListedItem[] {
       const context = str(item.context);
       return {
         id: str(item.id),
-        title: cleanTitle(plainText(str(item.title))),
+        title: plainIdWords(cleanTitle(plainText(str(item.title)))),
         about: /^product:[\w.-]+$/.test(context) ? appAbout(context) : context ? { label: context, href: null, app: false } : null,
         createdAt: str(item.createdAt) || str(item.created_at),
       };
@@ -450,7 +457,8 @@ export function decisionCard(args: {
     perItem: Boolean(words?.perItem),
     silent: "",
     answerAt: words?.answerAt ?? null,
-    listed: args.items ? listedItems({ items: args.items }) : [],
+    // A kind another page owns (proposed memories) is judged there: its items are not listed again here.
+    listed: args.items && !words?.answerAt ? listedItems({ items: args.items }) : [],
   };
   if (!card.needsWording) {
     const missing = [
