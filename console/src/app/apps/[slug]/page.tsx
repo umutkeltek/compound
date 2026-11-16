@@ -1,5 +1,4 @@
 import { ProductVisuals } from "@/components/products/VisualCampaigns";
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import { FreshnessChip, HeaderStat, PageHeader } from "@/components/kit";
@@ -7,9 +6,10 @@ import { DivergingBars, Legend, LineChart } from "@/components/charts/Charts";
 import { GroupAudit, NextMoves, ProfileRow, makeLookup } from "@/components/growth/AppGrowth";
 import { AppGlyph, DegradedGrowth, FocusChip, KpiTile, Panel, StatusLegend, coverageCounts } from "@/components/growth/GrowthKit";
 import { OpenOnHash } from "@/components/growth/OpenOnHash";
-import { arr, getWorkbench, str } from "@/lib/compound";
+import { arr, readProjection, readWorkProjectIndex, WORK_PROJECT_INDEX_READS } from "@/lib/compound";
+import { AppWork } from "@/components/growth/AppWork";
+import { appWorkModel } from "@/components/growth/app-work";
 import { findApp, formatValue, getGrowth, shortDate, STATUS_META, valueLabel, type FunnelStep } from "@/lib/growth";
-import { ago } from "@/lib/time";
 
 export const dynamic = "force-dynamic";
 
@@ -221,18 +221,7 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
         )}
       </section>
 
-      <Suspense
-        fallback={
-          <Panel title="Work on this app" subtitle="Loading open work…">
-            <div className="flex flex-col gap-2" aria-hidden>
-              <div className="skeleton h-5" />
-              <div className="skeleton h-5" />
-            </div>
-          </Panel>
-        }
-      >
-        <AppWork ids={[app.productId, ...app.aliases]} />
-      </Suspense>
+      <AppWorkSection productId={app.productId} name={app.name} />
 
       <p className="text-xs text-faint">
         {model.boundary}. Catalog: {model.catalog.areas} areas in {model.catalog.groups} groups.
@@ -241,29 +230,26 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
   );
 }
 
-/** Open work whose canonical surface is this app. The workbench read is slow, so it streams in on its own. */
-async function AppWork({ ids }: { ids: string[] }) {
-  const workbench = await getWorkbench();
-  const wanted = new Set(ids);
-  const work = arr(workbench?.open).filter((w) => wanted.has(str(w.canonical_surface)));
+/**
+ * Every open work item the shared resolver places in this app. The reads are
+ * non-blocking (they share the Work page's cache entries), so this renders at
+ * once from the last good copies or says what it is still reading.
+ */
+async function AppWorkSection({ productId, name }: { productId: string; name: string }) {
+  const nowMs = Date.now();
+  const [projectIndex, workbench] = await Promise.all([
+    readWorkProjectIndex({ nowMs }),
+    readProjection([...WORK_PROJECT_INDEX_READS.work.args], { timeoutMs: WORK_PROJECT_INDEX_READS.work.timeoutMs }),
+  ]);
+  const model = appWorkModel(arr(workbench.value?.open), projectIndex.index, productId, nowMs);
+  const labels = { work: "open work", apps: "your app list", inventory: "where each app's code lives" } as const;
+  const keys = Object.keys(labels) as Array<keyof typeof labels>;
   return (
-    <Panel title="Work on this app" subtitle={work.length ? `${work.length} open work items name this app` : "No open work names this app."}>
-      {work.length ? (
-        <ul className="divide-y divide-hair-2">
-          {work.slice(0, 8).map((w) => {
-            const id = str(w.work_id);
-            const when = str(w.claimed_at) || str(w.created_at);
-            return (
-              <li key={id} className="flex items-start justify-between gap-4 py-2.5">
-                <Link href={`/work/${encodeURIComponent(id)}`} className="min-w-0 text-sm font-medium text-ink hover:underline">
-                  <span className="line-clamp-2">{str(w.success_predicate) || str(w.desired_outcome) || id}</span>
-                </Link>
-                <span className="shrink-0 text-xs text-muted">{str(w.state)}{when ? ` · ${ago(when)}` : ""}</span>
-              </li>
-            );
-          })}
-        </ul>
-      ) : null}
-    </Panel>
+    <AppWork
+      name={name}
+      model={model}
+      missing={projectIndex.missing.map((key) => ({ label: labels[key], read: projectIndex.reads[key] }))}
+      reads={keys.map((key) => ({ label: labels[key], read: projectIndex.reads[key] }))}
+    />
   );
 }

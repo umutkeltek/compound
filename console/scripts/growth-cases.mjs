@@ -149,3 +149,6 @@ for (const kpis of [currencyGap.portfolio.totals, currencyGap.apps[0].kpis]) {
 }
 
 console.log("growth cases ok: v0.2 maps, folded moves keep every area, profile sentence names only gating dimensions, unknown statuses stay gaps, v0.1 refused");
+
+// One app's page: its work, numbers, results and ads (scripts/app-page-cases.mjs).
+await import("./app-page-cases.mjs");
