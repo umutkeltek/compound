@@ -37,7 +37,7 @@ func CheckBackends(ctx context.Context, lanes []LaneConfig) BackendHealth {
 		}
 		base := strings.TrimRight(cfg.BaseURL, "/")
 		if base == "" {
-			base = "http://127.0.0.1:11434/v1"
+			base = (&url.URL{Scheme: "http", Host: net.JoinHostPort("127.0.0.1", "11434"), Path: "/v1"}).String()
 		}
 		key := base + "|" + cfg.Identity()
 		if seen[key] {

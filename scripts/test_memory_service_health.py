@@ -7,13 +7,15 @@ import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
+from urllib.parse import urlunparse
 
 spec = importlib.util.spec_from_file_location("memory_service", Path(__file__).with_name("memory-service.py"))
 service = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(service)
 
-READY = {"status": "ready", "backends": [{"status": "ready", "base_url": "http://127.0.0.1:11434/v1", "identity": "ollama:fixture:2:f32"}]}
-DOWN = {"status": "backend_unavailable", "backends": [{"status": "process_unavailable", "base_url": "http://127.0.0.1:11434/v1", "identity": "ollama:fixture:2:f32"}]}
+LOCAL_ENDPOINT = urlunparse(("http", "127.0.0.1:11434", "/v1", "", "", ""))
+READY = {"status": "ready", "backends": [{"status": "ready", "base_url": LOCAL_ENDPOINT, "identity": "ollama:fixture:2:f32"}]}
+DOWN = {"status": "backend_unavailable", "backends": [{"status": "process_unavailable", "base_url": LOCAL_ENDPOINT, "identity": "ollama:fixture:2:f32"}]}
 
 
 class RecoveryTests(unittest.TestCase):
@@ -64,7 +66,7 @@ class RecoveryTests(unittest.TestCase):
                 self.assertEqual(self.kills, 0)
 
     def test_missing_incompatible_or_custom_owner_never_restart(self):
-        for status, base in [("model_missing", "http://127.0.0.1:11434/v1"), ("incompatible", "http://127.0.0.1:11434/v1"), ("process_unavailable", "http://backend.invalid/v1")]:
+        for status, base in [("model_missing", LOCAL_ENDPOINT), ("incompatible", LOCAL_ENDPOINT), ("process_unavailable", "http://backend.invalid/v1")]:
             report = {"status": "backend_unavailable", "backends": [{"status": status, "base_url": base}]}
             with patch.object(service, "backend_health", return_value=report), patch.object(service.subprocess, "run") as run:
                 with self.assertRaises(RuntimeError):
@@ -72,7 +74,7 @@ class RecoveryTests(unittest.TestCase):
                 run.assert_not_called()
 
     def test_persistent_budget_survives_new_service_process(self):
-        now = 2000000000
+        now = service.time.time()
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             directory = home / "run_attempts"
