@@ -40,7 +40,9 @@ assert.ok(graph.nodes.length <= 12, "focused work must remain readable at realis
 assert.ok(graph.edges.every((e) => graph.nodes.some((n) => n.id === e.source) && graph.nodes.some((n) => n.id === e.target)));
 assert.ok(graph.nodes.some((n) => n.id === "context:ctx_real"));
 assert.ok(graph.nodes.every((n) => !n.status), "recorded work state is not a heartbeat");
-assert.match(graph.note, /more references/);
+assert.match(graph.note, /all references remain in the inspector/);
+assert.equal(graph.nodes.filter((n) => n.kind === "attempts").length, 1, "attempt history is grouped instead of shrinking the map");
+assert.ok(graph.nodes.some((n) => n.label === "800 recorded attempts"));
 assert.equal(workGraph({ ...selected, outcome: "", owner: "", context: "", policy: "", attempts: [], evidence: [], checks: [] }).nodes.length, 1, "absent relationships are not invented");
 const deps = dependencyLinks({ edge_list: [
   { from: "project:research", to: "host:fixture", rel_title: "Runs on", confidence: "inferred", carried: true, evidence: "fixture observation" },

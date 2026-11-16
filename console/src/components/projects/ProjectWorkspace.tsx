@@ -109,7 +109,7 @@ export function ProjectWorkspace({ model, scope, view, inventory, dependencies, 
 
 function WorkRow({ work, selected, href }: { work: ProjectWork; selected: boolean; href: string }) {
   return <Link href={href} scroll={false} aria-current={selected ? "true" : undefined} className={"block border-b border-hair p-4 last:border-b-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus " + (selected ? "bg-work-soft" : "hover:bg-soft")}>
-    <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><StateBadge state={work.state} /><span className="text-xs text-muted">{work.owner || "Owner not recorded"}</span></div>
+    <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><StateBadge state={work.state} /><span className="text-xs text-muted">{work.ownerLabel || "Owner not recorded"}</span></div>
     <h3 className="line-clamp-2 text-sm font-semibold leading-relaxed text-ink">{work.title}</h3>
     <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-muted">{work.next || (work.state === "completed" ? "Open the result and verification references." : "Open the recorded outcome and proof needed.")}</p>
   </Link>;

@@ -1,3 +1,4 @@
+import { plainWorkStep, agentNameFor } from "./plain-words";
 import type { LensGraph, LensNode, LensEdge } from "./map/lens";
 
 export type RecordValue = Record<string, unknown>;
@@ -13,8 +14,8 @@ export type ProjectSummary = {
   id: string; label: string; kind: string; total: number; open: number; attention: number; completed: number;
 };
 export type ProjectWork = {
-  id: string; title: string; outcome: string; success: string; state: string; owner: string;
-  next: string; reason: string; context: string; policy: string; receipt: string; transition: string;
+  id: string; title: string; outcome: string; success: string; state: string; owner: string; ownerLabel: string;
+  next: string; nextSource: string; reason: string; context: string; policy: string; receipt: string; transition: string;
   evidence: string[]; checks: string[]; attempts: string[]; boundaries: string[]; createdAt: string;
 };
 export type WorkspaceModel = {
@@ -67,8 +68,8 @@ function mapWork(work: RecordValue, summary: RecordValue): ProjectWork {
   return {
     id, title: (text(action.title) || text(work.title) || outcome || text(work.success_predicate) || id).replace(/\s+/g, " ").slice(0, 180),
     outcome, success: text(work.success_predicate), state: text(work.state) || "unknown",
-    owner: text(work.owner),
-    next: text(summary.next_action), reason: text(summary.open_reason) || text(work.review_trigger),
+    owner: text(work.owner), ownerLabel: agentNameFor(text(work.owner), new Map()).name,
+    next: plainWorkStep(text(summary.next_action)), nextSource: text(summary.next_action), reason: text(summary.open_reason) || text(work.review_trigger),
     context: text(ids.context_pack_id) || text(work.context_pack_id),
     policy: text(work.policy_decision_id), receipt: text(ids.receipt_id) || text(work.receipt_id) || text(summary.receipt_id),
     transition: text(ids.transition_id) || text(work.transition_id) || text(summary.transition_id),
@@ -147,37 +148,40 @@ export function workGraph(work: ProjectWork): LensGraph {
   const source = "compound work list --json";
   const center = "work:" + work.id;
   const nodes: LensNode[] = [{
-    id: center, kind: "work", label: work.title, sublabel: "Work state: " + work.state,
-    accent: "blue", position: { x: 300, y: 180 }, sources: [source], raw: { work_id: work.id, state: work.state },
+    id: center, kind: "work", label: "Selected work", sublabel: work.title,
+    accent: "blue", position: { x: 240, y: 180 }, sources: [source], raw: { work_id: work.id, state: work.state },
   }];
   const edges: LensEdge[] = [];
-  const add = (kind: string, id: string, label: string, relation: string, incoming = false) => {
-    if (!id || !label || nodes.some((n) => n.id === kind + ":" + id)) return;
-    const index = nodes.length - 1;
+  let left = 0;
+  let right = 0;
+  const add = (kind: string, id: string, label: string, relation: string, incoming = false, detail = id) => {
+    if (!id || !label) return;
     const nodeId = kind + ":" + id;
+    const row = incoming ? left++ : right++;
     nodes.push({
-      id: nodeId, kind, label, sublabel: kind === "outcome" ? "Recorded on this work" : id,
-      accent: kind === "policy" ? "violet" : "gray",
-      position: { x: incoming ? 0 : 620, y: index * 100 }, sources: [source], raw: { reference: id, relationship: relation },
+      id: nodeId, kind, label, sublabel: detail, accent: kind === "policy" ? "violet" : "gray",
+      position: { x: incoming ? 0 : 480, y: row * 90 },
+      sources: kind === "receipt" || kind === "transition" ? [source, "compound workbench --json"] : [source],
+      raw: { reference: id, relationship: relation },
     });
     edges.push({ id: center + ":" + nodeId, source: incoming ? nodeId : center, target: incoming ? center : nodeId, kind: "reference", label: relation });
   };
-  add("outcome", work.id, work.outcome, "aims for", true);
-  add("owner", work.owner, work.owner, "accountable owner");
+  if (work.outcome) add("outcome", work.id, "Recorded goal", "pursued by", true, work.outcome);
+  add("owner", work.owner, "Accountable owner", "owned by");
   add("context", work.context, "Agent context", "context attached", true);
   add("policy", work.policy, "Permission decision", "governed by", true);
   add("receipt", work.receipt, "Recorded result", "result reference");
   add("transition", work.transition, "Recorded change", "change reference");
-  const refs = [
-    ...work.attempts.map((ref) => ({ kind: "attempt", ref, label: "Recorded attempt", relation: "attempt reference" })),
-    ...work.evidence.map((ref) => ({ kind: "evidence", ref, label: "Supporting evidence", relation: "evidence attached" })),
-    ...work.checks.map((ref) => ({ kind: "check", ref, label: "Verification reference", relation: "check attached" })),
-  ];
-  for (const r of refs) if (nodes.length < 12) add(r.kind, r.ref, r.label, r.relation);
-  const omitted = Math.max(0, refs.length - edges.filter((e) => /attempt|evidence|check/.test(e.label || "")).length);
+  for (const [kind, refs, label, relation] of [
+    ["attempts", work.attempts, "recorded attempts", "attempt references"],
+    ["evidence", work.evidence, "evidence references", "evidence attached"],
+    ["checks", work.checks, "check references", "checks attached"],
+  ] as const) {
+    if (refs.length) add(kind, work.id, refs.length + " " + label, relation, false, "Expand the exact references in the work inspector.");
+  }
   return {
-    lens: "work-spine", nodes, edges, generatedAt: "", sources: [source],
-    note: "Only recorded references are drawn. Attached checks and attempts do not prove success or live activity." + (omitted ? " " + omitted + " more references remain in the inspector." : ""),
+    lens: "work-spine", nodes, edges, generatedAt: "", sources: [source, "compound workbench --json"],
+    note: "Only recorded relationships are drawn. Repeated references are grouped; all references remain in the inspector. Attached checks and attempts do not prove success or live activity.",
   };
 }
 
