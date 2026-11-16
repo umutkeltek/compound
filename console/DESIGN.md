@@ -615,9 +615,9 @@ the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line
 
 | Page | Question | First answer |
 |---|---|---|
-| Today | What needs you today? | "N decisions wait for you, with M items in all", then at most five decisions in the attention order, each with what to do, why, and one way in. When nothing waits, it says so and "What the agents are doing" becomes the answer. |
+| Today | What needs you today? | "N decisions wait for you", counting only what is his (`waitingOnYou`), then at most five of them in the order Decide shows (`yourDecisionGroups`), so Today's rows are Decide's top rows; each row says what Decide's row says (the app it is about, the record's words, the kind's question and how long it has waited, from one function, `decisionHeadline`) and has one way in. No row carries a dead-end reason or an aggregate "cannot be undone" label. Quiet lines name what is not counted: decisions an agent must word first, records closed without him, work waiting on others, and the skill proposals folded out as agent housekeeping. Then, once, how a decision moves today (`HOW_DECISIONS_MOVE`). When nothing waits, it says so and "What the agents are doing" becomes the answer. Below, every number leads to its list: the stale line to the stale work list, the Learned tile to the memories that wait (its number holds while a copy is only older than the read window), the Autonomy tile to its settings, the latest change to its work; the Continue card names the next work, keeps no second "needs me" count and copies no command. |
 | Work | What is being worked on, and what is stuck? | Work items marked in progress out of open work, the split, what is stuck (picked up 7+ days ago and still open; on hold), and work items waiting for a decision. |
-| Decide | What is waiting for your decision? | How many decisions and items wait, how many can be decided now, and why the rest wait, counted from the last check: no button for that kind yet, or an incomplete approval record. Those that can be decided come first; the rest are one quieter "Not yet" list, with the standing said once when it is the same for all. |
+| Decide | What is waiting for your decision? | The same "N decisions wait for you" as Today and the sidebar, the same quiet lines (here "closed without you" opens its reasons and next steps), and once per page how a decision moves today: he tells an agent in chat, the agent records it and carries it out, and deciding on the page is being built. No button, "connect" step or command is offered as a way to decide. Only his decisions are cards, in Today's order, the unworded ones last; proposals to update agent skills are one quiet line outside the count. Each card names the app (linked) or thing it is about, asks its kind's question in one sentence, and says what a yes and a no would cause and whether it can be undone, from `decisionKindWords` in `lib/decision-registry.ts` (the one owner of those words); what the record does not say is named once ("The record does not say …"), never as empty boxes. Held work lists each item inline: title, app, recorded reason, since when, linking its page. The record behind a card sits in a closed "For agents" disclosure. |
 | Live | Who is working on what right now? | Agents holding work, the in-progress split and age, and a plain note when live run records are not visible, so "running" is the work record's word. |
 
 - **Words.** `lib/plain-words.ts` owns the names (decision, item, work item, agent, in progress,
@@ -637,23 +637,35 @@ the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line
   `running`/`in_progress`, `verifying`), picked up more than 7 days ago (from `claimed_at`: the
   projections carry no "last changed" time for open work), on hold (`held`, `blocked`), agents
   holding work, and decisions ready now. Pages and the sidebar call these, never their own count.
+  "Waiting for you" counts only what is his: agent housekeeping (skill proposals), records with no
+  clear question (`needs_wording`), what closed without him and work waiting on others are each
+  named apart (`describeWaiting`) and never added in; a number the projection does not give is left
+  out, never shown as 0.
   The rules for one work item (`isInProgress`, `isOnHold`, `isWaitingForCheck`, `isStale` and its
   threshold `STALE_AFTER_DAYS`) live in the client-safe `lib/work-state.ts`; `counts.ts` counts with
   them and re-exports them, so a client component asks the same question without its own copy.
 - **Send only what is shown.** Decide sends the full detail of the open decision only
   (`?decision=<key>` re-renders with that one's detail); filed is a count plus one row per kind
-  (`?filed=<kind>` opens its newest 100). Live's timeline gets its six rows, and the list of
+  (`?filed=<kind>` opens its newest 100). A filed row leads with its outcome (the recorded
+  decision, else the record's own outcome line, else its status) and when it was decided (else
+  raised), and "Recent decisions" lists the newest decided records across kinds. A watching row
+  never says it waits on him under the "does not need you yet" heading, and links the list that
+  holds its items when one exists. Live's timeline gets its six rows, and the list of
   agent-started sessions renders only at the Technical depth.
 - **Decide standing (2026-11-13).** A button needs owner evidence read in the last 25 seconds;
   that gate is unchanged. The list (`attention --json`) takes about a minute to read, so the
   opened decision also reads its own area (`reviews --json --area <area>`, about a second, the
   read the action path resolves against) through the non-blocking read, and that copy is its
-  evidence when it is fresher than the list's. It applies to that one decision only. Each row
-  says its standing from its freshest evidence (`lib/decide-model.ts` `standing`, words in
-  `lib/plain-words.ts` `standingLine`): "You can decide this now", "No button exists for this
-  kind of decision yet", "The approval record is incomplete: <the tool's reason>", or
-  "Checking… (takes a few seconds)" while the opened decision's read runs. Evidence older than
-  the live window says what it found and "checked N min ago"; it never says "paused".
+  evidence when it is fresher than the list's. It applies to that one decision only. Since no
+  decision can be recorded from the browser yet (2026-11-17), neither rows nor cards show that
+  standing: no "Ready to review" / "Needs a closer look" sections, no "Not yet" or "Checking…"
+  badge and no banner, so a recheck never moves, regroups or rebuilds anything. The list is one
+  list in the one shared order; the open card is keyed by its decision, so an open disclosure or
+  typed filter survives a recheck. A link to a decision that is not listed says why (answered or
+  closed, or a skill proposal folded out as housekeeping) and offers the filed list; the first
+  decision still opens beside the note, and the address keeps the link. Search text and kind live
+  in the address (`q`, `area`, written after a typing pause, other parameters kept), and search
+  matches only what a row shows.
 - **Work views.** Three views: the board by state (default), the List, and By app. Board
   columns: Suggested · Ready to start · Running or picked up · On hold · Waiting for a proof check
   · Done, with On hold moved to the front whenever it has items; the two in-progress columns add

@@ -95,6 +95,14 @@ export function plainState(state: string): string {
   return STATE_LABEL[state] ?? sentence(state.replace(/[_-]+/g, " "));
 }
 
+/**
+ * How a decision moves today, said once per page (Today and Decide), never on
+ * every row. The browser cannot record his answer yet, and no control may
+ * pretend it can: no button, no "connect" step, no command for him to run.
+ */
+export const HOW_DECISIONS_MOVE =
+  "To decide, tell an agent in chat. The agent records your answer and carries it out. Deciding on this page is being built.";
+
 /* ---------- areas (what a decision is about) ---------- */
 
 const AREA_LABEL: Record<string, string> = {

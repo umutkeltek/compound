@@ -103,54 +103,6 @@ export function runDecideDecisionFeedbackSelfTest(): SelfTestResult {
     }
   }
 
-  // (e) The batch-enumerable path (EnumerableApply's Rationale textarea +
-  // Confirm button) had a DEAD validation check: `apply()` already tested
-  // `requiresRationale && !rationale.trim()`, but the Confirm button was
-  // disabled by that exact same condition — so the check could never run
-  // and the operator saw a button that just didn't respond. Prove the
-  // disablement no longer includes the rationale condition (so the click
-  // reaches apply() and its existing check can actually fire), and that the
-  // message it sets matches the plain-language copy.
-  {
-    const src = read("components/decide/DecideQueue.tsx");
-    if (!/setError\(RATIONALE_REQUIRED_MESSAGE\)/.test(src)) {
-      fail("DecideQueue.tsx EnumerableApply no longer sets the plain-language RATIONALE_REQUIRED_MESSAGE on empty rationale");
-    } else {
-      pass("DecideQueue.tsx EnumerableApply surfaces RATIONALE_REQUIRED_MESSAGE when rationale is empty");
-    }
-    if (/disabled=\{running \|\| \(requiresRationale && !rationale\.trim\(\)\)\}/.test(src)) {
-      fail("DecideQueue.tsx Confirm button is still disabled purely by empty rationale — apply()'s validation check stays dead code and the click silently no-ops");
-    } else {
-      pass("DecideQueue.tsx Confirm button no longer silently blocks on empty rationale — clicking it reaches the validation check that shows the message");
-    }
-  }
-
-  // (e2) Enumerable owner actions must name singleton work directly and
-  // describe tracked actions as planning, not authority application. The
-  // owner-projected policy note stays visible before confirmation and is
-  // included in the dialog description announced by Radix.
-  {
-    const src = read("components/decide/DecideQueue.tsx");
-    const dialogDescription = src.match(/<Dialog\.Description[^>]*>([\s\S]*?)<\/Dialog\.Description>/)?.[1] ?? "";
-    if (!/effectKind=\{act\.effectKind\}/.test(src)) {
-      fail("DecideQueue.tsx does not pass the server-derived effect kind into EnumerableApply");
-    } else if (!/confirmationLead:\s*"Plans the tracked step for"/.test(src)) {
-      fail("DecideQueue.tsx still describes tracked planning as a generic apply");
-    } else if (!/const isSingleton = representedCount === 1 && members\.length === 1/.test(src) || !/isSingleton\s*\n\s*\? label/.test(src)) {
-      fail("DecideQueue.tsx does not use the owner action label for a singleton trigger");
-    } else if (!/isSingleton && policyNote\s*\n\s*\? policyNote/.test(src)) {
-      fail("DecideQueue.tsx does not surface the singleton policy boundary before confirmation");
-    } else if (!/isSingleton/.test(dialogDescription) || !/\{label\}/.test(dialogDescription) || !/singletonMember\?\.label/.test(dialogDescription)) {
-      fail("DecideQueue.tsx singleton dialog does not name the owner action and target");
-    } else if (!/policyNote/.test(dialogDescription)) {
-      fail("DecideQueue.tsx policy boundary is outside Dialog.Description and will not be announced with the confirmation");
-    } else if (!/isSingleton\s*\n\s*\? `Confirm \$\{label\}`/.test(src)) {
-      fail("DecideQueue.tsx singleton confirmation control still has a count-only accessible name");
-    } else {
-      pass("DecideQueue.tsx uses owner-specific singleton copy and announces the owner policy boundary in the confirmation dialog");
-    }
-  }
-
   /* ---------- f2: missing-owner naming (not the bare label) ---------- */
 
   // (f) The pure owner-unavailable message names the specific area and the
@@ -176,25 +128,6 @@ export function runDecideDecisionFeedbackSelfTest(): SelfTestResult {
     const b = ownerUnavailableMessage("synthesis-contradictions");
     if (a === b) fail("ownerUnavailableMessage does not vary by area — looks like a second hardcoded generic string");
     else pass("ownerUnavailableMessage varies by area (derived from the read model, not a second generic constant)");
-  }
-
-  // (h) DecideQueue.tsx must actually call ownerUnavailableMessage at both
-  // render sites that used to show the bare label: the CapabilityStatus
-  // badge's tooltip detail, and the DecisionDetail copy-mode card body. And
-  // the old generic, non-naming paragraph must be gone from the card body.
-  {
-    const src = read("components/decide/DecideQueue.tsx");
-    const callSites = src.match(/ownerUnavailableMessage\(/g)?.length ?? 0;
-    if (callSites < 2) {
-      fail(`expected ownerUnavailableMessage(...) wired at both the badge tooltip and the card body, found ${callSites} call site(s)`);
-    } else {
-      pass(`ownerUnavailableMessage(...) is wired at ${callSites} render sites in DecideQueue.tsx`);
-    }
-    if (/Primary action unavailable/.test(src)) {
-      fail("DecideQueue.tsx still renders the old generic 'Primary action unavailable' heading instead of the named-owner line");
-    } else {
-      pass("the old generic 'Primary action unavailable' heading is gone — replaced by the named-owner line");
-    }
   }
 
   /* ---------- f3: final confirmation shows the submitted values ---------- */
@@ -235,35 +168,28 @@ export function runDecideDecisionFeedbackSelfTest(): SelfTestResult {
     }
   }
 
-  /* ---------- f4: object-first face + readiness hierarchy ---------- */
+  /* ---------- f4: one card per decision, with context and no dead control ---------- */
 
+  // Decide shows what the decision is about and what a yes and a no would
+  // cause (lib/decision-registry.ts decisionKindWords, the one owner of those
+  // words), lists held work inline, and offers no control that cannot work:
+  // no action form, no "connect" hint, no copy-a-task hand-off. The record
+  // behind it sits in a closed disclosure for agents.
   {
     const src = read("components/decide/DecideQueue.tsx");
-    if (!/decideReadinessSections\(visible\)/.test(src)) {
-      fail("DecideQueue does not group the visible queue from the server-owned face state");
-    } else if (!/Ready to review/.test(src) || !/Needs a closer look/.test(src)) {
-      // Readiness describes the owner workflow; browser execution is separate.
-      fail("DecideQueue is missing the two explicit readiness group labels");
-    } else {
-      pass("DecideQueue groups the queue into 'Ready to review' and 'Needs a closer look' from the face state");
-    }
-
-    for (const tab of ["Summary", "History", "Evidence"]) {
-      if (!new RegExp(`value=["']${tab.toLowerCase()}["'][^>]*>${tab}<`).test(src)) {
-        fail(`Decision face is missing its ${tab} tab`);
-      }
-    }
-    if (!/value="action">Next step</.test(src)) fail("Decision next step is not directly reachable");
-  // The face's own state label, shown through the plain-words mapping.
-    if (!/StateBadge state=\{group\.face\.state\} label=\{plainDecisionState\(group\.face\.stateLabel\)\}/.test(src)) {
-      fail("Decision face does not render the shared state vocabulary from group.face");
-} else if (!src.includes("<DecisionContext group={group} />") || !/Current owner[\s\S]*group\.face\.owner/.test(read("components/decide/DecisionContext.tsx"))) {
-      fail("Decision face does not expose the human owner before technical evidence");
-    } else if (!/FreshnessChip[\s\S]*group\.face\.freshness\.generatedAt/.test(src)) {
-      fail("Decision face does not expose projection freshness in its primary header");
-    } else {
-      pass("Decision face exposes state, owner, and freshness before secondary records");
-    }
+    const missing = [
+      [/card\??\.question/, "the card's question"],
+      [/If you say yes/, "what a yes causes"],
+      [/If you say no/, "what a no causes"],
+      [/Can it be undone\?/, "whether it can be undone"],
+      [/card\??\.silent/, "one line naming what the record does not say"],
+      [/<HeldWorkList rows=\{group\.heldWork\} \/>/, "held work listed inline"],
+      [/<details[^>]*>\s*<summary[^>]*>For agents: the record behind it<\/summary>/, "the record behind it in a closed disclosure for agents"],
+    ].filter(([pattern]) => !(pattern as RegExp).test(src)).map(([, what]) => what);
+    const dead = [/<GovernedAct\b/, /<EnumerableApply\b/, /<AgentHandoff\b/, /Connect operator/, /Next step<\/TabsTrigger>/].filter((pattern) => pattern.test(src));
+    if (missing.length) fail(`the Decide card is missing: ${missing.join(", ")}`);
+    else if (dead.length) fail(`the Decide card still renders a control that cannot work: ${dead.map(String).join(", ")}`);
+    else pass("the Decide card leads with its question, a yes, a no and undo from the kind's words, lists held work inline, and renders no dead control");
   }
 
   /* ---------- f5: routing preserves exact owner authority ---------- */
@@ -279,7 +205,6 @@ export function runDecideDecisionFeedbackSelfTest(): SelfTestResult {
       ? fs.readFileSync(authorityComponentPath, "utf8")
       : "";
     const authorityModel = read("lib/action-authority.ts");
-    const decide = read("components/decide/DecideQueue.tsx");
     const routing = read("components/routing/PromotionBand.tsx");
     const governed = read("components/decide/GovernedAct.tsx");
 
@@ -293,12 +218,9 @@ export function runDecideDecisionFeedbackSelfTest(): SelfTestResult {
       pass("one client-safe AuthorityFace renderer owns the exact details/summary projection");
     }
 
-    if (!/import \{ AuthorityFaceDetails \} from "@\/components\/authority\/AuthorityFaceDetails"/.test(decide) ||
-        /function AuthorityFaceDetails\(/.test(decide)) {
-      fail("DecideQueue still owns a duplicate AuthorityFace renderer instead of the shared component");
-    } else {
-      pass("DecideQueue reuses the shared AuthorityFace renderer");
-    }
+    // Decide no longer mounts an action (no browser decision yet), so only
+    // Routing and the confirmation dialog render the shared AuthorityFace.
+
 
     const routingFace = routing.indexOf("<AuthorityFaceDetails authority={group.face.authority}");
     const routingAct = routing.indexOf("<GovernedAct");
@@ -349,26 +271,6 @@ export function runDecideDecisionFeedbackSelfTest(): SelfTestResult {
     }
   }
 
-  /* ---------- f7: partial enumerable scope stays truthful ---------- */
-
-  // The model may expose only independently authorized B2 members, while the
-  // card still represents a larger group. The action UI must keep those two
-  // counts separate and say explicitly that unavailable members do not move.
-  {
-    const src = read("components/decide/DecideQueue.tsx");
-    if (!/representedCount:\s*number/.test(src) ||
-        !/representedCount=\{act\.representedCount\}/.test(src)) {
-      fail("EnumerableApply does not receive the full represented group count");
-    } else if (!/const scopeLabel = `\$\{members\.length\} ready of \$\{representedCount\}`/.test(src) ||
-        !/const unchangedLabel = unavailableCount > 0[\s\S]*unavailable[\s\S]*remain unchanged/.test(src)) {
-      fail("EnumerableApply does not derive exact ready/total and unavailable/unchanged copy");
-    } else if (!/aria-label="Executable member scope"[\s\S]*\{scopeLabel\}[\s\S]*\{unchangedLabel\}/.test(src)) {
-      fail("the mixed-member scope truth is not rendered before the action");
-    } else {
-      pass("partial enumerable UI shows exact ready/total scope and keeps unavailable members unchanged");
-    }
-  }
-
   /* ---------- f8: card grammar — WHAT/consequence/action lead the card, one
    * systemic-blocker banner instead of N identical stamps, jargon reasons
    * mapped to plain language (work_58a058a3d028) ---------- */
@@ -412,32 +314,6 @@ export function runDecideDecisionFeedbackSelfTest(): SelfTestResult {
       fail(`queueSystemicBlocker must prefer a feature-detected projection reason, got ${JSON.stringify(projected)}`);
     } else {
       pass("queueSystemicBlocker collapses identical-reason queues into one banner, stays silent otherwise, and prefers a feature-detected reason");
-    }
-  }
-
-  // f8c: source-wiring — the card actually leads with the quoted object text
-  // outside the tabs, the queue renders the single decidability banner, the
-  // per-row stamp is demoted when it fires, and no render site shows the raw
-  // unavailableReason verbatim (every site routes through blockedReasonPlain).
-  {
-    const src = read("components/decide/DecideQueue.tsx");
-    if (!/<blockquote[^>]*>\s*\{group\.objectText/.test(src)) {
-      fail("the card no longer leads with the quoted objectText outside the tabs");
-    } else if (!/systemicBlocker\.totalCount - systemicBlocker\.blockedCount/.test(src)) {
-      fail("the queue no longer renders a single '<N> of <M> decidable' banner");
-    } else if (!/demoteBlockedStamp/.test(src)) {
-      fail("the per-row stamp is no longer demoted when a systemic-blocker banner covers it");
-    } else if (/\{group\.face\.unavailableReason\}/.test(src)) {
-      fail("a raw unavailableReason is rendered verbatim somewhere instead of through blockedReasonPlain(...)");
-    } else if (
-      // Rows and the open card now say the decision's standing (lib/plain-words.ts
-      // standingLine), which carries the reason in plain words; both routes count.
-      (src.match(/blockedReasonPlain\(|standingOf\(/g) ?? []).length < 4 ||
-      !/standingLine\(group\.standing\)/.test(src)
-    ) {
-      fail("the plain-words route (blockedReasonPlain, or standingOf through standingLine) is not wired at every card/row site that used to show the raw reason string");
-    } else {
-      pass("the Decide card leads with the quoted object text, shows one banner for a systemic blocker, demotes the per-row stamp, and never renders a raw reason string verbatim");
     }
   }
 

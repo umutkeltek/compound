@@ -2,7 +2,7 @@ import { PageHeader, ReadChip, ReadNotice, type ReadView } from "@/components/ki
 import type { WaitingOnYou } from "@/lib/attention";
 import { humanAge } from "@/lib/briefing";
 import { str } from "@/lib/compound";
-import { unit } from "@/lib/counts";
+import { describeWaiting, unit } from "@/lib/counts";
 
 const TZ = "Europe/Istanbul";
 
@@ -30,6 +30,7 @@ function ageWords(value: unknown): string {
 /**
  * Today's question and its answer, first on the page: "What needs you
  * today?" and one sentence built from the ONE "waiting for you" definition
+ * (only what is his; Decide's header and the sidebar say the same number)
  * (lib/counts.ts → lib/attention.ts `waitingOnYou`) the sidebar, Work and
  * Live use, with the units named. An attention read that has not landed shows
  * its read state (being read / could not read), never zero or "nothing".
@@ -56,11 +57,10 @@ export function BriefingHeader({
         !waiting ? (
           <ReadNotice read={read} label="what waits for you" />
         ) : waiting.groups <= 0 ? (
-          <>Nothing needs you today. No decision is waiting for you.</>
+          <>{describeWaiting(waiting).headline}.</>
         ) : (
           <>
-            <strong className="font-semibold text-seam">{unit(waiting.groups, "decision")}</strong>{" "}
-            {waiting.groups === 1 ? "waits" : "wait"} for you, with {unit(waiting.items, "item")} in all.
+            <strong className="font-semibold text-seam">{describeWaiting(waiting).headline}</strong>.
             {age ? <> The oldest has waited {age}.</> : null} Start with the first one below.
           </>
         )

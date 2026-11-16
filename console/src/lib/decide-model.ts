@@ -2,12 +2,18 @@ import { arr, num, reviewCommand, str, type Json, type ProjectionStatus } from "
 import { parseActionAuthorityBundle } from "@/lib/action-authority";
 import { ago, toDate } from "@/lib/time";
 import type { AttentionReport } from "@/lib/attention";
-import { type DecisionEffectKind, type DecisionOption, type FieldSpec, specFor } from "@/lib/decision-registry";
+import { decisionKindWords, type DecisionEffectKind, type DecisionOption, type FieldSpec, specFor } from "@/lib/decision-registry";
+import { humanizeProductId } from "@/lib/app-identity";
+import { appHref, workItemHref } from "@/lib/links";
+import { plainText, plainWorkStep, productTitle } from "@/lib/plain-words";
+import { workTitle } from "@/lib/work-title";
+import { timestampMs } from "@/lib/work-state";
 import { genericActionEffectKind, genericActionProjectionEligible, genericActionRevision, reviewResolutionRevision, OPERATOR_INPUTS } from "@/lib/generic-actions";
 import { areaPlain } from "@/lib/glossary";
 import { areaOf } from "@/lib/review-data";
 import { plainAge } from "@/components/kit/ReadState";
 import type { DecisionStanding } from "@/lib/plain-words";
+import type { WorkProjectIndex } from "@/lib/work-project";
 import type { AuthorityFace, ObjectFace } from "@/representation";
 
 /**
@@ -315,7 +321,199 @@ export type DecideGroup = {
    * optional so DecideGroup literals built elsewhere keep compiling.
    */
   standing?: DecisionStanding;
+  /** What it is about and what a yes and a no would cause, in his words. */
+  card?: DecisionCard;
+  /** Held work: each item inline (title, app, recorded reason, since when). Open decision only. */
+  heldWork?: HeldWorkRow[];
+  /** Title, app, question and wait, exactly as Today's row says them. */
+  headline?: DecisionHeadline;
 };
+
+/* ---------- one card per decision: what it is about and what would happen ---------- */
+
+/** The app or thing a decision is about; `href` when it has its own page. */
+export type DecisionAbout = { label: string; href: string | null; app: boolean };
+
+export type DecisionCard = {
+  about: DecisionAbout | null;
+  /** the question, in one plain sentence (the kind's question; "" when unknown) */
+  question: string;
+  /** the record's own words for what it is about, without its trailing question */
+  subject: string;
+  yes: string | null;
+  no: string | null;
+  undo: string | null;
+  recommendation: string | null;
+  /** the record carries no clear question: an agent must word it first */
+  needsWording: boolean;
+  /** each item inside is decided on its own (held work) */
+  perItem: boolean;
+  /** what the record does not say, named once ("" when it says everything) */
+  silent: string;
+};
+
+/** A trailing "Review it?" / "Promote it?" the record asks in tool words: the card asks its own question. */
+const TRAILING_ASK = /\s*(?:—\s*)?(?:Review it|Review the result|Promote it|Tidy it|Approve it|Apply it|Clear it|Remove it)\?\s*$/i;
+
+function aboutOf(area: string, sample: Json, summary: string): DecisionAbout | null {
+  const label = str(sample.context_label).trim();
+  const productId = /^product:[\w.-]+$/.test(label) ? label : /^(product:[\w.-]+)\b/.exec(summary)?.[1] ?? "";
+  if (productId) return { label: humanizeProductId(productId), href: appHref(productId), app: true };
+  // A rule's context label is the rule itself (the subject), not what it is about.
+  if (!label || area.startsWith("decision-candidates") || /record needs your decision/i.test(label)) return null;
+  return { label, href: null, app: false };
+}
+
+function listWords(parts: string[]): string {
+  return parts.length <= 1 ? parts.join("") : `${parts.slice(0, -1).join(", ")} or ${parts[parts.length - 1]}`;
+}
+
+/**
+ * One decision's card from its kind's words (lib/decision-registry.ts, the one
+ * owner) and its own record. Nothing is invented: what neither says is named
+ * once in `silent`, never filled with boilerplate.
+ */
+export function decisionCard(args: {
+  area: string;
+  sample: Json;
+  summary: string;
+  objectText: string;
+  needsWording: boolean;
+  recommendation: string | null;
+}): DecisionCard {
+  const words = decisionKindWords(args.area);
+  const subject = productTitle(plainText(args.objectText || args.summary), humanizeProductId).text.replace(TRAILING_ASK, "").trim();
+  const card: DecisionCard = {
+    about: aboutOf(args.area, args.sample, args.summary),
+    question: args.needsWording ? "" : words?.question ?? "",
+    subject: /record needs your decision|review record needs/i.test(subject) ? "" : subject,
+    yes: args.needsWording ? null : words?.yes ?? null,
+    no: args.needsWording ? null : words?.no ?? null,
+    undo: args.needsWording ? null : words?.undo ?? null,
+    recommendation: args.recommendation,
+    needsWording: args.needsWording,
+    perItem: Boolean(words?.perItem),
+    silent: "",
+  };
+  if (!card.needsWording) {
+    const missing = [
+      !card.question ? "what it asks" : "",
+      !card.yes ? "what a yes does" : "",
+      !card.no ? "what a no does" : "",
+      !card.undo ? "whether it can be undone" : "",
+      !card.recommendation ? "what is recommended" : "",
+    ].filter(Boolean);
+    card.silent = missing.length ? `The record does not say ${listWords(missing)}.` : "";
+  }
+  return card;
+}
+
+/**
+ * How long a decision has waited, in words ("4 days", "3 hours", "a moment");
+ * "" when the record carries no time. Today and Decide both use it.
+ */
+export function waitingAge(value: unknown, nowMs: number): string {
+  const ms = timestampMs(value);
+  if (ms === null) return "";
+  const minutes = Math.max(0, Math.floor((nowMs - ms) / 60_000));
+  if (minutes < 1) return "a moment";
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"}`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"}`;
+}
+
+/** The record's own words for what a decision is about, without tool framing or its trailing question. */
+function subjectOf(summary: string): string {
+  const text = productTitle(plainText(summary), humanizeProductId).text
+    .replace(/^Decision lifecycle has (?:a )?candidate (?:Ruling:? )?/i, "")
+    .replace(TRAILING_ASK, "")
+    .trim();
+  return /record needs your decision|review record needs/i.test(text) ? "" : text;
+}
+
+/**
+ * One decision's title, what it is about, its question and how long it has
+ * waited: the ONE function Today's rows and Decide's rows use, so the same
+ * decision reads the same on both pages. Works on an attention group alone
+ * (Today) or with its review sample (Decide), and always times the wait from
+ * the attention group's own `oldest_created_at`.
+ */
+export type DecisionHeadline = {
+  about: DecisionAbout | null;
+  /** the record's own words ("" when it carries only a template sentence) */
+  subject: string;
+  /** the kind's question ("" when an agent must word it first, or the kind is unknown) */
+  question: string;
+  needsWording: boolean;
+  /** "4 days"; "" when unknown */
+  waiting: string;
+};
+
+export function decisionHeadline(group: Json, sample: Json, nowMs: number): DecisionHeadline {
+  const area = str(group.area);
+  const summary = str(group.operator_summary);
+  const needsWording = group.needs_wording === true;
+  return {
+    about: aboutOf(area, sample, summary),
+    subject: subjectOf(summary),
+    question: needsWording ? "" : decisionKindWords(area)?.question ?? "",
+    needsWording,
+    waiting: waitingAge(group.oldest_created_at || sample.created_at, nowMs),
+  };
+}
+
+/** One held work item, inline on the "Work on hold" decision. */
+export type HeldWorkRow = {
+  id: string;
+  title: string;
+  href: string;
+  app: DecisionAbout | null;
+  /** the recorded reason for the hold, in plain words; "" when none was recorded */
+  reason: string;
+  /** when it was put on hold (ISO), "" when unknown */
+  since: string;
+};
+
+function holdSince(step: Json | undefined): string {
+  const ms = timestampMs(step?.ts ?? step?.at);
+  return ms === null ? "" : new Date(ms).toISOString();
+}
+
+/**
+ * The held work items behind the "Work on hold" decision, from each item's
+ * own record (`work show`) and the work-to-app index. A record not read yet
+ * still lists its item, by its title from the list row when there is one.
+ */
+export function heldWorkRows(
+  ids: readonly string[],
+  shows: ReadonlyMap<string, Json | null>,
+  rows: ReadonlyMap<string, Json>,
+  index: Pick<WorkProjectIndex, "byWork" | "projects"> | null,
+): HeldWorkRow[] {
+  return ids.map((id) => {
+    const show = shows.get(id) ?? null;
+    const work = (show && typeof show.work === "object" && show.work ? show.work as Json : show) ?? rows.get(id) ?? { work_id: id };
+    const state = str(work.state);
+    const lifecycle = arr(work.lifecycle) as Json[];
+    const hold = [...lifecycle].reverse().find((step) => step && str(step.to) === (state || "held"));
+    const note = str(hold?.note).replace(/\s*\(policy [^)]*\)\s*$/, "");
+    const reason = plainWorkStep(str(work.blocking_reason) || (/^action recorded:|^created$/i.test(note) ? "" : note));
+    const projectId = index?.byWork[id] ?? "";
+    const project = projectId ? index?.projects.find((p) => p.id === projectId) ?? null : null;
+    return {
+      id,
+      title: workTitle({ ...rows.get(id), ...work }),
+      href: workItemHref(id),
+      app: project && project.kind !== "none"
+        ? { label: project.name, href: project.kind === "app" ? appHref(project.id) : null, app: project.kind === "app" }
+        : null,
+      reason,
+      since: holdSince(hold),
+    };
+  });
+}
 
 /* ---------- helpers ---------- */
 
@@ -1541,6 +1739,17 @@ export function buildDecideGroups(
       panel,
       brief,
       standing,
+      headline: decisionHeadline(group, sample, Date.now()),
+      card: decisionCard({
+        area,
+        sample,
+        summary: str(group.operator_summary),
+        objectText,
+        needsWording: group.needs_wording === true,
+        recommendation: brief?.recommendation
+          ? [brief.options.find((option) => option.value === brief.recommendation?.option)?.label || brief.recommendation.option, brief.recommendation.rationale].filter(Boolean).join(": ")
+          : null,
+      }),
     };
   });
 }
@@ -1554,4 +1763,47 @@ function ownSample(group: Json, itemByID: Map<string, Json>): Json {
     if (item) return item;
   }
   return { id: str(group.key), area: areaOf(group) };
+}
+
+/* ---------- what happened: filed items lead with their outcome ---------- */
+
+export type FiledOutcome = {
+  /** what came of it, in plain words ("Dismissed", or the record's own outcome line) */
+  outcome: string;
+  /** the record's own words for what it was about */
+  subject: string;
+  /** when it was decided (ISO), else when it was raised */
+  when: string;
+  whenLabel: "decided" | "raised";
+  /** who decided: "you", "an agent", or "" when the record does not say */
+  by: string;
+};
+
+const RESOLUTION_WORDS: Record<string, string> = {
+  dismissed: "Dismissed",
+  parked: "Parked",
+  approved: "Approved",
+  accepted: "Accepted",
+  rejected: "Turned down",
+  resolved: "Resolved",
+  applied: "Applied",
+};
+
+/** A filed record's outcome and date, from the fields it already carries (`resolution`, `next_action`, `status`). */
+export function filedOutcome(item: Json): FiledOutcome {
+  const resolution = item.resolution && typeof item.resolution === "object" ? item.resolution as Json : null;
+  const decision = str(resolution?.decision).toLowerCase();
+  const actor = str(resolution?.actor) || str(resolution?.reviewed_by);
+  const status = str(item.status);
+  const outcome = decision
+    ? RESOLUTION_WORDS[decision] ?? decision.charAt(0).toUpperCase() + decision.slice(1).replace(/_/g, " ")
+    : plainText(str(item.next_action)) || (status ? status.charAt(0).toUpperCase() + status.slice(1).replace(/_/g, " ") : "Filed");
+  const decidedAt = str(resolution?.resolved_at);
+  return {
+    outcome: outcome.charAt(0).toUpperCase() + outcome.slice(1),
+    subject: subjectOf(str(item.operator_summary)),
+    when: decidedAt || str(item.created_at),
+    whenLabel: decidedAt ? "decided" : "raised",
+    by: !actor ? "" : /^operator\b/.test(actor) ? "you" : "an agent",
+  };
 }
