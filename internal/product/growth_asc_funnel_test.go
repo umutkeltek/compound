@@ -134,7 +134,8 @@ func TestGrowthASCFunnelTurnsStaleAnalyticsAreasMeasured(t *testing.T) {
 		t.Fatalf("first-time downloads = %+v, want 118 with latest %s", k, growthDay(3))
 	}
 	for _, f := range after.Funnel {
-		if f.ID == "impressions" && (f.Status != GrowthMeasured || f.AsOf != growthDay(2)) {
+		// 13 of 30 window days have impressions: a current but partial total.
+		if f.ID == "impressions" && (f.Status != GrowthPartial || f.AsOf != growthDay(2) || f.DaysReported != 13) {
 			t.Fatalf("impressions stage = %+v", f)
 		}
 	}

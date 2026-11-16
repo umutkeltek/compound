@@ -86,8 +86,9 @@ func TestGrowthRefreshNamesTheFeedThatStopped(t *testing.T) {
 		t.Fatalf("refresh moves = %v, want only the ratings feed", got)
 	}
 	for _, f := range app.Funnel {
-		if f.ID == "product_page_views" && f.Status != GrowthMeasured {
-			t.Fatalf("page views stage = %+v, want measured: its report is current", f)
+		// Current, not stale; it has one day of data in the window, so it is a lower bound.
+		if f.ID == "product_page_views" && f.Status != GrowthPartial {
+			t.Fatalf("page views stage = %+v, want partial: its report is current, its days are few", f)
 		}
 	}
 

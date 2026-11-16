@@ -1510,11 +1510,19 @@ func (c growthCtx) funnel(g *growthGroup, profile GrowthProfile) []GrowthFunnelS
 		switch {
 		case r.days > 0:
 			st.WindowStart, st.WindowEnd, st.DaysReported = from, to, r.days
-			st.Status = GrowthMeasured
-			st.Note = fmt.Sprintf("%s from %s to %s (%d of %s reported).", count, from, to, r.days, growthDays(c.opts.WindowDays))
-			if age > c.opts.StaleDays {
+			switch {
+			case age > c.opts.StaleDays:
 				st.Status = GrowthStale
 				st.Note = fmt.Sprintf("%s from %s to %s, but the newest data is from %s, %s ago.", count, from, to, r.date, growthDays(c.age(r.date)))
+			case r.days < c.opts.WindowDays:
+				// A day without a value adds nothing to the sum, and Apple
+				// leaves small daily analytics values out, so the total is a
+				// lower bound and a later stage can exceed it.
+				st.Status = GrowthPartial
+				st.Note = fmt.Sprintf("At least %s from %s to %s: only %d of %s have data, so the true total may be higher.", count, from, to, r.days, growthDays(c.opts.WindowDays))
+			default:
+				st.Status = GrowthMeasured
+				st.Note = fmt.Sprintf("%s from %s to %s (%d of %s reported).", count, from, to, r.days, growthDays(c.opts.WindowDays))
 			}
 		case age > c.opts.StaleDays:
 			st.Status = GrowthStale
@@ -2071,7 +2079,7 @@ func (c growthCtx) allocate(app GrowthApp, f growthFacts) GrowthAllocation {
 
 var growthStatuses = map[string]bool{GrowthMeasured: true, GrowthPartial: true, GrowthStale: true, GrowthBlind: true, GrowthNotApplicable: true, GrowthUnknown: true, GrowthDeferred: true}
 
-var growthFunnelStatuses = map[string]bool{GrowthMeasured: true, GrowthStale: true, GrowthBlind: true, GrowthNotApplicable: true}
+var growthFunnelStatuses = map[string]bool{GrowthMeasured: true, GrowthPartial: true, GrowthStale: true, GrowthBlind: true, GrowthNotApplicable: true}
 
 // Validate checks the projection against the contract shape.
 func (g Growth) Validate() error {

@@ -651,7 +651,8 @@ func TestGrowthFunnelPurchasesNeedRealPurchaseMetric(t *testing.T) {
 	rows = append(rows, growthRow{product: "product:alpha", metric: "app_store_connect_iap_units", date: growthDay(1), value: 1})
 	writeGrowthSignals(t, home, rows...)
 	p = purchases(buildGrowthT(t, home, growthOpts()))
-	if p.Status != GrowthMeasured || p.Value == nil || *p.Value != 1 || !strings.HasPrefix(p.Note, "1 purchase from ") || p.WindowEnd != growthDay(0) || p.DaysReported != 1 {
+	// One day of in-app purchases in the window: a current lower bound.
+	if p.Status != GrowthPartial || p.Value == nil || *p.Value != 1 || !strings.HasPrefix(p.Note, "At least 1 purchase from ") || p.WindowEnd != growthDay(0) || p.DaysReported != 1 {
 		t.Fatalf("purchases from iap units = %+v", p)
 	}
 }

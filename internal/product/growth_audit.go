@@ -31,11 +31,13 @@ var growthDimLabel = map[string]string{
 func (c growthCtx) audit(g *growthGroup, app GrowthApp) []GrowthAudit {
 	funnelFresh, funnelAny := 0, 0
 	for _, f := range app.Funnel {
+		// A partial stage is a window total with days missing: its data is
+		// current, only incomplete, so it counts as fresh.
 		switch f.Status {
-		case GrowthMeasured:
+		case GrowthMeasured, GrowthPartial:
 			funnelFresh++
 			funnelAny++
-		case GrowthStale, GrowthPartial:
+		case GrowthStale:
 			funnelAny++
 		}
 	}

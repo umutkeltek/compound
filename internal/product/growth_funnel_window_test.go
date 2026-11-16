@@ -78,3 +78,44 @@ func TestGrowthFunnelDownloadsFromAnalyticsKeepTheirName(t *testing.T) {
 		}
 	}
 }
+
+// A stage that has data on only some days of the window is a lower bound:
+// Apple leaves small daily values out of its analytics, so its total can be
+// lower than the next stage's. It reads partial and says so; it still counts
+// as a fresh stage, because its data is current.
+func TestGrowthFunnelStageWithMissingDaysIsALowerBound(t *testing.T) {
+	home := t.TempDir()
+	registerExampleApps(t, home, map[string]string{"product:example-app": "900000033"})
+	yes := true
+	var sales, analytics []string
+	for off := 40; off >= 1; off-- {
+		sales = append(sales, salesKindsLine("900000033", growthDay(off), 1, 0, 0, 0, 1, &yes))
+		observed := map[string]float64{"impressions": 20}
+		if off%7 == 0 { // page views published on 4 of the 30 window days
+			observed["product_page_views"] = 2
+		}
+		analytics = append(analytics, ascFunnelLine("900000033", growthDay(off), observed, nil))
+	}
+	writeASCSeries(t, home, sales...)
+	writeASCFunnelSeries(t, home, analytics...)
+
+	app := growthApp(t, buildGrowthT(t, home, growthOpts()), "product:example-app")
+	stage := map[string]GrowthFunnelStage{}
+	for _, f := range app.Funnel {
+		stage[f.ID] = f
+	}
+	views, downloads := stage["product_page_views"], stage["first_time_downloads"]
+	if views.Status != GrowthPartial || views.DaysReported != 4 || *views.Value != 8 ||
+		!strings.Contains(views.Note, "At least 8 product page views") || !strings.Contains(views.Note, "only 4 of 30 days have data") {
+		t.Fatalf("page views = %+v, want a partial lower bound over 4 of 30 days", views)
+	}
+	if downloads.Status != GrowthMeasured || *downloads.Value <= *views.Value {
+		t.Fatalf("downloads = %+v, want measured over every day and above the lower bound", downloads)
+	}
+	if imp := stage["impressions"]; imp.Status != GrowthMeasured || imp.DaysReported != 30 {
+		t.Fatalf("impressions = %+v, want measured over 30 days", imp)
+	}
+	if a := growthAudit(t, app, "analytics_funnel"); !strings.Contains(a.Summary+a.NextMove, "4 of 7") {
+		t.Fatalf("analytics funnel = %s %q %q, want the partial stage counted as fresh (4 of 7)", a.Status, a.Summary, a.NextMove)
+	}
+}
