@@ -180,7 +180,7 @@ console.log("app page cases ok: numbers name their days, one proceeds figure, fu
 {
   const source = readFileSync(new URL("../src/app/apps/[slug]/page.tsx", import.meta.url), "utf8");
   const body = source.slice(source.indexOf("return (\n    <div className=\"flex flex-col gap-8\">"));
-  const order = ["<AppNeedsYou", "<AppNumbers", "<AppWork", 'id="app-next-steps"', "<AppResults", "<AppAds", "<ProfileRow", "<GroupAudit"];
+  const order = ["<AppNeedsYou", "<AppNumbers", "<AppWork", 'id="app-next-steps"', "<AppResults", "<AppAds", "<AppWhere", "<ProfileRow", "<GroupAudit"];
   const at = order.map((mark) => body.indexOf(mark));
   assert.ok(at.every((i) => i >= 0), `every block is on the page: ${order.filter((_, i) => at[i] < 0)}`);
   assert.deepEqual([...at].sort((a, b) => a - b), at, "needs you, numbers, work, next steps, ads, then the profile and groups");
@@ -369,3 +369,36 @@ console.log("app page cases ok: overview and growth gaps name their counts, the 
 }
 
 console.log("app page cases ok: marketing visuals are one quiet line where an app has none");
+
+/* ---------- 9. Where it lives and runs: found under every spelling of the app ---------- */
+{
+  const { appWhereModel } = await import("../src/components/growth/app-where.ts");
+  const { AppWhere } = await import("../src/components/growth/AppWhere.tsx");
+  const edge = (from, rel, to, to_label, confidence = "observed", extra = {}) => ({ from, from_kind: "product", rel, rel_title: rel.replace("_", " "), to, to_label, confidence, evidence: "apps/pocket-log/deploy.sh:12", carried: false, ...extra });
+  const graph = {
+    snapshot: { state: "fresh", observed_at: new Date(NOW - 2 * DAY).toISOString() },
+    edge_list: [
+      edge("product:pocket_log", "code_in", "repo:example.invalid/pocket-log", "example.invalid/pocket-log"),
+      edge("product:pocket_log", "deployed_on", "host:box-1", "Box one (example host)", "declared"),
+      edge("product:Pocket-Log", "calls", "host:api", "API host"),
+      edge("product:pocket_log", "uses", "service:mail", "Mail"),
+      edge("product:tide_chart", "code_in", "repo:example.invalid/tide", "example.invalid/tide"),
+    ],
+  };
+  const model = appWhereModel(graph, ["product:pocket-log"], NOW);
+  assert.deepEqual(model.links.map((l) => [l.label, l.target, l.confidence]), [
+    ["Code in", "example.invalid/pocket-log", "observed"],
+    ["Deployed on", "Box one (example host)", "declared"],
+    ["Calls", "API host", "observed"],
+  ], "the underscore and upper-case spellings in the graph are this app's links");
+  assert.deepEqual(model.other, [{ relation: "uses", count: 1 }]);
+  assert.equal(model.observedDaysAgo, 2);
+  const words = text(renderToStaticMarkup(createElement(AppWhere, { name: "Pocket Log", model, read: { status: "live", source: "x" } })));
+  assert.ok(words.includes("Inventory observed 2 days ago") && words.includes("Written down, not seen"), words);
+  const unread = appWhereModel(null, ["product:pocket-log"], NOW);
+  assert.equal(unread.links, null, "an unread graph is unknown, never 'no links'");
+  const empty = text(renderToStaticMarkup(createElement(AppWhere, { name: "Quiet App", model: appWhereModel({ snapshot: {}, edge_list: [] }, ["product:quiet-app"], NOW), read: { status: "live", source: "x" } })));
+  assert.ok(empty.includes("That does not prove it has none"), empty);
+}
+
+console.log("app page cases ok: where an app lives and runs is found under every spelling, observed or declared, with its age");

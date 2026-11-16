@@ -5,12 +5,14 @@ import { BreadcrumbTitle, FreshnessChip, HeaderStat, PageHeader } from "@/compon
 import { AppAds, AppNumbers } from "@/components/growth/AppNumbers";
 import { AppNeedsYou } from "@/components/growth/AppNeedsYou";
 import { AppResults } from "@/components/products/AppResults";
+import { AppWhere } from "@/components/growth/AppWhere";
+import { appWhereModel } from "@/components/growth/app-where";
 import { decideHref } from "@/lib/links";
 import { foldLoopsByApp, getProductLoopsReport, productResultsDecision, verdictDue } from "@/lib/products";
 import { GroupAudit, NextMoves, ProfileRow, makeLookup, nextStepsSentence } from "@/components/growth/AppGrowth";
 import { AppGlyph, DegradedGrowth, FocusChip, StatusLegend, coverageCounts } from "@/components/growth/GrowthKit";
 import { OpenOnHash } from "@/components/growth/OpenOnHash";
-import { arr, readProjection, readWorkProjectIndex, WORK_PROJECT_INDEX_READS } from "@/lib/compound";
+import { arr, HEAVY_PROJECTION_TIMEOUT_MS, readProjection, readWorkProjectIndex, WORK_PROJECT_INDEX_READS } from "@/lib/compound";
 import { AppWork } from "@/components/growth/AppWork";
 import { appWorkModel } from "@/components/growth/app-work";
 import { findApp, getGrowth, valueLabel } from "@/lib/growth";
@@ -46,11 +48,14 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
 
   // The app's work: non-blocking reads that share the Work page's cache entries.
   const nowMs = Date.now();
-  const [projectIndex, workbench, results] = await Promise.all([
+  const [projectIndex, workbench, results, graph] = await Promise.all([
     readWorkProjectIndex({ nowMs }),
     readProjection([...WORK_PROJECT_INDEX_READS.work.args], { timeoutMs: WORK_PROJECT_INDEX_READS.work.timeoutMs }),
     getProductLoopsReport(),
+    readProjection(["system", "graph", "--kind", "product", "--json"], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }),
   ]);
+  // The graph spells some apps differently: look the app up by its id, every alias and its group id when sent.
+  const where = appWhereModel(graph.value, [app.productId, ...app.aliases, app.groupId].filter(Boolean), nowMs);
   // One results card per app: every spelling folds into the catalog's app.
   const loop = foldLoopsByApp(results.loops, model.apps).loops.find((row) => row.productId === app.productId) ?? null;
   const resultsKnown = results.status === "live" || results.status === "stale";
@@ -114,6 +119,8 @@ export default async function AppPage({ params }: { params: Promise<{ slug: stri
       <AppResults name={app.name} loop={loop} known={resultsKnown} />
 
       <AppAds app={app} />
+
+      <AppWhere name={app.name} model={where} read={graph} />
 
       <Suspense fallback={<p className="text-sm text-muted">Loading visual work…</p>}><ProductVisuals productIds={[app.productId, ...app.aliases]} /></Suspense>
 

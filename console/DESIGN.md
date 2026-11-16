@@ -541,7 +541,9 @@ matrix and the pale red fill above.
 - **One question first.** `/apps/[slug]` is a short briefing about one app, with its own purpose
   line and no header button: what needs you (its work on hold, a real verdict due), how it is
   doing (dated numbers), all of its open work (the shared work-to-app index, on hold and not moved
-  first, "See all N in Work"), the next moves (at most five, in the CLI's order), its ads, then what
+  first, "See all N in Work"), the next moves (at most five, in the CLI's order), whether the
+  changes helped, its ads, where it lives and runs (code, hosts and calls from the product graph,
+  matched by every id spelling, observed or declared, with the observation's age), then what
   the product is and the 12 groups. Each move says what to do, why in one line and
   what it unblocks by name. The section says when its steps are chores most apps share
   (`sharedMoves`) and that nothing starts them on its own; there is no copy button, and workflow

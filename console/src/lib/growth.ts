@@ -154,6 +154,8 @@ export type GrowthApp = {
   productId: string;
   name: string;
   aliases: string[];
+  /** The id the app's group is known by in other records ("" from a CLI that does not send `group_id`). */
+  groupId: string;
   /** First profile kind or "unknown" (kept for the sidebar and older readers). */
   kind: string;
   essence: { audience: string; problem: string; value: string } | null;
@@ -331,6 +333,7 @@ function mapApp(v: unknown): GrowthApp {
     productId: s(o.product_id),
     name: s(o.name) || s(o.product_id).replace(/^product:/, ""),
     aliases: strs(o.aliases),
+    groupId: s(o.group_id),
     kind: s(o.kind) || "unknown",
     essence: o.essence ? { audience: s(essence.audience), problem: s(essence.problem), value: s(essence.value) } : null,
     freshness: {
