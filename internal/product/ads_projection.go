@@ -162,20 +162,32 @@ type AdsProductView struct {
 }
 
 type AdsCampaignView struct {
-	Platform     string          `json:"platform"`
-	Label        string          `json:"label"`
-	ProductID    string          `json:"product_id"`
-	Account      string          `json:"account,omitempty"`
-	CampaignID   string          `json:"campaign_id"`
-	CampaignName string          `json:"campaign_name"`
-	Status       string          `json:"status"`
-	FirstDate    string          `json:"first_date"`
-	LastDate     string          `json:"last_date"`
-	Totals       AdsTotals       `json:"totals"`
-	Previous     AdsTotals       `json:"previous"`
-	Daily        []AdsDailyPoint `json:"daily"`
-	SourceRef    string          `json:"source_ref"`
+	Platform     string `json:"platform"`
+	Label        string `json:"label"`
+	ProductID    string `json:"product_id"`
+	Account      string `json:"account,omitempty"`
+	CampaignID   string `json:"campaign_id"`
+	CampaignName string `json:"campaign_name"`
+	// Status is "active" when a row on or after the active cutoff has spend
+	// or impressions above zero, else "quiet": rows of zeros mean the
+	// report is current but the campaign is not running.
+	Status    string `json:"status"`
+	FirstDate string `json:"first_date"`
+	LastDate  string `json:"last_date"`
+	// LastActiveDate is the newest day any row had spend or impressions
+	// above zero; empty when none ever did. A quiet campaign has had no
+	// spend and no impressions since this day.
+	LastActiveDate string          `json:"last_active_date,omitempty"`
+	Totals         AdsTotals       `json:"totals"`
+	Previous       AdsTotals       `json:"previous"`
+	Daily          []AdsDailyPoint `json:"daily"`
+	SourceRef      string          `json:"source_ref"`
 }
+
+// adRowRan reports whether the campaign ran on the row's day: it spent
+// money or its ads were shown. A pay-per-tap campaign can show ads that
+// nobody taps, so impressions alone count.
+func adRowRan(r AdRow) bool { return r.Spend > 0 || r.Impressions > 0 }
 
 type AdsGap struct {
 	Kind      string `json:"kind"`
@@ -304,8 +316,13 @@ func LoadAdsProjection(homePath string, opts AdsProjectionOptions) (AdsProjectio
 			}
 			platformRows = append(platformRows, r)
 			products[r.ProductID] = struct{}{}
+			// Each campaign maps to the newest day it ran ("" when it never
+			// did), so a campaign reporting only zeros is counted but not active.
 			key := r.ProductID + "\x00" + r.Account + "\x00" + r.CampaignID
-			if r.Date > campaigns[key] {
+			if _, seen := campaigns[key]; !seen {
+				campaigns[key] = ""
+			}
+			if adRowRan(r) && r.Date > campaigns[key] {
 				campaigns[key] = r.Date
 			}
 			if inWindow(r.Date) {
@@ -333,9 +350,9 @@ func LoadAdsProjection(homePath string, opts AdsProjectionOptions) (AdsProjectio
 			}
 		}
 		activeCutoff := asOfDay.Add(-staleAfter).Format("2006-01-02")
-		for _, last := range campaigns {
+		for _, lastRan := range campaigns {
 			view.CampaignsTotal++
-			if last >= activeCutoff {
+			if lastRan != "" && lastRan >= activeCutoff {
 				view.CampaignsActive++
 			}
 		}
@@ -454,6 +471,9 @@ func LoadAdsProjection(homePath string, opts AdsProjectionOptions) (AdsProjectio
 			if r.Date > view.LastDate {
 				view.LastDate = r.Date
 			}
+			if adRowRan(r) && r.Date > view.LastActiveDate {
+				view.LastActiveDate = r.Date
+			}
 			if inWindow(r.Date) {
 				w = append(w, r)
 			} else if inPrevious(r.Date) {
@@ -461,7 +481,7 @@ func LoadAdsProjection(homePath string, opts AdsProjectionOptions) (AdsProjectio
 			}
 		}
 		proj.Counts.Campaigns++
-		if view.LastDate >= activeCutoff {
+		if view.LastActiveDate != "" && view.LastActiveDate >= activeCutoff {
 			view.Status = "active"
 			proj.Counts.CampaignsActive++
 		} else {

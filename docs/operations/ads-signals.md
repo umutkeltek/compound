@@ -110,7 +110,10 @@ compound product ads --product product:demo-app --platform meta_ads --as-of 2026
 
 Per platform: `connected` (newest row within 72 h of as-of), `stale` (older),
 or `not_connected` (no rows) — the whole registry is always rendered, with the
-exact next command. Totals carry CTR / CPC / CPA / CPM / ROAS with zero
+exact next command. A campaign (and each platform's `campaigns_active` count)
+is `active` only when a row on or after that cutoff has spend or impressions
+above zero; a campaign whose rows report zeros is `quiet`, and its
+`last_active_date` names the newest day it had either. Totals carry CTR / CPC / CPA / CPM / ROAS with zero
 denominators reported as 0 and readers rendering "—"; rows in more than one
 currency are flagged `mixed_currency` with `spend_by_currency` instead of a
 summed number.
