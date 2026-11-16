@@ -96,13 +96,15 @@ type ProgressFile struct {
 }
 
 type preparedIndex struct {
-	identity IdentityFile
-	manifest Manifest
-	chunks   []Chunk
-	hashes   map[string]string
+	bodyBytesRead int64
+	identity      IdentityFile
+	manifest      Manifest
+	chunks        []Chunk
+	hashes        map[string]string
 }
 
 func Index(ctx context.Context, homePath string, lane LaneConfig, embedder Embedder, opts IndexOptions) (IndexReport, error) {
+	started := time.Now()
 	if err := ctx.Err(); err != nil {
 		return IndexReport{}, err
 	}
@@ -156,6 +158,7 @@ func Index(ctx context.Context, homePath string, lane LaneConfig, embedder Embed
 	}
 	report := IndexReport{
 		SchemaVersion:    ManifestSchemaVersion,
+		BodyBytesRead:    prepared.bodyBytesRead,
 		Lane:             lane.Lane,
 		IndexDir:         dir,
 		EmbedderIdentity: lane.Embedder.Identity(),
@@ -165,6 +168,21 @@ func Index(ctx context.Context, homePath string, lane LaneConfig, embedder Embed
 		Rebuild:          opts.Rebuild,
 	}
 	report.Added, report.Changed, report.Removed = stalenessCounts(oldManifest, prepared.manifest)
+	if st, e := os.Stat(filepath.Join(dir, "vectors.json")); e == nil {
+		report.IndexBytesRead = st.Size()
+	}
+	persist := func(p ProgressFile) error {
+		if err := persistIndex(dir, prepared, currentVectors, p); err != nil {
+			return err
+		}
+		for _, name := range []string{"identity.json", "manifest.json", "vectors.json", "progress.json"} {
+			if st, err := os.Stat(filepath.Join(dir, name)); err == nil {
+				report.IndexBytesWritten += st.Size()
+			}
+		}
+		return nil
+	}
+
 	pending := pendingChunks(prepared.chunks, currentVectors)
 	for start := 0; start < len(pending); start += embedBatchSize {
 		end := start + embedBatchSize
@@ -178,7 +196,7 @@ func Index(ctx context.Context, homePath string, lane LaneConfig, embedder Embed
 		}
 		vectors, err := embedder.Embed(ctx, texts)
 		if err != nil {
-			writeErr := persistIndex(dir, prepared, currentVectors, progressFor(lane, len(prepared.chunks), currentVectors, err.Error()))
+			writeErr := persist(progressFor(lane, len(prepared.chunks), currentVectors, err.Error()))
 			if writeErr != nil {
 				return report, fmt.Errorf("%w (also failed persisting partial progress: %v)", err, writeErr)
 			}
@@ -186,33 +204,35 @@ func Index(ctx context.Context, homePath string, lane LaneConfig, embedder Embed
 		}
 		if len(vectors) != len(batch) {
 			err := fmt.Errorf("embedder returned %d vectors for %d chunks", len(vectors), len(batch))
-			_ = persistIndex(dir, prepared, currentVectors, progressFor(lane, len(prepared.chunks), currentVectors, err.Error()))
+			_ = persist(progressFor(lane, len(prepared.chunks), currentVectors, err.Error()))
 			return report, err
 		}
+		report.NewEmbeddedChunks += len(vectors)
 		for i, vec := range vectors {
 			normalized, err := normalizeVector(vec)
 			if err != nil {
 				err = fmt.Errorf("chunk %s vector: %w", batch[i].ID, err)
-				_ = persistIndex(dir, prepared, currentVectors, progressFor(lane, len(prepared.chunks), currentVectors, err.Error()))
+				_ = persist(progressFor(lane, len(prepared.chunks), currentVectors, err.Error()))
 				return report, err
 			}
 			if len(normalized) != lane.Embedder.Dims {
 				err := fmt.Errorf("chunk %s vector dim %d != %d", batch[i].ID, len(normalized), lane.Embedder.Dims)
-				_ = persistIndex(dir, prepared, currentVectors, progressFor(lane, len(prepared.chunks), currentVectors, err.Error()))
+				_ = persist(progressFor(lane, len(prepared.chunks), currentVectors, err.Error()))
 				return report, err
 			}
 			currentVectors[batch[i].ID] = normalized
 		}
-		if err := persistIndex(dir, prepared, currentVectors, progressFor(lane, len(prepared.chunks), currentVectors, "")); err != nil {
+		if err := persist(progressFor(lane, len(prepared.chunks), currentVectors, "")); err != nil {
 			return report, err
 		}
 	}
 	if len(pending) == 0 {
-		if err := persistIndex(dir, prepared, currentVectors, progressFor(lane, len(prepared.chunks), currentVectors, "")); err != nil {
+		if err := persist(progressFor(lane, len(prepared.chunks), currentVectors, "")); err != nil {
 			return report, err
 		}
 	}
 	report.EmbeddedChunks = len(currentVectors)
+	report.WallMilliseconds = time.Since(started).Milliseconds()
 	return report, nil
 }
 
@@ -236,6 +256,7 @@ func prepareIndexContext(ctx context.Context, homePath string, lane LaneConfig) 
 		Chunk:               lane.Chunk,
 	}
 	var chunks []Chunk
+	var bodyBytesRead int64
 	for _, item := range manifest.Items {
 		if err := ctx.Err(); err != nil {
 			return preparedIndex{}, err
@@ -253,6 +274,7 @@ func prepareIndexContext(ctx context.Context, homePath string, lane LaneConfig) 
 		if err != nil {
 			return preparedIndex{}, err
 		}
+		bodyBytesRead += int64(len(body))
 		itemChunks, err := chunkItemContext(ctx, item, body, lane.Chunk)
 		if err != nil {
 			return preparedIndex{}, err
@@ -279,6 +301,7 @@ func prepareIndexContext(ctx context.Context, homePath string, lane LaneConfig) 
 		hashes[chunk.ID] = chunk.ChunkHash
 	}
 	return preparedIndex{
+		bodyBytesRead: bodyBytesRead,
 		identity: IdentityFile{
 			SchemaVersion:       IdentitySchemaVersion,
 			Lane:                lane.Lane,
