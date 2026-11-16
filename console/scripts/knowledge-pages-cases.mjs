@@ -283,6 +283,33 @@ console.log(JSON.stringify({ generated_at: iso(0) }));
     assert.doesNotMatch(sources, /bg-(emerald|slate|amber|red|violet|blue|pink)-\d{2,3}|text-(emerald|slate|amber)-\d{3}/, "no fixed light-only colours");
 
     console.log("knowledge-pages cases ok: Sources");
+
+    /* ---------- /map/memory redirect (KNOW-20) ---------- */
+    // Resolve with Next's own matchers: the first redirect whose path and
+    // query conditions match, and the destination it builds.
+    const { default: nextConfig } = await import("../next.config.ts");
+    const { getPathMatch } = await import("next/dist/shared/lib/router/utils/path-match.js");
+    const { matchHas, prepareDestination } = await import("next/dist/shared/lib/router/utils/prepare-destination.js");
+    const redirects = await nextConfig.redirects();
+    const follow = (pathname, query) => {
+      for (const rule of redirects) {
+        const params = getPathMatch(rule.source, { removeUnnamedParams: true })(pathname);
+        if (!params) continue;
+        const hasParams = matchHas({ headers: {}, cookies: {} }, query, rule.has, rule.missing);
+        if (!hasParams) continue;
+        const { parsedDestination } = prepareDestination({ appendParamsToQuery: false, destination: rule.destination, params: { ...params, ...hasParams }, query });
+        return parsedDestination;
+      }
+      return null;
+    };
+    const seeded = follow("/map/memory", { seed: "fixture-harness" });
+    assert.equal(seeded?.pathname, "/memory");
+    assert.equal(seeded?.query.graph, "fixture-harness", "an old seeded link opens the graph on the same seed");
+    assert.equal(seeded?.hash, "#memory-graph");
+    const plain = follow("/map/memory", {});
+    assert.equal(plain?.pathname, "/memory");
+    assert.equal(plain?.query.graph, undefined);
+    console.log("knowledge-pages cases ok: /map/memory redirect");
   } finally {
     await compound.settleProjectionReads();
     await rm(scratch, { recursive: true, force: true });
