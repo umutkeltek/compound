@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -82,11 +83,11 @@ func TestLessonMatchingHasAHardTimeBudget(t *testing.T) {
 	}
 	release := make(chan struct{})
 	defer close(release)
-	matcher, deadline := spoolLessonMatcher, spoolMatchDeadline
-	defer func() { spoolLessonMatcher, spoolMatchDeadline = matcher, deadline }()
-	spoolLessonMatcher = func(string, string, json.RawMessage) ([]LessonMatch, string) {
+	matcher, deadline := lessonPatternMatches, spoolMatchDeadline
+	defer func() { lessonPatternMatches, spoolMatchDeadline = matcher, deadline }()
+	lessonPatternMatches = func(*regexp.Regexp, string) bool {
 		<-release
-		return []LessonMatch{{ID: "never", Apply: "never"}}, ""
+		return true
 	}
 	fired := make(chan time.Time)
 	close(fired)
@@ -114,7 +115,7 @@ func TestLessonMatchingHasAHardTimeBudget(t *testing.T) {
 	}
 
 	// Within the budget the real matcher answers as before.
-	spoolLessonMatcher = matcher
+	lessonPatternMatches = matcher
 	spoolMatchDeadline = func() <-chan time.Time { return nil }
 	stdout.Reset()
 	if code := RunSpoolCommand("claude_code", "pre-tool-use", bytes.NewReader(spoolInput("widget --force all")), &stdout, &stderr, ledgerTestNow,

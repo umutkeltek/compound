@@ -417,8 +417,10 @@ being paged per item.
      `<tool>` is the harness tool name (`Bash`, `Edit`, `Write`, `Read`, ...)
      or `*`; it may not contain `:`. `<regex>` is Go RE2, matched against the
      tool call's primary input (the command for `Bash`, the file path for
-     file tools). A new regex may be at most 256 bytes and must compile to at
-     most 1000 instructions (the hook runs it on every call), and it may not
+     file tools). A new regex may be at most 256 bytes, must compile to at
+     most 1000 instructions, and must cost at most 400 µs per KiB on fixed
+     worst-case inputs (6.4 ms on a 16 KiB command; the hook runs it on every
+     call), and it may not
      fire on ordinary calls (`ls`, `git status`, an empty input, a plain
      Read) unless `--allow-broad-trigger` is given, which is recorded on the
      lesson (`broad_trigger: allowed`) and ranks it last. Example:

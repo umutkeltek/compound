@@ -149,6 +149,12 @@ func RebuildLessonIndex(homePath string, now time.Time) (LessonIndexBuild, error
 // size cap are returned as Unserved and left out. An error means nothing was
 // published and the previous index still serves.
 func CompileLessonIndex(homePath, out string, sources LessonSources, now time.Time) (LessonIndexBuild, error) {
+	return compileLessonIndex(homePath, out, sources, now, true)
+}
+
+// compileLessonIndex reuses the pattern costs the previous index measured
+// when useCache is set; the manual repair door measures everything again.
+func compileLessonIndex(homePath, out string, sources LessonSources, now time.Time, useCache bool) (LessonIndexBuild, error) {
 	build := LessonIndexBuild{Path: out}
 	unlock, err := lockLessonIndexBuild(homePath)
 	if err != nil {
@@ -179,7 +185,12 @@ func CompileLessonIndex(homePath, out string, sources LessonSources, now time.Ti
 		return build, fmt.Errorf("resolve current lessons: %w", err)
 	}
 	build.Problems = append(build.Problems, projection.problems...)
-	index, buildProblems := BuildLessonIndex(projection.lessons, now)
+	previous, hasPrevious := readPreviousLessonIndex(out)
+	var cache map[string]int64
+	if useCache && hasPrevious {
+		cache = lessonCostCache(previous)
+	}
+	index, buildProblems := buildLessonIndex(projection.lessons, now, cache)
 	index.SourceMemoryRevision = projection.revision
 	index.SourceLedgerSeq = projection.generation
 	index.ExcludedLessonIDs = projection.excluded
@@ -188,7 +199,9 @@ func CompileLessonIndex(homePath, out string, sources LessonSources, now time.Ti
 	if err != nil {
 		return build, err
 	}
-	build.Problems = append(build.Problems, droppedSkillLines(out, fitted, unserved)...)
+	if hasPrevious {
+		build.Problems = append(build.Problems, droppedSkillLines(previous, fitted, unserved)...)
+	}
 	if err := WriteLessonIndex(out, fitted); err != nil {
 		return build, err
 	}
@@ -201,15 +214,7 @@ func CompileLessonIndex(homePath, out string, sources LessonSources, now time.Ti
 // carries them any more. The first automatic rebuild on a home whose index
 // was built by hand from skill folders (and has no recorded sources) would
 // otherwise drop those lines silently.
-func droppedSkillLines(path string, next LessonIndex, unserved []string) []error {
-	data, state := readLessonIndexBytes(path)
-	if state != "" {
-		return nil
-	}
-	var previous LessonIndex
-	if json.Unmarshal(data, &previous) != nil {
-		return nil
-	}
+func droppedSkillLines(previous LessonIndex, next LessonIndex, unserved []string) []error {
 	kept := map[string]bool{}
 	for _, lesson := range next.Lessons {
 		kept[lesson.ID] = true
@@ -225,6 +230,19 @@ func droppedSkillLines(path string, next LessonIndex, unserved []string) []error
 		problems = append(problems, fmt.Errorf("lesson %s (from %s) was served but is in no recorded source now; record its folder with `%s --skills DIR` to keep it", lesson.ID, lesson.Source, LessonIndexRepairCommand))
 	}
 	return problems
+}
+
+// readPreviousLessonIndex reads the index a build is about to replace.
+func readPreviousLessonIndex(path string) (LessonIndex, bool) {
+	data, state := readLessonIndexBytes(path)
+	if state != "" {
+		return LessonIndex{}, false
+	}
+	var previous LessonIndex
+	if json.Unmarshal(data, &previous) != nil || previous.SchemaVersion != LessonIndexSchemaVersion {
+		return LessonIndex{}, false
+	}
+	return previous, true
 }
 
 // RemoveLessonsFromIndex drops ids from the published index without a full

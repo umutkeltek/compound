@@ -16,13 +16,9 @@ import (
 	"compound/internal/home"
 )
 
-// spoolLessonMatcher and spoolMatchDeadline are the spooled hook's lesson
-// matcher and its time budget; tests replace them to prove the fallback
-// without depending on how fast the machine is.
-var (
-	spoolLessonMatcher = MatchLessonsFileWithState
-	spoolMatchDeadline = func() <-chan time.Time { return time.After(LessonMatchBudget) }
-)
+// spoolMatchDeadline is the spooled hook's lesson-matching budget; tests
+// replace it to prove the fallback without depending on the machine.
+var spoolMatchDeadline = func() <-chan time.Time { return time.After(LessonMatchBudget) }
 
 // RunSpoolCommand is the zero-wait PreToolUse path for watch-only harnesses.
 // It reads stdin, matches the lesson index (one small file read), appends one
@@ -43,9 +39,7 @@ func RunSpoolCommand(harnessName, hookName string, stdin io.Reader, stdout, stde
 		if in.Err == nil && homeErr == nil {
 			indexPath := LessonIndexPath(homePath)
 			tool := NormalizeNativeTool(harnessName, in.ToolName)
-			matches, state := matchWithin(func() ([]LessonMatch, string) {
-				return spoolLessonMatcher(indexPath, tool, in.ToolInput)
-			}, spoolMatchDeadline())
+			matches, state, running := MatchLessonsFileWithin(indexPath, tool, in.ToolInput, spoolMatchDeadline())
 			for _, match := range matches {
 				lessonIDs = append(lessonIDs, match.ID)
 			}
@@ -54,8 +48,8 @@ func RunSpoolCommand(harnessName, hookName string, stdin io.Reader, stdout, stde
 			switch {
 			case state == LessonMatchTimeout:
 				// No pattern set may slow every tool call: past the budget the
-				// call gets no lessons.
-				fmt.Fprintf(stderr, "hook spool: lesson matching ran past its %s budget; serving no lessons (check the index for expensive triggers)\n", LessonMatchBudget)
+				// call gets the lessons matched so far.
+				fmt.Fprintf(stderr, "hook spool: lesson matching ran past its %s budget while lesson %s was running; served the %d lessons matched before it (check that trigger)\n", LessonMatchBudget, running, len(matches))
 			case state != "" && state != LessonIndexMissing:
 				// A broken index means no lessons, never a failed or slow call.
 				fmt.Fprintf(stderr, "hook spool: lesson index %s at %s; serving no lessons (repair: %s)\n", state, indexPath, LessonIndexRepairCommand)
@@ -246,7 +240,7 @@ func RunLessonsIndexCommand(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	}
-	build, err := CompileLessonIndex(homePath, out, sources, time.Now())
+	build, err := compileLessonIndex(homePath, out, sources, time.Now(), false)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1

@@ -250,7 +250,7 @@ func checkNewLessonTriggerBroad(trigger LessonTrigger, allowBroad bool) error {
 		return fmt.Errorf("trigger %s:%s fires on ordinary calls (%s), so it would crowd out specific lessons on almost every call; narrow it to the step before the damage, or pass --allow-broad-trigger to keep it (it then ranks last)",
 			trigger.Tool, trigger.Pattern, strings.Join(hits, "; "))
 	}
-	return nil
+	return CheckLessonTriggerCost(trigger)
 }
 
 // ParseLessonTrigger validates and splits a trigger. Empty input is no trigger.

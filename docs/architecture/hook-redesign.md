@@ -97,8 +97,27 @@ serving) and at most 1000 compiled instructions (`mem.CheckLessonPattern`, enfor
 builder and the reader). The builder marks the index `limits_version: 1`; the reader re-checks the
 compiled size of every pattern in an index without that mark (one written by an older binary) and drops
 an over-limit pattern instead of running it. A non-shell tool's input is matched on its first 2 KiB.
-Finally, matching on one tool call has a hard 100 ms budget: past it the call gets no lessons, the
-spool line records `lesson_index: "match_timeout"` and the hook logs it.
+The static caps do not predict cost (`(?:\w?\s?){225}#N` compiles to about 900 instructions, like a
+harmless 594-byte literal list, but costs about 70 ms on a 16 KiB command against 1.4 ms), so the
+lesson door and the index builder also time each pattern (`mem.MeasureLessonPattern`) against fixed
+worst-case subjects at the hook's own sizes: 16 KiB for a shell tool (text that makes optional repeats
+branch, an ordinary command repeated, pseudo-random bytes) and 2 KiB for any other tool (the same plus
+a file-writing payload); a `*` trigger is timed on both. The limit is 400 µs per KiB of subject (6.4 ms
+on 16 KiB, 0.8 ms on 2 KiB): measured, ordinary triggers cost 0.1-15 µs per KiB, the slowest real
+trigger about 90 µs per KiB, the slow shape above about 4,600 µs per KiB. Each subject is timed until
+one run is under the limit, at most five times, so one stalled run on a loaded machine does not refuse
+a fast pattern. The builder runs the same check on every pattern, so a slow trigger written by an older
+binary is left out and reported, never served; it records each entry's cost (`cost_us`) and the slow
+patterns it left out (`slow_patterns`, at most 64), and an automatic rebuild reuses those
+measurements, while `compound hook lessons-index` measures everything again. The index is marked
+`limits_version: 2`. None of this runs on the tool-call path.
+
+On the tool-call path, patterns run cheapest first (by `cost_us`; index order for an index without
+costs), and the served lessons are still the best-ranked matches. Matching on one call has a hard
+100 ms budget: past it the call gets the best-ranked lessons matched so far, the spool line records
+`lesson_index: "match_timeout"`, and the hook logs which lesson's pattern was running. Cheapest first
+means a slow pattern can only delay patterns that cost more than it, so a cheap guard is not starved by
+a slower lesson that outranks it.
 
 **Rank and capacity.** The index is in rank order, most specific first, then newest: a lesson whose
 trigger fires on an ordinary call (`ls`, `git status`, an empty input, a plain Read; kept only with
