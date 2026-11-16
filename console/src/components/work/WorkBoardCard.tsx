@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import type { KeyboardEvent } from "react";
 
 import { ClockIcon, IdRef, SegmentedProgress } from "@/components/kit";
@@ -7,6 +8,7 @@ import { hashToneFor, TONE_FILL } from "@/components/kit/tone";
 import type { StateTone } from "@/components/kit/StateBadge";
 import type { BoardCard } from "@/lib/work-pipeline";
 import { appHue, humanizeProductId } from "@/lib/app-identity";
+import { workItemHref } from "@/lib/links";
 import { plainState } from "@/lib/plain-words";
 
 /**
@@ -98,7 +100,7 @@ export function WorkBoardCard({
       data-tone={card.tone}
       role={interactive ? "button" : undefined}
       tabIndex={interactive ? 0 : undefined}
-      aria-label={interactive ? `Open trace ${card.title}` : undefined}
+      aria-label={interactive ? `Preview ${card.title}` : undefined}
       onClick={open}
       onKeyDown={onKeyDown}
     >
@@ -156,9 +158,19 @@ export function WorkBoardCard({
 
       <div className="mt-1 flex items-center gap-2 border-t border-hair-2 pt-2.5">
         <OwnerAvatar owner={owner} name={card.agentName} />
-        {card.displayId && !compact ? (
+        {card.traceable ? (
+          <Link
+            href={workItemHref(card.workId)}
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => event.stopPropagation()}
+            className="min-w-0 truncate text-xs font-medium text-work hover:underline"
+            title={card.workId}
+          >
+            Open work page
+          </Link>
+        ) : card.displayId && !compact ? (
           <span className="min-w-0 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
-            <IdRef id={card.displayId} kind={card.traceable ? "work" : "plan"} plain truncate />
+            <IdRef id={card.displayId} kind="plan" plain truncate />
           </span>
         ) : null}
         {card.ageLabel ? (

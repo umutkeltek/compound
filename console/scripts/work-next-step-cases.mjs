@@ -10,15 +10,25 @@ const work = {
   ],
 };
 assert.equal(workNextStep(work).reason, "Waiting for the second test account.");
-assert.equal(workNextStep(work).owner, "fixture-agent");
+assert.equal(workNextStep(work).owner, "Fixture Agent", "the owner by the agent's one name, never the raw id");
+assert.equal(workNextStep({ ...work, claimed_by: "fixture_agent:lane-2" }).owner, "Fixture Agent");
 assert.equal(workNextStep({ ...work, blocking_reason: "Current dependency" }).reason, "Current dependency");
 assert.doesNotMatch(workNextStep({ ...work, state: "ready" }).reason, /test account|test device/);
-assert.match(workNextStep({ state: "held" }).reason, /no reason was recorded/);
-assert.equal(workNextStep({ state: "held" }).owner, "No agent assigned");
-assert.match(workNextStep(work).next, /No automatic retry is confirmed/);
-assert.equal(workNextStep({ state: "verifying", success_predicate: "A real result is checked" }).reason, "A real result is checked");
-assert.match(workNextStep({ state: "running" }).reason, /marked as running/);
-console.log("work-next-step cases ok: latest hold reason, explicit dependencies, resumed work, missing ownership and unconfirmed retries");
+assert.match(workNextStep({ state: "held" }).reason, /No reason was recorded/);
+assert.equal(workNextStep({ state: "held" }).recorded, false);
+assert.equal(workNextStep({ state: "held" }).owner, "No agent");
+assert.equal(workNextStep(work).title, "On hold", "the state in the board's words");
+// No generic line that contradicts the record: a held item's next line never
+// says an agent checks it; a picked-up item never says nobody is assigned;
+// a suggested item says it needs accepting or cancelling.
+assert.doesNotMatch(workNextStep(work).next, /agent needs to|automatic retry/i);
+assert.match(workNextStep({ state: "claimed", owner: "fixture-agent" }).next, /^Fixture Agent picked it up/);
+assert.doesNotMatch(workNextStep({ state: "claimed", owner: "fixture-agent" }).next, /needs to be assigned|no agent/i);
+assert.match(workNextStep({ state: "proposed", owner: "operator:someone" }).next, /accept it or cancel it/);
+assert.equal(workNextStep({ state: "verifying", success_predicate: "A real result is checked" }).reason, "The check must show: A real result is checked");
+assert.match(workNextStep({ state: "running" }).reason, /No progress note was recorded/);
+assert.equal(workNextStep({ state: "ready", next_action: "claim before touching" }).reason, "An agent must pick it up before working on it.", "the tool's step in plain words");
+console.log("work-next-step cases ok: latest hold reason, explicit dependencies, resumed work, owner by name, no contradicting generic line");
 
 // One title per work item (lib/work-title.ts). The board card, the trace
 // drawer and the item page computed it three ways (outcome first, success
@@ -70,4 +80,49 @@ console.log("work-next-step cases ok: latest hold reason, explicit dependencies,
   assert.match(page, /title=\{workTitleFull\(work\)\}/, "the item page heading is the item's one title");
   assert.doesNotMatch(page, /"Work details"/, "the item page has no generic fallback heading");
   console.log("work-title cases ok: card, drawer and item page share one title; derived titles for records without a goal; long goals shortened, full text kept");
+}
+
+// An item's dates and history (lib/work-history.ts), from the JSON
+// `lifecycle` list `work show --json` returns: newest first, plain words,
+// the agent by name, and the stale mark from the one rule. A fixed clock.
+{
+  const { workDates, workHistory, plainHistoryNote, daysAgo, plainDay } = await import("../src/lib/work-history.ts");
+  const NOW = Date.parse("2030-05-20T12:00:00Z");
+  const ns = (days) => String(BigInt(NOW - days * 86_400_000) * 1_000_000n);
+  const record = {
+    id: "work_fixture_history", state: "running", created_at: new Date(NOW - 30 * 86_400_000).toISOString(),
+    lifecycle: [
+      { ts: ns(30), from: "", to: "ready", note: "created" },
+      { ts: ns(20), from: "ready", to: "claimed", by: "fixture_agent:lane-1", note: "claimed" },
+      { ts: ns(19), from: "claimed", to: "running", by: "fixture_agent:lane-1", note: "Started the fixture run. (policy allow_with_obligations)" },
+      { ts: ns(2), from: "running", to: "running", by: "fixture_agent:lane-1", note: "action recorded: inspect_task" },
+    ],
+  };
+  const history = workHistory(record);
+  assert.deepEqual(history.map((entry) => entry.what), [
+    "Updated while running",
+    "Picked up, not started → Running",
+    "Ready to start → Picked up, not started",
+    "Created as Ready to start",
+  ], "newest first, in the board's words");
+  assert.equal(history[1].who, "Fixture Agent", "who, by the agent's one name");
+  assert.equal(history[1].note, "Started the fixture run.", "policy suffix dropped");
+  assert.equal(history[0].note, 'Recorded the step "inspect task".');
+  assert.equal(history[3].note, "", "a bare 'created' note adds nothing");
+  assert.equal(plainHistoryNote("claimed"), "");
+  assert.deepEqual(workHistory({ id: "work_fixture_none" }), [], "no lifecycle: no history, never invented");
+
+  const dates = workDates(record, { nowMs: NOW });
+  assert.equal(dates.pickedUpMs, NOW - 20 * 86_400_000, "picked up: the latest step into claimed");
+  assert.equal(dates.changedMs, NOW - 2 * 86_400_000, "last changed: the latest step");
+  assert.equal(dates.createdMs, NOW - 30 * 86_400_000);
+  assert.equal(dates.stale, true, "running and picked up 20 days ago");
+  assert.equal(workDates(record, { nowMs: NOW, claimedAt: ns(3) }).stale, false, "the workbench pick-up time wins");
+  assert.equal(workDates({ ...record, state: "held" }, { nowMs: NOW }).stale, false, "on hold is not in progress");
+  assert.equal(workDates({ id: "x", state: "running" }, { nowMs: NOW }).stale, false, "unknown pick-up time is not stale");
+  assert.equal(workDates({ id: "x", state: "running" }, { nowMs: NOW }).changedMs, null);
+  assert.equal(daysAgo(NOW - 40 * 86_400_000, NOW), "40 days ago");
+  assert.equal(daysAgo(NOW - 1000, NOW), "today");
+  assert.equal(plainDay(Date.parse("2030-05-01T23:30:00Z")), "1 May 2030");
+  console.log("work-history cases ok: lifecycle newest first in plain words, agent by name, dates from the record, one stale rule");
 }

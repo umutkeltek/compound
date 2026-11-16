@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { BoardIcon, GridIcon, InboxIcon, LayersIcon, ListIcon, RouteIcon, TimelineIcon } from "@/components/kit/icons";
 import { BoardLens } from "@/components/work/BoardLens";
 import { WorkByAppLens, type WorkByAppModel } from "@/components/work/WorkByAppLens";
+import { rememberWorkList } from "@/components/work/WorkBackLink";
 import { CapsuleColumns } from "@/components/work/CapsuleColumns";
 import { OfferedLens } from "@/components/work/OfferedLens";
 import { PipelineLens } from "@/components/work/PipelineLens";
@@ -80,6 +81,8 @@ export function WorkLenses({
 
   useEffect(() => {
     paramsRef.current = searchParams.toString();
+    // The item page's "Back" returns here (components/work/WorkBackLink.tsx).
+    rememberWorkList(searchParams.toString());
   }, [searchParams]);
 
   // The address owns the view, the List filter, the agent, the app or group

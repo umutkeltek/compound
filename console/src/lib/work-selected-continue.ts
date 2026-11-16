@@ -33,15 +33,22 @@ export function selectedContinueView(work: Json, lease: Json | null): SelectedCo
   let status = "Waiting";
   let detail = "This task has not started a new run. Check its next step for what is needed.";
   if (state === "claimed") {
+    // Name what is missing; an owner on the record is not the same as an
+    // agent that holds the work now.
+    const missing = [
+      actor ? "" : "no agent holds it right now",
+      hasSelection ? "" : "no tool and model are chosen",
+      hasWorkspace ? "" : "no folder to work in is set",
+    ].filter(Boolean);
     status = ready ? "Ready to run" : "Needs setup";
     detail = ready
-      ? "An agent, model and workspace are selected. An authorized agent can check the task and start a run."
-      : "An agent, model or workspace still needs to be assigned before work can start.";
+      ? "An agent, a model and a folder are chosen. An agent can start the run."
+      : `It cannot start yet: ${missing.join(", ")}.`;
   } else if (state === "running") {
     status = "Running";
     detail = "The task is marked as running. Check its activity for the latest progress; completion still needs verification.";
   } else if (state === "verifying") {
-    status = "Result needs checking";
+    status = "Waiting for a proof check";
     detail = "The run has finished. The agent needs to check its result before this task can be completed. Starting another run is never automatic.";
   } else if (state === "completed") {
     status = "Completed";

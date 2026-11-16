@@ -1,10 +1,14 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 
-import { Drawer, FreshnessChip, IdRef, TooltipCard } from "@/components/kit";
+import { Drawer, FreshnessChip, IdRef, StateBadge, TooltipCard } from "@/components/kit";
 import type { Tone } from "@/components/kit";
 import { WorkActionRow, type WorkActionRowData } from "@/components/work/WorkActionRow";
+import { evidenceHistoryHref, workItemHref } from "@/lib/links";
+import { daysAgo, plainDay, type WorkDates } from "@/lib/work-history";
+import type { WorkNextStep } from "@/lib/work-next-step";
 import type { TraceModel, TraceStep } from "@/lib/work-trace";
 
 /** Classify an envelope-trace meta ref so its TooltipCard names what it is. */
@@ -49,7 +53,45 @@ function MetaRef({ value }: { value: string }) {
  * action row in the footer. Populated on open from `/api/work/trace`.
  */
 
-type TracePayload = { generatedAt: string; trace: TraceModel; actionRow: WorkActionRowData };
+type TracePayload = {
+  generatedAt: string;
+  nowMs: number;
+  preview: { stateLabel: string; nextStep: WorkNextStep; dates: WorkDates };
+  trace: TraceModel;
+  actionRow: WorkActionRowData;
+};
+
+/**
+ * The short preview: state, who has it, how old it is, the recorded reason
+ * or next step (lib/work-next-step.ts, the same as the item page), and the
+ * way to the item's own page. Everything else is on that page.
+ */
+function Preview({ payload }: { payload: TracePayload }) {
+  const { preview, trace, nowMs } = payload;
+  const { nextStep, dates } = preview;
+  const age = dates.pickedUpMs !== null
+    ? `Picked up ${daysAgo(dates.pickedUpMs, nowMs)}`
+    : dates.createdMs !== null ? `Created ${daysAgo(dates.createdMs, nowMs)}` : "Age not recorded";
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <StateBadge state={trace.state} label={preview.stateLabel} />
+        <span className="text-muted">{nextStep.owner === "No agent" ? "No agent has it" : <>Held by <strong className="font-semibold text-ink">{nextStep.owner}</strong></>}</span>
+        <span className={dates.stale ? "font-semibold text-crit" : "text-muted"} title={dates.pickedUpMs !== null ? plainDay(dates.pickedUpMs) : undefined}>
+          · {age}{dates.stale ? ", not moved in over a week" : ""}
+        </span>
+      </div>
+      <div>
+        <div className="section-label mb-1">{nextStep.recorded ? "Recorded reason" : "Where it stands"}</div>
+        <p className="whitespace-pre-line text-sm leading-relaxed text-ink">{nextStep.reason}</p>
+        {nextStep.next ? <p className="mt-1 text-sm text-muted">{nextStep.next}</p> : null}
+      </div>
+      <Link href={workItemHref(trace.workId)} className="w-fit rounded-md border border-work-line bg-work-soft px-3 py-1.5 text-sm font-semibold text-work hover:underline">
+        Open work page →
+      </Link>
+    </div>
+  );
+}
 
 const PHASE_TONE: Record<TraceStep["status"], string> = {
   done: "border-good-line bg-good-soft text-good",
@@ -93,7 +135,7 @@ function Spine({ payload }: { payload: TracePayload }) {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="text-2xs font-bold uppercase tracking-wide text-faint">Envelope trace · intent → proof</span>
+        <span className="text-2xs font-bold uppercase tracking-wide text-faint">Technical record</span>
         <FreshnessChip generatedAt={payload.generatedAt} source={trace.source} />
       </div>
 
@@ -119,10 +161,7 @@ function Spine({ payload }: { payload: TracePayload }) {
         </details>
       ) : null}
 
-      <div className="flex items-center gap-2 text-2xs text-faint">
-        <span>Trace lineage →</span>
-        <span className="mono">compound system lineage {trace.workId}</span>
-      </div>
+      <Link href={evidenceHistoryHref(trace.workId)} className="w-fit text-2xs font-medium text-work hover:underline">Evidence history →</Link>
     </div>
   );
 }
@@ -171,16 +210,8 @@ export function TraceDrawer({
     <Drawer
       open={Boolean(workId)}
       onOpenChange={(open) => !open && onClose()}
-      title={payload?.trace.title || "Work trace"}
+      title={payload?.trace.title || "Work item"}
       meta={workId ? <IdRef id={workId} plain /> : undefined}
-      footer={
-        payload ? (
-          <div className="w-full">
-            <div className="mb-2 text-2xs font-bold uppercase tracking-wide text-faint">Move this work</div>
-            <WorkActionRow data={payload.actionRow} mutationsReady={mutationsReady} onDone={onClose} />
-          </div>
-        ) : null
-      }
     >
       {loading ? (
         <div className="flex flex-col gap-3">
@@ -191,7 +222,19 @@ export function TraceDrawer({
       ) : error ? (
         <p className="text-sm text-crit">{error}</p>
       ) : payload ? (
-        <Spine payload={payload} />
+        <div className="flex flex-col gap-5">
+          <Preview payload={payload} />
+          <details className="rounded-lg border border-hair bg-soft px-3 py-2">
+            <summary className="cursor-pointer text-xs font-semibold text-muted">For agents: technical record and commands</summary>
+            <div className="mt-3 flex flex-col gap-4">
+              <Spine payload={payload} />
+              <div>
+                <div className="mb-2 text-2xs font-bold uppercase tracking-wide text-faint">Commands an agent can run</div>
+                <WorkActionRow data={payload.actionRow} mutationsReady={mutationsReady} onDone={onClose} />
+              </div>
+            </div>
+          </details>
+        </div>
       ) : null}
     </Drawer>
   );

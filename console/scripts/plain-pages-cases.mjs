@@ -119,7 +119,28 @@ const reply = {
   "source connections --json": { schema_version: "compound.source_connections_projection.v0.2", generated_at: iso(0), counts: {}, connections: [] },
   "director propose --dry-run --json": { generated_at: iso(0), proposals: [] },
   "packets list --json": { schema_version: "compound.work.offered_packets.v0.1", counts: {}, items: [] },
+  "work leases --json": { leases: [] },
+  // One item's own record, with the lifecycle list \`work show --json\` returns.
+  "work show work_fx_held --json": {
+    id: "work_fx_held", state: "held", owner: "claude_code", created_at: iso(12), success_predicate: "Fixture item on hold",
+    canonical_surface: "product:fixture-app", evidence_refs: ["rec_fixture_one"],
+    lifecycle: [
+      { ts: ns(12), from: "", to: "ready", note: "created" },
+      { ts: ns(11), from: "ready", to: "claimed", by: "claude_code:fixture-lane", note: "claimed" },
+      { ts: ns(10), from: "claimed", to: "running", by: "claude_code:fixture-lane", note: "Started the fixture run." },
+      { ts: ns(3), from: "running", to: "held", by: "claude_code:fixture-lane", note: "Waiting for a fixture device. (policy allow_with_obligations)" },
+    ],
+  },
+  "work show work_fx_run_old --json": {
+    id: "work_fx_run_old", state: "running", owner: "codex", created_at: iso(10), success_predicate: "Fixture run is still going",
+    lifecycle: [
+      { ts: ns(10), from: "", to: "ready", note: "created" },
+      { ts: ns(9), from: "ready", to: "claimed", by: "codex", note: "claimed" },
+      { ts: ns(9), from: "claimed", to: "running", by: "codex", note: "Started." },
+    ],
+  },
 };
+if (args === "work show work_fx_missing --json") { console.error("error: not found: /fixture-home/work/work_fx_missing.json"); process.exit(1); }
 if (args === "version") { console.log("synthetic"); process.exit(0); }
 // The test releases all reads only after every cold page has rendered.
 while (!existsSync(${JSON.stringify(releaseReads)})) await Bun.sleep(5);
@@ -142,6 +163,8 @@ const { default: Work } = await import("../src/app/work/page.tsx");
 const { default: Decide } = await import("../src/app/reviews/page.tsx");
 const { default: Live } = await import("../src/app/live/page.tsx");
 const { default: Projects } = await import("../src/app/projects/page.tsx");
+const { default: WorkItem } = await import("../src/app/work/[id]/page.tsx");
+const { GET: previewGET } = await import("../src/app/api/work/trace/route.ts");
 const { buildDecideGroups } = await import("../src/lib/decide-model.ts");
 const { agentNameFor, plainWhy, plainWorkStep, productTitle, standingLine } = await import("../src/lib/plain-words.ts");
 const { humanizeProductId } = await import("../src/lib/app-identity.ts");
@@ -338,6 +361,45 @@ try {
   assert.match(appRows, /work_fx_held/);
   assert.doesNotMatch(appRows, /work_fx_check_old|work_fx_ready/, "another group's work is not in this app's list");
   assert.match(appList.text, /Only work for Fixture App ?\. Show all work/);
+  // Every card and List row links to the item's own page.
+  const board = await renderWork("");
+  for (const id of ["work_fx_held", "work_fx_run_old", "work_fx_ready"]) {
+    assert.match(board.html, new RegExp(`href="/work/${id}"`), `board card ${id} links to its page`);
+  }
+  const allList = await renderWork("lens=table&filter=all");
+  assert.match(allList.html, /href="\/work\/work_fx_claimed"/, "a List row links to its page");
+
+  // The item page: what it is, how old, what happened, what it is connected to.
+  const held = visibleText(wrap("/work/work_fx_held", await WorkItem({ params: Promise.resolve({ id: "work_fx_held" }) })));
+  const heldHTML = wrap("/work/work_fx_held", await WorkItem({ params: Promise.resolve({ id: "work_fx_held" }) }));
+  assert.deepEqual(findBannedPhrases(held), []);
+  assert.match(held, /Created \d{1,2} \w{3} \d{4} · Picked up \d{1,2} \w{3} \d{4} \(3 days ago\) · Last changed \d{1,2} \w{3} \d{4} \(3 days ago\)/, "dates under the title");
+  assert.match(held, /Recorded reason On hold Waiting for a fixture device\. Nothing moves until the hold is lifted\./, "the recorded reason, without the policy suffix");
+  assert.doesNotMatch(held, /The assigned agent needs to check|See next step|Work details/, "no generic line, no button that only scrolls");
+  assert.match(held, /Held by Claude Code/, "the agent by its one name");
+  assert.match(heldHTML, /href="\/apps\/fixture-app"/, "Related: its app page");
+  assert.match(heldHTML, /href="\/work\?lens=table&amp;filter=all&amp;owner=claude_code"/, "Related: its agent's work");
+  assert.match(heldHTML, /href="\/reviews\?decision=workbench%3Ablocked-on-you"/, "Related: the Decide entry that lists it");
+  assert.match(heldHTML, /href="\/map\/lineage\/rec_fixture_one"/, "Related: evidence links to its history page");
+  assert.match(held, /History Running → On hold by Claude Code/, "history, newest first, in plain words");
+  assert.ok(held.indexOf("Running → On hold") < held.indexOf("Created as Ready to start"), "newest first");
+  assert.match(held, /For agents: commands and technical record/, "commands sit behind a disclosure for agents");
+  assert.ok(held.indexOf("Recorded reason") < held.indexOf("For agents"), "the reason comes before anything for agents");
+  const stale = visibleText(wrap("/work/work_fx_run_old", await WorkItem({ params: Promise.resolve({ id: "work_fx_run_old" }) })));
+  assert.match(stale, /In progress for more than 7 days without finishing\./, "a stale item says so");
+  assert.doesNotMatch(held, /In progress for more than 7 days/, "an on-hold item is not stale");
+
+  // The preview drawer's data: the same next step and dates; a failed read is a sentence, never the tool's error text.
+  const preview = await (await previewGET(new Request("https://console.invalid/api/work/trace?id=work_fx_held"))).json();
+  assert.equal(preview.preview.nextStep.reason, "Waiting for a fixture device.");
+  assert.equal(preview.preview.nextStep.owner, "Claude Code");
+  assert.equal(preview.preview.stateLabel, "On hold");
+  assert.ok(preview.trace.lifecycle.length === 4, "the technical record carries the lifecycle from the JSON list");
+  const missing = await previewGET(new Request("https://console.invalid/api/work/trace?id=work_fx_missing"));
+  const missingBody = await missing.json();
+  assert.equal(missing.status, 404);
+  assert.doesNotMatch(JSON.stringify(missingBody), /fixture-home|\.json|not found:/, "no raw error text or path");
+
   // The retired Projects page redirects: an app scope to the app's page, else to Work by app.
   assert.equal(await redirectOf(() => Projects({ searchParams: Promise.resolve({ scope: "product:fixture-app" }) })), "/apps/fixture-app");
   assert.equal(await redirectOf(() => Projects({ searchParams: Promise.resolve({ scope: "project:fixture-research", work: "work_fx_check_old" }) })), "/work/work_fx_check_old");

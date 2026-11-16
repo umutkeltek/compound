@@ -1,12 +1,13 @@
 "use client";
 
+import Link from "next/link";
 import type { CSSProperties } from "react";
 import { useEffect, useMemo, useState } from "react";
 
 import { EmptyState, IdRef, StateBadge } from "@/components/kit";
 import { appSlug } from "@/lib/app-identity";
 import { agentDisplayName } from "@/lib/harness-label";
-import type { ParsedWorkListParams, WorkFilter } from "@/lib/links";
+import { workItemHref, type ParsedWorkListParams, type WorkFilter } from "@/lib/links";
 import { filterWorkList } from "@/lib/work-list";
 import { STALE_AFTER_DAYS } from "@/lib/work-state";
 import type { WorkLensItem } from "@/lib/work-views";
@@ -112,11 +113,11 @@ export function WorkTableLens({ items, onOpenTrace, params, groups, onParamsChan
                   style={{ "--row-accent": rowAccent(item) } as CSSProperties}
                   tabIndex={0}
                   role="button"
-                  aria-label={`Open trace for ${item.title}`}
+                  aria-label={`Preview ${item.title}`}
                   onClick={() => onOpenTrace(item.workId)}
                   onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpenTrace(item.workId); } }}
                 >
-                  <td className="max-w-md px-3 py-3"><div className="line-clamp-2 text-sm font-semibold leading-snug text-ink">{item.title}</div><div className="mt-1"><IdRef id={item.workId} kind="work" plain truncate /></div></td>
+                  <td className="max-w-md px-3 py-3"><Link href={workItemHref(item.workId)} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} className="line-clamp-2 text-sm font-semibold leading-snug text-ink hover:underline">{item.title}</Link><Link href={workItemHref(item.workId)} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} className="mt-1 block w-fit hover:underline"><IdRef id={item.workId} kind="work" plain truncate /></Link></td>
                   <td className="px-3 py-3"><div className="text-xs font-semibold text-ink">{item.laneLabel}</div><div className="mt-0.5 text-2xs text-faint" title={item.harness ? `Recorded harness: ${item.harness}` : undefined}>{item.harnessLabel}</div>{item.runStatus ? <div className="mt-1 text-2xs text-faint">Run status: {item.runStatus.replace(/_/g, " ")}</div> : null}</td>
                   <td className="px-3 py-3"><StateBadge state={item.state} /><div className="mt-1 text-2xs tabular-nums text-faint">{item.ageLabel}</div></td>
                   <td className="max-w-44 px-3 py-3"><div className="truncate text-xs text-muted" title={item.owner}>{item.owner}</div>{item.actor ? <div className="mono mt-0.5 truncate text-2xs text-faint">run by {item.actor}</div> : null}</td>
