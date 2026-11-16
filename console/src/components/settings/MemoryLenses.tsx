@@ -10,6 +10,12 @@ import { Card, DoctrineNote, FileOwnedFoot, InspectRow, KV, SettingsSection } fr
  * which need a target-kind argument, so they get an honest inspect row instead
  * of a fabricated list.
  */
+/** What each memory search setting does, in words. */
+const PROFILE_WORDS: Record<string, string> = {
+  breadth: "it searches Compound's own records first and your wider notes as supporting evidence",
+  generic: "it uses the basic built-in search",
+};
+
 export function MemoryLenses({ engine, generatedAt }: { engine: Json | null; generatedAt?: string }) {
   const profile = str(engine?.profile) || "—";
   const configured = Boolean(engine?.configured);
@@ -32,8 +38,13 @@ export function MemoryLenses({ engine, generatedAt }: { engine: Json | null; gen
     >
       <div className="grid gap-4 md:grid-cols-2">
         <Card title="Engine profile">
-          <KV k="profile" v={profile} />
-          <KV k="configured" v={configured ? "yes" : "no"} />
+          <p className="text-sm leading-relaxed text-ink">
+            {engine === null
+              ? "The memory search settings could not be read."
+              : configured
+                ? `Memory search uses the "${profile}" setting${PROFILE_WORDS[profile] ? `: ${PROFILE_WORDS[profile]}` : ""}. It is chosen in its settings file; nothing in this console changes it.`
+                : "No memory search setting is chosen, so the built-in default applies."}
+          </p>
           <FileOwnedFoot
             cmd="compound memory engine-config"
             note="Engine profile is file-owned config (memory-engine.yaml). Read-only from the console."
@@ -58,7 +69,7 @@ export function MemoryLenses({ engine, generatedAt }: { engine: Json | null; gen
       <InspectRow
         label="Panel lens prompts"
         cmd="compound panel lenses --target-kind <kind> --json"
-        reason="Lens prompts are enumerated per target-kind (capability, observation, …), so there is no single console list. Inspect them by kind with the command above — names only, read-only."
+        reason="The questions used to judge proposed memories differ for each kind of record, so there is no single list to show here yet."
       />
     </SettingsSection>
   );

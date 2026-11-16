@@ -365,11 +365,18 @@ one-off where an atom exists is a review reject.** New atom → this table first
 Every tunable the system has (or will grow) is exactly one of:
 
 1. **Authority view** — file-owned truth (policy.yaml, lanes, criteria, lens prompts). Read-only
-   card + provenance chip `file-owned` + the exact `compound … import-…` command. Never editable
-   in-console.
-2. **Governed toggle** — one-click through the decision registry with receipt + undo path
-   (kill-switch arm/halt, grant revoke, hygiene repair). Provenance chip `governed`; always
-   ConfirmDialog'd; dangerous ones type-to-confirm.
+   card that says in one plain sentence what the setting controls, its value now and who changes
+   it ("changed only in its settings file; nothing in this console changes it"). Raw keys and the
+   exact command sit behind a closed "For agents" disclosure (`ForAgents` in
+   `components/settings/primitives.tsx`); a command with a blank such as `<file>` is never shown.
+   Never editable in-console.
+2. **Governed toggle** — one-click through the decision registry with receipt + undo path. None
+   is built yet, so no card shows this kind. Stopping all agents (`policy autonomy-halt`) exists
+   only as a command: the Settings card states whether agents are stopped, says stopping them
+   from here is not built yet and what the stop does, and shows no button or type-to-confirm.
+   Standing permissions open with one sentence ("Agents may do N things without asking; M of them
+   cannot be undone"), list those in force with the ones that cannot be undone and never expire
+   first, and fold expired ones behind their count.
 3. **View preference** — client-only (theme, density, default lenses, collapsed sections).
    localStorage, provenance chip `local`, zero governance.
 
@@ -462,14 +469,25 @@ than explicit depth on the two overview surfaces.
 ### 10.2 Truthful Live visualization law
 
 Live renders a harness → WorkEnvelope graph from the executor, RunAttempt, traffic, and
-coordination projections. Configured harnesses are not activity. A node or edge animates only
-when heartbeat, RunAttempt, or work-state evidence reports a live run. Summary counts orient the
-operator, then the workfield is the **Understand-level hero**; the denser operations table belongs
-to Investigate. Each harness overview shows at most its two highest-signal work items while
-retaining exact running, in-flight, and waiting totals. Codex, Claude, Scripts, and
-Switchback/API retain distinct semantic identity colors. Selecting a node updates a persistent
-inspector beside the workfield; deeper coordination and delegated-session identity remain below
-the canvas.
+coordination projections. Configured harnesses are not activity. An agent is one agent key
+(`lib/harness-label.ts`): the console regroups the executors projection's rows by the key of who
+picked each item up, else its owner, which is the key the Work filter `owner=` compares, so an
+agent's count equals the list its link opens. Work nobody holds is "No agent" and work you hold
+is "You"; neither is counted as an agent. Working now, All agents and Today say the same
+sentences from `lib/counts.ts`, and every number links to its Work list. A node or edge animates only
+when a run record (RunAttempt or heartbeat) says an agent is running it now; the work record's own
+state, `running` included, never animates. While the console cannot read run records nothing on the
+page moves, and the answer says so: the page shows the work records as last read, not a live feed.
+Each item shows when it was picked up and is marked "not moved in a week" past the shared stale
+rule (`lib/work-state.ts`). Summary counts orient the operator, then the workfield is the
+**Understand-level hero**; the latest work picked up (newest first, the only real time open work
+carries, next steps in plain words, each row linked to its page) belongs to Investigate. Each agent
+shows at most its two most urgent items (on hold, then not moved longest) while keeping its exact
+totals as links, and the canvas draws at most eight agents; the rest are named on All agents. The
+canvas fits in view on load, the scroll wheel scrolls the page, and there is no minimap. Codex,
+Claude, Scripts, and Switchback/API retain distinct semantic identity colors. Selecting a node
+updates a persistent inspector beside the workfield; deeper coordination and delegated-session
+identity remain below the canvas.
 
 The canvas is a projection, never an authority surface. It does not infer work ownership from
 layout, invent activity to make the system feel alive, or persist prompt content.
@@ -712,8 +730,12 @@ exercise these seams, including cold page reads and stale or partial authority.
   keep working; they are not shown. Supporting copy explains consequences and
   next steps. Internal identifiers stay in detail.
 
-Coordination also uses the existing background reader and refreshes while waiting;
-a cold read must not delay rendering or appear as an empty list of agents.
+Coordination (Waiting on each other) also uses the existing background reader and refreshes while
+waiting; a cold read must not delay rendering or appear as an empty list of agents. It shows one
+paragraph, not a card per session: how many sessions wait, what most of them wait for in plain
+words and since when (the dates of their last capacity readings), then the agents whose sessions
+hold work, each linked to its Work list, and the same agent and in-progress sentences as Working
+now. One freshness chip; recorded coordination entries sit behind "For agents".
 
 
 ## Connected project view

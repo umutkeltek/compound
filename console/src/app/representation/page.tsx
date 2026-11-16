@@ -1,5 +1,6 @@
-import { FreshnessChip, PageHeader } from "@/components/kit";
-import { arr, getWorkbench, str } from "@/lib/compound";
+import { hasCopy, PageHeader, ReadChip, ReadNotice, readsPending } from "@/components/kit";
+import { PendingRefresh } from "@/components/PendingRefresh";
+import { arr, HEAVY_PROJECTION_TIMEOUT_MS, readProjection, str } from "@/lib/compound";
 import { RepresentationRack, type Evidence } from "@/representation";
 
 export const dynamic = "force-dynamic";
@@ -19,7 +20,9 @@ export const dynamic = "force-dynamic";
  * that looks live but does nothing, which would re-introduce pf1).
  */
 export default async function RepresentationPage() {
-  const workbench = await getWorkbench();
+  // Non-blocking: the same cached copy the Work page reads, or "reading".
+  const read = await readProjection(["workbench", "--json"], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS });
+  const workbench = read.value;
   const open = arr(workbench?.open);
 
   const evidence: Evidence[] = open.slice(0, 24).map((raw): Evidence => {
@@ -42,15 +45,13 @@ export default async function RepresentationPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader
-        name="Views"
-        right={<FreshnessChip generatedAt={str(workbench?.generated_at)} source="compound workbench --json" />}
-      />
-      <div id="view-library" tabIndex={-1} className="scroll-mt-6" />
+      <PendingRefresh pending={readsPending(read)} stamp={Date.now()} />
+      <PageHeader name="View library" right={<ReadChip read={read} />} />
       <p className="text-sm text-muted" style={{ maxWidth: "var(--read-max)" }}>
-        Compare the available views. Each one explains which evidence it shows and when to use it.
+        A workbench for the agents that build this console: it shows the shapes the console can use to explain a work
+        item, drawn on your open work. It is not a list of views you can choose, and nothing here changes anything.
       </p>
-      <RepresentationRack evidence={evidence} />
+      {hasCopy(read) ? <RepresentationRack evidence={evidence} /> : <ReadNotice read={read} label="open work" />}
     </div>
   );
 }

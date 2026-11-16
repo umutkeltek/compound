@@ -2,6 +2,7 @@ import { arr, num, str, type Json } from "@/lib/compound";
 
 import {
   LEASE_STALE_AFTER_SECONDS,
+  regroupByHolder,
   type DelegatedSessionCounts,
   type DelegatedSessionRow,
   type DelegatedSessionStatus,
@@ -40,6 +41,9 @@ function workRef(value: unknown): ExecutorWorkRef | null {
     title,
     state: str(work.state),
     nextAction: str(work.next_action),
+    owner: str(work.owner),
+    claimedBy: str(work.claimed_by),
+    claimedAt: str(work.claimed_at),
   };
 }
 
@@ -61,6 +65,7 @@ function normalizeRow(raw: Json): ExecutorRow {
   return {
     id: str(raw.id),
     label: str(raw.label) || str(raw.id),
+    aliases: stringList(raw.aliases),
     status: str(raw.status) || "unknown",
     statusSource: str(raw.status_source),
     waitReason: str(raw.wait_reason),
@@ -185,7 +190,7 @@ export function normalizeExecutorProjection(projection: Json | null): ExecutorPr
       leases: num(counts.leases),
       staleHistory: num(counts.stale_leases),
     },
-    executors: arr(projection.executors).map(normalizeRow),
+    executors: regroupByHolder(arr(projection.executors).map(normalizeRow)),
     delegatedSessions,
     delegatedCounts: delegatedCounts(delegatedSessions, projection.delegated_counts),
   };

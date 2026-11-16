@@ -238,11 +238,13 @@ async function healthTruth() {
   const healthy = render(read(good));
   assert.equal(selfHealing(read(good)).ok, true);
   assert.match(healthy, /Clean home/);
-  assert.match(healthy, /home restore .*--target /);
-  assert.match(healthy, /home restore-history --id .*--dry-run/);
+  // Commands sit behind "For agents"; a command with a blank to fill in is never shown.
+  assert.match(healthy, /For agents: commands and technical record/);
   assert.match(healthy, /home archive-history --kind work --dry-run/);
-  assert.match(healthy, /home verify /);
-  console.log("  health ok: missing/malformed/stale/failed != healthy; recovery commands are bounded");
+  assert.match(healthy, /home backup/);
+  assert.doesNotMatch(healthy, /&lt;[a-z-]+(?:\.tar\.gz)?&gt;|<archive|<new-absent/, "no command with a placeholder");
+  assert.match(healthy, /Compound&#x27;s home is intact/);
+  console.log("  health ok: missing/malformed/stale/failed != healthy; commands with blanks are not shown");
   const { HarnessesHooks } = await import("../src/components/settings/HarnessesHooks.tsx");
   const renderHooks = (projection) => renderToStaticMarkup(createElement(HarnessesHooks, { harnessText: "", hooks: projection }));
   assert.match(renderHooks(read(null, "unreachable")), /unreachable|unavailable/i);
@@ -307,7 +309,8 @@ async function healthTruth() {
   const malformedTrees = renderToStaticMarkup(createElement(WorktreeInventory, { ...inventory, read: read({ ...inventory.read.value, rows: [null] }) }));
   assert.match(malformedTrees, /unreachable|unavailable/i);
   const emptyTrees = renderToStaticMarkup(createElement(WorktreeInventory, unbound));
-  assert.match(emptyTrees, /COMPOUND_WORKTREE_REPO/);
+  // No repository chosen: All agents shows nothing here (the setup note lives in Settings › This console).
+  assert.equal(emptyTrees, "");
   console.log("  worktrees ok: explicitly bound read-only inventory, unknown liveness preserved");
 }
 

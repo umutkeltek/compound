@@ -9,6 +9,10 @@
  * rule both surfaces read, and the small formatting helpers.
  */
 
+// Relative .ts imports: the agents consistency smoke loads this file under node, which has no "@/" alias.
+import { agentDisplayName, agentKey, NO_AGENT_KEY } from "../../lib/harness-label.ts";
+import { isInProgress, isOnHold } from "../../lib/work-state.ts";
+
 /** DESIGN.md / plan Part 3: a lease older than this (and no projection-supplied
  *  threshold) is stale — a lane-health hygiene class. 48h in seconds. */
 export const LEASE_STALE_AFTER_SECONDS = 48 * 60 * 60;
@@ -23,11 +27,19 @@ export interface ExecutorWorkRef {
   title: string;
   state: string;
   nextAction: string;
+  /** the record's accountable owner, raw ("" when none) */
+  owner: string;
+  /** who picked it up, raw ("" when nobody) */
+  claimedBy: string;
+  /** when it was picked up, as the projection wrote it ("" when unknown) */
+  claimedAt: string;
 }
 
 export interface ExecutorRow {
   id: string;
   label: string;
+  /** other names the projection lists for this agent */
+  aliases: string[];
   status: string;
   statusSource: string;
   waitReason: string;
@@ -75,6 +87,115 @@ export interface ExecutorProjection {
   executors: ExecutorRow[];
   delegatedSessions: DelegatedSessionRow[];
   delegatedCounts: DelegatedSessionCounts;
+}
+
+/* ---------- one agent per holder key ----------
+ * `compound executors --json` sorts open work into its own fixed agent
+ * profiles by a loose name match, and puts every holder it does not know
+ * (a scheduler, another tool, you) into one `unassigned` bucket. The Work
+ * page's agent filter, Today and Live must count the same population, so
+ * the console sorts each open work item by the one agent key
+ * (lib/harness-label.ts `agentKey` of who picked it up, else its owner),
+ * the same key the Work filter `owner=` compares. A row's numbers then equal
+ * the list its link opens, and "no agent" means no holder at all.
+ */
+
+const READY_STATES = new Set(["ready", "admitted", "proposed"]);
+
+/** The agent key a work item belongs to: who picked it up, else its owner. */
+export function holderKey(work: Pick<ExecutorWorkRef, "claimedBy" | "owner">): string {
+  return agentKey(work.claimedBy || work.owner);
+}
+
+function emptyRow(id: string): ExecutorRow {
+  return {
+    id,
+    label: agentDisplayName(id),
+    aliases: [],
+    status: "",
+    statusSource: "",
+    waitReason: "",
+    bestFor: [],
+    canUseTools: [],
+    costLimits: [],
+    running: 0,
+    ready: 0,
+    assigned: 0,
+    needsMe: 0,
+    leaseCount: 0,
+    oldestLeaseAgeSeconds: null,
+    leases: [],
+    routeEvidenceCount: 0,
+    routeEvidencePresent: false,
+    lastHook: null,
+    currentWork: [],
+    nextAssigned: null,
+    projectionNote: "",
+  };
+}
+
+/**
+ * Rows by holder key. A profile row keeps its configured facts (tools, cost
+ * limits, last hook) when its id is the key; its counts are recounted from
+ * the work it holds with lib/work-state.ts (in progress, on hold) and a lease
+ * follows the work item it is for. Profiles that hold nothing stay as idle
+ * rows. Order: holders by how much they hold, then idle profiles, and the
+ * no-agent row last.
+ */
+export function regroupByHolder(rows: readonly ExecutorRow[]): ExecutorRow[] {
+  const profiles = new Map<string, ExecutorRow>();
+  for (const row of rows) {
+    const key = agentKey(row.id);
+    if (!profiles.has(key)) profiles.set(key, row);
+  }
+  const work = new Map<string, ExecutorWorkRef[]>();
+  const keyOfWork = new Map<string, string>();
+  for (const row of rows) {
+    for (const ref of row.currentWork) {
+      const key = holderKey(ref);
+      if (ref.workId) {
+        if (keyOfWork.has(ref.workId)) continue;
+        keyOfWork.set(ref.workId, key);
+      }
+      work.set(key, [...(work.get(key) ?? []), ref]);
+    }
+  }
+  const leases = new Map<string, ExecutorLease[]>();
+  for (const row of rows) {
+    for (const lease of row.leases) {
+      const key = keyOfWork.get(lease.workId) ?? agentKey(row.id);
+      leases.set(key, [...(leases.get(key) ?? []), lease]);
+    }
+  }
+  const keys = new Set<string>([...work.keys(), ...leases.keys()]);
+  const out: ExecutorRow[] = [];
+  for (const key of keys) {
+    const profile = profiles.get(key);
+    const items = work.get(key) ?? [];
+    const held = leases.get(key) ?? [];
+    const ages = held.map((lease) => lease.ageSeconds).filter((age): age is number => age !== null);
+    const next = profile?.nextAssigned && keyOfWork.get(profile.nextAssigned.workId) === key ? profile.nextAssigned : null;
+    out.push({
+      ...(profile ?? emptyRow(key)),
+      id: key,
+      label: profile?.label && key !== NO_AGENT_KEY ? profile.label : agentDisplayName(key),
+      currentWork: items,
+      assigned: items.length,
+      running: items.filter((ref) => isInProgress(ref.state)).length,
+      ready: items.filter((ref) => READY_STATES.has(ref.state)).length,
+      needsMe: items.filter((ref) => isOnHold(ref.state)).length,
+      leases: held,
+      leaseCount: held.length,
+      oldestLeaseAgeSeconds: ages.length ? Math.max(...ages) : null,
+      nextAssigned: next,
+    });
+  }
+  for (const [id, profile] of profiles) {
+    if (keys.has(id) || id === NO_AGENT_KEY) continue;
+    out.push({ ...profile, id, currentWork: [], assigned: 0, running: 0, ready: 0, needsMe: 0, leases: [], leaseCount: 0, oldestLeaseAgeSeconds: null, nextAssigned: null });
+  }
+  const rank = (row: ExecutorRow) => (row.id === NO_AGENT_KEY ? 2 : row.currentWork.length ? 0 : 1);
+  return out.sort((a, b) => rank(a) - rank(b) || b.currentWork.length - a.currentWork.length || a.label.localeCompare(b.label));
 }
 
 /* ---------- delegated supervised-session board (pure) ----------
@@ -169,11 +290,13 @@ export function delegatedSessionView(row: DelegatedSessionRow): DelegatedSession
   if (status === "refused") detail = row.refusedReason;
   else if (status === "exited") detail = row.observedExit || row.runAttemptStatus;
   else if (status === "running") detail = row.runAttemptStatus;
+  // An exit is green only when it finished: abandoned, vanished, failed or killed is not done.
+  const unfinished = status === "exited" && /abandon|vanish|fail|kill|lost|crash|timeout|timed out/i.test(detail);
   return {
     workId: row.workId,
     status,
-    statusLabel: meta.label,
-    tone: meta.tone,
+    statusLabel: unfinished ? "Ended unfinished" : meta.label,
+    tone: unfinished ? "seam" : meta.tone,
     lane: row.lane,
     session: row.session,
     holder: row.holder,

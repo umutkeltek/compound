@@ -1,28 +1,22 @@
 "use client";
 
-import { CopyCmd } from "@/components/CopyCmd";
+import Link from "next/link";
+
 import { AuthorityFaceDetails } from "@/components/authority/AuthorityFaceDetails";
 import { GovernedAct } from "@/components/decide/GovernedAct";
-import { ArrowUpIcon, ClockIcon, EmptyState, FreshnessChip, IdRef, SectionHeader, StateBadge } from "@/components/kit";
-import type { DecideGroup } from "@/lib/decide-model";
-import { manualCopyCommandFor } from "@/lib/decide-resolution-acts";
 import { decideActIdentity } from "@/lib/governed-action-client";
+import { ArrowUpIcon, ClockIcon, EmptyState, IdRef, SectionHeader, StateBadge } from "@/components/kit";
+import type { DecideGroup } from "@/lib/decide-model";
+import { decideHref } from "@/lib/links";
 
 /**
- * The route promotion/remorse gate — "should a lane change?" Renders the same
- * DecideGroup model the Decide queue builds (via decide-model's resolver), so
- * the bespoke `route-promotions` Record-hold act is governed identically:
- * every mutation is one human click through /api/decision/execute, confirmed,
- * with its rationale written verbatim as provenance. Cards that expose no safe
- * one-click (a promote/demote lane change needs a separate authority review)
- * fall through to an honest copy-command — never a fabricated button.
- *
- * Two sub-bands, honest about attention band:
- *   - "Needs your call" — the needs-you route groups (amber admission seam,
- *     Class-A framing when a change is irreversible or high-blast).
- *   - "Record a hold"   — watching route groups where evidence is still thin;
- *     the operator MAY record a hold (reversible, changes no lane) or leave them
- *     collecting. No amber seam — these do not block the seam.
+ * Model changes waiting for a call. Each question links to the same decision
+ * on Decide (`decideHref({ decision: key })`), which owns judging it and
+ * re-checks its evidence when opened. A card whose owner offers a real action
+ * keeps the shared governed control (GovernedAct, ruled by the console's
+ * mutation readiness) after its owner's authority; a card with none shows no
+ * command, only the link. Holds (evidence still thin) are one table, each row
+ * linked to its decision, instead of a card per hold repeating one text.
  */
 
 const ROUTE_TILE = "border-route-line bg-route-soft text-route";
@@ -64,8 +58,6 @@ function RouteCard({
   seam: boolean;
   mutationsEnabled: boolean;
 }) {
-  const { act } = group;
-  const manualCopyCommand = manualCopyCommandFor(group);
   return (
     <article
       className={`rounded-lg border border-hair bg-panel px-4 py-3.5 shadow-sm transition-shadow hover:shadow ${
@@ -106,30 +98,22 @@ function RouteCard({
         <div className="flex items-center gap-2">
           <span className={`text-xs tabular-nums ${group.old ? "font-semibold text-seam" : "text-faint"}`}>
             {group.ageLabel}
-            {group.old ? " · stale" : ""}
+            {group.old ? " · waiting a long time" : ""}
           </span>
-            <FreshnessChip generatedAt={group.face.freshness.generatedAt} source={group.face.freshness.source} />
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {act.mode === "copy" ? (
-            <div className="flex flex-col items-end gap-1">
-              {manualCopyCommand ? <CopyCmd cmd={manualCopyCommand} compact /> : null}
-              <span className="text-2xs text-faint">
-                {group.authorityBound ? group.face.unavailableReason : "No one-click action wired yet"}
-                {!group.authorityBound && act.reason ? ` — ${act.reason}` : ""}.
-              </span>
-            </div>
-          ) : act.mode === "batch-enumerable" ? (
-            <span className="text-2xs text-faint">Per-member apply — open in the Decide queue.</span>
-          ) : (
+          {group.act.mode !== "copy" && group.act.mode !== "batch-enumerable" ? (
             <GovernedAct
-              key={decideActIdentity(act)}
-              act={act}
+              key={decideActIdentity(group.act)}
+              act={group.act}
               authority={group.face.authority}
               mutationsEnabled={mutationsEnabled}
               effectKind={group.capability.kind === "unavailable" ? "apply" : group.capability.kind}
             />
-          )}
+          ) : null}
+          <Link href={decideHref({ decision: group.key })} className="rounded-md border border-work-line bg-work-soft px-3 py-1.5 text-xs font-semibold text-work hover:bg-work-soft/70">
+            Decide this →
+          </Link>
         </div>
       </div>
 
@@ -169,7 +153,7 @@ export function PromotionBand({
       <SectionHeader
         tone="route"
         icon={<ArrowUpIcon />}
-        label="Promotion reviews"
+        label="Model changes waiting for a call"
         right={
           <span className="text-xs tabular-nums text-faint">
             {needsYou.length
@@ -180,13 +164,9 @@ export function PromotionBand({
       />
 
       {classA ? (
-        <div className="rounded-lg border border-crit-line bg-crit-soft px-4 py-3">
-          <div className="text-2xs font-bold uppercase tracking-wide text-crit">Class A · irreversible gate</div>
-          <p className="mt-1 text-xs leading-relaxed text-crit">
-            A change below is one-way or high-blast. Read the route evidence before you record — this is not a reversible
-            hold.
-          </p>
-        </div>
+        <p className="rounded-lg border border-crit-line bg-crit-soft px-4 py-3 text-sm leading-relaxed text-crit">
+          One of these changes cannot be undone once made. Its decision on Decide shows the evidence; read it there first.
+        </p>
       ) : null}
 
       {needsYou.length ? (
@@ -196,7 +176,7 @@ export function PromotionBand({
           ))}
         </div>
       ) : (
-        <EmptyState>Clean seam. No lane change waits on your call.</EmptyState>
+        <EmptyState>No model change waits for your call.</EmptyState>
       )}
 
       {holdRecord.length ? (
@@ -204,16 +184,33 @@ export function PromotionBand({
           <SectionHeader
             tone="neutral"
             icon={<ClockIcon />}
-            label="Record a hold — evidence still thin"
+            label="Waiting for more evidence"
             right={<span className="mono text-2xs tabular-nums text-faint">{holdRecord.length}</span>}
           />
-          <p className="text-2xs leading-relaxed text-faint">
-            Not enough route evidence to change these lanes yet. Recording a hold marks that you reviewed it — it changes
-            no lane and is reversible. Or leave them collecting.
+          <p className="text-sm leading-relaxed text-muted">
+            These model changes do not have enough runs behind them to judge yet. Nothing changes while they wait; each
+            one is on Decide if you want to look.
           </p>
-          {holdRecord.map((group) => (
-            <RouteCard key={group.key} group={group} seam={false} mutationsEnabled={mutationsEnabled} />
-          ))}
+          <div className="overflow-x-auto rounded-lg border border-hair bg-panel">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-hair text-2xs uppercase tracking-wide text-faint">
+                  <th className="px-3 py-2 font-semibold">Model change</th>
+                  <th className="px-3 py-2 font-semibold">Waiting</th>
+                  <th className="px-3 py-2 font-semibold"><span className="sr-only">Decision</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {holdRecord.map((group) => (
+                  <tr key={group.key} className="border-b border-hair last:border-b-0">
+                    <td className="px-3 py-2 text-ink">{group.title}</td>
+                    <td className={`whitespace-nowrap px-3 py-2 text-2xs ${group.old ? "text-seam" : "text-muted"}`}>{group.ageLabel}</td>
+                    <td className="px-3 py-2 text-right"><Link href={decideHref({ decision: group.key })} className="text-xs font-semibold text-work hover:underline">Open on Decide →</Link></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       ) : null}
     </section>

@@ -166,41 +166,62 @@ export function KV({ k, v, mono = true }: { k: ReactNode; v: ReactNode; mono?: b
   );
 }
 
+/** A command with a blank to fill in (`<file>`, `<id>`) is never shown. */
+export function hasPlaceholder(cmd: string): boolean {
+  return /<[^>]+>/.test(cmd);
+}
+
 /**
- * The honest file-owned footer: this state is not editable from the console —
- * it is imported from its source file. Shows the exact command to copy.
+ * Commands and raw records, folded shut and labelled for agents: the
+ * operator is never sent to a terminal, but an agent working for him can
+ * find the exact command here. Commands with blanks are dropped.
+ */
+export function ForAgents({ cmds = [], children, label = "For agents: commands and technical record" }: {
+  cmds?: readonly string[];
+  children?: ReactNode;
+  label?: string;
+}) {
+  const shown = cmds.filter((cmd) => cmd && !hasPlaceholder(cmd));
+  if (!shown.length && !children) return null;
+  return (
+    <details className="mt-3 border-t border-hair pt-2.5 text-xs text-muted">
+      <summary className="cursor-pointer text-2xs font-semibold text-faint">{label}</summary>
+      <div className="mt-2 flex flex-col gap-2">
+        {children}
+        {shown.map((cmd) => <CopyCmd key={cmd} cmd={cmd} />)}
+      </div>
+    </details>
+  );
+}
+
+/**
+ * Who changes this setting, in one plain sentence, and the exact command
+ * folded away for agents (dropped when it has a blank to fill in).
  */
 export function FileOwnedFoot({ cmd, note }: { cmd: string; note?: ReactNode }) {
   return (
-    <div className="mt-3 flex flex-col gap-1.5 border-t border-hair pt-2.5">
-      <div className="flex items-center gap-2">
-        <ProvenanceChip kind="file-owned" />
-        <span className="text-2xs leading-relaxed text-faint">
-          {note ?? "The console shows effective authority; edit at the source, then re-import."}
-        </span>
-      </div>
-      <CopyCmd cmd={cmd} />
+    <div className="mt-3 border-t border-hair pt-2.5">
+      <p className="text-2xs leading-relaxed text-faint">
+        {note ?? "Changed in its settings file; nothing in this console changes it."}
+      </p>
+      <ForAgents cmds={[cmd]} label="For agents: command" />
     </div>
   );
 }
 
 /**
- * Honest "not wired" row: a projection that errored or needs args gets NO fake
- * card — it states the gap plainly and hands over the exact inspect command.
+ * A setting this console cannot read: the gap in plain words, and the
+ * command to look at it folded away for agents.
  */
 export function InspectRow({ label, cmd, reason }: { label: string; cmd: string; reason?: ReactNode }) {
   return (
     <div className="rounded-lg border border-dashed border-hair bg-page p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="text-sm text-muted">{label}</span>
-        <span className="mono rounded-pill border border-hair bg-soft px-2 py-0.5 text-2xs font-semibold text-faint">
-          not wired
-        </span>
+        <span className="rounded-pill border border-hair bg-soft px-2 py-0.5 text-2xs font-semibold text-faint">not shown here yet</span>
       </div>
       {reason ? <p className="mt-1 text-xs leading-relaxed text-faint">{reason}</p> : null}
-      <div className="mt-2">
-        <CopyCmd cmd={cmd} />
-      </div>
+      <ForAgents cmds={[cmd]} label="For agents: command" />
     </div>
   );
 }

@@ -1,11 +1,10 @@
-import { CopyCmd } from "@/components/CopyCmd";
 import { BarChartIcon, Bars, CheckIcon, FreshnessChip, RouteIcon, SectionHeader } from "@/components/kit";
 import type { RouteTrafficReport } from "@/lib/routing";
 
 /**
  * Route traffic & cost — "at what cost is routing sending work?" Reads
  * `compound route evidence-authority --json`. Same honesty contract as Agents'
- * CostLanes (src/components/agents/CostLanes.tsx): route-evidence rows per
+ * the old Agents cost card: route-evidence rows per
  * provider are the CHEAP, LIVE traffic signal — dollar spend is only known for
  * the few rows the provider ledger covers, so we chart traffic, state the token
  * total, and name the spend gap instead of inventing a cost. Bars use the kit
@@ -119,13 +118,8 @@ export function RouteTraffic({ report }: { report: RouteTrafficReport | null }) 
           <span className="mono text-muted">
             {report.costKnownRows} of {report.tokenUsageRows}
           </span>{" "}
-          token rows. The rest is token traffic only — point{" "}
-          <span className="mono text-muted">compound route cost-doctor</span> at a provider-calls ledger to reconstruct
-          the rest.
+          token rows. For the rest only the amount of traffic is known, not what it cost.
         </p>
-        <div className="mt-2">
-          <CopyCmd cmd="compound route cost-doctor path/to/provider-calls.ndjson --tail 200" />
-        </div>
       </div>
     </section>
   );

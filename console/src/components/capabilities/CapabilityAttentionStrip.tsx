@@ -1,5 +1,7 @@
 import Link from "next/link";
 
+import { decideHref } from "@/lib/links";
+
 /*
  * A thin attention strip on the Capabilities screen: how many changes to what
  * the system can do are waiting on the operator (capability-lifecycle-proposals,
@@ -44,7 +46,7 @@ export function CapabilityAttentionStrip({ items }: { items: CapabilityAttention
         </span>
       </div>
       <Link
-        href="/reviews"
+        href={decideHref({ area: items.find((i) => i.count > 0)?.area ?? "" })}
         className="inline-flex items-center gap-1.5 rounded-md border border-hair bg-panel px-3 py-1.5 text-xs font-semibold text-ink transition-colors hover:bg-soft focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
       >
         Review in Decide →
