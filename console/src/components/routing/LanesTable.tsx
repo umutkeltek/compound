@@ -82,7 +82,7 @@ export function LanesTable({ report }: { report: ModelLanesReport | null }) {
                 <th className="pt-3 pr-3 pb-1.5 font-bold">Cost class</th>
                 <th className="pt-3 pr-3 pb-1.5 font-bold">Harness</th>
                 <th className="hidden pt-3 pr-3 pb-1.5 font-bold sm:table-cell">Provider route</th>
-                <th className="pt-3 pr-4 pb-1.5 pl-3 text-right font-bold">Caps</th>
+                <th className="pt-3 pr-4 pb-1.5 pl-3 text-right font-bold" title="How many kinds of work this model is set up to take">Kinds of work</th>
               </tr>
             </thead>
             {tiers.map((tier) => {

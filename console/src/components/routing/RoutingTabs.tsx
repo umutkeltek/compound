@@ -1,7 +1,17 @@
 "use client";
 
 import * as Tabs from "@radix-ui/react-tabs";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { ReactNode } from "react";
+
+/** The tabs, in order; the first is the default and is left out of the address. */
+export const ROUTING_TABS = ["lanes", "traffic", "bench"] as const;
+export type RoutingTab = (typeof ROUTING_TABS)[number];
+
+/** The tab an address asks for (`?tab=`), else the default. */
+export function routingTabOf(raw: string | null | undefined): RoutingTab {
+  return (ROUTING_TABS as readonly string[]).includes(raw ?? "") ? (raw as RoutingTab) : "lanes";
+}
 
 /**
  * The analytical shelf beneath the promotion band: Lanes (the roster) ·
@@ -31,10 +41,21 @@ export function RoutingTabs({
   traffic: ReactNode;
   bench: ReactNode;
 }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const params = useSearchParams();
+  const value = routingTabOf(params?.get("tab"));
+  const choose = (next: string) => {
+    const query = new URLSearchParams(params?.toString() ?? "");
+    if (next === "lanes") query.delete("tab");
+    else query.set("tab", next);
+    const search = query.toString();
+    router.replace(`${pathname}${search ? `?${search}` : ""}`, { scroll: false });
+  };
   return (
-    <Tabs.Root defaultValue="lanes" className="flex flex-col gap-5">
-      <Tabs.List className="flex flex-wrap gap-1 border-b border-hair" aria-label="Routing analytics">
-        <Trigger value="lanes">Lanes</Trigger>
+    <Tabs.Root value={value} onValueChange={choose} className="flex flex-col gap-5">
+      <Tabs.List className="flex flex-wrap gap-1 border-b border-hair" aria-label="Models and cost">
+        <Trigger value="lanes">Models</Trigger>
         <Trigger value="traffic">Traffic &amp; cost</Trigger>
         <Trigger value="bench">Bench</Trigger>
       </Tabs.List>

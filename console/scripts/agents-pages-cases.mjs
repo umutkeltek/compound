@@ -13,6 +13,10 @@
 //    next steps, and each agent's numbers link to its lists. All agents lists
 //    the oldest work that has not moved, linked, and never says "clear it".
 //
+// 5. Models and cost: each waiting model change links to its own decision on
+//    Decide, holds are one table (each row linked), the chosen tab is in the
+//    address, and no command with a blank is shown.
+//
 // 2. Settings in plain words. Standing permissions: in force first, the ones
 //    that cannot be undone and never expire on top, expired ones folded behind
 //    a count, readable dates, one opening sentence. The stop control says what
@@ -139,6 +143,9 @@ const { summarizeGrants, readableDate } = await import("../src/components/settin
 const { AutonomySafety } = await import("../src/components/settings/AutonomySafety.tsx");
 const { PolicyGroup } = await import("../src/components/settings/PolicyGroup.tsx");
 const { MemoryLenses } = await import("../src/components/settings/MemoryLenses.tsx");
+const { PromotionBand } = await import("../src/components/routing/PromotionBand.tsx");
+const { BenchPanel } = await import("../src/components/routing/BenchPanel.tsx");
+const { routingTabOf } = await import("../src/components/routing/RoutingTabs.tsx");
 
 const router = Object.fromEntries(["push", "replace", "refresh", "back", "forward", "prefetch"].map((k) => [k, () => {}]));
 const wrap = (path, element) =>
@@ -253,6 +260,28 @@ try {
   assert.doesNotMatch(all, /clear it|Archive lease history|Copy command|Lease pressure/i, "no instruction to act where no action exists");
   assert.match(all, /3 work items were picked up more than 7 days ago and are still not finished\. Nothing moves them on its own yet/);
   assert.ok(agentLinks.indexOf("/work/work_ap_sched_old") < agentLinks.indexOf("/work/work_ap_alpha_old"), "the oldest stale item is listed first, linked");
+
+  /* ---------- 5. models and cost ---------- */
+  const routeGroup = (key, title, extra = {}) => ({
+    key, glyph: "R", areaPlain: "Model upgrades", areaLabel: "Model upgrades", count: 1, title, capability: { kind: "unavailable" },
+    unlock: "", body: "", consequences: null, face: { authority: null, unavailableReason: "unavailable.", freshness: { generatedAt: "", source: "compound attention --json" } }, ageLabel: "12 days ago", old: false,
+    act: { mode: "copy", reason: "unavailable." }, authorityBound: false, evidence: [], sampleId: key, ...extra,
+  });
+  const bandHtml = wrap("/routing", createElement(PromotionBand, {
+    needsYou: [routeGroup("route-promotions|fx_one", "Fixture model ran 40 runs, 2% failed. Promote it?")],
+    holdRecord: [routeGroup("route-promotions|fx_hold_a", "Fixture model A: 0/0 runs"), routeGroup("route-promotions|fx_hold_b", "Fixture model B: 3/9 runs", { old: true })],
+    classA: false, mutationsEnabled: false,
+  }));
+  const band = visibleText(bandHtml);
+  for (const key of ["route-promotions|fx_one", "route-promotions|fx_hold_a", "route-promotions|fx_hold_b"]) {
+    assert.ok(hrefs(bandHtml).includes(`/reviews?decision=${encodeURIComponent(key)}`), `the model change ${key} links to its decision`);
+  }
+  assert.equal((bandHtml.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1].match(/<tr\b/g) ?? []).length, 2, "holds are one table, one row each");
+  assert.doesNotMatch(band, /No one-click|\.\.|unavailable|Clean seam|Record a hold/, "no repeated hold text, no doubled period, no dead control text");
+  assert.doesNotMatch(bandHtml, /<code/, "no command on a model change with no action");
+  assert.doesNotMatch(renderToStaticMarkup(createElement(BenchPanel)), /&lt;|<code/, "no command with a blank on Bench");
+  assert.equal(routingTabOf("traffic"), "traffic");
+  assert.equal(routingTabOf("made-up"), "lanes", "an unknown tab opens the default");
 
   /* ---------- 2. settings in plain words ---------- */
   const day = 86_400_000;
