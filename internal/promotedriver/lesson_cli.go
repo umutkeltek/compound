@@ -293,15 +293,16 @@ func RunLessonCLIAt(store *mem.Store, args []string, stdout, stderr io.Writer, n
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
+	var skillErr error
 	receipt := LessonReceipt{LessonResult: res, Slot: res.Claim.Entity + "::" + res.Claim.Predicate}
 	if skillFile != "" {
 		receipt.SkillFile = skillFile
 		receipt.SkillLines = mem.LessonSkillLines(res.Claim)
 		receipt.SkillAppended, err = AppendLessonToSkill(skillFile, receipt.SkillLines)
 		if err != nil {
-			// The lesson is already promoted; say exactly what is missing.
-			fmt.Fprintf(stderr, "error: lesson %s promoted but skill lines not written to %s: %v\n", res.Claim.ID, skillFile, err)
-			return 1
+			// The lesson is already in the ledger; the index is rebuilt
+			// below regardless, and the message says what is missing.
+			skillErr = err
 		}
 	}
 	// A duplicate rebuilds too: writing a lesson again is also its repair.
@@ -340,8 +341,22 @@ func RunLessonCLIAt(store *mem.Store, args []string, stdout, stderr io.Writer, n
 	if indexErr == nil && receipt.Index.Warning != "" {
 		fmt.Fprintln(stderr, "warning:", receipt.Index.Warning)
 	}
+	if skillErr != nil {
+		serving := "it is not served by the hook (it has no trigger)"
+		switch {
+		case receipt.Index.Indexed:
+			serving = fmt.Sprintf("the hook serves it (indexed at rank %d)", receipt.Index.Rank)
+		case want != "":
+			serving = "the hook does not serve it yet (see below)"
+		}
+		fmt.Fprintf(stderr, "error: lesson %s is in the ledger and %s, but its skill line was not written to %s: %v; fix the file and re-run the same command (a re-run is a duplicate that only fills in the missing lines)\n",
+			res.Claim.ID, serving, skillFile, skillErr)
+	}
 	if indexErr != nil {
 		fmt.Fprintf(stderr, "error: lesson %s is in the ledger, but %v\n", res.Claim.ID, indexErr)
+		return 1
+	}
+	if skillErr != nil {
 		return 1
 	}
 	return 0
