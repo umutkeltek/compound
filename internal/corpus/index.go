@@ -491,7 +491,10 @@ func writeJSONFile(path string, value any) error {
 		_ = os.Remove(tmpName)
 		return err
 	}
-	return os.Rename(tmpName, path)
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	return syncCorpusDirectory(filepath.Dir(path))
 }
 
 func manifestChunkHashes(manifest Manifest) map[string]string {

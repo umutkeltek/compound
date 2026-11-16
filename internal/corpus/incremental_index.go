@@ -25,6 +25,21 @@ import (
 // Legacy vectors.json stays available for rollback and is migrated only once.
 const vectorShardMagic = "CMPVEC01"
 
+// Injectable only at the filesystem durability boundary: a failed directory
+// sync must prevent a manifest from acknowledging new vector storage.
+var syncCorpusDirectory = func(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	err = f.Sync()
+	closeErr := f.Close()
+	if err != nil {
+		return err
+	}
+	return closeErr
+}
+
 type incrementalStats struct {
 	BodyBytesRead     int64
 	IndexBytesRead    int64
@@ -331,6 +346,9 @@ func indexIncremental(ctx context.Context, hp string, lane LaneConfig, embedder 
 			stats.IndexBytesWritten += n
 			delete(dirty, prefix)
 		}
+		if len(prepared.chunks) == 0 {
+			refs = map[string]string{}
+		}
 		prepared.manifest.VectorShards = refs
 		current := map[string][]float32{}
 		for _, c := range prepared.chunks {
@@ -487,6 +505,19 @@ func writeVectorShard(dir string, values map[string][]float32, dims int) (string
 	ref := hex.EncodeToString(digest[:])
 	path, _ := vectorShardPath(dir, ref)
 	if st, err := os.Stat(path); err == nil && st.Size() == int64(body.Len()) {
+		existing, err := os.ReadFile(path)
+		if err != nil {
+			return "", 0, err
+		}
+		if sha256.Sum256(existing) != digest {
+			return "", 0, fmt.Errorf("existing vector shard checksum mismatch")
+		}
+		if err := syncCorpusDirectory(filepath.Dir(path)); err != nil {
+			return "", 0, err
+		}
+		if err := syncCorpusDirectory(dir); err != nil {
+			return "", 0, err
+		}
 		return ref, 0, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -509,6 +540,12 @@ func writeVectorShard(dir string, values map[string][]float32, dims int) (string
 		return "", 0, err
 	}
 	if err = os.Rename(name, path); err != nil {
+		return "", 0, err
+	}
+	if err := syncCorpusDirectory(filepath.Dir(path)); err != nil {
+		return "", 0, err
+	}
+	if err := syncCorpusDirectory(dir); err != nil {
 		return "", 0, err
 	}
 	return ref, int64(body.Len()), nil

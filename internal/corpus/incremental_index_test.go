@@ -220,3 +220,37 @@ func TestIncrementalLockWaitIsCancellable(t *testing.T) {
 		t.Fatal("overlapping writer acquired lock")
 	}
 }
+
+func TestIncrementalDirectorySyncFailureCannotCommitMissingShard(t *testing.T) {
+	hp, _, lane := incrementalFixture(t, 2)
+	oldSync := syncCorpusDirectory
+	syncCorpusDirectory = func(path string) error {
+		if filepath.Base(path) == "vector-shards" {
+			return fmt.Errorf("synthetic directory sync failure")
+		}
+		return oldSync(path)
+	}
+	e := &fakeEmbedder{identity: lane.Embedder.Identity(), dim: 3}
+	_, err := Index(context.Background(), hp, lane, e, IndexOptions{Incremental: true})
+	syncCorpusDirectory = oldSync
+	if err == nil {
+		t.Fatal("index acknowledged an undurable shard")
+	}
+	if _, err := os.Stat(filepath.Join(IndexDir(hp, lane), "manifest.json")); !os.IsNotExist(err) {
+		t.Fatalf("uncommitted shard leaked through manifest: %v", err)
+	}
+	runIncremental(t, hp, lane)
+}
+func TestIncrementalEmptyGenerationRemovesVectorReferences(t *testing.T) {
+	hp, _, lane := incrementalFixture(t, 1)
+	runIncremental(t, hp, lane)
+	lane.Generation = "absent-generation"
+	r := runIncremental(t, hp, lane)
+	if r.Items != 0 || r.TotalChunks != 0 {
+		t.Fatalf("generation selection=%+v", r)
+	}
+	v, err := readVectors(IndexDir(hp, lane))
+	if err != nil || len(v.Vectors) != 0 {
+		t.Fatalf("empty generation vectors=%v err=%v", v, err)
+	}
+}

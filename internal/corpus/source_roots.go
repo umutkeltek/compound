@@ -24,6 +24,7 @@ func (s SourceConfig) approvedRoots(ctx context.Context) ([]string, error) {
 		// still pass the source snapshot, symlink, privacy and custody boundaries.
 		var output limitedInventory
 		cmd.Stdout = &output
+		cmd.WaitDelay = 250 * time.Millisecond
 		if err := cmd.Run(); err != nil {
 			return nil, fmt.Errorf("source root inventory unavailable: %w", err)
 		}

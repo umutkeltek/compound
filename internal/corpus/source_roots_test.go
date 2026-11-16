@@ -100,3 +100,20 @@ func TestSourceDeletionPreservesOwnedSearchAndReportsMissing(t *testing.T) {
 		t.Fatalf("source deletion discarded custodied knowledge: %+v", r)
 	}
 }
+
+func TestRootInventoryDescendantCannotHoldRefreshPipeOpen(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "inventory.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n(sleep 1) &\nprintf '%s' '{\"roots\":[]}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := SourceConfig{Format: "claude", RootsCommand: []string{script}}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	if _, err := cfg.approvedRoots(ctx); err == nil {
+		t.Fatal("inherited pipe was accepted as a completed inventory")
+	}
+	if time.Since(started) > 900*time.Millisecond {
+		t.Fatal("inherited stdout consumed the descendant lifetime")
+	}
+}
