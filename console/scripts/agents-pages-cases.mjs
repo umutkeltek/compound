@@ -8,6 +8,12 @@
 //    are not an agent's. Working now and All agents print the same sentences
 //    (lib/counts.ts) and link each number to its list.
 //
+// 2. Settings in plain words. Standing permissions: in force first, the ones
+//    that cannot be undone and never expire on top, expired ones folded behind
+//    a count, readable dates, one opening sentence. The stop control says what
+//    exists and that it cannot be pressed here; no button, no type-to-confirm.
+//    No command with a blank is shown; commands sit behind "For agents".
+//
 // Run as a child process by the wired traffic-board smoke (it owns a scratch
 // home and cache folder and moves the read layer's global state). Directly:
 //   bun scripts/agents-pages-cases.mjs
@@ -111,6 +117,10 @@ const { parseWorkListParams } = await import("../src/lib/links.ts");
 const compound = await import("../src/lib/compound.ts");
 const { default: Live } = await import("../src/app/live/page.tsx");
 const { default: Agents } = await import("../src/app/executors/page.tsx");
+const { summarizeGrants, readableDate } = await import("../src/components/settings/grants.ts");
+const { AutonomySafety } = await import("../src/components/settings/AutonomySafety.tsx");
+const { PolicyGroup } = await import("../src/components/settings/PolicyGroup.tsx");
+const { MemoryLenses } = await import("../src/components/settings/MemoryLenses.tsx");
 
 const router = Object.fromEntries(["push", "replace", "refresh", "back", "forward", "prefetch"].map((k) => [k, () => {}]));
 const wrap = (path, element) =>
@@ -194,7 +204,71 @@ try {
   }
   assert.match(all, /Set up but holding no work: Local Box\./);
 
-  console.log("agents-pages cases ok: one row per agent key, each count equals its Work list, Working now and All agents agree");
+  /* ---------- 2. settings in plain words ---------- */
+  const day = 86_400_000;
+  const iso = (offsetDays) => new Date(NOW + offsetDays * day).toISOString();
+  const grants = [
+    { id: "g_old", capability: "fixture.submit_entry", reversibility_ceiling: "irreversible", expires_at: iso(-40) },
+    { id: "g_old2", capability: "fixture.post_note", reversibility_ceiling: "reversible", expires_at: iso(-3) },
+    { id: "g_soon", capability: "fixture.edit_files", reversibility_ceiling: "reversible", expires_at: iso(5), target_path: "/srv/fixture/**" },
+    { id: "g_forever", capability: "fixture.edit_files_anywhere", reversibility_ceiling: "reversible" },
+    { id: "g_oneway", capability: "fixture.publish_release", reversibility_ceiling: "irreversible", expires_at: iso(30) },
+    { id: "g_oneway_forever", capability: "fixture.delete_branches", reversibility_ceiling: "irreversible", reason: "Fixture cleanup." },
+    { id: "g_later", capability: "fixture.weekly_digest", reversibility_ceiling: "reversible", not_before: iso(10), expires_at: iso(40) },
+  ];
+  const summary = summarizeGrants(grants, NOW);
+  assert.deepEqual(summary.active.map((g) => g.id), ["g_oneway_forever", "g_oneway", "g_forever", "g_soon"],
+    "in force only; cannot be undone and never expires first, then cannot be undone, then never expires, then soonest end");
+  assert.deepEqual(summary.expired.map((g) => g.id), ["g_old2", "g_old"], "expired, newest first");
+  assert.deepEqual(summary.upcoming.map((g) => g.id), ["g_later"]);
+  assert.equal(summary.sentence, "Agents may do 4 things without asking; 2 of them cannot be undone.");
+  assert.equal(readableDate(Date.parse("2030-03-15T00:00:00Z")), "15 Mar 2030");
+  assert.equal(summary.active[3].when, `until ${readableDate(NOW + 5 * day)}`);
+  assert.equal(summary.active[0].when, "never expires");
+
+  const safetyHtml = renderToStaticMarkup(createElement(AutonomySafety, {
+    halt: { installed: true, global_halt: false, disabled_class_count: 0 },
+    authority: { installed: true, autonomy_level: "L1", mode: "propose_only" },
+    grants: { grants, grant_count: grants.length },
+    editable: { installed: false, nothing_editable: true, hard_deny_core: ["policy", "permissions", "ledger", "evaluator"] },
+    nowMs: NOW,
+  }));
+  const safety = visibleText(safetyHtml);
+  assert.match(safety, /Agents may do 4 things without asking; 2 of them cannot be undone\./, "one opening sentence");
+  assert.match(safety, /Agents are not stopped\./);
+  assert.match(safety, /Stopping them from here is not built yet\./, "the stop control says it cannot be pressed here");
+  assert.doesNotMatch(safety, /Reveal halt|type: halt|governed|Kill switch/i, "no button, no ritual, no governed label");
+  assert.doesNotMatch(safetyHtml, /<button[^>]*>(?!<code)/, "no control on the stop card that looks like it acts");
+  assert.ok(safety.indexOf("Fixture delete branches") < safety.indexOf("Fixture publish release") && safety.indexOf("Fixture publish release") < safety.indexOf("Fixture edit files anywhere"), "most consequential first");
+  assert.match(safetyHtml, /<details[^>]*><summary[^>]*>2 expired, no longer in force<\/summary>/, "expired grants folded behind their count");
+  assert.ok(safetyHtml.indexOf("Fixture delete branches") < safetyHtml.indexOf("2 expired"), "in force before expired");
+  assert.match(safety, /Agents suggest changes and ask you before they change files on this machine\./, "autonomy level in one sentence");
+  assert.match(safetyHtml, /<details[^>]*><summary[^>]*>For agents: commands and technical record<\/summary>[\s\S]*autonomy-halt --global --reason/, "the stop command sits behind For agents");
+  const policyHtml = renderToStaticMarkup(createElement(PolicyGroup, {
+    placement: { placement_guard_mode: "observe", block_owner_ids: ["fixture-core"], owner_count: 3 },
+    frontier: { family_count: 2, deferred_count: 0, approval_required_open_count: 1, families: [] },
+    prompts: { prompt_count: 1, high_severity_count: 1, prompts: [{ id: "p1", question: "Should the fixture app ship its next release?", severity: "high" }] },
+    holds: { hold_count: 2, holds: [{ goal_id: "goal_a", app_id: "fixture-app", objective: "Fixture App release 2" }, { goal_id: "goal_b", objective: "Fixture service upgrade" }] },
+    decisions: { record_count: 5, counts_by_status: { compound_primary: 4, compound_parked: 1 }, counts_by_kind: {} },
+  }));
+  const policy = visibleText(policyHtml);
+  assert.match(policy, /Should the fixture app ship its next release\?/);
+  assert.match(policy, /No page in the console answers these yet/, "a question with no place to answer says so");
+  assert.ok(hrefs(policyHtml).includes("/apps/fixture-app"), "a release hold links to its app");
+  assert.match(policy, /Fixture service upgrade/, "every hold is listed");
+  const memory = visibleText(renderToStaticMarkup(createElement(MemoryLenses, { engine: { profile: "breadth", configured: true } })));
+  assert.match(memory, /Memory search uses the "breadth" setting: it searches Compound's own records first/);
+  for (const [name, html] of [["safety", safetyHtml], ["rules", policyHtml], ["memory", renderToStaticMarkup(createElement(MemoryLenses, { engine: null }))]]) {
+    assert.doesNotMatch(html, /&lt;[a-z][\w.-]*&gt;/, `${name}: no command with a blank to fill in`);
+  }
+
+  console.log("agents-pages cases ok: one row per agent key, each count equals its Work list, Working now and All agents agree; settings say what agents may do in plain words");
+} catch (error) {
+  console.error(error);
+  process.exitCode = 1;
 } finally {
+  // Release held reads so no stub child outlives a failed case.
+  await writeFile(releaseReads, "").catch(() => {});
   await rm(scratch, { recursive: true, force: true });
 }
+process.exit(process.exitCode ?? 0);

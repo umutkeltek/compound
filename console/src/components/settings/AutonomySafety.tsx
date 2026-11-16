@@ -1,152 +1,169 @@
 import { ShieldIcon, StatusChip } from "@/components/kit";
 import { arr, num, str, type Json } from "@/lib/compound";
+import { plainAutonomy } from "@/lib/plain-words";
 
-import { HaltDisclosure } from "./HaltDisclosure";
-import { Card, CountChip, DoctrineNote, FileOwnedFoot, KV, SettingsSection } from "./primitives";
+import { summarizeGrants, type GrantRow } from "./grants";
+import { Card, CountChip, DoctrineNote, FileOwnedFoot, ForAgents, KV, SettingsSection } from "./primitives";
 
 /**
- * Group 1 — Autonomy & safety (danger-first). Kill-switch status, autonomy
- * ceiling (read-only), standing grants (read-only + honest copy-revoke), and
- * the fail-closed editable-surfaces whitelist. The halt itself is guarded
- * behind type-to-confirm; nothing here fires a mutation.
+ * Safety and permissions, in plain words: whether agents are stopped, how
+ * far they may go on their own, which files they may edit, and the standing
+ * permissions in force. Each card says what it controls, its value now and
+ * who changes it; raw keys and commands sit behind a closed "For agents"
+ * disclosure. Nothing here changes anything.
+ *
+ * Stopping every agent: `compound policy autonomy-halt --global` exists and
+ * is checked before Compound starts or applies governed work (automatic
+ * admission, governed runs, applied actions). It does not end an agent
+ * session already open in a terminal, and the console has no way to set it.
+ * The card says exactly that, once, with no button and no ritual.
  */
+
+export const STOP_INSPECT_CMD = "compound policy autonomy-halt --json";
+export const STOP_ALL_CMD = 'compound policy autonomy-halt --global --reason "stopped by the operator"';
+export const STOP_CLEAR_CMD = "compound policy autonomy-halt --clear-global";
+
+function GrantList({ rows }: { rows: GrantRow[] }) {
+  return (
+    <ul className="flex flex-col divide-y divide-hair">
+      {rows.map((row) => (
+        <li key={row.id} className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5 py-2">
+          <div className="min-w-0">
+            <span className="text-sm text-ink">{row.what}</span>
+            {row.irreversible ? <span className="ml-2 text-2xs font-semibold text-seam">cannot be undone</span> : null}
+            {row.reason ? <p className="text-2xs text-muted">{row.reason}</p> : null}
+            <p className="mono truncate text-2xs text-faint" title={row.target || row.capability}>
+              {row.capability}{row.target ? ` · ${row.target}` : ""}
+            </p>
+          </div>
+          <span className={`shrink-0 whitespace-nowrap text-2xs ${row.neverExpires ? "font-semibold text-ink" : "text-muted"}`}>{row.when}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function AutonomySafety({
   halt,
   authority,
   grants,
   editable,
   generatedAt,
+  nowMs,
 }: {
   halt: Json | null;
   authority: Json | null;
   grants: Json | null;
   editable: Json | null;
   generatedAt?: string;
+  /** the clock for which permissions are in force */
+  nowMs: number;
 }) {
-  const haltInstalled = Boolean(halt?.installed);
   const globalHalt = Boolean(halt?.global_halt);
-  const disabledClasses = num(halt?.disabled_class_count);
-  const armed = globalHalt || disabledClasses > 0;
-  const haltPath = str(halt?.authority_path) || "config/autonomy-halt.yaml (under the runtime home)";
-
-  const level = str(authority?.autonomy_level) || "—";
+  const stoppedKinds = arr(halt?.disabled_classes).map((entry: Json) => str(entry?.class)).filter(Boolean);
+  const stoppedCount = num(halt?.disabled_class_count) || stoppedKinds.length;
+  const level = str(authority?.autonomy_level);
   const mode = str(authority?.mode);
-  const authorityInstalled = Boolean(authority?.installed);
-
-  const grantRows = arr(grants?.grants);
-  const grantCount = num(grants?.grant_count) || grantRows.length;
-
+  const summary = grants ? summarizeGrants(arr(grants.grants), nowMs) : null;
   const nothingEditable = Boolean(editable?.nothing_editable);
   const hardDeny = arr(editable?.hard_deny_core).map(String);
   const entryCount = num(editable?.entry_count);
-  const editableInstalled = Boolean(editable?.installed);
 
   return (
     <SettingsSection
       index={1}
       icon={<ShieldIcon />}
       tone="seam"
-      title="Autonomy & safety"
-      question="Is autonomous action allowed right now, and inside what ceiling?"
-      source="compound policy autonomy-halt --json"
+      title="Safety and permissions"
+      question={summary ? summary.sentence : "What agents may do without asking is not read yet."}
+      source="compound policy standing-grants-authority --json"
       generatedAt={generatedAt}
     >
-      {/* Kill-switch — the prominent card. Amber/crit framing only when readable
-          state says the halt is armed; honest static explanation otherwise. */}
       <Card
-        seamTone={globalHalt ? "crit" : armed ? "seam" : "good"}
-        title="Kill switch"
-        provenance="governed"
-        badge={
-          globalHalt ? (
-            <StatusChip tone="crit" label="global halt armed" title="compound policy autonomy-halt --json" />
-          ) : armed ? (
-            <StatusChip tone="seam" label={`${disabledClasses} class halted`} title="compound policy autonomy-halt --json" />
-          ) : (
-            <StatusChip tone="good" label="clear" title="compound policy autonomy-halt --json" />
-          )
-        }
+        seamTone={halt === null ? undefined : globalHalt ? "crit" : stoppedCount > 0 ? "seam" : "good"}
+        title="Stop all agents"
+        badge={halt === null ? <StatusChip tone="muted" label="not read" /> : globalHalt ? <StatusChip tone="crit" label="stopped" /> : stoppedCount > 0 ? <StatusChip tone="seam" label={`${stoppedCount} kinds stopped`} /> : <StatusChip tone="good" label="not stopped" />}
       >
-        <div className="flex flex-col gap-3">
-          <KV k="installed" v={haltInstalled ? "yes" : "no"} />
-          <KV k="global_halt" v={globalHalt ? "true" : "false"} />
-          <KV k="disabled_class_count" v={disabledClasses} />
-          <DoctrineNote>
-            {armed
-              ? "Autonomy is halted. Executors may not mutate under a halted class until the authority is lifted."
-              : "Nothing is halted. The kill switch is a fail-safe, not a toggle — it stays operator-guarded so a stray click can never disable governance."}
-          </DoctrineNote>
-          <HaltDisclosure inspectCmd="compound policy autonomy-halt --json" authorityPath={haltPath} />
+        <div className="flex flex-col gap-2 text-sm leading-relaxed text-muted">
+          <p className="text-ink">
+            {halt === null
+              ? "Whether agents are stopped could not be read."
+              : globalHalt
+                ? `All agents are stopped${str(halt?.reason) ? `: ${str(halt?.reason)}` : "."}`
+                : stoppedCount > 0
+                  ? `Agents are stopped for ${stoppedCount === 1 ? "one kind of work" : `${stoppedCount} kinds of work`}${stoppedKinds.length ? ` (${stoppedKinds.join(", ")})` : ""}; everything else runs.`
+                  : "Agents are not stopped."}
+          </p>
+          <p>
+            Stopping them from here is not built yet. The stop that exists keeps Compound from starting work or carrying
+            out actions on its own; agent sessions already open keep running until they are closed.
+          </p>
         </div>
+        <ForAgents cmds={[STOP_INSPECT_CMD, STOP_ALL_CMD, STOP_CLEAR_CMD]} />
+      </Card>
+
+      <Card
+        title="Standing permissions"
+        badge={summary ? <CountChip n={summary.active.length} label="in force" tone={summary.active.length > 0 ? "seam" : "good"} /> : <StatusChip tone="muted" label="not read" />}
+      >
+        {summary ? (
+          <>
+            {summary.active.length ? <GrantList rows={summary.active} /> : null}
+            {summary.upcoming.length ? (
+              <details className="mt-3 text-sm">
+                <summary className="cursor-pointer text-xs font-semibold text-muted">{summary.upcoming.length.toLocaleString("en-US")} start later</summary>
+                <GrantList rows={summary.upcoming} />
+              </details>
+            ) : null}
+            {summary.expired.length ? (
+              <details className="mt-3 text-sm">
+                <summary className="cursor-pointer text-xs font-semibold text-muted">{summary.expired.length.toLocaleString("en-US")} expired, no longer in force</summary>
+                <GrantList rows={summary.expired} />
+              </details>
+            ) : null}
+          </>
+        ) : (
+          <DoctrineNote>The permissions could not be read, so this page does not say what agents may do.</DoctrineNote>
+        )}
+        <FileOwnedFoot
+          cmd="compound policy standing-grants-authority --json"
+          note="Permissions change only when their settings file is imported again; nothing in this console grants or removes one."
+        />
       </Card>
 
       <div className="grid gap-4 md:grid-cols-2">
-        {/* Autonomy ceiling — read-only. */}
-        <Card title="Autonomy ceiling" badge={<StatusChip tone="muted" label={level} title="autonomy_level (compound policy operator-authority --json)" />}>
-          <KV k="autonomy_level" v={level} />
-          <KV k="mode" v={mode ? mode.replace(/_/g, " ") : "—"} />
-          <KV k="authority installed" v={authorityInstalled ? "yes" : "no"} />
-          <DoctrineNote>
-            <span className="mt-2 block">
-              The ceiling is the highest autonomy compound may reach; mode narrows what it does inside that ceiling.
-            </span>
-          </DoctrineNote>
+        <Card title="How far agents go on their own" badge={level ? <StatusChip tone="muted" label={level} /> : <StatusChip tone="muted" label="not read" />}>
+          <p className="text-sm leading-relaxed text-ink">
+            {authority === null ? "The autonomy level could not be read." : plainAutonomy(level) || (level ? `Level ${level}.` : "No autonomy level is set.")}
+          </p>
           <FileOwnedFoot
-            cmd="compound policy import-operator-state <operator-state.json>"
-            note="Operator-state is file-owned. The console reads effective authority; change it at the source and re-import."
+            cmd="compound policy operator-authority --json"
+            note="Set in your operator settings file; nothing in this console changes it."
           />
+          <ForAgents label="For agents: technical record">
+            <KV k="autonomy_level" v={level || "—"} />
+            <KV k="mode" v={mode || "—"} />
+            <KV k="installed" v={authority?.installed ? "yes" : "no"} />
+          </ForAgents>
         </Card>
 
-        {/* Editable-surfaces whitelist — fail-closed. */}
-        <Card title="Editable surfaces" badge={<CountChip n={entryCount} label="entries" tone={nothingEditable ? "good" : "muted"} />}>
-          <KV k="installed" v={editableInstalled ? "yes" : "no"} />
-          <KV k="nothing_editable" v={nothingEditable ? "true (fail-closed)" : "false"} />
-          <KV k="hard_deny_core" v={hardDeny.length ? hardDeny.join(", ") : "—"} mono={false} />
-          <DoctrineNote>
-            <span className="mt-2 block">
-              Fail-closed: with no whitelist installed, nothing is editable. The hard-deny core can never be opened,
-              whitelist or not.
-            </span>
-          </DoctrineNote>
-          <FileOwnedFoot cmd="compound policy editable-surfaces --json" note="Whitelist is file-owned config at the editable-surfaces authority path." />
+        <Card title="Changes agents may make to their own setup" badge={editable === null ? <StatusChip tone="muted" label="not read" /> : <CountChip n={entryCount} label="open" tone={nothingEditable ? "good" : "muted"} />}>
+          <p className="text-sm leading-relaxed text-ink">
+            {editable === null
+              ? "Which parts of their own setup agents may change could not be read."
+              : nothingEditable
+                ? "None: agents may not propose changes to their own setup until a part is opened for it."
+                : `${entryCount.toLocaleString("en-US")} ${entryCount === 1 ? "part of their setup is" : "parts of their setup are"} open for agents to propose changes.`}{" "}
+            {hardDeny.length ? `The ${hardDeny.length.toLocaleString("en-US")} parts that guard them (rules, permissions, records, grading) can never be opened.` : ""}
+          </p>
+          <FileOwnedFoot cmd="compound policy editable-surfaces --json" note="The list is a settings file; nothing in this console changes it." />
+          <ForAgents label="For agents: technical record">
+            <KV k="installed" v={editable?.installed ? "yes" : "no"} />
+            <KV k="nothing_editable" v={nothingEditable ? "true" : "false"} />
+            <KV k="hard_deny_core" v={hardDeny.length ? hardDeny.join(", ") : "—"} mono={false} />
+          </ForAgents>
         </Card>
       </div>
-
-      {/* Standing grants — read-only table; revoke is an honest copy-command. */}
-      <Card title="Standing grants" badge={<CountChip n={grantCount} label="grants" tone={grantCount > 0 ? "seam" : "good"} />}>
-        {grantRows.length ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead>
-                <tr className="border-b border-hair text-2xs uppercase tracking-wide text-faint">
-                  <th className="py-1.5 pr-3 font-semibold">capability</th>
-                  <th className="py-1.5 pr-3 font-semibold">ceiling</th>
-                  <th className="py-1.5 pr-3 font-semibold">target</th>
-                  <th className="py-1.5 font-semibold">expires</th>
-                </tr>
-              </thead>
-              <tbody className="mono tabular-nums">
-                {grantRows.map((grant: Json, index: number) => (
-                  <tr key={str(grant.id) || index} className="border-b border-hair last:border-b-0">
-                    <td className="py-1.5 pr-3 text-ink">{str(grant.capability) || "—"}</td>
-                    <td className="py-1.5 pr-3 text-muted">{str(grant.reversibility_ceiling) || "—"}</td>
-                    <td className="max-w-40 truncate py-1.5 pr-3 text-muted" title={str(grant.target_path)}>
-                      {str(grant.target_path) || "—"}
-                    </td>
-                    <td className="py-1.5 text-muted">{str(grant.expires_at) || "never"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <DoctrineNote>No standing grants. Every mutation needs a fresh policy decision.</DoctrineNote>
-        )}
-        <FileOwnedFoot
-          cmd="compound policy import-standing-grants <standing-grants.yaml>"
-          note="Grants are file-owned. To revoke, edit the source grants file and re-import — there is no console revoke button on purpose."
-        />
-      </Card>
     </SettingsSection>
   );
 }

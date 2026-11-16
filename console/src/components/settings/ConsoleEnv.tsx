@@ -4,7 +4,8 @@ import { FeedDegraded } from "@/components/kit/FeedDegraded";
 import { num, type LiveRead } from "@/lib/compound";
 
 import { buildCoverage, type AreaCoverage } from "./data";
-import { Card, CountChip, DoctrineNote, KV, SettingsSection } from "./primitives";
+import { ConsoleActsSentence } from "./ConsoleActsSentence";
+import { Card, CountChip, DoctrineNote, ForAgents, KV, SettingsSection } from "./primitives";
 
 const COVERAGE_TONE: Record<AreaCoverage, string> = {
   bespoke: "text-good",
@@ -19,11 +20,11 @@ const COVERAGE_LABEL: Record<AreaCoverage, string> = {
 };
 
 /**
- * Group 6 — Console & environment. Live mutation-gate booleans, and THE
- * transparency table: every wired bespoke area + every generic-certified verb
- * cross-referenced against the live review areas, so the operator sees exactly
- * which areas have server-adapter coverage vs an honest copy-only fallback.
- * This is backend coverage, not a claim that the standard browser may invoke it.
+ * This console: what it can do from the browser, in the one shared sentence
+ * (CONSOLE_ACTS_SENTENCE), and which kinds of decision have a server-side
+ * action behind them. The switches behind that answer and the coverage table
+ * are a technical record, folded shut for agents. This is backend coverage,
+ * not a claim that the standard browser may invoke it.
  */
 export function ConsoleEnv({
   mutationsEnabled,
@@ -60,59 +61,49 @@ export function ConsoleEnv({
       index={6}
       icon={<GearIcon />}
       tone="neutral"
-      title="Console & environment"
-      question="Can this console mutate, and which review areas have server-adapter coverage?"
+      title="This console"
+      question="What can you do from this browser, and which decisions have an action behind them?"
       source="compound attention --json"
       generatedAt={attentionRead.status === "live" && coverageKnown ? generatedAt : undefined}
     >
-      <div className="grid gap-4 md:grid-cols-2">
-        <Card title="Mutation gates" provenance="local" seamTone={mutationsEnabled ? "seam" : "good"}>
+      <Card title="What this console can do">
+        <p className="text-sm leading-relaxed text-ink"><ConsoleActsSentence /></p>
+        <ForAgents label="For agents: the switches behind this">
           <KV k="effective readiness" v={mutationsEnabled ? "ready" : "read-only"} />
           <KV k="mutation flag" v={mutationFlagEnabled ? "enabled" : "disabled"} />
           <KV k="instance pin" v={instancePinned ? "explicit" : "missing"} />
           <KV k="standard client" v={standardClientAuthorized ? "authorized" : "projection-only"} />
-          <KV k="privateFallbacksEnabled()" v={privateFallbacks ? "true" : "false"} />
-          <DoctrineNote>
-            <span className="mt-2 block">
-              {mutationsEnabled
-                ? "Mutations are enabled — governed acts run through /api/decision/execute behind the argv allowlist. Every act is still a human click (DEC-0021: nothing auto-runs)."
-                : "Read-only. The standard browser never receives the server capability; unsupported API extensions require an explicit home, opt-in flag, and out-of-band header."}
-            </span>
-          </DoctrineNote>
-        </Card>
+          <KV k="private run-record reads" v={privateFallbacks ? "on" : "off"} />
+        </ForAgents>
+      </Card>
 
-        <Card title="Coverage burn-down">
-          {attentionRead.status === "loading" ? (
-            <p className="text-sm text-muted">Checking which review areas have a server adapter…</p>
-          ) : !coverageKnown || attentionRead.status === "unreachable" ? (
-            <FeedDegraded label="Coverage" source="compound attention --json" lastGoodAt={attentionRead.lastGoodAt} />
-          ) : (
+      <Card title="Decisions with an action behind them">
+        {attentionRead.status === "loading" ? (
+          <p className="text-sm text-muted">Checking which kinds of decision have an action behind them…</p>
+        ) : !coverageKnown || attentionRead.status === "unreachable" ? (
+          <FeedDegraded label="Coverage" source="compound attention --json" lastGoodAt={attentionRead.lastGoodAt} />
+        ) : (
           <>
-          {attentionRead.status === "stale" ? <p className="mb-2 text-sm text-seam">Last-known coverage; current gaps are unconfirmed.</p> : null}
-          <div className="flex flex-wrap gap-2">
-            <CountChip n={needsYouGroups} label="need you" tone={needsYouGroups > 0 ? "seam" : "good"} title="counts.needs_you_groups" />
-            <CountChip
-              n={serverActionable}
-              label="server-ready"
-              tone="muted"
-              title="counts.actionable_now — server-side action candidates; the standard browser remains projection-only"
-            />
-            <CountChip n={fallbackGroups} label="fallback" tone={fallbackGroups > 0 ? "seam" : "good"} title="counts.fallback_groups" />
-          </div>
-          <DoctrineNote>
-            <span className="mt-3 block">
-              {fallbackGroups > 0
-                ? `${fallbackGroups.toLocaleString("en-US")} group${fallbackGroups === 1 ? "" : "s"} still lack a server adapter and fall back to copy-only.`
-                : "No server-adapter gaps. Every live area resolves to a wired server act; the standard browser remains projection-only."}
-            </span>
-          </DoctrineNote>
+            {attentionRead.status === "stale" ? <p className="mb-2 text-sm text-seam">From the last good read; it may have changed since.</p> : null}
+            <div className="flex flex-wrap gap-2">
+              <CountChip n={needsYouGroups} label="wait for you" tone={needsYouGroups > 0 ? "seam" : "good"} title="counts.needs_you_groups" />
+              <CountChip n={serverActionable} label="have an action ready" tone="muted" title="counts.actionable_now" />
+              <CountChip n={fallbackGroups} label="have no action yet" tone={fallbackGroups > 0 ? "seam" : "good"} title="counts.fallback_groups" />
+            </div>
+            <DoctrineNote>
+              <span className="mt-3 block">
+                {fallbackGroups > 0
+                  ? `${fallbackGroups.toLocaleString("en-US")} of the decisions waiting for you have no action behind them yet; an agent carries them out after you decide.`
+                  : "Every kind of decision waiting for you has an action behind it. The browser still only shows them."}
+              </span>
+            </DoctrineNote>
           </>
-          )}
-        </Card>
-      </div>
+        )}
+      </Card>
 
-      {/* THE transparency table. */}
+      {/* The transparency table, folded shut for agents. */}
       {coverageKnown && attentionRead.status !== "unreachable" ? (
+      <ForAgents label="For agents: which decision kinds have a server adapter">
       <Card
         title="Server-adapter coverage"
         badge={
@@ -188,14 +179,8 @@ export function ConsoleEnv({
             </div>
           </div>
         </div>
-        <div className="mt-3">
-          <DoctrineNote>
-            Adding a bespoke server adapter for a fallback area is one registry entry (REGISTRY in
-            decision-registry.ts); certifying a generic verb is one allowlist row (GENERIC_ACTION_ALLOWLIST in
-            generic-actions.ts). This table records server coverage only; it does not authorize the standard client.
-          </DoctrineNote>
-        </div>
       </Card>
+      </ForAgents>
       ) : null}
     </SettingsSection>
   );

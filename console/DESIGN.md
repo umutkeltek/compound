@@ -365,11 +365,18 @@ one-off where an atom exists is a review reject.** New atom → this table first
 Every tunable the system has (or will grow) is exactly one of:
 
 1. **Authority view** — file-owned truth (policy.yaml, lanes, criteria, lens prompts). Read-only
-   card + provenance chip `file-owned` + the exact `compound … import-…` command. Never editable
-   in-console.
-2. **Governed toggle** — one-click through the decision registry with receipt + undo path
-   (kill-switch arm/halt, grant revoke, hygiene repair). Provenance chip `governed`; always
-   ConfirmDialog'd; dangerous ones type-to-confirm.
+   card that says in one plain sentence what the setting controls, its value now and who changes
+   it ("changed only in its settings file; nothing in this console changes it"). Raw keys and the
+   exact command sit behind a closed "For agents" disclosure (`ForAgents` in
+   `components/settings/primitives.tsx`); a command with a blank such as `<file>` is never shown.
+   Never editable in-console.
+2. **Governed toggle** — one-click through the decision registry with receipt + undo path. None
+   is built yet, so no card shows this kind. Stopping all agents (`policy autonomy-halt`) exists
+   only as a command: the Settings card states whether agents are stopped, says stopping them
+   from here is not built yet and what the stop does, and shows no button or type-to-confirm.
+   Standing permissions open with one sentence ("Agents may do N things without asking; M of them
+   cannot be undone"), list those in force with the ones that cannot be undone and never expire
+   first, and fold expired ones behind their count.
 3. **View preference** — client-only (theme, density, default lenses, collapsed sections).
    localStorage, provenance chip `local`, zero governance.
 

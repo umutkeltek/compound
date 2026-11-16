@@ -1,11 +1,10 @@
-import { CopyCmd } from "@/components/CopyCmd";
 import { SelfHealingPanel } from "@/components/briefing/SelfHealingPanel";
 import { num, type ProjectionRead } from "@/lib/compound";
 import { selfHealing } from "@/lib/briefing";
 
 import { HeartPulseIcon } from "@/components/kit";
 
-import { Card, DoctrineNote, KV, SettingsSection } from "./primitives";
+import { Card, DoctrineNote, ForAgents, KV, SettingsSection } from "./primitives";
 
 /**
  * Group 7 — Health & backup. Reuses the briefing SelfHealingPanel (home-doctor
@@ -34,38 +33,29 @@ export function HealthBackup({ doctor }: { doctor: ProjectionRead }) {
       index={7}
       icon={<HeartPulseIcon />}
       tone="good"
-      title="Health & backup"
-      question="Is the runtime home intact, and how do I prove, snapshot, or restore it?"
+      title="Health and recovery"
+      question="Is Compound's home intact, and is anything waiting for a repair?"
       source="compound home doctor --json"
       generatedAt={health.observation === "live" ? doctor.generatedAt ?? undefined : undefined}
     >
-      <div className="grid gap-4 md:grid-cols-2">
-        <Card title={doctor.status === "stale" ? "Home doctor · last-known facts" : "Home doctor"} seamTone={health.ok ? "good" : "seam"}>
+      <Card title={doctor.status === "stale" ? "Compound's home · last known" : "Compound's home"} seamTone={value === null ? undefined : health.ok ? "good" : "seam"}>
+        <p className="text-sm leading-relaxed text-ink">
+          {value === null
+            ? "The health check could not be read."
+            : typeof value?.manifest_ok !== "boolean"
+              ? "The health check came back incomplete, so this page does not say the home is intact."
+              : health.ok
+                ? `Compound's home is intact${dirsTotal > 0 ? `: all ${dirsTotal.toLocaleString("en-US")} folders are in place` : ""}.`
+                : "Compound's home needs a repair; the list below says what. An agent carries out repairs; nothing in this console does."}
+        </p>
+        <p className="mt-1 text-2xs leading-relaxed text-faint">Backups and restores are run by an agent when you ask; this console starts none.</p>
+        <ForAgents cmds={DOCUMENTED_COMMANDS.map((entry) => entry.cmd)}>
           <KV k="manifest_ok" v={bool("manifest_ok")} />
           <KV k="dirs" v={Number.isInteger(value?.dirs_ok) && dirsTotal > 0 ? `${dirsOk}/${dirsTotal}` : "unknown"} />
           <KV k="inside_git_repo" v={bool("inside_git_repo")} />
           <KV k="generated_state_in_repo" v={bool("generated_state_in_repo_source")} />
-          <DoctrineNote>
-            <span className="mt-2 block">
-              Generated state belongs in the runtime home, never the repo. A true here would be a doctrine breach the
-              doctor flags for repair.
-            </span>
-          </DoctrineNote>
-        </Card>
-
-        <Card title="Prove · snapshot · restore">
-          <div className="flex flex-col gap-2.5">
-            {DOCUMENTED_COMMANDS.map((entry) => (
-              <div key={entry.cmd} className="flex flex-col gap-1">
-                <span className="text-xs font-semibold text-ink">{entry.label}</span>
-                <span className="text-2xs leading-relaxed text-muted">{entry.note}</span>
-                <CopyCmd cmd={entry.cmd} />
-              </div>
-            ))}
-          </div>
-        </Card>
-      </div>
-
+        </ForAgents>
+      </Card>
       <SelfHealingPanel health={health} />
     </SettingsSection>
   );

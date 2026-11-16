@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { PageHeader, ReadChip, ReadNotice, readsPending } from "@/components/kit";
+import { PageHeader, plainAge, ReadChip, ReadNotice, readsPending } from "@/components/kit";
 import { PendingRefresh } from "@/components/PendingRefresh";
 import { AutonomySafety } from "@/components/settings/AutonomySafety";
 import { ConsoleEnv } from "@/components/settings/ConsoleEnv";
@@ -20,14 +20,50 @@ function asProjection(read: LiveRead): ProjectionRead {
   return { ...read, status: read.status === "loading" ? "unreachable" : read.status };
 }
 
-/** Never render an unknown setting as a zero, disabled permission, or healthy system. */
-function SettingsGroup({ title, description, reads, children, selected }: {
-  title: string; description: string; reads: LiveRead[]; children: ReactNode; selected: string;
+/** What each read is, in words, for the labelled freshness chips. */
+const READ_LABEL: Record<string, string> = {
+  "policy autonomy-halt": "Stop switch",
+  "policy operator-authority": "Autonomy level",
+  "policy standing-grants-authority": "Permissions",
+  "policy editable-surfaces": "Setup changes",
+  "policy placement-authority": "Where work runs",
+  "policy operator-approval-frontier-authority": "What needs your approval",
+  "policy operator-prompts-authority": "Questions for you",
+  "policy release-goal-holds-authority": "Release holds",
+  "decisions authority": "Who decides what",
+  "route evidence-authority": "Model usage",
+  "memory engine-config": "Memory search",
+  "contract hooks-authority": "Agent connections",
+  "home doctor": "Health check",
+};
+
+function readLabel(read: LiveRead): string {
+  const command = read.source.replace(/^compound /, "").replace(/ --json$/, "");
+  return READ_LABEL[command] ?? command;
+}
+
+/** The section's state in words: how old its data is, still reading, or what could not be read. */
+function sectionStatus(reads: LiveRead[]): string {
+  if (!reads.length) return "";
+  const failed = reads.filter((read) => read.value === null && read.status === "unreachable");
+  if (failed.length) return `Could not read: ${failed.map(readLabel).join(", ")}`;
+  if (reads.some((read) => read.value === null)) return "Reading…";
+  const ages = reads.map((read) => read.ageMs).filter((age): age is number => age !== null);
+  return ages.length ? `Read ${plainAge(Math.max(...ages))}` : "Read";
+}
+
+/**
+ * Never render an unknown setting as zero, a disabled permission, or a
+ * healthy system. A `partial` section renders what loaded and marks only the
+ * missing part; its cards say "not read" for what is missing.
+ */
+function SettingsGroup({ title, description, reads, children, selected, partial = false }: {
+  title: string; description: string; reads: LiveRead[]; children: ReactNode; selected: string; partial?: boolean;
 }) {
   const missing = reads.filter((read) => read.value === null);
   const key = title.toLowerCase().replace(/[^a-z]+/g, "-");
   const open = selected === key;
-  const status = missing.length ? (missing.some((read) => read.status === "unreachable") ? "Unavailable" : "Checking…") : reads.some((read) => read.status === "stale") ? "Last saved data" : "View settings";
+  const status = sectionStatus(reads);
   return (
     <section id={`settings-${key}`} className="scroll-mt-20 rounded-xl border border-hair bg-panel">
       <Link href={open ? "/settings" : `/settings?section=${key}#settings-${key}`} scroll={false} aria-expanded={open} aria-controls={`settings-body-${key}`} className="flex flex-wrap items-center justify-between gap-3 rounded-xl px-5 py-4 hover:bg-soft">
@@ -35,8 +71,9 @@ function SettingsGroup({ title, description, reads, children, selected }: {
         <span className="flex items-center gap-3"><span className="text-xs text-muted">{status}</span><span aria-hidden className={open ? "rotate-90" : ""}>›</span></span>
       </Link>
       {open ? <div id={`settings-body-${key}`} className="grid gap-4 border-t border-hair p-5">
-        <div className="flex flex-wrap gap-2">{reads.map((read) => <ReadChip key={read.source} read={read} />)}</div>
-        {missing.length ? missing.map((read) => <ReadNotice key={read.source} read={read} label={read.source.replace(/^compound /, "")} />) : children}
+        {reads.length ? <div className="flex flex-wrap gap-x-4 gap-y-2">{reads.map((read) => <span key={read.source} className="inline-flex items-center gap-1.5 text-2xs text-muted">{readLabel(read)} <ReadChip read={read} /></span>)}</div> : null}
+        {missing.map((read) => <ReadNotice key={read.source} read={read} label={readLabel(read).toLowerCase()} />)}
+        {!missing.length || partial ? children : null}
       </div> : null}
     </section>
   );
@@ -63,9 +100,8 @@ export default async function Settings({ searchParams }: { searchParams?: Promis
     <div className="flex flex-col gap-5">
       <PendingRefresh pending={readsPending(...reads, attentionRead)} stamp={Date.now()} />
       <PageHeader name="Settings" lead="See what Compound may do, how it connects, and whether it is healthy." />
-      <p className="rounded-lg border border-hair bg-soft px-4 py-3 text-sm text-muted">This browser is read-only. Open a section for current settings and commands to change them.</p>
-      <SettingsGroup selected={selected} title="Safety & permissions" description="Autonomy, standing permissions and actions that need you." reads={reads.slice(0, 4)}>
-        <AutonomySafety halt={halt.value} authority={authority.value} grants={grants.value} editable={editable.value} generatedAt={grants.generatedAt ?? undefined} />
+      <SettingsGroup selected={selected} partial title="Safety & permissions" description="Whether agents are stopped, how far they go on their own, and what they may do without asking." reads={reads.slice(0, 4)}>
+        <AutonomySafety halt={halt.value} authority={authority.value} grants={grants.value} editable={editable.value} generatedAt={grants.generatedAt ?? undefined} nowMs={Date.now()} />
       </SettingsGroup>
       <SettingsGroup selected={selected} title="Operating rules" description="Approval rules, release holds and decision ownership." reads={reads.slice(4, 9)}>
         <PolicyGroup placement={placement.value} frontier={frontier.value} prompts={prompts.value} holds={holds.value} decisions={decisions.value} generatedAt={prompts.generatedAt ?? undefined} />
