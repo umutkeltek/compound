@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { SearchIcon } from "@/components/kit/icons";
 import { WorkBoardCard } from "@/components/work/WorkBoardCard";
-import { agentDisplayName, agentKey } from "@/lib/harness-label";
+import { agentDisplayName, agentKeyFolder } from "@/lib/harness-label";
 import type { ParsedWorkListParams } from "@/lib/links";
 import type { BoardColumnModel } from "@/lib/work-pipeline";
 
@@ -49,32 +49,42 @@ export function BoardLens({
     setQueryState(value);
     onParamsChange?.({ q: value }, "replace");
   };
-  const owner = params.owner;
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
-  // One entry per agent, whatever the spelling on the record (lib/harness-label.ts).
+  // One entry per agent, whatever the spelling on the record, lane spellings
+  // folded over the open work's holders (lib/harness-label.ts) as the List
+  // and the Agents pages fold them. The count is open work only, so it equals
+  // the List the same agent opens (`owner=<key>`, all open).
+  const keyOf = useMemo(
+    () => agentKeyFolder(columns.filter((column) => column.key !== "done").flatMap((column) => column.cards.map((card) => card.subtitle))),
+    [columns],
+  );
+  const owner = params.owner ? keyOf(params.owner) : "";
   const owners = useMemo(() => {
     const counts = new Map<string, { name: string; n: number }>();
-    for (const column of columns) for (const card of column.cards) {
-      const key = agentKey(card.subtitle);
-      const entry = counts.get(key) ?? { name: agentDisplayName(card.subtitle), n: 0 };
-      entry.n += 1;
-      counts.set(key, entry);
+    for (const column of columns) {
+      if (column.key === "done") continue;
+      for (const card of column.cards) {
+        const key = keyOf(card.subtitle);
+        const entry = counts.get(key) ?? { name: agentDisplayName(key), n: 0 };
+        entry.n += 1;
+        counts.set(key, entry);
+      }
     }
     return [...counts.entries()].sort((a, b) => b[1].n - a[1].n);
-  }, [columns]);
+  }, [columns, keyOf]);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return columns.map((column) => ({
       ...column,
       cards: column.cards.filter((card) => {
-        if (owner && agentKey(card.subtitle) !== owner) return false;
+        if (owner && keyOf(card.subtitle) !== owner) return false;
         if (!needle) return true;
         return `${card.title} ${card.note} ${card.subtitle} ${card.agentName ?? ""} ${card.projectName ?? ""} ${card.displayId}`.toLowerCase().includes(needle);
       }),
     }));
-  }, [columns, owner, query]);
+  }, [columns, keyOf, owner, query]);
 
   const narrowed = !!(query.trim() || owner);
   const isDone = (key: string) => key === "done";

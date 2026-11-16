@@ -21,6 +21,8 @@ const FILTERS: ReadonlyArray<{ id: WorkFilter; label: string }> = [
   { id: "running", label: "Running" },
   { id: "claimed", label: "Picked up, not started" },
   { id: "verifying", label: "Waiting for a proof check" },
+  { id: "picked", label: "Picked up" },
+  { id: "queued", label: "Not picked up yet" },
   { id: "all", label: "All open" },
 ];
 const PAGE_SIZE = 18;

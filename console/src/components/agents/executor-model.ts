@@ -10,8 +10,8 @@
  */
 
 // Relative .ts imports: the agents consistency smoke loads this file under node, which has no "@/" alias.
-import { agentDisplayName, agentKey, NO_AGENT_KEY } from "../../lib/harness-label.ts";
-import { isInProgress, isOnHold } from "../../lib/work-state.ts";
+import { agentDisplayName, agentKey, agentKeyFolder, NO_AGENT_KEY } from "../../lib/harness-label.ts";
+import { isInProgress, isOnHold, isPickedUp } from "../../lib/work-state.ts";
 
 /** DESIGN.md / plan Part 3: a lease older than this (and no projection-supplied
  *  threshold) is stale — a lane-health hygiene class. 48h in seconds. */
@@ -95,9 +95,12 @@ export interface ExecutorProjection {
  * (a scheduler, another tool, you) into one `unassigned` bucket. The Work
  * page's agent filter, Today and Live must count the same population, so
  * the console sorts each open work item by the one agent key
- * (lib/harness-label.ts `agentKey` of who picked it up, else its owner),
- * the same key the Work filter `owner=` compares. A row's numbers then equal
- * the list its link opens, and "no agent" means no holder at all.
+ * (lib/harness-label.ts `agentKey` of who picked it up, else its owner,
+ * lane spellings folded over the observed holders), the same key the Work
+ * filter `owner=` compares. A row holds only work that is picked up
+ * (lib/work-state.ts `isPickedUp`); suggested and ready work is held by
+ * nobody yet. A row's numbers then equal the list its link opens, and "no
+ * agent" means no holder at all.
  */
 
 const READY_STATES = new Set(["ready", "admitted", "proposed"]);
@@ -105,6 +108,11 @@ const READY_STATES = new Set(["ready", "admitted", "proposed"]);
 /** The agent key a work item belongs to: who picked it up, else its owner. */
 export function holderKey(work: Pick<ExecutorWorkRef, "claimedBy" | "owner">): string {
   return agentKey(work.claimedBy || work.owner);
+}
+
+/** Who holds a work item, as written on it: who picked it up, else its owner ("" when nobody). */
+export function holderOf(work: Pick<ExecutorWorkRef, "claimedBy" | "owner">): string {
+  return work.claimedBy || work.owner;
 }
 
 function emptyRow(id: string): ExecutorRow {
@@ -141,24 +149,31 @@ function emptyRow(id: string): ExecutorRow {
  * follows the work item it is for. Profiles that hold nothing stay as idle
  * rows. Order: holders by how much they hold, then idle profiles, and the
  * no-agent row last.
+ *
+ * `openWork` is the population: pass the Work page's own open list
+ * (`workRefsFromWorkbench`) so every number is counted from the read the
+ * List shows. Without it the rows' own `current_work` is used. Either way
+ * only picked-up work is held, and lane spellings fold over the holders of
+ * the whole population (`agentKeyFolder`), as the Work List folds them.
  */
-export function regroupByHolder(rows: readonly ExecutorRow[]): ExecutorRow[] {
+export function regroupByHolder(rows: readonly ExecutorRow[], openWork?: readonly ExecutorWorkRef[]): ExecutorRow[] {
   const profiles = new Map<string, ExecutorRow>();
   for (const row of rows) {
     const key = agentKey(row.id);
     if (!profiles.has(key)) profiles.set(key, row);
   }
+  const population = openWork ?? rows.flatMap((row) => row.currentWork);
+  const keyOf = agentKeyFolder(population.map(holderOf));
   const work = new Map<string, ExecutorWorkRef[]>();
   const keyOfWork = new Map<string, string>();
-  for (const row of rows) {
-    for (const ref of row.currentWork) {
-      const key = holderKey(ref);
-      if (ref.workId) {
-        if (keyOfWork.has(ref.workId)) continue;
-        keyOfWork.set(ref.workId, key);
-      }
-      work.set(key, [...(work.get(key) ?? []), ref]);
+  for (const ref of population) {
+    const key = keyOf(holderOf(ref));
+    if (ref.workId) {
+      if (keyOfWork.has(ref.workId)) continue;
+      keyOfWork.set(ref.workId, key);
     }
+    if (!isPickedUp(ref.state)) continue;
+    work.set(key, [...(work.get(key) ?? []), ref]);
   }
   const leases = new Map<string, ExecutorLease[]>();
   for (const row of rows) {

@@ -46,6 +46,18 @@ assert.deepEqual(ids(list({ filter: "all", project: "codebase:fixture-tools" }))
 assert.deepEqual(ids(list({ filter: "all", project: "none" })), ["work_f_blocked", "work_d_claimed", "work_e_ready"], "on hold first, then known pick-up times");
 assert.deepEqual(ids(list({ filter: "all", q: "fixture app" })), ["work_a_held", "work_b_run_old"], "search finds the app's name");
 
+// Picked up (in progress or on hold) and not picked up yet split every open row.
+assert.deepEqual(ids(list({ filter: "picked" })).sort(), ["work_a_held", "work_b_run_old", "work_c_check_older", "work_d_claimed", "work_f_blocked"]);
+assert.deepEqual(ids(list({ filter: "queued" })), ["work_e_ready"], "suggested or ready work is not picked up yet");
+
+// A lane spelled with hyphens folds into the agent it extends, whichever spelling the address carries.
+{
+  const laneRows = [...rows, row("work_g_lane", "running", { owner: "fixture-agent-night-lane", pickedUpMs: NOW - DAY })];
+  const laneList = (query) => ids(filterWorkList(laneRows, parseWorkListParams(query), { projectsKnown: true }));
+  assert.deepEqual(laneList({ filter: "all", owner: "fixture_agent" }), ["work_b_run_old", "work_d_claimed", "work_g_lane"]);
+  assert.deepEqual(laneList({ filter: "all", owner: "fixture-agent-night-lane" }), ["work_b_run_old", "work_d_claimed", "work_g_lane"], "a lane spelling in the address opens its agent's list");
+}
+
 // An app filter before the groups are read keeps nothing and says so; it never shows every row.
 assert.deepEqual(list({ filter: "all", app: "fixture-app" }, false), { rows: [], waitingForGroups: true });
 assert.equal(list({ filter: "all" }, false).rows.length, rows.length, "no app filter: the groups are not needed");

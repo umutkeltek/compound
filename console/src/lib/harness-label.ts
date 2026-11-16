@@ -68,6 +68,56 @@ export function agentKey(raw: string | null | undefined, directory?: readonly Ag
 }
 
 /**
+ * The agent key of each raw owner or claimed-by string, each key once,
+ * sorted. Pass every open work item's holder: this is the observed set
+ * `foldAgentKey` folds lane spellings into.
+ */
+export function observedAgentKeys(raws: Iterable<string | null | undefined>): string[] {
+  const keys = new Set<string>();
+  for (const raw of raws) keys.add(agentKey(raw));
+  return [...keys].sort();
+}
+
+/**
+ * Fold a lane spelling into the agent it extends. A lane written with a
+ * hyphen (`codex-fixture-lane`) normalizes to `codex_fixture_lane`, which
+ * `agentKey` cannot tell from an agent whose own name has a hyphen
+ * (`claude-code`). The data can: when a shorter key in the observed set is
+ * the start of this key (`codex` + `_`), the item belongs to that agent.
+ * The shortest such key wins; "no agent" and you never absorb another key.
+ * Every page that groups or filters work by agent folds with the same
+ * observed set (all open work items), so they name the same agents.
+ */
+export function foldAgentKey(key: string, observed: Iterable<string>): string {
+  if (!key || key === NO_AGENT_KEY || key === OPERATOR_AGENT_KEY) return key;
+  let best = key;
+  for (const candidate of observed) {
+    if (!candidate || candidate === key || candidate === NO_AGENT_KEY || candidate === OPERATOR_AGENT_KEY) continue;
+    if (key.startsWith(`${candidate}_`) && candidate.length < best.length) best = candidate;
+  }
+  return best;
+}
+
+/**
+ * One agent key per raw holder, folded over the observed set of `raws`
+ * (`observedAgentKeys` then `foldAgentKey`, remembered per key). Build it
+ * once from every open work item's holder and use it for each item.
+ */
+export function agentKeyFolder(raws: Iterable<string | null | undefined>): (raw: string | null | undefined) => string {
+  const observed = observedAgentKeys(raws);
+  const memo = new Map<string, string>();
+  return (raw) => {
+    const key = agentKey(raw);
+    let folded = memo.get(key);
+    if (folded === undefined) {
+      folded = foldAgentKey(key, observed);
+      memo.set(key, folded);
+    }
+    return folded;
+  };
+}
+
+/**
  * The one name to show for an agent, from any raw form. "No agent" for no
  * owner, "You" for the operator, the executors projection's label when the
  * directory has the agent, else the key in words (`claude_code` → "Claude

@@ -62,6 +62,15 @@ export function isOnHold(state: unknown): boolean {
   return (ON_HOLD_STATES as readonly string[]).includes(text(state));
 }
 
+/**
+ * Picked up: an agent (or you) holds it. In progress or on hold, the same
+ * work `executors --json` lists under each agent. Work suggested or ready
+ * to start is open but not picked up yet: nobody holds it.
+ */
+export function isPickedUp(state: unknown): boolean {
+  return isInProgress(state) || isOnHold(state);
+}
+
 /** Finished running and waiting for a proof check (`verifying`). Still in progress. */
 export function isWaitingForCheck(state: unknown): boolean {
   return text(state) === "verifying";

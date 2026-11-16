@@ -9,7 +9,7 @@
  */
 
 import { appSlug } from "@/lib/app-identity";
-import { agentKey } from "@/lib/harness-label";
+import { agentKeyFolder } from "@/lib/harness-label";
 import {
   appHref,
   parseWorkListParams,
@@ -19,7 +19,7 @@ import {
   type SearchParamsInput,
   type WorkFilter,
 } from "@/lib/links";
-import { isInProgress, isOnHold, isWaitingForCheck } from "@/lib/work-state";
+import { isInProgress, isOnHold, isPickedUp, isWaitingForCheck } from "@/lib/work-state";
 
 /** What the List needs from a row (lib/work-views.ts `WorkLensItem` carries it). */
 export type WorkListRow = {
@@ -59,6 +59,10 @@ export function matchesWorkFilter(row: Pick<WorkListRow, "state" | "stale">, fil
       return row.stale;
     case "progress":
       return isInProgress(row.state);
+    case "picked":
+      return isPickedUp(row.state);
+    case "queued":
+      return !isPickedUp(row.state);
   }
 }
 
@@ -99,9 +103,13 @@ export function filterWorkList<T extends WorkListRow>(
   if (wantsGroup && !opts.projectsKnown) return { rows: [], waitingForGroups: true };
   const app = params.app.toLowerCase();
   const needle = params.q.trim().toLowerCase();
+  // One agent per key, lane spellings folded over every listed item's holder
+  // (lib/harness-label.ts), the same fold the Agents pages count with.
+  const keyOf = agentKeyFolder(items.map((item) => item.owner));
+  const owner = params.owner ? keyOf(params.owner) : "";
   const rows = items.filter((item) => {
     if (!matchesWorkFilter(item, params.filter)) return false;
-    if (params.owner && agentKey(item.owner) !== params.owner) return false;
+    if (owner && keyOf(item.owner) !== owner) return false;
     if (app && !(item.projectKind === "app" && appSlug(item.projectId).toLowerCase() === app)) return false;
     if (params.project && item.projectId !== params.project) return false;
     if (needle) {

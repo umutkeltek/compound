@@ -1,7 +1,8 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 
-import { describeAgents, STALE_AFTER_DAYS, unit, type InProgressCount } from "@/lib/counts";
+import { agentWords, STALE_AFTER_DAYS, unit, type AgentCount, type InProgressCount } from "@/lib/counts";
+import { NO_AGENT_KEY, OPERATOR_AGENT_KEY } from "@/lib/harness-label";
 import { workListHref } from "@/lib/links";
 
 import type { Roster } from "./agent-roster";
@@ -19,6 +20,34 @@ const linkClass = "font-semibold text-work hover:underline";
 
 function Count({ n, href, children }: { n: number; href: string; children: ReactNode }) {
   return n > 0 ? <Link href={href} className={linkClass}>{children}</Link> : <>{children}</>;
+}
+
+/**
+ * "13 agents hold 538 work items. 2 more work items are held by you. 24 more
+ * open work items are suggested or ready to start: nobody has picked them up
+ * yet." The words are lib/counts.ts `describeAgents`; each part whose items
+ * are one Work list links to it (yours, no agent, not picked up yet), so the
+ * parts add up to every open work item and each opens exactly its items.
+ */
+export function AgentsSentence({ count }: { count: AgentCount }) {
+  const w = agentWords(count);
+  const parts: { text: string; href: string | null }[] = [
+    { text: w.held, href: null },
+    { text: w.none, href: workListHref({ filter: "picked", owner: NO_AGENT_KEY }) },
+    { text: w.yours, href: workListHref({ filter: "picked", owner: OPERATOR_AGENT_KEY }) },
+    { text: w.notPickedUp, href: workListHref({ filter: "queued" }) },
+    { text: w.idle, href: null },
+  ].filter((part) => part.text);
+  return (
+    <>
+      {parts.map((part, index) => (
+        <span key={index}>
+          {index > 0 ? " " : null}
+          {part.href ? <Link href={part.href} className={linkClass}>{part.text}</Link> : part.text}
+        </span>
+      ))}
+    </>
+  );
 }
 
 /** "528 work items are marked in progress: 87 running, 61 picked up but not started, 380 waiting for a proof check." */
@@ -72,7 +101,7 @@ export function AgentsAnswer({
 }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <p>{describeAgents(roster.count)}</p>
+      <p><AgentsSentence count={roster.count} /></p>
       <p className="text-base text-muted"><InProgressSentence c={roster.inProgress} /></p>
       {roster.inProgress.total > 0 ? <p className="text-base text-seam"><StaleSentence c={roster.inProgress} /></p> : null}
       {!runRecordsVisible ? (

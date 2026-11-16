@@ -101,8 +101,13 @@ function rosterWork(work: ExecutorWorkRef, nowMs: number): RosterWork {
   };
 }
 
-/** Build the roster from normalized executors rows. `nowMs` is the clock for "not moved in a week"; `top` caps each agent's listed items. */
-export function buildRoster(rows: readonly ExecutorRow[], nowMs: number, top = 6): Roster {
+/**
+ * Build the roster from normalized executors rows. `nowMs` is the clock for
+ * "not moved in a week"; `top` caps each agent's listed items. Pass the open
+ * list the rows were built from (`openWork`, components/agents/executor-normalize.ts)
+ * so the count also says how much open work nobody has picked up yet.
+ */
+export function buildRoster(rows: readonly ExecutorRow[], nowMs: number, top = 6, openWork?: readonly { state?: unknown }[] | null): Roster {
   const holders: RosterAgent[] = [];
   const idle: Roster["idle"] = [];
   for (const row of rows) {
@@ -128,7 +133,8 @@ export function buildRoster(rows: readonly ExecutorRow[], nowMs: number, top = 6
       oldestPickUpAgo: pickUps.length ? plainAge(Math.max(0, nowMs - Math.min(...pickUps))) : "",
       top: sorted.slice(0, top),
       href: {
-        all: workListHref({ filter: "all", owner: row.id }),
+        // What it holds: picked-up work (in progress or on hold), the rows' own population.
+        all: workListHref({ filter: "picked", owner: row.id }),
         progress: workListHref({ filter: "progress", owner: row.id }),
         stale: workListHref({ filter: "stale", owner: row.id }),
         onHold: workListHref({ filter: "blocked", owner: row.id }),
@@ -139,7 +145,7 @@ export function buildRoster(rows: readonly ExecutorRow[], nowMs: number, top = 6
   return {
     holders,
     idle,
-    count: countAgents(rows),
+    count: countAgents(rows, openWork as readonly Record<string, unknown>[] | null | undefined),
     inProgress: countInProgress(rowsFor(all), nowMs),
     onHold: countOnHold(rowsFor(all)),
   };

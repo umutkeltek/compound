@@ -1,12 +1,15 @@
 // Agents and Settings pages, against a synthetic compound binary:
 //
 // 1. One set of numbers. The executors projection sorts work into its own
-//    agent profiles by a loose name match and puts every holder it does not
-//    know into one "unassigned" bucket. The console regroups the rows by the
-//    one agent key (lib/harness-label.ts), so each agent's count equals the
-//    Work list its link opens, "no agent" means no holder, and your own items
-//    are not an agent's. Working now and All agents print the same sentences
-//    (lib/counts.ts) and link each number to its list.
+//    agent profiles by a loose name match, puts every holder it does not
+//    know into one "unassigned" bucket, leaves out suggested and ready work,
+//    and is read at another moment than the Work List. The console counts
+//    every agent's work over the Work page's own open list (workbench), one
+//    row per agent key with lane spellings folded (lib/harness-label.ts), so
+//    each number equals the Work list its link opens, "no agent" means no
+//    holder, your own items are not an agent's, and work nobody picked up is
+//    named and linked. Every linked number on Working now, All agents and
+//    Waiting is checked against the length of the list it opens.
 //
 // 3. Working now tells the truth about motion: nothing animates from the
 //    work record's own state, the latest work is in pick-up order with plain
@@ -73,6 +76,27 @@ function fixtureWork(now) {
   };
 }
 
+/**
+ * The Work page's open list (workbench), read a moment after the executors
+ * copy: one item has moved on to its proof check since, one is held by a
+ * lane spelled with hyphens, and suggested and ready work (which the
+ * executors projection leaves out) is in it.
+ */
+function fixtureOpen(now) {
+  const items = Object.values(fixtureWork(now)).flat().map((item) => ({ ...item }));
+  items.find((item) => item.work_id === "work_ap_alpha_old").state = "verifying";
+  const extra = (id, state, holder, days) => ({
+    work_id: id, state, ...holder, ...(days === null ? {} : { claimed_at: ns(now, days) }),
+    desired_outcome: `Fixture ${id.replace(/^work_ap_/, "").replace(/_/g, " ")}`, next_action: "finish run",
+  });
+  return [
+    ...items,
+    extra("work_ap_alpha_lane", "running", { claimed_by: "alpha-agent-fixture-lane" }, 3),
+    extra("work_ap_alpha_queued", "ready", { owner: "alpha_agent" }, null),
+    extra("work_ap_yours_suggested", "proposed", { owner: "operator:fixture-person" }, null),
+  ];
+}
+
 function executorsJson(now) {
   const work = fixtureWork(now);
   const row = (id, label, items, extra = {}) => ({
@@ -98,6 +122,7 @@ const args = process.argv.slice(2).join(" ");
 const now = Date.now();
 const executorsJson = ${executorsJson.toString()};
 const fixtureWork = ${fixtureWork.toString()};
+const fixtureOpen = ${fixtureOpen.toString()};
 const ns = ${ns.toString()};
 if (args === "version") { console.log("synthetic"); process.exit(0); }
 while (!existsSync(${JSON.stringify(releaseReads)})) await Bun.sleep(5);
@@ -114,6 +139,7 @@ const reply = {
     waits: [], integrity: [], operator_coordination: { items: [] },
   },
   "executors --json": executorsJson(now),
+  "workbench --json": { generated_at: new Date(now).toISOString(), open: fixtureOpen(now), recent: [] },
   "attention --json": { schema_version: "compound.attention.v0.1", generated_at: new Date(now).toISOString(), counts: { needs_you: 1, needs_you_groups: 1, blocked_on_you: 1 }, groups: [] },
 };
 console.log(JSON.stringify(reply[args] ?? { generated_at: new Date(now).toISOString() }));
@@ -134,7 +160,7 @@ const { countAgents, countInProgress, describeAgents, describeInProgress } = awa
 const { buildTraffic } = await import("../src/lib/traffic.ts");
 const { buildWorkLensItems } = await import("../src/lib/work-views.ts");
 const { filterWorkList } = await import("../src/lib/work-list.ts");
-const { parseWorkListParams } = await import("../src/lib/links.ts");
+const { parseWorkListParams, workListHref } = await import("../src/lib/links.ts");
 const compound = await import("../src/lib/compound.ts");
 const { default: Live } = await import("../src/app/live/page.tsx");
 const { default: Agents } = await import("../src/app/executors/page.tsx");
@@ -170,34 +196,42 @@ const hrefs = (html) => [...html.matchAll(/href="([^"]+)"/g)].map((m) => m[1].re
 try {
   /* ---------- 1. one set of numbers ---------- */
   const raw = executorsJson(NOW);
-  const projection = normalizeExecutorProjection(raw);
+  // The executors copy alone: its catch-all bucket splits into its real holders and only picked-up work is held.
+  const execOnly = normalizeExecutorProjection(raw);
+  assert.deepEqual(Object.fromEntries(execOnly.executors.map((row) => [row.id, row.currentWork.length])),
+    { alpha_agent: 3, beta_agent: 2, fixture_scheduler: 1, fixture_relay: 1, operator: 1, local_box: 0 },
+    "one row per agent key: the catch-all bucket splits into its real holders, a loosely matched item leaves alpha, ready work is held by nobody");
+
+  // What the pages count: the executors profiles, with the work of the Work page's own open list.
+  const openList = fixtureOpen(NOW);
+  const projection = normalizeExecutorProjection(raw, openList);
   const byId = Object.fromEntries(projection.executors.map((row) => [row.id, row.currentWork.length]));
-  assert.deepEqual(byId, { alpha_agent: 3, beta_agent: 2, fixture_scheduler: 2, fixture_relay: 1, operator: 1, unassigned: 1, local_box: 0 },
-    "one row per agent key: the catch-all bucket splits into its real holders, a loosely matched item leaves alpha");
-  assert.equal(projection.executors.find((row) => row.id === "unassigned").label, "No agent");
+  assert.deepEqual(byId, { alpha_agent: 4, beta_agent: 2, fixture_scheduler: 1, fixture_relay: 1, operator: 1, local_box: 0 },
+    "counted over the open list: the lane spelled with hyphens folds into its agent, the item that moved on counts where it is now");
   assert.equal(projection.executors.find((row) => row.id === "operator").label, "You");
   assert.equal(projection.executors.find((row) => row.id === "beta_agent").label, "Beta Agent", "the projection's label stays the name");
 
-  const agents = countAgents(projection.executors);
-  assert.deepEqual(agents, { withWork: 4, idle: 1, heldItems: 8, noAgentItems: 1, yourItems: 1 });
+  const agents = countAgents(projection.executors, openList);
+  assert.deepEqual(agents, { withWork: 4, idle: 1, heldItems: 8, noAgentItems: 0, yourItems: 1, notPickedUp: 4 });
   const agentsLine = describeAgents(agents);
-  assert.equal(agentsLine, "4 agents hold 8 work items. 1 more work item has no agent. 1 more work item is held by you. 1 agent has nothing to do.");
+  assert.equal(agentsLine, "4 agents hold 8 work items. 1 more work item is held by you. 4 more open work items are suggested or ready to start: nobody has picked them up yet. 1 agent has nothing to do.");
 
-  // Every number on a row equals the Work list its link opens (the real List filter).
-  const open = Object.values(fixtureWork(NOW)).flat();
-  const workRows = buildWorkLensItems(open, buildTraffic(projection, null), { nowMs: NOW });
+  // Every number on a row equals the Work list its link opens (the real List filter over the same open list).
+  const workRows = buildWorkLensItems(openList, buildTraffic(projection, null), { nowMs: NOW });
   const listSize = (href) => filterWorkList(workRows, parseWorkListParams(new URL(href, "https://console.invalid").searchParams), { projectsKnown: true }).rows.length;
-  const roster = buildRoster(projection.executors, NOW, 6);
+  const roster = buildRoster(projection.executors, NOW, 6, openList);
   for (const agent of roster.holders) {
     assert.equal(listSize(agent.href.all), agent.items, `${agent.name}: holds = its Work list`);
     assert.equal(listSize(agent.href.progress), agent.inProgress.total, `${agent.name}: in progress = its list`);
     assert.equal(listSize(agent.href.stale), agent.stale ?? 0, `${agent.name}: not moved = its list`);
     assert.equal(listSize(agent.href.onHold), agent.onHold, `${agent.name}: need you = its list`);
   }
-  assert.equal(roster.holders.reduce((n, a) => n + a.items, 0), open.length, "every open item has exactly one row");
-  const inProgress = countInProgress(open, NOW);
-  assert.deepEqual(roster.inProgress, inProgress, "the roster's in-progress count is counts.ts over the same items");
-  assert.equal(inProgress.total, 7);
+  assert.equal(listSize(workListHref({ filter: "queued" })), agents.notPickedUp, "not picked up yet = its list");
+  assert.equal(roster.holders.reduce((n, a) => n + a.items, 0) + agents.notPickedUp, openList.length,
+    "every open item is held by exactly one row or counted as not picked up");
+  const inProgress = countInProgress(openList, NOW);
+  assert.deepEqual(roster.inProgress, inProgress, "the roster's in-progress count is counts.ts over the Work page's open list");
+  assert.equal(inProgress.total, 8);
   assert.equal(inProgress.pickedUpOver7Days, 3);
   const beta = roster.holders.find((a) => a.key === "beta_agent");
   assert.deepEqual(beta.top.map((w) => w.workId), ["work_ap_beta_held", "work_ap_beta_check"], "on hold first, then not moved");
@@ -211,9 +245,10 @@ try {
   const agentsHtml = wrap("/executors", await Agents());
   const live = visibleText(liveHtml);
   const all = visibleText(agentsHtml);
-  const pageProjection = normalizeExecutorProjection(await compound.runJson(["executors", "--json"]));
-  const pageLine = describeAgents(countAgents(pageProjection.executors));
-  const pageProgress = describeInProgress(countInProgress(pageProjection.executors.flatMap((row) => row.currentWork.map((w) => ({ work_id: w.workId, state: w.state, claimed_at: w.claimedAt }))), Date.now()));
+  const pageOpen = (await compound.runJson(["workbench", "--json"])).open;
+  const pageProjection = normalizeExecutorProjection(await compound.runJson(["executors", "--json"]), pageOpen);
+  const pageLine = describeAgents(countAgents(pageProjection.executors, pageOpen));
+  const pageProgress = describeInProgress(countInProgress(pageOpen, Date.now()));
   for (const [name, text] of [["Working now", live], ["All agents", all]]) {
     assert.ok(text.includes(pageLine), `${name} says "${pageLine}"`);
     assert.ok(text.includes(`${pageProgress.headline}: ${pageProgress.detail}`), `${name} says the in-progress split in counts.ts words`);
@@ -221,16 +256,31 @@ try {
   }
   for (const [name, html] of [["Working now", liveHtml], ["All agents", agentsHtml]]) {
     const links = hrefs(html);
-    for (const filter of ["progress", "running", "claimed", "verifying", "stale"]) {
+    for (const filter of ["progress", "running", "claimed", "verifying", "stale", "queued"]) {
       assert.ok(links.includes(`/work?lens=table&filter=${filter}`), `${name}: the ${filter} number opens its list`);
+    }
+  }
+  // Every number that links to the Work List equals the length of the list it opens, over the page's own open list.
+  const pageRows = buildWorkLensItems(pageOpen, buildTraffic(pageProjection, null), { nowMs: Date.now() });
+  const pageListSize = (href) => filterWorkList(pageRows, parseWorkListParams(new URL(href, "https://console.invalid").searchParams), { projectsKnown: true }).rows.length;
+  const linkedNumbers = (html) => [...html.matchAll(/<a [^>]*href="(\/work\?[^"]+)"[^>]*>([\s\S]*?)<\/a>/g)]
+    .map((m) => ({ href: m[1].replace(/&amp;/g, "&"), text: visibleText(m[2]).trim() }))
+    .map((link) => ({ ...link, n: (link.text.match(/^(?:See all )?(\d[\d,]*)\b/) ?? link.text.match(/^\+\d[\d,]* more: all (\d[\d,]*)\b/))?.[1] }))
+    .filter((link) => link.n !== undefined);
+  for (const [name, html] of [["Working now", liveHtml], ["All agents", agentsHtml]]) {
+    const numbers = linkedNumbers(html);
+    assert.ok(numbers.length >= 8, `${name}: its numbers link to Work lists`);
+    for (const link of numbers) {
+      assert.equal(pageListSize(link.href), Number(link.n.replace(/,/g, "")), `${name}: "${link.text}" opens ${link.href}, a list of the same length`);
     }
   }
   assert.doesNotMatch(all, /Executors|Paused|Assg|\bRunning 8\b/, "no tile counts in-progress work as running or the catch-all as an agent");
   const agentLinks = hrefs(agentsHtml);
-  for (const href of ["/work?lens=table&filter=all&owner=alpha_agent", "/work?lens=table&filter=progress&owner=alpha_agent",
-    "/work?lens=table&filter=blocked&owner=beta_agent", "/work?lens=table&filter=stale&owner=fixture_scheduler", "/work?lens=table&filter=all&owner=unassigned"]) {
+  for (const href of ["/work?lens=table&filter=picked&owner=alpha_agent", "/work?lens=table&filter=progress&owner=alpha_agent",
+    "/work?lens=table&filter=blocked&owner=beta_agent", "/work?lens=table&filter=stale&owner=fixture_scheduler", "/work?lens=table&filter=picked&owner=operator"]) {
     assert.ok(agentLinks.includes(href), `All agents links ${href}`);
   }
+  assert.doesNotMatch(all, /Alpha Agent Fixture Lane/, "a lane spelled with hyphens is not shown as an agent of its own");
   assert.match(all, /Set up but holding no work: Local Box\./);
 
   /* ---------- 4. waiting on each other: one sentence, holders linked, same numbers ---------- */
@@ -246,19 +296,22 @@ try {
   assert.doesNotMatch(waiting, /view as|shared queue|10 open|coordination stale|stream live|\bMe\b|Others/, "no per-card queue numbers, no 'Me', one freshness chip");
   assert.ok(waiting.includes(pageLine), "the waiting page says the same agent count as Working now");
   assert.ok(waiting.includes(`${pageProgress.headline}: ${pageProgress.detail}`), "and the same in-progress split");
+  for (const link of linkedNumbers(waitingHtml)) {
+    assert.equal(pageListSize(link.href), Number(link.n.replace(/,/g, "")), `Waiting: "${link.text}" opens ${link.href}, a list of the same length`);
+  }
 
   /* ---------- 3. motion, order and links on Working now and All agents ---------- */
   assert.equal(isActiveRun({ runStatus: "", state: "running" }), false, "a work record saying running does not animate");
   assert.equal(isActiveRun({ runStatus: "running" }), true, "a run record saying running does");
-  assert.deepEqual(latestPickedUp(projection.executors, NOW, 6).rows.map((w) => w.workId).slice(3),
+  assert.deepEqual(latestPickedUp(execOnly.executors, NOW, 6).rows.map((w) => w.workId).slice(3),
     ["work_ap_alpha_new", "work_ap_beta_held", "work_ap_alpha_old"], "latest work in pick-up order, newest first");
-  assert.deepEqual(oldestNotMoved(projection.executors, NOW, 10).map((w) => w.workId),
+  assert.deepEqual(oldestNotMoved(execOnly.executors, NOW, 10).map((w) => w.workId),
     ["work_ap_sched_old", "work_ap_beta_check", "work_ap_alpha_old"], "oldest not-moved work first");
   assert.doesNotMatch(liveHtml, /data-live="true"|runbar|running now|Running now/, "nothing on Working now moves without a run record");
   assert.match(live, /Record the final checked commit for it\./, "next steps in plain words");
   assert.doesNotMatch(live, /commit:<full-sha>/);
   assert.match(live, /not a live feed/, "the page says it is the last read, not a live feed");
-  for (const href of ["/work?lens=table&filter=all&owner=alpha_agent", "/work?lens=table&filter=progress&owner=alpha_agent", "/work/work_ap_alpha_check"]) {
+  for (const href of ["/work?lens=table&filter=picked&owner=alpha_agent", "/work?lens=table&filter=progress&owner=alpha_agent", "/work/work_ap_alpha_check"]) {
     assert.ok(hrefs(liveHtml).includes(href), `Working now links ${href}`);
   }
   assert.doesNotMatch(all, /clear it|Archive lease history|Copy command|Lease pressure/i, "no instruction to act where no action exists");
@@ -368,7 +421,7 @@ try {
     assert.doesNotMatch(html, /&lt;[a-z][\w.-]*&gt;/, `${name}: no command with a blank to fill in`);
   }
 
-  console.log("agents-pages cases ok: one row per agent key, each count equals its Work list, Working now and All agents agree; settings say what agents may do in plain words");
+  console.log("agents-pages cases ok: one row per agent key over the Work page's open list, every linked number equals its Work list, Working now and All agents agree; settings say what agents may do in plain words");
 } catch (error) {
   console.error(error);
   process.exitCode = 1;

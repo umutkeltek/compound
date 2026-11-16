@@ -4,12 +4,12 @@ import { hasCopy, PageHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPendi
 import { PendingRefresh } from "@/components/PendingRefresh";
 import { WorkLenses } from "@/components/work/WorkLenses";
 import type { WorkByAppModel } from "@/components/work/WorkByAppLens";
-import { arr, HEAVY_PROJECTION_TIMEOUT_MS, readProjection, readWorkProjectIndex } from "@/lib/compound";
+import { arr, readWorkProjectIndex } from "@/lib/compound";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { countInProgress, countOnHold, countOpenWork, STALE_AFTER_DAYS, UNASSIGNED_AGENT_ID } from "@/lib/counts";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { parseWorkListParams, workListHref, type WorkFilter } from "@/lib/links";
-import { getTraffic } from "@/lib/traffic";
+import { getTraffic, readOpenWork } from "@/lib/traffic";
 import { buildBoard, decorateBoard, nameCardOwners } from "@/lib/work-pipeline";
 import { buildWorkLensItems } from "@/lib/work-views";
 
@@ -32,7 +32,8 @@ export default async function WorkPage({
   const params = parseWorkListParams(await searchParams);
   const nowMs = Date.now();
   const [workbenchRead, traffic, projectIndex] = await Promise.all([
-    readProjection(["workbench", "--json"], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }),
+    // The open work read every Agents page counts from too (lib/traffic.ts).
+    readOpenWork(),
     getTraffic(),
     // Which app, codebase or "not linked" group each item is in. It shares
     // the workbench read above (same argv) and adds the app list and inventory.

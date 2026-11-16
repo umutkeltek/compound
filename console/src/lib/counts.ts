@@ -23,7 +23,7 @@
 export { attentionShare, housekeepingGroups, waitingOnYou, yourDecisionGroups, type AttentionShare, type WaitingOnYou } from "@/lib/attention";
 import type { WaitingOnYou } from "@/lib/attention";
 
-import { isInProgress, isOnHold, isStale, isWaitingForCheck, STALE_AFTER_DAYS, timestampMs } from "@/lib/work-state";
+import { isInProgress, isOnHold, isPickedUp, isStale, isWaitingForCheck, STALE_AFTER_DAYS, timestampMs } from "@/lib/work-state";
 import { NO_AGENT_KEY, OPERATOR_AGENT_KEY } from "@/lib/harness-label";
 
 // The per-item rules (in progress, on hold, waiting for a check, stale and its
@@ -33,6 +33,7 @@ export {
   IN_PROGRESS_STATES,
   isInProgress,
   isOnHold,
+  isPickedUp,
   isStale,
   isWaitingForCheck,
   ON_HOLD_STATES,
@@ -241,6 +242,12 @@ export type AgentCount = {
   noAgentItems: number;
   /** open work items you hold yourself (the operator's row): yours, not an agent's */
   yourItems: number;
+  /**
+   * open work items nobody has picked up yet (suggested or ready to start,
+   * lib/work-state.ts `isPickedUp` false). Null when the count was made
+   * without the open list: unknown, never 0.
+   */
+  notPickedUp: number | null;
 };
 
 type AgentRow = { id: string; currentWork: readonly unknown[] };
@@ -248,10 +255,19 @@ type AgentRow = { id: string; currentWork: readonly unknown[] };
 /**
  * Count agents from the normalized executors rows (one row per agent key,
  * components/agents/executor-normalize.ts). Unit: agents; items are work
- * items. The no-agent row and your own row are not agents.
+ * items. The no-agent row and your own row are not agents. Pass the open
+ * list the rows were built from (`openWork`) to count what nobody holds yet,
+ * so the sentence accounts for every open item.
  */
-export function countAgents(rows: readonly AgentRow[]): AgentCount {
-  const out: AgentCount = { withWork: 0, idle: 0, heldItems: 0, noAgentItems: 0, yourItems: 0 };
+export function countAgents(rows: readonly AgentRow[], openWork?: readonly Row[] | null): AgentCount {
+  const out: AgentCount = {
+    withWork: 0,
+    idle: 0,
+    heldItems: 0,
+    noAgentItems: 0,
+    yourItems: 0,
+    notPickedUp: openWork ? openWork.filter((item) => !isPickedUp(item.state)).length : null,
+  };
   for (const row of rows) {
     const items = row.currentWork.length;
     if (row.id === UNASSIGNED_AGENT_ID) {
@@ -272,15 +288,34 @@ export function countAgents(rows: readonly AgentRow[]): AgentCount {
   return out;
 }
 
+/** The agent count in plain sentences, one part each so a page can link every number. */
+export type AgentWords = { held: string; none: string; yours: string; notPickedUp: string; idle: string };
+
+/**
+ * The agent count in words, part by part: "4 agents hold 444 work items.",
+ * "90 more have no agent.", "2 more are held by you.", "24 more open work
+ * items are suggested or ready to start: nobody has picked them up yet.",
+ * "1 agent has nothing to do." A part with nothing to say is "".
+ */
+export function agentWords(a: AgentCount): AgentWords {
+  const n = a.notPickedUp ?? 0;
+  return {
+    held: a.withWork
+      ? `${unit(a.withWork, "agent")} ${a.withWork === 1 ? "holds" : "hold"} ${unit(a.heldItems, "work item")}.`
+      : "No agent holds any work.",
+    none: a.noAgentItems ? `${unit(a.noAgentItems, "more work item")} ${a.noAgentItems === 1 ? "has" : "have"} no agent.` : "",
+    yours: a.yourItems ? `${unit(a.yourItems, "more work item")} ${a.yourItems === 1 ? "is" : "are"} held by you.` : "",
+    notPickedUp: n
+      ? `${unit(n, "more open work item")} ${n === 1 ? "is" : "are"} suggested or ready to start: nobody has picked ${n === 1 ? "it" : "them"} up yet.`
+      : "",
+    idle: a.idle ? `${unit(a.idle, "agent")} ${a.idle === 1 ? "has" : "have"} nothing to do.` : "",
+  };
+}
+
 /** The agent count in one plain sentence ("4 agents hold 444 work items. 90 more have no agent."). */
 export function describeAgents(a: AgentCount): string {
-  const held = a.withWork
-    ? `${unit(a.withWork, "agent")} ${a.withWork === 1 ? "holds" : "hold"} ${unit(a.heldItems, "work item")}.`
-    : "No agent holds any work.";
-  const none = a.noAgentItems ? ` ${unit(a.noAgentItems, "more work item")} ${a.noAgentItems === 1 ? "has" : "have"} no agent.` : "";
-  const yours = a.yourItems ? ` ${unit(a.yourItems, "more work item")} ${a.yourItems === 1 ? "is" : "are"} held by you.` : "";
-  const idle = a.idle ? ` ${unit(a.idle, "agent")} ${a.idle === 1 ? "has" : "have"} nothing to do.` : "";
-  return held + none + yours + idle;
+  const w = agentWords(a);
+  return [w.held, w.none, w.yours, w.notPickedUp, w.idle].filter(Boolean).join(" ");
 }
 
 /* ---------- decisions ---------- */
