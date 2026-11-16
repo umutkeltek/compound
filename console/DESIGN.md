@@ -665,20 +665,26 @@ a cold read must not delay rendering or appear as an empty list of agents.
 
 ## Connected project view
 
-Projects is a scope browser over the existing Work and System owners. It answers
-which recorded outcomes, work and evidence belong together; it creates no project registry.
-The Essentials entry opens a project/area selector with exact identity in the URL.
-Explicit project/product scope groups work first. Exact repository fingerprints from Git delivery bindings group remaining source work. Simple declared area names remain available; file paths and URLs do not become projects. Task prose,
-actor names and timing never create membership. Unlinked work remains visible.
+There is no Projects page. "Which app is this work for, and what is stuck there?" is
+answered where the work already lives: Work's "By app" view (`/work?lens=project`) and
+each app's own page. The app catalog (`product growth --json`, with its aliases) is the
+registry for apps; the console adds none.
 
-The selected work inspector and focused map share one work identity. The map draws at
-most twelve reference nodes; its table provides the same relationships without pan/zoom.
-An attached attempt or check is a reference, not activity or successful proof.
-Separate project goals and task prerequisites remain explicitly unprojected until an
-owned source supplies them. Inventory dependencies retain observed/declared/inferred
-confidence, carried evidence and observation age separately from read freshness.
+One resolver (`lib/work-project.ts`) places every open work item in exactly one group:
+a catalog app, a codebase, an app the record names that the catalog does not list, or
+"Not linked to a project". The record's own product id wins; then folders the inventory
+says an app's code lives in (`code_in`), then folder and surface names. Task prose,
+actor names and timing never create membership, and nothing is guessed when unsure:
+work that names no app or codebase stays visible in "Not linked", sorted by the same
+rule as every other group.
 
-Projects reads only existing CLI projections: work list, workbench, product inventory
-and the product-filtered system graph. Each read preserves loading, stale and unavailable
-states. Registered product inventory can appear before work exists, without growth data.
-The current browser action boundary is unchanged; the inspector opens the owning Work page.
+"By app" lists each group with "N need you · N in progress · N waiting for a check ·
+N not moved in a week" from the shared item rules (`lib/work-state.ts`), groups that
+need you first. Each count opens the List of exactly those items (`app=<slug>` for an
+app, `project=<group id>` otherwise); an app row also links to its app page. The view
+reads the same three projections the index owns (`readWorkProjectIndex`) and keeps
+their loading, last-good and failed states: until all three hold a list, the grouping
+is unknown, never empty, and a List narrowed to an app says it is still being read.
+
+Old `/projects` addresses redirect: an app's scope to that app's page, an opened work
+item to its own page, anything else to "By app".

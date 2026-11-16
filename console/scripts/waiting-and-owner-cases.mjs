@@ -17,7 +17,7 @@ const open = [
   { work_id: "work_cccccccccccc", state: "ready", owner: "claude" },
   { work_id: "work_dddddddddddd", state: "proposed" },
 ];
-const items = buildWorkLensItems(open, emptyTraffic);
+const items = buildWorkLensItems(open, emptyTraffic, { nowMs: Date.parse("2030-01-01T00:00:00Z") });
 assert.deepEqual(items.map((i) => i.laneLabel), ["claude", "codex", "claude", "Unassigned"], "owners must label lanes when no executor row joins");
 const groups = groupWorkLensItems(items, emptyTraffic);
 assert.deepEqual(groups.map((g) => `${g.label}:${g.items.length}`), ["claude:2", "codex:1", "Unassigned:1"], "only an item with no owner is Unassigned");
@@ -27,7 +27,7 @@ const traffic = {
   ...emptyTraffic,
   lanes: [{ agentId: "exec-a", agentLabel: "Claude Code", agentStatus: "running", running: 1, needsMe: 0, inFlight: [{ workId: "work_aaaaaaaaaaaa", title: "", state: "running", nextAction: "", harness: "claude", runStatus: "running", actor: "x", retryDepth: 0, startedAt: "", lastHeartbeatAt: "" }] }],
 };
-const joined = buildWorkLensItems(open, traffic);
+const joined = buildWorkLensItems(open, traffic, { nowMs: Date.parse("2030-01-01T00:00:00Z") });
 assert.equal(joined[0].laneLabel, "Claude Code");
 
 // One definition of "waiting on you": groups vs items vs work items, named.

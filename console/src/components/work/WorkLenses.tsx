@@ -4,8 +4,9 @@ import * as Tabs from "@radix-ui/react-tabs";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { BoardIcon, InboxIcon, LayersIcon, ListIcon, RouteIcon, TimelineIcon } from "@/components/kit/icons";
+import { BoardIcon, GridIcon, InboxIcon, LayersIcon, ListIcon, RouteIcon, TimelineIcon } from "@/components/kit/icons";
 import { BoardLens } from "@/components/work/BoardLens";
+import { WorkByAppLens, type WorkByAppModel } from "@/components/work/WorkByAppLens";
 import { CapsuleColumns } from "@/components/work/CapsuleColumns";
 import { OfferedLens } from "@/components/work/OfferedLens";
 import { PipelineLens } from "@/components/work/PipelineLens";
@@ -15,6 +16,7 @@ import { WorkFlowLens } from "@/components/work/WorkFlowLens";
 import { WorkSpaceLens } from "@/components/work/WorkSpaceLens";
 import { WorkTableLens } from "@/components/work/WorkTableLens";
 import type { LaneTrafficReport } from "@/lib/lane-traffic";
+import { parseWorkListParams, workListHref, type ParsedWorkListParams, type WorkLens } from "@/lib/links";
 import type { BoardColumnModel, OfferedPacketModel, PipelineStageModel } from "@/lib/work-pipeline";
 import type { WorkLensGroup, WorkLensItem } from "@/lib/work-views";
 
@@ -32,7 +34,7 @@ import type { WorkLensGroup, WorkLensItem } from "@/lib/work-views";
  * ambient organism-is-alive signal, not lens-scoped data.
  */
 
-export type WorkLensKey = "pipeline" | "table" | "flow" | "space" | "board" | "offered";
+export type WorkLensKey = WorkLens;
 
 const TAB_CLASS =
   "inline-flex shrink-0 items-center gap-1.5 rounded-md border border-transparent px-3 py-1.5 text-sm font-medium text-muted transition-colors hover:text-ink " +
@@ -54,6 +56,7 @@ export function WorkLenses({
   groups,
   defaultLens,
   mutationsReady,
+  byApp,
 }: {
   stages: PipelineStageModel[];
   columns: BoardColumnModel[];
@@ -65,6 +68,7 @@ export function WorkLenses({
   groups: WorkLensGroup[];
   defaultLens: WorkLensKey;
   mutationsReady: boolean;
+  byApp: WorkByAppModel;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -78,21 +82,21 @@ export function WorkLenses({
     paramsRef.current = searchParams.toString();
   }, [searchParams]);
 
-  const replaceParams = useCallback((next: { trace?: string | null; lens?: WorkLensKey; filter?: string }) => {
+  // The address owns the view, the List filter, the agent, the app or group
+  // and the search text (lib/links.ts). A view, filter or drawer change is a
+  // step Back can return to (push); typing replaces the current step.
+  const replaceParams = useCallback((next: { trace?: string | null } & Partial<Omit<ParsedWorkListParams, "trace">>, mode: "push" | "replace" = "replace") => {
     // Keep a synchronous query snapshot. A close followed immediately by a
-    // lens switch must not resurrect the trace while router.replace settles.
-    const params = new URLSearchParams(paramsRef.current);
-    if (next.trace === null) params.delete("trace");
-    else if (next.trace) params.set("trace", next.trace);
-    if (next.lens) {
-      if (next.lens === "board") params.delete("lens");
-      else params.set("lens", next.lens);
-    }
-    if (next.filter) params.set("filter", next.filter);
-    const query = params.toString();
-    paramsRef.current = query;
-    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+    // lens switch must not resurrect the trace while the router settles.
+    const current = parseWorkListParams(new URLSearchParams(paramsRef.current));
+    const merged = { ...current, ...next, trace: next.trace === null ? "" : next.trace ?? current.trace };
+    const href = workListHref(merged);
+    paramsRef.current = href.includes("?") ? href.slice(href.indexOf("?") + 1) : "";
+    const target = pathname === "/work" ? href : `${pathname}${href.slice("/work".length)}`;
+    if (mode === "push") router.push(target, { scroll: false });
+    else router.replace(target, { scroll: false });
   }, [pathname, router]);
+  const listParams = parseWorkListParams(searchParams);
 
   const openTrace = useCallback(
     (workId: string) => {
@@ -112,7 +116,7 @@ export function WorkLenses({
       <Tabs.Root value={lens} onValueChange={(value) => {
         const next = value as WorkLensKey;
         setLens(next);
-        replaceParams({ lens: next });
+        replaceParams({ lens: next }, "push");
       }} className="flex min-w-0 flex-col gap-4">
         {/* One default view (the board by state) and quieter alternates over
          * the same work items. Every view stays one click away. */}
@@ -132,6 +136,11 @@ export function WorkLenses({
             <ListIcon size={12} />
             List
             <span className="tabular-nums">{items.length}</span>
+          </Tabs.Trigger>
+          <Tabs.Trigger value="project" className={ALT_TAB_CLASS}>
+            <GridIcon size={12} />
+            By app
+            {byApp.groups ? <span className="tabular-nums">{byApp.groups.length}</span> : null}
           </Tabs.Trigger>
           <Tabs.Trigger value="pipeline" className={ALT_TAB_CLASS}>
             <TimelineIcon size={12} />
@@ -156,7 +165,16 @@ export function WorkLenses({
           <PipelineLens stages={stages} onOpenTrace={openTrace} />
         </Tabs.Content>
         <Tabs.Content value="table" className="min-w-0 focus-visible:outline-none">
-          <WorkTableLens items={items} onOpenTrace={openTrace} initialFilter={searchParams.get("filter") ?? "focus"} onFilterChange={(filter) => replaceParams({ filter })} />
+          <WorkTableLens
+            items={items}
+            onOpenTrace={openTrace}
+            params={listParams}
+            groups={byApp.groups}
+            onParamsChange={(next, mode) => replaceParams(next, mode)}
+          />
+        </Tabs.Content>
+        <Tabs.Content value="project" className="min-w-0 focus-visible:outline-none">
+          <WorkByAppLens model={byApp} />
         </Tabs.Content>
         <Tabs.Content value="flow" className="min-w-0 focus-visible:outline-none">
           <WorkFlowLens stages={stages} groups={groups} onOpenTrace={openTrace} />

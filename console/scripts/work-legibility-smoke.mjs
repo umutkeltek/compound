@@ -78,6 +78,9 @@ await import("./work-next-step-cases.mjs");
 await import("./links-cases.mjs");
 // Which app or codebase each work item belongs to (scripts/work-project-cases.mjs).
 await import("./work-project-cases.mjs");
+// What the Work List keeps for each filter, agent, app and search, and where
+// a retired Projects address goes (scripts/work-list-cases.mjs).
+await import("./work-list-cases.mjs");
 
 // Campaign previews are part of Work detail; keep their asset and rendered
 // state falsifiers in this existing canonical consumer.

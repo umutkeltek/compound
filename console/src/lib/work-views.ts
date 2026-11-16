@@ -4,7 +4,9 @@ import type { TrafficReport, TrafficWork } from "@/lib/traffic";
 import { stageProgressForState, type StageProgress } from "@/lib/work-pipeline";
 import { ago } from "@/lib/time";
 import { shortText, workId } from "@/lib/work-data";
-import { harnessDisplayName } from "@/lib/harness-label";
+import { agentDisplayName, harnessDisplayName } from "@/lib/harness-label";
+import { isStale, timestampMs } from "@/lib/work-state";
+import { workTitle } from "@/lib/work-title";
 
 /** Three presentations over one WorkEnvelope + executor + RunAttempt join. */
 export type WorkLensItem = {
@@ -25,15 +27,22 @@ export type WorkLensItem = {
   startedAt: string;
   lastHeartbeatAt: string;
   progress: StageProgress;
+  /** the agent's one name (lib/harness-label.ts) */
+  ownerName: string;
+  /** its app, codebase or "not linked" group (lib/work-project.ts), "" while not read */
+  projectId: string;
+  projectKind: string;
+  projectName: string;
+  /** in progress and picked up more than a week ago (lib/work-state.ts `isStale`) */
+  stale: boolean;
+  /** pick-up time in epoch ms, null when unknown */
+  pickedUpMs: number | null;
 };
 
-export type WorkLensGroup = { id: string; label: string; status: string; items: WorkLensItem[] };
+/** Which group a work item is in, from the shared index (lib/compound.ts `readWorkProjectIndex`). */
+export type WorkGroupOf = (workId: string) => { id: string; name: string; kind: string } | null;
 
-function titleFor(item: Json): string {
-  const surface = str(item.canonical_surface);
-  if (surface.startsWith("packet:")) return surface.slice("packet:".length).replace(/-/g, " ");
-  return str(item.title) || str(item.desired_outcome) || str(item.success_predicate) || workId(item) || "work item";
-}
+export type WorkLensGroup = { id: string; label: string; status: string; items: WorkLensItem[] };
 
 /** Claimant first (who holds it now), then the accountable owner. */
 function ownerOf(item: Json): string {
@@ -61,16 +70,22 @@ function byWork(report: TrafficReport): Map<string, { laneId: string; laneLabel:
   return out;
 }
 
-export function buildWorkLensItems(open: Json[], traffic: TrafficReport): WorkLensItem[] {
+/**
+ * One List row per open work item. Pass the clock (`nowMs`) for the stale
+ * mark and the group lookup when the shared index is read; without it a
+ * row's group is "" (unknown), never "not linked".
+ */
+export function buildWorkLensItems(open: Json[], traffic: TrafficReport, opts: { nowMs: number; groupOf?: WorkGroupOf }): WorkLensItem[] {
   const execution = byWork(traffic);
   return open.map((item) => {
     const id = workId(item);
     const joined = execution.get(id);
     const run = joined?.work;
+    const group = opts.groupOf?.(id) ?? null;
     const age = str(item.claimed_at) || str(item.created_at) || str(item.updated_at);
     return {
       workId: id,
-      title: shortText(titleFor(item), 180),
+      title: workTitle(item),
       state: str(item.state) || "unknown",
       owner: ownerOf(item) || "Unassigned",
       nextAction: shortText(str(item.next_action), 160),
@@ -90,6 +105,12 @@ export function buildWorkLensItems(open: Json[], traffic: TrafficReport): WorkLe
       startedAt: run?.startedAt ?? "",
       lastHeartbeatAt: run?.lastHeartbeatAt ?? "",
       progress: stageProgressForState(str(item.state)),
+      ownerName: agentDisplayName(ownerOf(item)),
+      projectId: group?.id ?? "",
+      projectKind: group?.kind ?? "",
+      projectName: group?.name ?? "",
+      stale: isStale(item, opts.nowMs),
+      pickedUpMs: timestampMs(item.claimed_at),
     };
   });
 }

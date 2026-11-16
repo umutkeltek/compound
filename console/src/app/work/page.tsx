@@ -4,7 +4,9 @@ import { hasCopy, PageHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPendi
 import { PendingRefresh } from "@/components/PendingRefresh";
 import { WorkLenses } from "@/components/work/WorkLenses";
 import { readAttention } from "@/lib/attention";
-import { arr, DIRECTOR_PROPOSE_ARGS, HEAVY_PROJECTION_TIMEOUT_MS, readProjection, str } from "@/lib/compound";
+import { arr, DIRECTOR_PROPOSE_ARGS, HEAVY_PROJECTION_TIMEOUT_MS, readProjection, readWorkProjectIndex, str } from "@/lib/compound";
+import type { WorkByAppModel } from "@/components/work/WorkByAppLens";
+import { workListHref } from "@/lib/links";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { countInProgress, countOnHold, countOpenWork, describeInProgress, STALE_AFTER_DAYS, UNASSIGNED_AGENT_ID, unit, waitingOnYou } from "@/lib/counts";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
@@ -33,7 +35,8 @@ export default async function WorkPage({
   searchParams: Promise<{ trace?: string; lens?: string }>;
 }) {
   const { trace, lens } = await searchParams;
-  const [workbenchRead, sourcesRead, suggestionsRead, packetsRead, laneTraffic, traffic, attentionLive] = await Promise.all([
+  const nowMs = Date.now();
+  const [workbenchRead, sourcesRead, suggestionsRead, packetsRead, laneTraffic, traffic, attentionLive, projectIndex] = await Promise.all([
     readProjection(["workbench", "--json"], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }),
     readProjection(["source", "connections", "--json"]),
     // Read-only: `director propose --dry-run` creates nothing; suggestions feed
@@ -44,6 +47,9 @@ export default async function WorkPage({
     buildLaneTraffic(200, { nonBlocking: true }),
     getTraffic(),
     readAttention(),
+    // Which app, codebase or "not linked" group each item is in. It shares the
+    // workbench read above (same argv) and adds the app list and inventory.
+    readWorkProjectIndex({ nowMs }),
   ]);
   const workbench = workbenchRead.value;
   const suggestions = suggestionsRead.value;
@@ -73,9 +79,20 @@ export default async function WorkPage({
 
   const initialTrace = isWorkId(str(trace)) ? str(trace) : null;
   const mutationsReady = computeConsoleMutationReadiness(consoleMutationsEnabled()).ready;
-  const items = buildWorkLensItems(open, traffic);
+  const index = projectIndex.index;
+  const groupById = new Map((index?.projects ?? []).map((group) => [group.id, group] as const));
+  const items = buildWorkLensItems(open, traffic, {
+    nowMs,
+    groupOf: index ? (id) => groupById.get(index.byWork[id] ?? "") ?? null : undefined,
+  });
+  const readLabels = { work: "work", apps: "your app list", inventory: "where each app's code lives" } as const;
+  const byApp: WorkByAppModel = {
+    groups: index ? index.projects.map((group) => ({ ...group })) : null,
+    missing: projectIndex.missing.map((key) => ({ label: readLabels[key], read: projectIndex.reads[key] })),
+    reads: (Object.keys(readLabels) as Array<keyof typeof readLabels>).map((key) => ({ label: readLabels[key], read: projectIndex.reads[key] })),
+  };
   const groups = groupWorkLensItems(items, traffic);
-  const allowedLenses = new Set<WorkLensKey>(["pipeline", "table", "flow", "space", "board", "offered"]);
+  const allowedLenses = new Set<WorkLensKey>(["pipeline", "table", "flow", "space", "board", "offered", "project"]);
   const defaultLens = allowedLenses.has(lens as WorkLensKey) ? lens as WorkLensKey : "board";
   const workbenchKnown = hasCopy(workbenchRead);
   // One definition per number (lib/counts.ts), shared with Today, Live and the sidebar.
@@ -83,7 +100,7 @@ export default async function WorkPage({
   const inProgress = workbenchKnown ? countInProgress(open, Date.now()) : null;
   const progress = inProgress ? describeInProgress(inProgress) : null;
   const onHold = workbenchKnown ? countOnHold(open) : null;
-  const pending = readsPending(workbenchRead, sourcesRead, suggestionsRead, packetsRead, traffic.read, attentionLive.read);
+  const pending = readsPending(workbenchRead, sourcesRead, suggestionsRead, packetsRead, traffic.read, attentionLive.read, projectIndex.reads.apps, projectIndex.reads.inventory);
 
   const stuck = [
     inProgress?.pickedUpOver7Days
@@ -128,7 +145,7 @@ export default async function WorkPage({
         right={
           <>
             <ReadChip read={workbenchRead} />
-            <Link href="/projects" className="text-sm font-medium text-work hover:underline">Browse by project →</Link>
+            <Link href={workListHref({ lens: "project" })} className="text-sm font-medium text-work hover:underline">Work by app →</Link>
 
           </>
         }
@@ -148,6 +165,7 @@ export default async function WorkPage({
             groups={groups}
             defaultLens={defaultLens}
             mutationsReady={mutationsReady}
+            byApp={byApp}
           />
         </>
       ) : null}

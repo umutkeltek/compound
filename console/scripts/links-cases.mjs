@@ -35,13 +35,13 @@ assert.equal(
 );
 
 // The parser: defaults, aliases, case, and both input shapes a page receives.
-assert.deepEqual(parseWorkListParams({}), { lens: "board", filter: "focus", owner: "", app: "", q: "", trace: "" });
-assert.deepEqual(parseWorkListParams(null), { lens: "board", filter: "focus", owner: "", app: "", q: "", trace: "" });
+assert.deepEqual(parseWorkListParams({}), { lens: "board", filter: "focus", owner: "", app: "", project: "", q: "", trace: "" });
+assert.deepEqual(parseWorkListParams(null), { lens: "board", filter: "focus", owner: "", app: "", project: "", q: "", trace: "" });
 assert.deepEqual(
   parseWorkListParams({ lens: ["list", "board"], filter: "Stale", owner: "Fixture-Agent:lane-1", app: "product:fixture-app", q: " find me ", trace: "not a work id" }),
-  { lens: "table", filter: "stale", owner: "fixture_agent", app: "fixture-app", q: "find me", trace: "" },
+  { lens: "table", filter: "stale", owner: "fixture_agent", app: "fixture-app", project: "", q: "find me", trace: "" },
 );
-assert.deepEqual(parseWorkListParams({ lens: "nonsense", filter: "nonsense" }), { lens: "board", filter: "focus", owner: "", app: "", q: "", trace: "" });
+assert.deepEqual(parseWorkListParams({ lens: "nonsense", filter: "nonsense" }), { lens: "board", filter: "focus", owner: "", app: "", project: "", q: "", trace: "" });
 assert.equal(parseWorkListParams(new URLSearchParams("owner=unassigned")).owner, "unassigned", "the no-agent filter has its own key");
 
 // Round trip: what a builder writes, the parser reads back.
@@ -66,7 +66,7 @@ const pageLenses = [...(/allowedLenses = new Set<WorkLensKey>\(\[([^\]]+)\]/.exe
 assert.ok(pageLenses.length >= 6, `found the Work page's lenses: ${pageLenses}`);
 for (const lens of pageLenses) assert.ok(WORK_LENSES.includes(lens), `lens ${lens} read by the Work page is known to the parser`);
 const tableLens = readFileSync(new URL("../src/components/work/WorkTableLens.tsx", import.meta.url), "utf8");
-const tableFilters = [...(/const FILTERS = \[([\s\S]*?)\] as const/.exec(tableLens)?.[1] ?? "").matchAll(/id: "([a-z]+)"/g)].map((m) => m[1]);
+const tableFilters = [...(/const FILTERS\b[^=]*= \[([\s\S]*?)\];/.exec(tableLens)?.[1] ?? "").matchAll(/id: "([a-z]+)"/g)].map((m) => m[1]);
 assert.ok(tableFilters.length >= 5, `found the List's filters: ${tableFilters}`);
 for (const filter of tableFilters) assert.ok(WORK_FILTERS.includes(filter), `filter ${filter} read by the List is known to the parser`);
 

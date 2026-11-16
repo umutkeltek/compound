@@ -5,6 +5,7 @@ import { normalizeExecutorProjection } from "@/components/agents/executor-normal
 import { normalizeRunAttempts } from "@/lib/run-attempts";
 import { buildTraffic } from "@/lib/traffic";
 import { buildPipeline } from "@/lib/work-pipeline";
+import { parseWorkListParams } from "@/lib/links";
 import { buildWorkLensItems, groupWorkLensItems } from "@/lib/work-views";
 import { WorkFlowLens } from "./WorkFlowLens";
 import { WorkSpaceLens } from "./WorkSpaceLens";
@@ -21,8 +22,13 @@ export function runWorkLifecycleStatusSelfTest(): { ok: boolean; details: string
     { id: "work_verifying_fixture", title: "Verifying fixture", state: "verifying", run: "succeeded" },
     { id: "work_running_fixture", title: "Running fixture", state: "running", run: "failed" },
   ];
+  // A fixed clock: the running fixture was picked up 10 days before it (stale),
+  // the others have no pick-up time (age unknown, so never stale).
+  const NOW = Date.parse("2030-01-10T00:00:00Z");
+  const pickedUp = (days: number) => String(BigInt(NOW - days * 86_400_000) * 1_000_000n);
   const open = fixtures.map(({ id, title, state }) => ({
     id, title, state, owner: "fixture-actor", next_action: "Follow the work lifecycle.",
+    ...(state === "running" ? { claimed_at: pickedUp(10) } : {}),
   }));
   const projection = normalizeExecutorProjection({
     executors: [{
@@ -41,7 +47,7 @@ export function runWorkLifecycleStatusSelfTest(): { ok: boolean; details: string
     created_at: "2026-01-01T00:00:00Z",
   })));
   const traffic = buildTraffic(projection, attempts);
-  const items = buildWorkLensItems(open, traffic);
+  const items = buildWorkLensItems(open, traffic, { nowMs: NOW });
   const groups = groupWorkLensItems(items, traffic);
   const stages = buildPipeline({ open, recent: [] }, null, []);
   const onOpenTrace = () => {};
@@ -51,25 +57,30 @@ export function runWorkLifecycleStatusSelfTest(): { ok: boolean; details: string
     return item?.state === fixture.state && item?.runStatus === fixture.run;
   }));
 
-  const table = renderToStaticMarkup(createElement(WorkTableLens, { items, onOpenTrace }));
-  const blockedTable = renderToStaticMarkup(createElement(WorkTableLens, { items, onOpenTrace, initialFilter: "blocked" }));
+  const list = (query: Record<string, string>, rows = items) =>
+    renderToStaticMarkup(createElement(WorkTableLens, { items: rows, onOpenTrace, params: parseWorkListParams(query), groups: null }));
+  const table = list({});
+  const allTable = list({ filter: "all" });
+  const blockedTable = list({ filter: "blocked" });
   const blockedBody = blockedTable.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1] ?? "";
   check("blocked-work link filters lifecycle rather than attempt status", blockedBody.includes("work_held_fixture") && !blockedBody.includes("work_running_fixture") && !blockedBody.includes("work_verifying_fixture"));
-  const invalidFilterTable = renderToStaticMarkup(createElement(WorkTableLens, { items, onOpenTrace, initialFilter: "made-up" }));
+  const invalidFilterTable = list({ filter: "made-up" });
   check("invalid filter falls back to useful focus view", invalidFilterTable === table);
-  const body = table.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1] ?? "";
+  const focusBody = table.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1] ?? "";
+  const focusRows = focusBody.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/g) ?? [];
+  check("default focus is on hold or not moved in a week: held and the stale running item only", focusRows.length === 2
+    && focusBody.includes("work_held_fixture") && focusBody.includes("work_running_fixture")
+    && !focusBody.includes("work_claimed_fixture") && !focusBody.includes("work_verifying_fixture"));
+  const body = allTable.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1] ?? "";
   const rows = body.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/g) ?? [];
-  check("default focus keeps held, running and verifying work but excludes claimed", rows.length === 3
-    && !body.includes("work_claimed_fixture")
-    && ["held", "running", "verifying"].every((state) => body.includes("work_" + state + "_fixture")));
-  check("table preserves held then running then verifying priority",
+  check("table preserves held then not moved then the rest priority",
     body.indexOf("work_held_fixture") >= 0
     && body.indexOf("work_held_fixture") < body.indexOf("work_running_fixture")
     && body.indexOf("work_running_fixture") < body.indexOf("work_verifying_fixture"));
   for (const fixture of fixtures.filter((fixture) => fixture.state !== "claimed")) {
     const row = rows.find((row) => row.includes(fixture.id)) ?? "";
     const cells = row.match(/<td\b[^>]*>[\s\S]*?<\/td>/g) ?? [];
-    const accent = fixture.state === "held" ? "seam" : fixture.state === "running" ? "work" : "memory";
+    const accent = fixture.state === "held" ? "seam" : fixture.state === "running" ? "crit" : "memory";
     check("table lifecycle badge and accent: " + fixture.state,
       (cells[2] ?? "").includes(">" + fixture.state + "<")
       && !(cells[2] ?? "").includes(">" + fixture.run + "<")
@@ -101,8 +112,8 @@ export function runWorkLifecycleStatusSelfTest(): { ok: boolean; details: string
   check("space inspector keeps running work primary and failed attempt separate",
     inspector.includes("work_running_fixture") && inspector.includes(">running<")
     && inspector.includes("Run status: failed") && !inspector.includes(">failed<"));
-  const noAttemptItems = buildWorkLensItems(open, buildTraffic(projection, null));
-  const noAttemptTable = renderToStaticMarkup(createElement(WorkTableLens, { items: noAttemptItems, onOpenTrace }));
+  const noAttemptItems = buildWorkLensItems(open, buildTraffic(projection, null), { nowMs: NOW });
+  const noAttemptTable = list({ filter: "all" }, noAttemptItems);
   check("unavailable attempts retain lifecycle without fabricated attempt detail",
     noAttemptTable.includes("work_verifying_fixture") && !noAttemptTable.includes("Run status:"));
   return {

@@ -17,8 +17,11 @@ import { isWorkId } from "@/lib/work-id";
 
 /* ---------- Work list: /work?lens=&filter=&owner=&app=&q=&trace= ---------- */
 
-/** Every view the Work page has. `board` (by state) is the default. */
-export const WORK_LENSES = ["board", "table", "pipeline", "flow", "space", "offered"] as const;
+/**
+ * Every view the Work page has. `board` (by state) is the default; `project`
+ * is open work grouped by app, codebase or "not linked".
+ */
+export const WORK_LENSES = ["board", "table", "pipeline", "flow", "space", "offered", "project"] as const;
 export type WorkLens = (typeof WORK_LENSES)[number];
 export const DEFAULT_WORK_LENS: WorkLens = "board";
 
@@ -28,9 +31,10 @@ const WORK_LENS_ALIASES: Readonly<Record<string, WorkLens>> = { list: "table" };
 /**
  * Every filter of the List (`lens=table`). `focus` is the default; `stale`
  * is in progress and picked up more than STALE_AFTER_DAYS days ago
- * (lib/work-state.ts `isStale`).
+ * (lib/work-state.ts `isStale`); `claimed` is picked up but not started;
+ * `progress` is every item in progress (`isInProgress`).
  */
-export const WORK_FILTERS = ["focus", "running", "blocked", "verifying", "stale", "all"] as const;
+export const WORK_FILTERS = ["focus", "running", "blocked", "verifying", "stale", "all", "claimed", "progress"] as const;
 export type WorkFilter = (typeof WORK_FILTERS)[number];
 export const DEFAULT_WORK_FILTER: WorkFilter = "focus";
 
@@ -43,6 +47,11 @@ export type WorkListParams = {
   owner?: string;
   /** an app slug or `product:` id; written as the slug */
   app?: string;
+  /**
+   * a group that is not an app (lib/work-project.ts ids): `codebase:<name>`,
+   * `unlisted:<name>` or `none` (not linked). Link an app with `app`.
+   */
+  project?: string;
   /** search text */
   q?: string;
   /** a work item to open in the trace drawer */
@@ -57,6 +66,8 @@ export type ParsedWorkListParams = {
   owner: string;
   /** the app slug, or "" */
   app: string;
+  /** a group id that is not an app (`codebase:<name>`, `unlisted:<name>`, `none`), or "" */
+  project: string;
   q: string;
   /** a valid work id, or "" */
   trace: string;
@@ -114,6 +125,7 @@ export function workListHref(params: WorkListParams = {}): string {
     ["filter", filter && filter !== DEFAULT_WORK_FILTER ? filter : ""],
     ["owner", owner],
     ["app", params.app ? slugOf(params.app) : ""],
+    ["project", params.project?.trim() ?? ""],
     ["q", params.q?.trim() ?? ""],
     ["trace", trace],
   ]);
@@ -132,9 +144,20 @@ export function parseWorkListParams(input: SearchParamsInput | null | undefined)
     filter: workFilterOf(param(input, "filter")) ?? DEFAULT_WORK_FILTER,
     owner: ownerRaw ? agentKey(ownerRaw) : "",
     app: slugOf(param(input, "app")),
+    project: param(input, "project"),
     q: param(input, "q"),
     trace: isWorkId(trace) ? trace : "",
   };
+}
+
+/**
+ * Link to the List of one group's work (a row of the "by app" view): an app
+ * by its slug (`app=`), any other group by its id (`project=`).
+ */
+export function workGroupHref(group: { readonly id: string; readonly kind: string }, filter: WorkFilter = "all"): string {
+  return group.kind === "app"
+    ? workListHref({ lens: "table", filter, app: group.id })
+    : workListHref({ lens: "table", filter, project: group.id });
 }
 
 /* ---------- one work item ---------- */

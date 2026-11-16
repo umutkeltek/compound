@@ -1,5 +1,4 @@
-import "./project-workspace-cases.mjs";
-// Plain-pages cases: render the real Today, Work, Decide, Live and Projects pages
+// Plain-pages cases: render the real Today, Work, Decide and Live pages
 // against a synthetic compound binary and check what a person reads.
 //
 //  1. No banned system phrase (lib/plain-words.ts BANNED_PHRASES) and no raw
@@ -43,7 +42,7 @@ const work = [
   { work_id: "work_fx_run_old", state: "running", owner: "codex", claimed_by: "codex", claimed_at: ns(9), success_predicate: "Fixture run is still going", next_action: "finish the run" },
   { work_id: "work_fx_claimed", state: "claimed", owner: "codex", claimed_by: "codex", claimed_at: ns(2), success_predicate: "Fixture item picked up recently", next_action: "start it" },
   { work_id: "work_fx_check_new", state: "verifying", owner: "claude_code", claimed_by: "claude_code:fixture-lane", claimed_at: ns(1), success_predicate: "Fixture check from yesterday", next_action: "attach the final verified candidate as commit:<full-sha>" },
-  { work_id: "work_fx_held", state: "held", owner: "claude_code", claimed_by: "claude_code", claimed_at: ns(3), success_predicate: "Fixture item on hold", next_action: "resolve the hold" },
+  { work_id: "work_fx_held", state: "held", owner: "claude_code", claimed_by: "claude_code", claimed_at: ns(3), success_predicate: "Fixture item on hold", next_action: "resolve the hold", canonical_surface: "product:fixture-app" },
   { work_id: "work_fx_ready", state: "ready", owner: "codex", success_predicate: "Fixture item ready to start", next_action: "claim before touching" },
 ];
 const group = (key, area, count, extra = {}) => ({
@@ -78,6 +77,7 @@ const reply = {
   "work list --json": { schema_version: "compound.work_list_projection.v0.1", work: work.map((w, i) => ({ ...w, id: w.work_id, scope: { project_id: i < 3 ? "fixture-research" : "fixture-operations" }, ids: { context_pack_id: "ctx_fixture_exact" } })) },
   "system inventory --kind product --json": { snapshot: { state: "fresh", observed_at: iso(0) }, resources: [{ id: "product:fixture-service", kind: "product", label: "Fixture service" }] },
   "system graph --kind product --json": { snapshot: { state: "fresh", observed_at: iso(0) }, edge_list: [] },
+  "product growth --json": { generated_at: iso(0), apps: [{ product_id: "product:fixture-app", name: "Fixture App", aliases: [] }] },
   "attention --json": {
     schema_version: "compound.attention.v0.1", generated_at: iso(0),
     counts: { needs_you: 13, needs_you_groups: 7, actionable_now: 0, watching: 2, blocked_on_you: 1, fallback_groups: 0 },
@@ -233,18 +233,36 @@ async function scopedEvidenceCases() {
 }
 
 const router = Object.fromEntries(["push", "replace", "refresh", "back", "forward", "prefetch"].map((k) => [k, () => {}]));
-const wrap = (path, element) =>
+const wrap = (path, element, query = "") =>
   renderToStaticMarkup(
     createElement(AppRouterContext.Provider, { value: router },
       createElement(PathnameContext.Provider, { value: path },
-        createElement(SearchParamsContext.Provider, { value: new URLSearchParams() }, element))));
+        createElement(SearchParamsContext.Provider, { value: new URLSearchParams(query) }, element))));
+
+/** Render the Work page at an address: the server reads `searchParams`, the client views read the same query. */
+async function renderWork(query) {
+  const params = Object.fromEntries(new URLSearchParams(query));
+  const html = wrap("/work", await Work({ searchParams: Promise.resolve(params) }), query);
+  return { html, text: visibleText(html) };
+}
+
+/** The address a retired page redirects to (Next throws NEXT_REDIRECT with it in `digest`). */
+async function redirectOf(render) {
+  try {
+    await render();
+  } catch (error) {
+    const match = /^NEXT_REDIRECT;[^;]*;([^;]+);/.exec(String(error?.digest ?? ""));
+    if (match) return match[1];
+    throw error;
+  }
+  throw new Error("expected a redirect");
+}
 
 const pages = {
   Today: { path: "/", render: () => Today(), question: "Today" },
   Work: { path: "/work", render: () => Work({ searchParams: Promise.resolve({}) }), question: "Work" },
   Decide: { path: "/reviews", render: () => Decide({ searchParams: Promise.resolve({}) }), question: "Decide" },
   Live: { path: "/live", render: () => Live(), question: "Live" },
-  Projects: { path: "/projects", render: () => Projects({ searchParams: Promise.resolve({}) }), question: "Projects" },
 };
 
 /** What a person reads: text content only (no scripts, styles or attributes). */
@@ -303,15 +321,27 @@ try {
   const warm = await renderAll();
   checkPlain(warm, "loaded");
 
-  assert.match(warm.Projects, /fixture research/);
-  assert.match(warm.Projects, /Fixture service/, "a registered project appears without growth measurements");
-  const projectHTML = wrap("/projects", await Projects({ searchParams: Promise.resolve({ scope: "project:fixture-research", work: "work_fx_check_old" }) }));
-  const projectText = visibleText(projectHTML);
-  assert.match(projectText, /Fixture check waits for its proof/);
-  assert.match(projectText, /ctx_fixture_exact/, "the inspector shows the actual context identity");
-  assert.doesNotMatch(projectText, /Fixture item on hold/, "another project's work is not pulled into this scope");
-  assert.match(projectHTML, /scope=project%3Afixture-research/, "scope survives work and view navigation");
-  assert.match(projectText, /Live process activity has not been checked/, "attempt references cannot become live activity");
+  // Work grouped by app (lens=project): one row per app and the "not linked"
+  // group, each count a link to exactly those items in that group.
+  const byApp = await renderWork("lens=project");
+  assert.deepEqual(findBannedPhrases(byApp.text), []);
+  assert.match(byApp.text, /2 groups hold open work/);
+  assert.match(byApp.text, /Fixture App App App page → 1 open work item 1 need you · 0 in progress · 0 waiting for a check · 0 not moved in a week/);
+  assert.match(byApp.text, /Not linked to a project Names no app or codebase 5 open work items 0 need you · 4 in progress · 2 waiting for a check · 2 not moved in a week/);
+  assert.ok(byApp.text.indexOf("Fixture App") < byApp.text.indexOf("Not linked to a project"), "the group that needs you comes first");
+  assert.match(byApp.html, /href="\/work\?lens=table&amp;filter=blocked&amp;app=fixture-app"/, "need you opens that app's on-hold list");
+  assert.match(byApp.html, /href="\/work\?lens=table&amp;filter=stale&amp;project=none"/, "not moved opens that group's stale list");
+  assert.match(byApp.html, /href="\/apps\/fixture-app"/, "an app row links to its app page");
+  // The List narrowed to one app shows only that app's work and names it.
+  const appList = await renderWork("lens=table&filter=all&app=fixture-app");
+  const appRows = appList.html.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1] ?? "";
+  assert.match(appRows, /work_fx_held/);
+  assert.doesNotMatch(appRows, /work_fx_check_old|work_fx_ready/, "another group's work is not in this app's list");
+  assert.match(appList.text, /Only work for Fixture App ?\. Show all work/);
+  // The retired Projects page redirects: an app scope to the app's page, else to Work by app.
+  assert.equal(await redirectOf(() => Projects({ searchParams: Promise.resolve({ scope: "product:fixture-app" }) })), "/apps/fixture-app");
+  assert.equal(await redirectOf(() => Projects({ searchParams: Promise.resolve({ scope: "project:fixture-research", work: "work_fx_check_old" }) })), "/work/work_fx_check_old");
+  assert.equal(await redirectOf(() => Projects({ searchParams: Promise.resolve({}) })), "/work?lens=project");
   // One definition per number: the same fixture, the same numbers everywhere.
   for (const name of ["Today", "Work", "Live"]) {
     assert.match(warm[name], /4 work items are marked in progress/, `${name}: in progress uses the shared definition`);
@@ -418,7 +448,7 @@ try {
     assert.equal(group.evidence.length, 0, `${group.key}: list-only rows carry no evidence`);
   }
 
-  console.log(`plain-pages cases ok: 5 pages × 2 read states free of ${BANNED_PHRASES.length} banned phrases; shared counts agree; Decide sends one decision's detail; opened decision checks its own read (stale refused, A's read never enables B)`);
+  console.log(`plain-pages cases ok: 4 pages × 2 read states, Work by app and the retired Projects redirect, free of ${BANNED_PHRASES.length} banned phrases; shared counts agree; Decide sends one decision's detail; opened decision checks its own read (stale refused, A's read never enables B)`);
 } finally {
   await writeFile(releaseReads, "");
   await compound.settleProjectionReads();
