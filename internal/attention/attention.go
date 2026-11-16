@@ -70,6 +70,10 @@ type Inputs struct {
 	// every non-activity caller; Build is nil-safe on it. Defined HERE (not imported from
 	// internal/activity) to keep the import direction clean — the CLI builds it from activity outputs.
 	Activity *ActivityDayInput
+	// Probe is the read-only window the live-count checks use (record files,
+	// path existence, waiter processes). Nil means the real machine; tests
+	// inject a fake so no check depends on the host.
+	Probe Probe
 }
 
 // ActivityDayInput carries one day's pre-computed unaccounted activity blocks (from
@@ -91,12 +95,41 @@ type ActivityBlock struct {
 	CategoryMix string
 }
 
+// Report is the attention projection. Groups holds only live items: everything
+// that asked to be counted under needs_you but is not the operator's sits in
+// SetAside with its reason, and Totals shows the arithmetic. The fields after
+// Groups are additive to compound.attention.v0.1; readers that ignore them keep
+// working, and counts.needs_you now counts live items only.
 type Report struct {
-	SchemaVersion string  `json:"schema_version"`
-	GeneratedAt   string  `json:"generated_at"`
-	Counts        Counts  `json:"counts"`
-	Top           *Group  `json:"top"`
-	Groups        []Group `json:"groups"`
+	SchemaVersion string          `json:"schema_version"`
+	GeneratedAt   string          `json:"generated_at"`
+	Counts        Counts          `json:"counts"`
+	Top           *Group          `json:"top"`
+	Groups        []Group         `json:"groups"`
+	SetAside      []SetAside      `json:"set_aside"`
+	Totals        Totals          `json:"totals"`
+	Freshness     ReportFreshness `json:"freshness"`
+}
+
+// ReportFreshness says when each source was read and how new its newest
+// record is. AsOf is the oldest read among the sources: the whole report is
+// only as fresh as its stalest part.
+type ReportFreshness struct {
+	AsOf           string            `json:"as_of"`
+	AsOfAgeSeconds int64             `json:"as_of_age_seconds"`
+	OldestSource   string            `json:"oldest_source,omitempty"`
+	Sources        []SourceFreshness `json:"sources"`
+	MissingSources []string          `json:"missing_sources,omitempty"`
+	GeneratedAt    string            `json:"generated_at"`
+}
+
+// SourceFreshness is one source's stamp.
+type SourceFreshness struct {
+	Source         string `json:"source"`
+	ReadAt         string `json:"read_at"`
+	AgeSeconds     int64  `json:"age_seconds"`
+	NewestRecordAt string `json:"newest_record_at,omitempty"`
+	Records        int    `json:"records"`
 }
 
 type Counts struct {
@@ -126,6 +159,18 @@ type Group struct {
 	TerminalReason  string    `json:"terminal_reason"`
 	ItemIDs         []string  `json:"item_ids"`
 	Freshness       Freshness `json:"freshness"`
+	// RecordCount is how many stored records stand behind this group's live
+	// items once repeats are folded in (several files of one record, or the
+	// same question filed again). Zero when the group was not checked record
+	// by record.
+	RecordCount int `json:"record_count,omitempty"`
+	// PostponedUntil is the deferral date that brought this item back: it was
+	// put off earlier and its date passed, so it is not new.
+	PostponedUntil string `json:"postponed_until,omitempty"`
+	// NeedsWording marks a live group holding an open product record whose
+	// writer gave it no question: it stays counted so a real product ask is
+	// never hidden, and an agent should word it.
+	NeedsWording bool `json:"needs_wording,omitempty"`
 }
 
 type Action struct {
@@ -182,9 +227,28 @@ func Build(in Inputs, now time.Time) Report {
 		SchemaVersion: SchemaVersion,
 		GeneratedAt:   generatedAt,
 		Groups:        []Group{},
+		SetAside:      []SetAside{},
 	}
+	reviewTotalRead, unchecked := 0, 0
 	if in.Reviews != nil {
-		report.Groups = append(report.Groups, groupsFromReviews(*in.Reviews, now)...)
+		projected := groupsFromReviews(*in.Reviews, now)
+		sources := map[string]Group{}
+		for _, g := range projected {
+			normalized := g
+			normalizeGroup(&normalized, generatedAt, now)
+			sources[g.Key] = normalized
+		}
+		live, setAside, totalRead, uncheckedReviews := reviewLiveness(*in.Reviews, projected, in.Probe, now)
+		for i := range setAside {
+			source := sources[setAside[i].SourceGroupKey]
+			setAside[i].Kind = source.Kind
+			setAside[i].Reversibility = source.Reversibility
+			setAside[i].RiskGrade = source.RiskGrade
+		}
+		sortSetAside(setAside)
+		report.Groups = append(report.Groups, live...)
+		report.SetAside = append(report.SetAside, setAside...)
+		reviewTotalRead, unchecked = totalRead, uncheckedReviews
 		report.Counts.FallbackGroups = fallbackGroupCount(*in.Reviews)
 	}
 	if in.Workbench != nil {
@@ -201,11 +265,89 @@ func Build(in Inputs, now time.Time) Report {
 	}
 	sortGroups(report.Groups)
 	report.Counts = countGroups(report.Groups, report.Counts.FallbackGroups)
+	report.Totals = buildTotals(report, reviewTotalRead, unchecked)
+	report.Freshness = buildFreshness(in, now)
 	if len(report.Groups) > 0 {
 		top := report.Groups[0]
 		report.Top = &top
 	}
 	return report
+}
+
+// buildTotals derives the headline arithmetic. TotalRead is counted from the
+// inputs (every needs_you unit before the live check), not from the result, so
+// LiveDecisions + SetAside == TotalRead is a real check, not a definition.
+func buildTotals(report Report, reviewTotalRead, unchecked int) Totals {
+	totals := Totals{
+		TotalRead:        reviewTotalRead,
+		LiveDecisions:    report.Counts.NeedsYou,
+		SetAsideByReason: map[string]int{},
+		Unchecked:        unchecked,
+	}
+	for _, g := range report.Groups {
+		if g.Band == BandNeedsYou && g.Source != SourceReviews {
+			totals.TotalRead += g.Count
+		}
+	}
+	for _, entry := range report.SetAside {
+		totals.SetAside += entry.Count
+		totals.SetAsideByReason[entry.Reason] += entry.Count
+	}
+	return totals
+}
+
+func buildFreshness(in Inputs, now time.Time) ReportFreshness {
+	out := ReportFreshness{GeneratedAt: now.UTC().Format(time.RFC3339), Sources: []SourceFreshness{}}
+	add := func(source, readAt, newest string, records int) {
+		entry := SourceFreshness{Source: source, ReadAt: readAt, NewestRecordAt: newest, Records: records}
+		if at, ok := parseTime(readAt); ok {
+			entry.ReadAt = at.UTC().Format(time.RFC3339)
+			if age := now.UTC().Sub(at.UTC()); age > 0 {
+				entry.AgeSeconds = int64(age / time.Second)
+			}
+		}
+		out.Sources = append(out.Sources, entry)
+	}
+	if in.Reviews != nil {
+		newest := ""
+		for _, item := range in.Reviews.Items {
+			newest = newerTimestamp(newest, item.CreatedAt)
+		}
+		add(SourceReviews, in.Reviews.GeneratedAt, newest, len(in.Reviews.Items))
+	} else {
+		out.MissingSources = append(out.MissingSources, SourceReviews)
+	}
+	if in.Workbench != nil {
+		newest := ""
+		for _, item := range in.Workbench.Open {
+			newest = newerTimestamp(newest, item.ClaimedAt)
+			for _, obs := range item.RunObservations {
+				newest = newerTimestamp(newest, obs.GeneratedAt)
+			}
+		}
+		add(SourceWorkbench, in.Workbench.GeneratedAt, newest, len(in.Workbench.Open))
+	} else {
+		out.MissingSources = append(out.MissingSources, SourceWorkbench)
+	}
+	if in.Executors != nil {
+		add(SourceExecutor, in.Executors.GeneratedAt, "", len(in.Executors.Executors))
+	} else {
+		out.MissingSources = append(out.MissingSources, SourceExecutor)
+	}
+	if in.Activity != nil {
+		add(SourceActivity, in.Activity.GeneratedAt, "", len(in.Activity.UnaccountedBlocks))
+	}
+	var oldest time.Time
+	for _, entry := range out.Sources {
+		at, ok := parseTime(entry.ReadAt)
+		if !ok {
+			continue
+		}
+		if out.AsOf == "" || at.Before(oldest) {
+			oldest, out.AsOf, out.OldestSource, out.AsOfAgeSeconds = at, entry.ReadAt, entry.Source, entry.AgeSeconds
+		}
+	}
+	return out
 }
 
 func Class(g Group) string {
@@ -1078,6 +1220,18 @@ func olderTimestamp(a, b string) string {
 	default:
 		return a
 	}
+}
+
+func newerTimestamp(a, b string) string {
+	bt, bOK := parseTime(b)
+	if !bOK {
+		return a
+	}
+	at, aOK := parseTime(a)
+	if !aOK || bt.After(at) {
+		return bt.UTC().Format(time.RFC3339)
+	}
+	return a
 }
 
 func parseTime(value string) (time.Time, bool) {
