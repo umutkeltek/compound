@@ -83,6 +83,39 @@ var setAsideReasonText = map[string]string{
 	SetAsideDuplicate:        "Asks the same thing as another item that is still counted.",
 }
 
+// setAsideClosed marks the reasons that leave nothing for anyone to decide:
+// the record is done, gone, a copy, or not a decision. The other reasons
+// (no_longer_current, on_hold) still wait on someone other than the operator.
+var setAsideClosed = map[string]bool{
+	SetAsideAlreadyDecided:   true,
+	SetAsideAlreadyReviewed:  true,
+	SetAsideFinishedChange:   true,
+	SetAsideRecordFolderFile: true,
+	SetAsideTestData:         true,
+	SetAsideSubjectGone:      true,
+	SetAsideDuplicate:        true,
+}
+
+// setAsideNextStep says what happens next and who handles it. Nothing turns
+// set-aside records into repair work yet, and the sentences say so.
+var setAsideNextStep = map[string]string{
+	SetAsideAlreadyDecided:   "Nothing is left for you. Tidying these records is agent work; none is scheduled yet.",
+	SetAsideAlreadyReviewed:  "Nothing is left for you. A review is on file; tidying the record is agent work, none scheduled yet.",
+	SetAsideFinishedChange:   "Nothing is left for you. The change already ran; tidying its paperwork is agent work, none scheduled yet.",
+	SetAsideRecordFolderFile: "Nothing is left for you. It belongs to another record and goes with it.",
+	SetAsideTestData:         "Nothing is left for you. Removing test data from the real store is agent work; none is scheduled yet.",
+	SetAsideSubjectGone:      "Nothing is left for you. What it was about is gone; tidying the record is agent work, none scheduled yet.",
+	SetAsideNoLongerCurrent:  "Nothing yet: its owner must check the current state again before anyone can decide.",
+	SetAsideOnHold:           "Waits on someone other than you. Its owner continues it.",
+	SetAsideDuplicate:        "The same question is still counted once in your list.",
+}
+
+// SetAsideReasonClosed reports whether a reason leaves nothing to decide.
+func SetAsideReasonClosed(reason string) bool { return setAsideClosed[reason] }
+
+// SetAsideReasonNextStep returns the plain next-step sentence for a reason.
+func SetAsideReasonNextStep(reason string) string { return setAsideNextStep[reason] }
+
 // SetAsideReasons returns the reason codes in check order.
 func SetAsideReasons() []string {
 	return append([]string{}, setAsideReasonOrder...)
@@ -110,6 +143,35 @@ type SetAside struct {
 	SourceGroupKey  string   `json:"source_group_key"`
 	DuplicateOf     string   `json:"duplicate_of,omitempty"`
 	ItemIDs         []string `json:"item_ids"`
+	// Closed is true when nothing is left for anyone to decide; false when
+	// the batch still waits on someone other than the operator.
+	Closed bool `json:"closed"`
+	// NextStep says in one plain sentence what happens next and who does it.
+	NextStep string `json:"next_step"`
+	// Records lists every stored record behind the batch (several files can
+	// share one id), so an owner can open each one.
+	Records []SetAsideRecord `json:"records"`
+	// Digest is sha256 over the batch's sorted record files: a stable key an
+	// owner can use to turn the batch into repair work exactly once, and to
+	// see when the batch changed.
+	Digest string `json:"digest"`
+}
+
+// SetAsideRecord is one stored record in a set-aside batch.
+type SetAsideRecord struct {
+	ID        string `json:"id"`
+	Path      string `json:"path"`
+	CreatedAt string `json:"created_at,omitempty"`
+	Status    string `json:"status,omitempty"`
+}
+
+// SetAsideReasonTotal is one reason's line in the totals.
+type SetAsideReasonTotal struct {
+	Reason     string `json:"reason"`
+	ReasonText string `json:"reason_text"`
+	Count      int    `json:"count"`
+	Closed     bool   `json:"closed"`
+	NextStep   string `json:"next_step"`
 }
 
 // Totals is the honest arithmetic behind the headline: every unit that asked
@@ -120,6 +182,12 @@ type Totals struct {
 	LiveDecisions    int            `json:"live_decisions"`
 	SetAside         int            `json:"set_aside"`
 	SetAsideByReason map[string]int `json:"set_aside_by_reason"`
+	// ClosedWithoutYou counts set-aside records that leave nothing for
+	// anyone to decide (the "closed without you" line).
+	ClosedWithoutYou int `json:"closed_without_you"`
+	// SetAsideReasons lists each reason present, in check order, with its
+	// count, whether it is closed, and its plain next step.
+	SetAsideReasons []SetAsideReasonTotal `json:"set_aside_reasons"`
 	// Unchecked counts live units the projection could not check record by
 	// record (kept, never hidden).
 	Unchecked int `json:"unchecked"`
@@ -798,20 +866,64 @@ func (l *liveness) setAsideBatches() []SetAside {
 				OperatorSummary: source.OperatorSummary,
 				SourceGroupKey:  source.Key,
 				DuplicateOf:     m.dupOf,
+				Closed:          setAsideClosed[m.reason],
+				NextStep:        setAsideNextStep[m.reason],
 			}
 			batches[k] = b
 			keys = append(keys, k)
 		}
 		b.Count++
 		b.ItemIDs = append(b.ItemIDs, m.item.ID)
+		b.Records = append(b.Records, SetAsideRecord{
+			ID:        m.item.ID,
+			Path:      m.item.JSONPath,
+			CreatedAt: m.item.CreatedAt,
+			Status:    m.item.Status,
+		})
 	}
 	out := make([]SetAside, 0, len(keys))
 	for _, k := range keys {
 		b := batches[k]
 		b.ItemIDs = uniqueStrings(b.ItemIDs)
+		sort.SliceStable(b.Records, func(i, j int) bool {
+			if b.Records[i].Path != b.Records[j].Path {
+				return b.Records[i].Path < b.Records[j].Path
+			}
+			return b.Records[i].ID < b.Records[j].ID
+		})
+		b.Digest = setAsideDigest(b.Records)
 		out = append(out, *b)
 	}
 	return out
+}
+
+func setAsideDigest(records []SetAsideRecord) string {
+	h := sha256.New()
+	for _, r := range records {
+		h.Write([]byte(r.Path + "\x00" + r.ID + "\n"))
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
+// setAsideReasonTotals rolls set-aside batches up by reason, in check order.
+func setAsideReasonTotals(entries []SetAside) ([]SetAsideReasonTotal, int) {
+	counts := map[string]int{}
+	for _, entry := range entries {
+		counts[entry.Reason] += entry.Count
+	}
+	out := []SetAsideReasonTotal{}
+	closed := 0
+	for _, reason := range setAsideReasonOrder {
+		n := counts[reason]
+		if n == 0 {
+			continue
+		}
+		if setAsideClosed[reason] {
+			closed += n
+		}
+		out = append(out, SetAsideReasonTotal{Reason: reason, ReasonText: setAsideReasonText[reason], Count: n, Closed: setAsideClosed[reason], NextStep: setAsideNextStep[reason]})
+	}
+	return out, closed
 }
 
 func sortSetAside(entries []SetAside) {

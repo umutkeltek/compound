@@ -3,6 +3,7 @@ package attention
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -148,4 +149,74 @@ func TestHonestListLockRequestWhoseLockIsGone(t *testing.T) {
 
 	wantIDs(t, "needs_you ids", needsYouIDs(report), "lcp_locked")
 	wantIDs(t, "subject_gone", setAsideByReason(t, report)["subject_gone"], "lcp_unlocked")
+}
+
+// Item 2: what was set aside has somewhere to go. Per reason the projection
+// says how many, whether the item is closed (nothing left for anyone to
+// decide) or still waiting on someone else, what happens next, and every
+// record behind it with its file, so an owner can turn a batch into repair
+// work keyed by the batch digest.
+func TestHonestListExposesSetAsideReasonsAndRecords(t *testing.T) {
+	created := liveNow.Add(-10 * 24 * time.Hour)
+	reviews := liveFixture(t,
+		liveRecord{area: "content-queue", id: "cq_live", status: "review_required", summary: "Post the spring note?", groupKey: "content-queue|review", created: created},
+		liveRecord{area: "content-queue", id: "cq_done", status: "recorded", readiness: "needs_review", summary: "Post the winter note?", groupKey: "content-queue|review", created: created},
+		liveRecord{area: "job-repair", id: "jr_1", file: "jr_1.plan.json", status: "unknown", summary: "Restart the sample job?", groupKey: "job-repair|all", created: created},
+		liveRecord{area: "job-repair", id: "jr_1", file: "jr_1.apply.terminal.json", status: "unknown", summary: "Restart the sample job?", groupKey: "job-repair|all", created: created},
+		liveRecord{area: "repo-cleanup", id: "rc_moved", status: "blocked", band: reviewartifact.BandNeedsYou, readiness: "blocked", summary: "The sample repository moved on.", created: created,
+			blocked: "current source-control state changed since this dirty-plan; stored review authority is stale"},
+	)
+	report := Build(Inputs{Reviews: reviews}, liveNow)
+	wire := wireOf(t, report)
+
+	totals := wire["totals"].(map[string]any)
+	if closed := wireNumber(t, totals, "closed_without_you"); closed != 3 {
+		t.Fatalf("closed_without_you = %d, want 3 (one decided record, two records of a finished change)", closed)
+	}
+	reasons, _ := totals["set_aside_reasons"].([]any)
+	byReason := map[string]map[string]any{}
+	for _, raw := range reasons {
+		entry := raw.(map[string]any)
+		byReason[entry["reason"].(string)] = entry
+		if text, _ := entry["next_step"].(string); strings.TrimSpace(text) == "" {
+			t.Fatalf("reason %v has no plain next step: %v", entry["reason"], entry)
+		}
+	}
+	if len(byReason) != 3 {
+		t.Fatalf("set_aside_reasons = %v, want already_decided, finished_change, no_longer_current", reasons)
+	}
+	if byReason["finished_change"]["closed"] != true || wireNumber(t, byReason["finished_change"], "count") != 2 {
+		t.Fatalf("finished_change = %v, want closed with 2 records", byReason["finished_change"])
+	}
+	if byReason["no_longer_current"]["closed"] != false {
+		t.Fatalf("no_longer_current = %v, want not closed: it waits on a fresh check", byReason["no_longer_current"])
+	}
+
+	var finished map[string]any
+	for _, raw := range wire["set_aside"].([]any) {
+		if entry := raw.(map[string]any); entry["reason"] == "finished_change" {
+			finished = entry
+		}
+	}
+	records, _ := finished["records"].([]any)
+	if len(records) != 2 {
+		t.Fatalf("finished_change records = %v, want both files of the change", finished["records"])
+	}
+	for _, raw := range records {
+		record := raw.(map[string]any)
+		path, _ := record["path"].(string)
+		if record["id"] != "jr_1" || !filepath.IsAbs(path) || record["created_at"] != created.Format(time.RFC3339) {
+			t.Fatalf("record = %v, want id, absolute file path and creation time", record)
+		}
+	}
+	digest, _ := finished["digest"].(string)
+	if !strings.HasPrefix(digest, "sha256:") {
+		t.Fatalf("batch digest = %q, want a sha256 key an owner can use to make repair work once", digest)
+	}
+	again := wireOf(t, Build(Inputs{Reviews: reviews}, liveNow.Add(time.Hour)))
+	for _, raw := range again["set_aside"].([]any) {
+		if entry := raw.(map[string]any); entry["reason"] == "finished_change" && entry["digest"] != digest {
+			t.Fatalf("digest changed between reads of the same records: %v -> %v", digest, entry["digest"])
+		}
+	}
 }

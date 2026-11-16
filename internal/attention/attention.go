@@ -298,6 +298,7 @@ func buildTotals(report Report, reviewTotalRead, unchecked int) Totals {
 		totals.SetAside += entry.Count
 		totals.SetAsideByReason[entry.Reason] += entry.Count
 	}
+	totals.SetAsideReasons, totals.ClosedWithoutYou = setAsideReasonTotals(report.SetAside)
 	return totals
 }
 

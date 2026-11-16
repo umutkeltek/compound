@@ -341,3 +341,13 @@ func containsAttentionString(values []string, want string) bool {
 	}
 	return false
 }
+
+// The text view says how many records were set aside as not the operator's,
+// and how many of those are closed without him, so they never vanish from it.
+func TestAttentionCLITextSaysWhatWasSetAside(t *testing.T) {
+	report := attention.Report{Totals: attention.Totals{TotalRead: 5, LiveDecisions: 1, SetAside: 4, ClosedWithoutYou: 3}}
+	out := captureStdout(t, func() { printAttentionText(report) })
+	if !strings.Contains(out, "set aside as not yours: 4 (closed without you: 3, waiting on others: 1)") {
+		t.Fatalf("text view hides what was set aside:\n%s", out)
+	}
+}
