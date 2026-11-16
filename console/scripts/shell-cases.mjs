@@ -14,6 +14,9 @@
 //     alias; waiting decisions by the words Today shows; open work by title.
 //     Each result says its kind and links through lib/links.ts; a read still
 //     loading says so; Enter opens, arrows move, Escape closes (Radix dialog).
+//  6. A wrong address gets a console page with a way back to the right list
+//     (root, an unknown app, an unknown work item); a failed page offers
+//     "Try again"; the shared loading frame mirrors no single page.
 //
 // Run: bun scripts/shell-cases.mjs
 import assert from "node:assert/strict";
@@ -274,5 +277,25 @@ assert.match(paletteSource, /e\.key === "Enter"/);
 assert.match(paletteSource, /e\.key === "ArrowDown"/);
 assert.match(paletteSource, /<Dialog\.Root/);
 
-console.log("shell-cases ok: six sections in his words, every page placed with a tab, one sidebar count, current app shown, earlier header names kept, section › page › item breadcrumb; search finds pages, apps, decisions and work");
+// ---------- 6. wrong addresses, failures, loading ----------
+const pageModule = async (rel) => (await import(`../src/app/${rel}`)).default;
+const notFoundRoot = render("/nonsense", createElement(await pageModule("not-found.tsx")));
+has(notFoundRoot, /There is no page at this address/, "the root not-found says what happened");
+has(notFoundRoot, /href="\/"[^>]*>Go to Today/, "and leads back to Today");
+const notFoundApp = render("/apps/no-such-app", createElement(await pageModule("apps/[slug]/not-found.tsx")));
+has(notFoundApp, /No app at this address/);
+has(notFoundApp, /href="\/apps"[^>]*>See all apps/, "an unknown app leads to the app list");
+const notFoundWork = render("/work/work_missing", createElement(await pageModule("work/[id]/not-found.tsx")));
+has(notFoundWork, /No work item opened at this address/);
+has(notFoundWork, /could not be read just now/, "it does not claim the item is gone when the read may have failed");
+has(notFoundWork, /href="\/work\?lens=table&amp;filter=all"[^>]*>See all work/, "an unknown work item leads to the work list");
+const failed = render("/apps", createElement(await pageModule("error.tsx"), { error: Object.assign(new Error("fixture"), { digest: "fixture-digest" }), reset: () => {} }));
+has(failed, />Try again</, "a failed page offers Try again");
+has(failed, /href="\/"[^>]*>Go to Today/);
+hasNot(failed, /fixture<|>fixture /, "the raw error message is not shown");
+const loadingFrame = render("/apps", createElement(await pageModule("loading.tsx")));
+has(loadingFrame, /data-skeleton="page"/, "the shared loading frame is the neutral page shape");
+hasNot(loadingFrame, /minmax\(300px,2fr\)/, "not an earlier Today layout");
+
+console.log("shell-cases ok: six sections in his words, every page placed with a tab, one sidebar count, current app shown, earlier header names kept, section › page › item breadcrumb; search finds pages, apps, decisions and work; wrong addresses and failures lead back");
 console.log(table.join("\n"));
