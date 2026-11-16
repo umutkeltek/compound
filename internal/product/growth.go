@@ -2026,7 +2026,7 @@ func (c growthCtx) nextMove(g *growthGroup, spec growthAreaSpec, status, missing
 				oldest = x.date
 			}
 		}
-		return fmt.Sprintf("Refresh %s. The last data is from %s.", strings.Join(names, " and "), oldest)
+		return fmt.Sprintf("Refresh %s. The last data is from %s.", strings.Join(names, " and "), oldest) + c.adsStopContext(g, staleEv)
 	case GrowthPartial:
 		if missing != "" {
 			return missing

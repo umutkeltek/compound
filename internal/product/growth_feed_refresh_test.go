@@ -99,14 +99,18 @@ func TestGrowthRefreshNamesTheFeedThatStopped(t *testing.T) {
 	}
 }
 
-// An ads campaign that stopped spending is not a stopped import. When the
-// product's rows end on days without spend or impressions and the same
-// account's import kept running, the advice is to confirm the campaign
-// stopped, never to refresh. Rows that end while the campaign still ran, or
-// an account whose import stopped, still mean a refresh.
+// An ads campaign that stopped spending is not a stopped import, and a
+// stopped import is not a stopped campaign. Only an import that covers this
+// product (its own receipts, or an account-wide receipt without a product)
+// and reached past its last row shows the import kept running: then the
+// advice is to confirm the campaign stopped, never to refresh. When the
+// product's own import stopped, it is a refresh, even if another product's
+// import on the same account kept going; if its last rows had no spend or
+// impressions, the advice says so, so a paused campaign is not mistaken for
+// missing spend.
 func TestGrowthStoppedCampaignIsNotAStaleImport(t *testing.T) {
 	home := t.TempDir()
-	for _, id := range []string{"product:stopped-ads", "product:running-ads", "product:cut-off-ads"} {
+	for _, id := range []string{"product:stopped-ads", "product:dropped-ads", "product:running-ads", "product:cut-off-ads"} {
 		applyGrowthBundle(t, home, id, iosProfile)
 	}
 	var rows []AdRow
@@ -115,9 +119,11 @@ func TestGrowthStoppedCampaignIsNotAStaleImport(t *testing.T) {
 		if off >= 36 {
 			spend, shown = 2, 50
 		}
-		rows = append(rows, AdRow{Currency: "USD", ProductID: "product:stopped-ads", Account: "acct-1", Date: growthDay(off), Spend: spend, Impressions: shown})
-		// Still spending on its last row: the import for it stopped.
-		rows = append(rows, AdRow{Currency: "USD", ProductID: "product:cut-off-ads", Account: "acct-1", CampaignID: "camp2", Date: growthDay(off), Spend: 1, Impressions: 20})
+		rows = append(rows,
+			AdRow{Currency: "USD", ProductID: "product:stopped-ads", Account: "acct-1", Date: growthDay(off), Spend: spend, Impressions: shown},
+			AdRow{Currency: "USD", ProductID: "product:dropped-ads", Account: "acct-2", Date: growthDay(off), Spend: spend, Impressions: shown},
+			// Still spending on its last row: the import for it stopped.
+			AdRow{Currency: "USD", ProductID: "product:cut-off-ads", Account: "acct-1", CampaignID: "camp2", Date: growthDay(off), Spend: 1, Impressions: 20})
 	}
 	for off := 40; off >= 0; off-- {
 		rows = append(rows, AdRow{Currency: "USD", ProductID: "product:running-ads", Account: "acct-1", CampaignID: "camp3", Date: growthDay(off), Spend: 1, Impressions: 20})
@@ -127,20 +133,32 @@ func TestGrowthStoppedCampaignIsNotAStaleImport(t *testing.T) {
 		AdsImport{ProductID: "product:stopped-ads", Account: "acct-1", DateStart: growthDay(43), DateEnd: growthDay(30)},
 		AdsImport{ProductID: "product:cut-off-ads", Account: "acct-1", DateStart: growthDay(43), DateEnd: growthDay(30)},
 		AdsImport{ProductID: "product:running-ads", Account: "acct-1", DateStart: growthDay(13), DateEnd: growthDay(0)},
+		// An account-wide import with no product kept running for acct-2.
+		AdsImport{Account: "acct-2", DateStart: growthDay(13), DateEnd: growthDay(0)},
 	)
 
 	g := buildGrowthT(t, home, growthOpts())
+	// Its own import stopped with its rows; another product's import on the
+	// same account kept running, which says nothing about this product.
 	stopped := growthApp(t, g, "product:stopped-ads")
 	paid := growthAudit(t, stopped, "acquisition_paid")
-	if paid.Status == GrowthStale || strings.Contains(paid.NextMove, "Refresh") ||
-		!strings.Contains(paid.NextMove, growthDay(36)) || !strings.Contains(paid.NextMove, growthDay(0)) {
-		t.Fatalf("stopped campaign = %s %q, want a check that names the last spend (%s) and the account's import (%s)", paid.Status, paid.NextMove, growthDay(36), growthDay(0))
+	if paid.Status != GrowthStale || !strings.Contains(paid.NextMove, "Refresh") ||
+		!strings.Contains(paid.NextMove, "no spend or impressions after "+growthDay(36)) {
+		t.Fatalf("own import stopped = %s %q, want a refresh that says the last rows had no spend after %s", paid.Status, paid.NextMove, growthDay(36))
 	}
-	if got := growthRefreshTitles(stopped); len(got) != 0 {
-		t.Fatalf("stopped campaign refresh moves = %v, want none", got)
+	if got := growthRefreshTitles(stopped); len(got) == 0 {
+		t.Fatal("own import stopped: want a refresh move")
+	}
+	dropped := growthApp(t, g, "product:dropped-ads")
+	if a := growthAudit(t, dropped, "acquisition_paid"); a.Status == GrowthStale || strings.Contains(a.NextMove, "Refresh") ||
+		!strings.Contains(a.NextMove, growthDay(36)) || !strings.Contains(a.NextMove, growthDay(0)) {
+		t.Fatalf("account-wide import kept running = %s %q, want a check that names the last spend (%s) and the import (%s)", a.Status, a.NextMove, growthDay(36), growthDay(0))
+	}
+	if got := growthRefreshTitles(dropped); len(got) != 0 {
+		t.Fatalf("account-wide import kept running: refresh moves = %v, want none", got)
 	}
 	cut := growthApp(t, g, "product:cut-off-ads")
-	if a := growthAudit(t, cut, "acquisition_paid"); a.Status != GrowthStale || !strings.Contains(a.NextMove, "Refresh") {
-		t.Fatalf("rows that stop while spending = %s %q, want a refresh", a.Status, a.NextMove)
+	if a := growthAudit(t, cut, "acquisition_paid"); a.Status != GrowthStale || !strings.Contains(a.NextMove, "Refresh") || strings.Contains(a.NextMove, "no spend") {
+		t.Fatalf("rows that stop while spending = %s %q, want a plain refresh", a.Status, a.NextMove)
 	}
 }

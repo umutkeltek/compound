@@ -1,6 +1,9 @@
 package product
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // This marker carries missing currency through daily and portfolio aggregation.
 // It is not a public KPI or a money amount.
@@ -43,7 +46,10 @@ func applyGrowthAds(rows []AdRow, imports []AdsImport, resolve func(string) *gro
 			accounts[g] = map[growthAdsAccount]bool{}
 		}
 		days[g][r.Date] = append(days[g][r.Date], r)
-		accounts[g][growthAdsAccount{r.Platform, r.Account}] = true
+		// A receipt for this product, or one for the whole account, can
+		// show this product's import kept running.
+		accounts[g][growthAdsAccount{r.Platform, r.Account, strings.ToLower(r.ProductID)}] = true
+		accounts[g][growthAdsAccount{r.Platform, r.Account, ""}] = true
 		g.noteAdRow("", r)
 		g.noteAdRow(r.Platform, r)
 		if r.Platform == "apple_search_ads" {
@@ -65,8 +71,9 @@ func applyGrowthAds(rows []AdRow, imports []AdsImport, resolve func(string) *gro
 	growthAdsFeedReach(accounts, imports, asOf)
 }
 
-// growthAdsAccount is one platform and ad account: the unit an import covers.
-type growthAdsAccount struct{ platform, account string }
+// growthAdsAccount is what one import covers: a platform and ad account, and
+// the product it was imported for ("" for an import of the whole account).
+type growthAdsAccount struct{ platform, account, product string }
 
 func (g *growthGroup) noteAdRow(platform string, r AdRow) {
 	if g.adsLast == nil {
@@ -85,19 +92,23 @@ func (g *growthGroup) noteAdRow(platform string, r AdRow) {
 // growthAdsFeedReach tells a campaign that stopped from an import that
 // stopped. A product's ad rows end either way, but only a stopped import
 // needs a refresh. Its ads metrics count as reported through the newest day
-// an import for the same platform and account reached (g.reported) only when
-// both hold:
+// an import that covers it reached (g.reported) only when both hold:
 //   - its newest rows show no spend and no impressions: it had stopped
 //     running before its rows ended;
-//   - an import for the same platform and account, for any product, reached a
-//     later day than its newest row: the import kept running.
+//   - an import of the same platform and account that covers this product
+//     (one imported for it, or one for the whole account, without a product)
+//     reached a later day than its newest row: the import kept running and
+//     no longer had rows for it.
 //
-// Rows that end on a day the campaign still ran, or an account whose imports
-// all end with the product's rows, leave the metrics judged on their rows.
+// Another product's import on the same account says nothing about this
+// product's: its imports can stop while the other's go on. Rows that end on a
+// day the campaign still ran, or imports that all end with the product's
+// rows, leave the metrics judged on their rows, so a stopped import reads
+// stale and asks for a refresh.
 func growthAdsFeedReach(accounts map[*growthGroup]map[growthAdsAccount]bool, imports []AdsImport, asOf string) {
 	reach := map[growthAdsAccount]string{}
 	for _, imp := range imports {
-		k := growthAdsAccount{imp.Platform, imp.Account}
+		k := growthAdsAccount{imp.Platform, imp.Account, strings.ToLower(imp.ProductID)}
 		if _, ok := parseGrowthDay(imp.DateEnd); ok && imp.DateEnd <= asOf && imp.DateEnd > reach[k] {
 			reach[k] = imp.DateEnd
 		}
@@ -119,6 +130,29 @@ func growthAdsFeedReach(accounts map[*growthGroup]map[growthAdsAccount]bool, imp
 			}
 		}
 	}
+}
+
+// adsStopContext adds, to the refresh advice for stopped ads data, what the
+// product's last rows showed when they had no spend or impressions: then the
+// campaign may simply be paused, and nothing is missing. It is empty when the
+// stale evidence holds no ads metric, or the last row had spend or
+// impressions.
+func (c growthCtx) adsStopContext(g *growthGroup, staleEv []growthEv) string {
+	for _, e := range staleEv {
+		platform, ads := growthAdsFeedMetrics[e.Metric]
+		if !ads {
+			continue
+		}
+		last := g.adsLast[platform]
+		if last.row == "" || last.ran >= last.row {
+			continue
+		}
+		if last.ran == "" {
+			return " Its rows never had spend or impressions: if the campaign is paused or ended, nothing is missing."
+		}
+		return fmt.Sprintf(" Its last rows had no spend or impressions after %s: if the campaign is paused or ended, nothing is missing.", last.ran)
+	}
+	return ""
 }
 
 func (c growthCtx) withholdUnconvertedAds(k *GrowthKpi, daily map[string]map[string]float64, window int) {
