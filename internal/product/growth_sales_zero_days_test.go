@@ -2,6 +2,7 @@ package product
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -96,5 +97,39 @@ func TestGrowthSalesZeroDaysNeverInventUncarriedFields(t *testing.T) {
 	}
 	if p := small.Kpis["proceeds_usd"]; p.Value == nil || *p.Value != 1 || p.DaysReported != 12 {
 		t.Fatalf("proceeds = %+v, want 1 over 12 reported days", p)
+	}
+}
+
+// An app that sold nothing since the series began has no series row, but the
+// ledger holds the older daily rows its import wrote for it. Those rows show
+// the account's report lists the app, so its quiet days are zero and its
+// sales feed is current, not a feed to refresh.
+func TestGrowthSalesZeroDaysCoverAppsKnownFromTheLedger(t *testing.T) {
+	home := t.TempDir()
+	applyGrowthBundle(t, home, "product:quiet-app", iosProfile)
+	applyGrowthBundle(t, home, "product:busy-app", iosProfile)
+	ledger := []Signal{ascLedgerSignal("sig_busy", "product:busy-app", "900000051", "app_store_connect_review_count", growthDay(200), 1)}
+	for off := 80; off >= 50; off-- { // an older import wrote zeros for the quiet app until day 50
+		ledger = append(ledger, ascLedgerSignal("sig_quiet"+growthDay(off), "product:quiet-app", "900000052", "app_store_connect_developer_proceeds_usd", growthDay(off), 0))
+	}
+	writeASCLedger(t, home, ledger...)
+	yes := true
+	var series, index []string
+	for off := 40; off >= 1; off-- {
+		series = append(series, salesKindsLine("900000051", growthDay(off), 3, 0, 0, 0, 2, &yes))
+		index = append(index, salesIndexLine(growthDay(off), "reported", 1))
+	}
+	writeASCSeries(t, home, series...)
+	writeASCDaysIndex(t, home, index...)
+
+	app := growthApp(t, buildGrowthT(t, home, growthOpts()), "product:quiet-app")
+	if p := app.Kpis["proceeds_usd"]; p.Value == nil || *p.Value != 0 || p.DaysReported != 30 {
+		t.Fatalf("proceeds = %+v, want 0 over 30 reported days", p)
+	}
+	if ue := growthAudit(t, app, "operations_unit_economics"); ue.Status == GrowthStale || strings.Contains(ue.NextMove, "Refresh") {
+		t.Fatalf("unit economics = %s %q, want the sales feed current", ue.Status, ue.NextMove)
+	}
+	if v := growthPoint(t, app.Series["proceeds_usd"], growthDay(45)); v != nil {
+		t.Fatalf("a day neither the ledger nor the index covers = %v, want missing", *v)
 	}
 }
