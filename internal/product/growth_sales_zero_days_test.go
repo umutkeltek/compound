@@ -168,3 +168,40 @@ func TestGrowthSalesZeroDaysNeedTheSeriesRowCount(t *testing.T) {
 		t.Fatalf("units = %+v, want 11 of 12 days reported", u)
 	}
 }
+
+// An app that a shared store id also names may have sold under that id, whose
+// rows nobody can attribute. Its days without a row of its own are not zero.
+func TestGrowthSalesZeroDaysSkipAppsWithASharedID(t *testing.T) {
+	home := t.TempDir()
+	registerExampleApps(t, home,
+		map[string]string{"product:busy-app": "900000071", "product:app-a": "900000072", "product:app-b": "900000073"},
+		ascLedgerSignal("sig_shared_a", "product:app-a", "900000074", "app_store_connect_review_count", growthDay(200), 1),
+		ascLedgerSignal("sig_shared_b", "product:app-b", "900000074", "app_store_connect_review_count", growthDay(200), 1))
+	yes := true
+	var series, index []string
+	for off := 12; off >= 1; off-- {
+		day := []string{salesKindsLine("900000071", growthDay(off), 3, 0, 0, 0, 2, &yes)}
+		if off == 12 {
+			day = append(day, salesKindsLine("900000072", growthDay(off), 1, 0, 0, 0, 1, &yes))
+		}
+		if off == 6 { // only the shared id sold
+			day = append(day, salesKindsLine("900000074", growthDay(off), 4, 0, 0, 0, 3, &yes))
+		}
+		series = append(series, day...)
+		index = append(index, salesIndexLine(growthDay(off), "reported", len(day)))
+	}
+	writeASCSeries(t, home, series...)
+	writeASCDaysIndex(t, home, index...)
+
+	g := buildGrowthT(t, home, growthOpts())
+	a := growthApp(t, g, "product:app-a")
+	if v := growthPoint(t, a.Series["units"], growthDay(6)); v != nil {
+		t.Fatalf("app-a on the day only the shared id sold = %v, want missing", *v)
+	}
+	if u := a.Kpis["units"]; u.DaysReported != 1 {
+		t.Fatalf("app-a units = %+v, want only its own row's day", u)
+	}
+	if u := growthApp(t, g, "product:busy-app").Kpis["units"]; u.DaysReported != 12 {
+		t.Fatalf("busy app units = %+v, want 12 days", u)
+	}
+}

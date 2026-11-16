@@ -164,6 +164,33 @@ func growthStoreWindowEnd(rows []growthSalesRow, index []ascSalesDayIndexRow, as
 // nothing about the day.
 var growthSalesDayExists = map[string]bool{"reported": true, "no_sales": true}
 
+// growthSalesSoleApps lists, in a stable order, the apps whose every store
+// app id names them alone. An app that a shared id also names is left out.
+func growthSalesSoleApps(ids map[string]map[*growthGroup]bool) []*growthGroup {
+	shared := map[*growthGroup]bool{}
+	for _, groups := range ids {
+		if len(groups) > 1 {
+			for g := range groups {
+				shared[g] = true
+			}
+		}
+	}
+	seen := map[*growthGroup]bool{}
+	var out []*growthGroup
+	for _, appID := range growthSortedKeys(ids) {
+		if len(ids[appID]) != 1 {
+			continue
+		}
+		for g := range ids[appID] {
+			if !shared[g] && !seen[g] {
+				seen[g] = true
+				out = append(out, g)
+			}
+		}
+	}
+	return out
+}
+
 // growthSalesDayComplete reports whether the series holds every row of the
 // day's Sales report. A reported day needs the index to count its series rows
 // and the series to hold exactly that many: a row without the count does not
@@ -189,7 +216,9 @@ func growthSalesDayComplete(d ascSalesDayIndexRow, seriesRows int) bool {
 // The rule holds within these limits, and outside them a day stays missing:
 //   - the days index must list the day as reported or no sales, on or before
 //     as-of, and the series must be complete for it (growthSalesDayComplete);
-//   - the app must be the only app some store app id maps to, and must have
+//   - every store app id that names the app must name it alone: rows of an
+//     id two apps share are not applied to either, so the app may have sold
+//     under it on a day it has no row of its own; and the app must have
 //     daily sales data of its own, from the series or from the older ledger
 //     rows its import wrote, which shows the account's report lists it;
 //     zeros start on its first such day, because before that the app may not
@@ -228,20 +257,7 @@ func applyGrowthASCSalesZeroDays(rows []growthSalesRow, index []ascSalesDayIndex
 		}
 	}
 	metrics := growthASCSalesValues(growthSalesRow{})
-	// The apps a store app id names alone, in a stable order.
-	seen := map[*growthGroup]bool{}
-	var groups []*growthGroup
-	for _, appID := range growthSortedKeys(ids) {
-		if len(ids[appID]) != 1 {
-			continue
-		}
-		for g := range ids[appID] {
-			if !seen[g] {
-				seen[g] = true
-				groups = append(groups, g)
-			}
-		}
-	}
+	groups := growthSalesSoleApps(ids)
 	for _, g := range groups {
 		// Days the app has sales data on file, and the first of them.
 		onFile := map[string]bool{}
