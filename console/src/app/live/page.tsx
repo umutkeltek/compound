@@ -1,12 +1,12 @@
 import Link from "next/link";
 
-import { buildRoster } from "@/components/agents/agent-roster";
+import { buildRoster, latestPickedUp } from "@/components/agents/agent-roster";
 import { AgentsAnswer } from "@/components/agents/AgentsAnswer";
 import { DelegatedSessions } from "@/components/agents/DelegatedSessions";
 import { normalizeExecutorProjection } from "@/components/agents/executor-normalize";
 import { CoordinationBoard, type ExecDetail } from "@/components/coordination/CoordinationBoard";
 import { LiveHarnessCanvas, type LiveLane } from "@/components/live/LiveHarnessCanvas";
-import { LiveOperationsTimeline } from "@/components/live/LiveOperationsTimeline";
+import { LiveOperationsTimeline, type TimelineRow } from "@/components/live/LiveOperationsTimeline";
 import { PageHeader, PulseIcon, ReadChip, ReadFailedBanner, ReadNotice, readsPending, SectionHeader, StatusChip } from "@/components/kit";
 import { PendingRefresh } from "@/components/PendingRefresh";
 import { readAttention } from "@/lib/attention";
@@ -14,9 +14,12 @@ import { readCoordination } from "@/lib/coordination";
 import { unit, waitingOnYou } from "@/lib/counts";
 import { depthShows, requestDepth } from "@/lib/depth";
 import { workListHref } from "@/lib/links";
-import { getTraffic, newestInFlight, trafficKnown } from "@/lib/traffic";
+import { getTraffic, trafficKnown } from "@/lib/traffic";
 
 export const dynamic = "force-dynamic";
+
+/** The most agents the canvas draws; it still fits the page at that size. */
+const CANVAS_LANES = 8;
 
 async function LiveCoordination({ execDetail, runAttemptsPresent }: { execDetail: Record<string, ExecDetail>; runAttemptsPresent: boolean }) {
   const { view, read } = await readCoordination();
@@ -64,26 +67,48 @@ export default async function LivePage() {
   // the same rows Today counts, and each row's numbers equal its Work list.
   const roster = known && projection ? buildRoster(projection.executors, nowMs, 2) : null;
   const runOf = new Map(traffic.lanes.flatMap((lane) => lane.inFlight.map((work) => [work.workId, work] as const)));
-  const lanes: LiveLane[] = (roster?.holders ?? []).map((agent) => ({
+  // The canvas holds the agents that hold the most; the rest are on All agents.
+  const shown = (roster?.holders ?? []).slice(0, CANVAS_LANES);
+  const hiddenHolders = (roster?.holders.length ?? 0) - shown.length;
+  const lanes: LiveLane[] = shown.map((agent) => ({
     id: agent.key,
     label: agent.name,
-    status: "",
+    totalWork: agent.items,
     running: agent.inProgress.total,
     needsMe: agent.onHold,
-    totalWork: agent.items,
+    stale: agent.stale,
+    href: agent.href,
     work: agent.top.map((work) => {
       const run = runOf.get(work.workId);
       return {
         workId: work.workId,
         title: work.title,
         state: work.state,
+        stateLabel: work.stateLabel,
         nextAction: work.next,
+        pickedUpAgo: work.pickedUpAgo,
+        stale: work.stale,
+        href: work.href,
         harness: run?.harness ?? "",
         runStatus: run?.runStatus ?? "",
         actor: run?.actor ?? "",
         retryDepth: run?.retryDepth ?? 0,
       };
     }),
+  }));
+  const latest = known && projection ? latestPickedUp(projection.executors, nowMs, 6) : null;
+  const timelineRows: TimelineRow[] = (latest?.rows ?? []).map((work) => ({
+    workId: work.workId,
+    title: work.title,
+    state: work.state,
+    stateLabel: work.stateLabel,
+    next: work.next,
+    pickedUpAgo: work.pickedUpAgo,
+    stale: work.stale,
+    href: work.href,
+    agentName: work.agentName,
+    runStatus: runOf.get(work.workId)?.runStatus ?? "",
+    harness: runOf.get(work.workId)?.harness ?? "",
   }));
 
   const execDetail: Record<string, ExecDetail> = {};
@@ -99,8 +124,6 @@ export default async function LivePage() {
     }
   }
 
-  // The browser gets only the six rows the timeline shows, not every item.
-  const newest = newestInFlight(traffic, 6);
   const delegatedRunning = projection?.delegatedCounts.running ?? 0;
   const pending = readsPending(executorsRead, attentionLive.read);
 
@@ -137,19 +160,25 @@ export default async function LivePage() {
           tone="work"
           icon={<PulseIcon />}
           label="Who holds what"
-          sub="each agent and its two most active work items · pick one for details"
+          sub="each agent and its two most urgent work items · pick one for details"
         />
         {known ? <LiveHarnessCanvas lanes={lanes} /> : <ReadNotice read={executorsRead} label="who holds what" />}
+        {hiddenHolders > 0 ? (
+          <p className="text-sm text-muted">
+            {unit(hiddenHolders, "more agent")} {hiddenHolders === 1 ? "holds" : "hold"} less work and {hiddenHolders === 1 ? "is" : "are"} listed on{" "}
+            <Link href="/executors" className="font-semibold text-work hover:underline">All agents</Link>.
+          </p>
+        ) : null}
       </section>
 
       <section data-depth-min="investigate" className="flex flex-col gap-3">
         <SectionHeader
           tone="work"
           icon={<PulseIcon />}
-          label="Latest work steps"
-          sub="newest first · when each was last seen and what comes next"
+          label="Latest work picked up"
+          sub="newest first · who holds it and what comes next"
         />
-        {known ? <LiveOperationsTimeline report={newest.report} total={newest.total} /> : <ReadNotice read={executorsRead} label="the latest work steps" />}
+        {known ? <LiveOperationsTimeline rows={timelineRows} total={latest?.total ?? 0} allHref={workListHref({ filter: "all" })} /> : <ReadNotice read={executorsRead} label="the latest work picked up" />}
       </section>
 
       {showCoordination ? (

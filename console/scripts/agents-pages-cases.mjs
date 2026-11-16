@@ -8,6 +8,11 @@
 //    are not an agent's. Working now and All agents print the same sentences
 //    (lib/counts.ts) and link each number to its list.
 //
+// 3. Working now tells the truth about motion: nothing animates from the
+//    work record's own state, the latest work is in pick-up order with plain
+//    next steps, and each agent's numbers link to its lists. All agents lists
+//    the oldest work that has not moved, linked, and never says "clear it".
+//
 // 2. Settings in plain words. Standing permissions: in force first, the ones
 //    that cannot be undone and never expire on top, expired ones folded behind
 //    a count, readable dates, one opening sentence. The stop control says what
@@ -48,7 +53,7 @@ function fixtureWork(now) {
     alpha: [
       w("work_ap_alpha_old", "running", { claimed_by: "alpha_agent" }, 9),
       w("work_ap_alpha_new", "claimed", { claimed_by: "alpha_agent:lane-1" }, 2),
-      w("work_ap_alpha_check", "verifying", { owner: "alpha_agent" }, 1),
+      w("work_ap_alpha_check", "verifying", { owner: "alpha_agent" }, 1, { next_action: "attach the final verified candidate as commit:<full-sha>" }),
       w("work_ap_relay", "running", { claimed_by: "fixture-relay:lane-a" }, 1),
     ],
     beta: [
@@ -108,7 +113,8 @@ process.env.COMPOUND_WORKTREE_REPO = "";
 process.env.TMPDIR = scratch;
 
 const { normalizeExecutorProjection } = await import("../src/components/agents/executor-normalize.ts");
-const { buildRoster } = await import("../src/components/agents/agent-roster.ts");
+const { buildRoster, latestPickedUp, oldestNotMoved } = await import("../src/components/agents/agent-roster.ts");
+const { isActiveRun } = await import("../src/components/live/LiveHarnessCanvas.tsx");
 const { countAgents, countInProgress, describeAgents, describeInProgress } = await import("../src/lib/counts.ts");
 const { buildTraffic } = await import("../src/lib/traffic.ts");
 const { buildWorkLensItems } = await import("../src/lib/work-views.ts");
@@ -203,6 +209,24 @@ try {
     assert.ok(agentLinks.includes(href), `All agents links ${href}`);
   }
   assert.match(all, /Set up but holding no work: Local Box\./);
+
+  /* ---------- 3. motion, order and links on Working now and All agents ---------- */
+  assert.equal(isActiveRun({ runStatus: "", state: "running" }), false, "a work record saying running does not animate");
+  assert.equal(isActiveRun({ runStatus: "running" }), true, "a run record saying running does");
+  assert.deepEqual(latestPickedUp(projection.executors, NOW, 6).rows.map((w) => w.workId).slice(3),
+    ["work_ap_alpha_new", "work_ap_beta_held", "work_ap_alpha_old"], "latest work in pick-up order, newest first");
+  assert.deepEqual(oldestNotMoved(projection.executors, NOW, 10).map((w) => w.workId),
+    ["work_ap_sched_old", "work_ap_beta_check", "work_ap_alpha_old"], "oldest not-moved work first");
+  assert.doesNotMatch(liveHtml, /data-live="true"|runbar|running now|Running now/, "nothing on Working now moves without a run record");
+  assert.match(live, /Record the final checked commit for it\./, "next steps in plain words");
+  assert.doesNotMatch(live, /commit:<full-sha>/);
+  assert.match(live, /not a live feed/, "the page says it is the last read, not a live feed");
+  for (const href of ["/work?lens=table&filter=all&owner=alpha_agent", "/work?lens=table&filter=progress&owner=alpha_agent", "/work/work_ap_alpha_check"]) {
+    assert.ok(hrefs(liveHtml).includes(href), `Working now links ${href}`);
+  }
+  assert.doesNotMatch(all, /clear it|Archive lease history|Copy command|Lease pressure/i, "no instruction to act where no action exists");
+  assert.match(all, /3 work items were picked up more than 7 days ago and are still not finished\. Nothing moves them on its own yet/);
+  assert.ok(agentLinks.indexOf("/work/work_ap_sched_old") < agentLinks.indexOf("/work/work_ap_alpha_old"), "the oldest stale item is listed first, linked");
 
   /* ---------- 2. settings in plain words ---------- */
   const day = 86_400_000;

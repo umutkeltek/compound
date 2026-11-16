@@ -144,3 +144,25 @@ export function buildRoster(rows: readonly ExecutorRow[], nowMs: number, top = 6
     onHold: countOnHold(rowsFor(all)),
   };
 }
+
+export type LatestWork = RosterWork & { agentName: string; agentKey: string };
+
+/**
+ * The most recently picked-up open items across every agent, newest first:
+ * the only real time the projections carry for open work (`claimed_at`).
+ * Items with no pick-up time come last. `total` is every open item held.
+ */
+export function latestPickedUp(rows: readonly ExecutorRow[], nowMs: number, limit: number): { rows: LatestWork[]; total: number } {
+  const all = rows.flatMap((row) => row.currentWork.map((ref) => ({ ...rosterWork(ref, nowMs), agentName: row.label, agentKey: row.id })));
+  all.sort((a, b) => (b.pickedUpMs ?? -Infinity) - (a.pickedUpMs ?? -Infinity));
+  return { rows: all.slice(0, limit), total: all.length };
+}
+
+/** The open items picked up longest ago and still in progress past the stale threshold, oldest first. */
+export function oldestNotMoved(rows: readonly ExecutorRow[], nowMs: number, limit: number): LatestWork[] {
+  return rows
+    .flatMap((row) => row.currentWork.map((ref) => ({ ...rosterWork(ref, nowMs), agentName: row.label, agentKey: row.id })))
+    .filter((work) => work.stale)
+    .sort((a, b) => (a.pickedUpMs ?? Infinity) - (b.pickedUpMs ?? Infinity))
+    .slice(0, limit);
+}

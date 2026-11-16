@@ -1,22 +1,35 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import Link from "next/link";
+import { useState } from "react";
 
 import { Drawer, EmptyState, IdRef, StateBadge } from "@/components/kit";
 import { harnessDisplayName } from "@/lib/harness-label";
-import { ago } from "@/lib/time";
-import type { TrafficReport, TrafficWork } from "@/lib/traffic";
 
-type Selected = { laneLabel: string; work: TrafficWork };
+/** One row: a work item, who holds it, when it was picked up, its next step, and any run record. */
+export type TimelineRow = {
+  workId: string;
+  title: string;
+  state: string;
+  stateLabel: string;
+  next: string;
+  pickedUpAgo: string;
+  stale: boolean;
+  href: string;
+  agentName: string;
+  /** from a run record; "" when this page sees none */
+  runStatus: string;
+  harness: string;
+};
 
 /**
- * `report` may hold only the rows to show (lib/traffic.ts `newestInFlight`);
- * `total` then carries the full in-flight count for "showing 6 of N".
+ * The latest work picked up, newest first: pick-up time is the only real
+ * time the work records carry for open work, so it is the order. Next steps
+ * are in plain words (lib/plain-words.ts). Nothing moves unless a run record
+ * says an agent is running it now.
  */
-export function LiveOperationsTimeline({ report, total }: { report: TrafficReport; total?: number }) {
-  const rows = useMemo(() => report.lanes.flatMap((lane) => lane.inFlight.map((work) => ({ laneLabel: lane.agentLabel, laneId: lane.agentId, work }))).sort((a, b) => (b.work.lastHeartbeatAt || b.work.startedAt).localeCompare(a.work.lastHeartbeatAt || a.work.startedAt)), [report]);
-  const visibleRows = rows.slice(0, 6);
-  const [selected, setSelected] = useState<Selected | null>(null);
+export function LiveOperationsTimeline({ rows, total, allHref }: { rows: TimelineRow[]; total: number; allHref: string }) {
+  const [selected, setSelected] = useState<TimelineRow | null>(null);
   if (!rows.length) return <EmptyState>No agent holds any work right now.</EmptyState>;
 
   return (
@@ -25,33 +38,36 @@ export function LiveOperationsTimeline({ report, total }: { report: TrafficRepor
         <div className="overflow-x-auto">
           <div className="min-w-[620px]">
             <div className="grid grid-cols-[128px_minmax(240px,1fr)_minmax(180px,.7fr)] border-b border-hair bg-soft/70 text-2xs font-bold uppercase tracking-wide text-faint">
-              <div className="px-3 py-2.5">Last seen</div><div className="border-l border-hair px-3 py-2.5">Work and agent</div><div className="border-l border-hair px-3 py-2.5">Next step</div>
+              <div className="px-3 py-2.5">Picked up</div><div className="border-l border-hair px-3 py-2.5">Work and agent</div><div className="border-l border-hair px-3 py-2.5">Next step</div>
             </div>
             <div>
-          {visibleRows.map(({ laneLabel, laneId, work }) => {
-            const active = work.runStatus === "running" || work.state === "running";
-            const blocked = work.state === "blocked" || work.state === "held";
-            const observedAt = work.lastHeartbeatAt || work.startedAt;
-            return <button key={`${laneId}:${work.workId}`} type="button" onClick={() => setSelected({ laneLabel, work })} className={`grid w-full grid-cols-[128px_minmax(240px,1fr)_minmax(180px,.7fr)] border-b border-hair text-left last:border-b-0 hover:bg-soft ${blocked ? "bg-seam-soft/25" : ""}`}>
-              <div className="px-3 py-3"><div className="mono text-xs text-ink">{observedAt ? ago(observedAt) : "not recorded"}</div><div className="mt-1 text-2xs text-faint">{work.lastHeartbeatAt ? "last sign of life" : work.startedAt ? "run started" : "no run record"}</div></div>
-              <div className="border-l border-hair px-3 py-3">
-                <div className="flex items-start justify-between gap-3"><div><div className="line-clamp-2 text-sm font-semibold leading-snug text-ink">{work.title}</div><div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-2xs text-faint"><span className="font-semibold text-muted">{laneLabel}</span><span title={work.harness ? `Recorded harness: ${work.harness}` : undefined}>{work.harness ? harnessDisplayName(work.harness) : "no run record"}</span>{work.actor ? <span>by {work.actor}</span> : null}</div></div><StateBadge state={work.runStatus || work.state} /></div>
-                {active ? <div className="runbar mt-2" aria-hidden /> : null}
-              </div>
-              <div className="border-l border-hair px-3 py-3"><p className={`line-clamp-3 text-xs leading-relaxed ${blocked ? "text-seam" : "text-muted"}`}>{work.nextAction || "No next step recorded."}</p>{work.retryDepth > 0 ? <div className="mono mt-1 text-2xs text-seam">tried {work.retryDepth + 1} times</div> : null}</div>
-            </button>;
-          })}
+              {rows.map((row) => {
+                const running = row.runStatus === "running";
+                return (
+                  <div key={row.workId} className={`grid w-full grid-cols-[128px_minmax(240px,1fr)_minmax(180px,.7fr)] border-b border-hair text-left last:border-b-0 hover:bg-soft ${row.state === "held" || row.state === "blocked" ? "bg-seam-soft/25" : ""}`}>
+                    <div className="px-3 py-3"><div className={`text-xs ${row.stale ? "text-seam" : "text-ink"}`}>{row.pickedUpAgo || "not recorded"}</div>{row.stale ? <div className="mt-1 text-2xs text-seam">not moved in a week</div> : null}</div>
+                    <div className="border-l border-hair px-3 py-3">
+                      <div className="flex items-start justify-between gap-3"><div><Link href={row.href} className="line-clamp-2 text-sm font-semibold leading-snug text-ink hover:underline">{row.title}</Link><div className="mt-1 text-2xs text-faint"><span className="font-semibold text-muted">{row.agentName}</span>{row.runStatus ? <> · run record: {row.runStatus}</> : null}</div></div><StateBadge state={row.state} /></div>
+                      {running ? <div className="runbar mt-2" aria-hidden /> : null}
+                    </div>
+                    <div className="border-l border-hair px-3 py-3"><p className="line-clamp-3 text-xs leading-relaxed text-muted">{row.next || "No next step recorded."}</p><button type="button" onClick={() => setSelected(row)} className="mt-1 text-2xs font-semibold text-work hover:underline">Preview</button></div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-hair px-3 py-2 text-2xs text-faint"><span>Showing {visibleRows.length} of {(total ?? rows.length).toLocaleString("en-US")} work items agents hold</span><a href="/work?lens=table" className="font-semibold text-work hover:underline">See all in Work →</a><span>A moving bar means the record says running.</span></div>
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-hair px-3 py-2 text-2xs text-faint">
+          <span>The {rows.length} picked up most recently, of {total.toLocaleString("en-US")} open work items</span>
+          <Link href={allHref} className="font-semibold text-work hover:underline">See all {total.toLocaleString("en-US")} in Work →</Link>
+        </div>
       </section>
-      <Drawer open={selected !== null} onOpenChange={(open) => { if (!open) setSelected(null); }} title={selected?.work.title || "Live work"} meta={selected?.work.workId} footer={selected ? <a href={`/work?trace=${selected.work.workId}`} className="text-xs font-semibold text-work hover:underline">Open full trace →</a> : undefined}>
+      <Drawer open={selected !== null} onOpenChange={(open) => { if (!open) setSelected(null); }} title={selected?.title || "Work item"} meta={selected?.workId} footer={selected ? <Link href={selected.href} className="text-xs font-semibold text-work hover:underline">Open work page →</Link> : undefined}>
         {selected ? <div className="grid gap-4">
-          <div className="grid grid-cols-2 gap-3"><div className="rounded-lg border border-hair bg-soft px-3 py-2"><div className="section-label">Work state</div><div className="mt-1"><StateBadge state={selected.work.state} /></div></div><div className="rounded-lg border border-hair bg-soft px-3 py-2"><div className="section-label">Last run</div><div className="mt-1"><StateBadge state={selected.work.runStatus || "unknown"} /></div></div></div>
-          <div><div className="section-label">Agent</div><p className="mt-1 text-sm text-ink">{selected.laneLabel}</p><p className="mt-0.5 text-xs text-muted" title={selected.work.harness ? `Recorded harness: ${selected.work.harness}` : undefined}>{selected.work.harness ? harnessDisplayName(selected.work.harness) : "No run record is visible to this page."}</p></div>
-          <div><div className="section-label">Next step</div><p className="mt-1 text-sm leading-relaxed text-muted">{selected.work.nextAction || "No next step recorded."}</p></div>
-          <IdRef id={selected.work.workId} kind="work" plain />
+          <div className="grid grid-cols-2 gap-3"><div className="rounded-lg border border-hair bg-soft px-3 py-2"><div className="section-label">Work state</div><div className="mt-1"><StateBadge state={selected.state} /></div></div><div className="rounded-lg border border-hair bg-soft px-3 py-2"><div className="section-label">Picked up</div><div className={`mt-1 text-sm ${selected.stale ? "text-seam" : "text-ink"}`}>{selected.pickedUpAgo || "unknown"}</div></div></div>
+          <div><div className="section-label">Agent</div><p className="mt-1 text-sm text-ink">{selected.agentName}</p><p className="mt-0.5 text-xs text-muted">{selected.runStatus ? `Latest run record: ${selected.runStatus}${selected.harness ? ` (${harnessDisplayName(selected.harness)})` : ""}.` : "This page sees no run record for it."}</p></div>
+          <div><div className="section-label">Next step</div><p className="mt-1 text-sm leading-relaxed text-muted">{selected.next || "No next step recorded."}</p></div>
+          <IdRef id={selected.workId} kind="work" plain />
         </div> : null}
       </Drawer>
     </>

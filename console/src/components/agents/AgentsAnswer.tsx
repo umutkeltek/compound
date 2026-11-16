@@ -77,8 +77,9 @@ export function AgentsAnswer({
       {roster.inProgress.total > 0 ? <p className="text-base text-seam"><StaleSentence c={roster.inProgress} /></p> : null}
       {!runRecordsVisible ? (
         <p className="text-sm text-muted">
-          This page cannot see the live run records, so it cannot tell which of these an agent is running this minute.
-          &quot;Running&quot; is what the work record says.
+          These are the work records as last read, not a live feed. This page cannot see run records, so it cannot
+          tell which of these an agent is running this minute: &quot;running&quot; is what the work record says, and
+          nothing here moves unless a run record shows an agent at work.
         </p>
       ) : null}
       {extra}

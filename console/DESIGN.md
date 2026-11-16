@@ -475,13 +475,19 @@ picked each item up, else its owner, which is the key the Work filter `owner=` c
 agent's count equals the list its link opens. Work nobody holds is "No agent" and work you hold
 is "You"; neither is counted as an agent. Working now, All agents and Today say the same
 sentences from `lib/counts.ts`, and every number links to its Work list. A node or edge animates only
-when heartbeat, RunAttempt, or work-state evidence reports a live run. Summary counts orient the
-operator, then the workfield is the **Understand-level hero**; the denser operations table belongs
-to Investigate. Each harness overview shows at most its two highest-signal work items while
-retaining exact running, in-flight, and waiting totals. Codex, Claude, Scripts, and
-Switchback/API retain distinct semantic identity colors. Selecting a node updates a persistent
-inspector beside the workfield; deeper coordination and delegated-session identity remain below
-the canvas.
+when a run record (RunAttempt or heartbeat) says an agent is running it now; the work record's own
+state, `running` included, never animates. While the console cannot read run records nothing on the
+page moves, and the answer says so: the page shows the work records as last read, not a live feed.
+Each item shows when it was picked up and is marked "not moved in a week" past the shared stale
+rule (`lib/work-state.ts`). Summary counts orient the operator, then the workfield is the
+**Understand-level hero**; the latest work picked up (newest first, the only real time open work
+carries, next steps in plain words, each row linked to its page) belongs to Investigate. Each agent
+shows at most its two most urgent items (on hold, then not moved longest) while keeping its exact
+totals as links, and the canvas draws at most eight agents; the rest are named on All agents. The
+canvas fits in view on load, the scroll wheel scrolls the page, and there is no minimap. Codex,
+Claude, Scripts, and Switchback/API retain distinct semantic identity colors. Selecting a node
+updates a persistent inspector beside the workfield; deeper coordination and delegated-session
+identity remain below the canvas.
 
 The canvas is a projection, never an authority surface. It does not infer work ownership from
 layout, invent activity to make the system feel alive, or persist prompt content.

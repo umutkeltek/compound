@@ -1,12 +1,11 @@
-import { buildRoster } from "@/components/agents/agent-roster";
+import { buildRoster, oldestNotMoved } from "@/components/agents/agent-roster";
 import { AgentsAnswer } from "@/components/agents/AgentsAnswer";
 import { CostLanes } from "@/components/agents/CostLanes";
 import { DelegatedSessions } from "@/components/agents/DelegatedSessions";
-import { summarizeHygiene, type ExecutorProjection } from "@/components/agents/executor-model";
+import type { ExecutorProjection } from "@/components/agents/executor-model";
 import { normalizeExecutorProjection } from "@/components/agents/executor-normalize";
 import { ExecutorTable } from "@/components/agents/ExecutorTable";
 import { HygieneBand } from "@/components/agents/HygieneBand";
-import { LeasePressure } from "@/components/agents/LeasePressure";
 import { LocalModelsTile } from "@/components/agents/LocalModelsTile";
 import { hasCopy, PageHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending } from "@/components/kit";
 import { PendingRefresh } from "@/components/PendingRefresh";
@@ -51,7 +50,8 @@ export default async function AgentsPage() {
   const [traffic, worktrees] = await Promise.all([getTraffic(), getWorktreeInventory()]);
   const read = traffic.read!;
   const projection = hasCopy(read) ? normalizeExecutorProjection(read.value) : null;
-  const roster = projection ? buildRoster(projection.executors, Date.now(), 6) : null;
+  const nowMs = Date.now();
+  const roster = projection ? buildRoster(projection.executors, nowMs, 6) : null;
 
   return (
     <div className="flex flex-col gap-6">
@@ -67,9 +67,8 @@ export default async function AgentsPage() {
       {projection && roster ? (
         <>
           <HygieneBand
-            summary={summarizeHygiene(projection)}
-            generatedAt={projection.generatedAt}
-            staleAfterSeconds={projection.staleAfterSeconds}
+            staleCount={roster.inProgress.pickedUpOver7Days}
+            oldest={oldestNotMoved(projection.executors, nowMs, 10)}
             staleHistory={projection.counts.staleHistory}
           />
 
@@ -85,8 +84,6 @@ export default async function AgentsPage() {
               Set up but holding no work: {roster.idle.map((agent) => agent.name).join(", ")}.
             </p>
           ) : null}
-
-          <LeasePressure executors={projection.executors} staleAfterSeconds={projection.staleAfterSeconds} />
 
           <DelegatedSessions rows={projection.delegatedSessions} counts={projection.delegatedCounts} />
 
