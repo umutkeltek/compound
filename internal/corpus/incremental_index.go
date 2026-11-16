@@ -213,15 +213,32 @@ func indexIncremental(ctx context.Context, hp string, lane LaneConfig, embedder 
 	for k, v := range old.VectorShards {
 		refs[k] = v
 	}
+	known := map[string]bool{}
 	if !opts.Rebuild {
 		if old.VectorShards != nil {
-			for prefix, ref := range old.VectorShards {
-				values, n, err := readVectorShard(dir, ref, lane.Embedder.Dims)
-				if err != nil {
+			if old.VectorPending == 0 && old.VectorError == "" {
+				if err := statVectorShards(dir, refs); err != nil {
 					return report, err
 				}
-				shards[prefix] = values
-				stats.IndexBytesRead += n
+				for _, hash := range manifestChunkHashes(old) {
+					prefix, e := vectorPrefix(hash)
+					if e != nil {
+						return report, e
+					}
+					if refs[prefix] == "" {
+						return report, fmt.Errorf("committed vector partition missing")
+					}
+					known[hash] = true
+				}
+			} else {
+				for prefix, ref := range old.VectorShards {
+					values, n, err := readVectorShard(dir, ref, lane.Embedder.Dims)
+					if err != nil {
+						return report, err
+					}
+					shards[prefix] = values
+					stats.IndexBytesRead += n
+				}
 			}
 		} else if len(old.Items) > 0 {
 			vectors, err := readVectors(dir)
@@ -259,17 +276,16 @@ func indexIncremental(ctx context.Context, hp string, lane LaneConfig, embedder 
 			dirty[prefix] = true
 		}
 	}
-	available := map[string][]float32{}
 	for _, values := range shards {
-		for hash, vec := range values {
-			available[hash] = vec
+		for hash := range values {
+			known[hash] = true
 		}
 	}
 	var pending []Chunk
 	hydrated := map[string][]Chunk{}
 	seen := map[string]bool{}
 	for _, chunk := range prepared.chunks {
-		if len(available[chunk.ChunkHash]) == lane.Embedder.Dims {
+		if known[chunk.ChunkHash] {
 			report.ReusedChunks++
 			continue
 		}
@@ -289,7 +305,6 @@ func indexIncremental(ctx context.Context, hp string, lane LaneConfig, embedder 
 							return report, e
 						}
 						stats.BodyBytesRead += int64(len(body))
-						var e error
 						cc, e = chunkItemContext(ctx, item, body, lane.Chunk)
 						if e != nil {
 							return report, e
@@ -319,8 +334,8 @@ func indexIncremental(ctx context.Context, hp string, lane LaneConfig, embedder 
 		prepared.manifest.VectorShards = refs
 		current := map[string][]float32{}
 		for _, c := range prepared.chunks {
-			if vec := available[c.ChunkHash]; len(vec) == lane.Embedder.Dims {
-				current[c.ID] = vec
+			if known[c.ChunkHash] {
+				current[c.ID] = nil
 			}
 		}
 		prepared.manifest.VectorPending = len(prepared.chunks) - len(current)
@@ -330,14 +345,14 @@ func indexIncremental(ctx context.Context, hp string, lane LaneConfig, embedder 
 			name  string
 			value any
 		}{{"identity.json", prepared.identity}, {"manifest.json", prepared.manifest}, {"progress.json", progressFor(lane, len(prepared.chunks), current, errText)}} {
-			raw, e := json.Marshal(entry.value)
+			raw, e := json.MarshalIndent(entry.value, "", "  ")
 			if e != nil {
 				return e
 			}
 			if e = writeJSONFile(filepath.Join(dir, entry.name), entry.value); e != nil {
 				return e
 			}
-			stats.IndexBytesWritten += int64(len(raw))
+			stats.IndexBytesWritten += int64(len(raw) + 1)
 		}
 		report.EmbeddedChunks = len(current)
 		return nil
@@ -381,10 +396,19 @@ func indexIncremental(ctx context.Context, hp string, lane LaneConfig, embedder 
 				return report, e
 			}
 			if shards[prefix] == nil {
-				shards[prefix] = map[string][]float32{}
+				if ref := refs[prefix]; ref != "" {
+					values, n, e := readVectorShard(dir, ref, lane.Embedder.Dims)
+					if e != nil {
+						return report, e
+					}
+					shards[prefix] = values
+					stats.IndexBytesRead += n
+				} else {
+					shards[prefix] = map[string][]float32{}
+				}
 			}
 			shards[prefix][hash] = normalized
-			available[hash] = normalized
+			known[hash] = true
 			dirty[prefix] = true
 			report.NewEmbeddedChunks++
 		}

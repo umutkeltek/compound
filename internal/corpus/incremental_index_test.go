@@ -79,7 +79,7 @@ func TestIncrementalNewModifiedAndMirroredBodiesKeepProvenance(t *testing.T) {
 	writeRaw(t, filepath.Join(mirror, "new.md"), added)
 	capture()
 	r = runIncremental(t, hp, lane)
-	if r.PreparedItems != 0 || r.BodyBytesRead != 0 || r.ReusedChunks != r.TotalChunks {
+	if r.PreparedItems != 0 || r.BodyBytesRead != 0 || r.IndexBytesRead != 0 || r.ReusedChunks != r.TotalChunks {
 		t.Fatalf("copied body was semantically reindexed: %+v", r)
 	}
 	m, err := readManifest(IndexDir(hp, lane))

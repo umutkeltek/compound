@@ -63,7 +63,7 @@ type IdentityFile struct {
 }
 
 type Manifest struct {
-	VectorShards  map[string]string `json:"vector_shards,omitempty"`
+	VectorShards  map[string]string `json:"vector_shards"`
 	VectorPending int               `json:"vector_pending,omitempty"`
 	VectorError   string            `json:"vector_error,omitempty"`
 	EmptyItems    map[string]bool   `json:"empty_items,omitempty"`

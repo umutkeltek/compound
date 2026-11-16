@@ -103,6 +103,15 @@ func Doctor(homePath string, lane LaneConfig) (DoctorReport, error) {
 			report.Checks = append(report.Checks, doctorCheck("vector_dims", false, fmt.Sprintf("%s dim=%d", id, len(vec))))
 		}
 	}
+	missingVectors := 0
+	for id := range chunkHashes {
+		if _, ok := vectors.Vectors[id]; !ok {
+			missingVectors++
+		}
+	}
+	if missingVectors > 0 {
+		report.Checks = append(report.Checks, doctorCheck("vectors_complete", false, fmt.Sprintf("missing=%d", missingVectors)))
+	}
 	report.EmbeddedChunks = len(vectors.Vectors)
 	report.Checks = append(report.Checks, doctorCheck("vectors", true, fmt.Sprintf("embedded=%d", report.EmbeddedChunks)))
 
