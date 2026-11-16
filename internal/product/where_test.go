@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/mem"
 )
@@ -361,5 +362,178 @@ func TestWhereContractsSharingARepositoryAreSeparateTargets(t *testing.T) {
 	}
 	if got.Status != WhereMultiple || len(got.Targets) != 2 {
 		t.Fatalf("got %s with %d targets (%v), want multiple with 2", got.Status, len(got.Targets), got.Conflicts)
+	}
+}
+
+// TestOneNamePerAppAcrossOwnerGrowthAndResults pins the one rule for an
+// app's name. A product registered under two spellings, where only one
+// spelling carries the deploy target, used to be named by the deploy target
+// in `where` (and so in the inventory and the graph), by the spelling signals
+// use on the app pages, and by both spellings in the results list. Now the
+// owner names the group once: `where` keeps the deploy target as product_id
+// and adds group_id, growth names the app by that group_id, and the results
+// list folds both spellings into one row under it.
+func TestOneNamePerAppAcrossOwnerGrowthAndResults(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range []Bundle{
+		registryBundle("product:tide-log", "Tide Log"),
+		deployedBundle("product:tide_log", "Tide Log", "place:build-host", "make deploy"),
+		registryBundle("product:sundial", "Sundial"),
+	} {
+		if _, err := Apply(home, store, b, b.Product.ID+".yaml", tProduct); err != nil {
+			t.Fatalf("apply %s: %v", b.Product.ID, err)
+		}
+	}
+	writeGrowthSignals(t, home,
+		growthRow{product: "product:tide-log", metric: growthSalesFirstDownloads, date: growthDay(1), value: 2},
+		growthRow{product: "product:tide-log", metric: growthSalesFirstDownloads, date: growthDay(2), value: 3},
+	)
+
+	one, err := Where(store, "tide_log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if one.ProductID != "product:tide_log" || one.Deployment.Command != "make deploy" {
+		t.Fatalf("where keeps the deploy target as product_id: %+v", one)
+	}
+	if one.GroupID != "product:tide-log" {
+		t.Fatalf("where group_id = %q, want the spelling signals use", one.GroupID)
+	}
+	all, err := WhereAll(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupIDs := map[string]bool{}
+	for _, r := range all {
+		groupIDs[r.GroupID] = true
+	}
+
+	growth := buildGrowthT(t, home, growthOpts())
+	if len(growth.Apps) != len(all) {
+		t.Fatalf("growth apps = %d, where groups = %d", len(growth.Apps), len(all))
+	}
+	for _, app := range growth.Apps {
+		if !groupIDs[app.ProductID] {
+			t.Errorf("growth names app %q; where group ids are %v", app.ProductID, groupIDs)
+		}
+	}
+
+	results, err := Authority(home, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range results.Products {
+		if item.ProductID == "product:tide_log" {
+			t.Fatalf("results list a second row for the other spelling: %+v", results.Products)
+		}
+	}
+	tide := findAuthorityProduct(results.Products, "product:tide-log")
+	if tide.ProductID == "" || strings.Join(tide.Aliases, ",") != "product:tide_log" || tide.SignalCount != 2 {
+		t.Fatalf("results row for the app = %+v, want one row naming both spellings and both signals", tide)
+	}
+}
+
+// TestResolveAppSetsOneAppOrNone pins the rule work binding relies on: an app
+// is set only when every recorded key that names an app names the same one,
+// it is the app's one group id, and the key that decided it is reported. Two
+// candidate apps, a folder that only looks like an app, or a bare name set
+// nothing.
+func TestResolveAppSetsOneAppOrNone(t *testing.T) {
+	withCheckout := func(b Bundle, path string) Bundle {
+		b.Product.Surfaces = append(b.Product.Surfaces, Surface{ID: "checkout", Kind: "repo", Ref: path})
+		return b
+	}
+	store := whereStore(t,
+		withCheckout(deployedBundle("product:cask", "Cask", "place:app_store_connect", ""), "/workspace/products/cask"),
+		registryBundle("product:tide-log", "Tide Log"),
+		withCheckout(deployedBundle("product:tide_log", "Tide Log", "place:build-host", "make deploy"), "/workspace/products/tide"),
+		withCheckout(registryBundle("product:alder", "Alder"), "/workspace/shared"),
+		withCheckout(registryBundle("product:birch", "Birch"), "/workspace/shared"),
+	)
+	writeGrowthSignals(t, store.HomePath(), growthRow{product: "product:tide-log", metric: growthSalesFirstDownloads, date: growthDay(1), value: 1})
+	resolver, err := NewAppResolver(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name                 string
+		keys                 AppKeys
+		status, product, key string
+	}{
+		{"product surface folds spellings to the one name", AppKeys{Surface: "product:tide_log"}, AppBound, "product:tide-log", AppKeySurfaceProduct},
+		{"product surface with detail", AppKeys{Surface: "product:tidelog:release"}, AppBound, "product:tide-log", AppKeySurfaceProduct},
+		{"surface folder inside a checkout", AppKeys{Surface: "/workspace/products/cask/Sources"}, AppBound, "product:cask", AppKeySurfacePath},
+		{"worktree inside a checkout", AppKeys{Worktree: "/workspace/products/tide/ios"}, AppBound, "product:tide-log", AppKeyWorktree},
+		{"context folder", AppKeys{ContextFolder: "/workspace/products/cask"}, AppBound, "product:cask", AppKeyContextFolder},
+		{"keys that agree", AppKeys{Surface: "product:cask", Worktree: "/workspace/products/cask/app"}, AppBound, "product:cask", AppKeySurfaceProduct},
+		{"two keys name two apps", AppKeys{Worktree: "/workspace/products/tide", ContextFolder: "/workspace/products/cask"}, AppAmbiguous, "", ""},
+		{"one folder two apps claim", AppKeys{Worktree: "/workspace/shared/app"}, AppAmbiguous, "", ""},
+		{"a folder that only looks like an app", AppKeys{Worktree: "/workspace/lanes/tide-log-fix"}, AppNone, "", ""},
+		{"a bare name", AppKeys{Surface: "tide log"}, AppNone, "", ""},
+		{"an unknown product", AppKeys{Surface: "product:no-such-app"}, AppNone, "", ""},
+	} {
+		got := resolver.Resolve(tc.keys)
+		if got.Status != tc.status || got.ProductID != tc.product || got.Key != tc.key {
+			t.Errorf("%s: got %+v, want status %s product %q key %q", tc.name, got, tc.status, tc.product, tc.key)
+		}
+		if got.Status == AppAmbiguous && len(got.Candidates) != 2 {
+			t.Errorf("%s: candidates = %v, want both apps named", tc.name, got.Candidates)
+		}
+		if strings.TrimSpace(got.Reason) == "" {
+			t.Errorf("%s: no reason recorded", tc.name)
+		}
+	}
+}
+
+// TestResolveAppGivesASystemAHome: work in a system's own code (not an app)
+// used to resolve to nothing, because the lookup only read products. An
+// entity whose parent is a system now makes that system a second kind of
+// home. An app checkout nested inside the system's folder still wins by the
+// longer path, and a folder no entity links to a system stays unresolved.
+func TestResolveAppGivesASystemAHome(t *testing.T) {
+	b := deployedBundle("product:cask", "Cask", "place:app_store_connect", "")
+	b.Product.Surfaces = append(b.Product.Surfaces, Surface{ID: "checkout", Kind: "repo", Ref: "/workspace/systems/alpha/apps/cask"})
+	store := whereStore(t, b)
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for _, e := range []mem.Entity{
+		{Slug: "system:alpha", Kind: "topic"},
+		{Slug: "repo:alpha-core", Kind: "repo", Parent: "system:alpha", Identifiers: []string{"/workspace/systems/alpha"}},
+		{Slug: "repo:beta-core", Kind: "repo", Identifiers: []string{"/workspace/systems/beta"}},
+	} {
+		if _, err := store.RegisterEntity(e, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resolver, err := NewAppResolver(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name                         string
+		keys                         AppKeys
+		status, product, system, key string
+	}{
+		{"worktree in the system's code", AppKeys{Worktree: "/workspace/systems/alpha/internal"}, AppBound, "", "system:alpha", AppKeyWorktree},
+		{"surface names the system", AppKeys{Surface: "system:alpha"}, AppBound, "", "system:alpha", AppKeySurfaceSystem},
+		{"an app nested in the system folder", AppKeys{Worktree: "/workspace/systems/alpha/apps/cask/src"}, AppBound, "product:cask", "", AppKeyWorktree},
+		{"app surface but system worktree", AppKeys{Surface: "product:cask", Worktree: "/workspace/systems/alpha/internal"}, AppAmbiguous, "", "", ""},
+		{"a folder no entity links to a system", AppKeys{Worktree: "/workspace/systems/beta/x"}, AppNone, "", "", ""},
+		{"an unregistered system name", AppKeys{Surface: "system:gamma"}, AppNone, "", "", ""},
+	} {
+		got := resolver.Resolve(tc.keys)
+		if got.Status != tc.status || got.ProductID != tc.product || got.SystemID != tc.system || got.Key != tc.key {
+			t.Errorf("%s: got %+v, want status %s product %q system %q key %q", tc.name, got, tc.status, tc.product, tc.system, tc.key)
+		}
+	}
+	all, err := WhereAll(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].GroupID != "product:cask" {
+		t.Fatalf("where --all must still list products only: %+v", all)
 	}
 }

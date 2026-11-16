@@ -174,47 +174,51 @@ type WorkbenchItem struct {
 	// Captured with State/PolicyDecisionID; in-process dispatch must not reload
 	// a newer generation and mistake it for the one that was selected.
 	sourceActionIntentID  string
-	WorkID                string                  `json:"work_id"`
-	State                 string                  `json:"state"`
-	Owner                 string                  `json:"owner,omitempty"`
-	AccountableOwner      string                  `json:"accountable_owner,omitempty"`
-	CreatorHarness        string                  `json:"creator_harness,omitempty"`
-	CreatorRequestedModel string                  `json:"creator_requested_model,omitempty"`
-	CreatorLaneID         string                  `json:"creator_lane_id,omitempty"`
-	GitDeliveryBound      bool                    `json:"git_delivery_bound,omitempty"`
-	TargetWorktreeRoot    string                  `json:"target_worktree_root,omitempty"`
-	RepositoryFingerprint string                  `json:"repository_fingerprint,omitempty"`
-	TargetLocalRef        string                  `json:"target_local_ref,omitempty"`
-	ExpectedBaseSHA       string                  `json:"expected_base_sha,omitempty"`
-	PublicationMode       string                  `json:"publication_mode,omitempty"`
-	PublicationRef        string                  `json:"publication_ref,omitempty"`
-	CandidateTipSHA       string                  `json:"candidate_tip_sha,omitempty"`
-	LandingStatus         string                  `json:"landing_status,omitempty"`
-	ClaimedBy             string                  `json:"claimed_by,omitempty"`
-	ClaimedAt             string                  `json:"claimed_at,omitempty"`
-	SuccessPredicate      string                  `json:"success_predicate"`
-	DesiredOutcome        string                  `json:"desired_outcome,omitempty"`
-	CanonicalSurface      string                  `json:"canonical_surface,omitempty"`
-	ContextPackID         string                  `json:"context_pack_id,omitempty"`
-	PolicyDecisionID      string                  `json:"policy_decision_id,omitempty"`
-	ReceiptID             string                  `json:"receipt_id,omitempty"`
-	TransitionID          string                  `json:"transition_id,omitempty"`
-	MoveType              string                  `json:"move_type,omitempty"`
-	Changed               bool                    `json:"changed,omitempty"`
-	ReviewTrigger         string                  `json:"review_trigger,omitempty"`
-	ObservatoryTags       []string                `json:"observatory_tags,omitempty"`
-	NextAction            string                  `json:"next_action"`
-	OpenReason            string                  `json:"open_reason,omitempty"`
-	EvidenceRefs          []string                `json:"evidence_refs,omitempty"`
-	ArtifactIDs           []string                `json:"artifact_ids,omitempty"`
-	VerificationIDs       []string                `json:"verification_ids,omitempty"`
-	MemoryCandidateIDs    []string                `json:"memory_candidate_ids,omitempty"`
-	ActionContext         *WorkActionContext      `json:"action_context,omitempty"`
-	ReviewCards           []WorkbenchReviewCard   `json:"review_cards,omitempty"`
-	RunObservations       []RunObservationSummary `json:"run_observations,omitempty"`
-	RunArtifacts          []WorkbenchRunArtifact  `json:"run_artifacts,omitempty"`
-	RouteOutcomes         []RouteOutcomeSummary   `json:"route_outcomes,omitempty"`
-	recentAt              string
+	WorkID                string `json:"work_id"`
+	State                 string `json:"state"`
+	Owner                 string `json:"owner,omitempty"`
+	AccountableOwner      string `json:"accountable_owner,omitempty"`
+	CreatorHarness        string `json:"creator_harness,omitempty"`
+	CreatorRequestedModel string `json:"creator_requested_model,omitempty"`
+	CreatorLaneID         string `json:"creator_lane_id,omitempty"`
+	GitDeliveryBound      bool   `json:"git_delivery_bound,omitempty"`
+	TargetWorktreeRoot    string `json:"target_worktree_root,omitempty"`
+	RepositoryFingerprint string `json:"repository_fingerprint,omitempty"`
+	TargetLocalRef        string `json:"target_local_ref,omitempty"`
+	ExpectedBaseSHA       string `json:"expected_base_sha,omitempty"`
+	PublicationMode       string `json:"publication_mode,omitempty"`
+	PublicationRef        string `json:"publication_ref,omitempty"`
+	CandidateTipSHA       string `json:"candidate_tip_sha,omitempty"`
+	LandingStatus         string `json:"landing_status,omitempty"`
+	ClaimedBy             string `json:"claimed_by,omitempty"`
+	ClaimedAt             string `json:"claimed_at,omitempty"`
+	SuccessPredicate      string `json:"success_predicate"`
+	DesiredOutcome        string `json:"desired_outcome,omitempty"`
+	CanonicalSurface      string `json:"canonical_surface,omitempty"`
+	// Scope is the work record's recorded scope (the app it is for, or the
+	// system), copied as-is so a reader of rows reads the record's own shape.
+	// Absent when the record names none.
+	Scope              *envelope.Scope         `json:"scope,omitempty"`
+	ContextPackID      string                  `json:"context_pack_id,omitempty"`
+	PolicyDecisionID   string                  `json:"policy_decision_id,omitempty"`
+	ReceiptID          string                  `json:"receipt_id,omitempty"`
+	TransitionID       string                  `json:"transition_id,omitempty"`
+	MoveType           string                  `json:"move_type,omitempty"`
+	Changed            bool                    `json:"changed,omitempty"`
+	ReviewTrigger      string                  `json:"review_trigger,omitempty"`
+	ObservatoryTags    []string                `json:"observatory_tags,omitempty"`
+	NextAction         string                  `json:"next_action"`
+	OpenReason         string                  `json:"open_reason,omitempty"`
+	EvidenceRefs       []string                `json:"evidence_refs,omitempty"`
+	ArtifactIDs        []string                `json:"artifact_ids,omitempty"`
+	VerificationIDs    []string                `json:"verification_ids,omitempty"`
+	MemoryCandidateIDs []string                `json:"memory_candidate_ids,omitempty"`
+	ActionContext      *WorkActionContext      `json:"action_context,omitempty"`
+	ReviewCards        []WorkbenchReviewCard   `json:"review_cards,omitempty"`
+	RunObservations    []RunObservationSummary `json:"run_observations,omitempty"`
+	RunArtifacts       []WorkbenchRunArtifact  `json:"run_artifacts,omitempty"`
+	RouteOutcomes      []RouteOutcomeSummary   `json:"route_outcomes,omitempty"`
+	recentAt           string
 }
 
 type WorkbenchReviewCard struct {
@@ -784,6 +788,15 @@ func lastCreatePlanID(events []Event) string {
 // the whole loop. Each field is optional: nil means "fall back to a per-item
 // lookup" so the standalone callers (active_packet_proof, tests) still work
 // without precomputing the full board.
+// recordedScope is nil when the record names no scope, so rows of unbound
+// work stay byte-identical to before.
+func recordedScope(scope envelope.Scope) *envelope.Scope {
+	if scope == (envelope.Scope{}) {
+		return nil
+	}
+	return &scope
+}
+
 type workbenchItemCaches struct {
 	RunObservations []RunObservationSummary
 	ASCSignals      *ascProductSignalState
@@ -891,6 +904,7 @@ func (s *Store) workbenchItemWithCaches(w envelope.WorkEnvelope, events []Event,
 		DesiredOutcome:     w.DesiredOutcome,
 		CanonicalSurface:   w.CanonicalSurface,
 		ContextPackID:      w.IDs.ContextPackID,
+		Scope:              recordedScope(w.Scope),
 		PolicyDecisionID:   w.PolicyDecisionID,
 		TransitionID:       w.IDs.TransitionID,
 		NextAction:         nextWorkAction(w.State),

@@ -41,9 +41,14 @@ type WhereTarget struct {
 // Deployment is filled only when the query selects exactly one target; every
 // recorded target is listed in Targets either way.
 type WhereReport struct {
-	Query      string        `json:"query,omitempty"`
-	Status     string        `json:"status"`
-	ProductID  string        `json:"product_id,omitempty"`
+	Query     string `json:"query,omitempty"`
+	Status    string `json:"status"`
+	ProductID string `json:"product_id,omitempty"`
+	// GroupID is the one name the product goes by everywhere: app pages,
+	// results, the inventory, the dependency graph, and the app a piece of
+	// work records. ProductID stays the deploy target the answer selected;
+	// a product with an app and a web side has one GroupID and two targets.
+	GroupID    string        `json:"group_id,omitempty"`
 	Members    []string      `json:"members,omitempty"`
 	Deployment Deployment    `json:"deployment"`
 	Targets    []WhereTarget `json:"targets,omitempty"`
@@ -123,6 +128,75 @@ type whereIndex struct {
 	parent   []int
 	// claims holds the latest current claim per entity and predicate.
 	claims map[string]map[string]mem.Claim
+	// signalRows counts product signal rows per lowercased product id; the
+	// main spelling of a group is the registered member signals name most.
+	signalRows map[string]int
+	// systems are the registered system: slugs, and systemPaths the recorded
+	// folders of entities whose parent is a system. They are the second kind
+	// of home a piece of work can have; `where` itself still answers products.
+	systems     map[string]bool
+	systemPaths []systemPath
+}
+
+// systemPath is one recorded folder of an entity that belongs to a system.
+type systemPath struct {
+	root, system string
+}
+
+// registeredEntity reports whether a product entity was registered with
+// identity facts, as opposed to a slug some writer only put a claim on.
+func registeredEntity(e mem.Entity) bool {
+	return e.CreatedAt != "" || len(e.Aliases) > 0 || len(e.Identifiers) > 0
+}
+
+// mainSpelling is the one rule that picks the name a product group goes by.
+// Among registered spellings, the one the product signal ledger names most
+// wins; ties go to the first in sort order. A group with no registered
+// spelling chooses among all of them the same way. Signal writers are the
+// longest-running writers of product ids, so this is the spelling the app
+// pages and results already show; a separator-variant registered later does
+// not take the name over. ids must be sorted.
+func mainSpelling(ids []string, registered func(string) bool, rows func(string) int) string {
+	best := ""
+	pick := func(candidate func(string) bool) {
+		for _, id := range ids {
+			if candidate(id) && (best == "" || rows(id) > rows(best)) {
+				best = id
+			}
+		}
+	}
+	pick(registered)
+	if best == "" {
+		pick(func(string) bool { return true })
+	}
+	return best
+}
+
+// signalSpellingRows counts the signal rows that name each product spelling,
+// with the same filter the growth projection applies to its signal rows.
+func signalSpellingRows(signals []Signal) map[string]int {
+	rows := map[string]int{}
+	for _, s := range signals {
+		metric := strings.TrimSpace(s.MetricName)
+		if strings.TrimSpace(s.ProductID) == "" || metric == "" || strings.HasPrefix(metric, "ads_") {
+			continue
+		}
+		rows[strings.ToLower(s.ProductID)]++
+	}
+	return rows
+}
+
+// groupID is the main spelling of the group rooted at root.
+func (idx *whereIndex) groupID(root int) string {
+	members := idx.memberIndexes(root)
+	ids := make([]string, 0, len(members))
+	registered := map[string]bool{}
+	for _, i := range members {
+		ids = append(ids, idx.entities[i].Slug)
+		registered[idx.entities[i].Slug] = registeredEntity(idx.entities[i])
+	}
+	sort.Strings(ids)
+	return mainSpelling(ids, func(id string) bool { return registered[id] }, func(id string) int { return idx.signalRows[strings.ToLower(id)] })
 }
 
 func loadWhereIndex(store *mem.Store) (*whereIndex, error) {
@@ -146,7 +220,19 @@ func loadWhereIndex(store *mem.Store) (*whereIndex, error) {
 		}
 	}
 	seen := map[string]bool{}
+	idx.systems = map[string]bool{}
 	for _, e := range registered {
+		if strings.HasPrefix(e.Slug, "system:") {
+			idx.systems[e.Slug] = true
+		}
+		if parent := strings.TrimSpace(e.Parent); strings.HasPrefix(parent, "system:") && !strings.HasPrefix(e.Slug, "product:") {
+			idx.systems[parent] = true
+			for _, id := range e.Identifiers {
+				if filepath.IsAbs(id) {
+					idx.systemPaths = append(idx.systemPaths, systemPath{root: filepath.Clean(id), system: parent})
+				}
+			}
+		}
 		if e.Kind == "product" && strings.HasPrefix(e.Slug, "product:") && !seen[e.Slug] {
 			seen[e.Slug] = true
 			idx.entities = append(idx.entities, e)
@@ -162,6 +248,14 @@ func loadWhereIndex(store *mem.Store) (*whereIndex, error) {
 	}
 	sort.Slice(idx.entities, func(i, j int) bool { return idx.entities[i].Slug < idx.entities[j].Slug })
 	idx.fold()
+	idx.signalRows = map[string]int{}
+	if home := store.HomePath(); home != "" {
+		signals, err := loadSignals(home)
+		if err != nil {
+			return nil, err
+		}
+		idx.signalRows = signalSpellingRows(signals)
+	}
 	return idx, nil
 }
 
@@ -423,6 +517,7 @@ func (idx *whereIndex) report(root int, selected map[string]bool) WhereReport {
 		report.Members = append(report.Members, idx.entities[i].Slug)
 	}
 	report.ProductID = report.Members[0]
+	report.GroupID = idx.groupID(root)
 
 	var surfaces []string
 	for _, slug := range report.Members {
@@ -620,6 +715,213 @@ func (idx *whereIndex) legacy(members []int) map[string]string {
 	if len(out) == 0 {
 		return nil
 	}
+	return out
+}
+
+// App binding statuses: the answer to "which app is this work for".
+const (
+	AppBound     = "bound"     // exactly one app matches by a recorded key
+	AppNone      = "none"      // no recorded key names an app
+	AppAmbiguous = "ambiguous" // recorded keys name more than one app; nothing is set
+)
+
+// App binding keys, in the order they are consulted. Each is a value the work
+// itself records; none is a guess from a name.
+const (
+	AppKeySurfaceProduct = "surface_product" // canonical surface is product:<id>[:...]
+	AppKeySurfacePath    = "surface_path"    // canonical surface is a folder
+	AppKeyWorktree       = "worktree"        // the git worktree the work runs in
+	AppKeyContextFolder  = "context_folder"  // the folder its context pack was built for
+)
+
+// AppKeySurfaceSystem is a canonical surface that names a registered system.
+const AppKeySurfaceSystem = "surface_system"
+
+// AppKeys are the recorded values of one piece of work that can name its app.
+type AppKeys struct {
+	Surface       string
+	Worktree      string
+	ContextFolder string
+}
+
+// AppBinding is the owner's answer for one piece of work. ProductID is the
+// app's group id, set only when Status is bound; Key names the recorded key
+// that decided it. Reason says why in plain words, also when nothing is set.
+type AppBinding struct {
+	Status    string `json:"status"`
+	ProductID string `json:"product_id,omitempty"`
+	// SystemID is set instead of ProductID when the one home that matches is
+	// a system (a registered system: entity) rather than an app.
+	SystemID   string   `json:"system_id,omitempty"`
+	Key        string   `json:"key,omitempty"`
+	Candidates []string `json:"candidates,omitempty"`
+	Reason     string   `json:"reason"`
+}
+
+// AppResolver answers AppBinding questions against one read of the identity
+// owner, so a caller binding many items reads the ledger once.
+type AppResolver struct{ idx *whereIndex }
+
+// NewAppResolver reads the identity owner once.
+func NewAppResolver(store *mem.Store) (*AppResolver, error) {
+	idx, err := loadWhereIndex(store)
+	if err != nil {
+		return nil, err
+	}
+	return &AppResolver{idx: idx}, nil
+}
+
+// ResolveApp is NewAppResolver(store).Resolve(keys).
+func ResolveApp(store *mem.Store, keys AppKeys) (AppBinding, error) {
+	r, err := NewAppResolver(store)
+	if err != nil {
+		return AppBinding{}, err
+	}
+	return r.Resolve(keys), nil
+}
+
+// Resolve sets an app only when every recorded key that names an app names
+// the same one. A key that names two apps, or two keys that name different
+// apps, leave it empty: a wrong label is worse than none. A product reference
+// must resolve through the owner (slug, separator fold, identifier or declared
+// alias); a folder must lie inside a checkout a product records, by longest
+// path. A folder whose name merely looks like an app names nothing.
+func (r *AppResolver) Resolve(keys AppKeys) AppBinding {
+	type hit struct {
+		key    string
+		groups []string
+	}
+	var hits []hit
+	if ref, ok := productSurfaceRef(keys.Surface); ok {
+		hits = append(hits, hit{AppKeySurfaceProduct, r.idx.groupIDs(r.idx.match(ref))})
+	} else if system := strings.TrimSpace(keys.Surface); r.idx.systems[system] {
+		hits = append(hits, hit{AppKeySurfaceSystem, []string{system}})
+	} else if path := absPath(keys.Surface); path != "" {
+		hits = append(hits, hit{AppKeySurfacePath, r.idx.pathGroupIDs(path)})
+	}
+	if path := absPath(keys.Worktree); path != "" {
+		hits = append(hits, hit{AppKeyWorktree, r.idx.pathGroupIDs(path)})
+	}
+	if path := absPath(keys.ContextFolder); path != "" {
+		hits = append(hits, hit{AppKeyContextFolder, r.idx.pathGroupIDs(path)})
+	}
+	named := map[string]bool{}
+	var said []string
+	key := ""
+	for _, h := range hits {
+		if len(h.groups) == 0 {
+			continue
+		}
+		if key == "" {
+			key = h.key
+		}
+		said = append(said, h.key+" names "+strings.Join(h.groups, " and "))
+		for _, g := range h.groups {
+			named[g] = true
+		}
+	}
+	var candidates []string
+	for g := range named {
+		candidates = append(candidates, g)
+	}
+	sort.Strings(candidates)
+	switch len(candidates) {
+	case 0:
+		return AppBinding{Status: AppNone, Reason: "no recorded key names an app"}
+	case 1:
+		bound := AppBinding{Status: AppBound, Key: key, Reason: strings.Join(said, "; ")}
+		if r.idx.systems[candidates[0]] {
+			bound.SystemID = candidates[0]
+		} else {
+			bound.ProductID = candidates[0]
+		}
+		return bound
+	}
+	return AppBinding{Status: AppAmbiguous, Candidates: candidates, Reason: "more than one app matches (" + strings.Join(said, "; ") + "); left empty"}
+}
+
+// productSurfaceRef returns the product reference a canonical surface names:
+// product:<id>, optionally followed by :<detail>. Anything else names none.
+func productSurfaceRef(surface string) (string, bool) {
+	surface = strings.TrimSpace(surface)
+	if !strings.HasPrefix(strings.ToLower(surface), "product:") {
+		return "", false
+	}
+	id := surface[len("product:"):]
+	if cut := strings.Index(id, ":"); cut >= 0 {
+		id = id[:cut]
+	}
+	if id == "" || strings.ContainsAny(id, "/\\ \t") {
+		return "", false
+	}
+	return "product:" + id, true
+}
+
+func absPath(value string) string {
+	value = strings.TrimSpace(value)
+	if !filepath.IsAbs(value) {
+		return ""
+	}
+	return filepath.Clean(value)
+}
+
+// groupIDs names the groups a match selected.
+func (idx *whereIndex) groupIDs(matched map[int]map[string]bool) []string {
+	var out []string
+	for root := range matched {
+		out = append(out, idx.groupID(root))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// pathGroupIDs names the homes whose recorded folder holds path, by the
+// longest recorded folder: a product group, or a system whose member entity
+// records the folder. Two homes at that same depth both answer.
+func (idx *whereIndex) pathGroupIDs(path string) []string {
+	longest := -1
+	roots := map[int]bool{}
+	systems := map[string]bool{}
+	for _, sp := range idx.systemPaths {
+		if path != sp.root && !strings.HasPrefix(path, sp.root+string(filepath.Separator)) {
+			continue
+		}
+		switch {
+		case len(sp.root) > longest:
+			longest = len(sp.root)
+			systems = map[string]bool{sp.system: true}
+		case len(sp.root) == longest:
+			systems[sp.system] = true
+		}
+	}
+	for i, e := range idx.entities {
+		for _, id := range e.Identifiers {
+			if !filepath.IsAbs(id) {
+				continue
+			}
+			root := filepath.Clean(id)
+			if path != root && !strings.HasPrefix(path, root+string(filepath.Separator)) {
+				continue
+			}
+			switch {
+			case len(root) > longest:
+				longest = len(root)
+				roots = map[int]bool{idx.find(i): true}
+				systems = map[string]bool{}
+			case len(root) == longest:
+				roots[idx.find(i)] = true
+			}
+		}
+	}
+	matched := map[int]map[string]bool{}
+	for root := range roots {
+		matched[root] = nil
+	}
+	out := idx.groupIDs(matched)
+	for system := range systems {
+		out = append(out, system)
+	}
+	sort.Strings(out)
 	return out
 }
 
