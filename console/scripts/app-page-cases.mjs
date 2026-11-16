@@ -14,7 +14,9 @@ import { AppNeedsYou } from "../src/components/growth/AppNeedsYou.tsx";
 import { readFileSync } from "node:fs";
 import { KpiTile } from "../src/components/growth/GrowthKit.tsx";
 import { AdsPlatformCard } from "../src/components/ads/AdsPlatformCard.tsx";
-import { mapTotals } from "../src/lib/ads.ts";
+import { ADS_GOOD_DIRECTION, campaignStateLabel, hasPlaceholder, mapAdsProjection, mapTotals } from "../src/lib/ads.ts";
+import { AdsCampaignTable } from "../src/components/ads/AdsTables.tsx";
+import { DeltaPill } from "../src/components/kit/DeltaPill.tsx";
 import { allocationWhy, funnelPeriods, kpiPeriod, mapGrowthModel } from "../src/lib/growth.ts";
 
 const NOW = Date.parse("2030-03-20T12:00:00Z");
@@ -201,3 +203,72 @@ console.log("app page cases ok: numbers name their days, one proceeds figure, fu
 }
 
 console.log("app page cases ok: the page leads with what needs you, then numbers, work, next steps and ads");
+
+/* ---------- 4. Ads: colours follow meaning, quiet campaigns say so, no placeholder commands ---------- */
+{
+  const day = (date, spend, impressions) => ({ date, currency: "USD", spend, impressions, clicks: 0, conversions: 0 });
+  const daily = (lastActive) => ["2030-03-08", "2030-03-09", "2030-03-10", "2030-03-11", "2030-03-12", "2030-03-13", "2030-03-14", "2030-03-15", "2030-03-16"]
+    .map((d) => day(d, d <= lastActive ? 1.5 : 0, d <= lastActive ? 9 : 0));
+  const campaign = (id, name, lastActive, extra = {}) => ({
+    platform: "apple_search_ads", product_id: "product:pocket-log", account: "acct-1", campaign_id: id, campaign_name: name, status: "active",
+    first_date: "2030-03-08", last_date: "2030-03-16", totals: { spend: 3, currency: "USD", rows: 9 }, previous: {}, daily: daily(lastActive), ...extra,
+  });
+  const payload = (campaigns) => ({
+    schema_version: "compound.product_ads.v0.1", status: "ok", as_of: "2030-03-16",
+    window: { days: 30, start: "2030-02-15", end: "2030-03-16" },
+    counts: { rows: 18, rows_in_window: 18, campaigns: campaigns.length, campaigns_active: campaigns.length },
+    platforms: [{ platform: "apple_search_ads", label: "Apple Search Ads", status: "connected", campaigns_active: campaigns.length, campaigns_total: campaigns.length }],
+    campaigns,
+  });
+
+  // An older CLI: every campaign with a recent row is "active", even with $0 spend for ten days.
+  const old = mapAdsProjection(payload([campaign("c1", "Pocket Log Region One — Search Results", "2030-03-16"), campaign("c2", "Pocket Log Region Two — Search Results", "2030-03-06")]));
+  assert.equal(old.campaigns[0].status, "active");
+  assert.equal(old.campaigns[1].status, "quiet", "no spend or impressions in the last 3 days is quiet, not active");
+  assert.equal(old.campaigns[1].lastActiveDate, "", "no active day inside the window");
+  assert.equal(campaignStateLabel(old.campaigns[1]), "quiet, no spend in this window");
+  assert.equal(old.counts.campaignsActive, 1, "the active count follows the campaigns");
+  assert.equal(old.platforms[0].campaignsActive, 1);
+  const older = mapAdsProjection(payload([campaign("c3", "Pocket Log Region Three", "2030-03-10")]));
+  assert.equal(campaignStateLabel(older.campaigns[0]), "quiet since Mar 10");
+  // A newer CLI sends last_active_date and its own status: trusted as is.
+  const fresh = mapAdsProjection(payload([campaign("c4", "Pocket Log Region Four", "2030-03-16", { status: "quiet", last_active_date: "2030-03-06" })]));
+  assert.equal(fresh.campaigns[0].status, "quiet");
+  assert.equal(campaignStateLabel(fresh.campaigns[0]), "quiet since Mar 6");
+
+  const table = renderToStaticMarkup(createElement(AdsCampaignTable, { campaigns: old.campaigns, windowDays: 30 }));
+  assert.ok(text(table).includes("Pocket Log Region Two — Search Results"), "full campaign names");
+  assert.ok(!table.includes(">c1<") && !table.includes("acct-1 <"), "campaign and account ids stay out of the visible text");
+  assert.ok(table.includes('href="/apps/pocket-log"') && text(table).includes("Pocket Log"), "the app links to its page by name");
+
+  // Good and bad follow the number's meaning: fewer installs is bad, less spend is good.
+  assert.equal(ADS_GOOD_DIRECTION.conversions, "up");
+  assert.equal(ADS_GOOD_DIRECTION.impressions, "up");
+  assert.equal(ADS_GOOD_DIRECTION.clicks, "up");
+  assert.equal(ADS_GOOD_DIRECTION.spend, "down");
+  const pill = renderToStaticMarkup(createElement(DeltaPill, { value: -24, suffix: "%", goodDirection: ADS_GOOD_DIRECTION.conversions }));
+  assert.ok(pill.includes("text-crit") && !pill.includes("text-good"), "falling installs are red");
+  const adsPage = readFileSync(new URL("../src/app/ads/page.tsx", import.meta.url), "utf8");
+  assert.ok(!/label="(Impressions|Clicks|Installs)"[^\n]*goodDirection="down"/.test(adsPage) && !adsPage.includes('goodDirection="down" title'), "no tile hard-codes down as good");
+  for (const label of ["Impressions", "Clicks", "Installs"]) {
+    assert.ok(new RegExp(`label="${label}"[^\\n]*goodDirection=\\{ADS_GOOD_DIRECTION\\.`).test(adsPage), `${label} tile follows its meaning`);
+  }
+  // Campaigns come before platforms, and platforms without a report fold into one line.
+  assert.ok(adsPage.indexOf('id="campaign-results" tabIndex={-1} className="scroll-mt-6 flex') < adsPage.indexOf("Platforms with reports"), "campaign table first");
+  assert.ok(adsPage.includes("<details") && adsPage.includes("platforms have\"} no report"), "unconnected platforms fold into one line");
+
+  // A command with a placeholder never reaches the owner.
+  assert.equal(hasPlaceholder("compound product ads import --platform x --product <product:id> --report <export.csv>"), true);
+  assert.equal(hasPlaceholder("compound product ads --json"), false);
+  const waitingCard = text(renderToStaticMarkup(createElement(AdsPlatformCard, {
+    windowDays: 30,
+    view: {
+      platform: "meta_ads", label: "Meta Ads", status: "stale", exportHint: "", firstDate: "", lastDate: "2030-01-01", lastImportAt: "", daysSinceLastDate: 70,
+      totals: mapTotals({}), previous: mapTotals({}), daily: [], products: [], campaignsActive: 0, campaignsTotal: 0,
+      nextMove: { text: "Stale. Import a newer report.", command: "compound product ads import --platform meta_ads --product <product:id> --report <export.csv>" },
+    },
+  })));
+  assert.ok(waitingCard.includes("Stale. Import a newer report.") && !waitingCard.includes("<product:id>") && !waitingCard.includes("compound product ads import"), waitingCard);
+}
+
+console.log("app page cases ok: ads colours follow meaning, quiet campaigns say since when, campaigns first, no placeholder commands");

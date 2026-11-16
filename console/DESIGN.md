@@ -562,6 +562,11 @@ matrix and the pale red fill above.
   days are not drawn as one funnel (no arrows, a plain sentence why); a `partial` step reads "at
   least". One name per number on every page: "New downloads", "Ad installs" (Apple counts
   re-downloads), "Cost per install" (never "CPA"). Ad tiles on an app page open its Ads view.
+  On Ads a change's colour follows what the number means (`ADS_GOOD_DIRECTION`: fewer installs is
+  red, less spend is green); a campaign is active only with spend or impressions in the last 3
+  days, else "quiet since <day>"; the campaign table comes first, apps link to their page, and
+  platforms with no report fold into one closed line. A command with a `<placeholder>` is never
+  shown; a runnable one sits in a closed "For agents" disclosure.
 - **Gaps are background.** "No data yet" is a pale neutral fill, the calmest filled state. "Not on
   file" is a dashed outline or hatch, "Set aside" a hatch on soft, "Does not apply" is left empty.
   Measured (green), out of date (amber) and the next-move mark (an ink dot or ring) are the only
