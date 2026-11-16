@@ -621,6 +621,10 @@ the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line
   the registry as unlisted, so its address and breadcrumb keep working; pages
   agents use sit in Settings' quiet back room. The sidebar has one count: what
   waits for him, on Today; no page counts on groups and no Work count.
+  Search finds every page by name, earlier name and purpose, every app by name
+  and alias, waiting decisions by the words Today shows and open work by title.
+  It reads the copies the pages already cache once, when it opens; typing never
+  starts a read, a read still loading says so, and it offers no terminal commands.
   Use `PageHeader` for the page label, a short lead or answer, and named freshness.
   An item or a question may be the title; the section's name stays above it.
 - Decide leads with the proposal and opens on **Next step**. Choices, status,

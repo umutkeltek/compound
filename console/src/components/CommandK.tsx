@@ -1,37 +1,137 @@
 "use client";
 
+import * as Dialog from "@radix-ui/react-dialog";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import type { SearchEntry, SearchGroup, SearchIndex, SearchKind } from "@/app/api/search/build";
+import type { ReadState } from "@/lib/compound";
 import { searchablePages } from "@/lib/experience";
+import { decideHref, workListHref } from "@/lib/links";
 
-type Item =
-  | { kind: "nav"; label: string; href: string }
-  | { kind: "cmd"; label: string; cmd: string };
+/**
+ * Search (⌘K, or the sidebar's Search box). It finds every page and tab by
+ * name, earlier name and purpose (lib/experience.ts), every app by name and
+ * alias, waiting decisions by the words Today shows, and open work by its
+ * title. Apps, decisions and work come from /api/search, asked once when
+ * search opens: the reads the pages already cache, so typing starts no read.
+ * A read still loading says so. Arrows move, Enter opens, Escape closes, and
+ * focus stays inside while it is open. Results link through lib/links.ts.
+ */
+export type SearchRow = SearchEntry | { kind: "more"; label: string; sub: string; href: string; terms: string };
 
-const ITEMS: Item[] = [
-  ...searchablePages().map(({ page }): Item => ({ kind: "nav", label: page.label, href: page.href })),
-  { kind: "cmd", label: "Growth model (terminal)", cmd: "compound product growth" },
-  { kind: "cmd", label: "Workbench (terminal)", cmd: "compound workbench" },
-  { kind: "cmd", label: "Review queue (terminal)", cmd: "compound reviews" },
-  { kind: "cmd", label: "External-repo reviews", cmd: "compound reviews --area external-repo-intake" },
-  { kind: "cmd", label: "List work", cmd: "compound work list" },
-  { kind: "cmd", label: "Architecture doctor", cmd: "compound architecture doctor --strict" },
-];
+export type SearchResultGroup = {
+  id: "pages" | "apps" | "decisions" | "work";
+  heading: string;
+  /** Said under the heading when the read behind it has no copy yet or failed. */
+  note: string;
+  rows: SearchRow[];
+};
+
+const KIND_LABEL: Record<SearchKind | "more", string> = {
+  page: "Page",
+  view: "Quick view",
+  app: "App",
+  decision: "Decision",
+  work: "Work",
+  more: "",
+};
+
+/** Every page and tab, with its section and the words he may type for it. */
+export const PAGE_ENTRIES: SearchEntry[] = searchablePages().map(({ section, page }) => ({
+  kind: "page",
+  label: page.label,
+  sub: page.label === section.label ? page.description : `${section.label} · ${page.description}`,
+  href: page.href,
+  terms: [page.label, section.label, section.question, page.description, ...(page.aliases ?? []), ...(page.keywords ?? [])]
+    .join(" ")
+    .toLowerCase(),
+}));
+
+const LOADING: SearchGroup = { state: "loading", entries: [] };
+
+function noteFor(state: ReadState, what: string): string {
+  if (state === "loading") return `Still reading ${what}; results may be missing.`;
+  if (state === "unreachable") return `Could not read ${what}; results may be missing.`;
+  return "";
+}
+
+function score(entry: SearchEntry, query: string, tokens: string[]): number {
+  const label = entry.label.toLowerCase();
+  const hay = `${label} ${entry.sub.toLowerCase()} ${entry.terms}`;
+  if (!tokens.every((token) => hay.includes(token))) return 0;
+  if (label.startsWith(query)) return 4;
+  if (label.includes(query)) return 3;
+  if (tokens.every((token) => label.includes(token))) return 2;
+  return 1;
+}
+
+function ranked(entries: SearchEntry[], query: string, tokens: string[]): SearchEntry[] {
+  return entries
+    .map((entry, index) => ({ entry, index, s: score(entry, query, tokens) }))
+    .filter((hit) => hit.s > 0)
+    .sort((a, b) => b.s - a.s || a.index - b.index)
+    .map((hit) => hit.entry);
+}
+
+/** The groups search shows for a query. Pure, so the shell check can run it without a browser. */
+export function searchResults(rawQuery: string, index: SearchIndex | null): SearchResultGroup[] {
+  const query = rawQuery.trim().toLowerCase();
+  const tokens = query.split(/\s+/).filter(Boolean);
+  if (!query) return [{ id: "pages", heading: "Pages", note: "", rows: PAGE_ENTRIES }];
+
+  const apps = index?.apps ?? LOADING;
+  const decisions = index?.decisions ?? LOADING;
+  const work = index?.work ?? LOADING;
+  const groups: SearchResultGroup[] = [];
+
+  const pages = ranked(PAGE_ENTRIES, query, tokens);
+  if (pages.length) groups.push({ id: "pages", heading: "Pages", note: "", rows: pages.slice(0, 8) });
+
+  const appHits = ranked(apps.entries, query, tokens);
+  const appNote = noteFor(apps.state, "your apps");
+  if (appHits.length || appNote) groups.push({ id: "apps", heading: "Apps", note: appNote, rows: appHits.slice(0, 8) });
+
+  const decisionHits = ranked(decisions.entries, query, tokens);
+  const decisionNote = noteFor(decisions.state, "what waits for you");
+  if (decisionHits.length || decisionNote) {
+    const rows: SearchRow[] = decisionHits.slice(0, 6);
+    if (decisionHits.length > rows.length) {
+      rows.push({ kind: "more", label: `See all ${decisionHits.length} matching decisions`, sub: "", href: decideHref({ q: rawQuery.trim() }), terms: "" });
+    }
+    groups.push({ id: "decisions", heading: "Decisions", note: decisionNote, rows });
+  }
+
+  const workHits = ranked(work.entries, query, tokens);
+  const workNote = noteFor(work.state, "open work");
+  if (workHits.length || workNote) {
+    const rows: SearchRow[] = workHits.slice(0, 8);
+    if (workHits.length > rows.length) {
+      rows.push({ kind: "more", label: `See all ${workHits.length} matching work items`, sub: "", href: workListHref({ lens: "table", filter: "all", q: rawQuery.trim() }), terms: "" });
+    }
+    groups.push({ id: "work", heading: "Work", note: workNote, rows });
+  }
+  return groups;
+}
+
+function anyLoading(index: SearchIndex | null): boolean {
+  return !index || [index.apps, index.decisions, index.work].some((group) => group.state === "loading");
+}
 
 export function CommandK() {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
-  const [copied, setCopied] = useState("");
+  const [active, setActive] = useState(0);
+  const [index, setIndex] = useState<SearchIndex | null>(null);
+  const rowRefs = useRef<(HTMLAnchorElement | null)[]>([]);
 
   useEffect(() => {
-    function onKey(e: KeyboardEvent) {
+    function onKey(e: globalThis.KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setOpen((o) => !o);
         setQ("");
       }
-      if (e.key === "Escape") setOpen(false);
     }
     function onOpen() {
       setOpen(true);
@@ -45,75 +145,131 @@ export function CommandK() {
     };
   }, []);
 
-  const results = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    if (!needle) return ITEMS;
-    return ITEMS.filter((i) =>
-      (i.label + (i.kind === "cmd" ? " " + i.cmd : "")).toLowerCase().includes(needle),
-    );
-  }, [q]);
+  // Ask for the index when search opens; while a read is still loading, ask
+  // again every few seconds until it lands or search closes.
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const load = () => {
+      fetch("/api/search", { cache: "no-store" })
+        .then((response) => (response.ok ? (response.json() as Promise<SearchIndex>) : null))
+        .then((next) => {
+          if (!alive) return;
+          if (next) setIndex(next);
+          if (!next || anyLoading(next)) timer = setTimeout(load, 4_000);
+        })
+        .catch(() => {
+          if (alive) timer = setTimeout(load, 4_000);
+        });
+    };
+    load();
+    return () => {
+      alive = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [open]);
 
-  async function pick(item: Item) {
-    if (item.kind === "nav") {
-      router.push(item.href);
-      setOpen(false);
-    } else {
-      try {
-        await navigator.clipboard.writeText(item.cmd);
-        setCopied(item.cmd);
-        setTimeout(() => {
-          setCopied("");
-          setOpen(false);
-        }, 700);
-      } catch {
-        setOpen(false);
-      }
+  const groups = useMemo(() => searchResults(q, index), [q, index]);
+  const flat = useMemo(() => groups.flatMap((group) => group.rows), [groups]);
+
+  useEffect(() => setActive(0), [q]);
+  useEffect(() => {
+    rowRefs.current[active]?.scrollIntoView({ block: "nearest" });
+  }, [active]);
+
+  function go(row: SearchRow | undefined) {
+    if (!row) return;
+    setOpen(false);
+    router.push(row.href);
+  }
+
+  function onInputKey(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActive((i) => (flat.length ? (i + 1) % flat.length : 0));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActive((i) => (flat.length ? (i - 1 + flat.length) % flat.length : 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      go(flat[active]);
     }
   }
 
-  // The visible trigger is the sidebar search box (it dispatches compound:command-k).
-  if (!open) return null;
-
+  let position = -1;
   return (
-    <>
-      <div
-        className="fixed inset-0 z-50 flex items-start justify-center bg-scrim pt-[18vh] backdrop-blur-sm"
-        onClick={() => setOpen(false)}
-      >
-        <div className="card w-[560px] max-w-[92vw] overflow-hidden p-0" onClick={(e) => e.stopPropagation()}>
+    <Dialog.Root open={open} onOpenChange={setOpen}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-scrim backdrop-blur-sm motion-reduce:backdrop-blur-none" />
+        <Dialog.Content
+          className="fixed left-1/2 top-[14vh] z-50 flex w-[600px] max-w-[92vw] -translate-x-1/2 flex-col overflow-hidden rounded-xl border border-hair bg-panel shadow-lg focus:outline-none"
+          aria-describedby="search-help"
+        >
+          <Dialog.Title className="sr-only">Search</Dialog.Title>
           <input
             autoFocus
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search pages and commands…"
-            className="w-full border-b border-line bg-transparent px-4 py-3 text-[14px] outline-none placeholder:text-ink-3"
+            onKeyDown={onInputKey}
+            role="combobox"
+            aria-expanded="true"
+            aria-controls="search-results"
+            aria-autocomplete="list"
+            aria-activedescendant={flat.length ? `search-row-${active}` : undefined}
+            aria-label="Search"
+            placeholder="Find a page, an app, a piece of work or a decision…"
+            className="w-full border-b border-hair bg-transparent px-4 py-3 text-md text-ink outline-none placeholder:text-faint"
           />
-          <div className="max-h-[300px] overflow-y-auto p-1.5">
-            {results.map((item) => (
-              <button
-                key={item.label}
-                onClick={() => pick(item)}
-                className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left hover:bg-soft"
-              >
-                <span className="text-[13px] font-medium text-ink">{item.label}</span>
-                {item.kind === "cmd" ? (
-                  <code className="mono max-w-[55%] truncate text-[11px] text-ink-3">
-                    {copied === item.cmd ? "copied ✓" : item.cmd}
-                  </code>
-                ) : (
-                  <span className="text-[11px] text-ink-3">page</span>
-                )}
-              </button>
+          <div id="search-results" role="listbox" aria-label="Results" className="max-h-[50vh] overflow-y-auto p-1.5">
+            {groups.map((group) => (
+              <div key={group.id} role="group" aria-label={group.heading} className="pb-1">
+                <div className="px-3 pb-1 pt-2 text-2xs font-semibold uppercase tracking-wide text-faint">{group.heading}</div>
+                {group.note ? <div className="px-3 pb-1 text-xs text-muted">{group.note}</div> : null}
+                {group.rows.map((row) => {
+                  position += 1;
+                  const at = position;
+                  const selected = at === active;
+                  return (
+                    <a
+                      key={`${group.id}-${row.href}-${at}`}
+                      id={`search-row-${at}`}
+                      ref={(el) => {
+                        rowRefs.current[at] = el;
+                      }}
+                      href={row.href}
+                      role="option"
+                      aria-selected={selected}
+                      data-kind={row.kind}
+                      onMouseMove={() => setActive(at)}
+                      onClick={(e) => {
+                        if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+                        e.preventDefault();
+                        go(row);
+                      }}
+                      className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left ${selected ? "bg-soft" : ""}`}
+                    >
+                      <span className="min-w-0">
+                        <span className={`block truncate text-sm ${row.kind === "more" ? "font-medium text-work" : "font-medium text-ink"}`}>{row.label}</span>
+                        {row.sub ? <span className="block truncate text-xs text-muted">{row.sub}</span> : null}
+                      </span>
+                      {KIND_LABEL[row.kind] ? (
+                        <span className="shrink-0 rounded-pill border border-hair px-2 py-0.5 text-2xs text-faint">{KIND_LABEL[row.kind]}</span>
+                      ) : null}
+                    </a>
+                  );
+                })}
+              </div>
             ))}
-            {!results.length && (
-              <div className="px-3 py-6 text-center text-[12.5px] text-ink-3">No matches</div>
-            )}
+            {!flat.length && !groups.some((group) => group.note) ? (
+              <div className="px-3 py-6 text-center text-sm text-muted">Nothing matches “{q.trim()}”.</div>
+            ) : null}
           </div>
-          <div className="border-t border-line px-4 py-2 text-[11px] text-ink-3">
-            enter to open / copy · esc to close · commands are copied, never executed
+          <div id="search-help" className="border-t border-hair px-4 py-2 text-2xs text-faint">
+            ↑ ↓ to move · Enter to open · Esc to close
           </div>
-        </div>
-      </div>
-    </>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }

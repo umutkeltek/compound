@@ -10,10 +10,14 @@
 //     the page header ends with its section's pages as tabs.
 //  4. The breadcrumb says section, then page, then item, and an unknown
 //     address says it is not found.
+//  5. Search finds pages by name, earlier name and purpose; apps by name and
+//     alias; waiting decisions by the words Today shows; open work by title.
+//     Each result says its kind and links through lib/links.ts; a read still
+//     loading says so; Enter opens, arrows move, Escape closes (Radix dialog).
 //
 // Run: bun scripts/shell-cases.mjs
 import assert from "node:assert/strict";
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createElement } from "react";
@@ -27,6 +31,8 @@ const { Nav } = await import("../src/components/Nav.tsx");
 const { NavAppLinks, visibleApps } = await import("../src/components/NavAppLinks.tsx");
 const { PageHeader } = await import("../src/components/kit/PageHeader.tsx");
 const { breadcrumbFor } = await import("../src/components/kit/Breadcrumb.tsx");
+const { searchResults } = await import("../src/components/CommandK.tsx");
+const { buildSearchIndex } = await import("../src/app/api/search/build.ts");
 
 const router = Object.fromEntries(["push", "replace", "refresh", "back", "forward", "prefetch"].map((k) => [k, () => {}]));
 const render = (path, element) =>
@@ -193,5 +199,80 @@ assert.deepEqual(crumbs("/nonsense"), ["Page not found"]);
 assert.equal(breadcrumbFor("/reviews")[0].href, "/", "the section crumb leads to the section");
 assert.equal(breadcrumbFor("/reviews").at(-1).href, undefined, "the last crumb is where he is, not a link");
 
-console.log("shell-cases ok: six sections in his words, every page placed with a tab, one sidebar count, current app shown, earlier header names kept, section › page › item breadcrumb");
+// ---------- 5. search ----------
+const labelsOf = (groups, id) => (groups.find((g) => g.id === id)?.rows ?? []).map((r) => r.label);
+const hrefsOf = (groups, id) => (groups.find((g) => g.id === id)?.rows ?? []).map((r) => r.href);
+// Pages by name, earlier name and purpose; the old palette knew only labels.
+for (const [query, label] of [
+  ["decisions", "All decisions"], ["decide", "All decisions"], ["permissions", "Settings"],
+  ["blocked", "Work"], ["portfolio", "All apps"], ["coordination", "Waiting on each other"],
+  ["cost per install", "Ads"], ["where knowledge", "Sources"],
+]) {
+  assert.ok(labelsOf(searchResults(query, null), "pages").includes(label), `"${query}" finds the ${label} page`);
+}
+const index = buildSearchIndex({
+  growth: {
+    status: "live",
+    value: {
+      schema_version: "compound.product_growth.v1",
+      apps: [
+        { product_id: "product:sample-weather", name: "Sample Weather", aliases: ["skycast"] },
+        { product_id: "product:fixture-notes", name: "Fixture Notes", aliases: [] },
+      ],
+    },
+  },
+  attention: {
+    status: "stale",
+    report: {
+      groups: [
+        { key: "fixture:decision-one", area: "product-results/fixture", band: "needs_you", count: 3, operator_summary: "Approve the new onboarding text for the weather app." },
+        { key: "fixture:not-mine", area: "upkeep", band: "agent_work", count: 1, operator_summary: "Rotate the fixture cache." },
+      ],
+    },
+  },
+  work: {
+    status: "live",
+    value: { open: [
+      { work_id: "work_fx_one", state: "held", title: "Fix the sync gap in the notes widget" },
+      { work_id: "work_fx_two", state: "running", success_predicate: "Weather alerts arrive on time" },
+    ] },
+  },
+  projects: {
+    byWork: { work_fx_one: "product:fixture-notes", work_fx_two: "none" },
+    projects: [
+      { id: "product:fixture-notes", name: "Fixture Notes", kind: "app", open: 1, needYou: 1, inProgress: 0, waitingForCheck: 0, stale: 0 },
+      { id: "none", name: "Not linked to a project", kind: "none", open: 1, needYou: 0, inProgress: 1, waitingForCheck: 0, stale: 0 },
+    ],
+    total: { open: 2, needYou: 1, inProgress: 1, waitingForCheck: 0, stale: 0 },
+  },
+});
+let hits = searchResults("skycast", index);
+assert.deepEqual(labelsOf(hits, "apps"), ["Sample Weather"], "an app is found by its alias");
+assert.deepEqual(hrefsOf(hits, "apps"), ["/apps/sample-weather"], "the app links through appHref");
+hits = searchResults("onboarding text", index);
+assert.equal(labelsOf(hits, "decisions").length, 1, "a waiting decision is found by its displayed words");
+assert.equal(hrefsOf(hits, "decisions")[0], "/reviews?decision=fixture%3Adecision-one", "the decision links through decideHref");
+assert.equal(labelsOf(searchResults("rotate", index), "decisions").length, 0, "only decisions that wait for him");
+hits = searchResults("sync gap", index);
+assert.deepEqual(labelsOf(hits, "work"), ["Fix the sync gap in the notes widget"], "open work is found by its title");
+assert.deepEqual(hrefsOf(hits, "work"), ["/work/work_fx_one"], "work links through workItemHref");
+assert.match(hits.find((g) => g.id === "work").rows[0].sub, /^Fixture Notes · /, "a work result names its app");
+assert.equal(labelsOf(searchResults("fixture notes", index), "work").length, 1, "work is found by its app's name");
+assert.equal(labelsOf(searchResults("weather", index), "work")[0], "Weather alerts arrive on time");
+const kinds = searchResults("weather", index).flatMap((g) => g.rows.map((r) => r.kind));
+assert.ok(kinds.includes("app") && kinds.includes("decision") && kinds.includes("work"), "one query reaches every kind");
+// Before the index lands, every group says it is still reading; never "nothing".
+const cold = searchResults("weather", null);
+for (const id of ["apps", "decisions", "work"]) {
+  assert.match(cold.find((g) => g.id === id)?.note ?? "", /Still reading/, `${id} says it is still reading`);
+}
+assert.equal(searchResults("weather", index).find((g) => g.id === "apps").note, "", "a landed read has no note");
+// No terminal commands among the results; Enter and arrows are handled; Radix dialog keeps focus inside.
+const paletteSource = readFileSync(fileURLToPath(new URL("../src/components/CommandK.tsx", import.meta.url)), "utf8");
+assert.doesNotMatch(paletteSource, /kind: "cmd"|clipboard/, "search sends nobody to a terminal");
+assert.match(paletteSource, /e\.key === "Enter"/);
+assert.match(paletteSource, /e\.key === "ArrowDown"/);
+assert.match(paletteSource, /<Dialog\.Root/);
+
+console.log("shell-cases ok: six sections in his words, every page placed with a tab, one sidebar count, current app shown, earlier header names kept, section › page › item breadcrumb; search finds pages, apps, decisions and work");
 console.log(table.join("\n"));
