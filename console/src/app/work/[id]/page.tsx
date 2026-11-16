@@ -20,6 +20,7 @@ import {
   shortText,
 } from "@/lib/work-data";
 import { selectedContinueView, selectedWorkLease } from "@/lib/work-selected-continue";
+import { workTitleFull } from "@/lib/work-title";
 
 export const dynamic = "force-dynamic";
 
@@ -97,7 +98,7 @@ export default async function WorkDetail({ params }: { params: Promise<{ id: str
     <div className="flex flex-col gap-6">
       <PendingRefresh pending={readsPending(workbenchRead)} stamp={Date.now()} />
       <Link href="/work" className="text-sm font-medium text-muted hover:text-ink">← All work</Link>
-      <PageHeader name="Work" title={packet?.title || str(work.desired_outcome) || "Work details"}
+      <PageHeader name="Work" title={workTitleFull(work)}
         action={{ label: "See next step", href: "#work-next-step" }}
         right={<><StateBadge state={state} /><span>Assigned to {nextStep.owner}</span></>} />
 
@@ -111,7 +112,7 @@ export default async function WorkDetail({ params }: { params: Promise<{ id: str
         </div>
         {!["completed", "failed", "cancelled"].includes(state) ? <details className="mt-4 border-t border-hair pt-4 text-sm">
           <summary className="cursor-pointer font-medium text-ink">Continue with an agent</summary>
-          <div className="mt-3 max-w-read"><AgentHandoff title={str(work.desired_outcome) || packet?.title || id} context={nextStep.reason} reference={id} /></div>
+          <div className="mt-3 max-w-read"><AgentHandoff title={workTitleFull(work)} context={nextStep.reason} reference={id} /></div>
         </details> : null}
       </section>
 

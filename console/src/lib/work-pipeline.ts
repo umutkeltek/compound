@@ -4,6 +4,7 @@ import { type StateTone, toneForState } from "@/components/kit/StateBadge";
 import { WORK_TRANSITIONS, workOptionsFor } from "@/lib/decision-registry";
 import { shortText, workId } from "@/lib/work-data";
 import { agentNameFor, plainWorkStep } from "@/lib/plain-words";
+import { workTitle } from "@/lib/work-title";
 
 /**
  * Name each card's owner the way Live names agents: the executor lane that
@@ -205,10 +206,9 @@ export function buildActionRow(id: string, state: string): WorkActionRowData {
 
 const LEARN_MOVES = new Set(["memory_delta", "rule_delta", "control_plane_repair", "outward_delta"]);
 
+/** The card shows the item's one title (lib/work-title.ts), shortened for the card. */
 function cardTitle(item: Json): string {
-  const surface = str(item.canonical_surface);
-  if (surface.startsWith("packet:")) return surface.slice("packet:".length).replace(/-/g, " ");
-  return str(item.title) || str(item.desired_outcome) || str(item.success_predicate) || workId(item) || "work item";
+  return workTitle(item);
 }
 
 function workCard(item: Json, note = "", progress?: StageProgress): BoardCard {
