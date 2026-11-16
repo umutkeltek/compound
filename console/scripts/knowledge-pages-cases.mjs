@@ -131,6 +131,11 @@ console.log(JSON.stringify({ generated_at: iso(0) }));
     assert.match(text, /Waiting for you/);
     assert.match(text, /2 proposed rules and 4 proposed memories wait for your choice/);
 
+    // KNOW-09: three notes from one paper are one group; the app note stands alone.
+    assert.equal((memory.match(/data-memory-group="3"/g) ?? []).length, 1, "notes from one source fold into one group");
+    assert.match(text, /3 proposed memories from one source About fixture harness, from Fixture Paper/);
+    assert.doesNotMatch(memory, /data-memory-group="1"/);
+
     // KNOW-16: every card is a link target.
     for (const id of ["cand_fxrule01", "cand_fxrule02", "cand_fxnote01", "cand_fxnote02", "cand_fxnote03", "cand_fxapp01"]) {
       assert.match(memory, new RegExp(`<article id="${id}"`), `${id} is a link target`);

@@ -1,7 +1,7 @@
 import { EvidenceCard } from "@/components/memory/EvidenceCard";
 import { MemoryGraphPanel } from "@/components/memory/MemoryGraphPanel";
-import { AdjudicationCard } from "@/components/memory/AdjudicationCard";
-import { buildAdjudicationModel, type AdjudicationCardModel } from "@/components/memory/model";
+import { MemoryGroup } from "@/components/memory/MemoryGroup";
+import { buildAdjudicationModel, groupAdjudicationModels, type AdjudicationCardModel } from "@/components/memory/model";
 import { PendingRefresh } from "@/components/PendingRefresh";
 import { BrainIcon, DocIcon, EmptyState, hasCopy, PageHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending, SectionHeader } from "@/components/kit";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
@@ -66,6 +66,7 @@ export default async function Memory({
     .map((candidate) => buildAdjudicationModel(candidate))
     .filter((m): m is AdjudicationCardModel => Boolean(m));
   const models = [...lawModels, ...proposedModels];
+  const groups = groupAdjudicationModels(models);
   // The queue is known only when both reads have a copy; a part-read queue
   // never claims a total or an empty state.
   const queueKnown = hasCopy(proposedRead) && hasCopy(law.read);
@@ -132,8 +133,8 @@ export default async function Memory({
         <MemoryRead read={proposedRead} label="proposed memories" />
         {models.length ? (
           <div className="flex flex-col gap-3">
-            {models.map((model) => (
-              <AdjudicationCard key={model.id} model={model} mutationsEnabled={mutationsEnabled} />
+            {groups.map((group) => (
+              <MemoryGroup key={group[0].id} models={group} mutationsEnabled={mutationsEnabled} />
             ))}
           </div>
         ) : queueClean ? (

@@ -127,3 +127,19 @@ export function buildAdjudicationModel(
   };
 }
 
+/**
+ * Proposed memories with the same subject and source, as one group (ten
+ * notes taken from one paper are one judgment, not ten scrolls). Proposed
+ * rules are never grouped: each is its own decision and its own link target.
+ * Order is kept: a group sits where its first card was.
+ */
+export function groupAdjudicationModels(models: readonly AdjudicationCardModel[]): AdjudicationCardModel[][] {
+  const groups = new Map<string, AdjudicationCardModel[]>();
+  for (const model of models) {
+    const key = model.kind === "rule" ? `rule\u0000${model.id}` : model.groupKey;
+    const list = groups.get(key);
+    if (list) list.push(model);
+    else groups.set(key, [model]);
+  }
+  return [...groups.values()];
+}
