@@ -3,7 +3,8 @@ import "./globals.css";
 import { NavContainer } from "@/components/NavContainer";
 import { CommandK } from "@/components/CommandK";
 import { RefreshControl } from "@/components/RefreshControl";
-import { SystemBanner } from "@/components/SystemBanner";
+import { SystemBanner, type BannerFreshness } from "@/components/SystemBanner";
+import { getInstalledBinaryFreshness } from "@/lib/compound";
 import { ExperienceBar } from "@/components/ExperienceBar";
 import { OperatorConnection } from "@/components/OperatorConnection";
 import { Breadcrumb, ThemeToggle } from "@/components/kit";
@@ -30,7 +31,10 @@ const THEME_SCRIPT = `(function(){try{var k='compound-theme';var p=localStorage.
  * sidebar's Search box) holds the quick views, and the browser connection
  * lives on Settings.
  */
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // Non-blocking: the last known answer, or "unknown" while it is checked.
+  const known = await getInstalledBinaryFreshness();
+  const freshness: BannerFreshness = { status: known.status, installedBuild: known.installedBuild, head: known.head };
   return (
     <html lang="en" suppressHydrationWarning>
       <body>
@@ -42,13 +46,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <header className="sticky top-0 z-40 flex min-h-12 flex-wrap items-center gap-2 border-b border-hair bg-panel/85 px-3 py-2 backdrop-blur sm:flex-nowrap sm:gap-3 sm:px-5 md:rounded-t-2xl md:px-8 md:py-3">
                 <NavContainer variant="mobile" />
                 <div className="min-w-0"><Breadcrumb /></div>
-                <div className="hidden min-w-0 2xl:block"><SystemBanner /></div>
+                <div className="hidden min-w-0 2xl:block"><SystemBanner freshness={freshness} /></div>
                 <div className="ml-auto flex shrink-0 items-center gap-1 sm:gap-2">
                   <RefreshControl responsive />
                   <ThemeToggle responsive />
                 </div>
               </header>
-              <div className="2xl:hidden"><SystemBanner compact /></div>
+              <div className="2xl:hidden"><SystemBanner freshness={freshness} compact /></div>
               <ExperienceBar />
               <main className="mx-auto w-full flex-1 px-4 pb-24 pt-6 sm:px-6 md:px-8 md:pt-8" style={{ maxWidth: "1480px" }}>
                 {children}

@@ -23,6 +23,9 @@
 //     not used for anything yet, in the one shared sentence.
 //  9. A header button leads somewhere he is not already looking: no scroll to
 //     what is on screen, no repeat of a tab; anchors land below the top bar.
+// 10. The build note says in plain words what it means and who handles it,
+//     leads to no page that says nothing about it, and can be dismissed until
+//     the source moves again.
 //
 // Run: bun scripts/shell-cases.mjs
 import assert from "node:assert/strict";
@@ -353,5 +356,19 @@ const passed = render("/growth", createElement(PageHeader, { name: "Growth", act
 has(passed, /href="\/sources"[^>]*>Review data connections/, "a page may still pass its own button");
 assert.match(readSrc("app/globals.css"), /html \{[^}]*scroll-padding-top: 4\.5rem/, "anchors land below the sticky top bar");
 
-console.log("shell-cases ok: six sections in his words, every page placed with a tab, one sidebar count, current app shown, earlier header names kept, section › page › item breadcrumb; search finds pages, apps, decisions and work; wrong addresses and failures lead back; nothing floats, quick views in search; browser connection on Settings; header buttons lead somewhere new");
+// ---------- 10. the build note ----------
+const banner = await import("../src/components/SystemBanner.tsx");
+const stale = { status: "stale", installedBuild: "1111111", head: "2222222" };
+assert.equal(banner.bannerVisible(stale, null), true, "a real gap shows");
+assert.equal(banner.bannerVisible(stale, "2222222"), false, "dismissed for this source version");
+assert.equal(banner.bannerVisible(stale, "1111111"), true, "a newer gap shows again after an older dismissal");
+assert.equal(banner.bannerVisible({ ...stale, status: "fresh" }, null), false);
+assert.equal(banner.bannerVisible({ ...stale, status: "unknown" }, null), false, "unknown is not a gap");
+assert.match(banner.BANNER_TEXT, /nothing for you to do/, "it says who handles it");
+const bannerSource = readSrc("components/SystemBanner.tsx");
+assert.doesNotMatch(bannerSource, /href="\/settings"/, "it no longer leads to a Settings page that says nothing about builds");
+assert.match(bannerSource, />\s*Dismiss\s*</, "it can be dismissed");
+assert.doesNotMatch(bannerSource, /newer Compound build is available/);
+
+console.log("shell-cases ok: six sections in his words, every page placed with a tab, one sidebar count, current app shown, earlier header names kept, section › page › item breadcrumb; search finds pages, apps, decisions and work; wrong addresses and failures lead back; nothing floats, quick views in search; browser connection on Settings; header buttons lead somewhere new; build note plain and dismissible");
 console.log(table.join("\n"));
