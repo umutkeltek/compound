@@ -3,12 +3,11 @@ import Link from "next/link";
 import { hasCopy, PageHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending, aboutDuration } from "@/components/kit";
 import { PendingRefresh } from "@/components/PendingRefresh";
 import { WorkLenses } from "@/components/work/WorkLenses";
-import { readAttention } from "@/lib/attention";
 import { arr, DIRECTOR_PROPOSE_ARGS, HEAVY_PROJECTION_TIMEOUT_MS, readProjection, readWorkProjectIndex, str } from "@/lib/compound";
 import type { WorkByAppModel } from "@/components/work/WorkByAppLens";
-import { workListHref } from "@/lib/links";
+import { workListHref, type WorkFilter } from "@/lib/links";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
-import { countInProgress, countOnHold, countOpenWork, describeInProgress, STALE_AFTER_DAYS, UNASSIGNED_AGENT_ID, unit, waitingOnYou } from "@/lib/counts";
+import { countInProgress, countOnHold, countOpenWork, STALE_AFTER_DAYS, UNASSIGNED_AGENT_ID } from "@/lib/counts";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { buildLaneTraffic } from "@/lib/lane-traffic";
 import { getTraffic } from "@/lib/traffic";
@@ -36,7 +35,7 @@ export default async function WorkPage({
 }) {
   const { trace, lens } = await searchParams;
   const nowMs = Date.now();
-  const [workbenchRead, sourcesRead, suggestionsRead, packetsRead, laneTraffic, traffic, attentionLive, projectIndex] = await Promise.all([
+  const [workbenchRead, sourcesRead, suggestionsRead, packetsRead, laneTraffic, traffic, projectIndex] = await Promise.all([
     readProjection(["workbench", "--json"], { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS }),
     readProjection(["source", "connections", "--json"]),
     // Read-only: `director propose --dry-run` creates nothing; suggestions feed
@@ -46,7 +45,6 @@ export default async function WorkPage({
     readProjection(["packets", "list", "--json"]),
     buildLaneTraffic(200, { nonBlocking: true }),
     getTraffic(),
-    readAttention(),
     // Which app, codebase or "not linked" group each item is in. It shares the
     // workbench read above (same argv) and adds the app list and inventory.
     readWorkProjectIndex({ nowMs }),
@@ -96,42 +94,42 @@ export default async function WorkPage({
   const defaultLens = allowedLenses.has(lens as WorkLensKey) ? lens as WorkLensKey : "board";
   const workbenchKnown = hasCopy(workbenchRead);
   // One definition per number (lib/counts.ts), shared with Today, Live and the sidebar.
-  const waiting = waitingOnYou(attentionLive.report);
   const inProgress = workbenchKnown ? countInProgress(open, Date.now()) : null;
-  const progress = inProgress ? describeInProgress(inProgress) : null;
   const onHold = workbenchKnown ? countOnHold(open) : null;
-  const pending = readsPending(workbenchRead, sourcesRead, suggestionsRead, packetsRead, traffic.read, attentionLive.read, projectIndex.reads.apps, projectIndex.reads.inventory);
+  const pending = readsPending(workbenchRead, sourcesRead, suggestionsRead, packetsRead, traffic.read, projectIndex.reads.apps, projectIndex.reads.inventory);
 
-  const stuck = [
-    inProgress?.pickedUpOver7Days
-      ? `${inProgress.pickedUpOver7Days.toLocaleString("en-US")} of them were picked up more than ${STALE_AFTER_DAYS} days ago and are still not finished`
-      : "",
-    onHold ? `${unit(onHold, "work item")} ${onHold === 1 ? "is" : "are"} on hold` : "",
-  ].filter(Boolean);
-
-  const answer = !workbenchKnown || !inProgress || !progress ? (
+  // The header leads with what is stopped: on hold (waits for a decision) and
+  // not moved (in progress, picked up more than a week ago). In progress is
+  // split into its three parts. Every number opens the List of exactly those
+  // items: the counts and the List filters share the rules in lib/work-state.ts.
+  const countLink = (n: number, label: string, filter: WorkFilter, tone = "text-ink") => (
+    n > 0
+      ? <Link href={workListHref({ filter })} className={`font-semibold hover:underline ${tone}`}>{n.toLocaleString("en-US")} {label}</Link>
+      : <span className="text-muted">{n.toLocaleString("en-US")} {label}</span>
+  );
+  const answer = !workbenchKnown || !inProgress ? (
     <ReadNotice read={workbenchRead} label="work" />
   ) : (
     <div className="flex flex-col gap-1.5">
-      <p><strong className="font-semibold">{inProgress.total.toLocaleString("en-US")} in progress</strong> · {countOpenWork(open).toLocaleString("en-US")} open tasks</p>
-      <p className="text-sm text-muted">{onHold || 0} on hold{inProgress.pickedUpOver7Days ? ` · ${inProgress.pickedUpOver7Days.toLocaleString("en-US")} picked up over a week ago` : ""}</p>
-      <details className="text-sm text-muted"><summary className="cursor-pointer">Progress breakdown</summary>
-      <p className="mt-2">{progress.headline}, out of {unit(countOpenWork(open), "open work item")}.</p>
-      {progress.detail ? <p className="text-sm text-muted">{progress.detail}</p> : null}
-      {stuck.length ? (
-        <p className="text-base text-seam">Stuck: {stuck.join("; ")}.</p>
-      ) : inProgress.total > 0 && inProgress.pickedUpOver7Days === null ? (
-        <p className="text-sm text-muted">{progress.age}</p>
-      ) : (
-        <p className="text-base text-good">Nothing looks stuck.</p>
-      )}
-      </details>
-      {waiting && waiting.workItems > 0 ? (
-        <p className="text-sm text-muted">
-          {unit(waiting.workItems, "work item")} {waiting.workItems === 1 ? "waits" : "wait"} for your decision.{" "}
-          <Link href="/reviews" className="font-semibold text-work hover:underline">Open Decide →</Link>
-        </p>
-      ) : null}
+      <p className="text-lg">
+        {countLink(onHold ?? 0, `on hold, waiting for you`, "blocked", "text-seam")}
+        {" · "}
+        {inProgress.pickedUpOver7Days === null
+          ? <span className="text-muted">how long work has sat is unknown: the records carry no pick-up time</span>
+          : countLink(inProgress.pickedUpOver7Days, `not moved in over ${STALE_AFTER_DAYS} days`, "stale", "text-crit")}
+      </p>
+      <p className="text-sm text-muted">
+        {countLink(inProgress.total, "in progress", "progress")}:{" "}
+        {countLink(inProgress.running, "running", "running")}
+        {" · "}
+        {countLink(inProgress.pickedUp, "picked up, not started", "claimed")}
+        {" · "}
+        {countLink(inProgress.checking, "waiting for a proof check", "verifying")}
+      </p>
+      <p className="text-sm text-muted">
+        {countLink(countOpenWork(open), countOpenWork(open) === 1 ? "open work item" : "open work items", "all")} in all.
+        {!onHold && !inProgress.pickedUpOver7Days ? <span className="text-good"> Nothing is on hold or stuck.</span> : null}
+      </p>
     </div>
   );
 

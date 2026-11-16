@@ -405,17 +405,36 @@ try {
   assert.equal(await redirectOf(() => Projects({ searchParams: Promise.resolve({ scope: "project:fixture-research", work: "work_fx_check_old" }) })), "/work/work_fx_check_old");
   assert.equal(await redirectOf(() => Projects({ searchParams: Promise.resolve({}) })), "/work?lens=project");
   // One definition per number: the same fixture, the same numbers everywhere.
-  for (const name of ["Today", "Work", "Live"]) {
+  for (const name of ["Today", "Live"]) {
     assert.match(warm[name], /4 work items are marked in progress/, `${name}: in progress uses the shared definition`);
   }
   for (const name of ["Today", "Live"]) {
     assert.match(warm[name], /1 running, 1 picked up but not started, 2 waiting for a proof check/, `${name}: in-progress split`);
     assert.match(warm[name], /2 of them were picked up more than 7 days ago/, `${name}: age from claimed_at`);
   }
-  assert.match(warm.Work, /Stuck: 2 of them were picked up more than 7 days ago and are still not finished; 1 work item is on hold/);
+  // Work leads with what is stopped, splits in progress into its named parts,
+  // and every number opens the List of exactly those items.
+  assert.match(warm.Work, /1 on hold, waiting for you · 2 not moved in over 7 days 4 in progress ?: 1 running · 1 picked up, not started · 2 waiting for a proof check 6 open work items in all\./);
+  const header = await renderWork("");
+  const rowsOf = (html) => (html.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1] ?? "").match(/<tr\b/g)?.length ?? 0;
+  for (const [filter, n] of [["blocked", 1], ["stale", 2], ["progress", 4], ["running", 1], ["claimed", 1], ["verifying", 2], ["all", 6]]) {
+    assert.match(header.html, new RegExp(`href="/work\\?lens=table&amp;filter=${filter}"`), `the header links ${filter}`);
+    assert.equal(rowsOf((await renderWork(`lens=table&filter=${filter}`)).html), n, `the ${filter} list holds exactly the header's ${n}`);
+  }
+  assert.doesNotMatch(warm.Work, /wait for your decision|Open Decide/, "held work is one fact on Work, not two");
+  // The List: as many cells per row as header cells (no shifted columns), the
+  // tool's next step in plain words, no column that says nothing on every row.
+  const listAll = await renderWork("lens=table&filter=all");
+  const headCells = (listAll.html.match(/<thead>[\s\S]*?<\/thead>/)?.[0].match(/<th\b/g) ?? []).length;
+  for (const tr of (listAll.html.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1] ?? "").match(/<tr\b[\s\S]*?<\/tr>/g) ?? []) {
+    assert.equal((tr.match(/<td\b/g) ?? []).length, headCells, "each row has one cell per header");
+  }
+  assert.match(listAll.text, /Record the final checked commit for it\./, "Next in plain words, as on the board");
+  assert.doesNotMatch(listAll.text, /commit:<full-sha>|Execution detail unavailable/);
+  const css = (await import("node:fs")).readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
+  assert.doesNotMatch(css, /\.work-focus-row::(before|after)/, "a generated box on a table row becomes an extra cell and shifts the columns");
   assert.match(warm.Today, /7 decisions wait for you, with 13 items in all/);
   assert.match(warm.Decide, /7 decisions waiting · 13 items to review/);
-  assert.match(warm.Work, /1 work item waits for your decision/);
   assert.match(warm.Live, /1 work item waits for your decision/);
   assert.match(warm.Live, /2 agents hold 5 work items/, "agents count excludes the no-agent bucket and idle agents");
   // Work cards: the owner's agent named as Live names it, the lane id small;

@@ -7,7 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 import { EmptyState, IdRef, StateBadge } from "@/components/kit";
 import { appSlug } from "@/lib/app-identity";
 import { agentDisplayName } from "@/lib/harness-label";
-import { workItemHref, type ParsedWorkListParams, type WorkFilter } from "@/lib/links";
+import { appHref, workItemHref, type ParsedWorkListParams, type WorkFilter } from "@/lib/links";
 import { filterWorkList } from "@/lib/work-list";
 import { STALE_AFTER_DAYS } from "@/lib/work-state";
 import type { WorkLensItem } from "@/lib/work-views";
@@ -103,7 +103,7 @@ export function WorkTableLens({ items, onOpenTrace, params, groups, onParamsChan
         <div className="overflow-x-auto">
           <table className="w-full min-w-[920px] border-collapse text-left">
             <thead><tr className="border-b border-hair bg-soft/70 text-2xs font-bold uppercase tracking-wide text-faint">
-              <th className="px-3 py-2.5">Work item</th><th className="px-3 py-2.5">Execution</th><th className="px-3 py-2.5">Status</th><th className="px-3 py-2.5">Owner</th><th className="px-3 py-2.5">Next</th>
+              <th className="px-3 py-2.5">Work item</th><th className="px-3 py-2.5">App</th><th className="px-3 py-2.5">Status</th><th className="px-3 py-2.5">Who has it</th><th className="px-3 py-2.5">Next</th>
             </tr></thead>
             <tbody>
               {visibleRows.map((item) => (
@@ -118,10 +118,10 @@ export function WorkTableLens({ items, onOpenTrace, params, groups, onParamsChan
                   onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpenTrace(item.workId); } }}
                 >
                   <td className="max-w-md px-3 py-3"><Link href={workItemHref(item.workId)} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} className="line-clamp-2 text-sm font-semibold leading-snug text-ink hover:underline">{item.title}</Link><Link href={workItemHref(item.workId)} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} className="mt-1 block w-fit hover:underline"><IdRef id={item.workId} kind="work" plain truncate /></Link></td>
-                  <td className="px-3 py-3"><div className="text-xs font-semibold text-ink">{item.laneLabel}</div><div className="mt-0.5 text-2xs text-faint" title={item.harness ? `Recorded harness: ${item.harness}` : undefined}>{item.harnessLabel}</div>{item.runStatus ? <div className="mt-1 text-2xs text-faint">Run status: {item.runStatus.replace(/_/g, " ")}</div> : null}</td>
-                  <td className="px-3 py-3"><StateBadge state={item.state} /><div className="mt-1 text-2xs tabular-nums text-faint">{item.ageLabel}</div></td>
-                  <td className="max-w-44 px-3 py-3"><div className="truncate text-xs text-muted" title={item.owner}>{item.owner}</div>{item.actor ? <div className="mono mt-0.5 truncate text-2xs text-faint">run by {item.actor}</div> : null}</td>
-                  <td className="max-w-xs px-3 py-3"><p className="line-clamp-2 text-xs leading-relaxed text-muted">{item.nextAction || "Open this task to check its latest activity."}</p></td>
+                  <td className="max-w-40 px-3 py-3 text-xs">{item.projectKind === "app" ? <Link href={appHref(item.projectId)} onClick={(event) => event.stopPropagation()} className="font-medium text-ink hover:underline">{item.projectName}</Link> : item.projectKind === "none" ? <span className="text-faint">Not linked</span> : item.projectName ? <span className="text-muted">{item.projectName}</span> : <span className="text-faint">Not read yet</span>}</td>
+                  <td className="px-3 py-3"><StateBadge state={item.state} /><div className={`mt-1 text-2xs tabular-nums ${item.stale ? "font-semibold text-crit" : "text-faint"}`}>{item.ageLabel}{item.stale ? " · not moved in a week" : ""}</div></td>
+                  <td className="max-w-44 px-3 py-3"><div className="truncate text-xs font-medium text-ink" title={item.owner}>{item.ownerName}</div>{item.owner && item.owner !== "Unassigned" && item.owner !== item.ownerName ? <div className="mono mt-0.5 truncate text-2xs text-faint" title={item.owner}>{item.owner}</div> : null}{item.runStatus ? <div className="mt-1 text-2xs text-faint">Run status: {item.runStatus.replace(/_/g, " ")}</div> : null}</td>
+                  <td className="max-w-xs px-3 py-3"><p className="line-clamp-2 text-xs leading-relaxed text-muted">{item.nextAction || "No next step recorded."}</p></td>
                 </tr>
               ))}
             </tbody>

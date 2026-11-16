@@ -5,6 +5,7 @@ import { stageProgressForState, type StageProgress } from "@/lib/work-pipeline";
 import { ago } from "@/lib/time";
 import { shortText, workId } from "@/lib/work-data";
 import { agentDisplayName, harnessDisplayName } from "@/lib/harness-label";
+import { plainWorkStep } from "@/lib/plain-words";
 import { isStale, timestampMs } from "@/lib/work-state";
 import { workTitle } from "@/lib/work-title";
 
@@ -88,7 +89,9 @@ export function buildWorkLensItems(open: Json[], traffic: TrafficReport, opts: {
       title: workTitle(item),
       state: str(item.state) || "unknown",
       owner: ownerOf(item) || "Unassigned",
-      nextAction: shortText(str(item.next_action), 160),
+      // The tool's step in the board's words (lib/plain-words.ts), mapped
+      // before it is shortened: the patterns match the whole instruction.
+      nextAction: shortText(plainWorkStep(str(item.next_action)), 200),
       canonicalSurface: str(item.canonical_surface),
       ageLabel: age ? ago(age) : "age unavailable",
       // The lane is the executor lane that runs the item. When the executor

@@ -86,7 +86,7 @@ export function runWorkLifecycleStatusSelfTest(): { ok: boolean; details: string
       && !(cells[2] ?? "").includes(">" + fixture.run + "<")
       && row.includes("--row-accent:var(--" + accent + "-fg)"));
     check("table labels attempt separately: " + fixture.state,
-      (cells[1] ?? "").includes("Run status: " + fixture.run));
+      (cells[3] ?? "").includes("Run status: " + fixture.run));
   }
 
   const flow = renderToStaticMarkup(createElement(WorkFlowLens, { stages, groups, onOpenTrace }));

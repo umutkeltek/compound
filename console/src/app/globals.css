@@ -642,18 +642,11 @@ body {
     var(--shadow-sm);
 }
 
-.work-focus-row {
-  position: relative;
-}
-
-.work-focus-row::before {
-  content: "";
-  position: absolute;
-  inset-block: .6rem;
-  left: 0;
-  width: 3px;
-  border-radius: 0 999px 999px 0;
-  background: var(--row-accent, var(--hair));
+/* The List row's state accent. It is drawn on the first cell: a generated
+   box on a table row becomes an extra cell and shifts every row one column
+   right of its header. */
+.work-focus-row > td:first-child {
+  box-shadow: inset 3px 0 0 var(--row-accent, var(--hair));
 }
 
 .composer-stage {
