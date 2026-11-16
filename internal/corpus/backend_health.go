@@ -17,8 +17,10 @@ import (
 // BackendHealth is a read-only readiness probe. Recovery belongs to the admitted
 // memory-service child, never to search or embedder construction.
 type BackendHealth struct {
-	Status   string         `json:"status"`
-	Backends []BackendCheck `json:"backends"`
+	IndexingStatus string           `json:"indexing_status"`
+	Indexing       []IndexingHealth `json:"indexing"`
+	Status         string           `json:"status"`
+	Backends       []BackendCheck   `json:"backends"`
 }
 type BackendCheck struct {
 	Status   string `json:"status"`
@@ -27,8 +29,9 @@ type BackendCheck struct {
 	Detail   string `json:"detail,omitempty"`
 }
 
-func CheckBackends(ctx context.Context, lanes []LaneConfig) BackendHealth {
+func CheckBackends(ctx context.Context, homePath string, lanes []LaneConfig) BackendHealth {
 	report := BackendHealth{Status: "ready", Backends: []BackendCheck{}}
+	report.IndexingStatus, report.Indexing = indexingHealth(homePath, lanes, time.Now())
 	seen := map[string]bool{}
 	for _, lane := range lanes {
 		cfg := lane.Embedder

@@ -1856,3 +1856,9 @@ a run; native attempt transcript markers preserve a 30-minute cooldown and a max
 of three restart attempts in 24 hours across helper restarts. Missing or ambiguous
 history fails closed. The hook uses an eight-minute execution ceiling to leave room
 for bounded recovery plus the existing four-minute corpus refresh deadline.
+
+The backend-health JSON also exposes `indexing_status` and per-source-lane `indexing`
+coverage from bounded `refresh.json` reads. It reports pending work, the last refresh's
+reported byte/runtime costs, and age since the last successful index. Missing timestamps
+or cost counters remain unknown. Indexing degradation does not change backend readiness
+or its exit code, so the hourly disk guard can warn without restarting a healthy model.

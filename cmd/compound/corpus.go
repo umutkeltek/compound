@@ -30,7 +30,7 @@ func cmdCorpus(args []string) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
-		report := corpus.CheckBackends(ctx, cfg.CorpusLanes)
+		report := corpus.CheckBackends(ctx, hp, cfg.CorpusLanes)
 		printJSON(report)
 		if report.Status != "ready" {
 			os.Exit(1)
