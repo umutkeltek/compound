@@ -21,15 +21,16 @@ type SourceConfig struct {
 }
 type EmbedderFactory func(LaneConfig) (Embedder, error)
 type Coverage struct {
-	BodyBytesRead       int64 `json:"body_bytes_read"`
-	VectorBytesRead     int64 `json:"vector_bytes_read"`
-	IndexBytesWritten   int64 `json:"index_bytes_written"`
-	PreparedItems       int   `json:"prepared_items"`
-	ReusedItems         int   `json:"reused_items"`
-	NewEmbeddedChunks   int   `json:"new_embedded_chunks"`
-	RefreshMilliseconds int64 `json:"refresh_milliseconds"`
-	IndexUnchanged      bool  `json:"index_unchanged"`
-	Roots               int   `json:"roots"`
+	Error               string `json:"error,omitempty"`
+	BodyBytesRead       int64  `json:"body_bytes_read"`
+	VectorBytesRead     int64  `json:"vector_bytes_read"`
+	IndexBytesWritten   int64  `json:"index_bytes_written"`
+	PreparedItems       int    `json:"prepared_items"`
+	ReusedItems         int    `json:"reused_items"`
+	NewEmbeddedChunks   int    `json:"new_embedded_chunks"`
+	RefreshMilliseconds int64  `json:"refresh_milliseconds"`
+	IndexUnchanged      bool   `json:"index_unchanged"`
+	Roots               int    `json:"roots"`
 
 	RefusedSymlinks    int    `json:"refused_symlinks,omitempty"`
 	IndexPendingChunks int    `json:"index_pending_chunks,omitempty"`
@@ -104,6 +105,7 @@ func Refresh(ctx context.Context, homePath string, lanes []LaneConfig, factory E
 			valid, err := ValidateLaneConfig(lane)
 			if err != nil {
 				c.Status = "invalid_config"
+				c.Error = err.Error()
 			} else {
 				roots, rootErr := valid.Source.approvedRoots(ctx)
 				captured := sourceobs.CaptureBatchReport{}
@@ -132,6 +134,7 @@ func Refresh(ctx context.Context, homePath string, lanes []LaneConfig, factory E
 				}
 				if err != nil {
 					c.Status = "capture_failed"
+					c.Error = err.Error()
 				} else {
 					c.RefusedSymlinks = captured.RefusedSymlinks
 					c.MissingFiles = captured.Missing
@@ -150,10 +153,12 @@ func Refresh(ctx context.Context, homePath string, lanes []LaneConfig, factory E
 						embedder, err := factory(valid)
 						if err != nil {
 							c.Status = "embedder_unavailable"
+							c.Error = err.Error()
 						} else {
 							indexed, err := Index(ctx, homePath, valid, embedder, IndexOptions{Incremental: true})
 							if err != nil {
 								c.Status = "index_failed"
+								c.Error = err.Error()
 							} else {
 								c.BodyBytesRead = indexed.BodyBytesRead
 								c.VectorBytesRead = indexed.IndexBytesRead

@@ -131,7 +131,7 @@ func prepareIncremental(ctx context.Context, hp string, lane LaneConfig, old Man
 			stats.PreparedItems++
 			itemChunks, err := chunkItemContext(ctx, item, body, lane.Chunk)
 			if err != nil {
-				return preparedIndex{}, err
+				return preparedIndex{}, fmt.Errorf("prepare item %s: %w", item.ID, err)
 			}
 			copyItem.Chunks = make([]sourceobs.SourceManifestChunk, 0, len(itemChunks))
 			for _, c := range itemChunks {
@@ -531,7 +531,7 @@ func readVectorShard(dir, ref string, dims int) (map[string][]float32, int64, er
 	}
 	count := int(binary.LittleEndian.Uint32(raw[12:16]))
 	stride := 32 + 4*dims
-	if dims <= 0 || stride < 32 || count != (len(raw)-16)/stride || 16+count*stride != len(raw) {
+	if dims <= 0 || dims > 65536 || stride < 32 || count != (len(raw)-16)/stride || 16+count*stride != len(raw) {
 		return nil, 0, fmt.Errorf("vector shard length mismatch")
 	}
 	values := make(map[string][]float32, count)
