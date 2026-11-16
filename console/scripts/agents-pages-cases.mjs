@@ -148,6 +148,8 @@ const { BenchPanel } = await import("../src/components/routing/BenchPanel.tsx");
 const { routingTabOf } = await import("../src/components/routing/RoutingTabs.tsx");
 const { DelegatedSessions } = await import("../src/components/agents/DelegatedSessions.tsx");
 const { WorktreeInventory } = await import("../src/components/agents/WorktreeInventory.tsx");
+const { CapabilityAttentionStrip } = await import("../src/components/capabilities/CapabilityAttentionStrip.tsx");
+const { default: Views } = await import("../src/app/representation/page.tsx");
 
 const router = Object.fromEntries(["push", "replace", "refresh", "back", "forward", "prefetch"].map((k) => [k, () => {}]));
 const wrap = (path, element) =>
@@ -274,6 +276,17 @@ try {
   assert.equal(renderToStaticMarkup(createElement(WorktreeInventory, { repo: null, read: null })), "", "no start-up hint when no repository was chosen");
   assert.doesNotMatch(all, /COMPOUND_WORKTREE_REPO|not wired|cost-doctor|path\/to/, "All agents opens with its answer, not a start-up hint or a command with a blank");
   assert.ok(agentLinks.includes("/routing?tab=traffic"), "cost is one link to Models and cost");
+
+  /* ---------- 7. back room: Skills and tools, View library ---------- */
+  const strip = renderToStaticMarkup(createElement(CapabilityAttentionStrip, { items: [{ area: "fixture-empty", label: "Empty", count: 0 }, { area: "capability-lifecycle-proposals", label: "Skill changes", count: 3 }] }));
+  assert.ok(hrefs(strip).includes("/reviews?area=capability-lifecycle-proposals"), "Review in Decide opens the matching decisions, not the whole queue");
+  const { readFileSync } = await import("node:fs");
+  assert.doesNotMatch(readFileSync(new URL("../src/app/map/page.tsx", import.meta.url), "utf8"), /\/projects/, "no link to the retired project map");
+  await Views();
+  await compound.settleProjectionReads();
+  const views = visibleText(wrap("/representation", await Views()));
+  assert.match(views, /A workbench for the agents that build this console/, "the View library says what it is");
+  assert.doesNotMatch(views, /Compare the available views/);
 
   /* ---------- 5. models and cost ---------- */
   const routeGroup = (key, title, extra = {}) => ({
