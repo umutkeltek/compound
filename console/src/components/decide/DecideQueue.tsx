@@ -6,57 +6,12 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { CopyCmd } from "@/components/CopyCmd";
 import { FreshnessChip } from "@/components/kit";
-import {
-  decideReadinessSections,
-  queueSystemicBlocker,
-  type SystemicBlocker,
-} from "@/lib/decide-members";
 import type { DecideDomain, DecideGroup, DecideMember, DecisionAbout, HeldWorkRow } from "@/lib/decide-model";
 import { ago } from "@/lib/time";
 import { humanizeProductId } from "@/lib/app-identity";
-import { plainArea, plainDecisionState, plainReason, plainText, productTitle, standingLine } from "@/lib/plain-words";
+import { plainArea, plainText, productTitle } from "@/lib/plain-words";
 import { PanelProofContinuity } from "./PanelProofContinuity";
 import { EvidenceReference } from "@/components/memory/EvidenceReference";
-
-/** Decide's two lists, in plain words (the split itself is decide-members' face-state rule). */
-const SECTION_COPY: Record<"act_now" | "needs_context", { label: string; description: string }> = {
-  act_now: { label: "Ready to review", description: "An owner workflow is available." },
-  needs_context: { label: "Needs a closer look", description: "Open a decision to see the next step." },
-};
-
-/** The system's reason in plain words (lib/plain-words.ts owns the mapping). */
-const blockedReasonPlain = plainReason;
-
-/**
- * Where one decision stands, in one line: what its freshest check found, and
- * when that check ran if it is older than the live window. The standing is
- * computed on the server (lib/decide-model.ts); a group without one (built
- * outside the model) falls back to its face label and reason.
- */
-function standingOf(group: DecideGroup): { text: string; tone: "good" | "seam" | "muted" } {
-  if (group.standing) return standingLine(group.standing);
-  const reason = group.face.primaryAction ? "" : blockedReasonPlain(group.face.unavailableReason);
-  return {
-    text: [plainDecisionState(group.face.stateLabel), reason].filter(Boolean).join(": "),
-    tone: group.face.state === "ready" ? "good" : "muted",
-  };
-}
-
-/**
- * Said once above the list when every decision that cannot be decided now
- * stands the same way (same words); the rows then stay quiet. Mixed reasons
- * get no banner: each row says its own.
- */
-function standingBanner(groups: DecideGroup[]): { title: string; text: string } | null {
-  const waiting = groups.filter((group) => group.face.state !== "ready");
-  if (waiting.length < 2) return null;
-  const texts = waiting.map((group) => standingOf(group).text);
-  if (!texts.every((text) => text === texts[0]) || !texts[0]) return null;
-  return {
-    title: waiting.length === groups.length ? "Why none can be decided now" : `Why ${waiting.length} of ${groups.length} cannot be decided now`,
-    text: texts[0],
-  };
-}
 
 /* Domain hue is accent-only (glyph tile + dot); the needs-you seam is amber. */
 const DOMAIN_TILE: Record<DecideDomain, string> = {
@@ -143,7 +98,6 @@ function DecisionRow({
   onActivate,
   onFocus,
   onKeyDown,
-  demoteBlockedStamp,
 }: {
   group: DecideGroup;
   selected: boolean;
@@ -151,16 +105,13 @@ function DecisionRow({
   onActivate: () => void;
   onFocus: () => void;
   onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => void;
-  /** True when the banner above the list already says this row's exact
-   * standing once for the whole queue — the row goes quiet instead of
-   * repeating it. */
-  demoteBlockedStamp: boolean;
 }) {
   return (
     <button
       ref={rowRef}
       type="button"
       aria-pressed={selected}
+      data-decision-row={group.key}
       onClick={onActivate}
       onFocus={onFocus}
       onKeyDown={onKeyDown}
@@ -376,7 +327,6 @@ export function DecideQueue({
   mutationsEnabled,
   keyboardShortcuts = true,
   initialSelectedKey = "",
-  systemicBlockerReason = null,
 }: {
   groups: DecideGroup[];
   /**
@@ -389,10 +339,6 @@ export function DecideQueue({
   mutationsEnabled: boolean;
   keyboardShortcuts?: boolean;
   initialSelectedKey?: string;
-  /** Feature-detected queue-level reason (a `systemic_blocker` projection
-   * field may land separately); the all-identical-reasons case is always
-   * computed from `groups` too, so the banner works even when this is null. */
-  systemicBlockerReason?: string | null;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -419,27 +365,6 @@ export function DecideQueue({
     return groups.filter((group) => (!areaFilter || plainArea(group.area) === areaFilter) &&
       (!query || `${group.title} ${group.objectText} ${titled(group.title).text} ${plainArea(group.area)} ${group.areaLabel} ${group.body}`.toLowerCase().includes(query)));
   }, [groups, filter, areaFilter]);
-  const readinessSections = useMemo(() => decideReadinessSections(visible), [visible]);
-  const visibleIndexByKey = useMemo(() => new Map(visible.map((group, index) => [group.key, index])), [visible]);
-  // The whole queue's decidability, not just the filtered view — a search
-  // shouldn't change whether the systemic-blocker fact is true.
-  // A queue-level reason the projection states itself wins; otherwise the
-  // banner appears only when every waiting decision stands the same way.
-  const systemicBlocker: SystemicBlocker | null = useMemo(
-    () => (systemicBlockerReason ? queueSystemicBlocker(groups, systemicBlockerReason) : null),
-    [groups, systemicBlockerReason],
-  );
-  const banner = useMemo(
-    () => systemicBlocker
-      ? {
-          title: systemicBlocker.totalCount - systemicBlocker.blockedCount === 0
-            ? "Why none can be decided now"
-            : `Why ${systemicBlocker.blockedCount} of ${systemicBlocker.totalCount} cannot be decided now`,
-          text: blockedReasonPlain(systemicBlocker.reason),
-        }
-      : standingBanner(groups),
-    [groups, systemicBlocker],
-  );
 
   useEffect(() => {
     const selectedIsCurrent = groups.some((group) => group.key === selectedKey);
@@ -477,8 +402,10 @@ export function DecideQueue({
   }, [initialSelectedKey, requestedExists, requestedIndex]);
 
   useEffect(() => {
-    if (!requestedExists && selectedKey) replaceSelectionInURL(selectedKey);
-  }, [replaceSelectionInURL, requestedExists, selectedKey]);
+    // A link to a decision that is gone keeps its address, so the page can
+    // say so; only a page opened with no decision writes the open one.
+    if (!initialSelectedKey && selectedKey) replaceSelectionInURL(selectedKey);
+  }, [initialSelectedKey, replaceSelectionInURL, selectedKey]);
 
   useEffect(() => {
     if (!keyboardShortcuts) return;
@@ -563,12 +490,6 @@ export function DecideQueue({
   return (
     <div className="grid gap-3">
       <div aria-live="polite" className="sr-only">{liveMessage}</div>
-      {banner ? (
-        <div role="status" className="rounded-lg border border-seam-line bg-seam-soft px-4 py-3">
-          <div className="text-sm font-semibold text-seam">{banner.title}</div>
-          <p className="mt-1 text-xs leading-relaxed text-muted">{banner.text}</p>
-        </div>
-      ) : null}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <input
           ref={filterRef}
@@ -589,36 +510,22 @@ export function DecideQueue({
 
       <div className="grid items-start gap-4 lg:grid-cols-5">
         <div ref={listRef} className="scroll-mt-16 max-h-[52vh] overflow-y-auto rounded-lg border border-hair bg-panel lg:col-span-2 lg:max-h-[70vh] lg:overflow-y-auto">
-          {visible.length ? readinessSections.map((section) => (
-            <section
-              key={section.key}
-              aria-label={SECTION_COPY[section.key].label}
-              className="border-b border-hair last:border-b-0"
-            >
-              <div className={`px-3 py-2.5 ${section.key === "act_now" ? "bg-good-soft" : "bg-soft"}`}>
-                <div className="flex items-center justify-between gap-2">
-                  <h3 className={`text-xs font-bold uppercase tracking-wide ${section.key === "act_now" ? "text-good" : "text-muted"}`}>{SECTION_COPY[section.key].label}</h3>
-                  <span className="mono rounded-pill border border-hair bg-panel px-2 py-0.5 text-2xs text-muted">{section.groups.length}</span>
-                </div>
-                <p className="mt-0.5 text-2xs text-muted">{SECTION_COPY[section.key].description}</p>
-              </div>
-              {section.groups.map((group) => {
-                const index = visibleIndexByKey.get(group.key) ?? 0;
-                return (
+          {visible.length ? (
+            <ol aria-label="Your decisions" className="list-none">
+              {visible.map((group, index) => (
+                <li key={group.key}>
                   <DecisionRow
-                    key={group.key}
                     group={group}
                     selected={selected?.key === group.key}
-                    demoteBlockedStamp={Boolean(systemicBlocker) || Boolean(banner && group.face.state !== "ready" && standingOf(group).text === banner.text)}
                     rowRef={(element) => { rowRefs.current[index] = element; }}
                     onActivate={() => select(group, index, true)}
                     onFocus={() => select(group, index)}
                     onKeyDown={(event) => onRowKey(event, index, group)}
                   />
-                );
-              })}
-            </section>
-          )) : (
+                </li>
+              ))}
+            </ol>
+          ) : (
             <p className="border-dashed px-4 py-8 text-center text-sm text-muted">No decision matches “{filter}”.</p>
           )}
         </div>

@@ -526,8 +526,8 @@ try {
   assert.match(warm.Decide, /Benchmark results/);
   // Where each decision stands, from the data: here every decision's kind has
   // no button, so it is said once above the list, and the answer counts it.
-  assert.match(warm.Decide, /Why none can be decided now/);
-  assert.match(warm.Decide, /Needs follow-up before it can be applied/);
+  assert.doesNotMatch(warm.Decide, /Why none can be decided now|Ready to review|Needs a closer look/, "one still list: no readiness sections and no banner");
+  assert.doesNotMatch(warm.Decide, /Needs follow-up before it can be applied|Not yet/, "no gate state on rows: how a decision moves is said once");
   assert.doesNotMatch(warm.Decide, /Recording actions is unavailable|Queue status/, "the buried queue-status note is gone: how a decision moves is said once, up top");
   assert.doesNotMatch(warm.Decide, /paused|pause while/i, "an old copy is only old: never 'paused'");
   // A title that starts with a product id leads with the product's name on
@@ -604,6 +604,29 @@ try {
   for (const group of queue.groups.slice(1)) {
     assert.equal(group.members.length, 0, `${group.key}: list-only rows carry no members`);
     assert.equal(group.evidence.length, 0, `${group.key}: list-only rows carry no evidence`);
+  }
+
+  // The queue holds still: one list in the one shared order. A decision whose
+  // check found something else (here: one turned "ready") stays where it was;
+  // no section regroups it and no banner appears.
+  {
+    const { DecideQueue } = await import("../src/components/decide/DecideQueue.tsx");
+    const flipped = queue.groups.map((group, index) => (index === 3 ? { ...group, face: { ...group.face, state: "ready" } } : group));
+    const html = wrap("/reviews", createElement(DecideQueue, { ...queue, groups: flipped }), `decision=${encodeURIComponent(queue.groups[0].key)}`);
+    const order = [...html.matchAll(/data-decision-row="([^"]+)"/g)].map((m) => m[1].replaceAll("&amp;", "&"));
+    assert.deepEqual(order, queue.groups.map((group) => group.key), "a recheck never reorders or regroups the list");
+    assert.doesNotMatch(html, /Ready to review|Needs a closer look|Why none can be decided now|cannot be decided now/);
+  }
+  // A link to a decision that is gone says so and offers the filed list; a
+  // skill-proposal link says it is agent housekeeping. Neither opens another
+  // decision silently.
+  for (const [key, said] of [
+    ["route-promotions|gone", /That decision is no longer waiting for you: it was answered or closed\. See filed items →/],
+    ["capability-lifecycle-proposals|clp_a", /That link opens a proposal to update agent skills\. It is agent housekeeping, not a decision for you/],
+  ]) {
+    const html = wrap("/reviews", await Decide({ searchParams: Promise.resolve({ decision: key }) }), `decision=${encodeURIComponent(key)}`);
+    assert.match(visibleText(html), said, key);
+    assert.match(html, /href="#filed"/, `${key}: offers the filed list`);
   }
 
   console.log(`plain-pages cases ok: 4 pages × 2 read states, Work by app and the retired Projects redirect, free of ${BANNED_PHRASES.length} banned phrases; shared counts agree; Decide sends one decision's detail; opened decision checks its own read (stale refused, A's read never enables B)`);

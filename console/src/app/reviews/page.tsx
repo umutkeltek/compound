@@ -4,7 +4,7 @@ import { DecideQueue } from "@/components/decide/DecideQueue";
 import { WaitingNotes } from "@/components/decide/WaitingNotes";
 import { CheckIcon, ClockIcon, hasCopy, PageHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending } from "@/components/kit";
 import { PendingRefresh } from "@/components/PendingRefresh";
-import { readAttention, yourDecisionGroups, type AttentionGroup } from "@/lib/attention";
+import { housekeepingGroups, readAttention, yourDecisionGroups, type AttentionGroup } from "@/lib/attention";
 import { arr, HEAVY_PROJECTION_TIMEOUT_MS, num, readProjection, readWorkProjectIndex, str, type Json, type LiveRead, type ProjectionStatus } from "@/lib/compound";
 import { ago } from "@/lib/time";
 import { describeWaiting, unit, waitingOnYou } from "@/lib/counts";
@@ -188,11 +188,6 @@ export default async function Decide({
     attentionRead.status === "loading" ? "unreachable" : attentionRead.status,
     scoped?.evidence ?? null,
   );
-  // Feature-detect a queue-level `systemic_blocker` reason the projection
-  // may start carrying directly; DecideQueue also computes the
-  // all-identical-reasons case itself from decideGroups, so the banner is
-  // correct with or without this field.
-  const systemicBlockerReason = str(reviews?.systemic_blocker) || null;
 
   // The open decision: the one asked for, else the first. Only it carries detail.
   const openKey = decideGroups.some((group) => group.key === requestedKey) ? requestedKey : decideGroups[0]?.key ?? "";
@@ -243,6 +238,11 @@ export default async function Decide({
     : [];
 
   const attentionKnown = hasCopy(attentionRead);
+  // A link to a decision that is not listed says why, never opens another
+  // one silently (the first decision still opens beside the note).
+  const requestedGone: "" | "gone" | "housekeeping" = requestedKey && attentionKnown && !decideGroups.some((group) => group.key === requestedKey)
+    ? housekeepingGroups(attention).some((group) => group.key === requestedKey) ? "housekeeping" : "gone"
+    : "";
   const reviewsKnown = hasCopy(reviewsRead);
   const pending = readsPending(attentionRead, reviewsRead, scoped?.read ?? null, ...showReads, projectIndex?.reads.work ?? null);
   const panelDetailOpen = Boolean(decideGroups.find((group) => group.key === requestedKey)?.panel);
@@ -265,6 +265,14 @@ export default async function Decide({
       {panelDetailOpen || !waiting ? null : <WaitingNotes waiting={waiting} totals={attention?.totals ?? null} workTitles={workTitles} detail />}
 
       <section id="decision-queue" tabIndex={-1} className="scroll-mt-6 flex flex-col gap-3" aria-label="Decisions">
+        {requestedGone ? (
+          <p role="status" className="rounded-lg border border-hair bg-soft px-4 py-3 text-sm text-muted">
+            {requestedGone === "housekeeping"
+              ? "That link opens a proposal to update agent skills. It is agent housekeeping, not a decision for you, so it is not listed here."
+              : "That decision is no longer waiting for you: it was answered or closed."}{" "}
+            <Link href="#filed" className="font-semibold text-work hover:underline">See filed items →</Link>
+          </p>
+        ) : null}
         {attentionKnown ? <ReadFailedBanner read={attentionRead} label="what waits for you" /> : null}
         {attentionKnown && decideGroups.length > 0 ? (
           <DecideQueue
@@ -272,7 +280,6 @@ export default async function Decide({
             detailKeys={openKey ? [openKey] : []}
             mutationsEnabled={mutationsEnabled}
             initialSelectedKey={requestedKey}
-            systemicBlockerReason={systemicBlockerReason}
           />
         ) : null}
       </section>
