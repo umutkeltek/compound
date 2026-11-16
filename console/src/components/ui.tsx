@@ -1,3 +1,4 @@
+import { plainState } from "@/lib/plain-words";
 import type { ReactNode } from "react";
 
 /* ---------- accents ---------- */
@@ -74,25 +75,25 @@ export function FreshnessChip({ generatedAt, source }: { generatedAt?: string; s
   );
 }
 
-const STATE_TONE: Record<string, { tone: Accent; label: string }> = {
-  proposed: { tone: "orange", label: "draft" },
-  admitted: { tone: "orange", label: "queued" },
-  ready: { tone: "green", label: "ready" },
-  claimed: { tone: "violet", label: "assigned" },
-  in_progress: { tone: "blue", label: "in progress" },
-  running: { tone: "blue", label: "running" },
-  verifying: { tone: "blue", label: "verifying" },
-  needs_review: { tone: "violet", label: "needs review" },
-  held: { tone: "violet", label: "needs me" },
-  blocked: { tone: "orange", label: "blocked" },
-  completed: { tone: "green", label: "completed" },
-  failed: { tone: "red", label: "failed" },
-  cancelled: { tone: "gray", label: "cancelled" },
+const STATE_TONE: Record<string, Accent> = {
+  proposed: "orange",
+  admitted: "orange",
+  ready: "green",
+  claimed: "violet",
+  in_progress: "blue",
+  running: "blue",
+  verifying: "blue",
+  needs_review: "violet",
+  held: "violet",
+  blocked: "orange",
+  completed: "green",
+  failed: "red",
+  cancelled: "gray",
 };
 
+/** A work state's pill; the words are the one name from lib/plain-words.ts. */
 export function StateBadge({ state }: { state: string }) {
-  const m = STATE_TONE[state] ?? { tone: "gray" as Accent, label: state || "unknown" };
-  return <Chip tone={m.tone}>{m.label}</Chip>;
+  return <Chip tone={STATE_TONE[state] ?? "gray"}>{state ? plainState(state) : "Unknown"}</Chip>;
 }
 
 /* ---------- card + layout primitives ---------- */

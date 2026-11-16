@@ -425,6 +425,10 @@ export function buildBoard(open: Json[], recent: Json[]): BoardColumnModel[] {
     emptyCopy: "Nothing closed recently.",
     cards: done.map((w) => workCard(w)),
   });
+  // What waits for you is the first thing on the board when there is any:
+  // on hold moves to the front instead of sitting off-screen to the right.
+  const hold = board.findIndex((column) => column.key === "needs-me");
+  if (hold > 0 && board[hold].cards.length) board.unshift(...board.splice(hold, 1));
   return board;
 }
 

@@ -431,6 +431,12 @@ try {
   }
   assert.match(listAll.text, /Record the final checked commit for it\./, "Next in plain words, as on the board");
   assert.doesNotMatch(listAll.text, /commit:<full-sha>|Execution detail unavailable/);
+  // One name per state: the List's badge uses the board's words.
+  assert.match(listAll.html, />On hold</, "the List says On hold, as the board does");
+  assert.doesNotMatch(listAll.html, />(held|verifying|claimed)</, "no raw state word in a badge");
+  // On hold is the first column on the board when it has items.
+  const columns = [...header.html.matchAll(/<section[^>]*aria-label="([^"]+)"/g)].map((m) => m[1]);
+  assert.equal(columns[0], "On hold", `on hold leads the board: ${columns.join(", ")}`);
   const css = (await import("node:fs")).readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
   assert.doesNotMatch(css, /\.work-focus-row::(before|after)/, "a generated box on a table row becomes an extra cell and shifts the columns");
   assert.match(warm.Today, /7 decisions wait for you, with 13 items in all/);

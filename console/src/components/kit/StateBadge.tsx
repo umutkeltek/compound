@@ -1,3 +1,5 @@
+import { plainState } from "@/lib/plain-words";
+
 /**
  * The one status-pill grammar (DESIGN.md §2): ~15 lifecycle states collapse
  * into 7 tones. Replaces STATE_TONE/MOVE_TONE (src/components/ui.tsx) where
@@ -60,7 +62,9 @@ const TONE_CLASSES: Record<StateTone, string> = {
 
 export function StateBadge({ state, label }: { state: string; label?: string }) {
   const tone = toneForState(state);
-  const text = label ?? (state ? state.replace(/_/g, " ") : "unknown");
+  // One name per state: the words come from lib/plain-words.ts, the same
+  // as the board, the List filters and the work item page.
+  const text = label ?? (state ? plainState(state) : "Unknown");
   return (
     <span
       className={`inline-flex items-center gap-1.5 rounded-pill border px-2.5 py-0.5 text-xs font-semibold tabular-nums ${TONE_CLASSES[tone]}`}

@@ -6,6 +6,7 @@ import { normalizeRunAttempts } from "@/lib/run-attempts";
 import { buildTraffic } from "@/lib/traffic";
 import { buildPipeline } from "@/lib/work-pipeline";
 import { parseWorkListParams } from "@/lib/links";
+import { plainState } from "@/lib/plain-words";
 import { buildWorkLensItems, groupWorkLensItems } from "@/lib/work-views";
 import { WorkFlowLens } from "./WorkFlowLens";
 import { WorkSpaceLens } from "./WorkSpaceLens";
@@ -82,7 +83,7 @@ export function runWorkLifecycleStatusSelfTest(): { ok: boolean; details: string
     const cells = row.match(/<td\b[^>]*>[\s\S]*?<\/td>/g) ?? [];
     const accent = fixture.state === "held" ? "seam" : fixture.state === "running" ? "crit" : "memory";
     check("table lifecycle badge and accent: " + fixture.state,
-      (cells[2] ?? "").includes(">" + fixture.state + "<")
+      (cells[2] ?? "").includes(">" + plainState(fixture.state) + "<")
       && !(cells[2] ?? "").includes(">" + fixture.run + "<")
       && row.includes("--row-accent:var(--" + accent + "-fg)"));
     check("table labels attempt separately: " + fixture.state,
@@ -99,7 +100,7 @@ export function runWorkLifecycleStatusSelfTest(): { ok: boolean; details: string
     const card = (flow.match(/<button\b[^>]*>[\s\S]*?<\/button>/g) ?? [])
       .find((card) => card.includes(fixture.id)) ?? "";
     check("flow lifecycle badge and separate attempt: " + fixture.state,
-      card.includes(">" + fixture.state + "<") && card.includes("Run status: " + fixture.run));
+      card.includes(">" + plainState(fixture.state) + "<") && card.includes("Run status: " + fixture.run));
   }
 
   const space = renderToStaticMarkup(createElement(WorkSpaceLens, { stages, groups, onOpenTrace }));
@@ -110,7 +111,7 @@ export function runWorkLifecycleStatusSelfTest(): { ok: boolean; details: string
     && space.includes('aria-label="Held fixture, held,'));
   const inspector = space.match(/<aside\b[^>]*>([\s\S]*?)<\/aside>/)?.[1] ?? "";
   check("space inspector keeps running work primary and failed attempt separate",
-    inspector.includes("work_running_fixture") && inspector.includes(">running<")
+    inspector.includes("work_running_fixture") && inspector.includes(">Running<")
     && inspector.includes("Run status: failed") && !inspector.includes(">failed<"));
   const noAttemptItems = buildWorkLensItems(open, buildTraffic(projection, null), { nowMs: NOW });
   const noAttemptTable = list({ filter: "all" }, noAttemptItems);
