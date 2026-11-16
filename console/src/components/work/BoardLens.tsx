@@ -117,7 +117,7 @@ export function BoardLens({
             <option value="">Everyone</option>
             {owners.map(([key, entry]) => (
               <option key={key} value={key}>
-                {entry.name} ({entry.n})
+                {entry.name} ({entry.n} open)
               </option>
             ))}
           </select>

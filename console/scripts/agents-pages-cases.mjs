@@ -325,6 +325,13 @@ try {
   for (const link of workNumbers) {
     assert.equal(pageListSize(link.href), Number(link.n.replace(/,/g, "")), `Work: "${link.text}" opens ${link.href}, a list of the same length`);
   }
+  // Work's agent menu: one entry per agent (lane spellings folded), each count its open-work list.
+  const menu = [...workHtml.replace(/<!-- -->/g, "").matchAll(/<option value="([^"]+)">([^<]*?) \((\d+) open\)<\/option>/g)];
+  assert.ok(menu.length >= 4, "the agent menu lists the agents");
+  assert.ok(!menu.some((m) => /fixture_lane/.test(m[1])), "a lane spelled with hyphens is not a menu entry of its own");
+  for (const [, key, name, n] of menu) {
+    assert.equal(pageListSize(`/work?lens=table&filter=all&owner=${key}`), Number(n), `Work's menu: ${name} (${n} open) equals its list`);
+  }
   // The same numbers on Work and on the Agents pages.
   for (const [filter, words] of [["running", "running"], ["claimed", "picked up"], ["verifying", "waiting for a proof check"]]) {
     const n = pageListSize(`/work?lens=table&filter=${filter}`);
