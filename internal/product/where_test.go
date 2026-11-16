@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/mem"
 )
@@ -485,5 +486,54 @@ func TestResolveAppSetsOneAppOrNone(t *testing.T) {
 		if strings.TrimSpace(got.Reason) == "" {
 			t.Errorf("%s: no reason recorded", tc.name)
 		}
+	}
+}
+
+// TestResolveAppGivesASystemAHome: work in a system's own code (not an app)
+// used to resolve to nothing, because the lookup only read products. An
+// entity whose parent is a system now makes that system a second kind of
+// home. An app checkout nested inside the system's folder still wins by the
+// longer path, and a folder no entity links to a system stays unresolved.
+func TestResolveAppGivesASystemAHome(t *testing.T) {
+	b := deployedBundle("product:cask", "Cask", "place:app_store_connect", "")
+	b.Product.Surfaces = append(b.Product.Surfaces, Surface{ID: "checkout", Kind: "repo", Ref: "/workspace/systems/alpha/apps/cask"})
+	store := whereStore(t, b)
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for _, e := range []mem.Entity{
+		{Slug: "system:alpha", Kind: "topic"},
+		{Slug: "repo:alpha-core", Kind: "repo", Parent: "system:alpha", Identifiers: []string{"/workspace/systems/alpha"}},
+		{Slug: "repo:beta-core", Kind: "repo", Identifiers: []string{"/workspace/systems/beta"}},
+	} {
+		if _, err := store.RegisterEntity(e, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resolver, err := NewAppResolver(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name                         string
+		keys                         AppKeys
+		status, product, system, key string
+	}{
+		{"worktree in the system's code", AppKeys{Worktree: "/workspace/systems/alpha/internal"}, AppBound, "", "system:alpha", AppKeyWorktree},
+		{"surface names the system", AppKeys{Surface: "system:alpha"}, AppBound, "", "system:alpha", AppKeySurfaceSystem},
+		{"an app nested in the system folder", AppKeys{Worktree: "/workspace/systems/alpha/apps/cask/src"}, AppBound, "product:cask", "", AppKeyWorktree},
+		{"app surface but system worktree", AppKeys{Surface: "product:cask", Worktree: "/workspace/systems/alpha/internal"}, AppAmbiguous, "", "", ""},
+		{"a folder no entity links to a system", AppKeys{Worktree: "/workspace/systems/beta/x"}, AppNone, "", "", ""},
+		{"an unregistered system name", AppKeys{Surface: "system:gamma"}, AppNone, "", "", ""},
+	} {
+		got := resolver.Resolve(tc.keys)
+		if got.Status != tc.status || got.ProductID != tc.product || got.SystemID != tc.system || got.Key != tc.key {
+			t.Errorf("%s: got %+v, want status %s product %q system %q key %q", tc.name, got, tc.status, tc.product, tc.system, tc.key)
+		}
+	}
+	all, err := WhereAll(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].GroupID != "product:cask" {
+		t.Fatalf("where --all must still list products only: %+v", all)
 	}
 }

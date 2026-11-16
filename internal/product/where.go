@@ -131,6 +131,16 @@ type whereIndex struct {
 	// signalRows counts product signal rows per lowercased product id; the
 	// main spelling of a group is the registered member signals name most.
 	signalRows map[string]int
+	// systems are the registered system: slugs, and systemPaths the recorded
+	// folders of entities whose parent is a system. They are the second kind
+	// of home a piece of work can have; `where` itself still answers products.
+	systems     map[string]bool
+	systemPaths []systemPath
+}
+
+// systemPath is one recorded folder of an entity that belongs to a system.
+type systemPath struct {
+	root, system string
 }
 
 // registeredEntity reports whether a product entity was registered with
@@ -210,7 +220,19 @@ func loadWhereIndex(store *mem.Store) (*whereIndex, error) {
 		}
 	}
 	seen := map[string]bool{}
+	idx.systems = map[string]bool{}
 	for _, e := range registered {
+		if strings.HasPrefix(e.Slug, "system:") {
+			idx.systems[e.Slug] = true
+		}
+		if parent := strings.TrimSpace(e.Parent); strings.HasPrefix(parent, "system:") && !strings.HasPrefix(e.Slug, "product:") {
+			idx.systems[parent] = true
+			for _, id := range e.Identifiers {
+				if filepath.IsAbs(id) {
+					idx.systemPaths = append(idx.systemPaths, systemPath{root: filepath.Clean(id), system: parent})
+				}
+			}
+		}
 		if e.Kind == "product" && strings.HasPrefix(e.Slug, "product:") && !seen[e.Slug] {
 			seen[e.Slug] = true
 			idx.entities = append(idx.entities, e)
@@ -712,6 +734,9 @@ const (
 	AppKeyContextFolder  = "context_folder"  // the folder its context pack was built for
 )
 
+// AppKeySurfaceSystem is a canonical surface that names a registered system.
+const AppKeySurfaceSystem = "surface_system"
+
 // AppKeys are the recorded values of one piece of work that can name its app.
 type AppKeys struct {
 	Surface       string
@@ -723,8 +748,11 @@ type AppKeys struct {
 // app's group id, set only when Status is bound; Key names the recorded key
 // that decided it. Reason says why in plain words, also when nothing is set.
 type AppBinding struct {
-	Status     string   `json:"status"`
-	ProductID  string   `json:"product_id,omitempty"`
+	Status    string `json:"status"`
+	ProductID string `json:"product_id,omitempty"`
+	// SystemID is set instead of ProductID when the one home that matches is
+	// a system (a registered system: entity) rather than an app.
+	SystemID   string   `json:"system_id,omitempty"`
 	Key        string   `json:"key,omitempty"`
 	Candidates []string `json:"candidates,omitempty"`
 	Reason     string   `json:"reason"`
@@ -766,6 +794,8 @@ func (r *AppResolver) Resolve(keys AppKeys) AppBinding {
 	var hits []hit
 	if ref, ok := productSurfaceRef(keys.Surface); ok {
 		hits = append(hits, hit{AppKeySurfaceProduct, r.idx.groupIDs(r.idx.match(ref))})
+	} else if system := strings.TrimSpace(keys.Surface); r.idx.systems[system] {
+		hits = append(hits, hit{AppKeySurfaceSystem, []string{system}})
 	} else if path := absPath(keys.Surface); path != "" {
 		hits = append(hits, hit{AppKeySurfacePath, r.idx.pathGroupIDs(path)})
 	}
@@ -799,7 +829,13 @@ func (r *AppResolver) Resolve(keys AppKeys) AppBinding {
 	case 0:
 		return AppBinding{Status: AppNone, Reason: "no recorded key names an app"}
 	case 1:
-		return AppBinding{Status: AppBound, ProductID: candidates[0], Key: key, Reason: strings.Join(said, "; ")}
+		bound := AppBinding{Status: AppBound, Key: key, Reason: strings.Join(said, "; ")}
+		if r.idx.systems[candidates[0]] {
+			bound.SystemID = candidates[0]
+		} else {
+			bound.ProductID = candidates[0]
+		}
+		return bound
 	}
 	return AppBinding{Status: AppAmbiguous, Candidates: candidates, Reason: "more than one app matches (" + strings.Join(said, "; ") + "); left empty"}
 }
@@ -839,11 +875,25 @@ func (idx *whereIndex) groupIDs(matched map[int]map[string]bool) []string {
 	return out
 }
 
-// pathGroupIDs names the groups whose recorded checkout holds path, by the
-// longest recorded checkout; two groups at that same depth both answer.
+// pathGroupIDs names the homes whose recorded folder holds path, by the
+// longest recorded folder: a product group, or a system whose member entity
+// records the folder. Two homes at that same depth both answer.
 func (idx *whereIndex) pathGroupIDs(path string) []string {
 	longest := -1
 	roots := map[int]bool{}
+	systems := map[string]bool{}
+	for _, sp := range idx.systemPaths {
+		if path != sp.root && !strings.HasPrefix(path, sp.root+string(filepath.Separator)) {
+			continue
+		}
+		switch {
+		case len(sp.root) > longest:
+			longest = len(sp.root)
+			systems = map[string]bool{sp.system: true}
+		case len(sp.root) == longest:
+			systems[sp.system] = true
+		}
+	}
 	for i, e := range idx.entities {
 		for _, id := range e.Identifiers {
 			if !filepath.IsAbs(id) {
@@ -857,6 +907,7 @@ func (idx *whereIndex) pathGroupIDs(path string) []string {
 			case len(root) > longest:
 				longest = len(root)
 				roots = map[int]bool{idx.find(i): true}
+				systems = map[string]bool{}
 			case len(root) == longest:
 				roots[idx.find(i)] = true
 			}
@@ -866,7 +917,12 @@ func (idx *whereIndex) pathGroupIDs(path string) []string {
 	for root := range roots {
 		matched[root] = nil
 	}
-	return idx.groupIDs(matched)
+	out := idx.groupIDs(matched)
+	for system := range systems {
+		out = append(out, system)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // RunWhereCLI is `compound product where`. It lives here rather than in
