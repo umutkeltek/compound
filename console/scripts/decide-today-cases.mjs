@@ -211,4 +211,30 @@ assert.equal(answered[1].by, "an agent");
 assert.deepEqual(answered[1].work, { href: "/work/work_fx_started", state: "unknown" });
 assert.equal(decideAnsweredHref(60), "/reviews?answers=60#answered");
 
+// 13. D1: a real idea whose result the waiting list does not ask about is
+// never "verdict due" on the Results card; a listed one links its exact item;
+// one counted under another decision links that decision instead.
+{
+  const { ProductLoopCard, loopState } = await import("../src/components/products/ProductLoopCard.tsx");
+  const real = { id: "hyp_fx_real", statement: "A fixture change, not yet released: its observation clock has not started.", expectedEffect: "Fixture downloads rise.", metrics: [], window: "28d", placeholder: false };
+  const loop = {
+    productId: "product:fixture-other", name: "Fixture Other", aliases: [], hypotheses: [real], signals: [], metricNames: [], hypothesisCount: 1, reviews: [],
+    sourceIssueCount: 0, freshness: { latestSignalAt: "", latestReviewAt: "", stale: false }, loopGaps: ["review_ready"], signalCount: 3,
+  };
+  for (const verdict of [undefined, { state: "unknown" }, { state: "not_listed" }]) {
+    const html = renderToStaticMarkup(createElement(ProductLoopCard, { loop, verdict }));
+    assert.equal(loopState(loop, verdict).blockedOnYou, false, `${verdict?.state ?? "no answer"}: not blocked on him`);
+    assert.doesNotMatch(text(html), /verdict due|Your verdict is due|Give the verdict/i, `${verdict?.state ?? "no answer"}: asks nothing`);
+    assert.doesNotMatch(html, /product-reviews/, "never a link to a decision the list does not hold");
+  }
+  const elsewhere = renderToStaticMarkup(createElement(ProductLoopCard, { loop, verdict: { state: "asked_elsewhere", decisionKey: "product-hypotheses|product:fixture-other" } }));
+  assert.match(elsewhere, /href="\/reviews\?decision=product-hypotheses%7Cproduct%3Afixture-other"/, "the same question links the decision it is counted under");
+  const due = renderToStaticMarkup(createElement(ProductLoopCard, { loop, verdict: productVerdict(report, ["product:fixture-app"], []) }));
+  assert.match(text(due), /verdict due .*Your verdict is due: did it work\? Give the verdict →/);
+  assert.match(due, /href="\/reviews\?decision=product%3Aproduct-results-due#decision-item-hyp_fx_due"/, "the verdict link opens that exact item");
+  const { AppNeedsYou } = await import("../src/components/growth/AppNeedsYou.tsx");
+  const unknownNeeds = text(renderToStaticMarkup(createElement(AppNeedsYou, { name: "Fixture Other", work: { rows: [], hrefs: { onHold: "/work" } }, verdicts: null })));
+  assert.match(unknownNeeds, /Still reading/, "the app page never says nothing waits before the waiting list is read");
+}
+
 console.log("decide-today cases ok: new kinds, covered band and its fold, set-aside groups that add up, linked lines, plain cards, one age, verdicts and answers");

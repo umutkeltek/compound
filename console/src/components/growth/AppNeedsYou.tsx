@@ -2,19 +2,19 @@ import Link from "next/link";
 
 import type { AppWorkModel } from "@/components/growth/app-work";
 
-/** A pending verdict about this app that only the owner can give, with the exact decision to open. */
-export type AppVerdict = { text: string; href: string };
+/** A decision about this app that only the owner can give (a verdict due, or the decision it is counted under), with the exact item to open. */
+export type AppVerdict = { text: string; href: string; lead?: string };
 
 /**
  * "Needs you": what about this app waits for the owner, first on the page.
  * Work on hold for this app and a real verdict due. While the work read has
  * not landed it says so; it never claims "nothing" before it knows.
  */
-export function AppNeedsYou({ name, work, verdicts }: { name: string; work: AppWorkModel | null; verdicts: AppVerdict[] }) {
+export function AppNeedsYou({ name, work, verdicts }: { name: string; work: AppWorkModel | null; verdicts: AppVerdict[] | null }) {
   const held = work ? work.rows.filter((row) => row.onHold) : [];
   const items = [
     ...held.map((row) => ({ key: row.id, href: row.href, lead: "On hold, waiting for you", text: row.title })),
-    ...verdicts.map((v, i) => ({ key: `verdict-${i}`, href: v.href, lead: "Verdict due", text: v.text })),
+    ...(verdicts ?? []).map((v, i) => ({ key: `verdict-${i}`, href: v.href, lead: v.lead ?? "Verdict due", text: v.text })),
   ];
   return (
     <section id="app-needs-you" className="flex scroll-mt-24 flex-col gap-2" aria-labelledby="app-needs-you-title">
@@ -37,10 +37,10 @@ export function AppNeedsYou({ name, work, verdicts }: { name: string; work: AppW
             </li>
           ) : null}
         </ul>
-      ) : work ? (
+      ) : work && verdicts ? (
         <p className="text-sm text-muted">Nothing about {name} waits for you: no work on hold and no verdict due.</p>
       ) : (
-        <p className="text-sm text-muted">Still reading {name}&apos;s work, so it is not yet known whether anything waits for you.</p>
+        <p className="text-sm text-muted">Still reading {name}&apos;s work and your waiting list, so it is not yet known whether anything waits for you.</p>
       )}
     </section>
   );

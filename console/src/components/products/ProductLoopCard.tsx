@@ -1,7 +1,8 @@
 import Link from "next/link";
 
 import { humanizeProductId } from "@/lib/app-identity";
-import { appHref, decideHref } from "@/lib/links";
+import type { ProductVerdict } from "@/lib/attention";
+import { appHref, decideHref, decideItemHref } from "@/lib/links";
 import { CopyCmd } from "@/components/CopyCmd";
 import { IdRef, StateBadge } from "@/components/kit";
 import { ago } from "@/lib/time";
@@ -12,7 +13,6 @@ import {
   metricLabel,
   metricSurface,
   nextMove,
-  productResultsDecision,
   verdictDue,
   type ProductLoop,
   type ProductSignal,
@@ -27,14 +27,19 @@ import {
  * admission seam and floats to the top of the page.
  */
 
-/** Map a loop onto its lifecycle state + a plain label for the StateBadge. */
-export function loopState(loop: ProductLoop): { state: string; label: string; blockedOnYou: boolean } {
-  if (verdictDue(loop)) return { state: "needs_you", label: "verdict due", blockedOnYou: true };
+/**
+ * Map a loop onto its lifecycle state + a plain label for the StateBadge. A
+ * verdict is due only when the waiting list asks for it (`verdict`, from
+ * lib/attention.ts productVerdict): the one definition Today, Decide, the app
+ * page and this card share. Without that answer the card never claims one.
+ */
+export function loopState(loop: ProductLoop, verdict?: ProductVerdict): { state: string; label: string; blockedOnYou: boolean } {
+  if (verdict?.state === "due") return { state: "needs_you", label: "verdict due", blockedOnYou: true };
   if (loop.signalCount === 0) return { state: "candidate", label: "awaiting signal", blockedOnYou: false };
-  const verdict = loop.reviews[0]?.verdict;
-  if (verdict === "supported") return { state: "completed", label: "supported", blockedOnYou: false };
-  if (verdict === "refuted") return { state: "failed", label: "refuted", blockedOnYou: false };
-  if (verdict === "inconclusive") return { state: "held", label: "inconclusive", blockedOnYou: false };
+  const last = loop.reviews[0]?.verdict;
+  if (last === "supported") return { state: "completed", label: "supported", blockedOnYou: false };
+  if (last === "refuted") return { state: "failed", label: "refuted", blockedOnYou: false };
+  if (last === "inconclusive") return { state: "held", label: "inconclusive", blockedOnYou: false };
   if (loop.hypothesisCount > 0) return { state: "running", label: "testing", blockedOnYou: false };
   return { state: "watching", label: "collecting", blockedOnYou: false };
 }
@@ -97,11 +102,33 @@ function MetricRow({ s }: { s: ProductSignal }) {
   );
 }
 
-export function ProductLoopCard({ loop }: { loop: ProductLoop }) {
+/**
+ * What happens next on the card, by the waiting list's answer: a verdict it
+ * asks for links that exact item; the same question counted under another
+ * decision links that one; a change it does not list asks nothing.
+ */
+export function verdictStep(loop: ProductLoop, verdict?: ProductVerdict): { text: string; link: { label: string; href: string } | null } {
+  const realChange = verdictDue(loop);
+  switch (verdict?.state) {
+    case "due":
+      return { text: "A result of this change is ready. Your verdict is due: did it work?", link: { label: "Give the verdict", href: decideItemHref(verdict.decisionKey, verdict.itemId) } };
+    case "asked_elsewhere":
+      return { text: "No verdict is due here. The same question waits for you once, as another decision.", link: { label: "Open that decision", href: decideHref({ decision: verdict.decisionKey }) } };
+    case "set_aside":
+      return { text: `No verdict is due. ${verdict.reasonText} ${verdict.nextStep}`.trim(), link: null };
+    case "not_listed":
+      return realChange ? { text: "No verdict is due: your waiting list does not ask about this change yet.", link: null } : { text: nextMove(loop).text, link: null };
+    default:
+      return realChange ? { text: "Checking whether a verdict waits for you.", link: null } : { text: nextMove(loop).text, link: null };
+  }
+}
+
+export function ProductLoopCard({ loop, verdict }: { loop: ProductLoop; verdict?: ProductVerdict }) {
   const move = nextMove(loop);
+  const step = verdictStep(loop, verdict);
   const latestReview = loop.reviews[0];
   const empty = loop.signalCount === 0;
-  const { state, label, blockedOnYou } = loopState(loop);
+  const { state, label, blockedOnYou } = loopState(loop, verdict);
   const transitionRef = loop.signals.find((s) => s.transitionRef)?.transitionRef ?? "";
   const realIdeas = loop.hypotheses.filter((h) => !h.placeholder);
 
@@ -177,13 +204,13 @@ export function ProductLoopCard({ loop }: { loop: ProductLoop }) {
       {/* next move (the doctor's answer) */}
       <div className="rounded-md border border-hair bg-soft px-3 py-2.5">
         <div className="section-label mb-1.5">What happens next</div>
-        <p className="text-xs text-ink">{move.text}</p>
-        {blockedOnYou ? (
+        <p className="text-xs text-ink">{step.text}</p>
+        {step.link ? (
           <Link
-            href={decideHref({ decision: productResultsDecision(loop.productId) })}
+            href={step.link.href}
             className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-work underline-offset-2 hover:underline"
           >
-            Give the verdict →
+            {step.link.label} →
           </Link>
         ) : null}
         {move.cmd ? (
