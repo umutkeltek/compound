@@ -82,6 +82,24 @@ const reply = {
         corroboration_count: 2, corroboration_evidence: ["ev_fxcorr1"] },
     ] },
 };
+// Sources: six connections. The CLI's own labels contradict the dates on
+// purpose (an "observed" feed 27 days old, a "stale" one 2 days old, an
+// import 137 days old) and its counts are wrong on purpose: the page must
+// derive one status per source from the date it shows.
+const ago = (hours) => new Date(now - hours * 3600000).toISOString();
+reply["source connections --json"] = { schema_version: "compound.source_connections_projection.v0.2", generated_at: iso(0),
+  counts: { total: 99, evidence_observed: 0, action_required: 42 },
+  connections: [
+    { id: "fx_feed_old", label: "Fixture daily feed", evidence_state: "observed", availability: "needs_private_config", private_setup_needed: true, last_seen: ago(27 * 24), row_count: 2900,
+      produces: ["product signal", "product loop evidence"], source_kinds: ["fixture_feed"], next_safe_action: "Refresh stale source observation", latest_cards: [] },
+    { id: "fx_feed_recent", label: "Fixture search feed", evidence_state: "stale", availability: "unknown", last_seen: ago(48), row_count: 120, produces: ["search signal"], source_ref: "site:https://fixture.example",
+      next_safe_action: "Refresh stale source observation",
+      latest_cards: [{ id: "sicard_fx0001", kind: "stale_source", title: "Refresh stale source observation", command: ["compound", "product", "loops", "--product", "product:fixture-app", "--json"] }] },
+    { id: "fx_import_old", label: "Fixture papers", evidence_state: "imported", availability: "unknown", last_seen: ago(137 * 24), row_count: 5, produces: ["knowledge evidence", "memory candidate"], latest_cards: [] },
+    { id: "fx_never", label: "Fixture stars", evidence_state: "never_seen", availability: "not_configured", row_count: 0, produces: ["session evidence"], latest_cards: [] },
+    { id: "fx_setup", label: "Fixture ads", evidence_state: "never_seen", availability: "needs_private_config", private_setup_needed: true, row_count: 0, latest_cards: [] },
+    { id: "fx_ads_recent", label: "Fixture ad spend", evidence_state: "observed", availability: "unknown", last_seen: ago(2), row_count: 358, produces: ["paid acquisition rows", "product signal"], latest_cards: [] },
+  ] };
 const value = reply[args];
 if (value) { console.log(JSON.stringify(value)); process.exit(0); }
 console.log(JSON.stringify({ generated_at: iso(0) }));
@@ -98,6 +116,7 @@ console.log(JSON.stringify({ generated_at: iso(0) }));
   const { BANNED_PHRASES, findBannedPhrases, MEMORY_CHOICE_HANDOFF } = await import("../src/lib/plain-words.ts");
   const { default: Memory } = await import("../src/app/memory/page.tsx");
   const { default: Rules } = await import("../src/app/standing-law/page.tsx");
+  const { default: Sources } = await import("../src/app/sources/page.tsx");
 
   const router = Object.fromEntries(["push", "replace", "refresh", "back", "forward", "prefetch"].map((k) => [k, () => {}]));
   const wrap = (path, element) =>
@@ -109,6 +128,8 @@ console.log(JSON.stringify({ generated_at: iso(0) }));
   const settled = async (render) => { await render(); await compound.settleProjectionReads(); return render(); };
   const renderMemory = async () => wrap("/memory", await Memory({ searchParams: Promise.resolve({}) }));
   const renderRules = async () => wrap("/standing-law", await Rules());
+  const renderSources = async (status) => wrap("/sources", await Sources({ searchParams: Promise.resolve(status ? { status } : {}) }));
+  const card = (html, id) => (html.match(new RegExp(`<article id="source-${id}"[\\s\\S]*?</article>`)) ?? [""])[0];
   // What the person reads: tags out, the closed "For agents" disclosures out.
   const forAgents = /<details[^>]*>\s*<summary[^>]*>For agents[\s\S]*?<\/details>/g;
   const visible = (html) => html.replace(forAgents, " ").replace(/<[^>]+>/g, " ").replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/\s+/g, " ");
@@ -214,6 +235,54 @@ console.log(JSON.stringify({ generated_at: iso(0) }));
     assert.doesNotMatch(rulesText, /Adjudicate on|\/memory/);
 
     console.log("knowledge-pages cases ok: Rules");
+
+    /* ---------- Sources ---------- */
+    // KNOW-17: a read not landed is "reading", a failed read says so; never zeros.
+    compound.invalidateRunJsonCache();
+    process.env.KNOWLEDGE_CASES_FAIL = "source connections";
+    const sourcesCold = await renderSources();
+    assert.match(visible(sourcesCold), /Reading the source connections for the first time/);
+    assert.match(visible(sourcesCold), /— sources in all/, "unknown tiles show —");
+    assert.doesNotMatch(visible(sourcesCold), /\b0 sources in all|\b0 out of date|live ·/);
+    await compound.settleProjectionReads();
+    const sourcesFailed = visible(await renderSources());
+    assert.match(sourcesFailed, /Could not read the source connections/);
+    assert.match(sourcesFailed, /— sources in all/);
+    assert.doesNotMatch(sourcesFailed, /\b0 sources in all|No sources are listed|live ·/, "a failed read never shows zeros or an empty list");
+    delete process.env.KNOWLEDGE_CASES_FAIL;
+    compound.invalidateRunJsonCache();
+
+    const sources = await settled(() => renderSources());
+    const sourcesText = visible(sources);
+    for (const phrase of findBannedPhrases(sourcesText)) assert.fail(`Sources shows a banned phrase: ${phrase}`);
+    // KNOW-15: one status per source that agrees with its date; tiles add up.
+    assert.match(visible(card(sources, "fx_feed_old")), /Out of date .*No new data since 27 days ago/, "a 27-day-old feed is out of date, whatever the CLI label");
+    assert.match(visible(card(sources, "fx_feed_recent")), /Up to date .*Last data 2 days ago/, "a 2-day-old feed is up to date");
+    assert.match(visible(card(sources, "fx_import_old")), /Imported .*Last import 137 days ago/);
+    assert.doesNotMatch(card(sources, "fx_import_old"), /text-good/, "an old import is never shown green");
+    assert.match(visible(card(sources, "fx_never")), /Not connected/);
+    assert.match(visible(card(sources, "fx_setup")), /Needs setup/);
+    assert.doesNotMatch(sourcesText, /availability|unknown ·|observed|stale\b/i, "no raw CLI labels and no unknown availability");
+    assert.match(sourcesText, /6 sources in all 1 out of date 1 need setup 0 age unknown 2 up to date 1 imported 1 not connected/, "tiles name what they count and add up");
+    assert.doesNotMatch(sourcesText, /\b99\b|\b42\b/, "the page never shows the CLI's own (wrong) totals");
+    // Tiles filter, and the filter is in the address.
+    assert.match(sources, /href="\/sources\?status=out_of_date#source-connections"/);
+    const outOfDate = await renderSources("out_of_date");
+    assert.ok(card(outOfDate, "fx_feed_old") && !card(outOfDate, "fx_feed_recent"), "the out-of-date filter shows only out-of-date sources");
+    // KNOW-12: no dead button; one real next step; commands only for agents, labelled.
+    assert.doesNotMatch(sources, /<button[^>]*\sdisabled=""/);
+    assert.doesNotMatch(sourcesText, /Plan intake work|Check connection settings/);
+    assert.doesNotMatch(sources, /href="\/settings/, "no link to a page that cannot fix it");
+    assert.match(visible(card(sources, "fx_feed_old")), /Nothing refreshes it yet: it needs a private setting on this computer, which an agent adds with you\./);
+    assert.match(card(sources, "fx_feed_recent"), /href="\/apps\/fixture-app"[^>]*>See this app&#x27;s numbers/, "a source that names an app links to it");
+    assert.match(card(sources, "fx_ads_recent"), /href="\/apps"[^>]*>See app numbers/);
+    assert.match(sources, /For agents: look at this source \(these commands do not refresh it\)/);
+    assert.match(sources, /compound product loops --product product:fixture-app --json/, "the read-only command is still there for agents");
+    assert.doesNotMatch(sourcesText, /compound /, "no command in the text he reads");
+    // KNOW-21: kit tokens only, so dark mode applies.
+    assert.doesNotMatch(sources, /bg-(emerald|slate|amber|red|violet|blue|pink)-\d{2,3}|text-(emerald|slate|amber)-\d{3}/, "no fixed light-only colours");
+
+    console.log("knowledge-pages cases ok: Sources");
   } finally {
     await compound.settleProjectionReads();
     await rm(scratch, { recursive: true, force: true });

@@ -1,238 +1,149 @@
-import { PageHeader } from "@/components/kit";
-import { CopyCmd } from "@/components/CopyCmd";
+import Link from "next/link";
+
+import { PageHeader, EmptyState, hasCopy, ReadChip, ReadFailedBanner, ReadNotice, readsPending, StatusChip } from "@/components/kit";
+import { PendingRefresh } from "@/components/PendingRefresh";
+import { ForAgents } from "@/components/settings/primitives";
 import { SourceIntakeButton } from "@/components/SourceIntakeButton";
-import { Card, Chip, EmptyState, FreshnessChip, Stat, type Accent } from "@/components/ui";
-import { arr, getSourceConnections, str, type Json } from "@/lib/compound";
-import { ago } from "@/lib/time";
+import { readProjection } from "@/lib/compound";
+import { countSourcesByStatus, unit } from "@/lib/counts";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
+import { appHref } from "@/lib/links";
+import {
+  compareSources,
+  isSourceStatusKey,
+  SOURCE_STALE_AFTER_HOURS,
+  SOURCE_STATUS_ORDER,
+  SOURCE_STATUS_WORDS,
+  sourceView,
+  type SourceView,
+} from "@/lib/sources";
 
 export const dynamic = "force-dynamic";
 
-const INTAKE_CARD_RE = /^sicard_[a-z0-9]+$/;
+/*
+ * Sources — where the agents' information comes from, and whether it is
+ * current. One plain status per source, derived from the date the card shows
+ * (lib/sources.ts), so a label never contradicts its date. The tiles count
+ * those statuses, add up to the total, and filter the list (`?status=`, so
+ * reload, Back and a pasted link keep it). The read is non-blocking: no copy
+ * yet reads as "reading", a failed read as "could not read", never as zeros.
+ *
+ * Nothing on this page refreshes a source. Each card says in one sentence
+ * what happens next and who handles it; the read-only commands that look at
+ * a source sit behind "For agents". The intake-planning button renders only
+ * when console readiness lets the browser act.
+ */
 
-function stateTone(value: string): Accent {
-  switch (value) {
-    case "healthy":
-    case "imported":
-    case "observed":
-    case "configured":
-      return "green";
-    case "needs_private_config":
-    case "needs_private_input":
-      return "orange";
-    case "needs_review":
-    case "has_cards":
-      return "violet";
-    case "stale":
-    case "failing":
-      return "red";
-    case "not_configured":
-    case "never_seen":
-    case "unknown":
-      return "gray";
-    default:
-      return "gray";
-  }
+const SOURCES_ARGS = ["source", "connections", "--json"];
+
+function sourcesHref(status: string): string {
+  return status ? `/sources?status=${encodeURIComponent(status)}#source-connections` : "/sources#source-connections";
 }
 
-function stateLabel(value: string): string {
-  switch (value) {
-    case "healthy":
-      return "healthy";
-    case "configured":
-      return "configured";
-    case "needs_private_config":
-      return "needs private config";
-    case "not_configured":
-      return "not configured";
-    case "unknown":
-      return "unknown";
-    case "never_seen":
-      return "never seen";
-    case "has_cards":
-      return "has cards";
-    case "needs_private_input":
-      return "needs private input";
-    case "needs_review":
-      return "needs review";
-    case "imported":
-      return "imported";
-    case "observed":
-      return "observed";
-    case "stale":
-      return "stale";
-    case "failing":
-      return "failing";
-    default:
-      return value.replace(/_/g, " ") || "unknown";
-  }
-}
-
-function shellArg(arg: string): string {
-  if (/^[A-Za-z0-9_./:=@+-]+$/.test(arg)) return arg;
-  return JSON.stringify(arg);
-}
-
-function commandText(command: unknown): string {
-  return arr(command).map(String).filter(Boolean).map(shellArg).join(" ");
-}
-
-function SourceActionCard({ card, mutationsEnabled }: { card: Json; mutationsEnabled: boolean }) {
-  const command = commandText(card.command);
-  const inputs = arr(card.required_inputs).map(String).filter(Boolean);
-  const validation = arr(card.expected_validation).map(String).filter(Boolean);
-  const stops = arr(card.stop_conditions).map(String).filter(Boolean);
-  const cardId = str(card.id);
-  const intakeable = INTAKE_CARD_RE.test(cardId);
-
+function SourceCard({ view, mutationsEnabled }: { view: SourceView; mutationsEnabled: boolean }) {
   return (
-    <li className="border-t border-line pt-3 first:border-t-0 first:pt-0">
-      <div className="flex flex-wrap items-center gap-1.5">
-        <Chip tone={stateTone(str(card.severity) === "high" ? "needs_private_input" : "needs_review")}>
-          {str(card.severity) || "review"}
-        </Chip>
-        {str(card.kind) ? <Chip tone="gray">{str(card.kind).replace(/_/g, " ")}</Chip> : null}
+    <article id={`source-${view.id}`} className="scroll-mt-6 rounded-lg border border-hair bg-panel p-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <h3 className="text-sm font-semibold text-ink">{view.label}</h3>
+        <StatusChip tone={view.status.tone} label={view.status.label} />
       </div>
-      <div className="mt-2 text-[12.5px] font-medium leading-snug text-ink">
-        {str(card.title) || "Source action"}
-      </div>
-      {inputs.length ? (
-        <p className="mt-1 text-[11.5px] leading-relaxed text-ink-3">Needs: {inputs.join("; ")}</p>
+      <p className="mt-1 text-xs text-muted">
+        {view.status.detail}
+        {view.rows !== null && view.rows > 0 ? ` ${unit(view.rows, "row")} on record.` : ""}
+        {view.availability ? ` ${view.availability}.` : ""}
+        {view.needsPrivateSetting && view.status.key !== "needs_setup" ? " Needs a private setting on this computer to refresh." : ""}
+      </p>
+      {view.produces.length ? (
+        <p className="mt-1 text-xs text-muted">Brings in: {view.produces.slice(0, 4).join(", ")}.</p>
       ) : null}
-      {validation.length ? (
-        <p className="mt-1 text-[11.5px] leading-relaxed text-ink-3">
-          Good result: {validation.slice(0, 2).join("; ")}
-        </p>
+      <p className="mt-2 text-xs leading-relaxed text-ink">{view.next}</p>
+      {view.link ? (
+        <Link href={view.link.href} className="mt-1 inline-flex text-xs font-semibold text-work hover:underline">{view.link.label} →</Link>
       ) : null}
-      {stops.length ? (
-        <p className="mt-1 text-[11.5px] leading-relaxed text-ink-3">Stop if: {stops.slice(0, 2).join("; ")}</p>
+      {mutationsEnabled && view.intakeCards.length ? (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {view.intakeCards.map((card) => <SourceIntakeButton key={card.id} cardId={card.id} mutationsEnabled={mutationsEnabled} />)}
+        </div>
       ) : null}
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        {intakeable ? <SourceIntakeButton cardId={cardId} mutationsEnabled={mutationsEnabled} /> : null}
-        {command ? <CopyCmd cmd={command} compact /> : null}
-      </div>
-    </li>
+      <ForAgents label="For agents: look at this source (these commands do not refresh it)" cmds={view.inspectCommands}>
+        <ul className="flex flex-col gap-0.5 text-2xs text-faint">
+          {view.recordedNextStep ? <li>Recorded next step: {view.recordedNextStep}</li> : null}
+          {view.intakeCards.map((card) => <li key={card.id}>Card: {card.title || "untitled"} <span className="mono">({card.id})</span></li>)}
+          {view.sourceRef ? <li className="mono break-all">ref: {view.sourceRef}</li> : null}
+          {view.sourceKinds.length ? <li className="mono break-all">kinds: {view.sourceKinds.join(", ")}</li> : null}
+          <li className="mono">id: {view.id}</li>
+        </ul>
+      </ForAgents>
+    </article>
   );
 }
 
-function SourceConnectionCard({ connection, mutationsEnabled }: { connection: Json; mutationsEnabled: boolean }) {
-  const availability = str(connection.availability) || "unknown";
-  const evidenceState = str(connection.evidence_state) || "never_seen";
-  const sourceKinds = arr(connection.source_kinds).map(String).filter(Boolean);
-  const produces = arr(connection.produces).map(String).filter(Boolean);
-  const cards = arr(connection.latest_cards);
-  const lastSeen = str(connection.last_seen);
-
-  return (
-    <Card
-      title={str(connection.label) || str(connection.id)}
-      accent={stateTone(availability)}
-      glyph="S"
-      right={<Chip tone={stateTone(evidenceState)}>{stateLabel(evidenceState)}</Chip>}
-    >
-      <div className="flex flex-col gap-3">
-        <div className="flex flex-wrap gap-1.5">
-          {sourceKinds.slice(0, 4).map((kind) => (
-            <Chip key={kind} tone="gray">
-              {kind}
-            </Chip>
-          ))}
-          <Chip tone={stateTone(availability)}>availability: {stateLabel(availability)}</Chip>
-          {connection.private_setup_needed ? <Chip tone="orange">private setup</Chip> : null}
-          {connection.row_count ? <Chip tone="blue">{connection.row_count} rows</Chip> : null}
-          {lastSeen ? <Chip tone="gray">{ago(lastSeen) || lastSeen}</Chip> : null}
-        </div>
-
-        {produces.length ? (
-          <div>
-            <div className="section-label mb-1">Produces</div>
-            <div className="flex flex-wrap gap-1.5">
-              {produces.slice(0, 5).map((item) => (
-                <Chip key={item} tone="green">
-                  {item}
-                </Chip>
-              ))}
-            </div>
-          </div>
-        ) : null}
-
-        <div>
-          <div className="section-label mb-1">Next step</div>
-          <p className="text-[12.5px] leading-relaxed text-ink-2">
-            {str(connection.next_safe_action) || "No next step has been recorded."}
-          </p>
-        </div>
-
-        {str(connection.source_ref) ? (
-          <code className="mono break-all text-[10.5px] leading-relaxed text-ink-3">{str(connection.source_ref)}</code>
-        ) : null}
-
-        {cards.length ? (
-          <div>
-            <div className="section-label mb-2">Latest cards</div>
-            <ul className="flex flex-col gap-3">
-              {cards.map((card) => (
-                <SourceActionCard
-                  key={str(card.id) || str(card.kind)}
-                  card={card}
-                  mutationsEnabled={mutationsEnabled}
-                />
-              ))}
-            </ul>
-          </div>
-        ) : null}
-      </div>
-    </Card>
-  );
-}
-
-export default async function SourcesPage() {
-  const projection = await getSourceConnections();
-  const connections = arr(projection?.connections);
-  const counts = (projection?.counts ?? {}) as Json;
+export default async function SourcesPage({ searchParams }: { searchParams?: Promise<{ status?: string }> }) {
+  const requested = (await searchParams)?.status ?? "";
+  const status = isSourceStatusKey(requested) ? requested : "";
+  const read = await readProjection(SOURCES_ARGS);
   const mutationsEnabled = computeConsoleMutationReadiness(consoleMutationsEnabled()).ready;
+  const nowMs = Date.now();
+  const known = hasCopy(read);
+  const connections = known && Array.isArray(read.value?.connections) ? (read.value!.connections as Record<string, unknown>[]) : [];
+  const views = connections.map((connection) => sourceView(connection, nowMs, appHref)).sort(compareSources);
+  const counts = known ? countSourcesByStatus(views) : null;
+  const shown = status ? views.filter((view) => view.status.key === status) : views;
+
+  const tile = (key: string, label: string, n: number | null) => {
+    const active = status === key;
+    return (
+      <Link
+        key={key || "all"}
+        href={active && key ? sourcesHref("") : sourcesHref(key)}
+        aria-current={active ? "true" : undefined}
+        scroll={false}
+        className={`flex flex-col gap-0.5 rounded-lg border px-3 py-2 transition-colors ${active ? "border-strong bg-soft-2" : "border-hair bg-panel hover:bg-soft"}`}
+      >
+        <span className="text-xl font-extrabold tabular-nums text-ink">{n === null ? "—" : n.toLocaleString("en-US")}</span>
+        <span className="text-xs text-muted">{label}</span>
+      </Link>
+    );
+  };
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader name="Sources" action={!connections.length ? { label: "Check connection settings", href: "/settings?section=agent-connections" } : undefined} lead="Check which connections are bringing in useful, current information." right={<FreshnessChip generatedAt={str(projection?.generated_at)} source="compound source connections --json" />} />
+      <PendingRefresh pending={readsPending(read)} stamp={nowMs} />
+      <PageHeader
+        name="Sources"
+        lead="Where your agents' information comes from, and whether it is current. Nothing on this page refreshes a source."
+        right={<ReadChip read={read} />}
+      />
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Stat label="Sources" value={Number(counts.total) || connections.length} glyph="S" accent="blue" />
-        <Stat
-          label="Evidence"
-          value={
-            (Number(counts.evidence_observed) || 0) +
-            (Number(counts.evidence_imported) || 0) +
-            (Number(counts.evidence_has_cards) || 0) +
-            (Number(counts.evidence_stale) || 0)
-          }
-          glyph=">"
-          accent="green"
-        />
-        <Stat
-          label="Private setup"
-          value={Number(counts.availability_needs_private_config) || 0}
-          glyph="!"
-          accent="orange"
-        />
-        <Stat label="Cards" value={Number(counts.action_required) || 0} glyph="C" accent="violet" />
-      </div>
+      <nav aria-label="Sources by status" className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+        {tile("", "sources in all", counts ? counts.total : null)}
+        {SOURCE_STATUS_ORDER.map((key) => tile(key, SOURCE_STATUS_WORDS[key].plural, counts ? (counts.byStatus[key] ?? 0) : null))}
+      </nav>
+      <p className="-mt-3 text-2xs text-faint">
+        A source that brings in data regularly is out of date after {SOURCE_STALE_AFTER_HOURS} hours without new data. Imports happen once and are not judged by age.
+      </p>
 
-      <div id="source-connections" tabIndex={-1} className="scroll-mt-6" />
-      {connections.length ? (
-        <div className="grid gap-4 lg:grid-cols-2">
-          {connections.map((connection) => (
-            <SourceConnectionCard
-              key={str(connection.id)}
-              connection={connection}
-              mutationsEnabled={mutationsEnabled}
-            />
-          ))}
-        </div>
-      ) : (
-        <EmptyState>No connections could be loaded. Open Settings to check the connection setup.</EmptyState>
-      )}
+      <section id="source-connections" tabIndex={-1} className="scroll-mt-6 flex flex-col gap-3">
+        {!known ? (
+          <ReadNotice read={read} label="the source connections" />
+        ) : (
+          <>
+            <ReadFailedBanner read={read} label="the source connections" />
+            {shown.length ? (
+              <div className="grid gap-3 lg:grid-cols-2">
+                {shown.map((view) => <SourceCard key={view.id} view={view} mutationsEnabled={mutationsEnabled} />)}
+              </div>
+            ) : views.length ? (
+              <EmptyState>
+                No source is {SOURCE_STATUS_WORDS[status as keyof typeof SOURCE_STATUS_WORDS]?.plural ?? "in this group"}. <Link href={sourcesHref("")} className="font-semibold text-work hover:underline">Show every source →</Link>
+              </EmptyState>
+            ) : (
+              <EmptyState>No sources are listed yet.</EmptyState>
+            )}
+          </>
+        )}
+      </section>
     </div>
   );
 }

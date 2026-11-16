@@ -97,6 +97,19 @@ export function countAcceptedMemories(canon: unknown): AcceptedMemoryCount | nul
   return { total: reply.total, byKind };
 }
 
+/* ---------- sources (the Sources page) ---------- */
+
+/**
+ * Sources by their one status (lib/sources.ts `sourceView`). Unit: sources.
+ * The statuses add up to `total`. A page whose connections read has no copy
+ * passes nothing and shows the counts as unknown, never 0.
+ */
+export function countSourcesByStatus(views: readonly { status: { key: string } }[]): { total: number; byStatus: Record<string, number> } {
+  const byStatus: Record<string, number> = {};
+  for (const view of views) byStatus[view.status.key] = (byStatus[view.status.key] ?? 0) + 1;
+  return { total: views.length, byStatus };
+}
+
 /* ---------- open work ---------- */
 
 /** Open work items: every item the work projection lists as not finished. Unit: work items. */
