@@ -435,3 +435,55 @@ func TestOneNamePerAppAcrossOwnerGrowthAndResults(t *testing.T) {
 		t.Fatalf("results row for the app = %+v, want one row naming both spellings and both signals", tide)
 	}
 }
+
+// TestResolveAppSetsOneAppOrNone pins the rule work binding relies on: an app
+// is set only when every recorded key that names an app names the same one,
+// it is the app's one group id, and the key that decided it is reported. Two
+// candidate apps, a folder that only looks like an app, or a bare name set
+// nothing.
+func TestResolveAppSetsOneAppOrNone(t *testing.T) {
+	withCheckout := func(b Bundle, path string) Bundle {
+		b.Product.Surfaces = append(b.Product.Surfaces, Surface{ID: "checkout", Kind: "repo", Ref: path})
+		return b
+	}
+	store := whereStore(t,
+		withCheckout(deployedBundle("product:cask", "Cask", "place:app_store_connect", ""), "/workspace/products/cask"),
+		registryBundle("product:tide-log", "Tide Log"),
+		withCheckout(deployedBundle("product:tide_log", "Tide Log", "place:build-host", "make deploy"), "/workspace/products/tide"),
+		withCheckout(registryBundle("product:alder", "Alder"), "/workspace/shared"),
+		withCheckout(registryBundle("product:birch", "Birch"), "/workspace/shared"),
+	)
+	writeGrowthSignals(t, store.HomePath(), growthRow{product: "product:tide-log", metric: growthSalesFirstDownloads, date: growthDay(1), value: 1})
+	resolver, err := NewAppResolver(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name                 string
+		keys                 AppKeys
+		status, product, key string
+	}{
+		{"product surface folds spellings to the one name", AppKeys{Surface: "product:tide_log"}, AppBound, "product:tide-log", AppKeySurfaceProduct},
+		{"product surface with detail", AppKeys{Surface: "product:tidelog:release"}, AppBound, "product:tide-log", AppKeySurfaceProduct},
+		{"surface folder inside a checkout", AppKeys{Surface: "/workspace/products/cask/Sources"}, AppBound, "product:cask", AppKeySurfacePath},
+		{"worktree inside a checkout", AppKeys{Worktree: "/workspace/products/tide/ios"}, AppBound, "product:tide-log", AppKeyWorktree},
+		{"context folder", AppKeys{ContextFolder: "/workspace/products/cask"}, AppBound, "product:cask", AppKeyContextFolder},
+		{"keys that agree", AppKeys{Surface: "product:cask", Worktree: "/workspace/products/cask/app"}, AppBound, "product:cask", AppKeySurfaceProduct},
+		{"two keys name two apps", AppKeys{Worktree: "/workspace/products/tide", ContextFolder: "/workspace/products/cask"}, AppAmbiguous, "", ""},
+		{"one folder two apps claim", AppKeys{Worktree: "/workspace/shared/app"}, AppAmbiguous, "", ""},
+		{"a folder that only looks like an app", AppKeys{Worktree: "/workspace/lanes/tide-log-fix"}, AppNone, "", ""},
+		{"a bare name", AppKeys{Surface: "tide log"}, AppNone, "", ""},
+		{"an unknown product", AppKeys{Surface: "product:no-such-app"}, AppNone, "", ""},
+	} {
+		got := resolver.Resolve(tc.keys)
+		if got.Status != tc.status || got.ProductID != tc.product || got.Key != tc.key {
+			t.Errorf("%s: got %+v, want status %s product %q key %q", tc.name, got, tc.status, tc.product, tc.key)
+		}
+		if got.Status == AppAmbiguous && len(got.Candidates) != 2 {
+			t.Errorf("%s: candidates = %v, want both apps named", tc.name, got.Candidates)
+		}
+		if strings.TrimSpace(got.Reason) == "" {
+			t.Errorf("%s: no reason recorded", tc.name)
+		}
+	}
+}

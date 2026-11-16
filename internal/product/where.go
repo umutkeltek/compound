@@ -696,6 +696,179 @@ func (idx *whereIndex) legacy(members []int) map[string]string {
 	return out
 }
 
+// App binding statuses: the answer to "which app is this work for".
+const (
+	AppBound     = "bound"     // exactly one app matches by a recorded key
+	AppNone      = "none"      // no recorded key names an app
+	AppAmbiguous = "ambiguous" // recorded keys name more than one app; nothing is set
+)
+
+// App binding keys, in the order they are consulted. Each is a value the work
+// itself records; none is a guess from a name.
+const (
+	AppKeySurfaceProduct = "surface_product" // canonical surface is product:<id>[:...]
+	AppKeySurfacePath    = "surface_path"    // canonical surface is a folder
+	AppKeyWorktree       = "worktree"        // the git worktree the work runs in
+	AppKeyContextFolder  = "context_folder"  // the folder its context pack was built for
+)
+
+// AppKeys are the recorded values of one piece of work that can name its app.
+type AppKeys struct {
+	Surface       string
+	Worktree      string
+	ContextFolder string
+}
+
+// AppBinding is the owner's answer for one piece of work. ProductID is the
+// app's group id, set only when Status is bound; Key names the recorded key
+// that decided it. Reason says why in plain words, also when nothing is set.
+type AppBinding struct {
+	Status     string   `json:"status"`
+	ProductID  string   `json:"product_id,omitempty"`
+	Key        string   `json:"key,omitempty"`
+	Candidates []string `json:"candidates,omitempty"`
+	Reason     string   `json:"reason"`
+}
+
+// AppResolver answers AppBinding questions against one read of the identity
+// owner, so a caller binding many items reads the ledger once.
+type AppResolver struct{ idx *whereIndex }
+
+// NewAppResolver reads the identity owner once.
+func NewAppResolver(store *mem.Store) (*AppResolver, error) {
+	idx, err := loadWhereIndex(store)
+	if err != nil {
+		return nil, err
+	}
+	return &AppResolver{idx: idx}, nil
+}
+
+// ResolveApp is NewAppResolver(store).Resolve(keys).
+func ResolveApp(store *mem.Store, keys AppKeys) (AppBinding, error) {
+	r, err := NewAppResolver(store)
+	if err != nil {
+		return AppBinding{}, err
+	}
+	return r.Resolve(keys), nil
+}
+
+// Resolve sets an app only when every recorded key that names an app names
+// the same one. A key that names two apps, or two keys that name different
+// apps, leave it empty: a wrong label is worse than none. A product reference
+// must resolve through the owner (slug, separator fold, identifier or declared
+// alias); a folder must lie inside a checkout a product records, by longest
+// path. A folder whose name merely looks like an app names nothing.
+func (r *AppResolver) Resolve(keys AppKeys) AppBinding {
+	type hit struct {
+		key    string
+		groups []string
+	}
+	var hits []hit
+	if ref, ok := productSurfaceRef(keys.Surface); ok {
+		hits = append(hits, hit{AppKeySurfaceProduct, r.idx.groupIDs(r.idx.match(ref))})
+	} else if path := absPath(keys.Surface); path != "" {
+		hits = append(hits, hit{AppKeySurfacePath, r.idx.pathGroupIDs(path)})
+	}
+	if path := absPath(keys.Worktree); path != "" {
+		hits = append(hits, hit{AppKeyWorktree, r.idx.pathGroupIDs(path)})
+	}
+	if path := absPath(keys.ContextFolder); path != "" {
+		hits = append(hits, hit{AppKeyContextFolder, r.idx.pathGroupIDs(path)})
+	}
+	named := map[string]bool{}
+	var said []string
+	key := ""
+	for _, h := range hits {
+		if len(h.groups) == 0 {
+			continue
+		}
+		if key == "" {
+			key = h.key
+		}
+		said = append(said, h.key+" names "+strings.Join(h.groups, " and "))
+		for _, g := range h.groups {
+			named[g] = true
+		}
+	}
+	var candidates []string
+	for g := range named {
+		candidates = append(candidates, g)
+	}
+	sort.Strings(candidates)
+	switch len(candidates) {
+	case 0:
+		return AppBinding{Status: AppNone, Reason: "no recorded key names an app"}
+	case 1:
+		return AppBinding{Status: AppBound, ProductID: candidates[0], Key: key, Reason: strings.Join(said, "; ")}
+	}
+	return AppBinding{Status: AppAmbiguous, Candidates: candidates, Reason: "more than one app matches (" + strings.Join(said, "; ") + "); left empty"}
+}
+
+// productSurfaceRef returns the product reference a canonical surface names:
+// product:<id>, optionally followed by :<detail>. Anything else names none.
+func productSurfaceRef(surface string) (string, bool) {
+	surface = strings.TrimSpace(surface)
+	if !strings.HasPrefix(strings.ToLower(surface), "product:") {
+		return "", false
+	}
+	id := surface[len("product:"):]
+	if cut := strings.Index(id, ":"); cut >= 0 {
+		id = id[:cut]
+	}
+	if id == "" || strings.ContainsAny(id, "/\\ \t") {
+		return "", false
+	}
+	return "product:" + id, true
+}
+
+func absPath(value string) string {
+	value = strings.TrimSpace(value)
+	if !filepath.IsAbs(value) {
+		return ""
+	}
+	return filepath.Clean(value)
+}
+
+// groupIDs names the groups a match selected.
+func (idx *whereIndex) groupIDs(matched map[int]map[string]bool) []string {
+	var out []string
+	for root := range matched {
+		out = append(out, idx.groupID(root))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// pathGroupIDs names the groups whose recorded checkout holds path, by the
+// longest recorded checkout; two groups at that same depth both answer.
+func (idx *whereIndex) pathGroupIDs(path string) []string {
+	longest := -1
+	roots := map[int]bool{}
+	for i, e := range idx.entities {
+		for _, id := range e.Identifiers {
+			if !filepath.IsAbs(id) {
+				continue
+			}
+			root := filepath.Clean(id)
+			if path != root && !strings.HasPrefix(path, root+string(filepath.Separator)) {
+				continue
+			}
+			switch {
+			case len(root) > longest:
+				longest = len(root)
+				roots = map[int]bool{idx.find(i): true}
+			case len(root) == longest:
+				roots[idx.find(i)] = true
+			}
+		}
+	}
+	matched := map[int]map[string]bool{}
+	for root := range roots {
+		matched[root] = nil
+	}
+	return idx.groupIDs(matched)
+}
+
 // RunWhereCLI is `compound product where`. It lives here rather than in
 // cmd/compound, which sits on its file-count ratchet; cmd/compound only
 // dispatches. An unresolved or ambiguous query exits 1 so a script cannot
