@@ -437,6 +437,22 @@ try {
   // On hold is the first column on the board when it has items.
   const columns = [...header.html.matchAll(/<section[^>]*aria-label="([^"]+)"/g)].map((m) => m[1]);
   assert.equal(columns[0], "On hold", `on hold leads the board: ${columns.join(", ")}`);
+  // Retired views open the board; Work shows three views and no activity section.
+  for (const lens of ["pipeline", "flow", "space", "offered"]) {
+    const retired = await renderWork(`lens=${lens}`);
+    assert.match(retired.html, /aria-label="On hold"/, `lens=${lens} opens the board`);
+  }
+  assert.doesNotMatch(header.text, /Stages|By agent|Work packets|Recent activity/, "the retired views and the activity section left Work");
+  // The board's search and agent filter come from the address; a search with no match says so and offers a way out.
+  const noMatch = await renderWork("q=zz-nothing-matches");
+  assert.match(noMatch.text, /No work matches .zz-nothing-matches.\. Clear search/);
+  assert.match(noMatch.text, /No match in this column\./);
+  assert.match(noMatch.text, /0 of 6 open match/);
+  const byAgent = await renderWork("owner=claude-code");
+  assert.match(byAgent.text, /2 of 6 open match/, "the agent filter keeps that agent's cards in any spelling");
+  assert.match(header.text, /6 open(?! match)/, "one total, named");
+  // A card names its app and its agent on one line.
+  assert.match(header.text, /F Fixture App · Claude Code Fixture item on hold/);
   const css = (await import("node:fs")).readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
   assert.doesNotMatch(css, /\.work-focus-row::(before|after)/, "a generated box on a table row becomes an extra cell and shifts the columns");
   assert.match(warm.Today, /7 decisions wait for you, with 13 items in all/);

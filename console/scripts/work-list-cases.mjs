@@ -70,4 +70,36 @@ assert.equal(projectsRedirectHref({ view: "map" }), "/work?lens=project");
 assert.equal(projectsRedirectHref(new URLSearchParams("scope=__unlinked__")), "/work?lens=project");
 assert.equal(projectsRedirectHref(null), "/work?lens=project");
 
+// Board cards: the stale mark from the one rule, the app from the index,
+// the agent by name, and a hint when a title repeats in its column.
+{
+  const { buildBoard, decorateBoard } = await import("../src/lib/work-pipeline.ts");
+  const ns = (days) => String(BigInt(NOW - days * DAY) * 1_000_000n);
+  const open = [
+    { work_id: "work_rep_a", state: "running", owner: "fixture_agent:lane-1", claimed_at: ns(9), title: "Same fixture title" },
+    { work_id: "work_rep_b", state: "running", owner: "fixture_agent:lane-2", claimed_at: ns(1), title: "Same fixture title" },
+    { work_id: "work_one_c", state: "ready", owner: "operator:someone", title: "A different fixture title" },
+  ];
+  const groups = { work_rep_a: { id: "product:fixture-app", name: "Fixture App", kind: "app" } };
+  const cards = decorateBoard(buildBoard(open, []), open, { nowMs: NOW, groupOf: (id) => groups[id] ?? null }).flatMap((c) => c.cards);
+  const card = (id) => cards.find((c) => c.workId === id);
+  assert.equal(card("work_rep_a").stale, true, "picked up 9 days ago and still running");
+  assert.equal(card("work_rep_b").stale, false);
+  assert.equal(card("work_rep_a").projectName, "Fixture App");
+  assert.equal(card("work_rep_b").projectName, "", "unknown group: no app named");
+  assert.match(card("work_rep_a").repeatHint, /One of 2 with this title · fixture_agent:lane-1/);
+  assert.notEqual(card("work_rep_a").repeatHint, card("work_rep_b").repeatHint, "repeated titles are told apart");
+  assert.equal(card("work_one_c").repeatHint, "");
+  assert.equal(card("work_one_c").agentName, "You", "the operator by the agent's one name");
+}
+
+// Back steps through views, filters and the preview (push); typing replaces.
+{
+  const { readFileSync } = await import("node:fs");
+  const shell = readFileSync(new URL("../src/components/work/WorkLenses.tsx", import.meta.url), "utf8");
+  assert.match(shell, /replaceParams\(\{ trace: workId \}, "push"\)/, "opening a preview is a step Back closes");
+  assert.match(shell, /replaceParams\(\{ lens: next \}, "push"\)/, "a view change is a step");
+  assert.doesNotMatch(shell, /data-depth-min/, "nothing on Work depends on a depth control Work does not show");
+}
+
 console.log("work-list cases ok: filters, agent/app/group/search narrowing, stale oldest first, by-app links, retired Projects addresses");

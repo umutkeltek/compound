@@ -62,8 +62,10 @@ for (const params of roundTrips) {
 // (WorkLenses / work/page.tsx and WorkTableLens), so links built here open
 // what the page shows. A new view or filter on the page must be added here.
 const workPage = readFileSync(new URL("../src/app/work/page.tsx", import.meta.url), "utf8");
-const pageLenses = [...(/allowedLenses = new Set<WorkLensKey>\(\[([^\]]+)\]/.exec(workPage)?.[1] ?? "").matchAll(/"([a-z]+)"/g)].map((m) => m[1]);
-assert.ok(pageLenses.length >= 6, `found the Work page's lenses: ${pageLenses}`);
+assert.match(workPage, /parseWorkListParams\(await searchParams\)/, "the Work page reads its parameters through the one parser");
+const workShell = readFileSync(new URL("../src/components/work/WorkLenses.tsx", import.meta.url), "utf8");
+const pageLenses = [...(/SHOWN_LENSES[^=]*= new Set<WorkLens>\(\[([^\]]+)\]/.exec(workShell)?.[1] ?? "").matchAll(/"([a-z]+)"/g)].map((m) => m[1]);
+assert.ok(pageLenses.length >= 3, `found the Work page's views: ${pageLenses}`);
 for (const lens of pageLenses) assert.ok(WORK_LENSES.includes(lens), `lens ${lens} read by the Work page is known to the parser`);
 const tableLens = readFileSync(new URL("../src/components/work/WorkTableLens.tsx", import.meta.url), "utf8");
 const tableFilters = [...(/const FILTERS\b[^=]*= \[([\s\S]*?)\];/.exec(tableLens)?.[1] ?? "").matchAll(/id: "([a-z]+)"/g)].map((m) => m[1]);

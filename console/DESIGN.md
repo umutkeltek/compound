@@ -488,17 +488,20 @@ registered owner of an action.
 
 ### 10.4 Work starts with intervention
 
-Work defaults to **Table → Needs focus**, ordered by blocked/held, running, verifying, claimed,
-then ready. It initially exposes 18 rows and expands deliberately so a 100-item backlog does not
-become the first screen. Search and state filters stay in the table. Flow answers lifecycle
-position by executor, Space answers harness ownership and current stage, and both open the same
-deep-linked trace. Space keeps its selected-work inspector visible while the lifecycle plane
-scrolls. Pipeline, Board, and Offered packets remain advanced lenses over the same projection.
+Work leads with what is stopped: the header names work on hold and work not moved in over a
+week first, then splits "in progress" into running, picked up and not started, and waiting for a
+proof check. Every number links to the List filtered to exactly those items (`filter=blocked`,
+`stale`, `progress`, `running`, `claimed`, `verifying`, `all`); the stale List is oldest first.
+The List's default filter is "On hold or not moved" (on hold, plus stale), led by on-hold items.
+It initially exposes 18 rows and expands deliberately. Filter, agent, app or group and search
+text live in the address. Every card and row links to the item's own page; a click elsewhere on
+it opens a short preview with the same recorded reason and "Open work page". Stages, Flow,
+By agent and Work packets are retired; their old `lens` values open the board.
 
-Table, Flow, and Space use the WorkEnvelope state for lifecycle filters, priority, color, status
-badges, and accessible work labels. Run status appears separately as execution evidence:
-a successful attempt does not complete work awaiting verification, and a running attempt does
-not override a held work item.
+The board and the List use the work item's state for filters, priority, color, status badges and
+accessible labels. Run status appears separately as execution evidence: a successful attempt
+does not complete work awaiting verification, and a running attempt does not override a held
+work item.
 
 ## 11. Workspace refresh (2026-11-12)
 
@@ -604,10 +607,11 @@ the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line
   kind of decision yet", "The approval record is incomplete: <the tool's reason>", or
   "Checking… (takes a few seconds)" while the opened decision's read runs. Evidence older than
   the live window says what it found and "checked N min ago"; it never says "paused".
-- **Work views.** The board by state is the default; List, Stages, Flow, By agent and Work packets
-  are quieter text tabs beside it. Board columns: Suggested · Ready to start · Running or picked up
-  · On hold · Waiting for a proof check · Done; the two middle in-progress columns add up to the
-  "in progress" number.
+- **Work views.** Three views: the board by state (default), the List, and By app. Board
+  columns: Suggested · Ready to start · Running or picked up · On hold · Waiting for a proof check
+  · Done, with On hold moved to the front whenever it has items; the two in-progress columns add
+  up to the "in progress" number. A card names its app and its agent on one line, and a title that
+  repeats in its column carries a hint that tells the cards apart.
 
 
 ## Console clarity and bounded reads

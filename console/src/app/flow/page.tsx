@@ -1,6 +1,8 @@
 import { redirect } from "next/navigation";
 
-/** Compatibility route for direct rendering environments that skip redirects(). */
+import { workListHref } from "@/lib/links";
+
+/** Compatibility route for direct rendering environments that skip redirects(): the Flow view is retired, so it opens the board. */
 export default function FlowCompatibilityPage() {
-  redirect("/work?lens=flow");
+  redirect(workListHref());
 }

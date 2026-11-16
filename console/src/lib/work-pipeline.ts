@@ -5,6 +5,8 @@ import { WORK_TRANSITIONS, workOptionsFor } from "@/lib/decision-registry";
 import { shortText, workId } from "@/lib/work-data";
 import { agentNameFor, plainWorkStep } from "@/lib/plain-words";
 import { workTitle } from "@/lib/work-title";
+import { agentDisplayName } from "@/lib/harness-label";
+import { isStale } from "@/lib/work-state";
 
 /**
  * Name each card's owner the way Live names agents: the executor lane that
@@ -118,23 +120,14 @@ export type BoardCard = {
   agentName?: string;
   /** the full owner/lane id, small text beside the agent name ("" when the name is the whole id) */
   lane?: string;
-};
-
-export type RailNode = "empty" | "filled" | "seat" | "done" | "run";
-
-export type SignalTile = { count: number; href: string; label: string; sub: string };
-
-export type PipelineStageModel = {
-  key: string;
-  label: string;
-  index: number;
-  tooltip: string;
-  emptyCopy: string;
-  count: number;
-  node: RailNode;
-  seat: boolean;
-  cards: BoardCard[];
-  signal?: SignalTile;
+  /** its app, codebase or "not linked" group (lib/work-project.ts); set by `decorateBoard` */
+  projectId?: string;
+  projectName?: string;
+  projectKind?: string;
+  /** in progress and not moved for more than a week (lib/work-state.ts `isStale`); set by `decorateBoard` */
+  stale?: boolean;
+  /** how to tell this card apart when its title repeats in its column; set by `decorateBoard` */
+  repeatHint?: string;
 };
 
 export type BoardColumnModel = {
@@ -144,15 +137,6 @@ export type BoardColumnModel = {
   tone: StateTone;
   emptyCopy: string;
   cards: BoardCard[];
-};
-
-export type OfferedPacketModel = {
-  key: string;
-  title: string;
-  surface: string;
-  path: string;
-  state: string;
-  tone: StateTone;
 };
 
 /** One contextual governed transition offered on the work-advance state machine. */
@@ -204,8 +188,6 @@ export function buildActionRow(id: string, state: string): WorkActionRowData {
   };
 }
 
-const LEARN_MOVES = new Set(["memory_delta", "rule_delta", "control_plane_repair", "outward_delta"]);
-
 /** The card shows the item's one title (lib/work-title.ts), shortened for the card. */
 function cardTitle(item: Json): string {
   return workTitle(item);
@@ -235,164 +217,42 @@ function workCard(item: Json, note = "", progress?: StageProgress): BoardCard {
   };
 }
 
-function proposalCard(p: Json): BoardCard {
-  const id = str(p.id);
-  return {
-    key: id || str(p.title),
-    workId: "",
-    displayId: id,
-    title: str(p.title) || str(p.predicate) || str(p.kind) || "suggested work",
-    subtitle: str(p.capability_class) || "suggestion",
-    state: "proposed",
-    tone: "draft",
-    ageLabel: "",
-    moveType: "",
-    note: shortText(str(p.consequence) || str(p.summary), 120),
-    traceable: false,
-    running: false,
-    progress: progressAt(1), // a suggestion sits at Suggest
-    surface: "",
-  };
-}
-
-function admissionCard(ap: Json): BoardCard {
-  const id = str(ap.work_id);
-  const state = str(ap.work_state) || "proposed";
-  const stale = str(ap.staleness) === "stale";
-  return {
-    key: id || str(ap.plan_id),
-    workId: id,
-    displayId: id || str(ap.plan_id),
-    title: `Intent: ${str(ap.success_predicate) || str(ap.desired_outcome) || "work plan"}`,
-    subtitle: str(ap.work_owner) || str(ap.actor) || "suggestion",
-    state,
-    tone: toneForState(state),
-    ageLabel: str(ap.age) || (ap.generated_at ? ago(ap.generated_at) : ""),
-    moveType: "",
-    note: stale ? "stale plan - revalidate before adding" : shortText(plainWorkStep(str(ap.next_action)), 96),
-    traceable: Boolean(id),
-    running: false,
-    progress: stageProgressForState(state),
-    surface: str(ap.canonical_surface),
-  };
-}
-
-const STAGE_COPY: Record<string, { label: string; tooltip: string; empty: string }> = {
-  signal: {
-    label: "Signal",
-    tooltip: "Where new information enters — connected sources and their freshness.",
-    empty: "No sources connected yet.",
-  },
-  propose: {
-    label: "Suggest",
-    tooltip: "Bounded jobs suggested from live evidence. Nothing advances without you.",
-    empty: "No open suggestions.",
-  },
-  admit: {
-    label: "Add to work",
-    tooltip: "Add a job to the work queue; it does not run anything yet.",
-    empty: "Nothing waits on you to add.",
-  },
-  claim: {
-    label: "Start",
-    tooltip: "An agent picks the work up and holds it, so two agents never work on the same thing.",
-    empty: "Nothing waiting for an agent.",
-  },
-  execute: {
-    label: "Run",
-    tooltip: "Agents do the work inside the rules. Every change needs a recorded permission.",
-    empty: "Nothing running right now.",
-  },
-  receipt: {
-    label: "Proof",
-    tooltip: "Proof a job ran — what was touched, what it cost, what came out.",
-    empty: "No fresh proof.",
-  },
-  learn: {
-    label: "Learn",
-    tooltip: "The write-back: outcomes become memory, rules, and skill-fitness that change the next run.",
-    empty: "Nothing learned from recent work yet.",
-  },
-};
-
-function stage(
-  key: string,
-  index: number,
-  cards: BoardCard[],
-  opts: { seat?: boolean; node?: RailNode; signal?: SignalTile } = {},
-): PipelineStageModel {
-  const copy = STAGE_COPY[key];
-  const has = cards.length > 0 || Boolean(opts.signal && opts.signal.count > 0);
-  const node: RailNode =
-    opts.node ?? (!has ? "empty" : opts.seat ? "seat" : "filled");
-  return {
-    key,
-    label: copy.label,
-    index,
-    tooltip: copy.tooltip,
-    emptyCopy: copy.empty,
-    count: opts.signal ? opts.signal.count : cards.length,
-    node,
-    seat: Boolean(opts.seat),
-    cards,
-    signal: opts.signal,
-  };
-}
-
-export function buildPipeline(
-  workbench: Json | null,
-  sources: Json | null,
-  proposals: Json[],
-): PipelineStageModel[] {
-  const open = arr(workbench?.open);
-  const recent = arr(workbench?.recent);
-  const admissionPreviews = arr(workbench?.admission_previews);
-  const byStates = (states: string[]) => open.filter((w) => states.includes(str(w.state)));
-
-  const proposedOpen = byStates(["proposed"]);
-  const proposedOpenIds = new Set(proposedOpen.map(workId).filter(Boolean));
-
-  const connections = arr(sources?.connections ?? sources?.sources ?? sources?.rows);
-  const freshCount = connections.filter((c) => str(c.staleness) === "fresh" || str(c.state) === "fresh").length;
-
-  const proposeCards: BoardCard[] = [
-    ...proposals.slice(0, 6).map(proposalCard),
-    ...admissionPreviews
-      .filter((ap) => !proposedOpenIds.has(str(ap.work_id)))
-      .slice(0, 6)
-      .map(admissionCard),
-  ];
-
-  const admitCards = proposedOpen.map((w) => workCard(w, "suggested -> add to work"));
-  const claimCards = byStates(["admitted", "ready"]).map((w) => workCard(w));
-  const executeCards = byStates(["claimed", "in_progress", "running", "verifying"]).map((w) => workCard(w));
-  const receiptCards = recent
-    .filter((w) => str(w.receipt_id))
-    .slice(0, 8)
-    .map((w) => workCard(w));
-  const learnCards = recent
-    .filter((w) => LEARN_MOVES.has(str(w.move_type)))
-    .slice(0, 8)
-    .map((w) => workCard(w, str(w.move_type).replace(/_/g, " ")));
-
-  return [
-    stage("signal", 1, [], {
-      signal: {
-        count: connections.length,
-        href: "/sources",
-        label: connections.length === 1 ? "source" : "sources",
-        sub: connections.length ? `${freshCount} fresh` : "none wired",
-      },
-    }),
-    stage("propose", 2, proposeCards),
-    stage("admit", 3, admitCards, { seat: true }),
-    stage("claim", 4, claimCards),
-    stage("execute", 5, executeCards, {
-      node: executeCards.some((c) => c.running) ? "run" : executeCards.length ? "filled" : "empty",
-    }),
-    stage("receipt", 6, receiptCards, { node: receiptCards.length ? "done" : "empty" }),
-    stage("learn", 7, learnCards, { node: learnCards.length ? "done" : "empty" }),
-  ];
+/**
+ * What a card needs to say which app it is for, who has it, whether it has
+ * stopped moving, and how it differs from a card with the same title in its
+ * column. `groupOf` comes from the shared index (lib/compound.ts
+ * `readWorkProjectIndex`); without it a card names no app (unknown). Pass the
+ * clock in.
+ */
+export function decorateBoard(
+  columns: BoardColumnModel[],
+  open: Json[],
+  opts: { nowMs: number; groupOf?: (workId: string) => { id: string; name: string; kind: string } | null },
+): BoardColumnModel[] {
+  const rows = new Map(open.map((row) => [workId(row), row] as const));
+  return columns.map((column) => {
+    const seen = new Map<string, number>();
+    for (const card of column.cards) seen.set(card.title, (seen.get(card.title) ?? 0) + 1);
+    return {
+      ...column,
+      cards: column.cards.map((card) => {
+        const group = card.workId ? opts.groupOf?.(card.workId) ?? null : null;
+        const row = card.workId ? rows.get(card.workId) : undefined;
+        const named = card.agentName && card.agentName !== card.subtitle;
+        const repeats = seen.get(card.title) ?? 0;
+        return {
+          ...card,
+          agentName: named ? card.agentName : card.subtitle ? agentDisplayName(card.subtitle) : "",
+          lane: named ? card.lane : card.subtitle && agentDisplayName(card.subtitle) !== card.subtitle ? card.subtitle : "",
+          projectId: group?.id ?? "",
+          projectName: group?.name ?? "",
+          projectKind: group?.kind ?? "",
+          stale: row ? isStale(row, opts.nowMs) : false,
+          repeatHint: repeats > 1 ? `One of ${repeats} with this title · ${card.subtitle || "no agent"} · ${card.workId.slice(-6) || card.key}` : "",
+        };
+      }),
+    };
+  });
 }
 
 export function buildBoard(open: Json[], recent: Json[]): BoardColumnModel[] {
@@ -430,20 +290,4 @@ export function buildBoard(open: Json[], recent: Json[]): BoardColumnModel[] {
   const hold = board.findIndex((column) => column.key === "needs-me");
   if (hold > 0 && board[hold].cards.length) board.unshift(...board.splice(hold, 1));
   return board;
-}
-
-export function buildOffered(packets: Json[]): OfferedPacketModel[] {
-  return packets
-    .filter((p) => (str(p.state) || str(p.status)).startsWith("offered"))
-    .map((p) => {
-      const state = str(p.state) || str(p.status);
-      return {
-        key: str(p.canonical_surface) || str(p.path) || str(p.title),
-        title: str(p.title) || str(p.canonical_surface) || "packet",
-        surface: str(p.canonical_surface),
-        path: str(p.path) || str(p.source_ref),
-        state,
-        tone: state.startsWith("offered") ? "draft" : toneForState(state.split(/[\s(]/)[0]),
-      };
-    });
 }

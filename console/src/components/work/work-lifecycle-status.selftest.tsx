@@ -4,12 +4,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { normalizeExecutorProjection } from "@/components/agents/executor-normalize";
 import { normalizeRunAttempts } from "@/lib/run-attempts";
 import { buildTraffic } from "@/lib/traffic";
-import { buildPipeline } from "@/lib/work-pipeline";
 import { parseWorkListParams } from "@/lib/links";
 import { plainState } from "@/lib/plain-words";
-import { buildWorkLensItems, groupWorkLensItems } from "@/lib/work-views";
-import { WorkFlowLens } from "./WorkFlowLens";
-import { WorkSpaceLens } from "./WorkSpaceLens";
+import { buildWorkLensItems } from "@/lib/work-views";
 import { WorkTableLens } from "./WorkTableLens";
 
 export function runWorkLifecycleStatusSelfTest(): { ok: boolean; details: string[] } {
@@ -49,8 +46,6 @@ export function runWorkLifecycleStatusSelfTest(): { ok: boolean; details: string
   })));
   const traffic = buildTraffic(projection, attempts);
   const items = buildWorkLensItems(open, traffic, { nowMs: NOW });
-  const groups = groupWorkLensItems(items, traffic);
-  const stages = buildPipeline({ open, recent: [] }, null, []);
   const onOpenTrace = () => {};
 
   check("real join retains distinct work and attempt states", fixtures.every((fixture) => {
@@ -90,29 +85,6 @@ export function runWorkLifecycleStatusSelfTest(): { ok: boolean; details: string
       (cells[3] ?? "").includes("Run status: " + fixture.run));
   }
 
-  const flow = renderToStaticMarkup(createElement(WorkFlowLens, { stages, groups, onOpenTrace }));
-  check("flow's three-card limit prioritizes work lifecycle",
-    !flow.includes("work_claimed_fixture")
-    && flow.indexOf("work_running_fixture") >= 0
-    && flow.indexOf("work_running_fixture") < flow.indexOf("work_verifying_fixture")
-    && flow.indexOf("work_verifying_fixture") < flow.indexOf("work_held_fixture"));
-  for (const fixture of fixtures.filter((fixture) => fixture.state !== "claimed")) {
-    const card = (flow.match(/<button\b[^>]*>[\s\S]*?<\/button>/g) ?? [])
-      .find((card) => card.includes(fixture.id)) ?? "";
-    check("flow lifecycle badge and separate attempt: " + fixture.state,
-      card.includes(">" + plainState(fixture.state) + "<") && card.includes("Run status: " + fixture.run));
-  }
-
-  const space = renderToStaticMarkup(createElement(WorkSpaceLens, { stages, groups, onOpenTrace }));
-  check("space's three-card limit prioritizes work lifecycle",
-    !space.includes("Claimed fixture")
-    && space.includes('aria-label="Running fixture, running,')
-    && space.includes('aria-label="Verifying fixture, verifying,')
-    && space.includes('aria-label="Held fixture, held,'));
-  const inspector = space.match(/<aside\b[^>]*>([\s\S]*?)<\/aside>/)?.[1] ?? "";
-  check("space inspector keeps running work primary and failed attempt separate",
-    inspector.includes("work_running_fixture") && inspector.includes(">Running<")
-    && inspector.includes("Run status: failed") && !inspector.includes(">failed<"));
   const noAttemptItems = buildWorkLensItems(open, buildTraffic(projection, null), { nowMs: NOW });
   const noAttemptTable = list({ filter: "all" }, noAttemptItems);
   check("unavailable attempts retain lifecycle without fabricated attempt detail",

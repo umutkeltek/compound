@@ -1,17 +1,19 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { SearchIcon } from "@/components/kit/icons";
 import { WorkBoardCard } from "@/components/work/WorkBoardCard";
+import { agentDisplayName, agentKey } from "@/lib/harness-label";
+import type { ParsedWorkListParams } from "@/lib/links";
 import type { BoardColumnModel } from "@/lib/work-pipeline";
 
 /**
- * Board lens — the by-state kanban (the default Work view). Each column is a
- * soft tray with a coloured state dot and count; cards open the one Trace
- * drawer. Search and owner filters narrow every column at once; long columns
- * show the first cards and a "Show N more" control so the board stays
- * scannable without hiding anything.
+ * Board lens — the by-state board (the default Work view). Each column is a
+ * soft tray with a coloured state dot and count; a card opens the preview,
+ * its link opens the work page. The search text and the agent filter live in
+ * the address (`q`, `owner`), so they survive reload and Back. Long columns
+ * show the first cards and a "Show N more" control.
  */
 const COLUMN_DOT: Record<string, string> = {
   draft: "bg-memory",
@@ -25,28 +27,41 @@ const COLUMN_DOT: Record<string, string> = {
 
 const PAGE = 8;
 
-function ownerKey(owner: string): string {
-  return owner ? owner.split(":")[0] : "Unassigned";
-}
+type BoardParams = Pick<ParsedWorkListParams, "owner" | "q">;
 
 export function BoardLens({
   columns,
+  openCount,
   onOpenTrace,
+  params,
+  onParamsChange,
 }: {
   columns: BoardColumnModel[];
+  /** open work items (the Done column is not open) */
+  openCount: number;
   onOpenTrace: (workId: string) => void;
+  params: BoardParams;
+  onParamsChange?: (next: Partial<BoardParams>, mode: "push" | "replace") => void;
 }) {
-  const [query, setQuery] = useState("");
-  const [owner, setOwner] = useState("all");
+  const [query, setQueryState] = useState(params.q);
+  useEffect(() => { setQueryState(params.q); }, [params.q]);
+  const setQuery = (value: string) => {
+    setQueryState(value);
+    onParamsChange?.({ q: value }, "replace");
+  };
+  const owner = params.owner;
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
+  // One entry per agent, whatever the spelling on the record (lib/harness-label.ts).
   const owners = useMemo(() => {
-    const counts = new Map<string, number>();
+    const counts = new Map<string, { name: string; n: number }>();
     for (const column of columns) for (const card of column.cards) {
-      const key = ownerKey(card.subtitle);
-      counts.set(key, (counts.get(key) ?? 0) + 1);
+      const key = agentKey(card.subtitle);
+      const entry = counts.get(key) ?? { name: agentDisplayName(card.subtitle), n: 0 };
+      entry.n += 1;
+      counts.set(key, entry);
     }
-    return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    return [...counts.entries()].sort((a, b) => b[1].n - a[1].n);
   }, [columns]);
 
   const filtered = useMemo(() => {
@@ -54,14 +69,21 @@ export function BoardLens({
     return columns.map((column) => ({
       ...column,
       cards: column.cards.filter((card) => {
-        if (owner !== "all" && ownerKey(card.subtitle) !== owner) return false;
+        if (owner && agentKey(card.subtitle) !== owner) return false;
         if (!needle) return true;
-        return `${card.title} ${card.note} ${card.subtitle} ${card.displayId}`.toLowerCase().includes(needle);
+        return `${card.title} ${card.note} ${card.subtitle} ${card.agentName ?? ""} ${card.projectName ?? ""} ${card.displayId}`.toLowerCase().includes(needle);
       }),
     }));
   }, [columns, owner, query]);
 
-  const shown = filtered.reduce((sum, column) => sum + column.cards.length, 0);
+  const narrowed = !!(query.trim() || owner);
+  const isDone = (key: string) => key === "done";
+  const shownOpen = filtered.filter((column) => !isDone(column.key)).reduce((sum, column) => sum + column.cards.length, 0);
+  const shownClosed = filtered.filter((column) => isDone(column.key)).reduce((sum, column) => sum + column.cards.length, 0);
+  const clear = () => {
+    setQueryState("");
+    onParamsChange?.({ q: "", owner: "" }, "push");
+  };
 
   return (
     <div className="flex min-w-0 flex-col gap-4">
@@ -71,27 +93,42 @@ export function BoardLens({
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search work"
+            placeholder="Search work, apps or agents"
             className="w-full bg-transparent text-ink outline-none placeholder:text-faint"
           />
         </label>
         <label className="inline-flex items-center gap-1.5 rounded-lg border border-hair bg-panel px-3 py-1.5 text-sm text-muted">
-          <span className="text-faint">Owner:</span>
+          <span className="text-faint">Agent:</span>
           <select
             value={owner}
-            onChange={(event) => setOwner(event.target.value)}
+            onChange={(event) => onParamsChange?.({ owner: event.target.value }, "push")}
             className="bg-transparent font-medium text-ink outline-none"
           >
-            <option value="all">Everyone</option>
-            {owners.map(([key, count]) => (
+            <option value="">Everyone</option>
+            {owners.map(([key, entry]) => (
               <option key={key} value={key}>
-                {key.replace(/_/g, " ")} ({count})
+                {entry.name} ({entry.n})
               </option>
             ))}
           </select>
         </label>
-        <span className="ml-auto text-sm tabular-nums text-faint">{shown} items</span>
+        {narrowed ? (
+          <button type="button" onClick={clear} className="text-sm font-semibold text-work hover:underline">Clear search</button>
+        ) : null}
+        <span className="ml-auto text-sm tabular-nums text-faint">
+          {narrowed
+            ? `${shownOpen.toLocaleString("en-US")} of ${openCount.toLocaleString("en-US")} open match`
+            : `${openCount.toLocaleString("en-US")} open`}
+          {shownClosed ? ` · ${shownClosed.toLocaleString("en-US")} recently closed` : ""}
+        </span>
       </div>
+
+      {narrowed && shownOpen + shownClosed === 0 ? (
+        <p className="rounded-xl border border-dashed border-hair px-4 py-6 text-center text-sm text-muted">
+          No work matches {query.trim() ? <>&ldquo;{query.trim()}&rdquo;</> : "this agent"}.{" "}
+          <button type="button" onClick={clear} className="font-semibold text-work hover:underline">Clear search</button>
+        </p>
+      ) : null}
 
       <div className="board-scroll overflow-x-auto pb-2">
         <div className="flex min-w-max items-start gap-4">
@@ -111,7 +148,9 @@ export function BoardLens({
                     <WorkBoardCard key={`${column.key}:${card.key}`} card={card} onOpen={onOpenTrace} />
                   ))
                 ) : (
-                  <p className="rounded-xl border border-dashed border-hair px-3 py-6 text-center text-sm text-faint">{column.emptyCopy}</p>
+                  <p className="rounded-xl border border-dashed border-hair px-3 py-6 text-center text-sm text-faint">
+                    {narrowed ? "No match in this column." : column.emptyCopy}
+                  </p>
                 )}
                 {hidden > 0 || open ? (
                   <button

@@ -3,7 +3,10 @@ import fs from "node:fs";
 const files = [
   "src/app/work/page.tsx",
   "src/components/briefing/PipelineStrip.tsx",
-  "src/components/work/PipelineLens.tsx",
+  "src/components/work/BoardLens.tsx",
+  "src/components/work/WorkByAppLens.tsx",
+  "src/components/work/WorkTableLens.tsx",
+  "src/app/work/[id]/page.tsx",
 ];
 const residue = /\b(?:admit|admission|governed|policydecision|envelope(?:s| spine| trace)?|rented executors?)\b/i;
 const failures = files.flatMap((file) => {
