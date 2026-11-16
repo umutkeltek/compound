@@ -191,6 +191,23 @@ type Totals struct {
 	// Unchecked counts live units the projection could not check record by
 	// record (kept, never hidden).
 	Unchecked int `json:"unchecked"`
+	// WaitingOnOthers counts units a source holds as waiting for the
+	// operator that wait on something outside him instead (blocked work);
+	// they are shown in the watching band, not counted as his.
+	// LiveDecisions + SetAside + WaitingOnOthers == TotalRead.
+	WaitingOnOthers int `json:"waiting_on_others"`
+	// BySource is the same arithmetic per source, in a fixed order.
+	BySource []SourceTotal `json:"by_source"`
+}
+
+// SourceTotal is one source's share of the totals: Live + SetAside +
+// WaitingOnOthers == Read.
+type SourceTotal struct {
+	Source          string `json:"source"`
+	Read            int    `json:"read"`
+	Live            int    `json:"live"`
+	SetAside        int    `json:"set_aside"`
+	WaitingOnOthers int    `json:"waiting_on_others"`
 }
 
 // Probe is the read-only window the liveness checks use to look at the

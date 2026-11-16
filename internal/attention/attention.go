@@ -279,27 +279,68 @@ func Build(in Inputs, now time.Time) Report {
 	return report
 }
 
-// buildTotals derives the headline arithmetic. TotalRead is counted from the
-// inputs (every needs_you unit before the live check), not from the result, so
-// LiveDecisions + SetAside == TotalRead is a real check, not a definition.
+// buildTotals derives the headline arithmetic. Each source's Read is counted
+// from the inputs (every unit that asked to be counted under needs_you before
+// the live check), not from the result, so Live + SetAside + WaitingOnOthers
+// == Read is a real check, not a definition.
 func buildTotals(report Report, reviewTotalRead, unchecked int) Totals {
 	totals := Totals{
-		TotalRead:        reviewTotalRead,
 		LiveDecisions:    report.Counts.NeedsYou,
 		SetAsideByReason: map[string]int{},
 		Unchecked:        unchecked,
+		BySource:         []SourceTotal{},
+	}
+	bySource := map[string]*SourceTotal{SourceReviews: {Source: SourceReviews, Read: reviewTotalRead}}
+	at := func(source string) *SourceTotal {
+		if bySource[source] == nil {
+			bySource[source] = &SourceTotal{Source: source}
+		}
+		return bySource[source]
 	}
 	for _, g := range report.Groups {
-		if g.Band == BandNeedsYou && g.Source != SourceReviews {
-			totals.TotalRead += g.Count
+		switch {
+		case g.Band == BandNeedsYou:
+			entry := at(g.Source)
+			entry.Live += g.Count
+			if g.Source != SourceReviews {
+				entry.Read += g.Count
+			}
+		case g.Kind == KindWaitingOnOthers:
+			entry := at(g.Source)
+			entry.Read += g.Count
+			entry.WaitingOnOthers += g.Count
+			totals.WaitingOnOthers += g.Count
 		}
 	}
 	for _, entry := range report.SetAside {
 		totals.SetAside += entry.Count
 		totals.SetAsideByReason[entry.Reason] += entry.Count
+		at(entry.Source).SetAside += entry.Count
 	}
 	totals.SetAsideReasons, totals.ClosedWithoutYou = setAsideReasonTotals(report.SetAside)
+	for _, source := range []string{SourceReviews, SourceWorkbench, SourceExecutor, SourceActivity} {
+		if entry := bySource[source]; entry != nil && entry.Read+entry.Live+entry.SetAside > 0 {
+			totals.TotalRead += entry.Read
+			totals.BySource = append(totals.BySource, *entry)
+			delete(bySource, source)
+		}
+	}
+	for _, source := range sortedSourceKeys(bySource) {
+		if entry := bySource[source]; entry.Read+entry.Live+entry.SetAside > 0 {
+			totals.TotalRead += entry.Read
+			totals.BySource = append(totals.BySource, *entry)
+		}
+	}
 	return totals
+}
+
+func sortedSourceKeys(m map[string]*SourceTotal) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func buildFreshness(in Inputs, now time.Time) ReportFreshness {

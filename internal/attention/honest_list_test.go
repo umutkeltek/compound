@@ -220,3 +220,76 @@ func TestHonestListExposesSetAsideReasonsAndRecords(t *testing.T) {
 		}
 	}
 }
+
+// Item 6: every unit a source holds as waiting for the operator is accounted
+// once: live in the list, set aside with a reason, or shown as waiting on
+// someone else. The test counts what the sources hold from the inputs
+// themselves, not from the projection, and checks the totals per source.
+func TestHonestListCountsAddUpToWhatTheSourcesHold(t *testing.T) {
+	created := liveNow.Add(-6 * 24 * time.Hour)
+	reviews := liveFixture(t,
+		liveRecord{area: "content-queue", id: "cq_live", status: "review_required", summary: "Post the spring note?", groupKey: "content-queue|review", created: created},
+		liveRecord{area: "content-queue", id: "cq_done", status: "recorded", readiness: "needs_review", summary: "Post the winter note?", groupKey: "content-queue|review", created: created},
+		liveRecord{area: "job-repair", id: "jr_1", file: "jr_1.plan.json", status: "unknown", summary: "Restart the sample job?", groupKey: "job-repair|all", created: created},
+		liveRecord{area: "job-repair", id: "jr_1", file: "jr_1.apply.terminal.json", status: "unknown", summary: "Restart the sample job?", groupKey: "job-repair|all", created: created},
+		liveRecord{area: "tool-proposals", id: "tp_a", status: "review_required", summary: "Template sentence.", context: "tool proposal", claim: "Review 7 events from harness-a.", created: created},
+		liveRecord{area: "tool-proposals", id: "tp_b", status: "review_required", summary: "Template sentence.", context: "tool proposal", claim: "Review 7 events from harness-a.", created: created.Add(time.Hour)},
+	)
+	open := []work.WorkbenchItem{
+		{WorkID: "work_held", State: "held"},
+		{WorkID: "work_waits", State: "blocked", NextAction: "Waits for another item."},
+		{WorkID: "work_gate", State: "blocked", ActionContext: &work.WorkActionContext{RequiresOperator: true}},
+		{WorkID: "work_ready", State: "ready"},
+	}
+	report := Build(Inputs{Reviews: reviews, Workbench: &work.WorkbenchReport{GeneratedAt: liveNow.Format(time.RFC3339), Open: open}}, liveNow)
+
+	// What the sources hold as waiting for him, read from the inputs.
+	heldReviews := 0
+	for _, g := range reviews.Groups {
+		if g.Band == reviewartifact.BandNeedsYou {
+			heldReviews += g.Count
+		}
+	}
+	heldWork := 0
+	for _, item := range open {
+		if item.State == "held" || item.State == "blocked" {
+			heldWork++
+		}
+	}
+
+	totals := wireOf(t, report)["totals"].(map[string]any)
+	read, live, aside, waiting := wireNumber(t, totals, "total_read"), wireNumber(t, totals, "live_decisions"), wireNumber(t, totals, "set_aside"), wireNumber(t, totals, "waiting_on_others")
+	if read != heldReviews+heldWork {
+		t.Fatalf("total_read = %d, want %d review records + %d held or blocked work items", read, heldReviews, heldWork)
+	}
+	if live+aside+waiting != read {
+		t.Fatalf("live %d + set aside %d + waiting on others %d != total read %d", live, aside, waiting, read)
+	}
+	if live != report.Counts.NeedsYou || waiting != 1 {
+		t.Fatalf("live = %d (needs_you %d), waiting = %d; want live == needs_you and 1 waiting", live, report.Counts.NeedsYou, waiting)
+	}
+	listed := 0
+	for _, g := range report.Groups {
+		if g.Band == BandNeedsYou {
+			listed += g.Count
+		}
+	}
+	records := 0
+	for _, entry := range report.SetAside {
+		records += len(entry.Records)
+	}
+	if listed != live || records != aside {
+		t.Fatalf("listed live items %d vs live %d; set-aside records %d vs set aside %d", listed, live, records, aside)
+	}
+	bySource := map[string]map[string]any{}
+	for _, raw := range totals["by_source"].([]any) {
+		entry := raw.(map[string]any)
+		bySource[entry["source"].(string)] = entry
+		if wireNumber(t, entry, "live")+wireNumber(t, entry, "set_aside")+wireNumber(t, entry, "waiting_on_others") != wireNumber(t, entry, "read") {
+			t.Fatalf("source %v does not add up: %v", entry["source"], entry)
+		}
+	}
+	if wireNumber(t, bySource[SourceReviews], "read") != heldReviews || wireNumber(t, bySource[SourceWorkbench], "read") != heldWork {
+		t.Fatalf("by_source = %v, want reviews %d and workbench %d read", totals["by_source"], heldReviews, heldWork)
+	}
+}
