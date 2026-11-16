@@ -101,6 +101,8 @@ func Search(ctx context.Context, homePath string, lanes []LaneConfig, factory Em
 					c.Status = "cancelled"
 				case errors.Is(qe, os.ErrNotExist):
 					c.Status = "not_indexed"
+				case errors.Is(qe, mem.ErrEngineUnavailable):
+					c.Status = "backend_unavailable"
 				case errors.Is(qe, ErrEmbedderMismatch):
 					c.Status = "identity_mismatch"
 				default:

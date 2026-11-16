@@ -17,6 +17,24 @@ func cmdCorpus(args []string) {
 		os.Exit(2)
 	}
 	switch args[0] {
+	case "backend-health":
+		hp, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		cfg, _, err := loadMemoryEngineConfig(hp)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "corpus backend-health: invalid configuration")
+			os.Exit(1)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		report := corpus.CheckBackends(ctx, cfg.CorpusLanes)
+		printJSON(report)
+		if report.Status != "ready" {
+			os.Exit(1)
+		}
 	case "refresh":
 		hp, err := home.Resolve("")
 		if err != nil {
@@ -56,7 +74,7 @@ func cmdCorpus(args []string) {
 }
 
 func corpusUsage() string {
-	return "usage: compound corpus <configure --file FILE|refresh|index --lane L [--rebuild] [--json]|doctor --lane L [--json]>"
+	return "usage: compound corpus <configure --file FILE|backend-health|refresh|index --lane L [--rebuild] [--json]|doctor --lane L [--json]>"
 }
 
 func cmdCorpusIndex(args []string) {

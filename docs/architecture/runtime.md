@@ -1839,3 +1839,20 @@ main-record session IDs before loading matching launch sidecars and preserves
 unreadable-record errors. Terminal attempts remain known even when their work
 is archived or the reservation-loss path has no envelope forward-link.
 Ordinary tool hooks continue to inspect nonterminal attempts only.
+
+### Memory backend recovery
+
+The existing approved-memory hook runs the installed `compound-memory-service refresh`
+inside the same governed execution reservation. `compound corpus backend-health` is a
+read-only probe of configured local model inventory and embedding dimensions. It reports
+`process_unavailable`, `process_unhealthy`, `model_missing`, or `incompatible`; a ready
+backend followed by failed indexing is reported as `indexing_degraded`. Search continues
+to return backend errors rather than translating an outage into zero relevant memories.
+
+The admitted helper may kickstart only the existing Homebrew Ollama owner on its
+standard local port, after checking that no corpus refresh is active. It never creates
+a service or downloads/replaces a model. One restart and three readiness checks bound
+a run; native attempt transcript markers preserve a 30-minute cooldown and a maximum
+of three restart attempts in 24 hours across helper restarts. Missing or ambiguous
+history fails closed. The hook uses an eight-minute execution ceiling to leave room
+for bounded recovery plus the existing four-minute corpus refresh deadline.

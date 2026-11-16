@@ -72,9 +72,13 @@ func refreshApprovedMemory(hp string, fx Fixture, now time.Time) string {
 	if err != nil {
 		return "binary_unavailable"
 	}
+	service := filepath.Join(filepath.Dir(binary), "compound-memory-service")
+	if st, err := os.Stat(service); err != nil || !st.Mode().IsRegular() || st.Mode().Perm()&0111 == 0 {
+		return "service_unavailable"
+	}
 	args := []string{"work", "advance", id, "--to", "running", "--by", memoryRefreshActor,
 		"--execute", "--resume-verifying", "--harness", "os-harness-entrypoints",
-		"--workspace", cwd, "--timeout", "5m", "--", binary, "corpus", "refresh"}
+		"--workspace", cwd, "--timeout", "8m", "--", service, "refresh", "--binary", binary, "--memory-home", hp, "--workspace", cwd}
 	if err := startMemoryRefresh(binary, hp, cwd, args); err != nil {
 		return "launch_failed"
 	}

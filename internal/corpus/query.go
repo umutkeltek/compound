@@ -2,6 +2,7 @@ package corpus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -412,7 +413,11 @@ func (t *IndexTransport) RoundTrip(req mem.Request) (mem.Response, error) {
 		hits, err := t.query(loaded, req)
 		if err != nil {
 			resp.OK = false
-			resp.Error = &mem.WireError{Code: mem.CodeBadRequest, Message: err.Error()}
+			code := mem.CodeBadRequest
+			if errors.Is(err, mem.ErrEngineUnavailable) {
+				code = mem.CodeEngineUnavailable
+			}
+			resp.Error = &mem.WireError{Code: code, Message: err.Error()}
 			return resp, nil
 		}
 		resp.OK = true
@@ -451,7 +456,7 @@ func (t *IndexTransport) load() (*loadedIndex, error) {
 func (t *IndexTransport) query(index *loadedIndex, req mem.Request) ([]mem.Hit, error) {
 	queryVectors, err := t.embedder.Embed(t.ctx, []string{req.Text})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", mem.ErrEngineUnavailable, err)
 	}
 	if len(queryVectors) != 1 {
 		return nil, fmt.Errorf("query embedder returned %d vectors", len(queryVectors))

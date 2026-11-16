@@ -32,19 +32,22 @@ func TestApprovedMemoryTriggerUsesGovernedResumeAndIgnoresReplay(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(hp, "work", "work", id+".json"), body, 0600); err != nil {
 		t.Fatal(err)
 	}
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := filepath.Join(filepath.Dir(binary), "compound-memory-service")
+	if err := os.WriteFile(service, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(service) })
 	old := startMemoryRefresh
 	defer func() { startMemoryRefresh = old }()
 	calls := 0
 	startMemoryRefresh = func(binary, home, workspace string, args []string) error {
 		calls++
 		joined := strings.Join(args, " ")
-		for _, part := range []string{"work advance " + id, "--execute --resume-verifying", "--harness os-harness-entrypoints", "-- corpus refresh"} {
-			if part == "-- corpus refresh" {
-				if args[len(args)-2] != "corpus" || args[len(args)-1] != "refresh" {
-					t.Fatal(args)
-				}
-				continue
-			}
+		for _, part := range []string{"work advance " + id, "--execute --resume-verifying", "--harness os-harness-entrypoints", "--timeout 8m", service + " refresh --binary " + binary + " --memory-home " + hp + " --workspace " + cwd} {
 			if !strings.Contains(joined, part) {
 				t.Fatalf("missing %s: %s", part, joined)
 			}

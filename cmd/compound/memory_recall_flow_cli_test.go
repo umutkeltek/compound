@@ -25,6 +25,13 @@ func TestMemoryRecallFreshSetupAutomaticCaptureAcrossHarnesses(t *testing.T) {
 		t.Skip("native subprocess lifecycle proof")
 	}
 	binary := compoundTestBinary(t)
+	helper, err := os.ReadFile(filepath.Join(testRepoRoot, "scripts", "memory-service.py"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(binary), "compound-memory-service"), helper, 0700); err != nil {
+		t.Fatal(err)
+	}
 	// The integration needs the real companion engine even in a fresh CI home.
 	// Build it with this source and put it ahead of any ambient installation.
 	engineDir := t.TempDir()
@@ -64,6 +71,10 @@ func TestMemoryRecallFreshSetupAutomaticCaptureAcrossHarnesses(t *testing.T) {
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"models": []map[string]string{{"name": "fixture"}}})
+			return
+		}
 		var req struct {
 			Input json.RawMessage `json:"input"`
 		}
@@ -133,7 +144,13 @@ func TestMemoryRecallFreshSetupAutomaticCaptureAcrossHarnesses(t *testing.T) {
 			time.Sleep(50 * time.Millisecond)
 		}
 		b, _ := os.ReadFile(filepath.Join(hp, "indexes", "corpus-dialogue", "refresh.json"))
-		t.Fatalf("automatic capture did not complete: %s", b)
+		wb, _ := os.ReadFile(filepath.Join(hp, "work", "work", id+".json"))
+		logs, _ := filepath.Glob(filepath.Join(hp, "run_attempts", "*.transcript"))
+		for _, log := range logs {
+			body, _ := os.ReadFile(log)
+			t.Logf("attempt %s: %s", filepath.Base(log), body)
+		}
+		t.Fatalf("automatic capture did not complete: %s work=%s", b, wb)
 	}
 	question := func(extra ...string) corpus.RecallReport {
 		t.Helper()
@@ -168,6 +185,19 @@ func TestMemoryRecallFreshSetupAutomaticCaptureAcrossHarnesses(t *testing.T) {
 	history := question("--include-private-text", "--history")
 	if len(history.Evidence) != 2 {
 		t.Fatalf("history: %+v", history)
+	}
+	server.Close()
+	outage := exec.Command(binary, "memory", "search", "archive decision", "--json")
+	outage.Env = env
+	out, outageErr := outage.CombinedOutput()
+	if outageErr == nil || !bytes.Contains(out, []byte("backend_unavailable")) {
+		t.Fatalf("outage disguised as empty recall: %v %s", outageErr, out)
+	}
+	selected := exec.Command(binary, "memory", "search", "archive decision", "--lane", "dialogue", "--json")
+	selected.Env = env
+	out, outageErr = selected.CombinedOutput()
+	if outageErr == nil || !bytes.Contains(out, []byte("backend unavailable")) {
+		t.Fatalf("selected outage: %v %s", outageErr, out)
 	}
 	t.Log(fmt.Sprintf("fresh setup -> Codex PostToolUse -> owned capture -> fresh CLI -> Claude SessionEnd correction -> fresh CLI/history; work=%s", id))
 }

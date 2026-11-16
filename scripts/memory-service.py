@@ -15,6 +15,145 @@ import sys
 
 ACTOR = "automation:memory-refresh"
 
+import datetime
+import re
+import time
+from urllib.parse import urlparse
+
+RECOVERY_MARKER = "memory-backend-recovery:"
+
+
+def backend_health(binary):
+    result = subprocess.run([str(binary), "corpus", "backend-health"], text=True,
+                            capture_output=True, timeout=50, check=False)
+    report = json.loads(result.stdout)
+    if report.get("status") == "ready" and result.returncode != 0:
+        raise RuntimeError("backend health command failed")
+    if not isinstance(report.get("backends"), list):
+        raise RuntimeError("backend health report is invalid")
+    return report
+
+
+def recovery_budget(binary, home, now):
+    # Reuse the native attempt transcript: no parallel retry ledger or new
+    # COMPOUND_HOME family. The marker is flushed BEFORE kickstart, so a crash
+    # consumes a retry rather than creating an endless restart loop.
+    record = run(binary, ["work", "show", work_id(home), "--json"], capture=True)
+    ids = record.get("run_attempt_ids", [])
+    recent = []
+    for rid in ids[-512:]:
+        if not re.fullmatch(r"ratt_[A-Za-z0-9_]+", rid):
+            raise RuntimeError("invalid recovery attempt identity")
+        attempt = json.loads((home / "run_attempts" / (rid + ".json")).read_text())
+        created = datetime.datetime.fromisoformat(attempt["created_at"].replace("Z", "+00:00")).timestamp()
+        if created > now + 60:
+            raise RuntimeError("recovery history clock is ahead")
+        if now - created > 86400 + 480:
+            continue
+        if attempt.get("origin") != "harness_execution":
+            continue
+        path = home / "run_attempts" / (rid + ".transcript")
+        if not path.exists() and attempt.get("status") in ("pending", "running"):
+            continue
+        with path.open() as stream:
+            for line in stream.read(65536).splitlines():
+                if line.startswith("stdout: " + RECOVERY_MARKER):
+                    stamp = float(line.removeprefix("stdout: " + RECOVERY_MARKER))
+                    if stamp < created - 1 or stamp > created + 480 or stamp > now + 60:
+                        raise RuntimeError("recovery marker clock is invalid")
+                    if now - stamp <= 86400:
+                        recent.append(stamp)
+                    break
+    if len(ids) > 512:
+        oldest = json.loads((home / "run_attempts" / (ids[-512] + ".json")).read_text())
+        age = now - datetime.datetime.fromisoformat(oldest["created_at"].replace("Z", "+00:00")).timestamp()
+        if age < 86400:
+            raise RuntimeError("recovery history exceeds bounded inspection")
+    if len(recent) >= 3:
+        raise RuntimeError("backend_unavailable: daily recovery limit reached")
+    if recent and now - max(recent) < 1800:
+        raise RuntimeError("backend_unavailable: recovery cooldown (30 minutes)")
+
+
+def refresh_active():
+    probe = subprocess.run(["/bin/ps", "-axo", "args="], text=True,
+                           capture_output=True, timeout=5, check=True)
+    for line in probe.stdout.splitlines():
+        if re.match(r"^\s*(?:\S*/)?compound\s+corpus\s+refresh(?:\s|$)", line):
+            return True
+    return False
+
+
+def recover_backend(binary, home):
+    report = backend_health(binary)
+    print(json.dumps({"memory_backend": report}), flush=True)
+    if report["status"] == "ready":
+        return
+    bad = [c for c in report["backends"] if c.get("status") != "ready"]
+    if not bad or any(c.get("status") not in ("process_unavailable", "process_unhealthy") for c in bad):
+        raise RuntimeError("backend_unavailable: model missing or incompatible; manual repair required")
+    # The installed owner controls only its canonical local listener. A custom
+    # port, proxy, remote endpoint or another service must never be restarted.
+    for check in report["backends"]:
+        endpoint = urlparse(check["base_url"])
+        if endpoint.hostname not in ("localhost", "127.0.0.1", "::1") or endpoint.port != 11434:
+            raise RuntimeError("backend_unavailable: endpoint has no approved service owner")
+    label = "gui/" + str(os.getuid()) + "/sh.brew.ollama"
+    owner = subprocess.run(["/bin/launchctl", "print", label], capture_output=True,
+                           text=True, timeout=5, check=False)
+    if owner.returncode != 0 or not re.search(r"program = /[^\n]+/ollama\s", owner.stdout):
+        raise RuntimeError("process_unavailable: existing Ollama service owner unavailable")
+    classification = "process_unhealthy" if "state = running" in owner.stdout else "process_unavailable"
+    print(json.dumps({"memory_backend_status": classification}), flush=True)
+    if refresh_active():
+        raise RuntimeError("backend_unavailable: active memory refresh; recovery deferred")
+    now = time.time()
+    recovery_budget(binary, home, now)
+    require_admitted_refresh(binary, home)
+    print(RECOVERY_MARKER + str(int(now)), flush=True)
+    restarted = subprocess.run(["/bin/launchctl", "kickstart", "-k", label],
+                               timeout=15, check=False)
+    if restarted.returncode:
+        raise RuntimeError("backend_unavailable: existing owner restart failed")
+    # Exactly three readiness checks after one restart. No pull, install, model
+    # replacement, daemon creation, or second kill on the failure path.
+    for delay in (1, 2, 4):
+        time.sleep(delay)
+        recovered = backend_health(binary)
+        if recovered["status"] == "ready":
+            print(json.dumps({"memory_backend_status": "recovered",
+                              "backends": recovered["backends"]}), flush=True)
+            return
+    raise RuntimeError("backend_unavailable: recovery exhausted")
+
+
+
+def require_admitted_refresh(binary, home):
+    rid = os.environ.get("COMPOUND_RUN_ATTEMPT_ID", "")
+    if not re.fullmatch(r"ratt_[A-Za-z0-9_]+", rid):
+        raise RuntimeError("refresh requires governed execution")
+    attempt = json.loads((home / "run_attempts" / (rid + ".json")).read_text())
+    record = run(binary, ["work", "show", work_id(home), "--json"], capture=True)
+    actions = record.get("run_ids", [])
+    if (record.get("state") != "running" or record.get("owner") != ACTOR
+            or attempt.get("work_id") != record.get("id")
+            or attempt.get("origin") != "harness_execution"
+            or attempt.get("status") != "running"
+            or not actions or attempt.get("action_intent_id") != actions[-1]
+            or not record.get("policy_decision_id")):
+        raise RuntimeError("refresh execution reservation changed")
+
+
+def refresh(binary, home):
+    require_admitted_refresh(binary, home)
+    recover_backend(binary, home)
+    result = subprocess.run([str(binary), "corpus", "refresh"], check=False)
+    if result.returncode:
+        print(json.dumps({"memory_backend_status": "indexing_degraded",
+                          "detail": "backend ready; corpus refresh failed"}), flush=True)
+        raise RuntimeError("indexing_degraded: corpus refresh failed")
+
+
 
 def run(binary, args, capture=False):
     result = subprocess.run([str(binary), *args], text=True,
@@ -36,10 +175,11 @@ def tick(binary, home, workspace):
         raise RuntimeError("maintenance work is " + state + "; no automatic takeover")
     args = ["work", "advance", wid, "--to", "running", "--by", ACTOR,
             "--execute", "--harness", "os-harness-entrypoints",
-            "--workspace", str(workspace), "--timeout", "5m"]
+            "--workspace", str(workspace), "--timeout", "8m"]
     if state == "verifying":
         args += ["--resume-verifying"]
-    run(binary, args + ["--", str(binary), "corpus", "refresh"])
+    run(binary, args + ["--", sys.executable, str(Path(__file__).resolve()), "refresh",
+                         "--binary", str(binary), "--memory-home", str(home), "--workspace", str(workspace)])
 
 
 def setup(binary, home, workspace, config):
@@ -71,9 +211,9 @@ def setup(binary, home, workspace, config):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("operation", choices=("setup", "tick"))
+    p.add_argument("operation", choices=("setup", "tick", "refresh"))
     p.add_argument("--binary", type=Path, required=True)
-    p.add_argument("--home", type=Path, required=True)
+    p.add_argument("--home", "--memory-home", dest="home", type=Path, required=True)
     p.add_argument("--workspace", type=Path, required=True)
     p.add_argument("--config", type=Path)
     a = p.parse_args()
@@ -82,13 +222,15 @@ def main():
             p.error("binary, home and workspace must be existing absolute paths")
     os.environ["COMPOUND_HOME"] = str(a.home)
     try:
-        if a.operation == "tick":
+        if a.operation == "refresh":
+            refresh(a.binary, a.home)
+        elif a.operation == "tick":
             tick(a.binary, a.home, a.workspace)
         else:
             if a.config is None:
                 p.error("setup requires --config with approved sources")
             setup(a.binary, a.home, a.workspace, a.config)
-    except (RuntimeError, OSError, ValueError, subprocess.CalledProcessError) as e:
+    except (RuntimeError, OSError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         print("memory service: " + str(e), file=sys.stderr)
         return 1
     return 0

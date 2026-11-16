@@ -1,9 +1,11 @@
 package corpus
 
 import (
+	"compound/internal/mem"
 	"compound/internal/retrievalparity"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -81,7 +83,11 @@ func SearchCLI(ctx context.Context, hp string, lanes []LaneConfig, args []string
 			}
 			retrievalparity.Record(hp, retrievalparity.NewRow(retrievalparity.ConsumerSearch, query, refs, time.Since(started), err == nil, time.Now()))
 			if err != nil {
-				fmt.Fprintln(errout, "memory search: source query unavailable")
+				if errors.Is(err, mem.ErrEngineUnavailable) {
+					fmt.Fprintln(errout, "memory search: backend unavailable; relevance could not be assessed")
+				} else {
+					fmt.Fprintln(errout, "memory search: source query unavailable")
+				}
 				return 1
 			}
 			if asJSON {
