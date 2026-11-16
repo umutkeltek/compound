@@ -76,6 +76,8 @@ await import("./waiting-and-owner-cases.mjs");
 await import("./work-next-step-cases.mjs");
 // One URL per destination and one Work parameter parser (scripts/links-cases.mjs).
 await import("./links-cases.mjs");
+// Which app or codebase each work item belongs to (scripts/work-project-cases.mjs).
+await import("./work-project-cases.mjs");
 
 // Campaign previews are part of Work detail; keep their asset and rendered
 // state falsifiers in this existing canonical consumer.
