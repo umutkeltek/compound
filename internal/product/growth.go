@@ -119,12 +119,24 @@ type GrowthFreshness struct {
 }
 
 type GrowthFunnelStage struct {
-	ID     string   `json:"id"`
-	Label  string   `json:"label"`
-	Value  *float64 `json:"value"`
-	AsOf   string   `json:"as_of"`
-	Status string   `json:"status"`
-	Note   string   `json:"note"`
+	ID string `json:"id"`
+	// Label names what Value counts; for the downloads stage it follows the
+	// source ("New downloads" from the Sales report, else "First-time
+	// downloads" from analytics) while ID stays first_time_downloads.
+	Label string   `json:"label"`
+	Value *float64 `json:"value"`
+	// AsOf is the newest day behind Value.
+	AsOf   string `json:"as_of"`
+	Status string `json:"status"`
+	Note   string `json:"note"`
+	// WindowStart and WindowEnd are the days Value sums when it is a window
+	// total. Every such stage uses the same window, the store KPIs' window,
+	// so stages compare with each other and with the tiles. Both are empty
+	// when Value is one reading on AsOf; DaysReported counts the window's
+	// days that had a value.
+	WindowStart  string `json:"window_start,omitempty"`
+	WindowEnd    string `json:"window_end,omitempty"`
+	DaysReported int    `json:"days_reported,omitempty"`
 }
 
 type GrowthEvidence struct {
@@ -1322,78 +1334,106 @@ func (c growthCtx) latestPoint(g *growthGroup, globs []string) (v float64, date 
 	return
 }
 
-// windowOrLatest sums the metric over the window when periodic rows fall in it,
-// else reports the newest periodic row (stale) or newest range row.
-func (c growthCtx) windowOrLatest(g *growthGroup, metric string) (v float64, date string, ok bool) {
-	m := g.daily[metric]
-	if s, d := c.sumRange(m, c.opts.WindowDays-1, 0); d > 0 {
-		return s, latestKey(m), true
-	}
-	if d := latestKey(m); d != "" {
-		return m[d], d, true
-	}
-	if r := g.ranges[metric]; len(r) > 0 {
-		for d, pv := range r {
-			if d > date {
-				v, date, ok = pv.v, d, true
-			}
-		}
-	}
-	return
+// growthFunnelRead is the number behind one funnel stage: a total over the
+// funnel window, or, when the window has no data, the newest single reading.
+type growthFunnelRead struct {
+	v    float64
+	date string // newest day behind v
+	days int    // days summed; 0 for a single reading
 }
 
+// funnelWindow returns how many days before as-of the funnel window ends and
+// its first and last day. It is the store KPIs' window (window_days long,
+// ending on the Sales report's newest final day), so every stage summed over
+// it compares with the others and with the tiles.
+func (c growthCtx) funnelWindow() (end int, from, to string) {
+	end = c.windowEnd("units")
+	return end, c.day(end + c.opts.WindowDays - 1), c.day(end)
+}
+
+// funnelTotal sums one daily metric over the funnel window; ok is false when no
+// day in the window has a value.
+func (c growthCtx) funnelTotal(g *growthGroup, metric string) (growthFunnelRead, bool) {
+	end, _, to := c.funnelWindow()
+	m := g.daily[metric]
+	v, days := c.sumRange(m, end+c.opts.WindowDays-1, end)
+	if days == 0 {
+		return growthFunnelRead{}, false
+	}
+	return growthFunnelRead{v: v, date: latestKeyUpTo(m, to), days: days}, true
+}
+
+// funnelReading is the newest single reading of the metrics, never a sum.
+func (c growthCtx) funnelReading(g *growthGroup, globs ...string) (growthFunnelRead, bool) {
+	v, date, ok := c.latestPoint(g, globs)
+	return growthFunnelRead{v: v, date: date}, ok
+}
+
+// growthSalesDownloadsNote and growthAnalyticsDownloadsNote say where the
+// downloads stage's number comes from; its label names the same count.
+const (
+	growthSalesDownloadsNote     = "Counted by the Sales report (exact)."
+	growthAnalyticsDownloadsNote = "Counted by App Store analytics (noised; the Sales report has no download kinds for this app)."
+)
+
+// funnel builds the seven stages. App Store impressions, product page views,
+// downloads and purchases are totals over one window, the store KPIs' window,
+// so each stage can be compared with the next and with the tiles; a stage
+// whose window has no data shows its newest reading instead and says so.
+// Activation, paywall views and renewals come from product usage events that
+// may be rates or running counts, so they stay one reading: summing them could
+// change what the number means.
 func (c growthCtx) funnel(g *growthGroup, profile GrowthProfile) []GrowthFunnelStage {
 	type def struct {
 		id, label string
 		storeOnly bool
-		fetch     func() (float64, string, bool)
-		noun      string
+		// fetch returns the number, the label and the noun that name what it
+		// counts, and a sentence on its source; ok is false when nothing does.
+		fetch func() (r growthFunnelRead, label, noun, source string, ok bool)
 	}
-	downloadsFrom := ""
+	first := func(reads ...func() (growthFunnelRead, bool)) (growthFunnelRead, bool) {
+		for _, read := range reads {
+			if r, ok := read(); ok {
+				return r, true
+			}
+		}
+		return growthFunnelRead{}, false
+	}
+	total := func(metric string) func() (growthFunnelRead, bool) {
+		return func() (growthFunnelRead, bool) { return c.funnelTotal(g, metric) }
+	}
+	reading := func(globs ...string) func() (growthFunnelRead, bool) {
+		return func() (growthFunnelRead, bool) { return c.funnelReading(g, globs...) }
+	}
+	plain := func(label, noun string, reads ...func() (growthFunnelRead, bool)) func() (growthFunnelRead, string, string, string, bool) {
+		return func() (growthFunnelRead, string, string, string, bool) {
+			r, ok := first(reads...)
+			return r, label, noun, "", ok
+		}
+	}
 	defs := []def{
-		{"impressions", "App Store impressions", true, func() (float64, string, bool) {
-			if v, d, ok := c.latestPoint(g, []string{"app_store_connect_impressions"}); ok {
-				return v, d, ok
+		{"impressions", "App Store impressions", true, plain("App Store impressions", "impressions",
+			total("app_store_connect_impressions"), reading("app_store_connect_impressions"), reading("app.impressions"))},
+		{"product_page_views", "Product page views", true, plain("Product page views", "product page views",
+			total("app_store_connect_product_page_views"), reading("app_store_connect_product_page_views"))},
+		{"first_time_downloads", "First-time downloads", true, func() (growthFunnelRead, string, string, string, bool) {
+			// The Sales report counts every new download exactly (the units
+			// KPI); analytics adds noise. Use Sales where it has the number,
+			// and name the stage after what it counts.
+			if r, ok := first(total(growthSalesFirstDownloads), reading(growthSalesFirstDownloads)); ok {
+				return r, "New downloads", "new downloads", growthSalesDownloadsNote, true
 			}
-			return c.latestPoint(g, []string{"app.impressions"})
-		}, "impressions"},
-		{"product_page_views", "Product page views", true, func() (float64, string, bool) {
-			return c.latestPoint(g, []string{"app_store_connect_product_page_views"})
-		}, "product page views"},
-		{"first_time_downloads", "First-time downloads", true, func() (float64, string, bool) {
-			// The Sales report counts every new download exactly; analytics
-			// adds noise. Use Sales where it has the number.
-			// Same number and window as the units KPI.
-			if k := c.kpiFor("units", g.daily); k.HasData {
-				downloadsFrom = "Counted by the Sales report (exact)."
-				return *k.Value, k.LatestDate, true
-			}
-			if v, d, ok := c.windowOrLatest(g, growthSalesFirstDownloads); ok {
-				downloadsFrom = "Counted by the Sales report (exact)."
-				return v, d, ok
-			}
-			downloadsFrom = "Counted by App Store analytics (noised; the Sales report has no download kinds for this app)."
-			if v, d, ok := c.windowOrLatest(g, "app_store_connect_first_time_downloads"); ok {
-				return v, d, ok
-			}
-			return c.latestPoint(g, []string{"app.downloads_first_time"})
-		}, "first-time downloads"},
-		{"activation", "Activation", false, func() (float64, string, bool) {
-			return c.latestPoint(g, []string{"posthog_*activation*", "posthog_*onboarding*"})
-		}, "activations"},
-		{"paywall_views", "Paywall views", true, func() (float64, string, bool) {
-			return c.latestPoint(g, []string{"posthog_*paywall*"})
-		}, "paywall views"},
-		{"purchases", "Purchases", false, func() (float64, string, bool) {
-			if v, d, ok := c.windowOrLatest(g, "app_store_connect_iap_units"); ok {
-				return v, d, ok
-			}
-			return c.windowOrLatest(g, "app_store_connect_app_units")
-		}, "purchases"},
-		{"renewals", "Renewals", true, func() (float64, string, bool) {
-			return c.latestPoint(g, []string{"posthog_*renew*", "app_store_connect_*renew*"})
-		}, "renewals"},
+			r, ok := first(total("app_store_connect_first_time_downloads"), reading("app_store_connect_first_time_downloads"), reading("app.downloads_first_time"))
+			return r, "First-time downloads", "first-time downloads", growthAnalyticsDownloadsNote, ok
+		}},
+		{"activation", "Activation", false, plain("Activation", "activations", reading("posthog_*activation*", "posthog_*onboarding*"))},
+		{"paywall_views", "Paywall views", true, plain("Paywall views", "paywall views", reading("posthog_*paywall*"))},
+		{"purchases", "Purchases", false, plain("Purchases", "purchases",
+			total("app_store_connect_iap_units"), reading("app_store_connect_iap_units"),
+			total("app_store_connect_app_units"), reading("app_store_connect_app_units"))},
+		{"renewals", "Renewals", true, plain("Renewals", "renewals", reading("posthog_*renew*", "app_store_connect_*renew*"))},
 	}
+	_, from, to := c.funnelWindow()
 	out := make([]GrowthFunnelStage, 0, len(defs))
 	for _, d := range defs {
 		st := GrowthFunnelStage{ID: d.id, Label: d.label}
@@ -1403,28 +1443,40 @@ func (c growthCtx) funnel(g *growthGroup, profile GrowthProfile) []GrowthFunnelS
 			out = append(out, st)
 			continue
 		}
-		v, date, ok := d.fetch()
+		r, label, noun, source, ok := d.fetch()
 		if !ok {
 			st.Status = GrowthBlind
 			st.Note = "Nothing measures this stage today."
 			if d.id == "purchases" {
-				if _, _, has := c.windowOrLatest(g, "app_store_connect_units"); has {
+				if len(g.daily["app_store_connect_units"]) > 0 || len(g.ranges["app_store_connect_units"]) > 0 {
 					st.Note = "Units are tracked, but purchases are not separated from free downloads."
 				}
 			}
 			out = append(out, st)
 			continue
 		}
-		st.Value, st.AsOf = growthPtr(v), date
-		if age := c.age(date); age > c.opts.StaleDays {
-			st.Status = GrowthStale
-			st.Note = fmt.Sprintf("Last reading was %s on %s, %s ago.", growthCount(v, strings.TrimSuffix(d.noun, "s"), d.noun), date, growthDays(age))
-		} else {
+		st.Label = label
+		st.Value, st.AsOf = growthPtr(r.v), r.date
+		count := growthCount(r.v, strings.TrimSuffix(noun, "s"), noun)
+		age := c.age(r.date)
+		switch {
+		case r.days > 0:
+			st.WindowStart, st.WindowEnd, st.DaysReported = from, to, r.days
 			st.Status = GrowthMeasured
-			st.Note = fmt.Sprintf("%s, latest data %s.", growthCount(v, strings.TrimSuffix(d.noun, "s"), d.noun), date)
+			st.Note = fmt.Sprintf("%s from %s to %s (%d of %s reported).", count, from, to, r.days, growthDays(c.opts.WindowDays))
+			if age > c.opts.StaleDays {
+				st.Status = GrowthStale
+				st.Note = fmt.Sprintf("%s from %s to %s, but the newest data is from %s, %s ago.", count, from, to, r.date, growthDays(age))
+			}
+		case age > c.opts.StaleDays:
+			st.Status = GrowthStale
+			st.Note = fmt.Sprintf("Last reading was %s on %s, %s ago.", count, r.date, growthDays(age))
+		default:
+			st.Status = GrowthMeasured
+			st.Note = fmt.Sprintf("%s, one reading on %s, not a total over %s to %s.", count, r.date, from, to)
 		}
-		if d.id == "first_time_downloads" && downloadsFrom != "" {
-			st.Note += " " + downloadsFrom
+		if source != "" {
+			st.Note += " " + source
 		}
 		out = append(out, st)
 	}
