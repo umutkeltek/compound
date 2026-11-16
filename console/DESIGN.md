@@ -689,9 +689,12 @@ the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line
   singleton, revision-bound registry workflow can describe the owner's options;
   this does not grant the browser permission to execute them.
 - Settings opens one section through `?section=`. Unopened panels do not render
-  their bodies. Settings, Feedback loops and Standing law use the existing
+  their bodies. Settings, Feedback loops, Standing law and Memory use the existing
   background read queue, preserve last-good/failure/loading states, and refresh
-  while reads are pending. Unknown counts are shown as unknown, never zero.
+  while reads are pending. Unknown counts are shown as unknown, never zero. A copy
+  past the 25-second cache window is the last good read, not a fault: a page warns
+  only when a refresh failed or the copy is older than ten minutes, so it does not
+  flip between "live" and a warning on every auto-refresh.
 - Loop cards summarize observations, hypotheses and reviews. Metric disclosure
   shows the latest observation per provider and metric; it does not render the
   whole event history. A rising number is not automatically a good result.

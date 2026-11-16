@@ -47,6 +47,29 @@ function text(value: unknown): string {
   return typeof value === "string" ? value : typeof value === "number" ? String(value) : "";
 }
 
+/* ---------- memory (the Memory page) ---------- */
+
+const isCount = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+
+/**
+ * Proposal records by their recorded state, from `memory candidates --json`
+ * `counts.by_state`. The CLI counts every record whatever the filter, so any
+ * filtered read carries the whole split. Unit: proposal records, not
+ * memories (an accepted statement is counted by `countAcceptedMemories`).
+ * `null` when the reply has no valid split: unknown, never zero.
+ */
+export function countProposalRecords(reply: unknown): Record<string, number> | null {
+  const counts = (reply as { counts?: { by_state?: unknown } } | null | undefined)?.counts?.by_state;
+  if (!counts || typeof counts !== "object" || Array.isArray(counts)) return null;
+  const out: Record<string, number> = {};
+  for (const [state, n] of Object.entries(counts)) {
+    if (!isCount(n)) return null;
+    out[state] = n;
+  }
+  return out;
+}
+
 /* ---------- open work ---------- */
 
 /** Open work items: every item the work projection lists as not finished. Unit: work items. */

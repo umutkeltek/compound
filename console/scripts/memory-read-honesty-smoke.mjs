@@ -11,6 +11,7 @@ const scratch = await mkdtemp(join(tmpdir(), "compound-memory-read-"));
 const bin = join(scratch, "compound-stub");
 await writeFile(bin, `#!/usr/bin/env bun
 const mode = process.env.MEMORY_READ_SMOKE_MODE;
+require("node:fs").appendFileSync(${JSON.stringify(join(scratch, "argv.log"))}, process.argv.slice(2).join(" ") + "\\n");
 if (process.argv[2] === "version") { console.log("synthetic"); process.exit(0); }
 if (mode === "fail") { console.error("synthetic memory projection unavailable"); process.exit(7); }
 if (mode === "slow") await Bun.sleep(16000);
@@ -61,6 +62,10 @@ try {
         createElement(SearchParamsContext.Provider,{value:new URLSearchParams()},
           await Memory({searchParams:Promise.resolve({})})))));
 
+  // The page never waits for compound: render, let the reads it queued land, render again.
+  const renderPageSettled = async () => { await renderPage(); await joinRefreshes(); return renderPage(); };
+  const noFalseWarning = /Could not read|not a current confirmed read|must recover|Check connection and access/;
+
   const renderHomeNow = async () => renderToStaticMarkup(createElement(AppRouterContext.Provider,{value:router},
     createElement(PathnameContext.Provider,{value:"/"},
       createElement(SearchParamsContext.Provider,{value:new URLSearchParams()},
@@ -78,9 +83,13 @@ try {
   const unavailableHome = await renderHome();
   assert.match(unavailableHome, /Memory unavailable/, "home must not turn failed memory reads into zero");
   assert.doesNotMatch(unavailableHome, /promoted · 0 awaiting · 0 parked/, "unknown counts must not become a zero summary");
+  const coldPage = await renderPage();
+  assert.match(coldPage, /Reading proposed memories for the first time/, "a memory read never landed is shown as being read");
+  assert.doesNotMatch(coldPage, /No proposed memories need review|No new supporting evidence/, "a cold page claims no empty queue");
+  await joinRefreshes();
   const unavailable = await renderPage();
-  assert.match(unavailable, /unreachable/, "actual memory page discloses failed reads");
-  assert.doesNotMatch(unavailable, /Clean seam|No proposed source evidence/, "failed page may not claim an empty queue or source set");
+  assert.match(unavailable, /Could not read proposed memories/, "actual memory page discloses failed reads");
+  assert.doesNotMatch(unavailable, /Clean seam|No proposed memories need review|No new supporting evidence/, "failed page may not claim an empty queue or source set");
   assert.match(unavailable, /—/, "unavailable counts are unknown, not zero");
 
   process.env.MEMORY_READ_SMOKE_MODE = "empty";
@@ -91,9 +100,10 @@ try {
   const emptyHome = await renderHome();
   assert.match(emptyHome, /promoted · 0 awaiting · 0 parked/, "real empty memory remains zero");
   assert.doesNotMatch(emptyHome, /Memory unavailable|Last known memory/);
-  const liveEmpty = await renderPage();
+  const liveEmpty = await renderPageSettled();
   assert.match(liveEmpty, /No new supporting evidence has been recorded/);
-  assert.doesNotMatch(liveEmpty, /unreachable|previously read/);
+  assert.match(liveEmpty, /No proposed memories need review/);
+  assert.doesNotMatch(liveEmpty, noFalseWarning);
 
   process.env.MEMORY_READ_SMOKE_MODE = "data";
   clockOffset += 26000;
@@ -103,7 +113,18 @@ try {
   assert.equal(live.read.status,"live");
   assert.deepEqual(live.actionable.map(x=>x.id),["cand_action"]);
   assert.deepEqual(live.sourceEvidence.map(x=>x.id),["cand_source"]);
-  await renderPage();
+  const livePage = await renderPageSettled();
+  assert.match(livePage, /cand_action/, "the proposed memory renders");
+  assert.doesNotMatch(livePage, noFalseWarning);
+  // KNOW-02: a good copy past the 25 s cache window, with the refresh not yet
+  // landed, is the last good read, not a fault. The page keeps the same cards
+  // and shows no warning (it used to flip to "not a current confirmed read"
+  // between auto-refreshes and push the cards down).
+  clockOffset += 26000;
+  const betweenRefreshes = await renderPage();
+  assert.match(betweenRefreshes, /cand_action/, "cards stay while a refresh runs");
+  assert.doesNotMatch(betweenRefreshes, noFalseWarning, "no stale warning for a copy that is only past the cache window");
+  await joinRefreshes();
   await renderHome();
   await joinRefreshes();
   const liveHome = await renderHome();
@@ -121,9 +142,14 @@ try {
   assert.equal((staleHome.match(/Last known memory/g) ?? []).length, 2, "both home memory surfaces label stale totals");
   assert.match(staleHome, /Last successful read:/);
   assert.doesNotMatch(staleHome, /Memory unavailable|promotions vs previous 7 days/);
-  const stalePage = await renderPage();
-  assert.match(stalePage,/previously read/,"actual page marks last-good memory data as stale");
-  assert.doesNotMatch(stalePage,/Clean seam|No proposed source evidence/);
+  const stalePage = await renderPageSettled();
+  assert.match(stalePage,/Could not read proposed memories\. Last good copy is from/,"actual page marks last-good memory data after a failed refresh");
+  assert.match(stalePage,/cand_action/,"the last good cards stay");
+  assert.doesNotMatch(stalePage,/Clean seam|No proposed memories need review|No new supporting evidence/);
+  // KNOW-03/13: the page never loads every candidate record to count them;
+  // the split comes from the filtered read's counts.
+  const argvLog = (await Bun.file(join(scratch, "argv.log")).text()).split("\n");
+  assert.ok(!argvLog.includes("memory candidates --json"), "the Memory page must not read every candidate record");
   // Join the failed background refresh before invalidating or cleaning up.
   await joinRefreshes();
 

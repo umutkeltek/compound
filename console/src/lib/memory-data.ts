@@ -222,6 +222,33 @@ export async function loadProposedMemorySplit(): Promise<{
 }
 
 /**
+ * The Memory page's read of what waits for the operator: the proposed set
+ * WITH evidence (about a dozen rows, so the per-row evidence lookup is
+ * cheap; the slow cost noted above was the whole set), through the
+ * non-blocking read queue. The page never waits for it: a missing copy is
+ * "loading", a failed refresh keeps the last good copy and says so. The
+ * same reply carries `counts.by_state` over EVERY candidate record (the
+ * CLI counts the full snapshot whatever the filter), so the page no longer
+ * loads all ~22k records just to count them.
+ */
+export const PROPOSED_MEMORY_ARGS = ["memory", "candidates", "--json", "--state", "proposed", "--include-evidence"];
+
+export async function readProposedMemory() {
+  const read = await readProjection(PROPOSED_MEMORY_ARGS, { timeoutMs: HEAVY_PROJECTION_TIMEOUT_MS });
+  const items = read.value
+    ? arr(read.value.items)
+        .map((item) => candidateWithId(asObject(item)))
+        .filter((item): item is MemoryCandidate => Boolean(item))
+    : [];
+  items.sort((a, b) => str(b.created_at).localeCompare(str(a.created_at)));
+  return {
+    actionable: items.filter(isActionableMemoryCandidate),
+    sourceEvidence: items.filter(isKnowledgeClassCandidate),
+    read,
+  };
+}
+
+/**
  * Parked standing-law candidates for the durable adjudication queue.
  *
  * Server-prefiltered with `--kind decision` (mem CandidateListOptions keys it on
