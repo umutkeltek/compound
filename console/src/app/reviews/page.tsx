@@ -10,8 +10,9 @@ import { ago } from "@/lib/time";
 import { describeWaiting, unit, waitingOnYou } from "@/lib/counts";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
-import { buildDecideGroups, heldWorkRows, type DecideAct, type DecideGroup, type ScopedDecisionEvidence } from "@/lib/decide-model";
+import { buildDecideGroups, filedOutcome, heldWorkRows, type DecideAct, type DecideGroup, type ScopedDecisionEvidence } from "@/lib/decide-model";
 import { workTitle } from "@/lib/work-title";
+import { workItemHref, workListHref } from "@/lib/links";
 import { decisionKindWords } from "@/lib/decision-registry";
 import { ATTENTION_SOURCED_GENERIC_AREAS } from "@/lib/generic-actions";
 import { areaOf, bandOf, enrichAttentionGroups, externalReviewRows, groupsForBand } from "@/lib/review-data";
@@ -21,6 +22,20 @@ export const dynamic = "force-dynamic";
 
 /** Filed items shown when one kind is open. */
 const FILED_SHOWN = 100;
+/** Recent decisions shown across kinds. */
+const RECENT_SHOWN = 12;
+
+function FiledRow({ item, filed }: { item: Json; filed: ReturnType<typeof filedOutcome> }) {
+  return (
+    <li className="grid gap-0.5 px-3 py-2">
+      <span className="text-sm text-ink"><strong className="font-semibold">{filed.outcome}</strong>{filed.subject ? <span className="text-muted"> · {filed.subject}</span> : null}</span>
+      <span className="text-2xs text-faint">
+        {plainArea(areaOf(item) || "")} · {filed.when ? `${filed.whenLabel} ${ago(filed.when)}` : `${filed.whenLabel} at an unknown time`}{filed.by ? ` by ${filed.by}` : ""}
+        <span className="mono"> · {str(item.id) || str(item.review_id)}</span>
+      </span>
+    </li>
+  );
+}
 
 /* ---------- item index + sample resolution (unchanged data contract) ----------
  * The Decide page renders the SAME ordered needs-you group set as
@@ -124,7 +139,26 @@ async function scopedEvidence(
 }
 
 /* ---------- watching (informational — no buttons, on purpose) ---------- */
-type WatchingEntry = { key: string; area: string; summary: string; count: number; createdAt: string };
+type WatchingEntry = { key: string; area: string; summary: string; count: number; createdAt: string; href: string };
+
+/**
+ * A watching row's words and where it leads. A summary that says it waits on
+ * him contradicts the "does not need you yet" heading, so it says what is
+ * true instead; a row leads to the list that holds its items when there is one.
+ */
+function watchingOf(row: Json): Pick<WatchingEntry, "summary" | "href"> {
+  const area = areaOf(row);
+  const raw = plainText(str(row.operator_summary));
+  const summary = !raw ? "Still watching." : /until you decide|needs your decision|waits? for you/i.test(raw)
+    ? "Watched for now; nothing is asked of you yet."
+    : raw;
+  const ids = arr(row.item_ids).map(String);
+  const href = str(row.kind) === "waiting_on_others" && ids.length === 1 ? workItemHref(ids[0])
+    : str(row.source) === "workbench" ? workListHref()
+    : area.startsWith("route-") ? "/routing"
+    : "";
+  return { summary, href };
+}
 
 function WatchingRow({ entry }: { entry: WatchingEntry }) {
   return (
@@ -214,7 +248,7 @@ export default async function Decide({
     .map((row: Json) => ({
       key: str(row.key) || str(row.id) || str(row.review_id),
       area: areaOf(row),
-      summary: plainText(str(row.operator_summary)) || "Still watching.",
+      ...watchingOf(row),
       count: num(row.count) || arr(row.item_ids).length || 1,
       createdAt: groupCreatedAt(row, itemByID),
     }))
@@ -234,8 +268,15 @@ export default async function Decide({
   const filedOfKind = filedKind
     ? filedItems
         .filter((item) => plainArea(areaOf(item) || "") === filedKind)
-        .sort((a, b) => str(b.created_at).localeCompare(str(a.created_at)))
+        .map((item) => ({ item, filed: filedOutcome(item) }))
+        .sort((a, b) => b.filed.when.localeCompare(a.filed.when))
     : [];
+  // What happened lately, across kinds: the newest recorded decisions.
+  const recentDecisions = filedItems
+    .map((item) => ({ item, filed: filedOutcome(item) }))
+    .filter((row) => row.filed.whenLabel === "decided")
+    .sort((a, b) => b.filed.when.localeCompare(a.filed.when))
+    .slice(0, RECENT_SHOWN);
 
   const attentionKnown = hasCopy(attentionRead);
   // A link to a decision that is not listed says why, never opens another
@@ -313,6 +354,14 @@ export default async function Decide({
           <span aria-hidden className="text-sm text-faint transition-transform group-open:rotate-90">›</span>
         </summary>
         <div className="border-t border-hair px-4 py-3">
+          {reviewsKnown && recentDecisions.length ? (
+            <div className="mb-4">
+              <div className="text-xs font-semibold text-ink">Recent decisions, newest first</div>
+              <ul className="mt-2 divide-y divide-hair rounded-md border border-hair">
+                {recentDecisions.map(({ item, filed }, index) => <FiledRow key={str(item.id) || index} item={item} filed={filed} />)}
+              </ul>
+            </div>
+          ) : null}
           {!reviewsKnown ? (
             <ReadNotice read={reviewsRead} label="filed items" />
           ) : filedKinds.length ? (
@@ -336,17 +385,11 @@ export default async function Decide({
           {filedKind && reviewsKnown ? (
             <div className="mt-4">
               <div className="text-xs font-semibold text-ink">
-                {filedKind} · showing {Math.min(FILED_SHOWN, filedOfKind.length).toLocaleString("en-US")} of {unit(filedOfKind.length, "item")}, newest first
+                {filedKind} · showing {Math.min(FILED_SHOWN, filedOfKind.length).toLocaleString("en-US")} of {unit(filedOfKind.length, "item")}, newest decided or raised first
               </div>
               <ul className="mt-2 divide-y divide-hair rounded-md border border-hair">
-                {filedOfKind.slice(0, FILED_SHOWN).map((item, index) => (
-                  <li key={str(item.id) || index} className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 px-3 py-2">
-                    <span className="min-w-0 flex-1 text-sm text-muted">
-                      {plainText(str(item.operator_summary) || str(item.next_action) || str(item.title)) || "No summary was written for this item."}
-                    </span>
-                    <span className="shrink-0 text-2xs tabular-nums text-faint">{str(item.created_at) ? ago(str(item.created_at)) : ""}</span>
-                    <span className="mono w-full truncate text-2xs text-faint">{str(item.id) || str(item.review_id)}</span>
-                  </li>
+                {filedOfKind.slice(0, FILED_SHOWN).map(({ item, filed }, index) => (
+                  <FiledRow key={str(item.id) || index} item={item} filed={filed} />
                 ))}
               </ul>
             </div>

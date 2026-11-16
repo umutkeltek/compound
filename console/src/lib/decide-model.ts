@@ -1764,3 +1764,46 @@ function ownSample(group: Json, itemByID: Map<string, Json>): Json {
   }
   return { id: str(group.key), area: areaOf(group) };
 }
+
+/* ---------- what happened: filed items lead with their outcome ---------- */
+
+export type FiledOutcome = {
+  /** what came of it, in plain words ("Dismissed", or the record's own outcome line) */
+  outcome: string;
+  /** the record's own words for what it was about */
+  subject: string;
+  /** when it was decided (ISO), else when it was raised */
+  when: string;
+  whenLabel: "decided" | "raised";
+  /** who decided: "you", "an agent", or "" when the record does not say */
+  by: string;
+};
+
+const RESOLUTION_WORDS: Record<string, string> = {
+  dismissed: "Dismissed",
+  parked: "Parked",
+  approved: "Approved",
+  accepted: "Accepted",
+  rejected: "Turned down",
+  resolved: "Resolved",
+  applied: "Applied",
+};
+
+/** A filed record's outcome and date, from the fields it already carries (`resolution`, `next_action`, `status`). */
+export function filedOutcome(item: Json): FiledOutcome {
+  const resolution = item.resolution && typeof item.resolution === "object" ? item.resolution as Json : null;
+  const decision = str(resolution?.decision).toLowerCase();
+  const actor = str(resolution?.actor) || str(resolution?.reviewed_by);
+  const status = str(item.status);
+  const outcome = decision
+    ? RESOLUTION_WORDS[decision] ?? decision.charAt(0).toUpperCase() + decision.slice(1).replace(/_/g, " ")
+    : plainText(str(item.next_action)) || (status ? status.charAt(0).toUpperCase() + status.slice(1).replace(/_/g, " ") : "Filed");
+  const decidedAt = str(resolution?.resolved_at);
+  return {
+    outcome: outcome.charAt(0).toUpperCase() + outcome.slice(1),
+    subject: subjectOf(str(item.operator_summary)),
+    when: decidedAt || str(item.created_at),
+    whenLabel: decidedAt ? "decided" : "raised",
+    by: !actor ? "" : /^operator\b/.test(actor) ? "you" : "an agent",
+  };
+}

@@ -646,7 +646,11 @@ the §3 empty-state doctrine copy ("Clean seam…", "Propose-only holds the line
   them and re-exports them, so a client component asks the same question without its own copy.
 - **Send only what is shown.** Decide sends the full detail of the open decision only
   (`?decision=<key>` re-renders with that one's detail); filed is a count plus one row per kind
-  (`?filed=<kind>` opens its newest 100). Live's timeline gets its six rows, and the list of
+  (`?filed=<kind>` opens its newest 100). A filed row leads with its outcome (the recorded
+  decision, else the record's own outcome line, else its status) and when it was decided (else
+  raised), and "Recent decisions" lists the newest decided records across kinds. A watching row
+  never says it waits on him under the "does not need you yet" heading, and links the list that
+  holds its items when one exists. Live's timeline gets its six rows, and the list of
   agent-started sessions renders only at the Technical depth.
 - **Decide standing (2026-11-13).** A button needs owner evidence read in the last 25 seconds;
   that gate is unchanged. The list (`attention --json`) takes about a minute to read, so the

@@ -112,8 +112,8 @@ const reply = {
     schema_version: "compound.review_queue.v0.1", generated_at: iso(0), groups: [],
     items: [
       { id: "rev_fx_filed_1", area: "bench", band: "filed", status: "filed", operator_summary: "A filed bench record.", created_at: iso(5) },
-      { id: "rev_fx_filed_2", area: "bench", band: "filed", status: "filed", operator_summary: "Another filed bench record.", created_at: iso(6) },
-      { id: "rev_fx_filed_3", area: "source-control-cleanup/scr_99aa88bb.preimage", band: "filed", status: "filed", operator_summary: "A filed cleanup record.", created_at: iso(7) },
+      { id: "rev_fx_filed_2", area: "bench", band: "filed", status: "resolved", operator_summary: "Another filed bench record. Review it?", created_at: iso(6), resolution: { decision: "dismissed", actor: "operator:fixture", resolved_at: iso(2) } },
+      { id: "rev_fx_filed_3", area: "source-control-cleanup/scr_99aa88bb.preimage", band: "filed", status: "completed", operator_summary: "A filed cleanup record.", next_action: "cleanup proposal rejected and filed", created_at: iso(7) },
     ],
   },
   // The opened decision's own read (Decide ?decision=route-promotions|x): its
@@ -628,6 +628,16 @@ try {
     assert.match(wrap("/reviews", createElement(DecideQueue, queue), "q=hypothesis"), /value="hypothesis"/, "the search box shows the address's text");
     const { decideFilterHref } = await import("../src/components/decide/DecideQueue.tsx");
     assert.equal(decideFilterHref("/reviews", "decision=a&filed=Sources", { q: "hold", area: "" }), "/reviews?decision=a&filed=Sources&q=hold", "typing keeps the open decision and other parameters");
+  }
+
+  // What happened: filed items lead with their outcome and when it was
+  // decided; recent decisions read across kinds; watching rows never claim to
+  // wait on him under a heading that says they do not, and lead somewhere.
+  {
+    const filed = visibleText(wrap("/reviews", await Decide({ searchParams: Promise.resolve({ filed: "Repository cleanup" }) }), "filed=Repository+cleanup"));
+    assert.match(filed, /Recent decisions, newest first Dismissed · Another filed bench record\. Benchmark results · decided 2d ago by you/, "a recent decision leads with its outcome, date and who");
+    assert.match(filed, /Cleanup proposal rejected and filed · A filed cleanup record\. Repository cleanup · raised 7d ago/, "a filed row leads with the outcome the record carries");
+    assert.doesNotMatch(filed, /until you decide/);
   }
 
   // A link to a decision that is gone says so and offers the filed list; a
