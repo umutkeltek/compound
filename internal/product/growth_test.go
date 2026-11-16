@@ -619,10 +619,11 @@ func TestGrowthStaleNamesTheStaleInput(t *testing.T) {
 	if ret.Status != GrowthStale {
 		t.Fatalf("retention = %+v", ret)
 	}
-	if strings.Contains(ret.NextMove, "PostHog") || !strings.Contains(ret.NextMove, "App Store Connect analytics") || !strings.Contains(ret.NextMove, growthDay(60)) {
+	// Redownloads come from the Sales report, so the stopped input is the sales feed.
+	if strings.Contains(ret.NextMove, "PostHog") || !strings.Contains(ret.NextMove, "App Store Connect sales") || !strings.Contains(ret.NextMove, growthDay(60)) {
 		t.Fatalf("retention next_move names the wrong source: %q", ret.NextMove)
 	}
-	if !strings.Contains(ret.Summary, growthDay(60)) || !strings.Contains(ret.Summary, "App Store Connect analytics") {
+	if !strings.Contains(ret.Summary, growthDay(60)) || !strings.Contains(ret.Summary, "App Store Connect sales") {
 		t.Fatalf("retention summary = %q", ret.Summary)
 	}
 }

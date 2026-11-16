@@ -460,6 +460,9 @@ func growthStaleOf(results []growthFormResult) []growthStaleSource {
 
 // growthGapKind is the next-move kind that closes a form's gap.
 func growthGapKind(r growthFormResult) string {
+	if r.gap != "" {
+		return r.gap
+	}
 	s := r.spec
 	switch {
 	case len(s.patterns)+len(s.capped)+len(s.companion) > 0 || s.custom != "":

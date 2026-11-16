@@ -15,20 +15,25 @@ var growthASCFunnelSeriesRel = filepath.Join("private", "metrics", "raw", "asc-f
 // growthASCFunnelCells are the analytics cells growth reads, each with the
 // ledger metric it feeds. The names are the ones the growth catalog already
 // judges, so the areas they feed need no catalog change.
-var growthASCFunnelCells = []struct{ cell, metric string }{
-	{"impressions", "app_store_connect_impressions"},
-	{"product_page_views", "app_store_connect_product_page_views"},
-	{"first_time_downloads", "app_store_connect_first_time_downloads"},
+//
+// report names the Apple report each cell is published in. Apple publishes
+// each report for the whole account, so an observed cell of any app shows
+// the report exists for that day (see applyGrowthASCFunnel).
+var growthASCFunnelCells = []struct{ cell, metric, report string }{
+	{"impressions", "app_store_connect_impressions", "discovery_and_engagement"},
+	{"product_page_views", "app_store_connect_product_page_views", "discovery_and_engagement"},
+	{"first_time_downloads", "app_store_connect_first_time_downloads", "downloads"},
 }
 
-// growthASCFunnelPoint is one observed analytics cell.
+// growthASCFunnelPoint is one observed analytics cell. A point with no metric
+// only says the series has a row for the app that day.
 type growthASCFunnelPoint struct {
 	appID, date, metric string
 	v                   float64
 }
 
 // loadGrowthASCFunnelSeries reads the analytics series and keeps only
-// observed cells. A missing file means no analytics source, not an error. A
+// observed cells, plus one row marker per app and day. A missing file means no analytics source, not an error. A
 // line that does not parse or lacks an app id or date is skipped. Two rows for
 // one app and day are both dropped: the day is not known, so it stays missing
 // rather than guessed.
@@ -59,6 +64,7 @@ func loadGrowthASCFunnelSeries(homePath string) ([]growthASCFunnelPoint, error) 
 		if count[r.ASCAppID+"|"+r.Date] != 1 {
 			continue
 		}
+		out = append(out, growthASCFunnelPoint{appID: r.ASCAppID, date: r.Date})
 		for _, c := range growthASCFunnelCells {
 			contract, err := ascFunnelMetric(c.cell)
 			if err != nil {
@@ -78,12 +84,41 @@ func loadGrowthASCFunnelSeries(homePath string) ([]growthASCFunnelPoint, error) 
 // periodic signals, under the same app id rule as the sales series: only an
 // id that maps to exactly one app counts. The series wins over a ledger copy
 // on a day it observed; ledger rows stay only on days it did not.
+//
+// It also records how far each report covered the app (g.reported): through
+// the newest day the app has a row while some app has an observed cell from
+// that report. Apple publishes each report for the whole account, so on such
+// a day a cell the app lacks is a value Apple did not publish (too small, or
+// none), not a report that stopped; refreshing would not bring it. The rule
+// assumes the series covers one account, as the sales days index does.
 func applyGrowthASCFunnel(points []growthASCFunnelPoint, ids map[string]map[*growthGroup]bool, asOf string) {
+	published := map[string]map[string]bool{} // report -> days some app has an observed cell
+	for _, p := range points {
+		if p.metric == "" {
+			continue
+		}
+		for _, c := range growthASCFunnelCells {
+			if c.metric == p.metric {
+				if published[c.report] == nil {
+					published[c.report] = map[string]bool{}
+				}
+				published[c.report][p.date] = true
+			}
+		}
+	}
 	for _, p := range points {
 		if p.date > asOf || len(ids[p.appID]) != 1 {
 			continue
 		}
 		for g := range ids[p.appID] {
+			if p.metric == "" {
+				for _, c := range growthASCFunnelCells {
+					if published[c.report][p.date] && p.date > g.reported[c.metric] {
+						g.reported[c.metric] = p.date
+					}
+				}
+				continue
+			}
 			byDate := g.signals[p.metric]
 			if byDate == nil {
 				byDate = map[string]growthPV{}

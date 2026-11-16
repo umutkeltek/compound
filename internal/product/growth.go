@@ -370,10 +370,19 @@ type growthGroup struct {
 	adRows  map[string]growthPV
 
 	adsRevenueRows, adsRows int
-	hyps                    []HypothesisCandidate
-	reviews                 []Review
-	issues                  int
-	canonical               string
+	// reported maps a metric to the newest day its feed is known to have
+	// covered this app, when that is later than its newest value: the
+	// analytics report listed the app, or the ads import for the same
+	// account kept running. A feed is judged stale on this day, not on its
+	// newest value.
+	reported map[string]string
+	// adsLast holds, per ad platform ("" for all of them), the newest day
+	// with an ad row and the newest day a row had spend or impressions.
+	adsLast   map[string]growthAdsLast
+	hyps      []HypothesisCandidate
+	reviews   []Review
+	issues    int
+	canonical string
 }
 
 var (
@@ -570,7 +579,11 @@ func loadGrowthWorld(homePath string, opts GrowthOptions) (*growthWorld, error) 
 	}
 	applyGrowthASCFunnel(ascFunnel, ascAppIDs, asOfStr)
 
-	applyGrowthAds(adRows, resolve, asOfStr)
+	adImports, err := LoadAdsImports(homePath)
+	if err != nil {
+		return nil, err
+	}
+	applyGrowthAds(adRows, adImports, resolve, asOfStr)
 
 	for _, d := range drafts {
 		if d.Post == nil || len(d.Post.PostedAt) < 10 {
@@ -729,7 +742,7 @@ func newGrowthGroup(i int) *growthGroup {
 		idx: i, idSet: map[string]bool{}, registered: map[string]bool{}, rows: map[string]int{}, tokens: map[string]bool{},
 		profileDeclared: map[string]bool{}, claims: map[string]string{},
 		signals: map[string]map[string]growthPV{}, ranges: map[string]map[string]growthPV{},
-		daily: map[string]map[string]float64{},
+		daily: map[string]map[string]float64{}, reported: map[string]string{},
 	}
 }
 
@@ -1016,6 +1029,19 @@ func (c growthCtx) series(daily map[string]map[string]float64) map[string][]Grow
 type growthEv struct {
 	GrowthEvidence
 	rows90 int
+	// reported is the newest day the metric's feed covered the app when that
+	// is later than LatestDate (see growthGroup.reported); else empty.
+	reported string
+}
+
+// fed is the newest day the evidence's feed is known to have covered the app:
+// its newest value, or a later day its report listed the app. Freshness is
+// judged on it, so a feed that still reports never reads as stopped.
+func (e growthEv) fed() string {
+	if e.reported > e.LatestDate {
+		return e.reported
+	}
+	return e.LatestDate
 }
 
 // evidence collects, per matching metric, row counts and the latest date.
@@ -1061,6 +1087,9 @@ func (c growthCtx) evidence(g *growthGroup, globs []string) []growthEv {
 				ev.rows90++
 			}
 		}
+		if r := g.reported[metric]; r > ev.LatestDate {
+			ev.reported = r
+		}
 		out = append(out, ev)
 	}
 	return out
@@ -1080,8 +1109,14 @@ func growthDays(n int) string { return growthCount(float64(n), "day", "days") }
 func growthMetricSource(metric string) string {
 	switch {
 	case metric == "app_store_connect_developer_proceeds_usd", metric == "app_store_connect_units",
-		metric == "app_store_connect_iap_units", metric == "app_store_connect_app_units", metric == growthSalesFirstDownloads:
+		metric == "app_store_connect_iap_units", metric == "app_store_connect_app_units", metric == growthSalesFirstDownloads,
+		metric == "app_store_connect_redownloads", metric == "app_store_connect_updates":
+		// Every field the Sales series carries (growthASCSalesValues).
 		return "App Store Connect sales"
+	case strings.HasPrefix(metric, "app_store_") && (strings.Contains(metric, "review") || strings.Contains(metric, "rating")):
+		// Ratings and review counts come from their own feed, which can stop
+		// while the analytics reports keep arriving.
+		return "App Store ratings"
 	case strings.HasPrefix(metric, "app_store_"), strings.HasPrefix(metric, "app."):
 		return "App Store Connect analytics"
 	case strings.HasPrefix(metric, "gsc_"):
@@ -1337,9 +1372,10 @@ func (c growthCtx) latestPoint(g *growthGroup, globs []string) (v float64, date 
 // growthFunnelRead is the number behind one funnel stage: a total over the
 // funnel window, or, when the window has no data, the newest single reading.
 type growthFunnelRead struct {
-	v    float64
-	date string // newest day behind v
-	days int    // days summed; 0 for a single reading
+	v      float64
+	date   string // newest day behind v
+	days   int    // days summed; 0 for a single reading
+	metric string // the metric summed, for its feed's report day
 }
 
 // funnelWindow returns how many days before as-of the funnel window ends and
@@ -1360,7 +1396,7 @@ func (c growthCtx) funnelTotal(g *growthGroup, metric string) (growthFunnelRead,
 	if days == 0 {
 		return growthFunnelRead{}, false
 	}
-	return growthFunnelRead{v: v, date: latestKeyUpTo(m, to), days: days}, true
+	return growthFunnelRead{v: v, date: latestKeyUpTo(m, to), days: days, metric: metric}, true
 }
 
 // funnelReading is the newest single reading of the metrics, never a sum.
@@ -1458,7 +1494,13 @@ func (c growthCtx) funnel(g *growthGroup, profile GrowthProfile) []GrowthFunnelS
 		st.Label = label
 		st.Value, st.AsOf = growthPtr(r.v), r.date
 		count := growthCount(r.v, strings.TrimSuffix(noun, "s"), noun)
-		age := c.age(r.date)
+		// A total is stale when its feed stopped covering the app, not when
+		// the feed published no value lately (see growthGroup.reported).
+		fresh := r.date
+		if rep := g.reported[r.metric]; r.metric != "" && rep > fresh {
+			fresh = rep
+		}
+		age := c.age(fresh)
 		switch {
 		case r.days > 0:
 			st.WindowStart, st.WindowEnd, st.DaysReported = from, to, r.days
@@ -1466,7 +1508,7 @@ func (c growthCtx) funnel(g *growthGroup, profile GrowthProfile) []GrowthFunnelS
 			st.Note = fmt.Sprintf("%s from %s to %s (%d of %s reported).", count, from, to, r.days, growthDays(c.opts.WindowDays))
 			if age > c.opts.StaleDays {
 				st.Status = GrowthStale
-				st.Note = fmt.Sprintf("%s from %s to %s, but the newest data is from %s, %s ago.", count, from, to, r.date, growthDays(age))
+				st.Note = fmt.Sprintf("%s from %s to %s, but the newest data is from %s, %s ago.", count, from, to, r.date, growthDays(c.age(r.date)))
 			}
 		case age > c.opts.StaleDays:
 			st.Status = GrowthStale
@@ -1530,6 +1572,10 @@ type growthFormResult struct {
 	nextMove string
 	evidence []GrowthEvidence
 	stale    []growthStaleSource // the sources that stopped, for a stale metric verdict
+	// gap overrides the next-move kind growthGapKind derives from the
+	// form, when the form's gap is not missing data: a feed that still
+	// reports while its values stopped asks to assess, not to connect.
+	gap string
 }
 
 // evalMetrics runs the metric and custom evaluators for one form. ok is false
@@ -1558,6 +1604,7 @@ func (c growthCtx) evalMetrics(g *growthGroup, app GrowthApp, spec growthAreaSpe
 	}
 	missing := ""
 	var staleEv []growthEv
+	gap := "" // next-move kind when it differs from the form's default
 	status := GrowthMeasured
 	switch spec.custom {
 	case "feedback":
@@ -1592,12 +1639,16 @@ func (c growthCtx) evalMetrics(g *growthGroup, app GrowthApp, spec growthAreaSpe
 		}
 	}
 	if spec.custom == "" || spec.custom == "organic" || spec.custom == "search_ads" || spec.custom == "web_traffic" || spec.custom == "pricing" || spec.custom == "unit_economics" {
-		status, missing, staleEv = c.metricStatus(g, spec, full, capped, latest, rows90, stale)
+		var quiet bool
+		status, missing, staleEv, quiet = c.metricStatus(g, spec, full, capped, latest, rows90, stale)
+		if quiet {
+			gap = "assess"
+		}
 	}
 	if status == GrowthBlind && spec.paywall && g.mentionsPaywall() {
 		status, missing = GrowthPartial, "Only hypotheses and reviews mention the paywall. Add paywall events."
 	}
-	r := growthFormResult{spec: spec, status: status, basis: "metric", evidence: a.Evidence}
+	r := growthFormResult{spec: spec, status: status, basis: "metric", evidence: a.Evidence, gap: gap}
 	if status == GrowthBlind {
 		r.basis = "none"
 	}
@@ -1627,12 +1678,27 @@ func growthFeedback(g *growthGroup, c growthCtx, a *GrowthAudit) (string, string
 	return GrowthBlind, ""
 }
 
-func (c growthCtx) metricStatus(g *growthGroup, spec growthAreaSpec, full, capped []growthEv, latest string, rows90, stale int) (string, string, []growthEv) {
+// metricStatus judges one form's metric evidence. A feed is stale when the
+// newest day it covered the app is old (growthEv.fed), not when its newest
+// value is; a stale entry carries that day as its date, so "Refresh X" names
+// the feed's own last report. When values stopped while the feed still
+// covers the app, the status is partial and quiet is true: the missing text
+// says what stopped, and nothing needs a refresh.
+func (c growthCtx) metricStatus(g *growthGroup, spec growthAreaSpec, full, capped []growthEv, latest string, rows90, stale int) (status, missing string, staleEv []growthEv, quiet bool) {
 	all := append(append([]growthEv{}, full...), capped...)
 	if len(all) == 0 {
-		return GrowthBlind, "", nil
+		return GrowthBlind, "", nil, false
 	}
-	var staleEv []growthEv
+	var quietEv []growthEv
+	judge := func(e growthEv) {
+		switch {
+		case c.age(e.fed()) > stale:
+			e.LatestDate = e.fed()
+			staleEv = append(staleEv, e)
+		case c.age(e.LatestDate) > stale:
+			quietEv = append(quietEv, e)
+		}
+	}
 	if spec.custom == "unit_economics" {
 		// Currency coverage and report freshness are different questions.
 		// USD and unconverted observations belong to one ads source.
@@ -1643,27 +1709,47 @@ func (c growthCtx) metricStatus(g *growthGroup, spec growthAreaSpec, full, cappe
 				if e.LatestDate > ads.LatestDate {
 					ads.LatestDate = e.LatestDate
 				}
+				if e.reported > ads.reported {
+					ads.reported = e.reported
+				}
 				continue
 			}
-			if c.age(e.LatestDate) > stale {
-				staleEv = append(staleEv, e)
+			judge(e)
+		}
+		if ads.LatestDate != "" {
+			judge(ads)
+		}
+	} else {
+		fed := ""
+		for _, e := range all {
+			if e.fed() > fed {
+				fed = e.fed()
 			}
 		}
-		if ads.LatestDate != "" && c.age(ads.LatestDate) > stale {
-			staleEv = append(staleEv, ads)
-		}
-	} else if c.age(latest) > stale {
-		for _, e := range all {
-			if e.LatestDate == latest {
-				staleEv = append(staleEv, e)
+		switch {
+		case c.age(fed) > stale:
+			for _, e := range all {
+				if e.fed() == fed {
+					e.LatestDate = fed
+					staleEv = append(staleEv, e)
+				}
+			}
+		case c.age(latest) > stale:
+			for _, e := range all {
+				if e.reported != "" && c.age(e.fed()) <= stale {
+					quietEv = append(quietEv, e)
+				}
 			}
 		}
 	}
 	if len(staleEv) > 0 {
-		return GrowthStale, "", staleEv
+		return GrowthStale, "", staleEv, false
+	}
+	if len(quietEv) > 0 {
+		return GrowthPartial, c.quietNote(g, quietEv), nil, true
 	}
 	if c.adsCurrencyGap(g, spec) {
-		return GrowthPartial, growthAdsCurrencyNote, nil
+		return GrowthPartial, growthAdsCurrencyNote, nil, false
 	}
 	has := func(glob string) bool {
 		for _, e := range all {
@@ -1676,29 +1762,58 @@ func (c growthCtx) metricStatus(g *growthGroup, spec growthAreaSpec, full, cappe
 	switch spec.custom {
 	case "unit_economics":
 		if !has("app_store_connect_developer_proceeds_usd") {
-			return GrowthPartial, "Ad spend is known but sales proceeds are missing.", nil
+			return GrowthPartial, "Ad spend is known but sales proceeds are missing.", nil, false
 		}
 		if !has(growthAdsSpend) {
-			return GrowthPartial, "Proceeds are known but there is no ad spend data.", nil
+			return GrowthPartial, "Proceeds are known but there is no ad spend data.", nil, false
 		}
 		if g.adsRevenueRows == 0 {
-			return GrowthPartial, "Ads have no revenue linked, so return on ad spend is unknown.", nil
+			return GrowthPartial, "Ads have no revenue linked, so return on ad spend is unknown.", nil, false
 		}
 	case "pricing":
-		return GrowthPartial, "Revenue per unit is known. Price response is not.", nil
+		return GrowthPartial, "Revenue per unit is known. Price response is not.", nil, false
 	}
 	if len(full) == 0 && len(capped) > 0 {
-		return GrowthPartial, "Only a weak proxy exists for this area.", nil
+		return GrowthPartial, "Only a weak proxy exists for this area.", nil, false
 	}
 	if rows90 < 3 {
-		return GrowthPartial, fmt.Sprintf("Only %d rows in the last 90 days.", rows90), nil
+		return GrowthPartial, fmt.Sprintf("Only %d rows in the last 90 days.", rows90), nil, false
 	}
 	for _, comp := range spec.companion {
 		if !has(comp) {
-			return GrowthPartial, fmt.Sprintf("Missing companion data: %s.", comp), nil
+			return GrowthPartial, fmt.Sprintf("Missing companion data: %s.", comp), nil, false
 		}
 	}
-	return GrowthMeasured, "", nil
+	return GrowthMeasured, "", nil, false
+}
+
+// quietNote says that a feed still covers the app while its values stopped:
+// the newest value and the newest covered day across the quiet evidence of
+// the first one's feed. For ads that means the campaign stopped spending,
+// not that the import did.
+func (c growthCtx) quietNote(g *growthGroup, quiet []growthEv) string {
+	e := quiet[0]
+	for _, o := range quiet[1:] {
+		if growthMetricSource(o.Metric) != growthMetricSource(e.Metric) {
+			continue
+		}
+		if o.LatestDate > e.LatestDate {
+			e.LatestDate = o.LatestDate
+		}
+		if o.reported > e.reported {
+			e.reported = o.reported
+		}
+	}
+	if platform, ads := growthAdsFeedMetrics[e.Metric]; ads {
+		last := g.adsLast[platform]
+		ran := "no row ever had spend or impressions"
+		if last.ran != "" {
+			ran = "no spend or impressions since " + last.ran
+		}
+		return fmt.Sprintf("No ad rows for this app since %s and %s, while the %s for its account reached %s. The campaign looks stopped: confirm it is paused or ended.",
+			last.row, ran, growthMetricSource(e.Metric), e.reported)
+	}
+	return fmt.Sprintf("%s reported this app through %s but has had no new value here since %s.", growthMetricSource(e.Metric), e.reported, e.LatestDate)
 }
 
 func (c growthCtx) summary(g *growthGroup, spec growthAreaSpec, status, missing string, ev []growthEv, latest string, staleEv []growthEv, app GrowthApp) string {
