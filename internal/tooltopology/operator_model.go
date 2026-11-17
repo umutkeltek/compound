@@ -16,13 +16,15 @@ import (
 const (
 	// OperatorModelPath is the file, relative to COMPOUND_HOME.
 	OperatorModelPath = "config/operator-model.md"
-	// MaxOperatorModelBytes is the session-start budget for the model. It
-	// keeps the whole start payload (the door map, capped at MaxServedBytes,
-	// plus this block) under the 10,000 characters a harness may keep from
-	// hook output. The budget only ever leaves out background sections:
-	// every rule section is served whole, even past it, and a section left
-	// out is named, never cut.
-	MaxOperatorModelBytes = 6144
+	// MaxOperatorModelBytes is the session-start budget for the model. The
+	// whole start text must stay under the 10,000 bytes a harness keeps from
+	// hook output (it replaces a longer one with a 2,000-byte preview). The
+	// parts: the ask-first line (about 450), this block, the door map (capped
+	// at MaxServedBytes) and the compact laws (about 700). 5120 leaves the
+	// rest of the budget at its caps. The budget only ever leaves out
+	// background sections: every rule section is served whole, even past it,
+	// and a section left out is named, never cut.
+	MaxOperatorModelBytes = 5120
 
 	operatorModelHeader  = "## Operator model (private, from " + OperatorModelPath + ")"
 	maxOperatorModelRead = 1 << 20
@@ -158,13 +160,15 @@ func renderOperatorModel(raw string, unread int64) string {
 }
 
 // ServeSessionStart is the one session-start payload every harness receives:
-// the door map, then the operator model one blank line apart when a model
-// exists. The hook and `compound doors serve` both call it, so a lane that
-// only gets `doors serve` (no session hook) still receives the operator model.
+// the operator model first, then the door map, one blank line apart when both
+// exist. The operator's rules lead because a harness may keep only the start
+// of a long hook output. The hook and `compound doors serve` both call it, so a
+// lane that only gets `doors serve` (no session hook) still receives the
+// operator model.
 func ServeSessionStart(home string, now time.Time, ttl time.Duration) string {
 	doorMap := ServeDoorMap(home, now, ttl)
 	if model := ServeOperatorModel(home); model != "" && doorMap != "" {
-		return doorMap + "\n\n" + model
+		return model + "\n\n" + doorMap
 	} else if model != "" {
 		return model
 	}

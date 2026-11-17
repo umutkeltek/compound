@@ -22,7 +22,7 @@ func writeHookOperatorModel(t *testing.T, home, body string) {
 	}
 }
 
-func TestLiveSessionStartServesOperatorModelAfterDoorMap(t *testing.T) {
+func TestLiveSessionStartServesOperatorModelBeforeDoorMap(t *testing.T) {
 	t.Setenv(SessionPackEnv, "full") // exact full-start payload; session_pack_test pins the minimal one
 	home := doorMapHome(t)
 	writeHookOperatorModel(t, home, syntheticOperatorModel)
@@ -33,9 +33,9 @@ func TestLiveSessionStartServesOperatorModelAfterDoorMap(t *testing.T) {
 		t.Fatal(err)
 	}
 	doorMap := tooltopology.ServeDoorMap(home, fixedNow, tooltopology.DefaultDoorMapTTL)
-	want := doorMap + "\n\n" + "## Operator model (private, from config/operator-model.md)\n" + strings.TrimRight(syntheticOperatorModel, "\n")
+	want := "## Operator model (private, from config/operator-model.md)\n" + strings.TrimRight(syntheticOperatorModel, "\n") + "\n\n" + doorMap
 	if res.ContextOutput != want {
-		t.Fatalf("live session-start must serve the door map, one blank line, then the operator model:\n got %q\nwant %q", res.ContextOutput, want)
+		t.Fatalf("live session-start must serve the operator model, one blank line, then the door map:\n got %q\nwant %q", res.ContextOutput, want)
 	}
 }
 
@@ -89,11 +89,11 @@ func TestLiveSessionStartOversizeOperatorModelStaysBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	idx := strings.Index(res.ContextOutput, "\n\n## Operator model")
-	if idx < 0 {
-		t.Fatalf("operator model block missing from %q", res.ContextOutput)
+	idx := strings.Index(res.ContextOutput, "\n\n## Door map")
+	if idx < 0 || !strings.HasPrefix(res.ContextOutput, "## Operator model") {
+		t.Fatalf("operator model block must lead, then the door map: %q", res.ContextOutput)
 	}
-	doorPart, modelPart := res.ContextOutput[:idx], res.ContextOutput[idx+2:]
+	modelPart, doorPart := res.ContextOutput[:idx], res.ContextOutput[idx+2:]
 	if len(doorPart) > tooltopology.MaxServedBytes+200 {
 		t.Fatalf("door map part is %d bytes, cap %d", len(doorPart), tooltopology.MaxServedBytes)
 	}

@@ -58,7 +58,7 @@ func tail(s string, n int) string {
 	return s[len(s)-n:]
 }
 
-func TestServeSessionStartCarriesOperatorModelAfterDoorMap(t *testing.T) {
+func TestServeSessionStartCarriesOperatorModelBeforeDoorMap(t *testing.T) {
 	home := t.TempDir()
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	without := ServeSessionStart(home, now, DefaultDoorMapTTL)
@@ -79,8 +79,8 @@ func TestServeSessionStartCarriesOperatorModelAfterDoorMap(t *testing.T) {
 		t.Fatal(err)
 	}
 	doorMap := ServeDoorMap(home, now, DefaultDoorMapTTL)
-	if both := ServeSessionStart(home, now, DefaultDoorMapTTL); doorMap == "" || !strings.HasPrefix(both, doorMap+"\n\n"+operatorModelHeader) {
-		t.Fatalf("model must follow the door map one blank line apart:\n%s", both)
+	if both := ServeSessionStart(home, now, DefaultDoorMapTTL); doorMap == "" || !strings.HasPrefix(both, operatorModelHeader) || !strings.HasSuffix(both, "\n\n"+doorMap) {
+		t.Fatalf("the model must lead and the door map follow it one blank line apart:\n%s", both)
 	}
 	if !strings.HasSuffix(with, "- lead with the decision") {
 		t.Fatalf("model body missing:\n%s", with)

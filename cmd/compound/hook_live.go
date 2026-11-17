@@ -208,7 +208,7 @@ func liveHookResponseWithEnforcement(
 		}
 		switch hookName {
 		case "session-start":
-			out.AdditionalContext = liveAdditionalContext(res.Summary, res.ContextOutput)
+			out.AdditionalContext = liveSessionStartContext(res)
 		case "user-prompt-submit":
 			out.AdditionalContext = res.ContextOutput
 		case "pre-tool-use":
@@ -228,7 +228,7 @@ func liveHookResponseWithEnforcement(
 	}
 	switch hookName {
 	case "session-start":
-		out.AdditionalContext = liveAdditionalContext(res.Summary, res.ContextOutput)
+		out.AdditionalContext = liveSessionStartContext(res)
 	case "user-prompt-submit":
 		out.AdditionalContext = res.ContextOutput
 	case "pre-tool-use":
@@ -295,6 +295,13 @@ func livePromptAdditionalContext(res hook.Result) string {
 		return res.ContextOutput
 	}
 	return warning + "\n\n" + res.ContextOutput
+}
+
+func liveSessionStartContext(res hook.Result) string {
+	if res.SummaryInContext {
+		return liveAdditionalContext(res.ContextOutput)
+	}
+	return liveAdditionalContext(res.Summary, res.ContextOutput)
 }
 
 func liveAdditionalContext(parts ...string) string {

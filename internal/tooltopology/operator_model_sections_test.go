@@ -20,7 +20,7 @@ func sampleSection(heading string, lines int, word string) string {
 // not rules, are left out when the budget is short. Each one left out is
 // named, so nothing is dropped silently.
 func TestServeOperatorModelServesEveryRuleSectionWhole(t *testing.T) {
-	constraints := sampleSection("Standing constraints for agents", 20, "constraint")
+	constraints := sampleSection("Standing constraints for agents", 14, "constraint")
 	who := sampleSection("Who", 8, "person")
 	background := sampleSection("Background", 30, "history")
 	decisions := sampleSection("Standing decisions", 15, "decision")
