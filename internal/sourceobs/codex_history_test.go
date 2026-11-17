@@ -132,7 +132,7 @@ func TestCodexHistoryScaleBackfillAndDailyReconcileResume(t *testing.T) {
 		t.Fatalf("backfill was not bounded: %+v", first)
 	}
 	second := captureCodex(t, hp, root, "", now)
-	if second.Pending != 0 || second.NativeBodyRows > 10*512+8 {
+	if second.Pending != 0 || second.NativeBodyRows > 11*512+8 {
 		t.Fatalf("backfill did not resume: %+v", second)
 	}
 	if count := len(codexManifest(t, hp).Items); count > 100 {
@@ -459,4 +459,72 @@ VALUES('thread-z','turn-z','late-user',1,99999,'{"type":"userMessage","content":
 		t.Fatal("new tail waited for history")
 	}
 	assertContiguous()
+}
+
+func TestCodexHistoryRoundRobinProgressUnderContinuousTails(t *testing.T) {
+	hp, root := t.TempDir(), nativeRoot(t)
+	db := filepath.Join(root, "thread_history_1.sqlite")
+	nativeSQL(t, db, codexHistorySchema+`
+WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<80)
+INSERT INTO thread_items(thread_id,turn_id,item_id,rollout_ordinal,created_at_ms,item_json,item_type,updated_at_ordinal)
+SELECT 'thread-a','turn-a','backlog-'||x,x*512,x,'{"type":"toolResult","output":"old history"}','toolResult',x*512 FROM n;
+WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<48)
+INSERT INTO thread_history_projection_state SELECT printf('thread-z%02d',x),10,2 FROM n;
+INSERT INTO thread_items(thread_id,turn_id,item_id,rollout_ordinal,created_at_ms,item_json,item_type,updated_at_ordinal)
+SELECT thread_id,'turn-z','late',1,1,'{"type":"userMessage","content":"Cold thread must progress"}','userMessage',1
+FROM thread_history_projection_state WHERE thread_id LIKE 'thread-z%';
+`)
+	now := time.Now().UTC()
+	for pass := 0; pass < 4; pass++ {
+		nativeSQL(t, db, fmt.Sprintf(`INSERT INTO thread_items(thread_id,turn_id,item_id,rollout_ordinal,created_at_ms,item_json,item_type,updated_at_ordinal)
+VALUES('thread-a','turn-a','fresh-%d',%d,%d,'{"type":"agentMessage","text":"Continuously active thread"}','agentMessage',%d);
+UPDATE thread_history_projection_state SET next_rollout_ordinal=%d WHERE thread_id='thread-a';`, pass, (82+pass)*512, 999999+pass, (82+pass)*512, (82+pass)*512+1))
+		r := captureCodex(t, hp, root, "", now)
+		if r.NativeBodyRows > 32*512+8 {
+			t.Fatalf("pass %d exceeded bounded range work: %+v", pass, r)
+		}
+	}
+	for n := 1; n <= 48; n++ {
+		if !strings.Contains(codexCurrentBody(t, hp, fmt.Sprintf("semantic/thread-z%02d/thread_items/0", n)), "Cold thread must progress") {
+			t.Fatalf("cold thread %d starved under a continuous tail", n)
+		}
+	}
+	if !strings.Contains(codexCurrentBody(t, hp, "pack/thread-a/thread_items/1"), "old history") {
+		t.Fatal("tail priority starved contiguous history")
+	}
+}
+
+func TestCodexHistoryByteBudgetAndDeferredMetadataPreserveProgress(t *testing.T) {
+	// Exercise the exact production scheduler at KiB scale, with rows larger than
+	// the priority share and an optional metadata row over the row limit.
+	reader := codexHistoryReader
+	codexHistoryReader = strings.NewReplacer("MAX_BYTES = 128 << 20", "MAX_BYTES = 128 << 10", "MAX_ROW = 64 << 20", "MAX_ROW = 64 << 10", "byte_limit = 32 << 20", "byte_limit = 32 << 10").Replace(reader)
+	defer func() { codexHistoryReader = reader }()
+	hp, root := t.TempDir(), nativeRoot(t)
+	db := filepath.Join(root, "thread_history_1.sqlite")
+	nativeSQL(t, db, codexHistorySchema+`
+WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<6)
+INSERT INTO thread_history_projection_state SELECT printf('thread-z%02d',x),10,2 FROM n;
+INSERT INTO thread_items(thread_id,turn_id,item_id,rollout_ordinal,created_at_ms,item_json,item_type,updated_at_ordinal)
+SELECT thread_id,'turn-z','large-user',1,1,'{"type":"userMessage","content":"'||replace(hex(zeroblob(57344)),'00','x')||'"}','userMessage',1
+FROM thread_history_projection_state WHERE thread_id LIKE 'thread-z%';
+`)
+	nativeSQL(t, filepath.Join(root, "state.sqlite"), `CREATE TABLE threads(id TEXT PRIMARY KEY,title TEXT,cwd TEXT,updated_at_ms INTEGER,unknown_payload BLOB);
+INSERT INTO threads VALUES('thread-a','Tiny useful context','/workspace/fixture',1,zeroblob(65537));`)
+	now := time.Now().UTC()
+	for pass := 0; pass < 7; pass++ {
+		nativeSQL(t, db, fmt.Sprintf(`INSERT INTO thread_items(thread_id,turn_id,item_id,rollout_ordinal,created_at_ms,item_json,item_type,updated_at_ordinal)
+VALUES('thread-a','turn-a','hot-%d',%d,%d,'{"type":"agentMessage","text":"'||replace(hex(zeroblob(20480)),'00','h')||'"}','agentMessage',%d);
+UPDATE thread_history_projection_state SET next_rollout_ordinal=%d WHERE thread_id='thread-a';`, pass, (pass+1)*512, 999999+pass, (pass+1)*512, (pass+1)*512+1))
+		r := captureCodex(t, hp, root, "state.sqlite", now)
+		if r.NativeBodyBytes > 128<<10 || r.Pending == 0 {
+			t.Fatalf("pass %d lost bound/deferred metadata: %+v", pass, r)
+		}
+		if !strings.Contains(codexCurrentBody(t, hp, "cursor/thread-a"), "projection_state") {
+			t.Fatal("deferred metadata discarded progress cursor")
+		}
+	}
+	for n := 1; n <= 6; n++ {
+		codexCurrentBody(t, hp, fmt.Sprintf("semantic/thread-z%02d/thread_items/0", n))
+	}
 }

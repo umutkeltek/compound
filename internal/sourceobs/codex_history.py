@@ -74,6 +74,8 @@ def main():
     stats = {"metadata_rows": 0, "body_rows": 0, "body_bytes": 0}
     used_packs = 0
     used_bytes = 0
+    capacity_waiting = None
+    fair_phase = False
     pending = 0
     deferred = 0
     seen = []
@@ -109,9 +111,13 @@ def main():
         stats["metadata_rows"] += len(rows)
         return rows, body_field
     def full_row(table, meta, field):
-        nonlocal used_bytes
+        nonlocal used_bytes, capacity_waiting
         size = meta["body_size"] or 0
-        if size > MAX_ROW or used_bytes+size > byte_limit:
+        if size > MAX_ROW:
+            return None
+        if used_bytes+size > byte_limit:
+            if fair_phase and capacity_waiting is None:
+                capacity_waiting = meta["thread_id"]
             return None
         keys = ["thread_id","turn_id"] if table=="thread_turns" else (["thread_id","turn_id","item_id"] if table=="thread_items" else ["thread_id","item_id"])
         sql = 'SELECT * FROM "'+table+'" WHERE '+" AND ".join('"'+key+'"=?' for key in keys)
@@ -125,12 +131,14 @@ def main():
         used_bytes += size
         return row
     def capture_pack(sid, table, bucket, force=False):
-        nonlocal used_packs, deferred
+        nonlocal used_packs, deferred, capacity_waiting
         force = force or states.get(sid,{}).get("epoch",epoch)<epoch
         marker = (sid,table,bucket)
         if marker in captured:
             return True
         if used_packs >= MAX_PACKS or pack_metadata_rows >= MAX_PACKS*WIDTH or used_bytes >= MAX_BYTES:
+            if fair_phase and capacity_waiting is None:
+                capacity_waiting = sid
             return False
         metas, field = metadata(table,sid,bucket)
         visible_metas = [m for m in metas if table != "thread_turns" and m["item_type"] in VISIBLE+("",)]
@@ -332,7 +340,7 @@ def main():
         state = info["state"]
         return metadata_db and (state.get("metadata_owned")!=state.get("metadata") or state.get("metadata_epoch",-1)<epoch)
     def own_metadata(info):
-        nonlocal used_bytes,deferred
+        nonlocal used_bytes,deferred,capacity_waiting
         if not metadata_due(info):
             return False
         sid,state = info["sid"],info["state"]
@@ -341,6 +349,8 @@ def main():
         stats["metadata_rows"] += 1
         if size and (size[0]>MAX_ROW or used_bytes+size[0]>byte_limit):
             deferred += 1
+            if size[0]<=MAX_ROW and fair_phase and capacity_waiting is None:
+                capacity_waiting = sid
             return False
         found = db.execute("SELECT * FROM metadata.threads WHERE id=?",(sid,)).fetchone()
         row = dict(found) if found else None
@@ -360,6 +370,7 @@ def main():
     for info in sorted((x for x in infos if x["state"].get("tail_pending")),key=lambda x:(-x["recency"],x["sid"]))[:8]:
         tail(info)
     byte_limit = MAX_BYTES
+    fair_phase = True
     next_thread = req.get("next_thread","")
     start = next((i for i,info in enumerate(infos) if info["sid"]>=next_thread),0)
     ordered = infos[start:]+infos[:start]
@@ -370,6 +381,8 @@ def main():
         progress = False
         for index,info in enumerate(ordered):
             if used_packs>=MAX_PACKS or pack_metadata_rows>=MAX_PACKS*WIDTH or used_bytes>=MAX_BYTES:
+                if capacity_waiting is None:
+                    capacity_waiting = info["sid"]
                 break
             state = info["state"]
             action_start = state.get("action",0)
@@ -382,6 +395,7 @@ def main():
                     break
         if not progress or used_packs>=MAX_PACKS or pack_metadata_rows>=MAX_PACKS*WIDTH or used_bytes>=MAX_BYTES:
             break
+    next_thread = capacity_waiting or next_thread
     for info in infos:
         sid,state,prior = info["sid"],info["state"],info["prior"]
         unfinished = (any(state["tables"][table]["last"]<info["maxima"][table] for table in TABLES)

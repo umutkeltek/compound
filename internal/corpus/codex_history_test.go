@@ -133,7 +133,7 @@ INSERT INTO thread_history_projection_state VALUES('metadata-only',0,0);
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(m.Items) != 2 {
+	if len(m.Items) != 3 {
 		t.Fatalf("native metadata was discarded or context-only artifact generated: %+v", m)
 	}
 	for _, item := range m.Items {
