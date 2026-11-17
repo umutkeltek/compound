@@ -5,9 +5,14 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
 const configuredEmbedBatch = 32
+
+// Ingestion includes cold model load and long document batches. The caller's
+// earlier deadline still bounds every request; interactive breadth keeps its own default.
+const configuredEmbedTimeout = 60 * time.Second
 
 type configuredEmbedder struct {
 	config   EmbedderConfig
@@ -34,6 +39,7 @@ func NewConfiguredEmbedder(lane LaneConfig) (Embedder, error) {
 	adapter, err := breadth.NewOpenAICompatEmbedder(breadth.OpenAICompatEmbedderConfig{
 		Provider: provider,
 		Batch:    configuredEmbedBatch,
+		Timeout:  configuredEmbedTimeout,
 		Model:    lane.Embedder.Model,
 		BaseURL:  lane.Embedder.BaseURL,
 	})
@@ -43,8 +49,9 @@ func NewConfiguredEmbedder(lane LaneConfig) (Embedder, error) {
 	return configuredEmbedder{config: lane.Embedder, adapter: adapter, identity: lane.Embedder.Identity(), dim: lane.Embedder.Dims}, nil
 }
 
-func (e configuredEmbedder) Identity() string { return e.identity }
-func (e configuredEmbedder) Dim() int         { return e.dim }
+func (e configuredEmbedder) Identity() string     { return e.identity }
+func (e configuredEmbedder) Dim() int             { return e.dim }
+func (e configuredEmbedder) indexBatchLimit() int { return configuredEmbedBatch }
 
 func (e configuredEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	var vectors [][]float32

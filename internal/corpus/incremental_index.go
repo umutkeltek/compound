@@ -174,9 +174,22 @@ func prepareIncremental(ctx context.Context, hp string, lane LaneConfig, old Man
 		manifest: out, chunks: chunks, hashes: hashes}, nil
 }
 
-func indexIncremental(ctx context.Context, hp string, lane LaneConfig, embedder Embedder, opts IndexOptions) (IndexReport, error) {
+func indexIncremental(ctx context.Context, hp string, lane LaneConfig, embedder Embedder, opts IndexOptions) (report IndexReport, resultErr error) {
 	started := time.Now()
 	dir := IndexDir(hp, lane)
+	stats := incrementalStats{}
+	defer func() {
+		report.SchemaVersion = ManifestSchemaVersion
+		report.Lane = lane.Lane
+		report.IndexDir = dir
+		report.EmbedderIdentity = lane.Embedder.Identity()
+		report.BodyBytesRead = stats.BodyBytesRead
+		report.IndexBytesRead = stats.IndexBytesRead
+		report.IndexBytesWritten = stats.IndexBytesWritten
+		report.PreparedItems = stats.PreparedItems
+		report.ReusedItems = stats.ReusedItems
+		report.WallMilliseconds = time.Since(started).Milliseconds()
+	}()
 	unlock, err := lockCorpusIndex(ctx, dir)
 	if err != nil {
 		return IndexReport{}, err
@@ -192,7 +205,6 @@ func indexIncremental(ctx context.Context, hp string, lane LaneConfig, embedder 
 	if err := checkIndexModelDigest(dir, lane, old, opts.Rebuild, false); err != nil {
 		return IndexReport{}, err
 	}
-	stats := incrementalStats{}
 	prepared, err := prepareIncremental(ctx, hp, lane, old, opts.Rebuild, &stats)
 	if err != nil {
 		return IndexReport{}, err
@@ -205,7 +217,7 @@ func indexIncremental(ctx context.Context, hp string, lane LaneConfig, embedder 
 	prepared.manifest.ModelDigest = lane.Embedder.ModelDigest
 	prepared.identity.ModelDigestBinding = binding
 	prepared.manifest.ModelDigestBinding = binding
-	report := IndexReport{SchemaVersion: ManifestSchemaVersion, Lane: lane.Lane, IndexDir: dir, EmbedderIdentity: lane.Embedder.Identity(),
+	report = IndexReport{SchemaVersion: ManifestSchemaVersion, Lane: lane.Lane, IndexDir: dir, EmbedderIdentity: lane.Embedder.Identity(),
 		Items: len(prepared.manifest.Items), TotalChunks: len(prepared.chunks), Rebuild: opts.Rebuild}
 	report.Added, report.Changed, report.Removed = stalenessCounts(old, prepared.manifest)
 	finish := func() {
@@ -386,13 +398,19 @@ func indexIncremental(ctx context.Context, hp string, lane LaneConfig, embedder 
 		report.EmbeddedChunks = len(current)
 		return nil
 	}
-	for start := 0; start < len(pending); start += embedBatchSize {
+	batchSize := embedBatchSize
+	if configured, ok := embedder.(interface{ indexBatchLimit() int }); ok {
+		if limit := configured.indexBatchLimit(); limit > 0 && limit < batchSize {
+			batchSize = limit
+		}
+	}
+	for start := 0; start < len(pending); start += batchSize {
 		if err := ctx.Err(); err != nil {
 			_ = persist(err.Error())
 			finish()
 			return report, err
 		}
-		end := start + embedBatchSize
+		end := start + batchSize
 		if end > len(pending) {
 			end = len(pending)
 		}

@@ -34,23 +34,28 @@ func conversationTextContext(ctx context.Context, format, body string) (string, 
 			continue
 		}
 		var row struct {
-			Type      string            `json:"type"`
-			Timestamp string            `json:"timestamp"`
-			Message   json.RawMessage   `json:"message"`
-			Payload   json.RawMessage   `json:"payload"`
-			Context   map[string]string `json:"context"`
-			Source    struct {
-				Table     string `json:"table"`
-				MessageID string `json:"message_id"`
-			} `json:"source"`
+			Type      string          `json:"type"`
+			Timestamp json.RawMessage `json:"timestamp"`
+			Message   json.RawMessage `json:"message"`
+			Payload   json.RawMessage `json:"payload"`
+			Context   json.RawMessage `json:"context"`
+			Source    json.RawMessage `json:"source"`
 		}
 		if err := json.Unmarshal([]byte(raw), &row); err != nil {
 			return "", fmt.Errorf("invalid transcript record %d", line)
 		}
 		if (format == "opencode" || format == "hermes") && row.Type == "native_session" {
+			var contextFields map[string]json.RawMessage
+			if len(row.Context) > 0 && string(row.Context) != "null" {
+				if err := json.Unmarshal(row.Context, &contextFields); err != nil {
+					return "", fmt.Errorf("invalid native session context record %d", line)
+				}
+			}
 			var contextParts []string
 			for _, field := range []string{"title", "cwd", "model", "source", "parent_session_id"} {
-				if value := row.Context[field]; value != "" {
+				var value string
+				_ = json.Unmarshal(contextFields[field], &value)
+				if value != "" {
 					contextParts = append(contextParts, field+": "+value)
 				}
 			}
@@ -129,19 +134,49 @@ func conversationTextContext(ctx context.Context, format, body string) (string, 
 		if strings.TrimSpace(text) == "" {
 			continue
 		}
+		timestamp, err := conversationTimestamp(row.Timestamp)
+		if err != nil {
+			return "", fmt.Errorf("invalid message timestamp record %d", line)
+		}
 		semanticOrdinal++
 		if format == "opencode" || format == "hermes" {
-			attribution := fmt.Sprintf("message %d", semanticOrdinal)
-			if row.Source.Table != "" && row.Source.MessageID != "" {
-				attribution = row.Source.Table + ":" + row.Source.MessageID
+			var source struct {
+				Table     string `json:"table"`
+				MessageID string `json:"message_id"`
 			}
-			fmt.Fprintf(&out, "[%s %s] %s: %s\n\n", row.Timestamp, attribution, message.Role, text)
+			if len(row.Source) > 0 && string(row.Source) != "null" {
+				if err := json.Unmarshal(row.Source, &source); err != nil {
+					return "", fmt.Errorf("invalid native message source record %d", line)
+				}
+			}
+			attribution := fmt.Sprintf("message %d", semanticOrdinal)
+			if source.Table != "" && source.MessageID != "" {
+				attribution = source.Table + ":" + source.MessageID
+			}
+			fmt.Fprintf(&out, "[%s %s] %s: %s\n\n", timestamp, attribution, message.Role, text)
 		} else {
-			fmt.Fprintf(&out, "[%s record %d] %s: %s\n\n", row.Timestamp, line, message.Role, text)
+			fmt.Fprintf(&out, "[%s record %d] %s: %s\n\n", timestamp, line, message.Role, text)
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return "", fmt.Errorf("transcript record exceeds supported size or cannot be read")
 	}
 	return out.String(), nil
+}
+
+// Metadata belongs to its native record family. A foreign context/source shape
+// must not make an otherwise valid visible message unreadable.
+func conversationTimestamp(raw json.RawMessage) (string, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", nil
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return text, nil
+	}
+	var number json.Number
+	if json.Unmarshal(raw, &number) == nil {
+		return number.String(), nil
+	}
+	return "", fmt.Errorf("timestamp must be a string or number")
 }

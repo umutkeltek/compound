@@ -185,20 +185,26 @@ func Refresh(ctx context.Context, homePath string, lanes []LaneConfig, factory E
 							c.Error = err.Error()
 						} else {
 							indexed, err := Index(ctx, homePath, valid, embedder, IndexOptions{Incremental: true})
+							// Costs and partial progress are observed even when preparation,
+							// a later provider batch, or publication fails.
+							c.BodyBytesRead = indexed.BodyBytesRead
+							c.VectorBytesRead = indexed.IndexBytesRead
+							c.IndexBytesWritten = indexed.IndexBytesWritten
+							c.PreparedItems = indexed.PreparedItems
+							c.ReusedItems = indexed.ReusedItems
+							c.NewEmbeddedChunks = indexed.NewEmbeddedChunks
+							c.IndexUnchanged = indexed.Unchanged
+							if indexed.Items > 0 {
+								c.Items = indexed.Items
+							}
+							c.Chunks = indexed.TotalChunks
+							c.IndexPendingChunks = indexed.TotalChunks - indexed.EmbeddedChunks
+
 							if err != nil {
 								c.Status = "index_failed"
 								c.Error = err.Error()
 							} else {
-								c.BodyBytesRead = indexed.BodyBytesRead
-								c.VectorBytesRead = indexed.IndexBytesRead
-								c.IndexBytesWritten = indexed.IndexBytesWritten
-								c.PreparedItems = indexed.PreparedItems
-								c.ReusedItems = indexed.ReusedItems
-								c.NewEmbeddedChunks = indexed.NewEmbeddedChunks
-								c.IndexUnchanged = indexed.Unchanged
 								c.IndexedAt = c.CheckedAt
-								c.Items = indexed.Items
-								c.Chunks = indexed.TotalChunks
 								if c.PendingFiles > 0 {
 									c.Status = "backfilling"
 								}

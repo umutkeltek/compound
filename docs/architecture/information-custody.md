@@ -630,3 +630,19 @@ evidence; retrieval and indexes are derived. Missing sessions report incomplete
 coverage while preserving owned current/historical evidence. Failed inventories
 publish no checkpoint. A v2 migration captures row items and a new projection,
 retaining the original v2 snapshot and its source fingerprint as historical evidence.
+
+
+### Transcript family parsing and ingestion recovery
+
+Transcript metadata belongs to its source format. Claude retry events can carry
+a string-valued source; the SQL adapters' source object and session context are
+decoded only for their native visible records. Malformed visible content still
+fails preparation while the owned raw evidence remains available.
+
+Configured corpus ingestion sends at most 32 inputs per provider request, allows
+up to 60 seconds for cold local document batches, and respects an earlier caller
+deadline. Each successful request publishes an index checkpoint before the next
+request. A failed request remains a reported failure; retry resumes missing
+vectors. Refresh reports retain observed body reads, preparation work, vector
+reads, metadata/shard writes and completed embeddings even when preparation or a
+later batch fails. Partial progress does not set the successful indexed timestamp.
