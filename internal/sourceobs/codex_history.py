@@ -321,4 +321,15 @@ def main():
     print(canonical({"complete":True,"pending":pending,"deferred":deferred,"seen_threads":seen,"session_bodies":len(body_threads),**stats}),flush=True)
     db.rollback()
     db.close()
-main()
+
+if __name__=="__main__":
+    try:
+        main()
+    except Exception as exc:
+        detail=str(exc)
+        safe=("unsupported Codex history schema:","native item_json must be an object","Codex range has no unique ordinal index","Codex thread metadata exceeds bounded inventory","row disappeared inside read transaction")
+        if isinstance(exc,ValueError) and detail.startswith(safe):
+            print(detail,file=sys.stderr)
+        else:
+            print("Codex history read failed ("+type(exc).__name__+"); check native row encoding/schema",file=sys.stderr)
+        sys.exit(1)

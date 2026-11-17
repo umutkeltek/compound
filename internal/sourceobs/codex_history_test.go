@@ -3,6 +3,7 @@ package sourceobs
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -363,5 +364,21 @@ c.close()
 	steady := captureCodex(t, hp, root, "", now)
 	if steady.NativeBodyRows != 0 {
 		t.Fatal("unchanged active WAL reread bodies")
+	}
+}
+
+func TestCodexHistoryMalformedNativeTextDoesNotEchoPayload(t *testing.T) {
+	hp, root := t.TempDir(), nativeRoot(t)
+	db := filepath.Join(root, "thread_history_1.sqlite")
+	nativeSQL(t, db, codexHistorySchema)
+	secret := "SyntheticPrivateNativeMarker"
+	raw := append([]byte{0xff}, []byte(secret)...)
+	nativeSQL(t, db, "UPDATE thread_items SET item_json=CAST(X'"+hex.EncodeToString(raw)+"' AS TEXT) WHERE item_id='user-native';")
+	_, err := CaptureCodexHistory(context.Background(), hp, "codex_history_fixture", root, "", "", time.Now())
+	if err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("native error leaked row data: %v", err)
+	}
+	if _, err := os.Stat(SourceManifestPath(hp, "codex_history_fixture")); !os.IsNotExist(err) {
+		t.Fatal("malformed source advanced its checkpoint")
 	}
 }
