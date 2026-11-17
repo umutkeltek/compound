@@ -22,11 +22,14 @@ var nativeConversationReader string
 // NativeConversationDatabase resolves a configured file below an approved
 // directory. Account paths and native source discovery are never implicit.
 func NativeConversationDatabase(root, format, database string) (string, error) {
-	if format != "opencode" && format != "hermes" {
+	if format != "opencode" && format != "hermes" && format != "codex-history" {
 		return "", fmt.Errorf("unsupported native conversation format")
 	}
 	if database == "" {
 		database = "opencode.db"
+		if format == "codex-history" {
+			database = "thread_history_1.sqlite"
+		}
 		if format == "hermes" {
 			database = "state.db"
 		}

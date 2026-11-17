@@ -15,7 +15,7 @@ func conversationText(format, body string) (string, error) {
 	return conversationTextContext(context.Background(), format, body)
 }
 func conversationTextContext(ctx context.Context, format, body string) (string, error) {
-	if format != "codex" && format != "claude" && format != "omp" && format != "opencode" && format != "hermes" {
+	if format != "codex" && format != "claude" && format != "omp" && format != "opencode" && format != "hermes" && format != "codex-history" {
 		return "", fmt.Errorf("unknown transcript format")
 	}
 	var out strings.Builder
@@ -44,7 +44,7 @@ func conversationTextContext(ctx context.Context, format, body string) (string, 
 		if err := json.Unmarshal([]byte(raw), &row); err != nil {
 			return "", fmt.Errorf("invalid transcript record %d", line)
 		}
-		if (format == "opencode" || format == "hermes") && row.Type == "native_session" {
+		if (format == "opencode" || format == "hermes" || format == "codex-history") && row.Type == "native_session" {
 			var contextFields map[string]json.RawMessage
 			if len(row.Context) > 0 && string(row.Context) != "null" {
 				if err := json.Unmarshal(row.Context, &contextFields); err != nil {
@@ -70,7 +70,7 @@ func conversationTextContext(ctx context.Context, format, body string) (string, 
 			Content json.RawMessage `json:"content"`
 		}
 		var encoded json.RawMessage
-		if (format == "omp" || format == "opencode" || format == "hermes") && row.Type == "message" {
+		if (format == "omp" || format == "opencode" || format == "hermes" || format == "codex-history") && row.Type == "message" {
 			encoded = row.Message
 		}
 		if format == "codex" && row.Type == "response_item" {
@@ -139,7 +139,7 @@ func conversationTextContext(ctx context.Context, format, body string) (string, 
 			return "", fmt.Errorf("invalid message timestamp record %d", line)
 		}
 		semanticOrdinal++
-		if format == "opencode" || format == "hermes" {
+		if format == "opencode" || format == "hermes" || format == "codex-history" {
 			var source struct {
 				Table     string `json:"table"`
 				MessageID string `json:"message_id"`

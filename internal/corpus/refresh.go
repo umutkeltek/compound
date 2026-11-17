@@ -13,9 +13,10 @@ import (
 )
 
 type SourceConfig struct {
-	Database     string   `json:"database,omitempty" yaml:"database,omitempty"`
-	Roots        []string `json:"roots,omitempty" yaml:"roots,omitempty"`
-	RootsCommand []string `json:"roots_command,omitempty" yaml:"roots_command,omitempty"`
+	StateDatabase string   `json:"state_database,omitempty" yaml:"state_database,omitempty"`
+	Database      string   `json:"database,omitempty" yaml:"database,omitempty"`
+	Roots         []string `json:"roots,omitempty" yaml:"roots,omitempty"`
+	RootsCommand  []string `json:"roots_command,omitempty" yaml:"roots_command,omitempty"`
 
 	Root   string `json:"root" yaml:"root"`
 	Format string `json:"format" yaml:"format"`
@@ -127,7 +128,9 @@ func Refresh(ctx context.Context, homePath string, lanes []LaneConfig, factory E
 						}
 						var part sourceobs.CaptureBatchReport
 						var e error
-						if valid.Source.Format == "opencode" || valid.Source.Format == "hermes" {
+						if valid.Source.Format == "codex-history" {
+							part, e = sourceobs.CaptureCodexHistory(ctx, homePath, valid.SourceFamily, root, valid.Source.Database, valid.Source.StateDatabase, now)
+						} else if valid.Source.Format == "opencode" || valid.Source.Format == "hermes" {
 							part, e = sourceobs.CaptureNativeConversations(ctx, homePath, valid.SourceFamily, root, valid.Source.Format, valid.Source.Database, now)
 						} else {
 							part, e = sourceobs.CaptureApprovedDirectoryBatchWithOptions(ctx, homePath, valid.SourceFamily, root, valid.Source.Format, now, sourceobs.CaptureOptions{ContinueAfterRefusedSymlink: true, SourceNamespace: ns})
@@ -167,8 +170,11 @@ func Refresh(ctx context.Context, homePath string, lanes []LaneConfig, factory E
 					c.OversizedFiles = captured.Oversized
 					c.DeferredFiles = captured.Deferred
 					c.FreshnessBasis = "inode_size_mtime_ctime; capture hashes changed bytes"
-					if valid.Source.Format == "opencode" || valid.Source.Format == "hermes" {
+					if valid.Source.Format == "opencode" || valid.Source.Format == "hermes" || valid.Source.Format == "codex-history" {
 						c.FreshnessBasis = "sqlite_transaction; database_wal_identity; session_metadata; daily_full_row_reconciliation"
+						if valid.Source.Format == "codex-history" {
+							c.FreshnessBasis = "sqlite_transaction; database_wal_identity; indexed_ordinal_ranges; bounded_resumable_daily_reconciliation"
+						}
 					}
 					c.CapturedFiles = captured.Captured
 					c.UnchangedFiles = captured.Unchanged
@@ -251,11 +257,16 @@ func (s SourceConfig) validate() error {
 	if s.Database != "" && (filepath.IsAbs(s.Database) || filepath.Clean(s.Database) == ".." || strings.HasPrefix(filepath.Clean(s.Database), ".."+string(filepath.Separator))) {
 		return fmt.Errorf("source database must stay beneath approved root")
 	}
+	if s.StateDatabase != "" {
+		if s.Format != "codex-history" || filepath.IsAbs(s.StateDatabase) || filepath.Clean(s.StateDatabase) == "." || filepath.Clean(s.StateDatabase) == ".." || strings.HasPrefix(filepath.Clean(s.StateDatabase), ".."+string(filepath.Separator)) {
+			return fmt.Errorf("state database must be a relative Codex metadata database beneath approved root")
+		}
+	}
 	switch s.Format {
-	case "markdown", "claude", "codex", "omp", "opencode", "hermes":
+	case "markdown", "claude", "codex", "omp", "opencode", "hermes", "codex-history":
 		return nil
 	default:
-		return fmt.Errorf("source format must be markdown, claude, codex, omp, opencode or hermes")
+		return fmt.Errorf("source format must be markdown, claude, codex, omp, opencode, hermes or codex-history")
 	}
 }
 

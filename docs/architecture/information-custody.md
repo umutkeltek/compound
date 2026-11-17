@@ -646,3 +646,36 @@ request. A failed request remains a reported failure; retry resumes missing
 vectors. Refresh reports retain observed body reads, preparation work, vector
 reads, metadata/shard writes and completed embeddings even when preparation or a
 later batch fails. Partial progress does not set the successful indexed timestamp.
+
+
+### Codex paginated native history
+
+The explicit corpus source format codex-history reads the configured
+thread_history_1.sqlite beneath an approved root. An optional relative
+state_database supplies supplementary thread metadata. SQLite is opened in
+read-only/query-only mode and each capture uses a read transaction. The adapter
+does not migrate rollouts, edit native state, or replace existing JSONL capture.
+
+Raw native rows use stable thread/table/512-ordinal source ranges. Rows of 64 KiB
+or more have independent source keys; packs reference their exact owned row
+snapshot. Every original item_json/error_json string and every native column is
+preserved, including unknown fields and binary values. Only userMessage text and
+agentMessage text enter separate visible-message packs. Raw packs, tools,
+reasoning, turn state, and account metadata normalize to no semantic text.
+Visible attribution uses the native turn/item IDs, independent of tool positions.
+
+A capture completes at most 32 ranges and reads at most 128 MiB of native column
+payloads; one row over 64 MiB is retained as deferred work rather than silently
+skipped. The inventory refuses more than 16,384 threads. Range metadata has a
+separate bounded work allowance. Database/WAL stat identity skips steady-state
+body reads. Native append/update ordinals find changed ranges; daily body
+reconciliation resumes from durable per-thread range cursors and catches
+same-revision edits and deletions. Tables without native update clocks are
+covered by that reconciliation. Pending/deferred work is visible in refresh.
+
+Cursor fingerprints and immutable bodies publish together through the existing
+source manifest authority with a generation check. Interrupted/concurrent exports
+cannot advance another capture's cursor. Native deletion can change the current
+projection while prior owned versions remain available; disappearance of a whole
+thread reports missing coverage and preserves its owned evidence. Mirrored
+databases retain separate SQLite/thread provenance while sharing identical bodies.
