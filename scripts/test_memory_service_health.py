@@ -15,7 +15,7 @@ spec.loader.exec_module(service)
 
 LOCAL_ENDPOINT = urlunparse(("http", "127.0.0.1:11434", "/v1", "", "", ""))
 READY = {"status": "ready", "backends": [{"status": "ready", "base_url": LOCAL_ENDPOINT, "identity": "ollama:fixture:2:f32"}]}
-DOWN = {"status": "backend_unavailable", "backends": [{"status": "process_unavailable", "base_url": LOCAL_ENDPOINT, "identity": "ollama:fixture:2:f32"}]}
+DOWN = {"status": "backend_unavailable", "backends": [{"status": "process_unavailable", "recovery_eligible": True, "base_url": LOCAL_ENDPOINT, "identity": "ollama:fixture:2:f32"}]}
 
 
 class RecoveryTests(unittest.TestCase):
@@ -70,6 +70,16 @@ class RecoveryTests(unittest.TestCase):
             report = {"status": "backend_unavailable", "backends": [{"status": status, "base_url": base}]}
             with patch.object(service, "backend_health", return_value=report), patch.object(service.subprocess, "run") as run:
                 with self.assertRaises(RuntimeError):
+                    service.recover_backend(Path("/fixture/bin/compound"), Path("/fixture/home"))
+                run.assert_not_called()
+
+    def test_sanitized_or_generic_endpoint_without_ownership_never_restarts(self):
+        for eligibility in (False, None):
+            report = {"status": "backend_unavailable", "backends": [{"status": "process_unhealthy", "base_url": LOCAL_ENDPOINT}]}
+            if eligibility is not None:
+                report["backends"][0]["recovery_eligible"] = eligibility
+            with patch.object(service, "backend_health", return_value=report), patch.object(service.subprocess, "run") as run:
+                with self.assertRaisesRegex(RuntimeError, "approved service owner"):
                     service.recover_backend(Path("/fixture/bin/compound"), Path("/fixture/home"))
                 run.assert_not_called()
 

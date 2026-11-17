@@ -122,6 +122,11 @@ func queryWithOptions(ctx context.Context, homePath string, lane LaneConfig, emb
 	engine := mem.NewProtocolEngine(transport, lane.Embedder.Identity())
 	defer engine.Close()
 	hits, err := runCorpusEngineQuery(engine, text, k)
+	// The generic capability probe collapses transport failures. Preserve the
+	// exact model refusal recorded by this transport instead of reporting outage.
+	if err != nil && transport.modelErr != nil {
+		err = transport.modelErr
+	}
 	if cancelErr := ctx.Err(); cancelErr != nil {
 		return QueryReport{}, cancelErr
 	}
@@ -378,6 +383,7 @@ type IndexTransport struct {
 	lane           LaneConfig
 	embedder       Embedder
 	loaded         *loadedIndex
+	modelErr       error
 }
 
 type loadedIndex struct {
@@ -451,7 +457,18 @@ func (t *IndexTransport) load() (*loadedIndex, error) {
 	if err != nil {
 		return nil, err
 	}
-	vectors, err := readVectors(dir)
+	if err := validateIndexModelDigest(t.lane, identity, manifest, true); err != nil {
+		t.modelErr = err
+		return nil, err
+	}
+	var vectors VectorFile
+	if manifest.VectorShards != nil {
+		// Shards are immutable. Never re-read a mutable manifest after validating
+		// its digest binding, including during a concurrent index publication.
+		vectors, err = readShardedVectors(dir, manifest)
+	} else {
+		vectors, err = readVectors(dir)
+	}
 	if err != nil {
 		return nil, err
 	}

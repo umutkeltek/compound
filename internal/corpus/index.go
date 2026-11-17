@@ -119,7 +119,7 @@ func Index(ctx context.Context, homePath string, lane LaneConfig, embedder Embed
 	if err := validateEmbedder(lane, embedder); err != nil {
 		return IndexReport{}, err
 	}
-	if opts.Incremental || lane.Source != nil {
+	if opts.Incremental || lane.Source != nil || lane.Embedder.ModelDigest != "" {
 		return indexIncremental(ctx, homePath, lane, embedder, opts)
 	}
 	dir := IndexDir(homePath, lane)

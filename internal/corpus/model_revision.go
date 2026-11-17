@@ -22,6 +22,9 @@ var ErrModelMissing = errors.New("model_missing")
 // identity or index directory. Legacy vectors can only be bound prospectively.
 // model_digest_binding=prospective does not attest the weights that produced old
 // cached vectors. Only an explicit rebuild replaces them with guarded requests.
+// Pinned writes use the existing immutable vector shards, including one-time
+// legacy migration without re-embedding. Queries validate the exact loaded
+// identity and manifest, then consume only the shard map from that manifest.
 // Before/after inventory checks detect observed model swaps, not an atomic or
 // cryptographic attestation of provider internals (including a swap back between
 // the two checks). Metadata belongs to the existing operator config and index;
@@ -124,6 +127,11 @@ func checkIndexModelDigest(dir string, lane LaneConfig, manifest Manifest, rebui
 		// index/probe path. A configured pin may not masquerade as a bound query.
 		return err
 	}
+	return validateIndexModelDigest(lane, identity, manifest, query)
+}
+
+// Validate the exact metadata whose immutable shards the reader will consume.
+func validateIndexModelDigest(lane LaneConfig, identity IdentityFile, manifest Manifest, query bool) error {
 	expected := lane.Embedder.ModelDigest
 	if identity.ModelDigest != manifest.ModelDigest || (manifest.ModelDigest != "" && identity.ModelDigestBinding != manifest.ModelDigestBinding) {
 		return fmt.Errorf("%w: index metadata digest mismatch; explicit --rebuild required", ErrModelChanged)
@@ -137,6 +145,9 @@ func checkIndexModelDigest(dir string, lane LaneConfig, manifest Manifest, rebui
 	}
 	if query && expected != "" && bound == "" {
 		return fmt.Errorf("%w: legacy index needs prospective refresh adoption or explicit --rebuild", ErrModelChanged)
+	}
+	if query && bound != "" && manifest.VectorShards == nil {
+		return fmt.Errorf("%w: pinned index needs immutable vector shards; refresh or explicit --rebuild required", ErrModelChanged)
 	}
 	return nil
 }

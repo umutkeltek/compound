@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"compound/internal/mem"
 )
 
 type revisionFixture struct {
@@ -317,5 +319,73 @@ func TestModelRevisionBoundQueryFailsReadOnlyWhenWeightsChange(t *testing.T) {
 	bytes, _ := os.ReadFile(path)
 	if string(bytes) != string(before) {
 		t.Fatal("read-only refusal changed binding")
+	}
+}
+
+func TestModelRevisionQueryRechecksActualLoadedBinding(t *testing.T) {
+	hp, _, lane := incrementalFixture(t, 2)
+	f := revisionServer(t)
+	lane.Embedder = f.config()
+	e, err := NewConfiguredEmbedder(lane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Index(context.Background(), hp, lane, e, IndexOptions{Incremental: true}); err != nil {
+		t.Fatal(err)
+	}
+	count, _ := f.counts()
+	original := runCorpusEngineQuery
+	t.Cleanup(func() { runCorpusEngineQuery = original })
+	runCorpusEngineQuery = func(engine *mem.ProtocolEngine, text string, k int) ([]mem.Hit, error) {
+		dir := IndexDir(hp, lane)
+		identity, err := readIdentity(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest, err := readManifest(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		identity.ModelDigest = "sha256:" + strings.Repeat("b", 64)
+		manifest.ModelDigest = identity.ModelDigest
+		if err := writeJSONFile(filepath.Join(dir, "identity.json"), identity); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeJSONFile(filepath.Join(dir, "manifest.json"), manifest); err != nil {
+			t.Fatal(err)
+		}
+		return original(engine, text, k)
+	}
+	result, err := QueryWithOptions(context.Background(), hp, lane, e, "fact", 5, QueryOptions{})
+	if err == nil || !strings.Contains(err.Error(), "model_changed") || len(result.Hits) != 0 {
+		t.Fatalf("query consumed replaced binding: %+v %v", result, err)
+	}
+	if after, _ := f.counts(); after != count {
+		t.Fatal("replaced index received query embedding")
+	}
+}
+func TestModelRevisionDefaultIndexMigratesLegacyVectorsToImmutableShards(t *testing.T) {
+	hp, _, lane := incrementalFixture(t, 2)
+	e := &fakeEmbedder{identity: lane.Embedder.Identity(), dim: 3}
+	if _, err := Index(context.Background(), hp, lane, e, IndexOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	f := revisionServer(t)
+	f.mu.Lock()
+	f.modelName = "synthetic"
+	f.mu.Unlock()
+	lane.Embedder.BaseURL = f.server.URL
+	lane.Embedder.ModelDigest = "sha256:" + strings.Repeat("a", 64)
+	e = &fakeEmbedder{identity: lane.Embedder.Identity(), dim: 3}
+	report, err := Index(context.Background(), hp, lane, e, IndexOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := readManifest(IndexDir(hp, lane))
+	if err != nil || m.VectorShards == nil || m.ModelDigestBinding != "prospective" || e.embedded != 0 || report.ReusedChunks != report.TotalChunks {
+		t.Fatalf("manifest=%+v report=%+v embeds=%d err=%v", m, report, e.embedded, err)
+	}
+	if _, err := QueryWithOptions(context.Background(), hp, lane, e, "fact", 5, QueryOptions{}); err != nil {
+		t.Fatal(err)
 	}
 }
