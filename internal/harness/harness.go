@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -103,6 +104,158 @@ type Harness struct {
 	// effort, and session (selection_capability.go). Nil means no row: every
 	// requested model or effort on it is refused before launch.
 	Selection *SelectionCapability `json:"selection,omitempty"`
+
+	// Wiring says where this harness gets each thing it runs with: the file
+	// behind every fact. Nil means nobody measured it. `compound harness map`
+	// prints it, `compound harness check` proves it against the machine, and the
+	// door map reads its MCP sources from it, so no second copy of these paths
+	// exists anywhere else. It is not part of RegistryRevision: it names paths
+	// on a machine, not what the harness can do.
+	Wiring *Wiring `json:"wiring,omitempty"`
+}
+
+// Wiring status values. A dormant harness is still described, but the live
+// check does not expect it to be wired.
+const (
+	WiringActive  = "active"
+	WiringDormant = "dormant"
+)
+
+// Unknown is the value a wiring fact carries when nobody verified it. Writing
+// it is better than a plausible guess that the next reader takes as measured.
+const Unknown = "unknown"
+
+// MCP config shapes. A shape names the key layout of a file, not a product.
+// Readers take server NAMES only and never keep env, args, headers or URLs.
+const (
+	// MCPShapeJSONServers is a top-level "mcpServers" object (Claude family).
+	MCPShapeJSONServers = "json-mcpServers"
+	// MCPShapeJSONMCP is an "mcp" object that holds two layouts at once:
+	// mcp.<name> and mcp.servers.<name> (OpenCode 2.x reads both).
+	MCPShapeJSONMCP = "json-mcp"
+	// MCPShapeTOMLServers is [mcp_servers.<name>] tables; `enabled = false`
+	// turns one off (Codex).
+	MCPShapeTOMLServers = "toml-mcp_servers"
+	// MCPShapeYAMLServers is a mcp_servers.<name> map; `enabled: false` turns
+	// one off (Hermes).
+	MCPShapeYAMLServers = "yaml-mcp_servers"
+)
+
+// Path placeholders used in wiring facts. "~/" is the user's home folder,
+// "<home>" one Claude home (the default is ~/.claude), "<repo>" the working
+// repository. ExpandWiringPath resolves the first two; "<repo>" stays a
+// description.
+const (
+	WiringClaudeHome      = "<home>"
+	WiringRepo            = "<repo>"
+	WiringClaudeConfigDir = "$CLAUDE_CONFIG_DIR"
+)
+
+// Wiring is the measured map of one harness: instructions, skills, MCP,
+// permissions, the session-context route, and how to ask the harness itself.
+type Wiring struct {
+	Status string `json:"status"`
+	// StatusNote says why, for a dormant harness.
+	StatusNote string `json:"status_note,omitempty"`
+	// Instructions are the instruction files the harness loads.
+	Instructions []string          `json:"instructions"`
+	SkillRoots   []WiringSkillRoot `json:"skill_roots"`
+	MCP          []WiringMCP       `json:"mcp"`
+	// Permissions is the file (and keys) that owns the permission posture.
+	Permissions string `json:"permissions"`
+	// Context is the route that gives the harness Compound context.
+	Context WiringContext `json:"context"`
+	// Listing is the harness's own commands that show what it loaded.
+	Listing []string `json:"listing"`
+	// Homes says where other homes of this family live, when there are more.
+	Homes string   `json:"homes,omitempty"`
+	Notes []string `json:"notes,omitempty"`
+}
+
+// WiringSkillRoot is one folder a harness loads skills from.
+type WiringSkillRoot struct {
+	Path string `json:"path"`
+	// Recursive is "yes", "no" or Unknown: whether the loader finds
+	// <root>/<group>/<name>/SKILL.md, not only <root>/<name>/SKILL.md.
+	Recursive string `json:"recursive"`
+}
+
+// WiringMCP is one file a harness reads MCP servers from.
+type WiringMCP struct {
+	Path  string `json:"path"`
+	Key   string `json:"key"`
+	Shape string `json:"shape"`
+	// Scope says whose list this is (user, project, the family owner list).
+	Scope string `json:"scope,omitempty"`
+}
+
+// WiringContext is the file that wires Compound's session context in, the text
+// that proves Compound's binding is in it, and how the harness reports that it
+// loaded it.
+type WiringContext struct {
+	Path string `json:"path"`
+	// Kind is settings-hooks, plugin, hook-shim, session-end-plugin or none.
+	Kind string `json:"kind"`
+	// Marker is text the file holds only when Compound's binding is in it.
+	Marker string `json:"marker,omitempty"`
+	// SessionStart is false when the route gives no context at session start.
+	SessionStart bool `json:"session_start"`
+	// EnabledBy is the config file that must also turn the route on, when one
+	// does.
+	EnabledBy string `json:"enabled_by,omitempty"`
+	// LoadReport is how the harness says it loaded the route; Unknown when it
+	// cannot say.
+	LoadReport string `json:"load_report"`
+}
+
+// Context route kinds.
+const (
+	ContextSettingsHooks    = "settings-hooks"
+	ContextPlugin           = "plugin"
+	ContextHookShim         = "hook-shim"
+	ContextSessionEndPlugin = "session-end-plugin"
+	ContextNone             = "none"
+)
+
+// Markers that prove Compound's binding is inside a wiring file. The settings
+// marker is the command every installed SessionStart binding runs; the plugin
+// and shim markers are the ownership lines their installers write first.
+const (
+	SessionStartHookMarker = " hook session-start --live"
+	OpenCodePluginMarker   = "// compound-owned: opencode-plugin"
+	OmpShimMarker          = "// compound-owned: oh-my-pi-hook-shim"
+	HermesSessionEndMarker = `register_hook("on_session_end"`
+)
+
+// ExpandWiringPath resolves a wiring path for one machine: "~/" against
+// userHome, "<home>" and "$CLAUDE_CONFIG_DIR" against claudeHome (the default
+// Claude home when empty). It returns "" for a path that has no file on a
+// machine: one under "<repo>", an Unknown, or a free-text note.
+func ExpandWiringPath(path, userHome, claudeHome string) string {
+	path = strings.TrimSpace(path)
+	if claudeHome == "" {
+		claudeHome = filepath.Join(userHome, ".claude")
+	}
+	switch {
+	case strings.HasPrefix(path, "~/"):
+		return filepath.Join(userHome, filepath.FromSlash(path[2:]))
+	case strings.HasPrefix(path, WiringClaudeHome+"/"):
+		return filepath.Join(claudeHome, filepath.FromSlash(strings.TrimPrefix(path, WiringClaudeHome+"/")))
+	case strings.HasPrefix(path, WiringClaudeConfigDir+"/"):
+		return filepath.Join(claudeHome, filepath.FromSlash(strings.TrimPrefix(path, WiringClaudeConfigDir+"/")))
+	}
+	return ""
+}
+
+// WiringNames lists the harnesses that carry wiring facts, sorted.
+func (r Registry) WiringNames() []string {
+	var out []string
+	for _, name := range r.Names() {
+		if r.Harnesses[name].Wiring != nil {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // Registry maps harness name -> capabilities.
@@ -185,6 +338,7 @@ func DefaultRegistry() Registry {
 				NativeSkills: true, MCP: true,
 			},
 			Limitations: []string{"long-session instruction drift", "instruction/context budget cap"},
+			Wiring:      claudeCodeWiring(),
 			// claude_code no longer binds UserPromptSubmit (see hookplan's
 			// prepare_turn_context split), so this budget governs SessionStart alone --
 			// one build per session, not one per turn. 1500ms was a per-turn figure and
@@ -526,6 +680,7 @@ func DefaultRegistry() Registry {
 				"initial skill list capped (progressive disclosure)",
 				"cwd-dependent guidance",
 			},
+			Wiring:         codexWiring(),
 			InjectBudgetMS: 1500,
 		},
 		"claude_native_account_pool": {
@@ -556,19 +711,27 @@ func DefaultRegistry() Registry {
 			Name:                 "hermes",
 			Selection:            noSelectionControl("registry identity only; no executor adapter"),
 			Posture:              PostureUnattended,
-			InstructionMechanism: "AGENTS.md + plugin lifecycle hooks + skills + MCP",
+			InstructionMechanism: "SOUL.md + AGENTS.md + session-end plugin + skills + MCP",
+			// A conservative FLOOR, like every other row: the flags describe what is
+			// INSTALLED. The Compound plugin (adapters/hermes/compound_memory) registers
+			// one hook, on_session_end, and nothing else. The flags used to claim
+			// session-start context, per-turn context, tool observation and tool
+			// blocking because Hermes HAS those hook names; nothing Compound installs
+			// binds them, so routing believed a context route and a veto that do not
+			// exist. Raise a flag only in the change that installs the binding and
+			// observes it firing.
 			Capabilities: Capabilities{
-				SessionStartContext: true, UserPromptContext: true, PreToolUseBlock: true,
-				PostToolUseEvent: true, StopFeedback: false, SessionEndReceipt: true,
-				NativeSkills: true, MCP: true,
+				SessionEndReceipt: true,
+				NativeSkills:      true, MCP: true,
 			},
 			Limitations: []string{
-				"dynamic context uses pre_llm_call; on_session_start fires after the system prompt is built",
+				"the Compound plugin registers on_session_end only: no session-start or per-turn context, no tool observation, no tool blocking",
+				"Hermes has pre_llm_call and tool hooks by name, but nothing Compound installs binds them",
 				"plugin callback exceptions fail open",
-				"native blocking requires an installed and content-attested Compound plugin",
 				"on_session_end is turn/run scoped, not final chat lifetime",
 				"no-agent cron and script execution requires a wrapper or action contract",
 			},
+			Wiring:         hermesWiring(),
 			InjectBudgetMS: 1000,
 		},
 		"opencode": {
@@ -591,6 +754,7 @@ func DefaultRegistry() Registry {
 				"installed state and content revision come from installed-hooks authority, not the static harness registry",
 				"not a mutation-control lane in imported capability authority",
 			},
+			Wiring:         openCodeWiring(),
 			InjectBudgetMS: 1000,
 		},
 		"prime_agent": {
@@ -713,6 +877,7 @@ func DefaultRegistry() Registry {
 				"no version-check suppression env exists (unlike prime_agent's PI_SKIP_VERSION_CHECK); `omp update` is explicit but marketplace.autoUpdate can still fetch mid-session, so the ExpectedVersion pin is load-bearing at a 17.x release cadence",
 				"SessionStartContext stays false: omp's session_start event has no context-return surface; ContextPack injection enters at the prompt boundary (before_agent_start), reported as UserPromptContext",
 			},
+			Wiring:          ohMyPiWiring(),
 			InjectBudgetMS:  1500,
 			ExpectedVersion: "18.1.17",
 		},
@@ -801,10 +966,145 @@ func DefaultRegistry() Registry {
 				"0.1.0-rc.7 — pre-1.0 plugin API; expect breaking change between any two versions, and the pre-release suffix is why this harness is deliberately absent from binaryForHarness (see version.go)",
 				"registry identity only, adopt-later — no adapter is registered; re-evaluate at >=1.0 or when `--profile headless` gains --model and --output-format",
 			},
+			Wiring:          deepSeekHarnessWiring(),
 			InjectBudgetMS:  1500,
 			ExpectedVersion: "0.1.0-rc.7",
 		},
 	}}
+}
+
+// The wiring facts below were measured on 2026-11-18 with each harness's own
+// listing command (named in Listing). A fact nobody could verify says Unknown.
+// Change one only after the listing command shows the new state.
+
+// claudeCodeWiring covers the whole Claude family: the default home, native
+// seats and model lanes all read the same file names inside their own home.
+func claudeCodeWiring() *Wiring {
+	return &Wiring{
+		Status:       WiringActive,
+		Instructions: []string{"<home>/CLAUDE.md", "<repo>/CLAUDE.md and each parent folder's CLAUDE.md"},
+		SkillRoots: []WiringSkillRoot{
+			{Path: "<home>/skills", Recursive: "no"},
+			{Path: "<repo>/.claude/skills", Recursive: "no"},
+		},
+		MCP: []WiringMCP{
+			{Path: "~/.claude.json", Key: "mcpServers", Shape: MCPShapeJSONServers, Scope: "user scope; the owner list for the whole Claude family"},
+			{Path: "<home>/.claude.json", Key: "mcpServers", Shape: MCPShapeJSONServers, Scope: "a home other than the default (CLAUDE_CONFIG_DIR)"},
+			{Path: "<repo>/.mcp.json", Key: "mcpServers", Shape: MCPShapeJSONServers, Scope: "project scope"},
+		},
+		Permissions: "<home>/settings.json permissions (defaultMode, allow, deny)",
+		Context: WiringContext{
+			Path: "<home>/settings.json", Kind: ContextSettingsHooks, Marker: SessionStartHookMarker,
+			SessionStart: true, LoadReport: Unknown,
+		},
+		Listing: []string{"claude mcp list", "/context and /hooks inside a session"},
+		Homes: "default ~/.claude with ~/.claude.json; other homes (native seats, model lanes) live in a config tree found at run time " +
+			"(the parent of the hook plan's lane homes, plus the lane registry file); native seats get the default's settings and MCP list " +
+			"by a mirror step at launch; lanes keep their own pinned settings",
+	}
+}
+
+func codexWiring() *Wiring {
+	return &Wiring{
+		Status:       WiringActive,
+		Instructions: []string{"~/.codex/AGENTS.md", "<repo>/AGENTS.md and the AGENTS.md of each folder up to the repo root"},
+		SkillRoots: []WiringSkillRoot{
+			{Path: "~/.codex/skills", Recursive: "yes"},
+			{Path: "~/.agents/skills", Recursive: "yes"},
+		},
+		MCP: []WiringMCP{
+			{Path: "~/.codex/config.toml", Key: "[mcp_servers.<name>]", Shape: MCPShapeTOMLServers, Scope: "user scope; enabled = false turns a server off"},
+		},
+		Permissions: "~/.codex/config.toml approval_policy and sandbox_mode (and per-project overrides)",
+		Context: WiringContext{
+			Path: "~/.codex/hooks.json", Kind: ContextSettingsHooks, Marker: SessionStartHookMarker,
+			SessionStart: true, LoadReport: "codex features list (the hooks feature must read true)",
+		},
+		Listing: []string{"codex debug prompt-input hi", "codex mcp list", "codex features list"},
+		Notes: []string{
+			"~/.agents/skills is read directly; a link there is resolved and shown by its target",
+			"~/.codex/skills/.system and enabled plugins add more skill roots",
+		},
+	}
+}
+
+func openCodeWiring() *Wiring {
+	return &Wiring{
+		Status:       WiringActive,
+		Instructions: []string{"<repo>/AGENTS.md", Unknown + ": the global instruction file is not verified on 2.3.0"},
+		SkillRoots: []WiringSkillRoot{
+			{Path: "~/.agents/skills", Recursive: "yes"},
+			{Path: "~/.claude/skills", Recursive: "yes"},
+			{Path: "~/.config/opencode/skills", Recursive: Unknown},
+		},
+		MCP: []WiringMCP{
+			{Path: "~/.config/opencode/opencode.json", Key: "mcp.<name> and mcp.servers.<name>", Shape: MCPShapeJSONMCP, Scope: "user scope; both layouts are read at once"},
+		},
+		Permissions: "~/.config/opencode/opencode.json permission",
+		Context: WiringContext{
+			Path: "~/.config/opencode/plugins/compound.ts", Kind: ContextPlugin, Marker: OpenCodePluginMarker,
+			SessionStart: true, LoadReport: "opencode api GET /api/plugin (state.status of plugin id compound)",
+		},
+		Listing: []string{"opencode plugin list --builtin", "opencode api GET /api/plugin", "opencode api GET /api/skill", "opencode debug config"},
+		Notes: []string{
+			"`opencode mcp list` misreads the mcp.servers layout; read `opencode debug config` instead",
+			"~/.config/opencode/opencode.jsonc is a second config document OpenCode also reads",
+		},
+	}
+}
+
+func ohMyPiWiring() *Wiring {
+	return &Wiring{
+		Status:       WiringActive,
+		Instructions: []string{"<repo>/AGENTS.md", "<repo>/CLAUDE.md"},
+		SkillRoots: []WiringSkillRoot{
+			{Path: "$CLAUDE_CONFIG_DIR/skills", Recursive: "no"},
+			{Path: "~/.agents/skills", Recursive: "no"},
+		},
+		MCP:         nil,
+		Permissions: "~/.omp/agent/config.yml approval mode; governed dispatch passes --approval-mode",
+		Context: WiringContext{
+			Path: "~/.omp/agent/hooks/pre/compound.ts", Kind: ContextHookShim, Marker: OmpShimMarker,
+			SessionStart: true, LoadReport: Unknown,
+		},
+		Listing: []string{"omp skill list --json"},
+		Notes:   []string{"no MCP file of its own: it discovers servers from the Claude, Codex and OpenCode files"},
+	}
+}
+
+func hermesWiring() *Wiring {
+	return &Wiring{
+		Status:       WiringActive,
+		Instructions: []string{"~/.hermes/SOUL.md", "<repo>/AGENTS.md"},
+		SkillRoots:   []WiringSkillRoot{{Path: "~/.hermes/skills", Recursive: Unknown}},
+		MCP: []WiringMCP{
+			{Path: "~/.hermes/config.yaml", Key: "mcp_servers.<name>", Shape: MCPShapeYAMLServers, Scope: "user scope; enabled: false turns a server off"},
+		},
+		Permissions: "~/.hermes/config.yaml approvals and command_allowlist",
+		Context: WiringContext{
+			Path: "~/.hermes/plugins/compound_memory/__init__.py", Kind: ContextSessionEndPlugin, Marker: HermesSessionEndMarker,
+			SessionStart: false, EnabledBy: "~/.hermes/config.yaml",
+			LoadReport: "~/.hermes/config.yaml plugins.enabled lists compound_memory",
+		},
+		Listing: []string{"hermes plugins list", "hermes mcp list"},
+		Notes:   []string{"the Compound plugin writes a receipt at session end; it gives no session-start context and blocks no tool"},
+	}
+}
+
+func deepSeekHarnessWiring() *Wiring {
+	return &Wiring{
+		Status:       WiringDormant,
+		StatusNote:   "last session 2026-08-23",
+		Instructions: []string{"prompt-only: the task text given to `dsh --profile headless`"},
+		MCP:          nil,
+		Permissions:  "DSH_PERMISSION_MODE environment variable",
+		Context:      WiringContext{Kind: ContextNone, LoadReport: Unknown},
+		Listing:      []string{Unknown + ": `dsh --profile <name> --help` writes the profile workspace, so there is no read-only listing"},
+		Notes: []string{
+			"skills: the loader's roots are plugin config and none are set",
+			"MCP servers live inside the profile's own config, not a standalone file",
+		},
+	}
 }
 
 func LoadRegistryManifest(path string) (RegistryManifest, error) {

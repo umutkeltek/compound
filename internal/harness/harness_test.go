@@ -169,21 +169,25 @@ func TestHermesCapabilitiesAreExplicitAndConservative(t *testing.T) {
 	if !found || hermes.Fallback {
 		t.Fatalf("hermes registry row = %+v found=%v, want explicit non-fallback", hermes, found)
 	}
-	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionEnd"} {
-		if !r.Supports("hermes", event) {
-			t.Errorf("hermes should support %s through its evidenced plugin lifecycle", event)
-		}
+	// The Compound plugin binds on_session_end and nothing else, so the session
+	// end receipt is the only hook capability the floor may claim.
+	if !r.Supports("hermes", "SessionEnd") {
+		t.Error("hermes must keep its session-end receipt: the Compound plugin registers on_session_end")
 	}
-	if r.Supports("hermes", "Stop") {
-		t.Error("hermes must not claim a native Stop feedback mapping")
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"} {
+		if r.Supports("hermes", event) {
+			t.Errorf("hermes must not claim %s: nothing Compound installs binds it", event)
+		}
 	}
 	if !hermes.Capabilities.NativeSkills || !hermes.Capabilities.MCP {
 		t.Fatalf("hermes native capabilities = %+v, want skills + MCP", hermes.Capabilities)
 	}
+	if hermes.Wiring == nil || hermes.Wiring.Context.SessionStart || hermes.Wiring.Context.Kind != ContextSessionEndPlugin {
+		t.Fatalf("hermes wiring must name a session-end-only route, got %+v", hermes.Wiring)
+	}
 	for _, limitation := range []string{
-		"dynamic context uses pre_llm_call; on_session_start fires after the system prompt is built",
+		"the Compound plugin registers on_session_end only: no session-start or per-turn context, no tool observation, no tool blocking",
 		"plugin callback exceptions fail open",
-		"native blocking requires an installed and content-attested Compound plugin",
 		"on_session_end is turn/run scoped, not final chat lifetime",
 		"no-agent cron and script execution requires a wrapper or action contract",
 	} {
