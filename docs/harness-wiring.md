@@ -445,6 +445,26 @@ compound harness observe                     # observe the bundled harness regis
 This is evidence-only — it observes what's installed, never configures or
 mutates your harness.
 
+### Where each harness is wired
+
+The registry also owns each harness's wiring facts: the instruction files it
+loads, its skill roots (and whether the loader looks inside sub-folders), the
+file and key it reads MCP servers from, the file that owns its permissions, the
+file that wires Compound's session context in, and the harness's own command
+that lists what it loaded. A fact nobody verified says `unknown`.
+
+```sh
+compound harness map                    # every harness, each fact with its file
+compound harness map --harness opencode # one harness
+compound harness map --json
+```
+
+For the Claude family the map also lists the homes found on this machine: the
+default home, other signed-in seats, and model lanes. They are found at run
+time from the hook plan's lane homes, the lane registry file (`LANES_JSON`, or
+`adapters/_lib/lanes.json` in the working repository) and the folder those
+homes share; no list of homes is kept in Compound.
+
 ## Governed execution and supervised sessions
 
 ### First model route
