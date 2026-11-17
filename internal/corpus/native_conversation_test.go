@@ -148,3 +148,35 @@ func TestNativeRefreshUnsupportedSchemaIsActionableFailure(t *testing.T) {
 		t.Fatalf("schema failure concealed: %+v", r)
 	}
 }
+
+func TestNativeRawOnlyAppendReusesSemanticProjectionAndVectors(t *testing.T) {
+	hp := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "state.db")
+	nativeCorpusSQL(t, path, `
+CREATE TABLE sessions(id TEXT PRIMARY KEY,source TEXT,started_at REAL,runtime_revision INTEGER);
+CREATE TABLE messages(id INTEGER PRIMARY KEY,session_id TEXT,role TEXT,content TEXT,timestamp REAL,active INTEGER DEFAULT 1,compacted INTEGER DEFAULT 0,_compressed_summary INTEGER DEFAULT 0);
+INSERT INTO sessions VALUES('stable','cli',1,1);
+INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(1,'stable','user','Cedar archive decision',1),(2,'stable','tool','Original hidden tool',2);
+`)
+	lane := LaneConfig{Lane: "native-stable", SourceFamily: "native_stable_fixture", Privacy: "private", Embedder: EmbedderConfig{Provider: "local", Model: "fixture", Dims: 3}, Source: &SourceConfig{Root: root, Format: "hermes"}}
+	factory := func(l LaneConfig) (Embedder, error) {
+		return &fakeEmbedder{identity: l.Embedder.Identity(), dim: l.Embedder.Dims}, nil
+	}
+	now := time.Now()
+	first := Refresh(context.Background(), hp, []LaneConfig{lane}, factory, now)
+	if first.Failed() {
+		t.Fatalf("initial: %+v", first)
+	}
+	nativeCorpusSQL(t, path, "UPDATE sessions SET runtime_revision=2; INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(3,'stable','tool','Another hidden tool',3);")
+	second := Refresh(context.Background(), hp, []LaneConfig{lane}, factory, now)
+	if second.Failed() {
+		t.Fatalf("raw update: %+v", second)
+	}
+	if second.Sources[0].NewEmbeddedChunks != 0 {
+		t.Fatalf("raw row append changed existing semantic chunk hashes: new_embedded_chunks=%d prepared_items=%d reused_items=%d", second.Sources[0].NewEmbeddedChunks, second.Sources[0].PreparedItems, second.Sources[0].ReusedItems)
+	}
+}
