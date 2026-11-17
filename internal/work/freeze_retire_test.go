@@ -132,3 +132,24 @@ func TestCurrentActiveMeaningDecisionsRetireByClaimID(t *testing.T) {
 		t.Fatalf("unnamed decision must stay current: %v", got)
 	}
 }
+
+// A retirer must be accepted: an operator-stamped ruling whose status is
+// proposed does not release the freeze it names; the same ruling accepted does.
+func TestActiveFreezeRecordsProposedRetirerDoesNotRelease(t *testing.T) {
+	t.Parallel()
+	freeze := mem.Claim{ID: "claim_freeze", ClaimType: "decision", Qualifiers: map[string]string{
+		"kind": "freeze", "decision_id": "freeze-x", "lifecycle_status": "accepted", "reviewed_by": "operator:test", "freeze_keywords": "absorption_debt",
+	}}
+	lift := func(status string) mem.Claim {
+		return mem.Claim{ID: "claim_lift", ClaimType: "decision", Qualifiers: map[string]string{
+			"kind": "ruling", "decision_id": "lift", "lifecycle_status": status, "reviewed_by": "operator:test", "supersedes": "freeze-x",
+			mem.OperationalDecisionAuthorityQualifier: mem.OperationalDecisionAuthorityValue,
+		}}
+	}
+	if got := activeFreezeRecords([]mem.Claim{freeze, lift("proposed")}); len(got) != 1 || got[0].ID != "freeze-x" {
+		t.Fatalf("a proposed ruling released the freeze: %+v", got)
+	}
+	if got := activeFreezeRecords([]mem.Claim{freeze, lift(freezeDecisionStatusAccepted)}); len(got) != 0 {
+		t.Fatalf("an accepted ruling must release the freeze: %+v", got)
+	}
+}

@@ -611,7 +611,7 @@ func (s *Store) matchingFreeze(w envelope.WorkEnvelope) (bool, policy.FreezeReco
 // to a freeze nobody named.
 func activeFreezeRecords(claims []mem.Claim) []policy.FreezeRecord {
 	named := mem.DecisionSupersedesNames(claims, func(c mem.Claim) bool {
-		return mem.HasOperationalDecisionAuthority(c.Qualifiers) && policy.HasOperatorProvenance(c.Qualifiers["reviewed_by"])
+		return mem.HasOperationalDecisionAuthority(c.Qualifiers) && policy.HasOperatorProvenance(c.Qualifiers["reviewed_by"]) && c.Qualifiers["lifecycle_status"] == freezeDecisionStatusAccepted
 	})
 	var freezes []mem.Claim
 	for _, c := range claims {
