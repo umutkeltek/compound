@@ -639,6 +639,12 @@ retaining the original v2 snapshot and its source fingerprint as historical evid
 
 ### Transcript family parsing and ingestion recovery
 
+OMP directory capture uses a 32 MiB changed-file budget per pass, leaving time
+for other sources in the shared refresh deadline. Other directory formats retain
+128 MiB. The 128-file ceiling and 1 GiB oversized-file rule remain in place; the
+first eligible file may exceed the batch budget so a large transcript can still
+make progress. Unchanged owned files do not consume the next batch's allowance.
+
 Transcript metadata belongs to its source format. Claude retry events can carry
 a string-valued source; the SQL adapters' source object and session context are
 decoded only for their native visible records. Malformed visible content still

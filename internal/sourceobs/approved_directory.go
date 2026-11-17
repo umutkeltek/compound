@@ -57,6 +57,11 @@ func CaptureApprovedDirectoryBatchWithOptions(ctx context.Context, homePath, fam
 			current[item.SourceKey] = item
 		}
 	}
+	maxBatchBytes := int64(128 << 20)
+	if format == "omp" {
+		// Leave time for other sources in the shared refresh deadline.
+		maxBatchBytes = 32 << 20
+	}
 	selectedBytes := int64(0)
 	selected := 0
 	seen := map[string]bool{}
@@ -82,7 +87,7 @@ func CaptureApprovedDirectoryBatchWithOptions(ctx context.Context, homePath, fam
 			result.Pending++
 			return false
 		}
-		if selected >= 128 || (selected > 0 && selectedBytes+info.Size() > 128<<20) {
+		if selected >= 128 || (selected > 0 && selectedBytes+info.Size() > maxBatchBytes) {
 			result.Pending++
 			return false
 		}
