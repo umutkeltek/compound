@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"compound/internal/harness"
 )
 
 var doorNow = time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
@@ -86,6 +88,79 @@ func TestScanMCPMalformedSourceIsAGapNotEmpty(t *testing.T) {
 	sets, gaps := ScanMCP([]MCPSource{{Harness: "h", Kind: MCPKindJSONServers, Path: filepath.Join(dir, "bad.json")}})
 	if len(sets) != 0 || len(gaps) != 1 {
 		t.Fatalf("sets=%v gaps=%v", sets, gaps)
+	}
+}
+
+// OpenCode 2.x reads mcp.<name> and mcp.servers.<name> from one file; the old
+// reader reported a server literally named "servers" and missed the real ones.
+// Codex and Hermes servers turned off are not servers the harness runs.
+func TestScanMCPReadsBothOpenCodeLayoutsAndSkipsServersTurnedOff(t *testing.T) {
+	dir := t.TempDir()
+	dmWriteFile(t, filepath.Join(dir, "o.json"), `{"mcp":{"servers":{"alpha":{"type":"local"},"off-1":{"type":"local","enabled":false}},"beta":{"type":"remote","url":"https://h.example/?k=sekret-4"}}}`)
+	dmWriteFile(t, filepath.Join(dir, "c.toml"), "[mcp_servers.gamma]\ncommand = \"g\"\nenabled_tools = [\"t\"]\n[mcp_servers.off-2]\ncommand = \"o\"\nenabled = false\n")
+	dmWriteFile(t, filepath.Join(dir, "h.yaml"), "plugins:\n  enabled: [p]\nmcp_servers:\n  delta:\n    command: d\n  off-3:\n    command: o\n    enabled: false\n")
+	sets, gaps := ScanMCP([]MCPSource{
+		{Harness: "opencode", Kind: MCPKindJSONMCP, Path: filepath.Join(dir, "o.json")},
+		{Harness: "codex", Kind: MCPKindTOMLServers, Path: filepath.Join(dir, "c.toml")},
+		{Harness: "hermes", Kind: MCPKindYAMLServers, Path: filepath.Join(dir, "h.yaml")},
+	})
+	got := map[string]string{}
+	for _, s := range sets {
+		got[s.Harness] = strings.Join(s.Servers, ",")
+	}
+	if got["opencode"] != "alpha,beta" || got["codex"] != "gamma" || got["hermes"] != "delta" || len(gaps) != 0 {
+		t.Fatalf("servers = %v gaps = %v", got, gaps)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", sets), "sekret") {
+		t.Fatal("snapshot leaked a URL value")
+	}
+}
+
+// The door map takes its MCP files from the harness registry's wiring facts,
+// plus each signed-in Claude seat's own list. Lanes and dormant harnesses are
+// not sources.
+func TestDefaultMCPSourcesComeFromTheHarnessFacts(t *testing.T) {
+	home := "/Users/example"
+	homes := []harness.ClaudeHome{
+		{Name: "default", Dir: filepath.Join(home, ".claude"), Kind: harness.ClaudeHomeDefault},
+		{Name: "seat-a", Dir: filepath.Join(home, "cfg", "seat-a"), Kind: harness.ClaudeHomeNative},
+		{Name: "seat-gone", Dir: filepath.Join(home, "cfg", "seat-gone"), Kind: harness.ClaudeHomeNative, Missing: true},
+		{Name: "lane-a", Dir: filepath.Join(home, "cfg", "lane-a"), Kind: harness.ClaudeHomeLane},
+	}
+	var got []string
+	for _, src := range DefaultMCPSources(home, homes) {
+		got = append(got, src.Harness+"="+src.Kind+"="+src.Display)
+		if !strings.HasPrefix(src.Path, home+"/") {
+			t.Fatalf("source %+v is not under the home", src)
+		}
+	}
+	want := []string{
+		"claude_code=json-mcpServers=~/.claude.json",
+		"codex=toml-mcp_servers=~/.codex/config.toml",
+		"hermes=yaml-mcp_servers=~/.hermes/config.yaml",
+		"opencode=json-mcp=~/.config/opencode/opencode.json",
+		"claude_code@seat-a=json-mcpServers=~/cfg/seat-a/.claude.json",
+		"mcporter=json-mcpServers=~/.mcporter/mcporter.json",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("sources:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// The served block names seats whose list differs from their family's instead
+// of serving every seat's list.
+func TestServedMCPLineNamesSeatsThatDiffer(t *testing.T) {
+	line := renderMCPLine([]MCPSet{
+		{Harness: "claude_code", Servers: []string{"a", "b"}},
+		{Harness: "claude_code@seat-1", Servers: []string{"a"}},
+		{Harness: "claude_code@seat-2", Servers: []string{"a", "b"}},
+		{Harness: "codex", Servers: []string{"c"}},
+	}, budgetMCP)
+	if !strings.HasPrefix(line, "MCP: claude_code[a,b] codex[c]; claude_code seats differ: seat-1 (compound harness check)") || strings.Contains(line, "seat-2") {
+		t.Fatalf("served MCP line = %q", line)
+	}
+	if line := renderMCPLine([]MCPSet{{Harness: "h1", Servers: []string{"x"}}}, budgetMCP); line != "MCP: h1[x]" {
+		t.Fatalf("no seats, no suffix: %q", line)
 	}
 }
 

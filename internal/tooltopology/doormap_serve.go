@@ -221,16 +221,48 @@ func renderDoorLines(doors []Door, budget, badExtra int) []string {
 }
 
 func renderMCPLine(sets []MCPSet, budget int) string {
-	if len(sets) == 0 {
+	// A seat set ("family@home") is not served on its own: the block names the
+	// seats whose list differs from their family's, and `compound harness check`
+	// says how. Serving every seat would crowd out the families.
+	family := map[string][]string{}
+	var bases []MCPSet
+	for _, s := range sets {
+		if !strings.Contains(s.Harness, seatLabelSeparator) {
+			bases = append(bases, s)
+			family[s.Harness] = s.Servers
+		}
+	}
+	differing := map[string][]string{}
+	var fams []string
+	for _, s := range sets {
+		fam, seat, ok := strings.Cut(s.Harness, seatLabelSeparator)
+		if ok && strings.Join(s.Servers, ",") != strings.Join(family[fam], ",") {
+			if len(differing[fam]) == 0 {
+				fams = append(fams, fam)
+			}
+			differing[fam] = append(differing[fam], seat)
+		}
+	}
+	if len(bases) == 0 && len(fams) == 0 {
 		return ""
 	}
+	suffix := ""
+	for _, fam := range fams {
+		suffix += "; " + fam + " seats differ: " + joinCapped(differing[fam], 60)
+	}
+	if suffix != "" {
+		suffix += " (compound harness check)"
+	}
+	if len(bases) == 0 {
+		return truncBytes("MCP:"+suffix, budget)
+	}
 	// Per-harness share keeps a 23-server bridge from crowding out the rest.
-	share := budget / len(sets)
-	parts := make([]string, 0, len(sets))
-	for _, s := range sets {
+	share := (budget - len(suffix)) / len(bases)
+	parts := make([]string, 0, len(bases))
+	for _, s := range bases {
 		parts = append(parts, fmt.Sprintf("%s[%s]", s.Harness, joinCapped(s.Servers, share-len(s.Harness)-3)))
 	}
-	return truncBytes("MCP: "+strings.Join(parts, " "), budget)
+	return truncBytes("MCP: "+strings.Join(parts, " ")+suffix, budget)
 }
 
 func renderModelLine(ms []ModelLane, budget int) string {

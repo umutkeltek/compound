@@ -1,54 +1,79 @@
 package tooltopology
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+
+	"compound/internal/harness"
 )
 
-// MCP source kinds. A kind names a config SHAPE, not a product: the reader
-// extracts server names only and never touches env, args, headers or URLs, so
-// no credential can reach the snapshot.
+// MCP source kinds. A kind names a config SHAPE, not a product; the harness
+// registry owns the shapes and the one reader of them. It extracts server
+// names only and never touches env, args, headers or URLs, so no credential
+// can reach the snapshot.
 const (
-	MCPKindJSONServers = "json-mcpServers"  // top-level "mcpServers" object
-	MCPKindJSONMCP     = "json-mcp"         // top-level "mcp" object
-	MCPKindTOMLServers = "toml-mcp_servers" // [mcp_servers.<name>] tables
+	MCPKindJSONServers = harness.MCPShapeJSONServers // top-level "mcpServers" object
+	MCPKindJSONMCP     = harness.MCPShapeJSONMCP     // "mcp" object: mcp.<name> and mcp.servers.<name>
+	MCPKindTOMLServers = harness.MCPShapeTOMLServers // [mcp_servers.<name>] tables; enabled = false is off
+	MCPKindYAMLServers = harness.MCPShapeYAMLServers // mcp_servers.<name> map; enabled: false is off
 )
 
-// MCPSource is one harness config that declares MCP servers.
+// MCPSource is one place a harness config declares MCP servers.
 type MCPSource struct {
 	Harness string
 	Kind    string
 	Path    string
 	// Display is the home-relative label shown to readers ("~/..."), so the
-	// snapshot says where to look without embedding an absolute home path.
+	// snapshot says where to look without embedding the absolute home path.
 	Display string
 }
 
-// DefaultMCPSources lists the conventional config locations of the harnesses
-// Compound serves, relative to a user home. Absent files are skipped.
-func DefaultMCPSources(homeDir string) []MCPSource {
-	mk := func(harness, kind, rel string) MCPSource {
-		return MCPSource{Harness: harness, Kind: kind, Path: filepath.Join(homeDir, filepath.FromSlash(rel)), Display: "~/" + rel}
+// seatLabelSeparator joins a family and one of its homes in an MCP set label
+// ("claude_code@seat-a"). The served block summarises those sets.
+const seatLabelSeparator = "@"
+
+// DefaultMCPSources lists the MCP files the harness registry's wiring facts
+// name for every active harness, each signed-in Claude seat's own list, and
+// the bridge config. Absent files are skipped by ScanMCP.
+func DefaultMCPSources(homeDir string, claudeHomes []harness.ClaudeHome) []MCPSource {
+	reg := harness.DefaultRegistry()
+	var out []MCPSource
+	for _, name := range reg.WiringNames() {
+		w := reg.Harnesses[name].Wiring
+		if w.Status != harness.WiringActive {
+			continue
+		}
+		for _, src := range w.MCP {
+			// "<home>" files belong to one Claude home each; seats are added below.
+			if !strings.HasPrefix(src.Path, "~/") {
+				continue
+			}
+			out = append(out, MCPSource{Harness: name, Kind: src.Shape, Path: harness.ExpandWiringPath(src.Path, homeDir, ""), Display: src.Path})
+		}
 	}
-	return []MCPSource{
-		mk("claude_code", MCPKindJSONServers, ".claude.json"),
-		mk("codex", MCPKindTOMLServers, ".codex/config.toml"),
-		mk("opencode", MCPKindJSONMCP, ".config/opencode/opencode.json"),
-		mk("mcporter", MCPKindJSONServers, ".mcporter/mcporter.json"),
+	for _, h := range claudeHomes {
+		if h.Kind != harness.ClaudeHomeNative || h.Missing {
+			continue
+		}
+		path := h.MCPFile(homeDir)
+		display := path
+		if rel, err := filepath.Rel(homeDir, path); err == nil && !strings.HasPrefix(rel, "..") {
+			display = "~/" + filepath.ToSlash(rel)
+		}
+		out = append(out, MCPSource{Harness: "claude_code" + seatLabelSeparator + h.Name, Kind: MCPKindJSONServers, Path: path, Display: display})
 	}
+	out = append(out, MCPSource{Harness: "mcporter", Kind: MCPKindJSONServers,
+		Path: filepath.Join(homeDir, ".mcporter", "mcporter.json"), Display: "~/.mcporter/mcporter.json"})
+	return out
 }
 
-var safeName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
-
-// ScanMCP reads server names from each source. A missing file is a quiet skip
-// (the harness may not be installed); an unreadable or unparseable one is a gap.
+// ScanMCP reads server names from each source. A missing file is quiet (the
+// harness may not be installed); an unreadable or unparseable one is a gap.
 func ScanMCP(sources []MCPSource) ([]MCPSet, []string) {
 	var sets []MCPSet
 	var gaps []string
@@ -74,82 +99,14 @@ func ScanMCP(sources []MCPSource) ([]MCPSet, []string) {
 	return sets, gaps
 }
 
+// readMCPNames delegates to the harness registry's reader, so the door map and
+// `compound harness check` can never disagree about what a file declares.
 func readMCPNames(src MCPSource) (names []string, note string, err error) {
-	f, err := os.Open(src.Path)
+	got, err := harness.ReadMCPServers(src.Kind, src.Path)
 	if err != nil {
 		return nil, "", err
 	}
-	defer f.Close()
-	switch src.Kind {
-	case MCPKindTOMLServers:
-		return scanTOMLServers(f), "", nil
-	case MCPKindJSONServers, MCPKindJSONMCP:
-		key := "mcpServers"
-		if src.Kind == MCPKindJSONMCP {
-			key = "mcp"
-		}
-		var doc map[string]json.RawMessage
-		if err := json.NewDecoder(f).Decode(&doc); err != nil {
-			return nil, "", fmt.Errorf("parse json: %w", err)
-		}
-		var servers map[string]json.RawMessage
-		if raw, ok := doc[key]; ok {
-			if err := json.Unmarshal(raw, &servers); err != nil {
-				return nil, "", fmt.Errorf("%s is not an object", key)
-			}
-		}
-		for name := range servers {
-			if safeName.MatchString(name) {
-				names = append(names, name)
-			}
-		}
-		sort.Strings(names)
-		if raw, ok := doc["projects"]; ok && key == "mcpServers" {
-			var projects map[string]struct {
-				MCPServers map[string]json.RawMessage `json:"mcpServers"`
-			}
-			if json.Unmarshal(raw, &projects) == nil {
-				n := 0
-				for _, p := range projects {
-					if len(p.MCPServers) > 0 {
-						n++
-					}
-				}
-				if n > 0 {
-					note = strconv.Itoa(n) + " project-scoped config(s) with servers not listed"
-				}
-			}
-		}
-		return names, note, nil
-	}
-	return nil, "", fmt.Errorf("unknown source kind %q", src.Kind)
-}
-
-var tomlServerHeader = regexp.MustCompile(`^\[mcp_servers\.(?:"([^"]+)"|([A-Za-z0-9_-]+))\]\s*(?:#.*)?$`)
-
-func scanTOMLServers(f *os.File) []string {
-	seen := map[string]bool{}
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 64*1024), 1<<20)
-	for sc.Scan() {
-		m := tomlServerHeader.FindStringSubmatch(strings.TrimSpace(sc.Text()))
-		if m == nil {
-			continue
-		}
-		name := m[1]
-		if name == "" {
-			name = m[2]
-		}
-		if safeName.MatchString(name) {
-			seen[name] = true
-		}
-	}
-	names := make([]string, 0, len(seen))
-	for n := range seen {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return names
+	return got.Names, got.Note, nil
 }
 
 // BinarySpec maps a harness name to the executable that launches it.

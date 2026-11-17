@@ -8,7 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/harness"
 	"compound/internal/home"
+	"compound/internal/hookplan"
 	"compound/internal/lanematrix"
 )
 
@@ -108,8 +110,10 @@ func parseDoorsFlags(args []string) (doorsFlags, error) {
 
 func refreshFromEnvironment(homePath string, f doorsFlags, now time.Time) (DoorMap, error) {
 	userHome, _ := os.UserHomeDir()
+	// Claude seats are found from the same seams `compound harness check` uses.
+	claudeHomes := harness.DiscoverClaudeHomes(harness.DefaultClaudeHomeSources(userHome, harness.DefaultRegistry(), hookplan.LaneHookSettingsPath))
 	in := Inputs{
-		MCPSources: DefaultMCPSources(userHome),
+		MCPSources: DefaultMCPSources(userHome, claudeHomes),
 		Binaries:   DefaultBinaries,
 		PathDirs:   filepath.SplitList(os.Getenv("PATH")),
 		HomeDir:    userHome,
