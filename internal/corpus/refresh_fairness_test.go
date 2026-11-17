@@ -68,3 +68,31 @@ func TestCancelledRefreshPreservesLastObservedCoverage(t *testing.T) {
 		t.Fatalf("cancellation was presented as an observation: %+v", r)
 	}
 }
+
+func TestInterruptedRefreshDoesNotMonopolizeNextPass(t *testing.T) {
+	home, now := t.TempDir(), time.Now()
+	lanes := []LaneConfig{fairRefreshLane(t, "first"), fairRefreshLane(t, "second")}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("fixture interruption did not occur")
+			}
+		}()
+		Refresh(context.Background(), home, lanes, func(LaneConfig) (Embedder, error) {
+			panic("fixture interruption before final receipt")
+		}, now)
+	}()
+	var prior Coverage
+	if err := readJSONFile(refreshPath(home, lanes[0]), &prior); err != nil {
+		t.Fatal(err)
+	}
+	if prior.Status != "refreshing" || prior.CheckedAt != "" || prior.LastAttemptAt == "" {
+		t.Fatalf("start was not recorded separately from success: %+v", prior)
+	}
+	next := Refresh(context.Background(), home, lanes, func(l LaneConfig) (Embedder, error) {
+		return &fakeEmbedder{identity: l.Embedder.Identity(), dim: 3}, nil
+	}, now.Add(time.Second))
+	if next.Sources[0].Lane != "second" || next.Sources[0].IndexedAt == "" {
+		t.Fatalf("interrupted source monopolized next pass: %+v", next)
+	}
+}

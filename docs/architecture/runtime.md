@@ -1861,7 +1861,11 @@ history fails closed. The hook uses an eight-minute execution ceiling to leave r
 for bounded recovery plus the existing four-minute corpus refresh deadline.
 
 The backend-health JSON also exposes `indexing_status` and per-source-lane `indexing`
-coverage from bounded `refresh.json` reads. Refresh visits the oldest checked sources first, with\nnew sources first and stable ties. Sources skipped after the deadline keep their\nprevious coverage receipt; cancellation is reported without claiming a fresh check. It reports pending work, the last refresh's
+coverage from bounded `refresh.json` reads. Refresh visits the least recently attempted sources first, with
+new sources first and stable ties. Sources skipped after the deadline keep their
+previous coverage receipt; cancellation is reported without claiming a fresh check.
+Attempt time is recorded before capture, separately from successful coverage, so a
+crashed source does not monopolize the next pass. It reports pending work, the last refresh's
 reported byte/runtime costs, and age since the last successful index. Missing timestamps
 or cost counters remain unknown. Indexing degradation does not change backend readiness
 or its exit code, so the hourly disk guard can warn without restarting a healthy model.

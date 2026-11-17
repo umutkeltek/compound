@@ -24,6 +24,7 @@ type SourceConfig struct {
 }
 type EmbedderFactory func(LaneConfig) (Embedder, error)
 type Coverage struct {
+	LastAttemptAt   string                `json:"last_attempt_at,omitempty"`
 	ShardCompaction ShardCompactionReport `json:"shard_compaction"`
 
 	NativeRowsCaptured     int   `json:"native_rows_captured,omitempty"`
@@ -112,7 +113,11 @@ func refreshLanesByAge(homePath string, lanes []LaneConfig, now time.Time) []Lan
 	for _, lane := range lanes {
 		var previous Coverage
 		if readJSONFile(refreshPath(homePath, lane), &previous) == nil {
-			stamp, err := time.Parse(time.RFC3339Nano, previous.CheckedAt)
+			last := previous.LastAttemptAt
+			if last == "" {
+				last = previous.CheckedAt
+			}
+			stamp, err := time.Parse(time.RFC3339Nano, last)
 			if err == nil && !stamp.After(now) {
 				checked[lane.Lane] = stamp
 			}
@@ -141,6 +146,23 @@ func Refresh(ctx context.Context, homePath string, lanes []LaneConfig, factory E
 			// instead of marking skipped work freshly checked.
 			continue
 		} else {
+			// Retain observed coverage while recording the attempt before any
+			// expensive capture. A crash cannot monopolize the next pass.
+			path := refreshPath(homePath, lane)
+			var prior Coverage
+			_ = readJSONFile(path, &prior)
+			prior.Lane, prior.Status, prior.LastAttemptAt = lane.Lane, "refreshing", c.CheckedAt
+			c.LastAttemptAt = c.CheckedAt
+			writeErr := os.MkdirAll(filepath.Dir(path), 0700)
+			if writeErr == nil {
+				writeErr = writeJSONFile(path, prior)
+			}
+			if writeErr != nil {
+				c.Status, c.Error = "status_write_failed", writeErr.Error()
+				report.Status = "degraded"
+				report.Sources = append(report.Sources, c)
+				continue
+			}
 			valid, err := ValidateLaneConfig(lane)
 			if err != nil {
 				c.Status = "invalid_config"
