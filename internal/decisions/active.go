@@ -109,9 +109,10 @@ func ResolveActive(claims []mem.Claim, query string) (mem.Claim, string, bool) {
 // decision record retires (see RetiredRefs).
 //
 // This is the ONE read path the decision readers share (director's grant
-// resolution, standing law, served decision refs, `decisions show`); work's
-// freeze admission guard mirrors the same rule in internal/work because of an
-// import cycle. It reads ONLY decision records folded through mem.Store —
+// resolution, standing law, served decision refs, `decisions show`). Because
+// of an import cycle, internal/work's freeze guard, autonomy grant check and
+// meaning directives cannot call it; they apply the same mem retirement rule
+// with their own trust filters. It reads ONLY decision records folded through mem.Store —
 // never markdown, worklog, or brain prose (grants-as-gates 2026-07-10,
 // falsifier e). Undo is modeled as a superseding record (falsifier c): a NEW
 // accepted record whose `supersedes` qualifier names the old decision flips
