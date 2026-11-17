@@ -84,9 +84,17 @@ type throwawayIdentity struct {
 
 func runTool(t *testing.T, stdin []byte, name string, args ...string) []byte {
 	t.Helper()
+	return runToolEnv(t, nil, stdin, name, args...)
+}
+
+func runToolEnv(t *testing.T, env []string, stdin []byte, name string, args ...string) []byte {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
+	if env != nil {
+		cmd.Env = env
+	}
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
@@ -100,7 +108,7 @@ func runTool(t *testing.T, stdin []byte, name string, args ...string) []byte {
 // newThrowawayIdentity makes a self-signed code-signing identity in its own
 // keychain under the test's temp folder. The keychain is unlocked by a
 // password file and its key is open to codesign, so signing raises no prompt.
-func newThrowawayIdentity(t *testing.T) throwawayIdentity {
+func newThrowawayIdentity(t *testing.T, home string) throwawayIdentity {
 	t.Helper()
 	if runtime.GOOS != "darwin" {
 		t.Skip("code signing needs macOS codesign and security; this host has neither")
@@ -127,26 +135,86 @@ func newThrowawayIdentity(t *testing.T) throwawayIdentity {
 	fingerprint := string(runTool(t, nil, openssl, "x509", "-in", cert, "-noout", "-fingerprint", "-sha1"))
 	id.sha1 = strings.ReplaceAll(strings.TrimSpace(fingerprint[strings.Index(fingerprint, "=")+1:]), ":", "")
 
-	searchList := func() string { return string(runTool(t, nil, "security", "list-keychains", "-d", "user")) }
-	before := searchList()
-	runTool(t, nil, "security", "create-keychain", "-p", password, id.keychain)
-	t.Cleanup(func() { _ = exec.Command("security", "delete-keychain", id.keychain).Run() })
-	if after := searchList(); after != before {
-		// Some macOS versions add a new keychain to the user's search list; put
-		// the exact earlier list back so the test leaves the machine as it was.
-		var paths []string
-		for _, quoted := range regexp.MustCompile(`"([^"]+)"`).FindAllStringSubmatch(before, -1) {
-			paths = append(paths, quoted[1])
+	// codesign needs this identity on the search list belonging to its HOME,
+	// even with --keychain on some macOS versions. Keep that registration in
+	// the installer's isolated fixture home, never the test runner's home.
+	// security reports success without persisting a list if these directories
+	// do not exist, leaving the next codesign process unable to find the key.
+	for _, dir := range []string{"Preferences", "Keychains"} {
+		if err := os.MkdirAll(filepath.Join(home, "Library", dir), 0o700); err != nil {
+			t.Fatal(err)
 		}
-		runTool(t, nil, "security", append([]string{"list-keychains", "-d", "user", "-s"}, paths...)...)
-		t.Logf("create-keychain changed the user keychain search list; restored it")
 	}
-	runTool(t, nil, "security", "set-keychain-settings", id.keychain)
-	runTool(t, nil, "security", "import", p12, "-k", id.keychain, "-P", password, "-T", "/usr/bin/codesign")
-	runTool(t, nil, "security", "set-key-partition-list", "-S", "apple-tool:,apple:,codesign:", "-s", "-k", password, id.keychain)
+	env := append(os.Environ(), "HOME="+home)
+	security := func(args ...string) []byte { return runToolEnv(t, env, nil, "security", args...) }
+	security("create-keychain", "-p", password, id.keychain)
+	t.Cleanup(func() {
+		// delete-keychain removes only this keychain and its search-list entry;
+		// restoring a saved whole list would discard later additions.
+		security("delete-keychain", id.keychain)
+	})
+	var paths []string
+	for _, quoted := range regexp.MustCompile(`"([^"]+)"`).FindAllSubmatch(security("list-keychains", "-d", "user"), -1) {
+		paths = append(paths, string(quoted[1]))
+	}
+	paths = append(paths, id.keychain)
+	security(append([]string{"list-keychains", "-d", "user", "-s"}, paths...)...)
+	canonicalKeychain, err := filepath.EvalSymlinks(id.keychain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(security("list-keychains", "-d", "user"), []byte(canonicalKeychain)) {
+		t.Fatal("fixture keychain registration was not persisted in the fixture home")
+	}
+	if bytes.Contains(runTool(t, nil, "security", "list-keychains", "-d", "user"), []byte(canonicalKeychain)) {
+		t.Fatal("fixture keychain leaked into the test runner's home")
+	}
+	security("set-keychain-settings", id.keychain)
+	security("import", p12, "-k", id.keychain, "-P", password, "-T", "/usr/bin/codesign")
+	security("set-key-partition-list", "-S", "apple-tool:,apple:,codesign:", "-s", "-k", password, id.keychain)
 	// Locked again, so the installer has to unlock it from the password file.
-	runTool(t, nil, "security", "lock-keychain", id.keychain)
+	security("lock-keychain", id.keychain)
 	return id
+}
+
+func TestSigningFixtureCleanupPreservesLaterKeychain(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("keychain isolation needs macOS security")
+	}
+	home := t.TempDir()
+	env := append(os.Environ(), "HOME="+home)
+	security := func(args ...string) []byte { return runToolEnv(t, env, nil, "security", args...) }
+	later := filepath.Join(home, "later.keychain-db")
+	var removed, retained string
+	outer := t
+	if !t.Run("fixture", func(t *testing.T) {
+		id := newThrowawayIdentity(t, home)
+		var err error
+		removed, err = filepath.EvalSymlinks(id.keychain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		security("create-keychain", "-p", "synthetic-fixture-password", later)
+		outer.Cleanup(func() { security("delete-keychain", later) })
+		retained, err = filepath.EvalSymlinks(later)
+		if err != nil {
+			t.Fatal(err)
+		}
+		security("list-keychains", "-d", "user", "-s", id.keychain, later)
+	}) {
+		return
+	}
+	list := security("list-keychains", "-d", "user")
+	if bytes.Contains(list, []byte(removed)) || !bytes.Contains(list, []byte(retained)) {
+		t.Fatalf("cleanup must remove only its own entry and preserve the later keychain: %s", list)
+	}
+	if _, err := os.Stat(later); err != nil {
+		t.Fatalf("cleanup removed the later keychain: %v", err)
+	}
+	personal := runTool(t, nil, "security", "list-keychains", "-d", "user")
+	if bytes.Contains(personal, []byte(removed)) || bytes.Contains(personal, []byte(retained)) {
+		t.Fatal("isolated fixture changed the test runner's search list")
+	}
 }
 
 // designatedRequirement is what macOS checks a privacy grant against.
@@ -198,11 +266,14 @@ func leftoverStages(t *testing.T, f sourceInstallerFixture) []string {
 // keeps a privacy grant. Read from the settings file under the Compound home
 // and from the environment.
 func TestSourceInstallerSignsPublishedProgramsWithFixedIdentity(t *testing.T) {
-	id := newThrowawayIdentity(t)
+	if runtime.GOOS != "darwin" {
+		t.Skip("code signing needs macOS codesign and security; this host has neither")
+	}
 	first, second := buildFixtureMachO(t, "first"), buildFixtureMachO(t, "second")
 	for _, source := range []string{"settings-file", "environment"} {
 		t.Run(source, func(t *testing.T) {
 			f := sourceInstallFixture(t)
+			id := newThrowawayIdentity(t, f.home)
 			var env []string
 			if source == "settings-file" {
 				writePrivate(t, filepath.Join(f.home, "config", "install-signing.conf"), "# private signing settings\nCOMPOUND_INSTALL_SIGN_IDENTITY="+id.sha1+"\nCOMPOUND_INSTALL_SIGN_KEYCHAIN="+id.keychain+"\nCOMPOUND_INSTALL_SIGN_KEYCHAIN_PASSWORD_FILE="+id.passwordFile+"\n")
@@ -214,7 +285,7 @@ func TestSourceInstallerSignsPublishedProgramsWithFixedIdentity(t *testing.T) {
 			for round, build := range []string{first, second} {
 				if round == 1 {
 					// Locked again between installs, as after a restart.
-					runTool(t, nil, "security", "lock-keychain", id.keychain)
+					runToolEnv(t, append(os.Environ(), "HOME="+f.home), nil, "security", "lock-keychain", id.keychain)
 				}
 				out, err := f.runEnv("", append(env, "FIXTURE_MACHO="+build)...)
 				if err != nil {
