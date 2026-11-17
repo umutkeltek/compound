@@ -1035,6 +1035,11 @@ never stored on the home, persisted, or reused across requests, so a new
 projection rereads mutable refs, status, origin identity, proofs, and previously
 missing inputs; governed land-check, close, and admission keep fresh per-call
 reads. A nil session means fresh reads per Work.
+A projection session bounds each read (10 s). A repository that does not answer,
+such as one on a blocked volume, is marked unavailable for the rest of that
+request: its rows show `delivery_unknown` (unknown, not failed, never ready to
+close) with an integrity line, every later read of it returns at once, and rows
+of repositories that answer are unchanged. The unbounded governed paths decide.
 
 ### Lifecycle finalization cost and evidence scope
 

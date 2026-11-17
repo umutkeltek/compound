@@ -1078,6 +1078,16 @@ func (s *Store) applyWorkbenchGitDeliveryWithFacts(item *WorkbenchItem, w envelo
 	}
 
 	live, err := s.evaluateLandCheckWithFacts(w, LandCheckOptions{CandidateTipSHA: tip}, now, facts)
+	var unavailable *landingRepositoryUnavailableError
+	if errors.As(err, &unavailable) {
+		// The bounded projection read could not observe this repository. The
+		// row is unknown, not failed and not ready: the governed land-check
+		// and close still read the repository fresh before any decision.
+		item.LandingStatus = "delivery_unknown"
+		item.NextAction = "repository did not answer in this read (" + unavailable.Error() + "); delivery is unknown, not failed: when its volume answers, rerun compound work land-check " + w.ID + " --tip " + tip + " --dry-run"
+		report.Integrity = append(report.Integrity, w.ID+": Git delivery unknown: "+err.Error())
+		return
+	}
 	var changed *repositoryFingerprintChangedError
 	if errors.As(err, &changed) {
 		item.LandingStatus = "repository_fingerprint_changed"

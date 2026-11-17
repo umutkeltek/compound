@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"compound/internal/authority/gitrepository"
 )
@@ -24,6 +25,26 @@ const (
 	landingReadIdentity      = "identity"
 	landingReadOwnedPaths    = "owned_paths"
 )
+
+// landingProjectionReadTimeout bounds each repository-scoped Git read of one
+// projection session. A healthy read answers in milliseconds; a repository on
+// a blocked volume never answers, and without a bound one such repository
+// froze the whole Workbench (every row, every console page that reads it).
+const landingProjectionReadTimeout = 10 * time.Second
+
+// landingRepositoryUnavailableError reports that one repository did not answer
+// a Git read inside the session's bound. It is an observation about this
+// request, not a delivery verdict: the projection shows the row as unknown and
+// the governed land-check and close paths, which never use a bounded session,
+// still read the repository fresh before any decision.
+type landingRepositoryUnavailableError struct {
+	repo    string
+	timeout time.Duration
+}
+
+func (e *landingRepositoryUnavailableError) Error() string {
+	return fmt.Sprintf("repository %s did not answer a Git read within %s", e.repo, e.timeout)
+}
 
 // landingFact is one cached read result: the value or the error, never both.
 // Caching errors is the point — every Work affected by the same failed Git
@@ -68,6 +89,14 @@ type landingOwnedDirtyFact struct {
 // dies with its request; it is never stored on the Store, never persisted, and
 // never crosses processes, so a new request rereads every mutable fact (refs,
 // status, origin identity, proofs) and every input that was missing before.
+//
+// A projection session also bounds every read (readTimeout). A repository
+// that does not answer one read in time is marked unavailable for the rest of
+// the request: each later read of it returns the same typed error at once, so
+// one blocked volume costs one bound per repository, never one per row or per
+// read, and repositories that answer are evaluated exactly as before. The
+// abandoned read keeps running in its own goroutine until the volume answers;
+// it never writes to the session, whose caches are filled only by the caller.
 type landingGitFacts struct {
 	canonicalRepoCache map[string]landingFact[string]
 	targetRefCache     map[string]landingFact[landingTargetRefFact]
@@ -85,6 +114,12 @@ type landingGitFacts struct {
 	// base, because a different base can name a different lineage.
 	identitySession *gitrepository.IdentitySession
 	ownedDirtyCache map[string]landingFact[landingOwnedDirtyFact]
+
+	// readTimeout bounds each read; zero reads without a bound.
+	readTimeout time.Duration
+	// unavailable names each repository (by the exact path the read used) that
+	// did not answer inside readTimeout during this request.
+	unavailable map[string]*landingRepositoryUnavailableError
 
 	// reads counts, per fact kind, the real reads this session performed
 	// (cache hits are free). Projection evidence only; never a gate.
@@ -105,7 +140,45 @@ func newLandingGitFacts() *landingGitFacts {
 		identityCache:      map[string]landingFact[gitrepository.Identity]{},
 		identitySession:    gitrepository.NewIdentitySession(),
 		ownedDirtyCache:    map[string]landingFact[landingOwnedDirtyFact]{},
+		readTimeout:        landingProjectionReadTimeout,
+		unavailable:        map[string]*landingRepositoryUnavailableError{},
 		reads:              map[string]int{},
+	}
+}
+
+// boundedLandingRead runs one repository read under the session's bound. A
+// nil or unbounded session calls read directly, so governed paths keep their
+// exact fresh-read behavior. read must not touch the session: on a timeout it
+// keeps running unobserved, and the buffered result is dropped.
+func boundedLandingRead[T any](f *landingGitFacts, repo string, read func() (T, error)) (T, error) {
+	var zero T
+	if f == nil || f.readTimeout <= 0 {
+		return read()
+	}
+	if unavailable := f.unavailable[repo]; unavailable != nil {
+		return zero, unavailable
+	}
+	type outcome struct {
+		value T
+		err   error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		value, err := read()
+		done <- outcome{value: value, err: err}
+	}()
+	timer := time.NewTimer(f.readTimeout)
+	defer timer.Stop()
+	select {
+	case result := <-done:
+		return result.value, result.err
+	case <-timer.C:
+		unavailable := &landingRepositoryUnavailableError{repo: repo, timeout: f.readTimeout}
+		if f.unavailable == nil {
+			f.unavailable = map[string]*landingRepositoryUnavailableError{}
+		}
+		f.unavailable[repo] = unavailable
+		return zero, unavailable
 	}
 }
 
@@ -134,7 +207,7 @@ func (f *landingGitFacts) canonicalRepo(path string) (string, error) {
 	if fact, ok := f.canonicalRepoCache[path]; ok {
 		return fact.value, fact.err
 	}
-	value, err := canonicalLandingRepo(path)
+	value, err := boundedLandingRead(f, path, func() (string, error) { return canonicalLandingRepo(path) })
 	f.recordRead(landingReadCanonicalRepo)
 	f.canonicalRepoCache[path] = landingFact[string]{value: value, err: err}
 	return value, err
@@ -149,7 +222,11 @@ func (f *landingGitFacts) normalizeTargetRef(repoPath, value string) (string, st
 	if fact, ok := f.targetRefCache[key]; ok {
 		return fact.value.branch, fact.value.ref, fact.err
 	}
-	branch, ref, err := normalizeLandingTargetRef(repoPath, value)
+	fact, err := boundedLandingRead(f, repoPath, func() (landingTargetRefFact, error) {
+		branch, ref, err := normalizeLandingTargetRef(repoPath, value)
+		return landingTargetRefFact{branch: branch, ref: ref}, err
+	})
+	branch, ref := fact.branch, fact.ref
 	f.recordRead(landingReadTargetRef)
 	f.targetRefCache[key] = landingFact[landingTargetRefFact]{
 		value: landingTargetRefFact{branch: branch, ref: ref},
@@ -169,7 +246,9 @@ func (f *landingGitFacts) refCommit(repoPath, ref string) (string, error) {
 	if fact, ok := f.refCommitCache[key]; ok {
 		return fact.value, fact.err
 	}
-	value, err := runLandingGitOutput(repoPath, "rev-parse", "--verify", ref+"^{commit}")
+	value, err := boundedLandingRead(f, repoPath, func() (string, error) {
+		return runLandingGitOutput(repoPath, "rev-parse", "--verify", ref+"^{commit}")
+	})
 	f.recordRead(landingReadRefCommit)
 	f.refCommitCache[key] = landingFact[string]{value: value, err: err}
 	return value, err
@@ -183,7 +262,7 @@ func (f *landingGitFacts) currentBranchRef(repoPath string) (string, error) {
 	if fact, ok := f.currentBranchCache[repoPath]; ok {
 		return fact.value, fact.err
 	}
-	value, err := landingCurrentBranchRef(repoPath)
+	value, err := boundedLandingRead(f, repoPath, func() (string, error) { return landingCurrentBranchRef(repoPath) })
 	f.recordRead(landingReadCurrentBranch)
 	f.currentBranchCache[repoPath] = landingFact[string]{value: value, err: err}
 	return value, err
@@ -198,7 +277,9 @@ func (f *landingGitFacts) statusPorcelain(repoPath string) (string, error) {
 	if fact, ok := f.statusCache[repoPath]; ok {
 		return fact.value, fact.err
 	}
-	value, err := runLandingGitOutput(repoPath, "status", "--porcelain=v1", "--untracked-files=all")
+	value, err := boundedLandingRead(f, repoPath, func() (string, error) {
+		return runLandingGitOutput(repoPath, "status", "--porcelain=v1", "--untracked-files=all")
+	})
 	f.recordRead(landingReadStatus)
 	f.statusCache[repoPath] = landingFact[string]{value: value, err: err}
 	return value, err
@@ -213,7 +294,9 @@ func (f *landingGitFacts) worktreeList(repoPath string) (string, error) {
 	if fact, ok := f.worktreeListCache[repoPath]; ok {
 		return fact.value, fact.err
 	}
-	value, err := runLandingGitOutput(repoPath, "worktree", "list", "--porcelain", "-z")
+	value, err := boundedLandingRead(f, repoPath, func() (string, error) {
+		return runLandingGitOutput(repoPath, "worktree", "list", "--porcelain", "-z")
+	})
 	f.recordRead(landingReadWorktreeList)
 	f.worktreeListCache[repoPath] = landingFact[string]{value: value, err: err}
 	return value, err
@@ -241,7 +324,7 @@ func (f *landingGitFacts) refExists(repoPath, ref string) (bool, error) {
 	if fact, ok := f.refExistsCache[key]; ok {
 		return fact.value, fact.err
 	}
-	value, err := landingRefExists(repoPath, ref)
+	value, err := boundedLandingRead(f, repoPath, func() (bool, error) { return landingRefExists(repoPath, ref) })
 	f.recordRead(landingReadRefExists)
 	f.refExistsCache[key] = landingFact[bool]{value: value, err: err}
 	return value, err
@@ -258,7 +341,7 @@ func (f *landingGitFacts) commitExists(repoPath, sha string) (bool, error) {
 	if fact, ok := f.commitExistsCache[key]; ok {
 		return fact.value, fact.err
 	}
-	value, err := landingCommitExists(repoPath, sha)
+	value, err := boundedLandingRead(f, repoPath, func() (bool, error) { return landingCommitExists(repoPath, sha) })
 	f.recordRead(landingReadCommitExists)
 	f.commitExistsCache[key] = landingFact[bool]{value: value, err: err}
 	return value, err
@@ -275,7 +358,9 @@ func (f *landingGitFacts) isAncestor(repoPath, ancestor, descendant string) (boo
 	if fact, ok := f.ancestryCache[key]; ok {
 		return fact.value, fact.err
 	}
-	value, err := landingIsAncestor(repoPath, ancestor, descendant)
+	value, err := boundedLandingRead(f, repoPath, func() (bool, error) {
+		return landingIsAncestor(repoPath, ancestor, descendant)
+	})
 	f.recordRead(landingReadAncestry)
 	f.ancestryCache[key] = landingFact[bool]{value: value, err: err}
 	return value, err
@@ -293,7 +378,12 @@ func (f *landingGitFacts) repositoryIdentity(root, expectedBase string) (gitrepo
 	if fact, ok := f.identityCache[key]; ok {
 		return fact.value, fact.err
 	}
-	value, err := f.identitySession.ReadIdentityContext(context.Background(), root, expectedBase)
+	// IdentitySession is safe for concurrent use and never holds its lock
+	// across a Git read, so an abandoned identity read cannot block the next.
+	identities := f.identitySession
+	value, err := boundedLandingRead(f, root, func() (gitrepository.Identity, error) {
+		return identities.ReadIdentityContext(context.Background(), root, expectedBase)
+	})
 	f.recordRead(landingReadIdentity)
 	f.identityCache[key] = landingFact[gitrepository.Identity]{value: value, err: err}
 	return value, err
@@ -309,7 +399,11 @@ func (f *landingGitFacts) ownedPathsDirty(repoPath, expectedBase, candidate stri
 	if fact, ok := f.ownedDirtyCache[key]; ok {
 		return fact.value.dirty, append([]string(nil), fact.value.paths...), fact.err
 	}
-	dirty, paths, err := landingOwnedPathsDirty(repoPath, expectedBase, candidate)
+	owned, err := boundedLandingRead(f, repoPath, func() (landingOwnedDirtyFact, error) {
+		dirty, paths, err := landingOwnedPathsDirty(repoPath, expectedBase, candidate)
+		return landingOwnedDirtyFact{dirty: dirty, paths: paths}, err
+	})
+	dirty, paths := owned.dirty, owned.paths
 	f.recordRead(landingReadOwnedPaths)
 	f.ownedDirtyCache[key] = landingFact[landingOwnedDirtyFact]{
 		value: landingOwnedDirtyFact{dirty: dirty, paths: append([]string(nil), paths...)},
