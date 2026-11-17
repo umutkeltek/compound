@@ -10,8 +10,10 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -87,25 +89,32 @@ func checkBackend(ctx context.Context, base string, cfg EmbedderConfig) BackendC
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	request := func(method, endpoint string, body []byte, out any) (int, error) {
+	request := func(method, endpoint string, body []byte, out any) (int, bool, error) {
 		req, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(body))
 		if err != nil {
-			return 0, err
+			return 0, false, err
 		}
+		// An accepted connection that stalls before sending headers is unhealthy,
+		// whereas a failed dial is unavailable. HTTP status alone cannot tell them
+		// apart. Trace callbacks may run on transport goroutines.
+		var connected atomic.Bool
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+			GotConn: func(httptrace.GotConnInfo) { connected.Store(true) },
+		}))
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := client.Do(req)
 		if err != nil {
-			return 0, err
+			return 0, connected.Load(), err
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			return resp.StatusCode, fmt.Errorf("HTTP %d", resp.StatusCode)
+			return resp.StatusCode, true, fmt.Errorf("HTTP %d", resp.StatusCode)
 		}
 		raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 		if err != nil {
-			return resp.StatusCode, err
+			return resp.StatusCode, true, err
 		}
-		return resp.StatusCode, json.Unmarshal(raw, out)
+		return resp.StatusCode, true, json.Unmarshal(raw, out)
 	}
 	var tags struct {
 		Models []struct {
@@ -115,7 +124,7 @@ func checkBackend(ctx context.Context, base string, cfg EmbedderConfig) BackendC
 		} `json:"models"`
 	}
 	origin := u.Scheme + "://" + u.Host
-	status, err := request(http.MethodGet, origin+"/api/tags", nil, &tags)
+	status, connected, err := request(http.MethodGet, origin+"/api/tags", nil, &tags)
 	if err != nil && !requireInventory && (status == http.StatusNotFound || status == http.StatusMethodNotAllowed || status == http.StatusNotImplemented || status == http.StatusOK) {
 		// A generic OpenAI-compatible local server need not implement Ollama's
 		// inventory. Unsupported inventory never attests a restart owner.
@@ -123,7 +132,7 @@ func checkBackend(ctx context.Context, base string, cfg EmbedderConfig) BackendC
 	} else {
 		if err != nil {
 			check.Status = "process_unavailable"
-			if status != 0 {
+			if status != 0 || connected {
 				check.Status = "process_unhealthy"
 			}
 			check.Detail = "Ollama model inventory unavailable"
@@ -159,7 +168,7 @@ func checkBackend(ctx context.Context, base string, cfg EmbedderConfig) BackendC
 	if !strings.HasSuffix(endpoint, "/v1") {
 		endpoint += "/v1"
 	}
-	status, err = request(http.MethodPost, endpoint+"/embeddings", raw, &embedded)
+	status, _, err = request(http.MethodPost, endpoint+"/embeddings", raw, &embedded)
 	if err != nil {
 		check.Status, check.Detail = "process_unhealthy", "configured model could not produce embeddings"
 		if status == http.StatusNotFound {
