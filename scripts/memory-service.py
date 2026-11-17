@@ -78,11 +78,15 @@ def recovery_budget(binary, home, now):
         raise RuntimeError("backend_unavailable: recovery cooldown (30 minutes)")
 
 
-def refresh_active():
+def refresh_active(binary=None):
     probe = subprocess.run(["/bin/ps", "-axo", "args="], text=True,
                            capture_output=True, timeout=5, check=True)
+    exact = re.escape(str(binary)) + "|" if binary is not None else ""
+    executable = re.compile(r"^\s*(?:" + exact + r"(?:\S*/)?compound)\s+")
+    operation = re.compile(r"^(?:--home(?:=|\s+).+?\s+)?corpus\s+(?:refresh|index)(?:\s|$)")
     for line in probe.stdout.splitlines():
-        if re.match(r"^\s*(?:\S*/)?compound\s+corpus\s+refresh(?:\s|$)", line):
+        match = executable.match(line)
+        if match and operation.match(line[match.end():]):
             return True
     return False
 
@@ -111,8 +115,8 @@ def recover_backend(binary, home):
         raise RuntimeError("process_unavailable: existing Ollama service owner unavailable")
     classification = "process_unhealthy" if "state = running" in owner.stdout else "process_unavailable"
     print(json.dumps({"memory_backend_status": classification}), flush=True)
-    if refresh_active():
-        raise RuntimeError("backend_unavailable: active memory refresh; recovery deferred")
+    if refresh_active(binary):
+        raise RuntimeError("backend_unavailable: active memory refresh/index; recovery deferred")
     now = time.time()
     recovery_budget(binary, home, now)
     require_admitted_refresh(binary, home)

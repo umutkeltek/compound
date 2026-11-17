@@ -249,5 +249,45 @@ class HelperAdmissionTests(unittest.TestCase):
             recover.assert_not_called()
 
 
+
+class ProcessObservationTests(unittest.TestCase):
+    def observed(self, line, binary=Path("/fixture/bin/compound")):
+        completed = subprocess.CompletedProcess(["/bin/ps"], 0, line + "\n", "")
+        with patch.object(service.subprocess, "run", return_value=completed):
+            return service.refresh_active(binary)
+
+    def test_manual_index_and_global_home_refresh_are_active(self):
+        for line, binary in [
+            ("/fixture/bin/compound corpus index --lane fixture", Path("/fixture/bin/compound")),
+            ("/fixture/bin/compound --home /fixture/home corpus refresh", Path("/fixture/bin/compound")),
+            ("/fixture tools/memory-runtime --home=/fixture home corpus index --lane fixture", Path("/fixture tools/memory-runtime")),
+            ("compound corpus refresh --home /fixture/home", Path("/fixture/bin/compound")),
+        ]:
+            with self.subTest(line=line):
+                self.assertTrue(self.observed(line, binary))
+
+    def test_health_helpers_and_embedded_command_text_are_not_ingestion(self):
+        for line in [
+            "/fixture/bin/compound corpus backend-health",
+            "python3 /fixture/compound-memory-service refresh --binary /fixture/bin/compound",
+            "/fixture/bin/compound work advance fixture --prompt corpus index",
+            "/fixture/bin/compound --home /fixture/home corpus doctor --lane fixture",
+        ]:
+            with self.subTest(line=line):
+                self.assertFalse(self.observed(line))
+
+    def test_actual_manual_index_observation_prevents_kickstart(self):
+        def command(args, **kwargs):
+            if args[0] == "/bin/ps":
+                return subprocess.CompletedProcess(args, 0, "/fixture/bin/compound corpus index --lane fixture\n", "")
+            if args[1] == "print":
+                return subprocess.CompletedProcess(args, 0, "program = /fixture/bin/ollama\nstate = running\n", "")
+            self.fail("active manual indexing must exclude restart: " + str(args))
+        with patch.object(service, "backend_health", return_value=DOWN), patch.object(service.subprocess, "run", side_effect=command), patch.object(service, "recovery_budget") as budget, patch.object(service, "require_admitted_refresh") as admitted:
+            with self.assertRaisesRegex(RuntimeError, "active memory refresh"):
+                service.recover_backend(Path("/fixture/bin/compound"), Path("/fixture/home"))
+            budget.assert_not_called()
+            admitted.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()
