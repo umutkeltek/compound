@@ -131,9 +131,10 @@ func TestRefreshRetainsSuccessfulHTTPBatchAndFailureCosts(t *testing.T) {
 	}
 	second := Refresh(context.Background(), hp, []LaneConfig{lane}, factory, time.Now())
 	done := second.Sources[0]
-	if second.Failed() || done.NewEmbeddedChunks != 33 || done.IndexPendingChunks != 0 || done.BodyBytesRead != 0 {
+	if second.Failed() || done.NewEmbeddedChunks != 33 || done.IndexPendingChunks != 0 || done.PreparedItems != 0 || done.BodyBytesRead <= 0 || done.BodyBytesRead >= c.BodyBytesRead {
 		t.Fatalf("retry did not resume exact checkpoint: %+v", done)
 	}
+	t.Logf("observed 65-document checkpoint costs: failed_pass body_bytes=%d index_bytes_written=%d new_embeddings=%d; retry body_bytes=%d index_bytes_written=%d new_embeddings=%d", c.BodyBytesRead, c.IndexBytesWritten, c.NewEmbeddedChunks, done.BodyBytesRead, done.IndexBytesWritten, done.NewEmbeddedChunks)
 	mu.Lock()
 	defer mu.Unlock()
 	for text, count := range succeeded {
@@ -148,7 +149,7 @@ func TestRefreshRetainsSuccessfulHTTPBatchAndFailureCosts(t *testing.T) {
 
 func TestRefreshPreparationFailurePreservesReadCosts(t *testing.T) {
 	hp, root := t.TempDir(), t.TempDir()
-	body := "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Cedar visible message\"}}\n{broken native record\n"
+	body := "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Cedar visible message\"}}\n{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":{\"invalid\":\"visible content\"}}}\n"
 	if err := os.WriteFile(filepath.Join(root, "broken.jsonl"), []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +159,7 @@ func TestRefreshPreparationFailurePreservesReadCosts(t *testing.T) {
 	}
 	r := Refresh(context.Background(), hp, []LaneConfig{lane}, factory, time.Now())
 	c := r.Sources[0]
-	if !r.Failed() || c.Status != "index_failed" || c.BodyBytesRead != int64(len(body)) || c.PreparedItems != 1 || !strings.Contains(c.Error, "invalid transcript record 2") {
+	if !r.Failed() || c.Status != "index_failed" || c.BodyBytesRead != int64(len(body)) || c.PreparedItems != 1 || !strings.Contains(c.Error, "invalid content record 2") {
 		t.Fatalf("preparation failure erased observed cost: %+v", c)
 	}
 	m, err := sourceobs.LoadSourceManifest(hp, lane.SourceFamily)
