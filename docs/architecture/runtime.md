@@ -1842,7 +1842,10 @@ Ordinary tool hooks continue to inspect nonterminal attempts only.
 
 ### Memory backend recovery
 
-The existing approved-memory hook runs the installed `compound-memory-service refresh`
+The approved-memory hook starts `compound-memory-service tick`, which holds a per-home
+nonblocking launch lock across admission and execution. Duplicate triggers exit without
+queuing work. A nine-minute deadline includes admission; cancellation sends SIGTERM
+to the native execution owner so it can finalize the attempt. The helper runs `compound-memory-service refresh`
 inside the same governed execution reservation. `compound corpus backend-health` is a
 read-only probe of configured local model inventory and embedding dimensions. It reports
 `process_unavailable`, `process_unhealthy`, `model_missing`, or `incompatible`; a ready

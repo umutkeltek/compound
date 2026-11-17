@@ -9,6 +9,7 @@ Tick --recovery-only runs the same admitted recovery without corpus refresh;
 HELD work still requires operator release outside this helper.
 """
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -170,9 +171,27 @@ def refresh(binary, home):
 
 
 
-def run(binary, args, capture=False):
-    result = subprocess.run([str(binary), *args], text=True,
-                            stdout=subprocess.PIPE if capture else None, check=False)
+def run(binary, args, capture=False, timeout=None, lock_fd=None):
+    if timeout is None:
+        result = subprocess.run([str(binary), *args], text=True,
+                                stdout=subprocess.PIPE if capture else None, check=False)
+    else:
+        # SIGTERM lets the native execution owner finalize its attempt and stop
+        # its own children. subprocess.run(timeout=...) would send SIGKILL.
+        with subprocess.Popen([str(binary), *args], text=True,
+                              stdout=subprocess.PIPE if capture else None,
+                              pass_fds=() if lock_fd is None else (lock_fd,)) as process:
+            try:
+                stdout, _ = process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                try:
+                    process.communicate(timeout=30)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate()
+                raise RuntimeError("memory launch deadline exceeded; inspect native work before retry")
+            result = subprocess.CompletedProcess(process.args, process.returncode, stdout)
     if result.returncode:
         raise RuntimeError("Compound refused or failed: " + " ".join(args[:2]))
     return json.loads(result.stdout) if capture else None
@@ -205,7 +224,7 @@ def claim_ready(binary, home, record):
     return claimed
 
 
-def tick(binary, home, workspace, start=False, recovery_only=False):
+def _tick_locked(binary, home, workspace, start=False, recovery_only=False, lock_fd=None):
     wid = work_id(home)
     record = maintenance_work(binary, home)
     if record.get("state") == "ready" and start:
@@ -220,7 +239,23 @@ def tick(binary, home, workspace, start=False, recovery_only=False):
         args += ["--resume-verifying"]
     operation = "recover" if recovery_only else "refresh"
     run(binary, args + ["--", sys.executable, str(Path(__file__).resolve()), operation,
-                         "--binary", str(binary), "--memory-home", str(home), "--workspace", str(workspace)])
+                         "--binary", str(binary), "--memory-home", str(home), "--workspace", str(workspace)],
+        timeout=240 if recovery_only else 540, lock_fd=lock_fd)
+
+
+def tick(binary, home, workspace, start=False, recovery_only=False):
+    # Cover waiting/admission as well as running refresh. The kernel releases
+    # this coordination lock after failures or process exit.
+    lock_dir = home / "lock"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    with (lock_dir / "memory-refresh-launch.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(json.dumps({"status": "already_running", "work_id": work_id(home)}))
+            return
+        _tick_locked(binary, home, workspace, start=start, recovery_only=recovery_only,
+                     lock_fd=lock.fileno())
 
 
 def setup(binary, home, workspace, config):

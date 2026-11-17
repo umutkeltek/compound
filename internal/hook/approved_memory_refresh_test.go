@@ -44,15 +44,15 @@ func TestApprovedMemoryTriggerUsesGovernedResumeAndIgnoresReplay(t *testing.T) {
 	old := startMemoryRefresh
 	defer func() { startMemoryRefresh = old }()
 	calls := 0
-	startMemoryRefresh = func(binary, home, workspace string, args []string) error {
+	startMemoryRefresh = func(launcher, home, workspace string, args []string) error {
 		calls++
 		joined := strings.Join(args, " ")
-		for _, part := range []string{"work advance " + id, "--execute --resume-verifying", "--harness os-harness-entrypoints", "--timeout 8m", service + " refresh --binary " + binary + " --memory-home " + hp + " --workspace " + cwd} {
+		for _, part := range []string{"tick --binary " + binary, "--memory-home " + hp, "--workspace " + cwd} {
 			if !strings.Contains(joined, part) {
 				t.Fatalf("missing %s: %s", part, joined)
 			}
 		}
-		if home != hp || workspace != cwd {
+		if launcher != service || home != hp || workspace != cwd {
 			t.Fatal("wrong scope")
 		}
 		return nil

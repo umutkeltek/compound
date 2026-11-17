@@ -142,7 +142,11 @@ class RecoveryTests(unittest.TestCase):
 
 class HelperAdmissionTests(unittest.TestCase):
     binary = Path("/fixture/bin/compound")
-    home = Path("/fixture/home")
+    def setUp(self):
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        self.home = Path(self._home.name)
+
     workspace = Path("/fixture/workspace")
 
     def record(self, state="ready"):
@@ -151,7 +155,7 @@ class HelperAdmissionTests(unittest.TestCase):
     def test_explicit_start_claims_only_existing_ready_work_then_executes(self):
         record = self.record()
         commands = []
-        def command(binary, args, capture=False):
+        def command(binary, args, capture=False, timeout=None, lock_fd=None):
             commands.append(args)
             if args[:2] == ["work", "show"]:
                 return dict(record)
@@ -186,7 +190,7 @@ class HelperAdmissionTests(unittest.TestCase):
     def test_setup_admits_existing_ready_owner_without_replacement_or_refresh(self):
         record = self.record()
         commands = []
-        def command(binary, args, capture=False):
+        def command(binary, args, capture=False, timeout=None, lock_fd=None):
             commands.append(args)
             if args[:2] == ["work", "claim"]:
                 record["state"] = "claimed"
@@ -288,6 +292,85 @@ class ProcessObservationTests(unittest.TestCase):
                 service.recover_backend(Path("/fixture/bin/compound"), Path("/fixture/home"))
             budget.assert_not_called()
             admitted.assert_not_called()
+
+
+class LaunchCoordinationTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.home = self.root / "home"
+        self.home.mkdir()
+        self.binary = self.root / "fixture-command"
+        self.binary.write_text("""#!/usr/bin/env python3
+import hashlib,json,os,pathlib,sys,time
+home=pathlib.Path(os.environ["COMPOUND_HOME"])
+if sys.argv[1:3]==["work","show"]:
+ print(json.dumps({"id":"work_memory_refresh_"+hashlib.sha256(str(home).encode()).hexdigest()[:16],"owner":"automation:memory-refresh","state":"verifying"}))
+else:
+ (home/"entered").write_text(str(os.getpid()))
+ end=time.monotonic()+8
+ while not (home/"release").exists() and time.monotonic()<end:time.sleep(.02)
+""")
+        self.binary.chmod(0o700)
+
+    def launch(self):
+        return subprocess.Popen([service.sys.executable, str(Path(service.__file__).resolve()), "tick",
+                                 "--binary", str(self.binary), "--memory-home", str(self.home),
+                                 "--workspace", str(self.root)], stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True)
+
+    def wait_entered(self):
+        deadline=service.time.monotonic()+4
+        while not (self.home/"entered").exists():
+            if service.time.monotonic()>deadline:
+                self.fail("fixture admission never started")
+            service.time.sleep(.02)
+
+    def test_only_one_waiting_command_and_lock_releases_after_completion(self):
+        first=self.launch()
+        try:
+            self.wait_entered()
+            second=self.launch()
+            out,err=second.communicate(timeout=3)
+            self.assertEqual(second.returncode,0,err)
+            self.assertEqual(json.loads(out)["status"],"already_running")
+            (self.home/"release").touch()
+            _,err=first.communicate(timeout=3)
+            self.assertEqual(first.returncode,0,err)
+            third=self.launch()
+            out,err=third.communicate(timeout=3)
+            self.assertEqual(third.returncode,0,err)
+            self.assertNotIn("already_running",out)
+        finally:
+            (self.home/"release").touch()
+            if first.poll() is None:first.terminate()
+            first.communicate(timeout=3)
+
+    def test_waiting_child_keeps_lock_if_helper_crashes(self):
+        first=self.launch()
+        try:
+            self.wait_entered()
+            first.kill()
+            first.wait(timeout=3)
+            second=self.launch()
+            out,err=second.communicate(timeout=3)
+            self.assertEqual(second.returncode,0,err)
+            self.assertEqual(json.loads(out)["status"],"already_running")
+        finally:
+            (self.home/"release").touch()
+            first.communicate(timeout=3)
+
+    def test_deadline_requests_graceful_native_cancellation(self):
+        marker=self.root/"terminated"
+        child=self.root/"slow.py"
+        child.write_text("import signal,sys,time,pathlib\n"
+                         "def stop(*args):\n pathlib.Path(sys.argv[1]).touch()\n sys.exit(0)\n"
+                         "signal.signal(signal.SIGTERM,stop)\n"
+                         "while True:time.sleep(.02)\n")
+        with self.assertRaisesRegex(RuntimeError,"deadline exceeded"):
+            service.run(Path(service.sys.executable),[str(child),str(marker)],timeout=.3)
+        self.assertTrue(marker.exists())
 
 if __name__ == "__main__":
     unittest.main()

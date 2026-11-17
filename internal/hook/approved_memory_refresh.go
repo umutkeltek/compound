@@ -76,10 +76,10 @@ func refreshApprovedMemory(hp string, fx Fixture, now time.Time) string {
 	if st, err := os.Stat(service); err != nil || !st.Mode().IsRegular() || st.Mode().Perm()&0111 == 0 {
 		return "service_unavailable"
 	}
-	args := []string{"work", "advance", id, "--to", "running", "--by", memoryRefreshActor,
-		"--execute", "--resume-verifying", "--harness", "os-harness-entrypoints",
-		"--workspace", cwd, "--timeout", "8m", "--", service, "refresh", "--binary", binary, "--memory-home", hp, "--workspace", cwd}
-	if err := startMemoryRefresh(binary, hp, cwd, args); err != nil {
+	// The helper holds one per-home launch lock before entering work admission.
+	// Hooks must not enqueue another work command while admission is waiting.
+	args := []string{"tick", "--binary", binary, "--memory-home", hp, "--workspace", cwd}
+	if err := startMemoryRefresh(service, hp, cwd, args); err != nil {
 		return "launch_failed"
 	}
 	return fmt.Sprintf("requested:%s", id)
