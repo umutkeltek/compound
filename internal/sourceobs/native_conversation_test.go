@@ -183,29 +183,53 @@ func TestNativeBoundedBackfillAndDailyReconciliationResume(t *testing.T) {
 	hp, root := t.TempDir(), nativeRoot(t)
 	path := filepath.Join(root, "state.db")
 	nativeSQL(t, path, hermesNativeSchema+`
-WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<130)
+WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<5)
 INSERT INTO sessions(id,source,started_at) SELECT printf('s%03d',i),'cli',i FROM n;
-INSERT INTO messages(id,session_id,role,content,timestamp) SELECT rowid,id,'user','Synthetic turn',started_at FROM sessions;
+INSERT INTO messages(id,session_id,role,content,timestamp) SELECT rowid,id,'user','Synthetic turn ' || id,started_at FROM sessions;
 `)
 	now := time.Now().UTC().Truncate(24 * time.Hour).Add(time.Hour)
-	first := captureNative(t, hp, root, "hermes", now)
-	if first.Captured != 128 || first.Pending != 2 {
-		t.Fatalf("bounded pass: %+v", first)
+	for i, count := range []int{2, 2, 1} {
+		pass := captureNative(t, hp, root, "hermes", now)
+		pending := []int{3, 1, 0}[i]
+		if pass.Captured != count || pass.NativeSessionBodies != count || pass.NativeBodyRows != 2*count || pass.Pending != pending {
+			t.Fatalf("backfill pass %d: %+v", i, pass)
+		}
 	}
-	retry := captureNative(t, hp, root, "hermes", now)
-	if retry.Captured != 2 || retry.NativeSessionBodies != 2 || retry.Pending != 0 {
-		t.Fatalf("resume reread checkpointed bodies: %+v", retry)
+	for i := 1; i <= 5; i++ {
+		sid := fmt.Sprintf("s%03d", i)
+		items := nativeSessionItems(t, hp, sid)
+		if len(items) != 1 {
+			t.Fatalf("session %s duplicated or lost: %+v", sid, items)
+		}
+		if got := nativeProjectedMessages(t, nativeBody(t, hp, items[0])); len(got) != 1 || got[0] != "Synthetic turn "+sid {
+			t.Fatalf("session %s projection: %v", sid, got)
+		}
+		if rows := nativeRawBodies(t, hp, sid); !strings.Contains(rows, `"table":"sessions"`) || !strings.Contains(rows, `"table":"messages"`) || !strings.Contains(rows, "Synthetic turn "+sid) {
+			t.Fatalf("session %s lost original rows", sid)
+		}
 	}
-	daily := captureNative(t, hp, root, "hermes", now.Add(24*time.Hour))
-	if daily.NativeSessionBodies != 128 || daily.Captured != 0 || daily.Pending != 2 {
-		t.Fatalf("daily budget: %+v", daily)
+	before := nativeManifest(t, hp)
+	for i, count := range []int{2, 2, 1} {
+		pass := captureNative(t, hp, root, "hermes", now.Add(24*time.Hour))
+		pending := []int{3, 1, 0}[i]
+		if pass.NativeSessionBodies != count || pass.NativeBodyRows != 2*count || pass.Captured != 0 || pass.Pending != pending {
+			t.Fatalf("daily reconciliation pass %d: %+v", i, pass)
+		}
 	}
-	continued := captureNative(t, hp, root, "hermes", now.Add(24*time.Hour))
-	if continued.NativeSessionBodies != 2 || continued.Captured != 0 || continued.Pending != 0 {
-		t.Fatalf("daily cursor did not resume: %+v", continued)
+	after := nativeManifest(t, hp)
+	bodies := map[string]string{}
+	for _, item := range after.Items {
+		if strings.Contains(item.SourceRef, "session=") {
+			bodies[item.ID] = item.BodyRef
+		}
+	}
+	for _, item := range before.Items {
+		if strings.Contains(item.SourceRef, "session=") && bodies[item.ID] != item.BodyRef {
+			t.Fatalf("daily reconciliation lost owned body %s", item.ID)
+		}
 	}
 	done := captureNative(t, hp, root, "hermes", now.Add(24*time.Hour))
-	if done.NativeBodyRows != 0 {
+	if done.NativeBodyRows != 0 || done.NativeSessionBodies != 0 || done.Pending != 0 {
 		t.Fatalf("completed reconcile repeated: %+v", done)
 	}
 }

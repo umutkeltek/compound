@@ -607,9 +607,11 @@ A read-only SQLite transaction binds each inventory. Database/WAL identity skips
 unchanged refreshes. Session revision, message/part identity, update timestamps and
 compression flags select changed sessions. A daily full-row reconciliation catches
 content corrections without changed revision metadata. Each session's v3 manifest
-fingerprint records resumable progress, bounded to 128 session reads and 128 MiB
-of changed row/projection exports per pass (64 MiB per session). Changed sessions
-still read their native rows; refresh counters distinguish SQL reads from captures.
+fingerprint records resumable progress, bounded to two session reads and 128 MiB
+of changed row/projection exports per pass (64 MiB per session). The small session
+batch bounds row custody publication so backfill can commit progress within a
+refresh deadline. Changed sessions still read their native rows; refresh counters
+distinguish SQL reads from captures.
 
 Each original native row/version has its own content-addressed owned item, keyed
 by approved database namespace, session, table and actual native primary key.

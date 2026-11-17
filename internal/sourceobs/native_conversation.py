@@ -6,7 +6,8 @@ import pathlib
 import sqlite3
 import sys
 
-MAX_SESSIONS = 128
+# Keep row custody publication small enough to checkpoint within refresh budgets.
+MAX_SESSIONS = 2
 MAX_BYTES = 128 << 20
 MAX_SESSION_BYTES = 64 << 20
 
