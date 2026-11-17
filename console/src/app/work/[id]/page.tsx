@@ -14,8 +14,8 @@ import { arr, getWork, getWorkLeases, readProjection, readWorkProjectIndex, str,
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { agentDisplayName } from "@/lib/harness-label";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
-import { appHref, decideHref, evidenceHistoryHref, workGroupHref, workListHref } from "@/lib/links";
-import { plainArea, plainState, plainWorkStep } from "@/lib/plain-words";
+import { appHref, decideHref, recordHref, workGroupHref, workListHref } from "@/lib/links";
+import { plainArea, plainState, plainWorkStep, recordRefWords } from "@/lib/plain-words";
 import { enrichWorkItem, readWorkbenchItem, packetForSurface, shortText } from "@/lib/work-data";
 import { daysAgo, plainDay, workDates, workHistory } from "@/lib/work-history";
 import { workNextStep } from "@/lib/work-next-step";
@@ -51,14 +51,36 @@ function BulletList({ items, empty }: { items: string[]; empty: string }) {
   );
 }
 
-/** Record ids, each a link to its evidence history page. */
+/**
+ * One record the item points to: what it is in words ("Landing check",
+ * "Commit"), its id as small secondary text, and a link only when a page can
+ * open it (lib/links.ts `recordHref`). A record no page reads is text, never
+ * a link to "not found".
+ */
+function RecordRef({ value }: { value: string }) {
+  const words = recordRefWords(value);
+  const href = recordHref(value);
+  const label = href === null
+    ? <span className="text-sm text-ink">{words.kind}</span>
+    : /^https?:/i.test(href)
+      ? <a href={href} target="_blank" rel="noreferrer noopener" className="text-sm font-medium text-work hover:underline">{words.kind}</a>
+      : <Link href={href} className="text-sm font-medium text-work hover:underline">{words.kind}</Link>;
+  return (
+    <span className="flex min-w-0 flex-col">
+      {label}
+      <span className="mono truncate text-2xs text-faint" title={value}>{words.id}</span>
+    </span>
+  );
+}
+
+/** Records, each in words with its id small (`RecordRef`). */
 function RecordLinks({ items, empty }: { items: string[]; empty: string }) {
   if (!items.length) return <EmptyState>{empty}</EmptyState>;
   return (
     <ul className="flex flex-col gap-1.5">
       {items.map((ref) => (
         <li key={ref}>
-          <Link href={evidenceHistoryHref(ref)} className="mono break-all text-xs leading-relaxed text-work hover:underline">{ref}</Link>
+          <RecordRef value={ref} />
         </li>
       ))}
     </ul>
@@ -200,10 +222,8 @@ export default async function WorkDetail({ params }: { params: Promise<{ id: str
           ) : null}
           <RelatedItem label="Evidence">
             {records.length ? (
-              <span className="flex flex-col">
-                {records.slice(0, 2).map((ref) => (
-                  <Link key={ref} href={evidenceHistoryHref(ref)} className="mono truncate text-xs text-work hover:underline" title={ref}>{ref}</Link>
-                ))}
+              <span className="flex flex-col gap-1">
+                {records.slice(0, 2).map((ref) => <RecordRef key={ref} value={ref} />)}
                 {records.length > 2 ? <a href="#work-technical" className="text-xs text-muted hover:underline">{records.length - 2} more below</a> : null}
               </span>
             ) : <span className="text-muted">No evidence recorded yet</span>}

@@ -58,7 +58,7 @@ export function LiveOperationsTimeline({ rows, total, allHref }: { rows: Timelin
           </div>
         </div>
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-hair px-3 py-2 text-2xs text-faint">
-          <span>The {rows.length} picked up most recently, of {total.toLocaleString("en-US")} open work items</span>
+          <span>The {rows.length} picked up most recently, of {total.toLocaleString("en-US")} work items picked up and still open</span>
           <Link href={allHref} className="font-semibold text-work hover:underline">See all {total.toLocaleString("en-US")} in Work →</Link>
         </div>
       </section>

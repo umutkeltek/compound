@@ -244,6 +244,17 @@ async function healthTruth() {
   assert.match(healthy, /home backup/);
   assert.doesNotMatch(healthy, /&lt;[a-z-]+(?:\.tar\.gz)?&gt;|<archive|<new-absent/, "no command with a placeholder");
   assert.match(healthy, /Compound&#x27;s home is intact/);
+  // Each finding is one plain sentence on what it means and who handles it; its command is only behind a closed "For agents".
+  const findings = render(read({ ...good, verdict: "fail", operational_hygiene: { ok: false, terminal_hot_work_count: 12, stale_lease_count: 3 } }));
+  const findingText = findings.replace(/<[^>]+>/g, " ").replace(/&#x27;/g, "'").replace(/\s+/g, " ");
+  assert.match(findingText, /12 finished work items still sit with the open work\. Nothing is lost, but every read of open work is slower for it\./);
+  assert.match(findingText, /3 records of an agent holding work are left over from work that has finished\. They block nothing\./);
+  assert.match(findingText, /An agent does it when you ask in chat; this page knows of no scheduled job that does\./, "who handles it");
+  const outsideDisclosures = findings.replace(/<details[\s\S]*?<\/details>/g, "");
+  assert.doesNotMatch(outsideDisclosures.replace(/<[^>]+>/g, " "), /archive-history|home doctor/i, "no command outside a closed For agents disclosure");
+  assert.doesNotMatch(outsideDisclosures, /<button/i, "no copy button outside a closed For agents disclosure");
+  assert.doesNotMatch(findings, /<details[^>]*\sopen/, "the disclosures start closed");
+  assert.doesNotMatch(findingText, /Terminal work not archived|Refresh or run home doctor/, "no system label, no instruction to run a command");
   console.log("  health ok: missing/malformed/stale/failed != healthy; commands with blanks are not shown");
   const { HarnessesHooks } = await import("../src/components/settings/HarnessesHooks.tsx");
   const renderHooks = (projection) => renderToStaticMarkup(createElement(HarnessesHooks, { harnessText: "", hooks: projection }));

@@ -1310,11 +1310,11 @@ func applyAttentionMeter(reviewQueue *workbenchReviewQueue, store *work.Store, r
 		reviewQueue.AttentionUnavailable = true
 		return
 	}
-	report := attention.Build(attention.Inputs{
+	report := attention.Build(attentionSources(attention.Inputs{
 		Reviews:   &reviews,
 		Workbench: &bench,
 		Executors: &executors,
-	}, now)
+	}, store.HomePath(), now), now)
 	reviewQueue.Counts.ReviewRequired = report.Counts.NeedsYou
 	reviewQueue.BlockedOnYou = report.Counts.BlockedOnYou
 }

@@ -2,7 +2,6 @@ import { buildRoster, oldestNotMoved } from "@/components/agents/agent-roster";
 import { AgentsAnswer } from "@/components/agents/AgentsAnswer";
 import { DelegatedSessions } from "@/components/agents/DelegatedSessions";
 import type { ExecutorProjection } from "@/components/agents/executor-model";
-import { normalizeExecutorProjection } from "@/components/agents/executor-normalize";
 import { ExecutorTable } from "@/components/agents/ExecutorTable";
 import { HygieneBand } from "@/components/agents/HygieneBand";
 import Link from "next/link";
@@ -11,7 +10,9 @@ import { ForAgents } from "@/components/settings/primitives";
 import { hasCopy, PageHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending } from "@/components/kit";
 import { PendingRefresh } from "@/components/PendingRefresh";
 import { getWorktreeInventory } from "@/lib/compound";
-import { getTraffic } from "@/lib/traffic";
+import { readAttention } from "@/lib/attention";
+import { waitingWork } from "@/lib/counts";
+import { readAgentsWork } from "@/lib/traffic";
 import { WorktreeInventory } from "@/components/agents/WorktreeInventory";
 
 export const dynamic = "force-dynamic";
@@ -34,21 +35,25 @@ function Provenance({ projection }: { projection: ExecutorProjection }) {
 }
 
 export default async function AgentsPage() {
-  const [traffic, worktrees] = await Promise.all([getTraffic(), getWorktreeInventory()]);
-  const read = traffic.read!;
-  const projection = hasCopy(read) ? normalizeExecutorProjection(read.value) : null;
+  const [agentsWork, worktrees, attention] = await Promise.all([readAgentsWork(), getWorktreeInventory(), readAttention()]);
+  const { traffic, executorsRead: read, workRead, open, projection } = agentsWork;
   const nowMs = Date.now();
-  const roster = projection ? buildRoster(projection.executors, nowMs, 6) : null;
+  // Every number is counted over the Work page's own open list, so it equals the Work list it opens.
+  // "Need you" is the waiting list's own sorting (lib/counts.ts `waitingWork`), as on Today, Decide and Work.
+  const roster = projection ? buildRoster(projection.executors, nowMs, 6, { openWork: open, waiting: waitingWork(attention.report) }) : null;
+  // The read still missing when the numbers cannot be counted yet: the open work first.
+  const missingRead = hasCopy(workRead) ? read : workRead;
 
   return (
     <div className="flex flex-col gap-6">
-      <PendingRefresh pending={readsPending(read)} stamp={Date.now()} />
+      <PendingRefresh pending={readsPending(read, workRead, attention.read)} stamp={Date.now()} />
       <PageHeader
         name="All agents"
-        answer={roster ? <AgentsAnswer roster={roster} runRecordsVisible={traffic.runAttemptsPresent} /> : <ReadNotice read={read} label="who works on what" />}
-        right={<ReadChip read={read} />}
+        answer={roster ? <AgentsAnswer roster={roster} runRecordsVisible={traffic.runAttemptsPresent} /> : <ReadNotice read={missingRead} label="who works on what" />}
+        right={<ReadChip read={workRead} />}
       />
-      <ReadFailedBanner read={read} label="who works on what" />
+      <ReadFailedBanner read={workRead} label="open work" />
+      <ReadFailedBanner read={read} label="who is set up" />
       <WorktreeInventory {...worktrees} />
 
       {projection && roster ? (

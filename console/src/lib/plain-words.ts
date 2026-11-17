@@ -105,6 +105,18 @@ export const HOW_DECISIONS_MOVE =
 
 /* ---------- areas (what a decision is about) ---------- */
 
+/**
+ * The waiting list's own kinds that are not review-queue areas: each source
+ * that lists his items one by one (`compound attention --json` groups with
+ * `items[]`). Kept apart so the review areas below stay one list.
+ */
+const WAITING_LIST_AREA_LABEL: Record<string, string> = {
+  "memory-proposals": "Proposed memories",
+  "product-results-due": "Did a change work?",
+  "hook-approval-requests": "Agent actions held for you",
+  "data-source-setup": "Data source setup",
+};
+
 const AREA_LABEL: Record<string, string> = {
   "workbench-blocked-on-you": "Work on hold",
   "workbench-needs-claim": "Work nobody picked up",
@@ -149,7 +161,7 @@ const AREA_LABEL: Record<string, string> = {
 export function plainArea(area: string): string {
   const head = (area || "").split("/")[0].trim();
   if (!head) return "Other";
-  return AREA_LABEL[head] ?? sentence(head.replace(/[_-]+/g, " "));
+  return AREA_LABEL[head] ?? WAITING_LIST_AREA_LABEL[head] ?? sentence(head.replace(/[_-]+/g, " "));
 }
 
 /** The id part of an area path, for small secondary text ("" when none). */
@@ -569,6 +581,54 @@ export function memoryChoice(verdict: string, kind: MemoryChoiceFor): { label: s
   const choice = MEMORY_CHOICE[verdict];
   if (!choice) return { label: sentence(verdict.replace(/[_-]+/g, " ")), means: "" };
   return { label: choice[kind], means: choice.means[kind] };
+}
+
+/* ---------- Work: the records an item points to ---------- */
+
+/** A record reference in words: what it is, and its id as small secondary text. */
+export type RecordRefWords = { kind: string; id: string };
+
+/**
+ * What a record reference is, by the shape its owner writes: `kind:` prefix
+ * or id prefix. Order matters: the first match names it. Unknown shapes are
+ * "Record", never a guess.
+ */
+const RECORD_KINDS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/^ratt_/, "Agent run"],
+  [/^(?:land-check:|landcheck_)/, "Landing check"],
+  [/^commit:/, "Commit"],
+  [/^(?:proof-check:|pfrs_)/, "Proof check result"],
+  [/^presubmit-execution:/, "Test run before landing"],
+  [/^(?:verifier-verdict:|verification:)/, "Review verdict"],
+  [/^(?:receipt:|rec_)/, "Result record"],
+  [/^(?:transition:|tr_)/, "Recorded change"],
+  [/^ctx_/, "What the agent was given"],
+  [/^(?:finding:|find_)/, "Finding"],
+  [/^worktree-branch:/, "Branch"],
+  [/^artifact:/, "Saved file"],
+  [/^design-sketch:/, "Design sketch"],
+  [/^source-observation:/, "Observation"],
+  [/^(?:evidence:|ev_)/, "Evidence"],
+  [/^cand_/, "Proposed memory"],
+  [/^claim_/, "Memory"],
+  [/^(?:work:|work_)/, "Work item"],
+  [/^(?:check:|live:)/, "Check"],
+  [/^https?:\/\//i, "Web page"],
+  [/^(?:\/|~\/|file:)/, "File"],
+];
+
+/**
+ * A record reference in words: "Landing check" with its id, "Commit" with
+ * the short hash, "File" with the file's name. The kind leads; the id stays
+ * small, to find the record.
+ */
+export function recordRefWords(ref: string): RecordRefWords {
+  const value = (ref ?? "").trim();
+  const kind = RECORD_KINDS.find(([pattern]) => pattern.test(value))?.[1] ?? "Record";
+  const bare = /^https?:\/\//i.test(value) ? value.replace(/^https?:\/\//i, "") : value.replace(/^[a-z][a-z-]*:(?!\/\/)/i, "");
+  if (kind === "Commit") return { kind, id: bare.slice(0, 12) };
+  if (kind === "File") return { kind, id: bare.split("/").filter(Boolean).pop() ?? bare };
+  return { kind, id: bare };
 }
 
 /* ---------- banned words ---------- */

@@ -4,15 +4,15 @@ import { DecideQueue } from "@/components/decide/DecideQueue";
 import { WaitingNotes } from "@/components/decide/WaitingNotes";
 import { CheckIcon, ClockIcon, hasCopy, PageHeader, ReadChip, ReadFailedBanner, ReadNotice, readsPending } from "@/components/kit";
 import { PendingRefresh } from "@/components/PendingRefresh";
-import { housekeepingGroups, readAttention, yourDecisionGroups, type AttentionGroup } from "@/lib/attention";
+import { attentionShare, housekeepingGroups, readAttention, yourDecisionGroups, type AttentionGroup } from "@/lib/attention";
 import { arr, HEAVY_PROJECTION_TIMEOUT_MS, num, readProjection, readWorkProjectIndex, str, type Json, type LiveRead, type ProjectionStatus } from "@/lib/compound";
 import { ago } from "@/lib/time";
 import { describeWaiting, unit, waitingOnYou } from "@/lib/counts";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
-import { buildDecideGroups, filedOutcome, heldWorkRows, type DecideAct, type DecideGroup, type ScopedDecisionEvidence } from "@/lib/decide-model";
+import { answeredRow, buildDecideGroups, filedOutcome, heldWorkRows, type AnsweredRow, type DecideAct, type DecideGroup, type ScopedDecisionEvidence } from "@/lib/decide-model";
 import { workTitle } from "@/lib/work-title";
-import { workItemHref, workListHref } from "@/lib/links";
+import { DECIDE_ANSWERED_ANCHOR, DECIDE_SET_ASIDE_ANCHOR, decideAnsweredHref, workItemHref, workListHref } from "@/lib/links";
 import { decisionKindWords } from "@/lib/decision-registry";
 import { ATTENTION_SOURCED_GENERIC_AREAS } from "@/lib/generic-actions";
 import { areaOf, bandOf, enrichAttentionGroups, externalReviewRows, groupsForBand } from "@/lib/review-data";
@@ -24,6 +24,21 @@ export const dynamic = "force-dynamic";
 const FILED_SHOWN = 100;
 /** Recent decisions shown across kinds. */
 const RECENT_SHOWN = 12;
+/** Recorded answers shown before "Show more", and how many more each step shows. */
+const ANSWERS_SHOWN = 10;
+const ANSWERS_STEP = 50;
+
+function AnsweredRowItem({ row }: { row: AnsweredRow }) {
+  return (
+    <li className="grid gap-0.5 px-3 py-2">
+      <span className="text-sm text-ink"><strong className="font-semibold">{row.outcome}</strong>{row.subject ? <span className="text-muted"> · {row.subject}</span> : null}</span>
+      <span className="text-2xs text-faint">
+        {row.kind} · {row.when ? `answered ${ago(row.when)}` : "answered at an unknown time"}{row.by ? ` by ${row.by}` : ""}
+        {row.work ? <> · <Link href={row.work.href} className="font-semibold text-work hover:underline">the work it started</Link> is {row.work.state === "unknown" ? "in an unknown state" : row.work.state}</> : null}
+      </span>
+    </li>
+  );
+}
 
 function FiledRow({ item, filed }: { item: Json; filed: ReturnType<typeof filedOutcome> }) {
   return (
@@ -180,7 +195,7 @@ function WatchingRow({ entry }: { entry: WatchingEntry }) {
 export default async function Decide({
   searchParams,
 }: {
-  searchParams: Promise<{ decision?: string | string[]; filed?: string | string[] }>;
+  searchParams: Promise<{ decision?: string | string[]; filed?: string | string[]; open?: string | string[]; answers?: string | string[] }>;
 }) {
   // Non-blocking reads: the page renders at once from the cached copies (or
   // says they are being read) and never waits for compound.
@@ -271,6 +286,15 @@ export default async function Decide({
         .map((item) => ({ item, filed: filedOutcome(item) }))
         .sort((a, b) => b.filed.when.localeCompare(a.filed.when))
     : [];
+  // Every recorded answer and what came of it (the waiting list's `answered`),
+  // newest first; the rest fold behind "Show more" (`?answers=<n>`).
+  const answeredAll = (attention?.answered ?? []).map(answeredRow);
+  const answersParam = Number.parseInt(Array.isArray(params.answers) ? str(params.answers[0]) : str(params.answers), 10);
+  const answersShown = Math.min(answeredAll.length, Number.isSafeInteger(answersParam) && answersParam > 0 ? answersParam : ANSWERS_SHOWN);
+  const openParam = Array.isArray(params.open) ? str(params.open[0]) : str(params.open);
+  const wordingLinks = needsYou
+    .filter((group) => attentionShare(group) === "wording")
+    .map((group) => ({ key: group.key, label: plainArea(group.area) }));
   // What happened lately, across kinds: the newest recorded decisions.
   const recentDecisions = filedItems
     .map((item) => ({ item, filed: filedOutcome(item) }))
@@ -303,7 +327,7 @@ export default async function Decide({
           right={<ReadChip read={attentionRead} />}
         />
       )}
-      {panelDetailOpen || !waiting ? null : <WaitingNotes waiting={waiting} totals={attention?.totals ?? null} workTitles={workTitles} detail />}
+      {panelDetailOpen || !waiting ? null : <WaitingNotes waiting={waiting} totals={attention?.totals ?? null} workTitles={workTitles} detail wordingLinks={wordingLinks} openSetAside={openParam === DECIDE_SET_ASIDE_ANCHOR} />}
 
       <section id="decision-queue" tabIndex={-1} className="scroll-mt-6 flex flex-col gap-3" aria-label="Decisions">
         {requestedGone ? (
@@ -343,7 +367,7 @@ export default async function Decide({
         </details>
       ) : null}
 
-      <details id="filed" open={Boolean(filedKind)} className="group scroll-mt-20 overflow-hidden rounded-lg border border-hair bg-panel shadow-sm">
+      <details id="filed" open={Boolean(filedKind) || Number.isSafeInteger(answersParam)} className="group scroll-mt-20 overflow-hidden rounded-lg border border-hair bg-panel shadow-sm">
         <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 marker:hidden">
           <span className="inline-flex h-6 w-6 items-center justify-center rounded-sm bg-good-soft text-sm text-good"><CheckIcon /></span>
           <span className="flex-1 text-sm text-muted">
@@ -354,7 +378,30 @@ export default async function Decide({
           <span aria-hidden className="text-sm text-faint transition-transform group-open:rotate-90">›</span>
         </summary>
         <div className="border-t border-hair px-4 py-3">
-          {reviewsKnown && recentDecisions.length ? (
+          {attention?.answered ? (
+            <div id={DECIDE_ANSWERED_ANCHOR} className="mb-4 scroll-mt-20">
+              <div className="text-xs font-semibold text-ink">
+                Your answers and what came of each, newest first · showing {answersShown.toLocaleString("en-US")} of {unit(answeredAll.length, "answer")}
+              </div>
+              {answeredAll.length ? (
+                <ul className="mt-2 divide-y divide-hair rounded-md border border-hair">
+                  {answeredAll.slice(0, answersShown).map((row) => <AnsweredRowItem key={row.key} row={row} />)}
+                </ul>
+              ) : <p className="mt-2 text-xs text-faint">No answer is recorded yet.</p>}
+              {answeredAll.length > answersShown || answersShown > ANSWERS_SHOWN ? (
+                <p className="mt-2 flex gap-4 text-xs">
+                  {answeredAll.length > answersShown ? (
+                    <Link href={decideAnsweredHref(answersShown + ANSWERS_STEP)} scroll={false} className="font-semibold text-work hover:underline">
+                      Show more ({unit(answeredAll.length - answersShown, "more answer")})
+                    </Link>
+                  ) : null}
+                  {answersShown > ANSWERS_SHOWN ? (
+                    <Link href={decideAnsweredHref(ANSWERS_SHOWN)} scroll={false} className="font-semibold text-work hover:underline">Show fewer</Link>
+                  ) : null}
+                </p>
+              ) : null}
+            </div>
+          ) : reviewsKnown && recentDecisions.length ? (
             <div className="mb-4">
               <div className="text-xs font-semibold text-ink">Recent decisions, newest first</div>
               <ul className="mt-2 divide-y divide-hair rounded-md border border-hair">

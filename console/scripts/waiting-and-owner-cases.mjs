@@ -72,6 +72,11 @@ assert.deepEqual(
     groups: 2, items: 3, workItems: 2, wording: 1,
     housekeeping: { groups: 30, items: 30 },
     closedWithoutYou: 95,
+    // Set aside in all, closed or not; an older tool that sends no rule list
+    // or rules state leaves both unknown (null), never "none".
+    setAside: 102,
+    coveredByRule: null,
+    rulesRead: null,
     waitingOnOthers: { items: 1, itemIds: ["work_c"] },
   },
   "34 needs-you groups hold 2 decisions that are his",

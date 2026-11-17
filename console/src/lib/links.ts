@@ -32,9 +32,14 @@ const WORK_LENS_ALIASES: Readonly<Record<string, WorkLens>> = { list: "table" };
  * Every filter of the List (`lens=table`). `focus` is the default; `stale`
  * is in progress and picked up more than STALE_AFTER_DAYS days ago
  * (lib/work-state.ts `isStale`); `claimed` is picked up but not started;
- * `progress` is every item in progress (`isInProgress`).
+ * `progress` is every item in progress (`isInProgress`); `picked` is every
+ * item an agent or you hold (`isPickedUp`: in progress or on hold), the
+ * population the Agents pages count; `queued` is open work nobody has
+ * picked up yet (suggested or ready to start). `blocked` is the work
+ * waiting for your answer and `others` the work blocked on something outside
+ * you, both as the waiting list sorts them (lib/work-state.ts `waitsOn`).
  */
-export const WORK_FILTERS = ["focus", "running", "blocked", "verifying", "stale", "all", "claimed", "progress"] as const;
+export const WORK_FILTERS = ["focus", "running", "blocked", "verifying", "stale", "all", "claimed", "progress", "picked", "queued", "others"] as const;
 export type WorkFilter = (typeof WORK_FILTERS)[number];
 export const DEFAULT_WORK_FILTER: WorkFilter = "focus";
 
@@ -232,8 +237,62 @@ export function memoryCandidateHref(candidateId: string): string {
   return id ? `/memory#${encodeURIComponent(id)}` : memoryReviewHref();
 }
 
+/**
+ * Where a record reference leads, or null when no page can open it. Only
+ * what resolves is linked: a work item opens its own page; evidence, a
+ * proposed memory and a memory open their evidence history (the history
+ * page resolves those ids); a web address opens itself. Agent runs, landing
+ * checks, commits, result records and the rest have no page that reads them
+ * yet, so they are shown as text, never as a link to "not found".
+ */
+export function recordHref(ref: string): string | null {
+  const value = (ref ?? "").trim();
+  const work = value.replace(/^work:/, "");
+  if (isWorkId(work)) return workItemHref(work);
+  const id = value.replace(/^evidence:/, "");
+  if (/^(?:ev|cand|claim)_[\w-]+$/.test(id)) return evidenceHistoryHref(id);
+  if (/^https?:\/\/[^\s]+$/i.test(value)) return value;
+  return null;
+}
+
 /** Link to a record's evidence history: `/map/lineage/<id>`. An empty id links to the map. */
 export function evidenceHistoryHref(id: string): string {
   const value = (id ?? "").trim();
   return value ? `/map/lineage/${encodeURIComponent(value)}` : "/map";
+}
+
+/* ---------- Decide's own sections (P9: the waiting list explains itself) ---------- */
+
+/** Where Decide lists what was set aside and why. */
+export const DECIDE_SET_ASIDE_ANCHOR = "set-aside";
+/** Where Decide lists what a standing rule of his already covers. */
+export const DECIDE_COVERED_ANCHOR = "covered-by-rule";
+/** Where Decide lists recorded answers and what came of them. */
+export const DECIDE_ANSWERED_ANCHOR = "answered";
+
+/** Decide with the set-aside reasons open: `/reviews?open=set-aside#set-aside`. */
+export function decideSetAsideHref(): string {
+  return withQuery("/reviews", [["open", DECIDE_SET_ASIDE_ANCHOR]], `#${DECIDE_SET_ASIDE_ANCHOR}`);
+}
+
+/** Decide at what a standing rule of his covers: `/reviews#covered-by-rule`. */
+export function decideCoveredHref(): string {
+  return `/reviews#${DECIDE_COVERED_ANCHOR}`;
+}
+
+/** One item inside a decision: `/reviews?decision=<key>#decision-item-<id>`. */
+export function decideItemHref(decisionKey: string, itemId: string): string {
+  const id = (itemId ?? "").trim();
+  return `${decideHref({ decision: decisionKey })}${id ? `#decision-item-${encodeURIComponent(id)}` : ""}`;
+}
+
+/** Decide's recorded answers with the first `shown` listed: `/reviews?answers=<n>#answered`. */
+export function decideAnsweredHref(shown: number): string {
+  const n = Number.isSafeInteger(shown) && shown > 0 ? String(shown) : "";
+  return withQuery("/reviews", [["answers", n]], `#${DECIDE_ANSWERED_ANCHOR}`);
+}
+
+/** Link to what agents remember (accepted memories) on the Memory page: `/memory#memory-accepted`. */
+export function memoryAcceptedHref(): string {
+  return "/memory#memory-accepted";
 }

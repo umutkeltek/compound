@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { memoryBriefingNotice, type MemoryBriefing } from "@/lib/briefing";
+import { memoryAcceptedHref } from "@/lib/links";
 
 /**
  * Knows strip (redesign plan Part 3 — kept, restyled): what the system believes
@@ -38,12 +39,12 @@ export function KnowsStrip({ memory }: { memory: MemoryBriefing }) {
       </div>
       <div>
         <Link
-          href="/memory"
+          href={memoryAcceptedHref()}
           className="text-md font-semibold text-work hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
         >
           Ask what it knows →
         </Link>
-        <div className="mt-1.5 text-sm text-muted">promoted beliefs, with sources</div>
+        <div className="mt-1.5 text-sm text-muted">what agents remember, with sources</div>
       </div>
       </div>
     </div>

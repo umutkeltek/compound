@@ -21,9 +21,15 @@
  */
 
 export { attentionShare, housekeepingGroups, waitingOnYou, yourDecisionGroups, type AttentionShare, type WaitingOnYou } from "@/lib/attention";
-import type { WaitingOnYou } from "@/lib/attention";
+import {
+  attentionShare,
+  waitingOnYou,
+  yourDecisionGroups,
+  type AttentionSetAsideReason,
+  type WaitingOnYou,
+} from "@/lib/attention";
 
-import { isInProgress, isOnHold, isStale, isWaitingForCheck, STALE_AFTER_DAYS, timestampMs } from "@/lib/work-state";
+import { isInProgress, isOnHold, isPickedUp, isStale, isWaitingForCheck, STALE_AFTER_DAYS, timestampMs, waitsOn, type WaitingWorkIds } from "@/lib/work-state";
 import { NO_AGENT_KEY, OPERATOR_AGENT_KEY } from "@/lib/harness-label";
 
 // The per-item rules (in progress, on hold, waiting for a check, stale and its
@@ -33,11 +39,15 @@ export {
   IN_PROGRESS_STATES,
   isInProgress,
   isOnHold,
+  isPickedUp,
   isStale,
   isWaitingForCheck,
   ON_HOLD_STATES,
   STALE_AFTER_DAYS,
   timestampMs,
+  waitsOn,
+  type WaitingWorkIds,
+  type WaitsOn,
 } from "@/lib/work-state";
 
 type Row = Record<string, unknown>;
@@ -207,6 +217,43 @@ export function describeInProgress(c: InProgressCount): { headline: string; deta
   return { headline, detail, age };
 }
 
+/**
+ * The waiting list's own sorting of open work, as ids (lib/work-state.ts
+ * `WaitingWorkIds`): `you` are the work items inside the decisions that are
+ * yours (the "held for your answer" group Today and Decide count), `others`
+ * the work blocked on something outside you. Null when attention has not
+ * been read: pages then fall back to the state rule (`waitsOn`).
+ */
+export function waitingWork(report: Parameters<typeof waitingOnYou>[0]): WaitingWorkIds | null {
+  if (!report) return null;
+  const you = new Set(
+    yourDecisionGroups(report)
+      .filter((group) => group.source === "workbench" && attentionShare(group) === "yours")
+      .flatMap((group) => group.item_ids),
+  );
+  return { you, others: new Set(waitingOnYou(report)?.waitingOnOthers?.itemIds ?? []) };
+}
+
+/**
+ * Open work by whom it waits on (`waitsOn` over the same rows the Work List
+ * filters), so "waiting for you" and "waits on something else" each equal
+ * the list they open. Unit: work items.
+ */
+export function countWaitingWork(items: readonly Row[], waiting: WaitingWorkIds | null): { you: number; others: number } {
+  const seen = new Set<string>();
+  const out = { you: 0, others: 0 };
+  for (const item of items) {
+    const id = text(item.work_id);
+    if (id) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+    }
+    const on = waitsOn(item, waiting);
+    if (on) out[on] += 1;
+  }
+  return out;
+}
+
 /** Items on hold or blocked: waiting, not in progress. Unit: work items. */
 export function countOnHold(items: readonly Row[]): number {
   const seen = new Set<string>();
@@ -241,6 +288,12 @@ export type AgentCount = {
   noAgentItems: number;
   /** open work items you hold yourself (the operator's row): yours, not an agent's */
   yourItems: number;
+  /**
+   * open work items nobody has picked up yet (suggested or ready to start,
+   * lib/work-state.ts `isPickedUp` false). Null when the count was made
+   * without the open list: unknown, never 0.
+   */
+  notPickedUp: number | null;
 };
 
 type AgentRow = { id: string; currentWork: readonly unknown[] };
@@ -248,10 +301,19 @@ type AgentRow = { id: string; currentWork: readonly unknown[] };
 /**
  * Count agents from the normalized executors rows (one row per agent key,
  * components/agents/executor-normalize.ts). Unit: agents; items are work
- * items. The no-agent row and your own row are not agents.
+ * items. The no-agent row and your own row are not agents. Pass the open
+ * list the rows were built from (`openWork`) to count what nobody holds yet,
+ * so the sentence accounts for every open item.
  */
-export function countAgents(rows: readonly AgentRow[]): AgentCount {
-  const out: AgentCount = { withWork: 0, idle: 0, heldItems: 0, noAgentItems: 0, yourItems: 0 };
+export function countAgents(rows: readonly AgentRow[], openWork?: readonly Row[] | null): AgentCount {
+  const out: AgentCount = {
+    withWork: 0,
+    idle: 0,
+    heldItems: 0,
+    noAgentItems: 0,
+    yourItems: 0,
+    notPickedUp: openWork ? openWork.filter((item) => !isPickedUp(item.state)).length : null,
+  };
   for (const row of rows) {
     const items = row.currentWork.length;
     if (row.id === UNASSIGNED_AGENT_ID) {
@@ -272,15 +334,34 @@ export function countAgents(rows: readonly AgentRow[]): AgentCount {
   return out;
 }
 
+/** The agent count in plain sentences, one part each so a page can link every number. */
+export type AgentWords = { held: string; none: string; yours: string; notPickedUp: string; idle: string };
+
+/**
+ * The agent count in words, part by part: "4 agents hold 444 work items.",
+ * "90 more have no agent.", "2 more are held by you.", "24 more open work
+ * items are suggested or ready to start: nobody has picked them up yet.",
+ * "1 agent has nothing to do." A part with nothing to say is "".
+ */
+export function agentWords(a: AgentCount): AgentWords {
+  const n = a.notPickedUp ?? 0;
+  return {
+    held: a.withWork
+      ? `${unit(a.withWork, "agent")} ${a.withWork === 1 ? "holds" : "hold"} ${unit(a.heldItems, "work item")}.`
+      : "No agent holds any work.",
+    none: a.noAgentItems ? `${unit(a.noAgentItems, "more work item")} ${a.noAgentItems === 1 ? "has" : "have"} no agent.` : "",
+    yours: a.yourItems ? `${unit(a.yourItems, "more work item")} ${a.yourItems === 1 ? "is" : "are"} held by you.` : "",
+    notPickedUp: n
+      ? `${unit(n, "more open work item")} ${n === 1 ? "is" : "are"} suggested or ready to start: nobody has picked ${n === 1 ? "it" : "them"} up yet.`
+      : "",
+    idle: a.idle ? `${unit(a.idle, "agent")} ${a.idle === 1 ? "has" : "have"} nothing to do.` : "",
+  };
+}
+
 /** The agent count in one plain sentence ("4 agents hold 444 work items. 90 more have no agent."). */
 export function describeAgents(a: AgentCount): string {
-  const held = a.withWork
-    ? `${unit(a.withWork, "agent")} ${a.withWork === 1 ? "holds" : "hold"} ${unit(a.heldItems, "work item")}.`
-    : "No agent holds any work.";
-  const none = a.noAgentItems ? ` ${unit(a.noAgentItems, "more work item")} ${a.noAgentItems === 1 ? "has" : "have"} no agent.` : "";
-  const yours = a.yourItems ? ` ${unit(a.yourItems, "more work item")} ${a.yourItems === 1 ? "is" : "are"} held by you.` : "";
-  const idle = a.idle ? ` ${unit(a.idle, "agent")} ${a.idle === 1 ? "has" : "have"} nothing to do.` : "";
-  return held + none + yours + idle;
+  const w = agentWords(a);
+  return [w.held, w.none, w.yours, w.notPickedUp, w.idle].filter(Boolean).join(" ");
 }
 
 /* ---------- decisions ---------- */
@@ -352,8 +433,16 @@ export type WaitingWords = {
   /** quiet lines, each one plain sentence; "" when there is nothing to say */
   wording: string;
   housekeeping: string;
+  /**
+   * What was set aside, with both numbers each naming what it counts: set
+   * aside in all, and of those, closed without him ("" when nothing was).
+   */
   closedWithoutYou: string;
   waitingOnOthers: string;
+  /** "Agents handle these under your rule: N" ("" when no rule covers anything) */
+  coveredByRule: string;
+  /** his standing rules could not be read ("" when they were, or the source does not say) */
+  rulesUnread: string;
 };
 
 /**
@@ -373,11 +462,55 @@ export function describeWaiting(w: WaitingOnYou): WaitingWords {
   const housekeeping = w.housekeeping.groups > 0
     ? `${unit(w.housekeeping.groups, "proposal")} to update agent skills ${be(w.housekeeping.groups)} agent housekeeping, not decisions for you, so ${w.housekeeping.groups === 1 ? "it is" : "they are"} not counted.`
     : "";
-  const closedWithoutYou = w.closedWithoutYou && w.closedWithoutYou > 0
-    ? `${unit(w.closedWithoutYou, "record")} closed without you: nothing is left to decide.`
+  const closed = w.closedWithoutYou ?? 0;
+  const setAside = Math.max(w.setAside ?? 0, closed);
+  const closedWithoutYou = setAside > 0
+    ? `${unit(setAside, "record")} ${setAside === 1 ? "was" : "were"} set aside and not counted as yours. ${
+        closed === setAside
+          ? `${setAside === 1 ? "It" : `All ${setAside.toLocaleString("en-US")}`} closed without you: nothing is left to decide.`
+          : closed > 0
+            ? `${closed.toLocaleString("en-US")} of them closed without you: nothing is left to decide.`
+            : "None of them is closed yet."
+      }`
     : "";
   const waitingOnOthers = w.waitingOnOthers && w.waitingOnOthers.items > 0
     ? `${unit(w.waitingOnOthers.items, "work item")} ${w.waitingOnOthers.items === 1 ? "waits" : "wait"} on something outside you, not on you.`
     : "";
-  return { headline, wording, housekeeping, closedWithoutYou, waitingOnOthers };
+  const coveredByRule = w.coveredByRule && w.coveredByRule.items > 0
+    ? `Agents handle these under your rule: ${w.coveredByRule.items.toLocaleString("en-US")}.`
+    : "";
+  const rulesUnread = w.rulesRead === false
+    ? "Your standing rules could not be read, so it is not known whether one already covers any of these."
+    : "";
+  return { headline, wording, housekeeping, closedWithoutYou, waitingOnOthers, coveredByRule, rulesUnread };
+}
+
+/* ---------- what was set aside, grouped so each group adds up ---------- */
+
+/** One group of set-aside reasons: closed, or not closed but not his now. */
+export type SetAsideGroup = {
+  closed: boolean;
+  heading: string;
+  /** the sum of its rows: each group adds up to its own number */
+  count: number;
+  reasons: AttentionSetAsideReason[];
+};
+
+/**
+ * The set-aside reasons in two groups whose rows add up to each group's
+ * number: closed without him (nothing left to decide), and not closed but not
+ * his now (someone or something else acts first). Empty groups are left out.
+ */
+export function setAsideGroups(reasons: readonly AttentionSetAsideReason[]): SetAsideGroup[] {
+  const groups: SetAsideGroup[] = [
+    { closed: true, heading: "Closed without you: nothing is left to decide", count: 0, reasons: [] },
+    { closed: false, heading: "Not closed, and not yours now: someone or something else acts first", count: 0, reasons: [] },
+  ];
+  for (const reason of reasons) {
+    if (reason.count <= 0) continue;
+    const group = reason.closed ? groups[0] : groups[1];
+    group.reasons.push(reason);
+    group.count += reason.count;
+  }
+  return groups.filter((group) => group.count > 0);
 }

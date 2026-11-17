@@ -78,6 +78,21 @@ type Inputs struct {
 	// path existence, waiter processes). Nil means the real machine; tests
 	// inject a fake so no check depends on the host.
 	Probe Probe
+	// Rules is the operator's standing grants as the policy owner loads
+	// them. Nil means not read: no item moves to the covered_by_rule band.
+	Rules *RulesInput
+	// The queues below are read by the CLI through each owner's reader (see
+	// queues.go). Nil means not read: the queue adds nothing.
+	MemoryProposals *MemoryProposalsInput
+	ProductResults  *ProductResultsInput
+	HookRequests    *HookRequestsInput
+	DataSources     *DataSourcesInput
+	// DraftPlaceholders are the texts owners stamp on a draft nobody has
+	// written yet; an ask resting on one is set aside, not counted.
+	DraftPlaceholders []string
+	// Work reads the current state of work an answer named (see
+	// outcomes.go). Nil leaves those states unknown.
+	Work WorkLookup
 }
 
 // ActivityDayInput carries one day's pre-computed unaccounted activity blocks (from
@@ -113,6 +128,16 @@ type Report struct {
 	SetAside      []SetAside      `json:"set_aside"`
 	Totals        Totals          `json:"totals"`
 	Freshness     ReportFreshness `json:"freshness"`
+	// CoveredByRule lists live items his standing rules already cover:
+	// not counted under needs_you, each batch naming its rule and whether
+	// anything works it (see covered.go).
+	CoveredByRule []CoveredByRule `json:"covered_by_rule"`
+	// Rules says whether his standing rules were read for this report.
+	Rules RulesState `json:"rules"`
+	// Answered lists every review record that carries a recorded answer,
+	// newest first, with what came of it (see outcomes.go). It is not part
+	// of any count.
+	Answered []Answer `json:"answered"`
 }
 
 // ReportFreshness says when each source was read and how new its newest
@@ -175,6 +200,10 @@ type Group struct {
 	// writer gave it no question: it stays counted so a real product ask is
 	// never hidden, and an agent should word it.
 	NeedsWording bool `json:"needs_wording,omitempty"`
+	// Items identifies each live item of a group read from a queue other
+	// than the review queue (memory, product results, hook requests, data
+	// sources), so a page can link the exact item.
+	Items []ItemRef `json:"items,omitempty"`
 }
 
 type Action struct {
@@ -221,6 +250,10 @@ var knownAreaClassifications = map[string]areaClassification{
 	"lease-hygiene":                  {Kind: KindHygiene, BlastRadius: BlastLocalReversible, Reversibility: Reversible},
 	"activity-unaccounted":           {Kind: KindActivity, BlastRadius: BlastRead, Reversibility: Reversible},
 	"workbench-waiting-on-others":    {Kind: KindWaitingOnOthers, BlastRadius: BlastRead, Reversibility: Reversible},
+	"memory-proposals":               {Kind: KindMemoryProposal, BlastRadius: BlastLocalReversible, Reversibility: Reversible},
+	"product-results-due":            {Kind: KindProductResult, BlastRadius: BlastLocalReversible, Reversibility: Reversible},
+	"hook-approval-requests":         {Kind: KindHookApproval},
+	"data-source-setup":              {Kind: KindSourceSetup, BlastRadius: BlastLocalReversible, Reversibility: Reversible},
 }
 
 func Build(in Inputs, now time.Time) Report {
@@ -233,8 +266,15 @@ func Build(in Inputs, now time.Time) Report {
 		GeneratedAt:   generatedAt,
 		Groups:        []Group{},
 		SetAside:      []SetAside{},
+		CoveredByRule: []CoveredByRule{},
+		Answered:      []Answer{},
+	}
+	if in.Rules != nil {
+		report.Rules = RulesState{Read: true, ActiveStandingGrants: len(in.Rules.activeGrants(now))}
 	}
 	reviewTotalRead, unchecked := 0, 0
+	queueRead := map[string]int{}
+	reviewAsks := map[string]string{}
 	if in.Reviews != nil {
 		projected := groupsFromReviews(*in.Reviews, now)
 		sources := map[string]Group{}
@@ -243,7 +283,12 @@ func Build(in Inputs, now time.Time) Report {
 			normalizeGroup(&normalized, generatedAt, now)
 			sources[g.Key] = normalized
 		}
-		live, setAside, totalRead, uncheckedReviews := reviewLiveness(*in.Reviews, projected, in.Probe, now)
+		live, setAside, covered, asks, totalRead, uncheckedReviews := reviewLiveness(*in.Reviews, projected, in.Probe, in.Rules, in.DraftPlaceholders, now)
+		reviewAsks = asks
+		for i := range covered {
+			covered[i].Kind = sources[covered[i].SourceGroupKey].Kind
+		}
+		report.CoveredByRule = append(report.CoveredByRule, covered...)
 		for i := range setAside {
 			source := sources[setAside[i].SourceGroupKey]
 			setAside[i].Kind = source.Kind
@@ -265,12 +310,24 @@ func Build(in Inputs, now time.Time) Report {
 	if in.Activity != nil {
 		report.Groups = append(report.Groups, groupsFromActivity(*in.Activity, now)...)
 	}
+	for _, q := range queueResults(in, reviewAsks, now) {
+		queueRead[q.source] = q.read
+		if q.live != nil {
+			report.Groups = append(report.Groups, *q.live)
+		}
+		report.SetAside = append(report.SetAside, q.setAside...)
+	}
+	sortSetAside(report.SetAside)
 	for i := range report.Groups {
 		normalizeGroup(&report.Groups[i], generatedAt, now)
 	}
 	sortGroups(report.Groups)
 	report.Counts = countGroups(report.Groups, report.Counts.FallbackGroups)
-	report.Totals = buildTotals(report, reviewTotalRead, unchecked)
+	if in.Reviews != nil {
+		report.Answered = answersFromReviews(*in.Reviews, liveReviewItems(report.Groups), in.Probe, in.Work)
+	}
+	queueRead[SourceReviews] = reviewTotalRead
+	report.Totals = buildTotals(report, queueRead, unchecked)
 	report.Freshness = buildFreshness(in, now)
 	if len(report.Groups) > 0 {
 		top := report.Groups[0]
@@ -282,15 +339,18 @@ func Build(in Inputs, now time.Time) Report {
 // buildTotals derives the headline arithmetic. Each source's Read is counted
 // from the inputs (every unit that asked to be counted under needs_you before
 // the live check), not from the result, so Live + SetAside + WaitingOnOthers
-// == Read is a real check, not a definition.
-func buildTotals(report Report, reviewTotalRead, unchecked int) Totals {
+// + CoveredByRule == Read is a real check, not a definition.
+func buildTotals(report Report, readFromInputs map[string]int, unchecked int) Totals {
 	totals := Totals{
 		LiveDecisions:    report.Counts.NeedsYou,
 		SetAsideByReason: map[string]int{},
 		Unchecked:        unchecked,
 		BySource:         []SourceTotal{},
 	}
-	bySource := map[string]*SourceTotal{SourceReviews: {Source: SourceReviews, Read: reviewTotalRead}}
+	bySource := map[string]*SourceTotal{}
+	for source, read := range readFromInputs {
+		bySource[source] = &SourceTotal{Source: source, Read: read}
+	}
 	at := func(source string) *SourceTotal {
 		if bySource[source] == nil {
 			bySource[source] = &SourceTotal{Source: source}
@@ -302,7 +362,7 @@ func buildTotals(report Report, reviewTotalRead, unchecked int) Totals {
 		case g.Band == BandNeedsYou:
 			entry := at(g.Source)
 			entry.Live += g.Count
-			if g.Source != SourceReviews {
+			if _, counted := readFromInputs[g.Source]; !counted {
 				entry.Read += g.Count
 			}
 		case g.Kind == KindWaitingOnOthers:
@@ -317,16 +377,20 @@ func buildTotals(report Report, reviewTotalRead, unchecked int) Totals {
 		totals.SetAsideByReason[entry.Reason] += entry.Count
 		at(entry.Source).SetAside += entry.Count
 	}
+	for _, entry := range report.CoveredByRule {
+		totals.CoveredByRule += entry.Count
+		at(entry.Source).CoveredByRule += entry.Count
+	}
 	totals.SetAsideReasons, totals.ClosedWithoutYou = setAsideReasonTotals(report.SetAside)
-	for _, source := range []string{SourceReviews, SourceWorkbench, SourceExecutor, SourceActivity} {
-		if entry := bySource[source]; entry != nil && entry.Read+entry.Live+entry.SetAside > 0 {
+	for _, source := range []string{SourceReviews, SourceWorkbench, SourceExecutor, SourceActivity, SourceMemory, SourceProduct, SourceHookRequests, SourceDataSources} {
+		if entry := bySource[source]; entry != nil && entry.Read+entry.Live+entry.SetAside+entry.CoveredByRule > 0 {
 			totals.TotalRead += entry.Read
 			totals.BySource = append(totals.BySource, *entry)
 			delete(bySource, source)
 		}
 	}
 	for _, source := range sortedSourceKeys(bySource) {
-		if entry := bySource[source]; entry.Read+entry.Live+entry.SetAside > 0 {
+		if entry := bySource[source]; entry.Read+entry.Live+entry.SetAside+entry.CoveredByRule > 0 {
 			totals.TotalRead += entry.Read
 			totals.BySource = append(totals.BySource, *entry)
 		}
@@ -383,6 +447,9 @@ func buildFreshness(in Inputs, now time.Time) ReportFreshness {
 	}
 	if in.Activity != nil {
 		add(SourceActivity, in.Activity.GeneratedAt, "", len(in.Activity.UnaccountedBlocks))
+	}
+	for _, q := range queueResults(in, nil, now) {
+		add(q.fresh.Source, q.fresh.ReadAt, q.fresh.NewestRecordAt, q.fresh.Records)
 	}
 	var oldest time.Time
 	for _, entry := range out.Sources {
@@ -988,7 +1055,8 @@ func classRank(g Group) int {
 		return 0
 	}
 	switch g.Kind {
-	case KindVerdict, KindPromotion, KindContradiction, KindAdjudicate, KindIntake, KindAdvance, KindProductMove:
+	case KindVerdict, KindPromotion, KindContradiction, KindAdjudicate, KindIntake, KindAdvance, KindProductMove,
+		KindMemoryProposal, KindProductResult, KindHookApproval, KindSourceSetup:
 		return 1
 	default:
 		return 2

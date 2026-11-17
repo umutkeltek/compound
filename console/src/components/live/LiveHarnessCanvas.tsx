@@ -146,11 +146,22 @@ function initialSelection(lanes: LiveLane[]): LiveData | null {
 
 const linkClass = "font-semibold text-work hover:underline";
 
+/**
+ * One count in the agent panel, in the canvas's own colours (ink on the
+ * canvas background, like every other tile on it): a link number is
+ * underlined, not blue on grey, so it reads on the dark canvas.
+ */
 function LaneCount({ label, value, href }: { label: string; value: number | null; href: string }) {
   return (
-    <div className="rounded-lg border border-[var(--canvas-border)] bg-soft/30 px-2 py-2">
+    <div className="rounded-lg border border-[var(--canvas-border)] bg-[var(--canvas-bg)] px-2 py-2">
       <div className="text-2xs font-bold uppercase text-[var(--canvas-muted)]">{label}</div>
-      {value === null ? <div className="mt-1 text-sm text-[var(--canvas-muted)]">unknown</div> : value > 0 ? <Link href={href} className={`mono mt-1 block text-lg ${linkClass}`}>{value}</Link> : <div className="mono mt-1 text-lg">0</div>}
+      {value === null ? (
+        <div className="mt-1 text-sm text-[var(--canvas-muted)]">unknown</div>
+      ) : value > 0 ? (
+        <Link href={href} className="mono mt-1 block w-fit text-lg font-semibold text-[var(--canvas-ink)] underline decoration-[var(--canvas-muted)] underline-offset-4 hover:decoration-[var(--canvas-ink)]">{value}</Link>
+      ) : (
+        <div className="mono mt-1 text-lg text-[var(--canvas-ink)]">0</div>
+      )}
     </div>
   );
 }

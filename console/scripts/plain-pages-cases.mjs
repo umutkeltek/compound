@@ -91,6 +91,12 @@ const reply = {
       set_aside_reasons: [{ reason: "subject_gone", reason_text: "What it is about no longer exists.", count: 9, closed: true, next_step: "Nothing is left for you." }],
     },
     operator_attention: { schema_version: "compound.operator_attention.v0.1", revision: "r1", total: 0, items: [] },
+    // The waiting list's newer fields: nothing a rule covers yet, rules read, and every recorded answer.
+    set_aside: [], covered_by_rule: [], rules: { read: true, active_standing_grants: 1 },
+    answered: [
+      { area: "bench", item_id: "rev_fx_filed_2", question: "Another filed bench record. Review it?", decision: "dismissed", decided_at: iso(2), decided_by: "operator:fixture", still_waiting: false, outcome: "Dismissed two days ago. Recording it ran nothing else." },
+      { area: "source-control-cleanup/scr_99aa88bb.preimage", item_id: "rev_fx_filed_3", question: "A filed cleanup record.", decision: "open_work", decided_at: iso(6), decided_by: "fixture-agent", work_id: "work_fx_ready", work_state: "unknown", still_waiting: false, outcome: "Turned into work." },
+    ],
   },
   "executors --json": {
     schema_version: "compound.executors_projection.v0.1", generated_at: iso(0),
@@ -132,7 +138,7 @@ const reply = {
   // One item's own record, with the lifecycle list \`work show --json\` returns.
   "work show work_fx_held --json": {
     id: "work_fx_held", state: "held", owner: "claude_code", created_at: iso(12), success_predicate: "Fixture item on hold",
-    canonical_surface: "product:fixture-app", evidence_refs: ["rec_fixture_one"],
+    canonical_surface: "product:fixture-app", evidence_refs: ["ev_fixture_one", "land-check:landcheck_fixture01", "ratt_20300101T000000Z_fixture1", "rec_fixture_one"],
     lifecycle: [
       { ts: ns(12), from: "", to: "ready", note: "created" },
       { ts: ns(11), from: "ready", to: "claimed", by: "claude_code:fixture-lane", note: "claimed" },
@@ -391,7 +397,14 @@ try {
   assert.match(heldHTML, /href="\/apps\/fixture-app"/, "Related: its app page");
   assert.match(heldHTML, /href="\/work\?lens=table&amp;filter=all&amp;owner=claude_code"/, "Related: its agent's work");
   assert.match(heldHTML, /href="\/reviews\?decision=workbench%3Ablocked-on-you"/, "Related: the Decide entry that lists it");
-  assert.match(heldHTML, /href="\/map\/lineage\/rec_fixture_one"/, "Related: evidence links to its history page");
+  assert.match(heldHTML, /href="\/map\/lineage\/ev_fixture_one"/, "Related: evidence links to its history page");
+  // Only what a page can open is a link: an agent run, a landing check and a result record are named in words, not linked to "not found".
+  for (const href of [...heldHTML.matchAll(/href="\/map\/lineage\/([^"]+)"/g)].map((m) => decodeURIComponent(m[1]))) {
+    assert.match(href, /^(?:ev|cand|claim|work)_/, `the history page resolves ${href}`);
+  }
+  assert.match(held, /Evidence Evidence ev_fixture_one Landing check landcheck_fixture01 2 more below/, "each record by what it is, the id small");
+  assert.match(held, /Agent run ratt_20300101T000000Z_fixture1/);
+  assert.match(held, /Result record rec_fixture_one/);
   assert.match(held, /History Running → On hold by Claude Code/, "history, newest first, in plain words");
   assert.ok(held.indexOf("Running → On hold") < held.indexOf("Created as Ready to start"), "newest first");
   assert.match(held, /For agents: commands and technical record/, "commands sit behind a disclosure for agents");
@@ -423,12 +436,16 @@ try {
     assert.match(warm[name], /1 running, 1 picked up but not started, 2 waiting for a proof check/, `${name}: in-progress split`);
     assert.match(warm[name], /2 of them were picked up more than 7 days ago/, `${name}: age from claimed_at`);
   }
+  // Today's "outside changes" tile counts finished work, which no Work list holds: it says what it counts and links nowhere else.
+  assert.match(warm.Today, /work items finished in 7 days whose change reached a product or the world, of \d+ finished/, "the tile says what it counts");
+  assert.doesNotMatch(warm.Today, /See all work/, "the finished-work count does not open the list of open work");
   // Work leads with what is stopped, splits in progress into its named parts,
   // and every number opens the List of exactly those items.
-  assert.match(warm.Work, /1 on hold, waiting for you · 2 not moved in over 7 days 4 in progress ?: 1 running · 1 picked up, not started · 2 waiting for a proof check 6 open work items in all\./);
+  // Waiting for you and waiting on something else are the waiting list's own sorting, named apart as Today and Decide name them.
+  assert.match(warm.Work, /1 on hold, waiting for you · 1 waits on something else, not on you · 2 not moved in over 7 days 4 in progress ?: 1 running · 1 picked up, not started · 2 waiting for a proof check 6 open work items in all\./);
   const header = await renderWork("");
   const rowsOf = (html) => (html.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1] ?? "").match(/<tr\b/g)?.length ?? 0;
-  for (const [filter, n] of [["blocked", 1], ["stale", 2], ["progress", 4], ["running", 1], ["claimed", 1], ["verifying", 2], ["all", 6]]) {
+  for (const [filter, n] of [["blocked", 1], ["others", 1], ["stale", 2], ["progress", 4], ["running", 1], ["claimed", 1], ["verifying", 2], ["all", 6]]) {
     assert.match(header.html, new RegExp(`href="/work\\?lens=table&amp;filter=${filter}"`), `the header links ${filter}`);
     assert.equal(rowsOf((await renderWork(`lens=table&filter=${filter}`)).html), n, `the ${filter} list holds exactly the header's ${n}`);
   }
@@ -479,7 +496,7 @@ try {
       assert.match(warm[name], /6 decisions wait for you ?\./, `${name}: the one waiting count`);
       assert.doesNotMatch(warm[name], /\b(9|15) decisions\b|13 items|15 items/, `${name}: no second count`);
       assert.match(warm[name], /1 more decision is yours once an agent words it as a clear question\./, `${name}: the unworded record is named apart`);
-      assert.match(warm[name], /9 records closed without you: nothing is left to decide\./, `${name}: closed without you`);
+      assert.match(warm[name], /9 records were set aside and not counted as yours\. All 9 closed without you: nothing is left to decide\./, `${name}: set aside, and of those closed, each named`);
       assert.match(warm[name], /1 work item waits on something outside you, not on you\./, `${name}: waiting on others`);
       assert.match(warm[name], /2 proposals to update agent skills are agent housekeeping, not decisions for you, so they are not counted\./, `${name}: skill proposals folded out`);
       assert.equal(warm[name].split("To decide, tell an agent in chat.").length - 1, 1, `${name}: how a decision moves is said once`);
@@ -624,6 +641,13 @@ try {
     const rowsAt = (query) => [...wrap("/reviews", createElement(DecideQueue, queue), query).matchAll(/data-decision-row="([^"]+)"/g)].map((m) => m[1]);
     assert.deepEqual(rowsAt("q=hypothesis"), ["bench|review"], "q filters to the rows that show the word");
     assert.deepEqual(rowsAt("area=launchd-repair"), ["launchd-repair|review"], "area filters to one kind");
+    // An unknown kind in the address is ignored, and the page says so (never 'No decision matches “”').
+    const unknownKind = visibleText(wrap("/reviews", createElement(DecideQueue, queue), "area=zz-no-such-kind"));
+    assert.equal(rowsAt("area=zz-no-such-kind").length, queue.groups.length, "an unknown kind shows every decision");
+    assert.match(unknownKind, /No decision of the kind “Zz no such kind” waits for you, so all kinds are shown\./);
+    assert.doesNotMatch(unknownKind, /No decision matches “”/);
+    // The counter counts what the header counts; the unworded decision is named apart.
+    assert.match(unknownKind, /6 of 6 decisions · 1 to be worded first/);
     assert.deepEqual(rowsAt("q=operator"), [], "search never matches hidden tool text (the row says 'your review')");
     assert.match(wrap("/reviews", createElement(DecideQueue, queue), "q=hypothesis"), /value="hypothesis"/, "the search box shows the address's text");
     const { decideFilterHref } = await import("../src/components/decide/DecideQueue.tsx");
@@ -635,7 +659,9 @@ try {
   // wait on him under a heading that says they do not, and lead somewhere.
   {
     const filed = visibleText(wrap("/reviews", await Decide({ searchParams: Promise.resolve({ filed: "Repository cleanup" }) }), "filed=Repository+cleanup"));
-    assert.match(filed, /Recent decisions, newest first Dismissed · Another filed bench record\. Benchmark results · decided 2d ago by you/, "a recent decision leads with its outcome, date and who");
+    assert.match(filed, /Your answers and what came of each, newest first · showing 2 of 2 answers Dismissed two days ago\. Recording it ran nothing else\. · Another filed bench record\. Benchmark results · answered 2d ago by you/, "an answer leads with what came of it, when and who");
+    assert.match(filed, /Turned into work\. · A filed cleanup record\. Repository cleanup · answered 6d ago by an agent · the work it started is in an unknown state/, "the work an answer started is linked, its unknown state said as unknown");
+    assert.match(wrap("/reviews", await Decide({ searchParams: Promise.resolve({ filed: "Repository cleanup" }) }), "filed=Repository+cleanup"), /href="\/work\/work_fx_ready"[^>]*>the work it started/);
     assert.match(filed, /Cleanup proposal rejected and filed · A filed cleanup record\. Repository cleanup · raised 7d ago/, "a filed row leads with the outcome the record carries");
     assert.doesNotMatch(filed, /until you decide/);
   }

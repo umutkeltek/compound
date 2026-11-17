@@ -6,7 +6,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { CopyCmd } from "@/components/CopyCmd";
 import { FreshnessChip } from "@/components/kit";
-import type { DecideDomain, DecideGroup, DecideMember, DecisionAbout, HeldWorkRow } from "@/lib/decide-model";
+import type { DecideDomain, DecideGroup, DecideMember, DecisionAbout, DecisionListedItem, HeldWorkRow } from "@/lib/decide-model";
 import { ago } from "@/lib/time";
 import { humanizeProductId } from "@/lib/app-identity";
 import { plainArea, plainText, productTitle } from "@/lib/plain-words";
@@ -138,7 +138,8 @@ function DecisionRow({
           {group.headline?.subject || group.headline?.question || titled(group.objectText || group.title).text}
         </span>
         {group.headline?.needsWording ? <span className="mt-1 block text-2xs text-seam">An agent must word this first</span> : null}
-        {group.count > 1 ? <span className="mt-1 block text-2xs text-faint">{group.count} items</span> : null}
+        {group.headline?.countLabel ? <span className="mt-1 block text-2xs text-faint">{group.headline.countLabel}</span>
+          : group.count > 1 ? <span className="mt-1 block text-2xs text-faint">{group.count} items</span> : null}
       </span>
     </button>
   );
@@ -234,6 +235,22 @@ function HeldWorkList({ rows }: { rows: HeldWorkRow[] }) {
   );
 }
 
+/** The items the waiting list names inside a decision, each with the app or thing it is about. */
+function ListedItems({ items }: { items: DecisionListedItem[] }) {
+  return (
+    <ul className="mt-3 max-w-read divide-y divide-hair rounded-md border border-hair" aria-label="What it covers">
+      {items.slice(0, 25).map((item) => (
+        <li key={item.id} id={`decision-item-${item.id}`} className="grid scroll-mt-24 gap-0.5 px-3 py-2">
+          {item.about ? <span className="text-xs"><AboutLink about={item.about} /></span> : null}
+          {item.title ? <span className="line-clamp-2 text-sm text-ink">{item.title}</span> : null}
+          {item.createdAt ? <span className="text-2xs text-faint">Since {ago(item.createdAt)}</span> : null}
+        </li>
+      ))}
+      {items.length > 25 ? <li className="px-3 py-2 text-2xs text-faint">{items.length - 25} more are not shown here.</li> : null}
+    </ul>
+  );
+}
+
 /**
  * One decision as one card: the app or thing it is about, the question in
  * one sentence, what a yes and a no would cause, whether it can be undone and
@@ -257,7 +274,7 @@ function DecisionDetail({ group }: { group: DecideGroup }) {
           <span className="font-bold uppercase">{plainArea(group.area || group.areaLabel)}</span>
           {card?.about ? <span>· {card.about.app ? "App " : ""}<AboutLink about={card.about} /></span> : null}
           <span>· waiting {group.headline?.waiting || group.ageLabel}</span>
-          {group.count > 1 ? <span>· {group.count} items</span> : null}
+          {group.headline?.countLabel ? <span>· {group.headline.countLabel}</span> : group.count > 1 ? <span>· {group.count} items</span> : null}
         </div>
         {card?.needsWording ? (
           <>
@@ -281,6 +298,12 @@ function DecisionDetail({ group }: { group: DecideGroup }) {
               </dl>
             ) : null}
             {card?.silent ? <p className="mt-3 max-w-read text-xs text-faint">{card.silent}</p> : null}
+            {card?.listed.length ? <ListedItems items={card.listed} /> : null}
+            {card?.answerAt ? (
+              <p className="mt-3 max-w-read text-sm">
+                <Link href={card.answerAt.href} className="font-semibold text-work hover:underline">{card.answerAt.label} →</Link>
+              </p>
+            ) : null}
           </>
         )}
         {card?.perItem && group.heldWork?.length ? <HeldWorkList rows={group.heldWork} /> : null}
@@ -321,6 +344,21 @@ export function decideFilterHref(pathname: string, currentSearch: string, filter
   }
   const query = params.toString();
   return query ? `${pathname}?${query}` : pathname;
+}
+
+/**
+ * The list's counter: of the decisions he can answer (what the page header
+ * counts), how many show; the ones an agent must word first are named apart.
+ */
+export function decisionCounter(
+  visible: ReadonlyArray<Pick<DecideGroup, "headline">>,
+  groups: ReadonlyArray<Pick<DecideGroup, "headline">>,
+): string {
+  const answerable = (list: ReadonlyArray<Pick<DecideGroup, "headline">>) => list.filter((group) => !group.headline?.needsWording).length;
+  const total = answerable(groups);
+  const wording = groups.length - total;
+  const base = `${answerable(visible)} of ${total} decision${total === 1 ? "" : "s"}`;
+  return wording > 0 ? `${base} · ${wording} to be worded first` : base;
 }
 
 export function initialDecideIndex(
@@ -372,7 +410,15 @@ export function DecideQueue({
   // Search text and kind live in the address (`q`, `area`; lib/links.ts
   // decideHref's names), so a reload, Back or a pasted link keeps them.
   const [filter, setFilter] = useState(() => searchParams.get("q") ?? "");
-  const [areaFilter, setAreaFilter] = useState(() => areaHead(searchParams.get("area") ?? ""));
+  // A kind in the address that no decision has is ignored, and the page says so.
+  const [ignoredArea] = useState(() => {
+    const asked = areaHead(searchParams.get("area") ?? "");
+    return asked && !groups.some((group) => areaHead(group.area) === asked) ? asked : "";
+  });
+  const [areaFilter, setAreaFilter] = useState(() => {
+    const asked = areaHead(searchParams.get("area") ?? "");
+    return asked && groups.some((group) => areaHead(group.area) === asked) ? asked : "";
+  });
   const [focused, setFocused] = useState(() => Math.max(0, initialDecideIndex(groups, initialSelectedKey)));
   const [selectedKey, setSelectedKey] = useState(() => initialDecideKey(groups, initialSelectedKey));
 
@@ -542,9 +588,13 @@ export function DecideQueue({
         <select aria-label="Filter by kind" value={areaFilter} onChange={(event) => setAreaFilter(event.target.value)} className="min-h-10 max-w-full rounded-md border border-hair bg-panel px-3 py-2 text-sm text-ink">
           <option value="">All kinds</option>{areas.map((area) => <option key={area} value={area}>{plainArea(area)} ({groups.filter((group) => areaHead(group.area) === area).length})</option>)}
         </select>
-        <span className="mono text-2xs tabular-nums text-faint">{visible.length} of {groups.length} decisions</span>
+        {/* The counter counts what the header counts (decisions he can answer); the ones an agent must word first are named apart. */}
+        <span className="mono text-2xs tabular-nums text-faint">{decisionCounter(visible, groups)}</span>
         {filter || areaFilter ? <button type="button" onClick={() => { setFilter(""); setAreaFilter(""); }} className="text-xs font-semibold text-work hover:underline">Clear filters</button> : null}
       </div>
+      {ignoredArea ? (
+        <p role="status" className="text-xs text-muted">No decision of the kind “{plainArea(ignoredArea)}” waits for you, so all kinds are shown.</p>
+      ) : null}
 
       <div className="grid items-start gap-4 lg:grid-cols-5">
         <div ref={listRef} className="scroll-mt-16 max-h-[52vh] overflow-y-auto rounded-lg border border-hair bg-panel lg:col-span-2 lg:max-h-[70vh] lg:overflow-y-auto">
@@ -564,7 +614,9 @@ export function DecideQueue({
               ))}
             </ol>
           ) : (
-            <p className="border-dashed px-4 py-8 text-center text-sm text-muted">No decision matches “{filter}”.</p>
+            <p className="border-dashed px-4 py-8 text-center text-sm text-muted">
+              {filter.trim() ? <>No decision matches “{filter}”.</> : <>No decision of this kind waits for you.</>}
+            </p>
           )}
         </div>
 

@@ -1,4 +1,5 @@
 import { arr, num, str, type Json } from "@/lib/compound";
+import { workTitleFull } from "@/lib/work-title";
 
 import {
   LEASE_STALE_AFTER_SECONDS,
@@ -45,6 +46,21 @@ function workRef(value: unknown): ExecutorWorkRef | null {
     claimedBy: str(work.claimed_by),
     claimedAt: str(work.claimed_at),
   };
+}
+
+/**
+ * The Work page's open list (`workbench --json` `open[]`) as work refs: the
+ * population every Agents number is counted from, so a number and the Work
+ * List it opens come from one read. Titles use the List's own wording
+ * (lib/work-title.ts), so an item reads the same on both pages.
+ */
+export function workRefsFromWorkbench(open: readonly unknown[]): ExecutorWorkRef[] {
+  return open
+    .map((value) => {
+      const ref = workRef(value);
+      return ref ? { ...ref, title: workTitleFull(value as Json) } : null;
+    })
+    .filter((ref): ref is ExecutorWorkRef => ref !== null);
 }
 
 function leaseList(value: unknown): ExecutorLease[] {
@@ -159,7 +175,14 @@ function delegatedCounts(rows: DelegatedSessionRow[], raw: unknown): DelegatedSe
     : tally;
 }
 
-export function normalizeExecutorProjection(projection: Json | null): ExecutorProjection | null {
+/**
+ * Parse `executors --json`. Pass `openWork` (the Work page's open list,
+ * `workbench --json` `open[]`) to count every agent's work from the read the
+ * Work List shows; the executors read then gives only each agent's profile
+ * (name, tools, leases, last hook). Without it the projection's own
+ * `current_work` is used.
+ */
+export function normalizeExecutorProjection(projection: Json | null, openWork?: readonly unknown[] | null): ExecutorProjection | null {
   if (!projection) return null;
   const counts = (projection.counts && typeof projection.counts === "object" ? projection.counts : {}) as Json;
   // The projection carries no staleness threshold today (verified against the
@@ -190,7 +213,7 @@ export function normalizeExecutorProjection(projection: Json | null): ExecutorPr
       leases: num(counts.leases),
       staleHistory: num(counts.stale_leases),
     },
-    executors: regroupByHolder(arr(projection.executors).map(normalizeRow)),
+    executors: regroupByHolder(arr(projection.executors).map(normalizeRow), openWork ? workRefsFromWorkbench(openWork) : undefined),
     delegatedSessions,
     delegatedCounts: delegatedCounts(delegatedSessions, projection.delegated_counts),
   };

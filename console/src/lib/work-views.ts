@@ -6,7 +6,7 @@ import { ago } from "@/lib/time";
 import { shortText, workId } from "@/lib/work-data";
 import { agentDisplayName, harnessDisplayName } from "@/lib/harness-label";
 import { plainWorkStep } from "@/lib/plain-words";
-import { isStale, timestampMs } from "@/lib/work-state";
+import { isStale, timestampMs, waitsOn, type WaitingWorkIds, type WaitsOn } from "@/lib/work-state";
 import { workTitle } from "@/lib/work-title";
 
 /** Three presentations over one WorkEnvelope + executor + RunAttempt join. */
@@ -38,6 +38,8 @@ export type WorkLensItem = {
   stale: boolean;
   /** pick-up time in epoch ms, null when unknown */
   pickedUpMs: number | null;
+  /** whom it waits on, by the waiting list's sorting (lib/work-state.ts `waitsOn`) */
+  waitsOn: WaitsOn;
 };
 
 /** Which group a work item is in, from the shared index (lib/compound.ts `readWorkProjectIndex`). */
@@ -76,7 +78,11 @@ function byWork(report: TrafficReport): Map<string, { laneId: string; laneLabel:
  * mark and the group lookup when the shared index is read; without it a
  * row's group is "" (unknown), never "not linked".
  */
-export function buildWorkLensItems(open: Json[], traffic: TrafficReport, opts: { nowMs: number; groupOf?: WorkGroupOf }): WorkLensItem[] {
+export function buildWorkLensItems(
+  open: Json[],
+  traffic: TrafficReport,
+  opts: { nowMs: number; groupOf?: WorkGroupOf; waiting?: WaitingWorkIds | null },
+): WorkLensItem[] {
   const execution = byWork(traffic);
   return open.map((item) => {
     const id = workId(item);
@@ -114,6 +120,7 @@ export function buildWorkLensItems(open: Json[], traffic: TrafficReport, opts: {
       projectName: group?.name ?? "",
       stale: isStale(item, opts.nowMs),
       pickedUpMs: timestampMs(item.claimed_at),
+      waitsOn: waitsOn(item, opts.waiting ?? null),
     };
   });
 }
