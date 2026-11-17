@@ -6,6 +6,7 @@ import (
 	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -102,9 +103,30 @@ func (r RefreshReport) Failed() bool {
 func refreshPath(homePath string, lane LaneConfig) string {
 	return filepath.Join(filepath.Dir(IndexDir(homePath, lane)), "refresh.json")
 }
+
+// refreshLanesByAge gives skipped and newly configured sources their turn after
+// a bounded pass. The caller's configuration remains unchanged.
+func refreshLanesByAge(homePath string, lanes []LaneConfig, now time.Time) []LaneConfig {
+	ordered := append([]LaneConfig(nil), lanes...)
+	checked := make(map[string]time.Time, len(lanes))
+	for _, lane := range lanes {
+		var previous Coverage
+		if readJSONFile(refreshPath(homePath, lane), &previous) == nil {
+			stamp, err := time.Parse(time.RFC3339Nano, previous.CheckedAt)
+			if err == nil && !stamp.After(now) {
+				checked[lane.Lane] = stamp
+			}
+		}
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return checked[ordered[i].Lane].Before(checked[ordered[j].Lane])
+	})
+	return ordered
+}
+
 func Refresh(ctx context.Context, homePath string, lanes []LaneConfig, factory EmbedderFactory, now time.Time) RefreshReport {
 	report := RefreshReport{Status: "ok", Sources: []Coverage{}}
-	for _, lane := range lanes {
+	for _, lane := range refreshLanesByAge(homePath, lanes, now) {
 		if lane.Source == nil {
 			continue
 		}
@@ -112,6 +134,12 @@ func Refresh(ctx context.Context, homePath string, lanes []LaneConfig, factory E
 		c := Coverage{Lane: lane.Lane, Status: "ok", CheckedAt: now.UTC().Format(time.RFC3339Nano)}
 		if err := ctx.Err(); err != nil {
 			c.Status = "cancelled"
+			c.CheckedAt = ""
+			report.Status = "degraded"
+			report.Sources = append(report.Sources, c)
+			// This source was not attempted. Keep its previous receipt and age
+			// instead of marking skipped work freshly checked.
+			continue
 		} else {
 			valid, err := ValidateLaneConfig(lane)
 			if err != nil {

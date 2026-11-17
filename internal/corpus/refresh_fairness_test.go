@@ -1,0 +1,70 @@
+package corpus
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func fairRefreshLane(t *testing.T, name string) LaneConfig {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "note.md"), []byte("The archive uses Cedar for recoverable history."), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return LaneConfig{Lane: name, SourceFamily: name, Privacy: "private",
+		Embedder: EmbedderConfig{Provider: "ollama", Model: "synthetic", Dims: 3},
+		Source:   &SourceConfig{Root: root, Format: "markdown"}}
+}
+
+func TestRefreshBudgetDoesNotStarveLaterSource(t *testing.T) {
+	home, now := t.TempDir(), time.Now()
+	lanes := []LaneConfig{fairRefreshLane(t, "first"), fairRefreshLane(t, "second")}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	first := Refresh(ctx, home, lanes, func(l LaneConfig) (Embedder, error) {
+		cancel()
+		return &fakeEmbedder{identity: l.Embedder.Identity(), dim: 3}, nil
+	}, now)
+	if len(first.Sources) != 2 || first.Sources[1].Status != "cancelled" {
+		t.Fatalf("budget did not stop second source: %+v", first)
+	}
+	if _, err := os.Stat(refreshPath(home, lanes[1])); !os.IsNotExist(err) {
+		t.Fatalf("unattempted source got a receipt: %v", err)
+	}
+	next := Refresh(context.Background(), home, lanes, func(l LaneConfig) (Embedder, error) {
+		return &fakeEmbedder{identity: l.Embedder.Identity(), dim: 3}, nil
+	}, now.Add(time.Second))
+	if next.Sources[0].Lane != "second" || next.Sources[0].IndexedAt == "" {
+		t.Fatalf("next pass did not index skipped source first: %+v", next)
+	}
+	if lanes[0].Lane != "first" {
+		t.Fatal("changed caller configuration order")
+	}
+}
+
+func TestCancelledRefreshPreservesLastObservedCoverage(t *testing.T) {
+	home, now := t.TempDir(), time.Now()
+	lane := fairRefreshLane(t, "fixture")
+	path := refreshPath(home, lane)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	previous := Coverage{Lane: lane.Lane, Status: "ok", CheckedAt: now.Add(-time.Hour).Format(time.RFC3339Nano), IndexedAt: now.Add(-time.Hour).Format(time.RFC3339Nano), Items: 7}
+	if err := writeJSONFile(path, previous); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(path)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r := Refresh(ctx, home, []LaneConfig{lane}, func(LaneConfig) (Embedder, error) { t.Fatal("cancelled source invoked backend"); return nil, nil }, now)
+	after, _ := os.ReadFile(path)
+	if string(before) != string(after) {
+		t.Fatal("cancelled source overwrote successful coverage")
+	}
+	if !r.Failed() || r.Sources[0].CheckedAt != "" {
+		t.Fatalf("cancellation was presented as an observation: %+v", r)
+	}
+}
