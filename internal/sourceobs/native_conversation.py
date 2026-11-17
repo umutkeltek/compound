@@ -79,7 +79,7 @@ def layouts(db, tables, format):
 
 
 def session_body(db, schema, format, sid):
-    raw, messages, mirrored_ids, mirrored_text = [], [], set(), set()
+    raw, messages, mirrored_text = [], [], {}
     for st, mt, pt, v2 in sorted(schema, key=lambda x: not x[3]):
         session = db.execute('SELECT * FROM "' + st + '" WHERE id=?', (sid,)).fetchone()
         if session is None:
@@ -112,7 +112,12 @@ def session_body(db, schema, format, sid):
                 role = row["type"] if v2 else data.get("role")
                 content = data.get("content", data.get("text", ""))
                 if not text_content(content):
-                    content = [object_data(p) for p in by_message.get(row["id"], [])]
+                    content = []
+                    for part in by_message.get(row["id"], []):
+                        block = object_data(part)
+                        if v2:
+                            block.setdefault("type", part["type"])
+                        content.append(block)
             message = emit_message(mt, row, role, content)
             if message is None:
                 continue
@@ -120,12 +125,13 @@ def session_body(db, schema, format, sid):
             # Only dedupe across the two schema mirrors, never repeated turns
             # within one source history. All original rows remain above.
             if format == "opencode":
-                if not v2 and (row["id"] in mirrored_ids or signature in mirrored_text):
+                if not v2 and mirrored_text.get(signature, 0):
+                    mirrored_text[signature] -= 1
                     continue
                 if v2:
-                    mirrored_ids.add(row["id"])
-                    mirrored_text.add(signature)
+                    mirrored_text[signature] = mirrored_text.get(signature, 0) + 1
             messages.append(message)
+    messages.sort(key=lambda m: float(m["timestamp"] or 0))
     return raw, messages
 
 
@@ -165,6 +171,10 @@ def main():
     db.execute("BEGIN")
     tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     schema = layouts(db, tables, request["format"])
+    for st, mt, pt, _ in schema:
+        for table in (mt, pt):
+            if table and db.execute('SELECT 1 FROM "' + table + '" AS m LEFT JOIN "' + st + '" AS s ON s.id=m.session_id WHERE s.id IS NULL LIMIT 1').fetchone():
+                raise ValueError("native conversation rows have no owning session: " + table)
     count, size, pending = 0, 0, 0
     for sid, meta, metadata_count in inventory(db, schema):
         old = request["previous"].get(sid, "")
@@ -189,8 +199,12 @@ def main():
             body += "".join(canonical(m) + "\n" for m in messages)
             if len(body.encode()) > MAX_SESSION_BYTES:
                 raise ValueError("native session exceeds 64 MiB; configure a bounded source export")
-            result["body"] = body
-            size += len(body.encode())
+            if size + len(body.encode()) > MAX_BYTES:
+                result.pop("fingerprint")
+                pending += 1
+            else:
+                result["body"] = body
+                size += len(body.encode())
         print(canonical(result), flush=True)
     db.rollback()
     db.close()

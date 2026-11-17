@@ -243,7 +243,22 @@ func TestNativeOpenCodeBothSchemasDedupeMirrorsRetainRows(t *testing.T) {
 			t.Fatalf("lost table provenance: %s", table)
 		}
 	}
-	nativeSQL(t, path, "INSERT INTO session_part VALUES('answer','mirror',1,'text',2,3,'{\"type\":\"text\",\"text\":\"Additional part\"}'); UPDATE session_message SET data='{}',time_updated=3 WHERE id='answer';")
+	nativeSQL(t, path, "INSERT INTO message VALUES('old-user-second','mirror',3,3,'{\"role\":\"user\"}'); INSERT INTO part VALUES('p2','old-user-second','mirror',3,3,'{\"type\":\"text\",\"text\":\"Cedar archive\"}');")
+	captureNative(t, hp, root, "opencode", time.Now())
+	repeated := false
+	for _, item := range nativeSessionItems(t, hp, "mirror") {
+		if item.VersionState == "superseded" {
+			continue
+		}
+		projected := nativeProjectedMessages(t, nativeBody(t, hp, item))
+		if len(projected) == 3 && strings.Count(strings.Join(projected, "|"), "Cedar archive") == 2 {
+			repeated = true
+		}
+	}
+	if !repeated {
+		t.Fatal("mirror dedupe removed an original repeated turn")
+	}
+	nativeSQL(t, path, "INSERT INTO session_part VALUES('answer','mirror',1,'text',2,3,'{\"text\":\"Additional part\"}'); UPDATE session_message SET data='{}',time_updated=3 WHERE id='answer';")
 	update := captureNative(t, hp, root, "opencode", time.Now())
 	if update.Captured != 1 {
 		t.Fatalf("v2 part update: %+v", update)

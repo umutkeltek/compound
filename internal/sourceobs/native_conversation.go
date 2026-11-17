@@ -126,6 +126,7 @@ func CaptureNativeConversations(ctx context.Context, homePath, family, root, for
 		return result, loadErr
 	}
 	current, previous := map[string]SourceManifestItem{}, map[string]string{}
+	expectedItems := map[string]SourceManifestItem{}
 	inventoryKey := idFor("source_", family, namespace, "inventory")
 	var checkpoint SourceManifestItem
 	for _, item := range existing.Items {
@@ -142,6 +143,7 @@ func CaptureNativeConversations(ctx context.Context, homePath, family, root, for
 		}
 		sid := parsed.Query().Get("session")
 		current[sid], previous[sid] = item, item.SourceFingerprint
+		expectedItems[item.SourceKey] = item
 	}
 	epoch, previousEpoch := now.UTC().Unix()/86400, int64(-1)
 	parts := strings.Split(checkpoint.SourceFingerprint, ":")
@@ -269,6 +271,16 @@ func CaptureNativeConversations(ctx context.Context, homePath, family, root, for
 		}
 		if latestCheckpoint.SourceFingerprint != checkpoint.SourceFingerprint {
 			return fmt.Errorf("native checkpoint advanced concurrently; retry")
+		}
+		for _, candidate := range append(append([]SourceManifestItem(nil), fragment.Items...), metadataOnly...) {
+			if candidate.SourceKey == inventoryKey {
+				continue
+			}
+			expected, had := expectedItems[candidate.SourceKey]
+			actual, exists := byKey[candidate.SourceKey]
+			if had != exists || had && (actual.ID != expected.ID || actual.SourceFingerprint != expected.SourceFingerprint) {
+				return fmt.Errorf("native session checkpoint advanced concurrently; retry")
+			}
 		}
 		owned, err := captureOwnedSourceManifest(homePath, fragment, spool.files, nil)
 		if err != nil {
