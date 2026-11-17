@@ -647,6 +647,43 @@ vectors. Refresh reports retain observed body reads, preparation work, vector
 reads, metadata/shard writes and completed embeddings even when preparation or a
 later batch fails. Partial progress does not set the successful indexed timestamp.
 
+### Corpus vector shard compaction
+
+Vector shards are derived cache files; the committed index manifest names the live
+set. Compaction is default-off (shard_compaction.enabled: false). This setting is
+configuration, never evidence that old consumers have stopped. Before enabling,
+use the existing Work Action → Receipt → Transition and RuntimeBinding/native
+readback path to record the actual installed binary/helper and known-process
+census, then independently check that evidence. Caller-written success JSON or a
+configuration Boolean is not a cutover proof. Unknown or old consumers keep GC off.
+
+Roll out in stages: run the new writer with compaction disabled to initialize
+the shard-access gate; reload all readers/writers; verify their native readback
+and census; only then enable through the governed configuration path. Old readers
+do not participate in the lease, so rolling old/new readers with enabled collection
+is unsupported. A grace interval cannot prove that an old process is gone.
+
+The long refresh lock still serializes writers across provider calls. A separate
+short gate protects query/doctor manifest-to-shard loading. Readers open existing
+gates without creating files; legacy layouts remain readable. Collection attempts
+an exclusive short gate without waiting; busy readers defer it explicitly.
+Loaded vector snapshots remain in memory after their read lease ends.
+
+Only a complete, durably published, re-read committed shard map is eligible.
+The existing writer collects at most 16 regular hash-named unreferenced files per
+pass, scans at most 512 directory entries, reads at most 64 MiB, and checks a
+cooperative 150 ms budget. A blocked filesystem syscall cannot obey that clock
+deadline. Budget/reader deferral is reported; it is not a completed global sweep.
+Candidates beyond the bounded scan remain debt rather than implicit permission
+to widen the pass. No daemon, periodic authority, or separate retention ledger exists.
+
+Every candidate (chunk hash, exact float32 bits) must already exist in current
+referenced shards. Unique hashes, different vectors/model outputs, other dimensions,
+invalid files and unsafe links stay retained. No current vector entry, source
+artifact, source history, manifest, or legacy vectors.json rollback body is deleted.
+Payload bytes use actual file sizes. Allocation (st_blocks) and filesystem free
+space are reported separately; neither is a shared-block or reclaim estimate.
+
 
 ### Codex paginated native history
 
