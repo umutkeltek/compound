@@ -22,6 +22,8 @@ type SourceConfig struct {
 }
 type EmbedderFactory func(LaneConfig) (Embedder, error)
 type Coverage struct {
+	ShardCompaction ShardCompactionReport `json:"shard_compaction"`
+
 	NativeRowsCaptured     int   `json:"native_rows_captured,omitempty"`
 	NativeRowBytesCaptured int64 `json:"native_row_bytes_captured,omitempty"`
 
@@ -189,6 +191,7 @@ func Refresh(ctx context.Context, homePath string, lanes []LaneConfig, factory E
 								c.Status = "index_failed"
 								c.Error = err.Error()
 							} else {
+								c.ShardCompaction = indexed.ShardCompaction
 								c.BodyBytesRead = indexed.BodyBytesRead
 								c.VectorBytesRead = indexed.IndexBytesRead
 								c.IndexBytesWritten = indexed.IndexBytesWritten

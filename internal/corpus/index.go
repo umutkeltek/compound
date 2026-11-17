@@ -28,6 +28,8 @@ type IndexOptions struct {
 }
 
 type IndexReport struct {
+	ShardCompaction ShardCompactionReport `json:"shard_compaction"`
+
 	BodyBytesRead     int64 `json:"body_bytes_read"`
 	IndexBytesRead    int64 `json:"vector_bytes_read"`
 	IndexBytesWritten int64 `json:"index_bytes_written"`

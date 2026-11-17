@@ -1,6 +1,7 @@
 package corpus
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -36,6 +37,11 @@ func Doctor(homePath string, lane LaneConfig) (DoctorReport, error) {
 		return DoctorReport{}, err
 	}
 	dir := IndexDir(homePath, lane)
+	release, err := acquireShardRead(context.Background(), dir)
+	if err != nil {
+		return DoctorReport{}, err
+	}
+	defer release()
 	report := DoctorReport{
 		SchemaVersion:    ManifestSchemaVersion,
 		Status:           "fail",

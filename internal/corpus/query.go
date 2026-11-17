@@ -449,6 +449,11 @@ func (t *IndexTransport) load() (*loadedIndex, error) {
 		return t.loaded, nil
 	}
 	dir := IndexDir(t.homePath, t.lane)
+	release, err := acquireShardRead(t.ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	identity, err := readIdentity(dir)
 	if err != nil {
 		return nil, err
