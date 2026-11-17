@@ -19,10 +19,14 @@ type CaptureOptions struct {
 }
 
 type CaptureBatchReport struct {
-	RefusedSymlinks int
-	Oversized       int
-	Deferred        int
-	Missing         int
+	NativeMetadataRows  int
+	NativeBodyRows      int
+	NativeBodyBytes     int64
+	NativeSessionBodies int
+	RefusedSymlinks     int
+	Oversized           int
+	Deferred            int
+	Missing             int
 	SourceManifestReport
 	Captured  int
 	Unchanged int
@@ -87,7 +91,7 @@ func CaptureApprovedDirectoryBatchWithOptions(ctx context.Context, homePath, fam
 	ext := ".md"
 	switch format {
 	case "markdown":
-	case "codex", "claude":
+	case "codex", "claude", "omp":
 		ext = ".jsonl"
 	default:
 		return CaptureBatchReport{}, fmt.Errorf("unsupported source format")
