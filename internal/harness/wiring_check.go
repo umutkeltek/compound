@@ -105,6 +105,16 @@ type WiringCheck struct {
 	// SkillAdapters maps a harness to its rendered skill adapter file; nil
 	// skips the adapter rows.
 	SkillAdapters map[string]string
+	// RetryDelay is the pause before asking a harness a second time; zero
+	// means two seconds.
+	RetryDelay time.Duration
+}
+
+func (c WiringCheck) retryDelay() time.Duration {
+	if c.RetryDelay > 0 {
+		return c.RetryDelay
+	}
+	return 2 * time.Second
 }
 
 // RenderedSkillAdapterPaths maps each rendered skill adapter to its file.
@@ -442,11 +452,22 @@ func (c WiringCheck) ownedFileContextRow(name string, w *Wiring) WiringRow {
 		return row
 	}
 	out, err := c.Probe("opencode", "api", "GET", "/api/plugin")
-	status, detail, known := openCodePluginState(out, path)
+	status, detail, listed, answered := openCodePluginState(out, path)
+	if answered && !listed {
+		// A server that is still loading answers with a partial list; ask once
+		// more before calling the plugin missing.
+		time.Sleep(c.retryDelay())
+		out, err = c.Probe("opencode", "api", "GET", "/api/plugin")
+		status, detail, listed, answered = openCodePluginState(out, path)
+	}
 	switch {
-	case err != nil && !known:
-		row.Status, row.Found = WiringUnknownRow, "Compound's plugin is installed; OpenCode did not answer: "+err.Error()
-	case !known:
+	case !answered:
+		reason := "its answer is not the plugin list"
+		if err != nil {
+			reason = err.Error()
+		}
+		row.Status, row.Found = WiringUnknownRow, "Compound's plugin is installed; OpenCode did not answer: "+reason
+	case !listed:
 		row.Status, row.Found = WiringFail, "Compound's plugin is installed, but OpenCode does not list it"
 		row.Fix = "opencode service restart, then compound harness check --harness opencode"
 	case status == "active":
@@ -460,8 +481,9 @@ func (c WiringCheck) ownedFileContextRow(name string, w *Wiring) WiringRow {
 }
 
 // openCodePluginState finds the Compound plugin in `opencode api GET
-// /api/plugin` output, by id or by its source path.
-func openCodePluginState(out []byte, pluginPath string) (status, detail string, known bool) {
+// /api/plugin` output, by id or by its source path. answered is false when
+// the output is not a plugin list at all.
+func openCodePluginState(out []byte, pluginPath string) (status, detail string, listed, answered bool) {
 	var doc struct {
 		Data []struct {
 			ID     string `json:"id"`
@@ -471,8 +493,8 @@ func openCodePluginState(out []byte, pluginPath string) (status, detail string, 
 			State map[string]any `json:"state"`
 		} `json:"data"`
 	}
-	if json.Unmarshal(out, &doc) != nil {
-		return "", "", false
+	if json.Unmarshal(out, &doc) != nil || doc.Data == nil {
+		return "", "", false, false
 	}
 	for _, p := range doc.Data {
 		if p.ID != compoundServer && filepath.Clean(p.Source.Path) != filepath.Clean(pluginPath) {
@@ -485,9 +507,9 @@ func openCodePluginState(out []byte, pluginPath string) (status, detail string, 
 				break
 			}
 		}
-		return firstNonEmptyString(status, Unknown), detail, true
+		return firstNonEmptyString(status, Unknown), detail, true, true
 	}
-	return "", "", false
+	return "", "", false, true
 }
 
 // sessionEndPluginRow checks Hermes's session-end plugin: the file holds the

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const sessionStartHook = `{"hooks":{"SessionStart":[{"matcher":"*","hooks":[{"type":"command","command":"/usr/local/bin/compound hook session-start --live --harness claude_code"}]}]%s}}`
@@ -32,6 +33,9 @@ type wiringMachine struct {
 	user, tree string
 	homes      []ClaudeHome
 	probe      map[string]probeAnswer
+	// first answers are given once each, before probe answers.
+	first map[string][]probeAnswer
+	asked map[string]int
 }
 
 type probeAnswer struct {
@@ -42,7 +46,8 @@ type probeAnswer struct {
 func newWiringMachine(t *testing.T) *wiringMachine {
 	t.Helper()
 	user := t.TempDir()
-	m := &wiringMachine{user: user, tree: filepath.Join(user, "cfg", "claude"), probe: map[string]probeAnswer{}}
+	m := &wiringMachine{user: user, tree: filepath.Join(user, "cfg", "claude"), probe: map[string]probeAnswer{},
+		first: map[string][]probeAnswer{}, asked: map[string]int{}}
 	w := func(rel, body string) { writeWiringFile(t, filepath.Join(user, filepath.FromSlash(rel)), body) }
 	w(".claude.json", `{"mcpServers":{"compound":{"command":"compound"},"alpha":{"env":{"TOKEN":"sekret-1"}}}}`)
 	w(".claude/settings.json", claudeSettings("bypassPermissions", []string{"Bash(rm -rf /)"}, "/usr/local/bin/compound hook pre-tool-use --live --harness claude_code --spool"))
@@ -77,8 +82,15 @@ func (m *wiringMachine) check(t *testing.T, only string) []WiringRow {
 	t.Helper()
 	rows, err := CheckWiring(WiringCheck{
 		Registry: DefaultRegistry(), UserHome: m.user, Homes: m.homes, Only: only,
+		RetryDelay: time.Millisecond,
 		Probe: func(binary string, args ...string) ([]byte, error) {
-			a, ok := m.probe[binary+" "+strings.Join(args, " ")]
+			key := binary + " " + strings.Join(args, " ")
+			m.asked[key]++
+			if queue := m.first[key]; len(queue) > 0 {
+				m.first[key] = queue[1:]
+				return []byte(queue[0].out), queue[0].err
+			}
+			a, ok := m.probe[key]
 			if !ok {
 				return nil, errors.New("not on PATH")
 			}
@@ -239,6 +251,7 @@ func TestWiringCheckAsksTheHarnessWhetherItLoadedTheRoute(t *testing.T) {
 		{"opencode plugin failed", "opencode", "opencode api GET /api/plugin", probeAnswer{out: `{"data":[{"id":"compound","state":{"status":"failed","error":"Plugin must export default definition"}}]}`}, WiringFail, "failed Plugin must export default definition"},
 		{"opencode plugin missing", "opencode", "opencode api GET /api/plugin", probeAnswer{out: `{"data":[{"id":"opencode.agent","state":{"status":"active"}}]}`}, WiringFail, "does not list it"},
 		{"opencode not answering", "opencode", "opencode api GET /api/plugin", probeAnswer{out: "<!doctype html>", err: errors.New("timeout")}, WiringUnknownRow, "did not answer"},
+		{"opencode answers a web page", "opencode", "opencode api GET /api/plugin", probeAnswer{out: "<!doctype html>"}, WiringUnknownRow, "not the plugin list"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -256,6 +269,13 @@ func TestWiringCheckAsksTheHarnessWhetherItLoadedTheRoute(t *testing.T) {
 				t.Fatalf("context = %s %q, want %s containing %q", r.Status, r.Found, c.status, c.found)
 			}
 		})
+	}
+	// A server still loading lists the plugin late: the check asks once more.
+	m0 := newWiringMachine(t)
+	key := "opencode api GET /api/plugin"
+	m0.first[key] = []probeAnswer{{out: `{"data":[{"id":"opencode.agent","state":{"status":"active"}}]}`}}
+	if r := findRow(t, m0.check(t, "opencode"), "opencode", "", FactContext); r.Status != WiringPass || m0.asked[key] != 2 {
+		t.Fatalf("a partial list must be asked again (asked %d): %+v", m0.asked[key], r)
 	}
 	// Without a probe the route is unproven: never PASS on the file alone.
 	m := newWiringMachine(t)
