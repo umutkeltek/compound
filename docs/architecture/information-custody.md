@@ -724,3 +724,14 @@ manifest. Custody and source-history checks remain with SourceManifest. State-on
 threads retain native raw metadata but publish no context-only retrieval item until
 native history items exist. A tool-only capture therefore changes owned source
 evidence without rewriting an unchanged retrieval manifest.
+
+Recent native tails receive at most eight of the 32 range slots and 32 MiB of
+the 128 MiB body allowance. The remaining capacity visits threads in a persisted
+round-robin order, completing one range/action per visit and rotating backfill,
+updates, reconciliation, tail, and metadata work. The inventory fingerprint
+owns the next-thread position under the same publication CAS. A tail range
+advances contiguous backfill only when an indexed next-row lookup proves it
+contains the next uncaptured history; tail visibility never skips older custody.
+Optional native turn anchors bring the latest visible user/agent items forward
+even when raw tools follow them. Full thread metadata has a separate raw source
+key, so a deferred metadata body cannot discard a small progress cursor.

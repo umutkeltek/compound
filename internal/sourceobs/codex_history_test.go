@@ -86,7 +86,7 @@ INSERT INTO thread_items VALUES('thread-a','turn-a','reasoning',4,1003,'{"type":
 	if strings.Contains(raw, strings.Repeat("x", 65536)) || !strings.Contains(raw, `"native_row_key"`) || !strings.Contains(raw, `{ \"type\":\"userMessage\"`) {
 		t.Fatal("raw pack did not preserve original item_json or separate large row")
 	}
-	cursor := codexCurrentBody(t, hp, "cursor/thread-a")
+	cursor := codexCurrentBody(t, hp, "metadata/thread-a")
 	if !strings.Contains(cursor, `"creator_account_id":"synthetic-account"`) || !strings.Contains(cursor, `"base64":"AAH/"`) {
 		t.Fatal("optional native metadata was not lossless")
 	}

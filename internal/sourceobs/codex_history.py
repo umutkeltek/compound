@@ -111,7 +111,7 @@ def main():
     def full_row(table, meta, field):
         nonlocal used_bytes
         size = meta["body_size"] or 0
-        if size > MAX_ROW or used_bytes+size > MAX_BYTES:
+        if size > MAX_ROW or used_bytes+size > byte_limit:
             return None
         keys = ["thread_id","turn_id"] if table=="thread_turns" else (["thread_id","turn_id","item_id"] if table=="thread_items" else ["thread_id","item_id"])
         sql = 'SELECT * FROM "'+table+'" WHERE '+" AND ".join('"'+key+'"=?' for key in keys)
@@ -184,141 +184,230 @@ def main():
         used_packs += 1
         captured.add(marker)
         return True
-    projections = db.execute("SELECT * FROM thread_history_projection_state ORDER BY thread_id")
-    for projection in projections:
+    # Inventory/cursors are the existing scheduler checkpoint. No second queue.
+    captured = set()
+    infos = []
+    for projection in db.execute("SELECT * FROM thread_history_projection_state ORDER BY thread_id"):
         projection = dict(projection)
         sid = projection["thread_id"]
         if not isinstance(sid,str) or not sid or len(sid)>4096 or len(seen)>=MAX_THREADS:
             raise ValueError("Codex thread metadata exceeds bounded inventory")
         seen.append(sid)
         stats["metadata_rows"] += 1
-        prior_state = states.get(sid)
-        state = json.loads(canonical(prior_state)) if prior_state else {"v":1,"tables":{},"epoch":epoch,"reconcile_table":0,"reconcile_bucket":-1}
-        captured = set()
-        thread_dirty = False
-        projection_stamp = stamp(projection)
-        if prior_state and state.get("projection") != projection_stamp:
-            thread_dirty = True
-        state["projection"] = projection_stamp
-        metadata_probe = None
+        prior = states.get(sid)
+        state = json.loads(canonical(prior)) if prior else {"v":1,"tables":{},"epoch":epoch,"reconcile_table":len(TABLES),"reconcile_bucket":-1}
+        state["projection"] = stamp(projection)
+        probe = None
         if metadata_db:
             wanted = ["id","title","cwd"]
-            available = set(metadata_columns)
-            wanted += [k for k in ("model","source","updated_at","updated_at_ms","history_mode") if k in available]
-            found = db.execute("SELECT "+",".join('"'+k+'"' for k in wanted)+" FROM metadata.threads WHERE id=?",(sid,)).fetchone()
-            metadata_probe = dict(found) if found else None
+            wanted += [k for k in ("model","source","updated_at","updated_at_ms","history_mode") if k in metadata_columns]
+            selected = ['CASE WHEN length(CAST("'+k+'" AS BLOB))<'+str(LARGE)+' THEN "'+k+'" ELSE NULL END AS "'+k+'"' for k in wanted]
+            found = db.execute("SELECT "+",".join(selected)+" FROM metadata.threads WHERE id=?",(sid,)).fetchone()
+            probe = dict(found) if found else None
             stats["metadata_rows"] += 1
-            meta_stamp = stamp(metadata_probe)
-            if prior_state and state.get("metadata") != meta_stamp:
-                thread_dirty = True
-            state["metadata"] = meta_stamp
-        blocked = False
+            state["metadata"] = stamp(probe)
         maxima = {}
+        latest_update = [-1,-1]
+        recency = 0
         for table in TABLES:
-            last = db.execute('SELECT rollout_ordinal FROM "'+table+'" WHERE thread_id=? ORDER BY rollout_ordinal DESC LIMIT 1',(sid,)).fetchone()
-            maximum = last[0] if last else -1
-            maxima[table] = maximum
+            fields = "rollout_ordinal" if table=="thread_turns" else "rollout_ordinal,created_at_ms"
+            row = db.execute('SELECT '+fields+' FROM "'+table+'" WHERE thread_id=? ORDER BY rollout_ordinal DESC LIMIT 1',(sid,)).fetchone()
+            maxima[table] = row[0] if row else -1
+            if row and len(row)>1:
+                recency = max(recency,row[1] or 0)
             stats["metadata_rows"] += 1
-            ts = state["tables"].setdefault(table,{"last":-1})
-            if table == "thread_items" and "update" not in ts:
-                latest = db.execute("SELECT updated_at_ordinal FROM thread_items WHERE thread_id=? ORDER BY updated_at_ordinal DESC LIMIT 1",(sid,)).fetchone()
-                ts["update"] = [latest[0],maximum] if latest else [-1,-1]
-            while ts["last"] < maximum:
-                row = db.execute('SELECT rollout_ordinal FROM "'+table+'" WHERE thread_id=? AND rollout_ordinal>? ORDER BY rollout_ordinal LIMIT 1',(sid,ts["last"])).fetchone()
-                if row is None:
-                    ts["last"] = maximum
-                    break
-                bucket = row[0]//WIDTH
-                if not capture_pack(sid,table,bucket):
-                    blocked = True
-                    break
-                ts["last"] = min(maximum,(bucket+1)*WIDTH-1)
-                thread_dirty = True
-            if blocked:
-                break
-        # Indexed item-update watermark catches revisions to earlier ranges.
-        if not blocked and state["tables"].get("thread_items",{}).get("last",-1) >= maxima["thread_items"]:
-            ts = state["tables"]["thread_items"]
-            updates = db.execute("SELECT updated_at_ordinal,rollout_ordinal FROM thread_items WHERE thread_id=? AND (updated_at_ordinal>? OR (updated_at_ordinal=? AND rollout_ordinal>?)) ORDER BY updated_at_ordinal,rollout_ordinal LIMIT "+str(1025 if used_packs<MAX_PACKS and pack_metadata_rows<MAX_PACKS*WIDTH and used_bytes<MAX_BYTES else 1),(sid,ts["update"][0],ts["update"][0],ts["update"][1])).fetchall()
-            stats["metadata_rows"] += len(updates)
-            for upd in updates[:1024]:
-                if not capture_pack(sid,"thread_items",upd[1]//WIDTH):
-                    blocked = True
-                    break
-                ts["update"] = list(upd)
-                thread_dirty = True
-            if len(updates)>1024:
-                blocked = True
-        # Turns and realtime have no native update cursor. Their small metadata
-        # revisions are caught by a bounded daily body reconcile, never trusted
-        # as immutable merely because a turn reports completed.
-        if not blocked and prior_state is None:
-            state["epoch"] = epoch
-            state["reconcile_table"] = len(TABLES)
-        if not blocked and state.get("epoch",-1) < epoch:
-            table_index = state.get("reconcile_table",0)
-            if table_index >= len(TABLES):
-                table_index = 0
-                state["reconcile_bucket"] = -1
-            while table_index < len(TABLES):
-                table = TABLES[table_index]
-                after = state.get("reconcile_bucket",-1)
-                row = db.execute('SELECT rollout_ordinal FROM "'+table+'" WHERE thread_id=? AND rollout_ordinal>=? ORDER BY rollout_ordinal LIMIT 1',(sid,(after+1)*WIDTH)).fetchone()
-                choices = [b for b in known.get(sid,{}).get(table,[]) if b>after]
-                if row is not None:
-                    choices.append(row[0]//WIDTH)
-                if not choices:
-                    table_index += 1
-                    state["reconcile_bucket"] = -1
-                    state["reconcile_table"] = table_index
-                    continue
-                bucket = min(choices)
-                if not capture_pack(sid,table,bucket,True):
-                    blocked = True
-                    break
-                state["reconcile_bucket"] = bucket
-                state["reconcile_table"] = table_index
-                thread_dirty = True
-            if table_index == len(TABLES):
-                state["epoch"] = epoch
-        if blocked:
-            pending += 1
-        # Thread metadata is raw custody; only the small useful context enters recall.
-        # Fetch metadata only for processed/new threads or a due reconcile.
-        if thread_dirty or (not blocked and prior_state is None) or (not blocked and state != prior_state):
-            thread_row = None
-            if metadata_db:
-                size_sql = "+".join('COALESCE(length(CAST("'+c+'" AS BLOB)),0)' for c in metadata_columns)
-                row_size = db.execute("SELECT "+size_sql+" FROM metadata.threads WHERE id=?",(sid,)).fetchone()
-                if row_size and (row_size[0]>MAX_ROW or used_bytes+row_size[0]>MAX_BYTES):
-                    deferred += 1
-                    pending += 1
-                    continue
-                found = db.execute("SELECT * FROM metadata.threads WHERE id=?",(sid,)).fetchone()
-                if found:
-                    thread_row = dict(found)
-                    payload_size = len(canonical(thread_row).encode())
-                    if payload_size>MAX_ROW or used_bytes+payload_size>MAX_BYTES:
-                        deferred += 1
-                        pending += 1
+            state["tables"].setdefault(table,{"last":-1})
+        upd = db.execute("SELECT updated_at_ordinal,rollout_ordinal FROM thread_items WHERE thread_id=? ORDER BY updated_at_ordinal DESC,rollout_ordinal DESC LIMIT 1",(sid,)).fetchone()
+        stats["metadata_rows"] += 1
+        if upd:
+            latest_update = list(upd)
+        state["tables"]["thread_items"].setdefault("update",latest_update)
+        # Recent visible turn anchors can precede a long tail of raw tool output.
+        targets = []
+        if {"first_user_item_id","final_agent_item_id"} <= set(columns["thread_turns"]):
+            turn = db.execute("SELECT turn_id,first_user_item_id,final_agent_item_id FROM thread_turns WHERE thread_id=? ORDER BY rollout_ordinal DESC LIMIT 1",(sid,)).fetchone()
+            stats["metadata_rows"] += 1
+            if turn:
+                for item_id in (turn[1],turn[2]):
+                    if not item_id:
                         continue
-                    used_bytes += payload_size
-                    stats["body_rows"] += 1
-                    body_threads.add(sid)
-                    stats["body_bytes"] += payload_size
-            raw = {"type":"native_thread","format":"codex-history","projection_state":projection,"metadata":thread_row}
+                    row = db.execute("SELECT rollout_ordinal FROM thread_items WHERE thread_id=? AND turn_id=? AND item_id=?",(sid,turn[0],item_id)).fetchone()
+                    stats["metadata_rows"] += 1
+                    target = ["thread_items",row[0]//WIDTH] if row else None
+                    if target and target not in targets:
+                        targets.append(target)
+        for table in TABLES:
+            target = [table,maxima[table]//WIDTH]
+            if maxima[table]>=0 and target not in targets:
+                targets.append(target)
+        revision = stamp([projection,maxima,latest_update])
+        if state.get("tail_revision") != revision:
+            state["tail_revision"] = revision
+            state["tail_pending"] = targets
+        infos.append({"sid":sid,"projection":projection,"probe":probe,"prior":prior,
+                      "state":state,"maxima":maxima,"update":latest_update,"recency":recency})
+    def contiguous(info, table, bucket):
+        ts = info["state"]["tables"][table]
+        row = db.execute('SELECT rollout_ordinal FROM "'+table+'" WHERE thread_id=? AND rollout_ordinal>? ORDER BY rollout_ordinal LIMIT 1',(info["sid"],ts["last"])).fetchone()
+        stats["metadata_rows"] += 1
+        # A tail never advances the contiguous history over an unowned range.
+        if row is not None and row[0]//WIDTH == bucket:
+            ts["last"] = min(info["maxima"][table],(bucket+1)*WIDTH-1)
+    def pack(info, table, bucket, force=False):
+        if not capture_pack(info["sid"],table,bucket,force):
+            return False
+        contiguous(info,table,bucket)
+        return True
+    def tail(info):
+        state = info["state"]
+        todo = state.get("tail_pending",[])
+        if not todo:
+            return False
+        table,bucket = todo[0]
+        if not pack(info,table,bucket):
+            return False
+        state["tail_pending"] = todo[1:]
+        return True
+    def backfill(info):
+        state = info["state"]
+        start = state.get("backfill_table",0)
+        for offset in range(len(TABLES)):
+            index = (start+offset)%len(TABLES)
+            table = TABLES[index]
+            ts = state["tables"][table]
+            if ts["last"] >= info["maxima"][table]:
+                continue
+            row = db.execute('SELECT rollout_ordinal FROM "'+table+'" WHERE thread_id=? AND rollout_ordinal>? ORDER BY rollout_ordinal LIMIT 1',(info["sid"],ts["last"])).fetchone()
+            stats["metadata_rows"] += 1
+            if row is None:
+                continue
+            state["backfill_table"] = (index+1)%len(TABLES)
+            return pack(info,table,row[0]//WIDTH)
+        return False
+    def updates(info):
+        ts = info["state"]["tables"]["thread_items"]
+        if ts["update"] >= info["update"]:
+            return False
+        rows = db.execute("SELECT updated_at_ordinal,rollout_ordinal FROM thread_items WHERE thread_id=? AND (updated_at_ordinal>? OR (updated_at_ordinal=? AND rollout_ordinal>?)) ORDER BY updated_at_ordinal,rollout_ordinal LIMIT 1025",(info["sid"],ts["update"][0],ts["update"][0],ts["update"][1])).fetchall()
+        stats["metadata_rows"] += len(rows)
+        if not rows:
+            return False
+        bucket = rows[0][1]//WIDTH
+        if not pack(info,"thread_items",bucket):
+            return False
+        for row in rows:
+            if row[1]//WIDTH != bucket:
+                break
+            ts["update"] = list(row)
+        return True
+    def reconcile(info):
+        state = info["state"]
+        if state.get("epoch",-1)>=epoch:
+            return False
+        index = state.get("reconcile_table",0)
+        if index >= len(TABLES):
+            index = 0
+            state["reconcile_bucket"] = -1
+        while index < len(TABLES):
+            table = TABLES[index]
+            after = state.get("reconcile_bucket",-1)
+            row = db.execute('SELECT rollout_ordinal FROM "'+table+'" WHERE thread_id=? AND rollout_ordinal>=? ORDER BY rollout_ordinal LIMIT 1',(info["sid"],(after+1)*WIDTH)).fetchone()
+            stats["metadata_rows"] += 1
+            choices = [b for b in known.get(info["sid"],{}).get(table,[]) if b>after]
+            if row is not None:
+                choices.append(row[0]//WIDTH)
+            if choices:
+                bucket = min(choices)
+                if not pack(info,table,bucket,True):
+                    return False
+                state["reconcile_bucket"] = bucket
+                state["reconcile_table"] = index
+                return True
+            index += 1
+            state["reconcile_bucket"] = -1
+            state["reconcile_table"] = index
+        state["epoch"] = epoch
+        return True
+    def metadata_due(info):
+        state = info["state"]
+        return metadata_db and (state.get("metadata_owned")!=state.get("metadata") or state.get("metadata_epoch",-1)<epoch)
+    def own_metadata(info):
+        nonlocal used_bytes,deferred
+        if not metadata_due(info):
+            return False
+        sid,state = info["sid"],info["state"]
+        size_sql = "+".join('COALESCE(length(CAST("'+c+'" AS BLOB)),0)' for c in metadata_columns)
+        size = db.execute("SELECT "+size_sql+" FROM metadata.threads WHERE id=?",(sid,)).fetchone()
+        stats["metadata_rows"] += 1
+        if size and (size[0]>MAX_ROW or used_bytes+size[0]>byte_limit):
+            deferred += 1
+            return False
+        found = db.execute("SELECT * FROM metadata.threads WHERE id=?",(sid,)).fetchone()
+        row = dict(found) if found else None
+        payload_size = size[0] if size else 0
+        used_bytes += payload_size
+        stats["body_rows"] += 1 if row else 0
+        stats["body_bytes"] += payload_size
+        if row:
+            body_threads.add(sid)
+        emit("metadata/"+sid,sid,"raw_row","threads",{"type":"native_row","format":"codex-history","table":"threads","row":row},rows=1 if row else 0)
+        state["metadata_owned"] = state.get("metadata")
+        state["metadata_epoch"] = epoch
+        return True
+    # Reserve at least 24 range/96 MiB slots for rotating work. Recent tails
+    # cannot consume the history portion, and cold history cannot hide tails.
+    byte_limit = 32 << 20
+    for info in sorted((x for x in infos if x["state"].get("tail_pending")),key=lambda x:(-x["recency"],x["sid"]))[:8]:
+        tail(info)
+    byte_limit = MAX_BYTES
+    next_thread = req.get("next_thread","")
+    start = next((i for i,info in enumerate(infos) if info["sid"]>=next_thread),0)
+    ordered = infos[start:]+infos[:start]
+    actions = (backfill,updates,reconcile,tail,own_metadata)
+    # Each visit completes at most one action. Class rotation protects history
+    # against a continuously growing tail and updates against a long backfill.
+    for _ in range(MAX_PACKS*len(actions)+len(actions)):
+        progress = False
+        for index,info in enumerate(ordered):
+            if used_packs>=MAX_PACKS or pack_metadata_rows>=MAX_PACKS*WIDTH or used_bytes>=MAX_BYTES:
+                break
+            state = info["state"]
+            action_start = state.get("action",0)
+            for offset in range(len(actions)):
+                action_index = (action_start+offset)%len(actions)
+                if actions[action_index](info):
+                    state["action"] = (action_index+1)%len(actions)
+                    next_thread = ordered[(index+1)%len(ordered)]["sid"]
+                    progress = True
+                    break
+        if not progress or used_packs>=MAX_PACKS or pack_metadata_rows>=MAX_PACKS*WIDTH or used_bytes>=MAX_BYTES:
+            break
+    for info in infos:
+        sid,state,prior = info["sid"],info["state"],info["prior"]
+        unfinished = (any(state["tables"][table]["last"]<info["maxima"][table] for table in TABLES)
+                      or state["tables"]["thread_items"]["update"]<info["update"]
+                      or state.get("epoch",-1)<epoch or bool(state.get("tail_pending"))
+                      or metadata_due(info))
+        if unfinished:
+            pending += 1
+        # The small progress cursor must publish even when a metadata body is
+        # too large/deferred. Its source ref points at separately owned metadata.
+        if state!=prior:
+            raw = {"type":"native_thread","format":"codex-history","projection_state":info["projection"],
+                   "metadata_key":"metadata/"+sid if metadata_db else None}
             fp = "codex-cursor-v1:"+base64.urlsafe_b64encode(canonical(state).encode()).decode().rstrip("=")
-            emit("cursor/"+sid,sid,"cursor","thread_history_projection_state",raw,fp,2 if thread_row else 1)
-            if thread_row:
-                context_key = "context/"+sid
-                has_native_items = maxima.get("thread_items",-1)>=0 or maxima.get("thread_realtime_items",-1)>=0
-                if has_native_items:
-                    context = {k:thread_row[k] for k in ("title","cwd","model","source") if isinstance(thread_row.get(k),str) and thread_row[k]}
-                    body = canonical({"type":"native_session","format":"codex-history","thread_id":sid,"context":context})+"\n"
-                    emit(context_key,sid,"semantic_context","threads",body)
-                elif old(context_key):
-                    emit(context_key,sid,"cursor","threads",{"type":"native_context_without_items","thread_id":sid})
-    print(canonical({"complete":True,"pending":pending,"deferred":deferred,"seen_threads":seen,"session_bodies":len(body_threads),**stats}),flush=True)
+            emit("cursor/"+sid,sid,"cursor","thread_history_projection_state",raw,fp,1)
+        probe = info["probe"]
+        context_key = "context/"+sid
+        if probe and (prior is None or prior.get("metadata")!=state.get("metadata")):
+            has_items = info["maxima"]["thread_items"]>=0 or info["maxima"]["thread_realtime_items"]>=0
+            if has_items:
+                context = {k:probe[k] for k in ("title","cwd","model","source") if isinstance(probe.get(k),str) and probe[k]}
+                body = canonical({"type":"native_session","format":"codex-history","thread_id":sid,"context":context})+"\n"
+                emit(context_key,sid,"semantic_context","threads",body)
+            elif old(context_key):
+                emit(context_key,sid,"cursor","threads",{"type":"native_context_without_items","thread_id":sid})
+    print(canonical({"complete":True,"pending":pending,"deferred":deferred,"seen_threads":seen,"next_thread":next_thread,"session_bodies":len(body_threads),**stats}),flush=True)
     db.rollback()
     db.close()
 

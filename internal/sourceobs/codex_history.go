@@ -21,6 +21,7 @@ import (
 var codexHistoryReader string
 
 type codexHistoryRecord struct {
+	NextThread    string   `json:"next_thread"`
 	SessionBodies int      `json:"session_bodies"`
 	Key           string   `json:"key"`
 	ThreadID      string   `json:"thread_id"`
@@ -136,14 +137,23 @@ func CaptureCodexHistory(ctx context.Context, homePath, family, root, database, 
 		}
 	}
 	epoch := now.UTC().Unix() / 86400
-	expected := fmt.Sprintf("codex-db-v1:%s:%d:complete", identity, epoch)
-	if checkpoint.SourceFingerprint == expected {
+	expected := fmt.Sprintf("codex-db-v2:%s:%d:complete:", identity, epoch)
+	if strings.HasPrefix(checkpoint.SourceFingerprint, expected) {
 		result.Unchanged = len(threads)
 		result.Missing = nativeMissingCount(checkpoint)
 		result.SourceManifestReport = SourceManifestReport{ManifestID: existing.ID, ManifestPath: SourceManifestPath(homePath, family), AuthorityRef: SourceManifestAuthorityRef(family), ItemCount: len(existing.Items)}
 		return result, ctx.Err()
 	}
-	request, _ := json.Marshal(map[string]any{"database": path, "metadata_database": metaPath, "previous": previous, "states": states, "known_packs": known, "epoch": epoch})
+	nextThread := ""
+	if strings.HasPrefix(checkpoint.SourceFingerprint, "codex-db-v2:") {
+		encoded := checkpoint.SourceFingerprint[strings.LastIndex(checkpoint.SourceFingerprint, ":")+1:]
+		decoded, err := base64.RawURLEncoding.DecodeString(encoded)
+		if err != nil {
+			return result, fmt.Errorf("Codex inventory rotation invalid")
+		}
+		nextThread = string(decoded)
+	}
+	request, _ := json.Marshal(map[string]any{"next_thread": nextThread, "database": path, "metadata_database": metaPath, "previous": previous, "states": states, "known_packs": known, "epoch": epoch})
 	spool, err := newSourceManifestSnapshotBatch(128)
 	if err != nil {
 		return result, err
@@ -254,8 +264,8 @@ func CaptureCodexHistory(ctx context.Context, homePath, family, root, database, 
 	if result.Pending > 0 || result.Deferred > 0 {
 		status = "pending"
 	}
-	inventoryBody := fmt.Sprintf("{\"type\":\"native_inventory\",\"format\":\"codex-history\",\"missing_sessions\":%d,\"pending\":%d,\"deferred\":%d}\n", result.Missing, result.Pending, result.Deferred)
-	inventoryRow := codexHistoryRecord{Key: "inventory", Kind: "inventory", Table: "inventory", Body: inventoryBody, Fingerprint: fmt.Sprintf("codex-db-v1:%s:%d:%s", identity, epoch, status)}
+	inventoryBody := fmt.Sprintf("{\"type\":\"native_inventory\",\"format\":\"codex-history\",\"missing_sessions\":%d,\"pending\":%d,\"deferred\":%d,\"next_thread\":%s}\n", result.Missing, result.Pending, result.Deferred, strconv.Quote(complete.NextThread))
+	inventoryRow := codexHistoryRecord{Key: "inventory", Kind: "inventory", Table: "inventory", Body: inventoryBody, Fingerprint: fmt.Sprintf("codex-db-v2:%s:%d:%s:%s", identity, epoch, status, base64.RawURLEncoding.EncodeToString([]byte(complete.NextThread)))}
 	// The inventory uses a stable family key, not a fictitious native thread.
 	if err := appendBody(inventoryRow); err != nil {
 		return result, err
