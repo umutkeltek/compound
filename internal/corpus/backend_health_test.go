@@ -2,11 +2,15 @@ package corpus
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -83,5 +87,74 @@ func TestMemoryServiceRecoveryFixtures(t *testing.T) {
 	cmd.Env = append(cmd.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("recovery fixtures: %v\n%s", err, out)
+	}
+}
+
+func TestBackendReadinessNeverReportsURLSecrets(t *testing.T) {
+	cfg := EmbedderConfig{Provider: "local", Model: "fixture", Dims: 2}
+	unsafe := (&url.URL{Scheme: "http", Host: "backend.invalid", Path: "/v1", User: url.UserPassword("name", "secret"), RawQuery: "token=secret", Fragment: "secret"}).String()
+	for _, base := range []string{unsafe, "http://%secret"} {
+		got := checkBackend(context.Background(), base, cfg)
+		raw, _ := json.Marshal(got)
+		if strings.Contains(string(raw), "secret") || strings.Contains(string(raw), "name:") {
+			t.Fatalf("endpoint leaked: %s", raw)
+		}
+		var fields map[string]any
+		_ = json.Unmarshal(raw, &fields)
+		if fields["recovery_eligible"] != false {
+			t.Fatalf("unsafe endpoint eligible: %s", raw)
+		}
+	}
+}
+func TestBackendReadinessGenericLocalWithoutOllamaInventory(t *testing.T) {
+	for _, code := range []int{404, 405, 501} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/api/tags" {
+				w.WriteHeader(code)
+				return
+			}
+			if r.URL.Path != "/v1/embeddings" {
+				t.Errorf("unexpected path %s", r.URL.Path)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"embedding": []float64{1, 2}}}})
+		}))
+		cfg := EmbedderConfig{Provider: "local", Model: "fixture", Dims: 2}
+		got := checkBackend(context.Background(), srv.URL+"/v1", cfg)
+		srv.Close()
+		raw, _ := json.Marshal(got)
+		var fields map[string]any
+		_ = json.Unmarshal(raw, &fields)
+		if got.Status != "ready" || fields["recovery_eligible"] != false {
+			t.Fatalf("generic backend rejected or restartable: %s", raw)
+		}
+	}
+}
+
+func TestBackendReadinessGenericHTTPSUsesNormalCertificateVerification(t *testing.T) {
+	embeds := 0
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			w.WriteHeader(404)
+			return
+		}
+		embeds++
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"embedding": []float64{1, 2}}}})
+	}))
+	defer srv.Close()
+	cfg := EmbedderConfig{Provider: "local", Model: "fixture", Dims: 2, BaseURL: srv.URL + "/v1"}
+	if got := checkBackend(context.Background(), cfg.BaseURL, cfg); got.Status == "ready" || embeds != 0 || got.RecoveryEligible {
+		t.Fatalf("untrusted TLS accepted: %+v", got)
+	}
+	original := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = original })
+	roots := x509.NewCertPool()
+	roots.AddCert(srv.Certificate())
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{RootCAs: roots}
+	defer transport.CloseIdleConnections()
+	http.DefaultTransport = transport
+	got := checkBackend(context.Background(), cfg.BaseURL, cfg)
+	if got.Status != "ready" || got.RecoveryEligible || embeds != 1 {
+		t.Fatalf("trusted TLS not usable: %+v embeds=%d", got, embeds)
 	}
 }

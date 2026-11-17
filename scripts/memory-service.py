@@ -96,7 +96,10 @@ def recover_backend(binary, home):
     # port, proxy, remote endpoint or another service must never be restarted.
     for check in report["backends"]:
         endpoint = urlparse(check["base_url"])
-        if endpoint.hostname not in ("localhost", "127.0.0.1", "::1") or endpoint.port != 11434:
+        if (check.get("recovery_eligible") is not True or endpoint.scheme != "http"
+                or endpoint.username is not None or endpoint.password is not None
+                or endpoint.query or endpoint.fragment
+                or endpoint.hostname not in ("localhost", "127.0.0.1", "::1") or endpoint.port != 11434):
             raise RuntimeError("backend_unavailable: endpoint has no approved service owner")
     label = "gui/" + str(os.getuid()) + "/sh.brew.ollama"
     owner = subprocess.run(["/bin/launchctl", "print", label], capture_output=True,
