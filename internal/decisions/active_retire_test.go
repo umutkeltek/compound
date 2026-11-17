@@ -144,19 +144,29 @@ func TestRetireCommaListInOneUndoOf(t *testing.T) {
 
 // Goal 3, unchanged: a retired record does not come back when the record that
 // retired it is itself retired — every accepted record's list keeps counting.
+// The decision-id case held before this change and must keep holding; the
+// claim-id case applies the same rule to the new naming forms.
 func TestRetiredRecordStaysRetiredWhenItsRetirerIsRetired(t *testing.T) {
-	claims := []mem.Claim{
-		importedDecisionClaim("claim_a", "a", 1, "A"),
-		legacyDecisionClaim("LEGACY-B", 2, "B, no decision_id"),
-		retiringRuling("claim_r1", "r1", 3, "claim_a", "LEGACY-B"),
-		retiringRuling("claim_r2", "r2", 4, "r1"),
-	}
-	refs := activeRefs(claims)
-	if refs["decision://a"] != 0 || refs["decision://LEGACY-B"] != 0 {
-		t.Fatalf("records came back when their retirer was retired: %v", refs)
-	}
-	if refs["decision://r1"] != 0 || refs["decision://r2"] != 1 {
-		t.Fatalf("retirer chain: want only r2 active, got %v", refs)
+	for name, firstRetirer := range map[string][]string{
+		"by decision id (rule unchanged)": {"a", "b"},
+		"by claim id and legacy id":       {"claim_a", "LEGACY-B"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			b := legacyDecisionClaim("LEGACY-B", 2, "B")
+			if firstRetirer[1] == "b" {
+				b = importedDecisionClaim("claim_b", "b", 2, "B")
+			}
+			claims := []mem.Claim{
+				importedDecisionClaim("claim_a", "a", 1, "A"),
+				b,
+				retiringRuling("claim_r1", "r1", 3, firstRetirer...),
+				retiringRuling("claim_r2", "r2", 4, "r1"),
+			}
+			refs := activeRefs(claims)
+			if len(refs) != 1 || refs["decision://r2"] != 1 {
+				t.Fatalf("records came back when their retirer was retired: want only r2 active, got %v", refs)
+			}
+		})
 	}
 }
 
