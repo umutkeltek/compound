@@ -216,8 +216,12 @@ if __name__ == "__main__":
         main()
     except Exception as exc:
         # Do not expose source bodies or SQL parameters in errors.
-        if isinstance(exc, ValueError):
-            print(str(exc), file=sys.stderr)
+        detail = str(exc)
+        safe_prefixes = ("unsupported native schema:", "unsupported incomplete OpenCode schema:",
+                         "unsupported OpenCode schema:", "native session exceeds ",
+                         "native message data must be ", "native conversation rows have no owning session:")
+        if isinstance(exc, ValueError) and detail.startswith(safe_prefixes):
+            print(detail, file=sys.stderr)
         else:
-            print("native SQLite read failed (" + type(exc).__name__ + ")", file=sys.stderr)
+            print("native SQLite read failed (" + type(exc).__name__ + "); check source row encoding/schema", file=sys.stderr)
         sys.exit(1)

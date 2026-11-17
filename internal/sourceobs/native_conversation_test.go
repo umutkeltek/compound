@@ -391,3 +391,65 @@ for sql in sys.stdin:
 		t.Fatalf("WAL update missed: %+v", updated)
 	}
 }
+
+func TestNativeMalformedSourceDoesNotEchoPrivateFields(t *testing.T) {
+	hp, root := t.TempDir(), nativeRoot(t)
+	path := filepath.Join(root, "opencode.db")
+	nativeSQL(t, path, opencodeNativeSchema+"UPDATE session_message SET time_created='SensitiveTimestampPayload' WHERE id='answer';")
+	_, err := CaptureNativeConversations(context.Background(), hp, "native_fixture", root, "opencode", "", time.Now())
+	if err == nil || strings.Contains(err.Error(), "SensitiveTimestampPayload") || !strings.Contains(err.Error(), "source row encoding/schema") {
+		t.Fatalf("private field reached diagnostics: %v", err)
+	}
+	if _, err := LoadSourceManifest(hp, "native_fixture"); !os.IsNotExist(err) {
+		t.Fatalf("invalid native source published manifest: %v", err)
+	}
+}
+
+func TestNativePublicationRefusesNewerSessionCheckpoint(t *testing.T) {
+	hp, root := t.TempDir(), nativeRoot(t)
+	path := filepath.Join(root, "state.db")
+	nativeSQL(t, path, hermesNativeSchema+"INSERT INTO sessions(id,source,started_at) VALUES('s1','cli',1); INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(1,'s1','user','Cedar',1);")
+	now := time.Now()
+	captureNative(t, hp, root, "hermes", now)
+	nativeSQL(t, path, "UPDATE messages SET content='Birch',timestamp=2 WHERE id=1;")
+	newer := nativeManifest(t, hp)
+	for i := range newer.Items {
+		if strings.Contains(newer.Items[i].SourceRef, "session=s1&") {
+			newer.Items[i].SourceFingerprint = "native-session-v2:competing"
+		}
+	}
+	body, err := json.MarshalIndent(newer, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	competing := filepath.Join(t.TempDir(), "competing.json")
+	if err := os.WriteFile(competing, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	backend := t.TempDir()
+	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
+	// Deliberately inject a valid newer authority record after the initial
+	// read. A cooperating writer would normally use the manifest lock.
+	script := "#!/bin/sh\n/bin/cp " + quote(competing) + " " + quote(SourceManifestPath(hp, "native_fixture")) + "\nprintf '%s\\n' '{\"session_id\":\"s1\",\"fingerprint\":\"candidate\",\"body\":\"{\\\"type\\\":\\\"native_session\\\"}\\n\"}' '{\"complete\":true,\"pending\":1}'\n"
+	if err := os.WriteFile(filepath.Join(backend, "python3"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	previousPath := os.Getenv("PATH")
+	t.Setenv("PATH", backend)
+	_, err = CaptureNativeConversations(context.Background(), hp, "native_fixture", root, "hermes", "", now)
+	if err == nil || !strings.Contains(err.Error(), "session checkpoint advanced concurrently") {
+		t.Fatalf("newer generation replaced: %v", err)
+	}
+	actual, err := os.ReadFile(SourceManifestPath(hp, "native_fixture"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(actual) != string(body) {
+		t.Fatal("newer authority bytes changed")
+	}
+	t.Setenv("PATH", previousPath)
+	retry := captureNative(t, hp, root, "hermes", now)
+	if retry.Captured != 1 {
+		t.Fatalf("retry after competing publication: %+v", retry)
+	}
+}
