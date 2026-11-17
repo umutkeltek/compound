@@ -1843,7 +1843,7 @@ Ordinary tool hooks continue to inspect nonterminal attempts only.
 ### Memory backend recovery
 
 The approved-memory hook starts `compound-memory-service tick`, which holds a per-home
-nonblocking launch lock across admission and execution. Duplicate triggers exit without
+nonblocking launch lock across admission and execution. The hook checks the exact maintenance lease before launching anything and paces requests per home: one minute initially, doubling to thirty minutes while successful coverage does not advance. A fresh failed check remains due so it cannot reset failure backoff. Duplicate triggers exit without
 queuing work. A nine-minute deadline includes admission; cancellation sends SIGTERM
 to the native execution owner so it can finalize the attempt. The helper runs `compound-memory-service refresh`
 inside the same governed execution reservation. `compound corpus backend-health` is a
@@ -1869,3 +1869,5 @@ crashed source does not monopolize the next pass. It reports pending work, the l
 reported byte/runtime costs, and age since the last successful index. Missing timestamps
 or cost counters remain unknown. Indexing degradation does not change backend readiness
 or its exit code, so the hourly disk guard can warn without restarting a healthy model.
+
+Unfinished corpus coverage is interpreted against the same four-minute deadline used by the native refresh command. Readers report an expired or invalid `refreshing` attempt as `interrupted`, preserve prior observation counts and timestamps, and never rewrite the durable receipt during a read. The launch-lock regression exercises normal completion, a killed helper with its child still alive, orphan-child exit, and killing the native child: the lock remains held only while an actual owner is alive.

@@ -2,8 +2,10 @@
 import datetime
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
+import signal
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -359,6 +361,35 @@ else:
             self.assertEqual(json.loads(out)["status"],"already_running")
         finally:
             (self.home/"release").touch()
+            first.communicate(timeout=3)
+
+        third = self.launch()
+        out, err = third.communicate(timeout=3)
+        self.assertEqual(third.returncode, 0, err)
+        self.assertNotIn("already_running", out)
+
+    def test_launch_lock_releases_after_helper_and_native_child_are_killed(self):
+        first = self.launch()
+        try:
+            self.wait_entered()
+            native_pid = int((self.home / "entered").read_text())
+            first.kill()
+            first.wait(timeout=3)
+            second = self.launch()
+            out, err = second.communicate(timeout=3)
+            self.assertEqual(second.returncode, 0, err)
+            self.assertEqual(json.loads(out)["status"], "already_running")
+            os.kill(native_pid, signal.SIGKILL)
+            first.communicate(timeout=3)
+            (self.home / "release").touch()
+            third = self.launch()
+            out, err = third.communicate(timeout=3)
+            self.assertEqual(third.returncode, 0, err)
+            self.assertNotIn("already_running", out)
+        finally:
+            (self.home / "release").touch()
+            if first.poll() is None:
+                first.kill()
             first.communicate(timeout=3)
 
     def test_deadline_requests_graceful_native_cancellation(self):

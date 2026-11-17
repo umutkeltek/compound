@@ -74,11 +74,10 @@ func Search(ctx context.Context, homePath string, lanes []LaneConfig, factory Em
 	identityGroups := map[string]int{}
 	for _, lane := range lanes {
 		c := Coverage{Lane: lane.Lane, Status: "snapshot_only", FreshnessBasis: "owned snapshot; original source freshness is not monitored"}
-		var prior Coverage
 		if lane.Source != nil {
-			if err := readJSONFile(refreshPath(homePath, lane), &prior); err == nil {
+			if prior, err := readRefreshCoverage(homePath, lane, time.Now()); err == nil {
 				c = prior
-				if stamp, err := time.Parse(time.RFC3339, c.CheckedAt); err != nil || time.Since(stamp) > 15*time.Minute {
+				if stamp, err := time.Parse(time.RFC3339, c.CheckedAt); !hardRefreshStatuses[c.Status] && (err != nil || time.Since(stamp) > 15*time.Minute) {
 					c.Status = "stale"
 				}
 			} else {

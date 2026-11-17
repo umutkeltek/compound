@@ -46,7 +46,7 @@ func cmdCorpus(args []string) {
 			fmt.Fprintln(os.Stderr, "corpus refresh: invalid configuration")
 			os.Exit(1)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), corpus.RefreshTimeout)
 		defer cancel()
 		report := corpus.Refresh(ctx, hp, cfg.CorpusLanes, corpus.NewConfiguredEmbedder, time.Now())
 		printJSON(report)

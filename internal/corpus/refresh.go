@@ -13,6 +13,10 @@ import (
 	"compound/internal/sourceobs"
 )
 
+// RefreshTimeout is the native refresh deadline and the age beyond which an
+// unfinished attempt cannot be reported as still refreshing.
+const RefreshTimeout = 4 * time.Minute
+
 type SourceConfig struct {
 	StateDatabase string   `json:"state_database,omitempty" yaml:"state_database,omitempty"`
 	Database      string   `json:"database,omitempty" yaml:"database,omitempty"`
@@ -82,6 +86,7 @@ var hardRefreshStatuses = map[string]bool{
 	"index_failed":         true,
 	"status_write_failed":  true,
 	"cancelled":            true,
+	"interrupted":          true,
 }
 
 // Failed reports whether a scheduled refresh must exit non-zero: a lane hit a
@@ -103,6 +108,24 @@ func (r RefreshReport) Failed() bool {
 
 func refreshPath(homePath string, lane LaneConfig) string {
 	return filepath.Join(filepath.Dir(IndexDir(homePath, lane)), "refresh.json")
+}
+
+// readRefreshCoverage preserves the last observed coverage while distinguishing
+// an unfinished attempt whose native deadline passed. This is a read-only
+// projection: a killed writer cannot finalize its own receipt.
+func readRefreshCoverage(homePath string, lane LaneConfig, now time.Time) (Coverage, error) {
+	var c Coverage
+	if err := readJSONFile(refreshPath(homePath, lane), &c); err != nil {
+		return c, err
+	}
+	if c.Status == "refreshing" {
+		started, err := time.Parse(time.RFC3339Nano, c.LastAttemptAt)
+		if err != nil || started.After(now) || now.Sub(started) >= RefreshTimeout {
+			c.Status = "interrupted"
+			c.Error = "refresh deadline passed without a completed coverage record"
+		}
+	}
+	return c, nil
 }
 
 // refreshLanesByAge gives skipped and newly configured sources their turn after
@@ -343,8 +366,8 @@ func RefreshDue(hp string, now time.Time, changedSource ...string) (bool, error)
 		if lane.Source == nil {
 			continue
 		}
-		var c Coverage
-		if err := readJSONFile(refreshPath(hp, lane), &c); err != nil {
+		c, err := readRefreshCoverage(hp, lane, now)
+		if err != nil || hardRefreshStatuses[c.Status] {
 			return true, nil
 		}
 		stamp, err := time.Parse(time.RFC3339, c.CheckedAt)
