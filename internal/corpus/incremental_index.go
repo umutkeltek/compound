@@ -189,11 +189,22 @@ func indexIncremental(ctx context.Context, hp string, lane LaneConfig, embedder 
 	if err != nil && !os.IsNotExist(err) {
 		return IndexReport{}, err
 	}
+	if err := checkIndexModelDigest(dir, lane, old, opts.Rebuild, false); err != nil {
+		return IndexReport{}, err
+	}
 	stats := incrementalStats{}
 	prepared, err := prepareIncremental(ctx, hp, lane, old, opts.Rebuild, &stats)
 	if err != nil {
 		return IndexReport{}, err
 	}
+	if err := verifyModelDigest(ctx, lane.Embedder); err != nil {
+		return IndexReport{}, err
+	}
+	binding := modelDigestBinding(old, lane.Embedder.ModelDigest, opts.Rebuild)
+	prepared.identity.ModelDigest = lane.Embedder.ModelDigest
+	prepared.manifest.ModelDigest = lane.Embedder.ModelDigest
+	prepared.identity.ModelDigestBinding = binding
+	prepared.manifest.ModelDigestBinding = binding
 	report := IndexReport{SchemaVersion: ManifestSchemaVersion, Lane: lane.Lane, IndexDir: dir, EmbedderIdentity: lane.Embedder.Identity(),
 		Items: len(prepared.manifest.Items), TotalChunks: len(prepared.chunks), Rebuild: opts.Rebuild}
 	report.Added, report.Changed, report.Removed = stalenessCounts(old, prepared.manifest)
@@ -208,7 +219,7 @@ func indexIncremental(ctx context.Context, hp string, lane LaneConfig, embedder 
 	// Metadata inventory is reconciled on every pass. No vector or body reads
 	// and no index writes are needed when the committed generation is complete.
 	var progress ProgressFile
-	if !opts.Rebuild && old.VectorShards != nil && old.VectorPending == 0 && old.VectorError == "" && reflect.DeepEqual(old.Items, prepared.manifest.Items) &&
+	if !opts.Rebuild && old.ModelDigest == prepared.manifest.ModelDigest && old.ModelDigestBinding == binding && old.VectorShards != nil && old.VectorPending == 0 && old.VectorError == "" && reflect.DeepEqual(old.Items, prepared.manifest.Items) &&
 		(len(old.EmptyItems) == 0 && len(prepared.manifest.EmptyItems) == 0 || reflect.DeepEqual(old.EmptyItems, prepared.manifest.EmptyItems)) && old.Chunk == lane.Chunk &&
 		old.PrefixSchemaVersion == PrefixSchemaVersion && readJSONFile(filepath.Join(dir, "progress.json"), &progress) == nil &&
 		progress.PendingChunks == 0 && progress.TotalChunks == len(prepared.chunks) && progress.Error == "" {

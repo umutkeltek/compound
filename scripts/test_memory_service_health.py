@@ -66,7 +66,7 @@ class RecoveryTests(unittest.TestCase):
                 self.assertEqual(self.kills, 0)
 
     def test_missing_incompatible_or_custom_owner_never_restart(self):
-        for status, base in [("model_missing", LOCAL_ENDPOINT), ("incompatible", LOCAL_ENDPOINT), ("process_unavailable", "http://backend.invalid/v1")]:
+        for status, base in [("model_missing", LOCAL_ENDPOINT), ("incompatible", LOCAL_ENDPOINT), ("model_changed", LOCAL_ENDPOINT), ("process_unavailable", "http://backend.invalid/v1")]:
             report = {"status": "backend_unavailable", "backends": [{"status": status, "base_url": base}]}
             with patch.object(service, "backend_health", return_value=report), patch.object(service.subprocess, "run") as run:
                 with self.assertRaises(RuntimeError):

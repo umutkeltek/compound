@@ -112,6 +112,9 @@ func queryWithOptions(ctx context.Context, homePath string, lane LaneConfig, emb
 	if err != nil {
 		return QueryReport{}, err
 	}
+	if err := checkIndexModelDigest(IndexDir(homePath, lane), lane, manifest, false, true); err != nil {
+		return QueryReport{}, err
+	}
 	transport := NewIndexTransport(homePath, lane, embedder)
 	transport.ctx = ctx
 	transport.manifest = &manifest
@@ -414,6 +417,9 @@ func (t *IndexTransport) RoundTrip(req mem.Request) (mem.Response, error) {
 		if err != nil {
 			resp.OK = false
 			code := mem.CodeBadRequest
+			if errors.Is(err, ErrModelChanged) || errors.Is(err, ErrModelMissing) {
+				code = mem.CodeEmbedderMismatch
+			}
 			if errors.Is(err, mem.ErrEngineUnavailable) {
 				code = mem.CodeEngineUnavailable
 			}
@@ -456,6 +462,9 @@ func (t *IndexTransport) load() (*loadedIndex, error) {
 func (t *IndexTransport) query(index *loadedIndex, req mem.Request) ([]mem.Hit, error) {
 	queryVectors, err := t.embedder.Embed(t.ctx, []string{req.Text})
 	if err != nil {
+		if errors.Is(err, ErrModelChanged) || errors.Is(err, ErrModelMissing) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("%w: %v", mem.ErrEngineUnavailable, err)
 	}
 	if len(queryVectors) != 1 {

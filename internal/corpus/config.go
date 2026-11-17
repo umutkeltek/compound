@@ -53,11 +53,12 @@ type LaneConfig struct {
 }
 
 type EmbedderConfig struct {
-	Provider string `json:"provider" yaml:"provider"`
-	Model    string `json:"model" yaml:"model"`
-	Dims     int    `json:"dims" yaml:"dims"`
-	Bits     string `json:"bits" yaml:"bits"`
-	BaseURL  string `json:"base_url,omitempty" yaml:"base_url,omitempty"`
+	ModelDigest string `json:"model_digest,omitempty" yaml:"model_digest,omitempty"`
+	Provider    string `json:"provider" yaml:"provider"`
+	Model       string `json:"model" yaml:"model"`
+	Dims        int    `json:"dims" yaml:"dims"`
+	Bits        string `json:"bits" yaml:"bits"`
+	BaseURL     string `json:"base_url,omitempty" yaml:"base_url,omitempty"`
 }
 
 func (e EmbedderConfig) Identity() string {
@@ -122,6 +123,16 @@ func ValidateLaneConfig(lane LaneConfig) (LaneConfig, error) {
 	lane.Privacy = strings.ToLower(strings.TrimSpace(lane.Privacy))
 	lane.Embedder.Provider = strings.TrimSpace(lane.Embedder.Provider)
 	lane.Embedder.Model = strings.TrimSpace(lane.Embedder.Model)
+	digest, digestErr := normalizeModelDigest(lane.Embedder.ModelDigest)
+	if digestErr != nil {
+		return LaneConfig{}, digestErr
+	}
+	lane.Embedder.ModelDigest = digest
+	if digest != "" {
+		if _, err := modelInventoryURL(lane.Embedder); err != nil {
+			return LaneConfig{}, err
+		}
+	}
 	lane.Embedder.Bits = strings.TrimSpace(lane.Embedder.Bits)
 	lane.Embedder.BaseURL = strings.TrimSpace(lane.Embedder.BaseURL)
 	if lane.Embedder.Bits == "" {

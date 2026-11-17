@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -23,10 +24,12 @@ type BackendHealth struct {
 	Backends       []BackendCheck   `json:"backends"`
 }
 type BackendCheck struct {
-	Status   string `json:"status"`
-	Identity string `json:"identity"`
-	BaseURL  string `json:"base_url"`
-	Detail   string `json:"detail,omitempty"`
+	ModelDigest         string `json:"model_digest,omitempty"`
+	ExpectedModelDigest string `json:"expected_model_digest,omitempty"`
+	Status              string `json:"status"`
+	Identity            string `json:"identity"`
+	BaseURL             string `json:"base_url"`
+	Detail              string `json:"detail,omitempty"`
 }
 
 func CheckBackends(ctx context.Context, homePath string, lanes []LaneConfig) BackendHealth {
@@ -42,7 +45,7 @@ func CheckBackends(ctx context.Context, homePath string, lanes []LaneConfig) Bac
 		if base == "" {
 			base = (&url.URL{Scheme: "http", Host: net.JoinHostPort("127.0.0.1", "11434"), Path: "/v1"}).String()
 		}
-		key := base + "|" + cfg.Identity()
+		key := base + "|" + cfg.Identity() + "|" + cfg.ModelDigest
 		if seen[key] {
 			continue
 		}
@@ -89,8 +92,9 @@ func checkBackend(ctx context.Context, base string, cfg EmbedderConfig) BackendC
 	}
 	var tags struct {
 		Models []struct {
-			Name  string `json:"name"`
-			Model string `json:"model"`
+			Name   string `json:"name"`
+			Model  string `json:"model"`
+			Digest string `json:"digest"`
 		} `json:"models"`
 	}
 	origin := u.Scheme + "://" + u.Host
@@ -108,11 +112,18 @@ func checkBackend(ctx context.Context, base string, cfg EmbedderConfig) BackendC
 		for _, name := range []string{model.Name, model.Model} {
 			if name == cfg.Model || (!strings.Contains(cfg.Model, ":") && name == cfg.Model+":latest") {
 				found = true
+				check.ModelDigest, _ = normalizeModelDigest(model.Digest)
 			}
 		}
 	}
 	if !found {
 		check.Status, check.Detail = "model_missing", "configured model is absent; no automatic download"
+		return check
+	}
+	check.ExpectedModelDigest = cfg.ModelDigest
+	if cfg.ModelDigest != "" && check.ModelDigest != cfg.ModelDigest {
+		check.Status = "model_changed"
+		check.Detail = "configured weights differ; no automatic restart"
 		return check
 	}
 	raw, _ := json.Marshal(map[string]any{"model": cfg.Model, "input": []string{"memory readiness probe"}})
@@ -148,6 +159,19 @@ func checkBackend(ctx context.Context, base string, cfg EmbedderConfig) BackendC
 	if !nonzero {
 		check.Detail = "embedding is empty or zero"
 		return check
+	}
+	if cfg.ModelDigest != "" {
+		if err := verifyModelDigest(ctx, cfg); err != nil {
+			check.Status = "process_unhealthy"
+			if errors.Is(err, ErrModelChanged) {
+				check.Status = "model_changed"
+			}
+			if errors.Is(err, ErrModelMissing) {
+				check.Status = "model_missing"
+			}
+			check.Detail = "model inventory changed during readiness probe"
+			return check
+		}
 	}
 	check.Status = "ready"
 	return check

@@ -52,6 +52,8 @@ type IndexReport struct {
 }
 
 type IdentityFile struct {
+	ModelDigest         string      `json:"model_digest,omitempty"`
+	ModelDigestBinding  string      `json:"model_digest_binding,omitempty"`
 	SchemaVersion       string      `json:"schema_version"`
 	Lane                string      `json:"lane"`
 	SourceFamily        string      `json:"source_family"`
@@ -63,10 +65,12 @@ type IdentityFile struct {
 }
 
 type Manifest struct {
-	VectorShards  map[string]string `json:"vector_shards"`
-	VectorPending int               `json:"vector_pending,omitempty"`
-	VectorError   string            `json:"vector_error,omitempty"`
-	EmptyItems    map[string]bool   `json:"empty_items,omitempty"`
+	ModelDigest        string            `json:"model_digest,omitempty"`
+	ModelDigestBinding string            `json:"model_digest_binding,omitempty"`
+	VectorShards       map[string]string `json:"vector_shards"`
+	VectorPending      int               `json:"vector_pending,omitempty"`
+	VectorError        string            `json:"vector_error,omitempty"`
+	EmptyItems         map[string]bool   `json:"empty_items,omitempty"`
 
 	SchemaVersion       string                         `json:"schema_version"`
 	Lane                string                         `json:"lane"`
@@ -124,6 +128,10 @@ func Index(ctx context.Context, homePath string, lane LaneConfig, embedder Embed
 		return IndexReport{}, err
 	}
 	defer unlock()
+	oldManifest, _ := readManifest(dir)
+	if err := checkIndexModelDigest(dir, lane, oldManifest, opts.Rebuild, false); err != nil {
+		return IndexReport{}, err
+	}
 	prepared, err := prepareIndexContext(ctx, homePath, lane)
 	if err != nil {
 		return IndexReport{}, err
@@ -131,7 +139,14 @@ func Index(ctx context.Context, homePath string, lane LaneConfig, embedder Embed
 	if err := refuseMixedIdentity(dir, prepared.identity.EmbedderIdentity); err != nil {
 		return IndexReport{}, err
 	}
-	oldManifest, _ := readManifest(dir)
+	if err := verifyModelDigest(ctx, lane.Embedder); err != nil {
+		return IndexReport{}, err
+	}
+	prepared.identity.ModelDigest = lane.Embedder.ModelDigest
+	prepared.manifest.ModelDigest = lane.Embedder.ModelDigest
+	binding := modelDigestBinding(oldManifest, lane.Embedder.ModelDigest, opts.Rebuild)
+	prepared.identity.ModelDigestBinding = binding
+	prepared.manifest.ModelDigestBinding = binding
 	oldVectors, _ := readVectors(dir)
 	currentVectors := map[string][]float32{}
 	reused := 0
