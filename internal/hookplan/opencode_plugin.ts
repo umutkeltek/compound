@@ -1,6 +1,10 @@
 // compound-owned: opencode-plugin@1
-import type { Plugin } from "@opencode-ai/plugin"
-import type { Part } from "@opencode-ai/sdk"
+// OpenCode 2.x loads a plugin module's default export and requires the shape
+// `{ id, setup }` (or `{ id, effect }`); a bare plugin function is refused with
+// "Plugin must export a default definition with an id and an effect or setup
+// function". `setup` receives the promise-based plugin API and may return a
+// cleanup function. The types below describe only the parts of that API this
+// plugin uses, as the 2.x host passes them.
 
 type CompoundHookName = "session-start" | "user-prompt-submit" | "post-tool-use"
 
@@ -22,6 +26,58 @@ type HookResponse = {
 }
 
 export type HookRunner = (name: CompoundHookName, input: HookInput) => Promise<string>
+
+type Disposable = { dispose: () => unknown }
+
+// One entry of the system prompt OpenCode sends to the model (LLM.SystemPart).
+export type SystemPart = { type: "text"; text: string }
+
+// session.hook("prompt"): fires once per user prompt, before the message is recorded.
+export type PromptHookInput = {
+  sessionID: string
+  prompt: { text?: string }
+}
+
+// session.hook("context"): fires for every primary model request. Hooks mutate the
+// payload in place; the host sends `system` exactly as the hooks leave it.
+export type ContextHookInput = {
+  sessionID: string
+  system: SystemPart[]
+}
+
+// tool.hook("execute.after"): fires after every tool call, completed or failed.
+export type ToolAfterHookInput = {
+  tool: string
+  sessionID: string
+  input?: Record<string, unknown>
+  status?: "completed" | "error"
+  result?: { output?: unknown; content?: Array<{ type: string; text?: string }> }
+  error?: unknown
+}
+
+export type OpenCodeEvent = {
+  type: string
+  data?: { sessionID?: string; location?: { directory?: string } }
+}
+
+export type OpenCodePluginAPI = {
+  location?: { directory?: string } | null
+  session: {
+    hook(name: "prompt", fn: (input: PromptHookInput) => unknown): Promise<Disposable>
+    hook(name: "context", fn: (input: ContextHookInput) => unknown): Promise<Disposable>
+  }
+  tool: {
+    hook(name: "execute.after", fn: (input: ToolAfterHookInput) => unknown): Promise<Disposable>
+  }
+  event: {
+    subscribe(options: { types: string[]; signal?: AbortSignal }): AsyncIterable<OpenCodeEvent>
+  }
+}
+
+export type PluginDefinition = {
+  id: string
+  setup: (api: OpenCodePluginAPI) => Promise<() => Promise<void>>
+}
 
 // Budgets are per hook because the hooks have different jobs, and one shared
 // budget silently defeated the most important of them. Measured on a real
@@ -91,111 +147,161 @@ const runCompoundHook: HookRunner = async (name, input) => {
   ).trim()
 }
 
-function userPrompt(parts: Part[]): string {
-  return parts
-    .filter(
-      (part): part is Extract<Part, { type: "text" }> =>
-        part.type === "text" && !part.synthetic && !part.ignored,
-    )
-    .map((part) => part.text)
-    .join("\n")
-    .trim()
-}
-
 function contextBlock(source: string, context: string): string {
   return "<compound-context source=\"" + source + "\">\n" + context + "\n</compound-context>"
 }
 
-function appendSystemContext(existing: string | undefined, blocks: string[]): string | undefined {
-  const additions = blocks.filter(Boolean)
-  if (additions.length === 0) return existing
-  return [existing?.trim(), ...additions].filter(Boolean).join("\n\n")
+function toolResponse(input: ToolAfterHookInput): string {
+  if (input.status === "error") return oneLine(input.error)
+  const output = input.result?.output
+  if (typeof output === "string") return output
+  const text = (input.result?.content ?? [])
+    .filter((part) => part.type === "text" && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("\n")
+  if (text) return text
+  return output === undefined ? "" : JSON.stringify(output) ?? ""
 }
 
-function createCompoundPlugin(runHook: HookRunner = runCompoundHook): Plugin {
-  return async ({ directory }) => {
-    const sessionStarts = new Map<string, Promise<string>>()
-    const sessionContextInjected = new Set<string>()
+function createCompoundPlugin(runHook: HookRunner = runCompoundHook): PluginDefinition {
+  return {
+    id: "compound",
+    setup: async (api) => {
+      const directory = api.location?.directory || process.cwd()
+      const sessionStarts = new Map<string, Promise<string>>()
+      const promptContexts = new Map<string, string>()
 
-    const invokeOpen = async (
-      name: CompoundHookName,
-      input: HookInput,
-    ): Promise<string> => {
-      try {
-        return await runHook(name, input)
-      } catch (error) {
-        console.error("[compound/opencode] " + name + " failed open: " + oneLine(error))
-        return ""
+      const invokeOpen = async (name: CompoundHookName, input: HookInput): Promise<string> => {
+        try {
+          return await runHook(name, input)
+        } catch (error) {
+          console.error("[compound/opencode] " + name + " failed open: " + oneLine(error))
+          return ""
+        }
       }
-    }
 
-    const ensureSessionStart = (sessionID: string, cwd = directory): Promise<string> => {
-      const existing = sessionStarts.get(sessionID)
-      if (existing) return existing
-      const pending = invokeOpen("session-start", {
-        hook_event_name: "SessionStart",
-        session_id: sessionID,
-        cwd,
-      })
-      sessionStarts.set(sessionID, pending)
-      return pending
-    }
-
-    return {
-      event: async ({ event }) => {
-        if (event.type === "session.created") {
-          void ensureSessionStart(event.properties.info.id, event.properties.info.directory)
-        }
-        if (event.type === "session.deleted") {
-          sessionStarts.delete(event.properties.info.id)
-          sessionContextInjected.delete(event.properties.info.id)
-        }
-      },
-
-      "chat.message": async (input, output) => {
-        const blocks: string[] = []
-        if (!sessionContextInjected.has(input.sessionID)) {
-          const context = await ensureSessionStart(input.sessionID)
-          if (context) blocks.push(contextBlock("session-start", context))
-          sessionContextInjected.add(input.sessionID)
-        }
-
-        const prompt = userPrompt(output.parts)
-        const promptContext = await invokeOpen("user-prompt-submit", {
-          hook_event_name: "UserPromptSubmit",
-          session_id: input.sessionID,
-          cwd: directory,
-          prompt,
+      const ensureSessionStart = (sessionID: string, cwd = directory): Promise<string> => {
+        const existing = sessionStarts.get(sessionID)
+        if (existing) return existing
+        const pending = invokeOpen("session-start", {
+          hook_event_name: "SessionStart",
+          session_id: sessionID,
+          cwd,
         })
-        if (promptContext) blocks.push(contextBlock("user-prompt-submit", promptContext))
+        sessionStarts.set(sessionID, pending)
+        return pending
+      }
 
-        output.message.system = appendSystemContext(output.message.system, blocks)
-      },
+      const forget = (sessionID: string) => {
+        sessionStarts.delete(sessionID)
+        promptContexts.delete(sessionID)
+      }
 
-      "tool.execute.after": async (input, output) => {
-        void invokeOpen("post-tool-use", {
-          hook_event_name: "PostToolUse",
-          session_id: input.sessionID,
-          cwd: directory,
-          tool_name: input.tool,
-          tool_input: input.args ?? {},
-          tool_response: output.output,
-        })
-      },
-    }
+      // Start the briefing as soon as a session exists, so the first prompt rarely waits
+      // for the whole ContextPack build. OpenCode runs one plugin instance per location and
+      // delivers every session event to all of them, so an instance only starts sessions
+      // created at its own location; the context hook still covers any it skips.
+      const events = new AbortController()
+      void (async () => {
+        try {
+          const stream = api.event.subscribe({
+            types: ["session.created", "session.deleted"],
+            signal: events.signal,
+          })
+          for await (const event of stream) {
+            const sessionID = event.data?.sessionID
+            if (!sessionID) continue
+            if (event.type === "session.created") {
+              const created = event.data?.location?.directory
+              if (created && api.location?.directory && created !== api.location.directory) continue
+              void ensureSessionStart(sessionID, created || directory)
+            }
+            if (event.type === "session.deleted") forget(sessionID)
+          }
+        } catch (error) {
+          if (!events.signal.aborted) {
+            console.error("[compound/opencode] session events failed open: " + oneLine(error))
+          }
+        }
+      })()
+
+      const registrations: Disposable[] = []
+      try {
+        registrations.push(
+          await api.session.hook("prompt", async (input) => {
+            try {
+              await ensureSessionStart(input.sessionID)
+              const context = await invokeOpen("user-prompt-submit", {
+                hook_event_name: "UserPromptSubmit",
+                session_id: input.sessionID,
+                cwd: directory,
+                prompt: (input.prompt?.text ?? "").trim(),
+              })
+              promptContexts.set(input.sessionID, context)
+            } catch (error) {
+              console.error("[compound/opencode] prompt hook failed open: " + oneLine(error))
+            }
+          }),
+        )
+
+        registrations.push(
+          await api.session.hook("context", async (input) => {
+            try {
+              const blocks: string[] = []
+              const sessionContext = await ensureSessionStart(input.sessionID)
+              if (sessionContext) blocks.push(contextBlock("session-start", sessionContext))
+              const promptContext = promptContexts.get(input.sessionID)
+              if (promptContext) blocks.push(contextBlock("user-prompt-submit", promptContext))
+              if (blocks.length > 0 && Array.isArray(input.system)) {
+                input.system.push({ type: "text", text: blocks.join("\n\n") })
+              }
+            } catch (error) {
+              console.error("[compound/opencode] context hook failed open: " + oneLine(error))
+            }
+          }),
+        )
+
+        registrations.push(
+          await api.tool.hook("execute.after", (input) => {
+            try {
+              void invokeOpen("post-tool-use", {
+                hook_event_name: "PostToolUse",
+                session_id: input.sessionID,
+                cwd: directory,
+                tool_name: input.tool,
+                tool_input: input.input ?? {},
+                tool_response: toolResponse(input),
+              })
+            } catch (error) {
+              console.error("[compound/opencode] post-tool-use failed open: " + oneLine(error))
+            }
+          }),
+        )
+      } catch (error) {
+        console.error("[compound/opencode] hook registration failed open: " + oneLine(error))
+      }
+
+      return async () => {
+        events.abort()
+        for (const registration of registrations) {
+          try {
+            await registration.dispose()
+          } catch {
+            // Disposal during shutdown has nothing left to protect.
+          }
+        }
+      }
+    },
   }
 }
 
-type TestablePlugin = Plugin & {
-  createWithRunner: (runHook: HookRunner) => Plugin
-  timeoutMS: (name: CompoundHookName) => number
-}
-
-// opencode initializes every function exported by a plugin module. Keep the default plugin as the
-// only runtime function export; properties preserve test access without becoming module exports.
-const CompoundPlugin = Object.assign(createCompoundPlugin(), {
+// Test access lives on a named non-function export. OpenCode reads only the default
+// export; a 1.x host initialized every exported function, so none is exported here.
+export const testing = {
   createWithRunner: createCompoundPlugin,
   timeoutMS,
-}) as TestablePlugin
+}
+
+const CompoundPlugin: PluginDefinition = createCompoundPlugin()
 
 export default CompoundPlugin

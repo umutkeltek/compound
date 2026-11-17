@@ -125,7 +125,7 @@ export function validateOpenCodePosture(plan: CompiledPosture): void {
   if (
     plan.mutation_ready ||
     prepare.disposition !== "native" ||
-    !prepare.native_events?.includes("chat.message") ||
+    !prepare.native_events?.includes("session.context") ||
     guard.disposition !== "unsupported" ||
     guard.native_events?.includes("tool.execute.before") ||
     observe.disposition !== "native" ||

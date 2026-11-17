@@ -7,14 +7,17 @@ installer first runs:
 compound harness posture-plan --harness opencode --json
 ```
 
-It validates the adapter-owned native projection (`chat.message`, `tool.execute.after`, and an
+It validates the adapter-owned native projection (`session.context`, `tool.execute.after`, and an
 explicitly unsupported mutation guard) before touching config. Operators choose the semantic
 posture; they do not maintain OpenCode event names in Compound core. opencode's
 tool.execute.before callback cannot deny a tool call, so this adapter does not register that
 callback and does not provide a mutation-control boundary.
 
-The plugin uses the stable chat.message hook's message.system field for context injection. It does
-not use experimental.chat.system.transform. Every callback fails open with one stderr line;
+The plugin targets OpenCode 2.x, which loads only a default export shaped `{ id, setup }`.
+`setup` starts the session briefing on `session.created` (only in the plugin instance at that
+session's location), runs user-prompt-submit from the session `prompt` hook, and appends both
+contexts to the `system` array of every model request from the session `context` hook. Tool calls
+are recorded from the tool `execute.after` hook. Every callback fails open with one stderr line;
 PostToolUse dispatch is fire-and-forget.
 
 Most users do not run this folder: `compound init` installs the same plugin from the copy

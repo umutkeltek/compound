@@ -11,14 +11,14 @@ func (openCodeSemanticAdapter) Compile(
 	switch intention {
 	case IntentionPrepareContext:
 		if !attestation.Features["chat_message_context"] {
-			return unsupportedIntention(intention, "chat.message context injection is not attested"), nil
+			return unsupportedIntention(intention, "session context hook injection is not attested"), nil
 		}
 		return CompiledIntention{
 			Intention:           intention,
 			Disposition:         DispositionNative,
 			EnforcementStrength: "context",
-			NativeEvents:        []string{"chat.message"},
-		}, []nativeBinding{{event: "chat.message"}}
+			NativeEvents:        []string{"session.context"},
+		}, []nativeBinding{{event: "session.context"}}
 	case IntentionGuardMutation:
 		if attestation.Features["before_tool_can_deny"] {
 			return CompiledIntention{

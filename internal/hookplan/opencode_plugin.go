@@ -22,9 +22,11 @@ const OpenCodePluginMarker = "// compound-owned: opencode-plugin@1"
 // OpenCodePluginRelPath is the plugin's location under the user's home folder.
 const OpenCodePluginRelPath = ".config/opencode/plugins/compound.ts"
 
-// openCodePluginFile is the whole-file installer for OpenCode. The plugin gives OpenCode the
-// session briefing (session.created + chat.message) and records tool calls
-// (tool.execute.after). OpenCode has no session-end callback, so no receipt binding exists.
+// openCodePluginFile is the whole-file installer for OpenCode. The plugin uses the OpenCode 2.x
+// definition shape (`export default { id, setup }`): it starts the session briefing on
+// session.created, adds it and the per-prompt context to the system prompt through the session
+// `prompt` and `context` hooks, and records tool calls through the tool `execute.after` hook.
+// OpenCode has no session-end callback, so no receipt binding exists.
 // The copy that `bun adapters/opencode/install.ts` wrote before this marker existed is adopted
 // as compound-owned, so the first `compound init` after an upgrade refreshes it in place.
 func openCodePluginFile() ownedFile {
@@ -35,8 +37,8 @@ func openCodePluginFile() ownedFile {
 		legacy:  []string{strings.TrimPrefix(openCodePluginSource, OpenCodePluginMarker+"\n")},
 		bindings: []HookInstallBinding{
 			{Event: "SessionStart", Matcher: "*", Command: "opencode plugin: session.created → compound hook session-start", Blocking: false},
-			{Event: "UserPromptSubmit", Matcher: "*", Command: "opencode plugin: chat.message → compound hook user-prompt-submit", Blocking: false},
-			{Event: "PostToolUse", Matcher: "*", Command: "opencode plugin: tool.execute.after → compound hook post-tool-use", Blocking: false},
+			{Event: "UserPromptSubmit", Matcher: "*", Command: "opencode plugin: session prompt + context hooks → compound hook user-prompt-submit", Blocking: false},
+			{Event: "PostToolUse", Matcher: "*", Command: "opencode plugin: tool execute.after hook → compound hook post-tool-use", Blocking: false},
 		},
 	}
 }

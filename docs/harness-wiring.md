@@ -291,9 +291,10 @@ block an action before it runs. The plugin registers only the native lifecycle i
 honestly provide:
 
 ```text
-session.created     → session-start (the briefing, held for the first message)
-chat.message        → user-prompt-submit (context injection)
-tool.execute.after  → post-tool-use (outcome observation)
+session.created     → session-start (the briefing, awaited before the first model request)
+session prompt hook → user-prompt-submit (context for the turn)
+session context hook → both contexts appended to the system prompt of every model request
+tool execute.after  → post-tool-use (outcome observation)
 guard_mutation      → unsupported
 record_receipt      → unsupported
 ```
