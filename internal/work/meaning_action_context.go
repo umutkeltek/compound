@@ -140,31 +140,26 @@ func (s *Store) promotedMeaningActionContext(contextPackID string) (meaningResol
 // contract without importing internal/decisions (which would create the
 // decisions -> writeback -> work import cycle). If multiple accepted claims
 // carry one decision id, the newest ledger revision is the current one, matching
-// ContextPack construction.
+// ContextPack construction. Supersession uses mem's one retirement rule: a
+// record named by decision id, claim id or decision:// ref leaves with every
+// accepted import that shares its canonical id.
 func currentActiveMeaningDecisions(claims []mem.Claim) map[string]mem.Claim {
-	superseded := map[string]bool{}
+	var accepted []mem.Claim
 	for _, claim := range claims {
 		if claim.ClaimType != "decision" || claim.Qualifiers == nil ||
 			strings.ToLower(strings.TrimSpace(claim.Qualifiers["lifecycle_status"])) != "accepted" {
 			continue
 		}
-		for _, id := range strings.Split(claim.Qualifiers["supersedes"], ",") {
-			if id = strings.TrimSpace(id); id != "" {
-				superseded[id] = true
-			}
-		}
+		accepted = append(accepted, claim)
 	}
+	retired := mem.RetiredDecisionIDs(accepted, mem.DecisionSupersedesNames(accepted, nil))
 	byRef := map[string]mem.Claim{}
-	for _, claim := range claims {
-		if claim.ClaimType != "decision" || claim.Qualifiers == nil ||
-			strings.ToLower(strings.TrimSpace(claim.Qualifiers["lifecycle_status"])) != "accepted" {
-			continue
-		}
+	for _, claim := range accepted {
 		decisionID := strings.TrimSpace(claim.Qualifiers["decision_id"])
-		if decisionID == "" || superseded[decisionID] {
+		if decisionID == "" || retired[decisionID] {
 			continue
 		}
-		ref := "decision://" + decisionID
+		ref := mem.DecisionRefPrefix + decisionID
 		if prior, ok := byRef[ref]; !ok || claim.Seq > prior.Seq || (claim.Seq == prior.Seq && claim.ID > prior.ID) {
 			byRef[ref] = claim
 		}

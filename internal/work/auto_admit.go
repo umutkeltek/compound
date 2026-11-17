@@ -256,19 +256,14 @@ func (s *Store) validateActiveAutonomyGrant(artifact autonomyproof.Artifact) err
 	if err != nil {
 		return err
 	}
-	superseded := map[string]bool{}
-	for _, claim := range claims {
-		if claim.ClaimType != "decision" ||
-			!mem.HasOperationalDecisionAuthority(claim.Qualifiers) ||
-			!policy.HasOperatorProvenance(claim.Qualifiers["reviewed_by"]) ||
-			claim.Qualifiers["lifecycle_status"] != "accepted" {
-			continue
-		}
-		for _, id := range splitFreezeCSV(claim.Qualifiers["supersedes"]) {
-			superseded[id] = true
-		}
-	}
-	var classClaims []mem.Claim
+	// Retirement naming is mem's one rule (decision id, claim id or
+	// decision:// ref); only operator grants of this scope join a canonical id.
+	named := mem.DecisionSupersedesNames(claims, func(claim mem.Claim) bool {
+		return mem.HasOperationalDecisionAuthority(claim.Qualifiers) &&
+			policy.HasOperatorProvenance(claim.Qualifiers["reviewed_by"]) &&
+			claim.Qualifiers["lifecycle_status"] == "accepted"
+	})
+	var grants []mem.Claim
 	for _, claim := range claims {
 		q := claim.Qualifiers
 		if claim.ClaimType != "decision" ||
@@ -277,7 +272,12 @@ func (s *Store) validateActiveAutonomyGrant(artifact autonomyproof.Artifact) err
 			q["kind"] != "grant" || q["lifecycle_status"] != "accepted" || q["scope"] != "autonomy-evidence-threshold" {
 			continue
 		}
-		if superseded[q["decision_id"]] || q["auto_admit_class"] != artifact.Class {
+		grants = append(grants, claim)
+	}
+	retired := mem.RetiredDecisionIDs(grants, named)
+	var classClaims []mem.Claim
+	for _, claim := range grants {
+		if retired[mem.DecisionCanonicalID(claim)] || claim.Qualifiers["auto_admit_class"] != artifact.Class {
 			continue
 		}
 		classClaims = append(classClaims, claim)
@@ -553,11 +553,11 @@ func hasAutoAdmitProvenance(actor string) bool {
 // (kind, lifecycle_status, decision_id, freeze_owner_globs, freeze_keywords,
 // supersedes, reviewed_by) mirror internal/decisions' schema exactly —
 // `compound decisions record --kind freeze` is the only writer of these
-// qualifiers, so the two stay in lockstep by construction.
+// qualifiers, so the two stay in lockstep by construction. The `supersedes`
+// naming rule is shared through mem (DecisionSupersedesNames).
 const (
-	freezeDecisionKind            = "freeze"
-	freezeDecisionStatusAccepted  = "accepted"
-	freezeDecisionSupersedesField = "supersedes"
+	freezeDecisionKind           = "freeze"
+	freezeDecisionStatusAccepted = "accepted"
 )
 
 // freezeGuard is the enforcement seam AdmitAuto and Advance both call: a
@@ -602,17 +602,18 @@ func (s *Store) matchingFreeze(w envelope.WorkEnvelope) (bool, policy.FreezeReco
 // record's supersedes qualifier (undo = supersede, falsifier c). Legacy
 // recorded freezes remain fail-safe active; only the new locked-import stamp
 // may release them, so generic memory cannot forge an unfreeze.
+//
+// Naming is mem's one retirement rule (mem.DecisionSupersedesNames): an entry
+// may name the freeze's decision_id, the claim id of any of its imports, or
+// its canonical ref, and it releases every freeze import that shares that
+// canonical ref. Only freezes that pass the filter below join a canonical id
+// (mem.RetiredDecisionIDs), so a generic memory claim cannot link a named id
+// to a freeze nobody named.
 func activeFreezeRecords(claims []mem.Claim) []policy.FreezeRecord {
-	superseded := map[string]bool{}
-	for _, c := range claims {
-		if c.ClaimType != "decision" || !mem.HasOperationalDecisionAuthority(c.Qualifiers) || !policy.HasOperatorProvenance(c.Qualifiers["reviewed_by"]) {
-			continue
-		}
-		for _, id := range splitFreezeCSV(c.Qualifiers[freezeDecisionSupersedesField]) {
-			superseded[id] = true
-		}
-	}
-	var out []policy.FreezeRecord
+	named := mem.DecisionSupersedesNames(claims, func(c mem.Claim) bool {
+		return mem.HasOperationalDecisionAuthority(c.Qualifiers) && policy.HasOperatorProvenance(c.Qualifiers["reviewed_by"])
+	})
+	var freezes []mem.Claim
 	for _, c := range claims {
 		if c.ClaimType != "decision" {
 			continue
@@ -621,8 +622,14 @@ func activeFreezeRecords(claims []mem.Claim) []policy.FreezeRecord {
 		if q["kind"] != freezeDecisionKind || q["lifecycle_status"] != freezeDecisionStatusAccepted || !policy.HasOperatorProvenance(q["reviewed_by"]) {
 			continue
 		}
+		freezes = append(freezes, c)
+	}
+	released := mem.RetiredDecisionIDs(freezes, named)
+	var out []policy.FreezeRecord
+	for _, c := range freezes {
+		q := c.Qualifiers
 		id := q["decision_id"]
-		if id != "" && superseded[id] {
+		if released[mem.DecisionCanonicalID(c)] {
 			continue
 		}
 		out = append(out, policy.FreezeRecord{

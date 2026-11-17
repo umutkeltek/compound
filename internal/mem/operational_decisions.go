@@ -5,10 +5,10 @@ import "strings"
 // AuthoritativeActiveOperationalDecisions is the single pure fold for
 // operational decisions that may authorize an autonomous action. It admits
 // only accepted, reviewed, authority-stamped records and applies explicit
-// decision-id supersession before returning live claims.
+// supersession among them (DecisionSupersedesNames, RetiredDecisionIDs) before
+// returning live claims.
 func AuthoritativeActiveOperationalDecisions(claims []Claim) []Claim {
 	accepted := make([]Claim, 0, len(claims))
-	superseded := map[string]bool{}
 	for _, claim := range claims {
 		q := claim.Qualifiers
 		if claim.ClaimType != "decision" || !HasOperationalDecisionAuthority(q) ||
@@ -16,19 +16,74 @@ func AuthoritativeActiveOperationalDecisions(claims []Claim) []Claim {
 			continue
 		}
 		accepted = append(accepted, claim)
-		for _, id := range strings.Split(q["supersedes"], ",") {
-			if id = strings.TrimSpace(id); id != "" {
-				superseded[id] = true
-			}
-		}
 	}
+	retired := RetiredDecisionIDs(accepted, DecisionSupersedesNames(accepted, nil))
 	out := make([]Claim, 0, len(accepted))
 	for _, claim := range accepted {
 		decisionID := strings.TrimSpace(claim.Qualifiers["decision_id"])
-		if decisionID == "" || superseded[decisionID] {
+		if decisionID == "" || retired[DecisionCanonicalID(claim)] {
 			continue
 		}
 		out = append(out, claim)
 	}
 	return out
+}
+
+// DecisionRefPrefix is the scheme of a canonical decision ref
+// (decision://<DecisionCanonicalID>).
+const DecisionRefPrefix = "decision://"
+
+// DecisionCanonicalID is the id one decision is served under: the claim's
+// decision_id qualifier when it has one, else its claim id. Imports of one
+// decision page share it (an older legacy claim whose claim id is DEC-0003 and
+// a newer claim whose decision_id is DEC-0003).
+func DecisionCanonicalID(c Claim) string {
+	if id := strings.TrimSpace(c.Qualifiers["decision_id"]); id != "" {
+		return id
+	}
+	return strings.TrimSpace(c.ID)
+}
+
+// DecisionSupersedesNames is the one naming rule for decision retirement: it
+// collects what the `supersedes` qualifiers of the decision claims that
+// superseder accepts (nil accepts every decision claim) name. An entry may be
+// a decision id, a claim id, or a canonical ref with or without the
+// decision:// prefix; one qualifier may carry a comma list. An empty entry or
+// a bare prefix names nothing.
+func DecisionSupersedesNames(claims []Claim, superseder func(Claim) bool) map[string]bool {
+	named := map[string]bool{}
+	for _, c := range claims {
+		if c.ClaimType != "decision" || (superseder != nil && !superseder(c)) {
+			continue
+		}
+		for _, id := range strings.Split(c.Qualifiers["supersedes"], ",") {
+			if key := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(id), DecisionRefPrefix)); key != "" {
+				named[key] = true
+			}
+		}
+	}
+	return named
+}
+
+// RetiredDecisionIDs returns the canonical ids (DecisionCanonicalID) that
+// named retires among members. A member named by its claim id or decision_id
+// retires its canonical id, and with it every member that shares that id, so
+// the older and newer imports of one decision leave together. Only members
+// join a canonical id: a claim outside the caller's trust filter can never
+// link a named id to a record nobody named. A retired record stays retired
+// when its retirer is itself retired, because every superseder's list counts.
+func RetiredDecisionIDs(members []Claim, named map[string]bool) map[string]bool {
+	retired := map[string]bool{}
+	if len(named) == 0 {
+		return retired
+	}
+	for _, c := range members {
+		if c.ClaimType != "decision" {
+			continue
+		}
+		if named[strings.TrimSpace(c.ID)] || named[strings.TrimSpace(c.Qualifiers["decision_id"])] {
+			retired[DecisionCanonicalID(c)] = true
+		}
+	}
+	return retired
 }

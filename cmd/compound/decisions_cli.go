@@ -493,6 +493,7 @@ func cmdDecisions(args []string) {
 		fmt.Printf("# decisions doctor\n\n")
 		fmt.Printf("- policy: %d\n- doctrine: %d\n- operational: %d\n", report.Counts[decisions.KindPolicy], report.Counts[decisions.KindDoctrine], report.Counts[decisions.KindOperational])
 		fmt.Printf("- proposed: %d\n- accepted: %d\n- superseded: %d\n- deprecated: %d\n- rejected: %d\n", report.Statuses[decisions.StatusProposed], report.Statuses[decisions.StatusAccepted], report.Statuses[decisions.StatusSuperseded], report.Statuses[decisions.StatusDeprecated], report.Statuses[decisions.StatusRejected])
+		fmt.Printf("- retired_by_later_record: %d\n", report.RetiredByLaterRecord)
 		fmt.Printf("- current: %d\n- parked: %d\n", report.Current, report.Parked)
 		fmt.Printf("- missing_lifecycle_fields: %d\n", report.MissingLifecycleFields)
 		if writebackEnabled && decisions.NeedsWriteback(report) {
@@ -656,21 +657,44 @@ func cmdDecisions(args []string) {
 			fmt.Fprintln(os.Stderr, "decisions:", err)
 			os.Exit(1)
 		}
+		printDecisionList(claims, kindFilter, hasFlag(args, "--all"))
+	}
+}
+
+// printDecisionList is the `compound decisions [--kind=K] [--all]` list.
+// By default it prints each active decision once (its canonical ref, newest
+// import) and a count of the decisions a later record retired; --all prints
+// every decision claim, one line per import, with its effective status.
+func printDecisionList(claims []mem.Claim, kindFilter string, all bool) {
+	if all {
+		retired := decisions.RetiredRefs(claims)
 		any := false
 		for _, c := range claims {
 			if c.ClaimType != "decision" {
 				continue
 			}
-			k := decisions.Kind(c)
-			if kindFilter != "" && k != kindFilter {
+			if kindFilter != "" && decisions.Kind(c) != kindFilter {
 				continue
 			}
 			l := decisions.LifecycleFromClaim(c)
-			fmt.Printf("- [%s/%s] %s - %s\n", l.Kind, l.Status, c.ID, c.Object)
+			fmt.Printf("- [%s/%s] %s - %s\n", l.Kind, decisions.EffectiveStatus(c, retired), c.ID, c.Object)
 			any = true
 		}
 		if !any {
 			fmt.Println("(no decisions - run compound decisions import)")
 		}
+		return
+	}
+	listing := decisions.ListDecisions(claims, kindFilter)
+	if len(listing.Active) == 0 && len(listing.Retired) == 0 && listing.NotAccepted == 0 {
+		fmt.Println("(no decisions - run compound decisions import)")
+		return
+	}
+	for _, record := range listing.Active {
+		fmt.Printf("- [%s/%s] %s - %s\n", record.Lifecycle.Kind, record.Lifecycle.Status, strings.TrimPrefix(record.Ref, decisions.RefPrefix), record.Claim.Object)
+	}
+	fmt.Printf("- retired: %d (a later record supersedes them; --all lists every record)\n", len(listing.Retired))
+	if listing.NotAccepted > 0 {
+		fmt.Printf("- not accepted: %d (proposed, superseded, deprecated or rejected; --all lists them)\n", listing.NotAccepted)
 	}
 }

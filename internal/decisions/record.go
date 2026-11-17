@@ -47,7 +47,7 @@ type RecordInput struct {
 	Domains            []string
 	Falsifier          string
 	ReviewTrigger      string
-	UndoOf             string // optional; this record supersedes the named decision id (falsifier c)
+	UndoOf             string // optional; this record supersedes the named decisions: decision id, claim id or decision:// ref, comma list allowed (falsifier c, RetiredRefs)
 	AutoAdmitClass     string // autonomy grant: exact director class (first live class: job_health)
 	MinTerminalSamples int    // autonomy grant: deterministic latest-terminal sample count
 	MinWindowDays      int    // autonomy grant: minimum span between oldest/newest selected sample

@@ -122,7 +122,11 @@ type DoctorReport struct {
 	Counts                 map[string]int `json:"counts"`
 	Statuses               map[string]int `json:"statuses"`
 	MissingLifecycleFields int            `json:"missing_lifecycle_fields"`
-	LifecycleGaps          []LifecycleGap `json:"lifecycle_gaps,omitempty"`
+	// RetiredByLaterRecord counts current claims whose own status says
+	// accepted but which a later record retires (RetiredRefs). Statuses
+	// counts them as superseded, not accepted.
+	RetiredByLaterRecord int            `json:"retired_by_later_record"`
+	LifecycleGaps        []LifecycleGap `json:"lifecycle_gaps,omitempty"`
 }
 
 func promotionBasisForStatus(s string) string {
@@ -908,20 +912,27 @@ func VerdictForCandidate(c mem.Candidate) string {
 }
 
 // DoctorReportFromClaims projects current decision claims into a lifecycle audit.
+// Statuses use EffectiveStatus: an accepted claim that a later record retires
+// counts as superseded.
 func DoctorReportFromClaims(claims []mem.Claim) DoctorReport {
 	report := DoctorReport{
 		Counts:   map[string]int{},
 		Statuses: map[string]int{},
 	}
+	retired := RetiredRefs(claims)
 	for _, c := range claims {
 		if c.ClaimType != "decision" {
 			continue
 		}
 		l := LifecycleFromClaim(c)
+		status := EffectiveStatus(c, retired)
+		if status != l.Status {
+			report.RetiredByLaterRecord++
+		}
 		report.Total++
 		report.Current++
 		report.Counts[l.Kind]++
-		report.Statuses[l.Status]++
+		report.Statuses[status]++
 		missing := MissingRequired(l)
 		if len(missing) == 0 {
 			continue
@@ -931,7 +942,7 @@ func DoctorReportFromClaims(claims []mem.Claim) DoctorReport {
 			ClaimID:      c.ID,
 			DecisionID:   l.ID,
 			Kind:         l.Kind,
-			Status:       l.Status,
+			Status:       status,
 			Missing:      append([]string(nil), missing...),
 			EvidenceRefs: append([]string(nil), l.EvidenceRefs...),
 		})
