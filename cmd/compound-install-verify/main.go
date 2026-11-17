@@ -4,8 +4,10 @@
 // It is a SEPARATE program on purpose. Asking the artifact under test to vouch for itself is
 // precisely the check a stub passes: the installer's only probe used to be "run the new binary
 // and compare its version string", which a four-line shell script answers correctly. This
-// program is compiled from repo source by `go run` at install time, so it is trustworthy for the
-// same reason the build is — nothing on the install path can substitute it.
+// program is built from repo source into the installer's staging folder and run from there at
+// install time, so it is trustworthy for the same reason the build is — nothing on the install
+// path can substitute it. (Not `go run`: that starts it from the Go build cache, which may sit on
+// a volume that is not answering.)
 //
 // Exit codes: 0 verified, 1 verification failed (the message names the failed property), 2 usage.
 package main

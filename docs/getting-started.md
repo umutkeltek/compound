@@ -208,6 +208,25 @@ make install
 This makes an unreleased development build, not a release. Write down the printed commit. Do not
 present the install as a published Compound version.
 
+### Keep macOS permission grants across rebuilds (optional)
+
+macOS ties a privacy permission, such as access to an external volume or the local network, to
+the exact program it was given to. Each `go build` gets a new ad-hoc signature, so after every
+`make install` macOS sees a new `compound` and asks again, and a scheduled job that runs it waits
+on that prompt until someone answers. To keep one grant across rebuilds, give the installer a
+code-signing identity: set `COMPOUND_INSTALL_SIGN_IDENTITY` to the SHA-1 of a code-signing
+certificate (`security find-identity -p codesigning` lists them), and, when it lives in its own
+keychain, `COMPOUND_INSTALL_SIGN_KEYCHAIN` (that keychain file) and
+`COMPOUND_INSTALL_SIGN_KEYCHAIN_PASSWORD_FILE` (a mode 600 file with its password). The same
+`KEY=value` lines can live in a mode 600 file, `~/.compound/config/install-signing.conf` by default
+(`COMPOUND_INSTALL_SIGN_CONFIG` names another); the environment wins when it sets the identity.
+The installer then signs `compound` and `compound-breadth-engine` with that identity and a fixed
+identifier before it verifies them, checks that their designated requirement names the identity
+rather than one build's hash, and prints that kind in its summary. If signing fails, or a step does
+not finish within `COMPOUND_INSTALL_STEP_TIMEOUT` seconds (default 120), nothing is installed and
+the next install starts clean. Without a setting, or with the identity `-`, the install keeps the
+ad-hoc signature as before. The first signed install still asks once; later rebuilds keep the grant.
+
 ## 2. First run
 
 The signed installation commands above select **v0.1.1**, which wires Claude Code and Codex.

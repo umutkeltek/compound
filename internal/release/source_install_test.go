@@ -261,23 +261,37 @@ func sourceInstallFixture(t *testing.T) sourceInstallerFixture {
 [ "$INSTALL_FAIL" != breadth_probe ] || exit 73
 sed -n 's/.*"request_id":"\([^"]*\)".*/{"ok":true,"schema_version":1,"request_id":"\1","name":"compound-breadth","breadth":true,"ready":false}/p'
 `
+	// The install verifier as the installer builds it: it records where it ran
+	// from, and can hang (exec keeps one pid for the time limit to stop).
+	files["synthetic-verify"] = `#!/bin/sh
+printf 'verify %s %s\n' "$0" "$*" >>"$FIXTURE_REPO/cli-calls"
+[ "$INSTALL_FAIL" != verify_hang ] || exec sleep 30
+echo 'install verification ok'
+`
 	for rel, body := range files {
 		if err := os.WriteFile(filepath.Join(f.repo, rel), []byte(body), 0700); err != nil {
 			t.Fatal(err)
 		}
 	}
+	// `go run` is refused: it starts the verifier from the Go build cache, which
+	// hung an install when that cache sat on a volume that was not answering.
 	goShim := `#!/bin/sh
 set -eu
 case "$1" in
- run) echo 'install verification ok'; exit 0 ;;
+ run) echo 'go run is not allowed in the installer' >&2; exit 64 ;;
  build)
   out=
   while [ "$#" -gt 0 ]; do
    if [ "$1" = -o ]; then shift; out=$1; fi
    target=$1; shift
   done
-  if [ "$target" = ./cmd/compound-breadth-engine ] && [ "$INSTALL_FAIL" = breadth_build ]; then exit 71; fi
-  if [ "$target" = ./cmd/compound-breadth-engine ]; then
+  if [ "$target" = ./cmd/compound-install-verify ]; then
+   if [ "$INSTALL_FAIL" = kill_build ]; then kill -KILL "$PPID"; fi
+   cp "$FIXTURE_REPO/synthetic-verify" "$out"
+  elif [ "$target" = ./cmd/compound-breadth-engine ] && [ "$INSTALL_FAIL" = breadth_build ]; then exit 71
+  elif [ -n "${FIXTURE_MACHO:-}" ]; then
+   cp "$FIXTURE_MACHO" "$out"
+  elif [ "$target" = ./cmd/compound-breadth-engine ]; then
    cp "$FIXTURE_REPO/synthetic-breadth" "$out"
   else
    cp "$FIXTURE_REPO/synthetic-cli" "$out"
@@ -320,9 +334,15 @@ exec '` + realMV + `' "$@"
 	return f
 }
 
-func (f sourceInstallerFixture) run(fail string) ([]byte, error) {
+func (f sourceInstallerFixture) run(fail string) ([]byte, error) { return f.runEnv(fail) }
+
+// runEnv runs the installer with signing unset unless extra (later entries win)
+// names it, so a signing setting in the caller's environment cannot leak in.
+func (f sourceInstallerFixture) runEnv(fail string, extra ...string) ([]byte, error) {
 	cmd := exec.Command("sh", filepath.Join(f.repo, "install.sh"))
 	cmd.Dir = f.repo
-	cmd.Env = append(os.Environ(), "HOME="+f.home, "COMPOUND_HOME="+f.home, "GOBIN="+f.bin, "PATH="+f.fakeBin+":"+os.Getenv("PATH"), "FIXTURE_REPO="+f.repo, "INSTALL_FAIL="+fail, "COMPOUND_INSTALL_OS_ALIAS=1", "COMPOUND_INSTALL_AUTONOMY_LAB=1")
+	cmd.Env = append(os.Environ(), "HOME="+f.home, "COMPOUND_HOME="+f.home, "GOBIN="+f.bin, "PATH="+f.fakeBin+":"+os.Getenv("PATH"), "FIXTURE_REPO="+f.repo, "INSTALL_FAIL="+fail, "COMPOUND_INSTALL_OS_ALIAS=1", "COMPOUND_INSTALL_AUTONOMY_LAB=1",
+		"COMPOUND_INSTALL_SIGN_IDENTITY=", "COMPOUND_INSTALL_SIGN_KEYCHAIN=", "COMPOUND_INSTALL_SIGN_KEYCHAIN_PASSWORD_FILE=", "COMPOUND_INSTALL_SIGN_CONFIG=", "COMPOUND_INSTALL_STEP_TIMEOUT=", "FIXTURE_MACHO=")
+	cmd.Env = append(cmd.Env, extra...)
 	return cmd.CombinedOutput()
 }
