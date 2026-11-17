@@ -19,14 +19,16 @@ type CaptureOptions struct {
 }
 
 type CaptureBatchReport struct {
-	NativeMetadataRows  int
-	NativeBodyRows      int
-	NativeBodyBytes     int64
-	NativeSessionBodies int
-	RefusedSymlinks     int
-	Oversized           int
-	Deferred            int
-	Missing             int
+	NativeRowsCaptured     int
+	NativeRowBytesCaptured int64
+	NativeMetadataRows     int
+	NativeBodyRows         int
+	NativeBodyBytes        int64
+	NativeSessionBodies    int
+	RefusedSymlinks        int
+	Oversized              int
+	Deferred               int
+	Missing                int
 	SourceManifestReport
 	Captured  int
 	Unchanged int

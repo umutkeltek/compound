@@ -64,7 +64,7 @@ func nativeSessionItems(t *testing.T, hp, sid string) []SourceManifestItem {
 	t.Helper()
 	var out []SourceManifestItem
 	for _, item := range nativeManifest(t, hp).Items {
-		if strings.Contains(item.SourceRef, "session="+sid+"&") {
+		if strings.Contains(item.SourceRef, "session="+sid+"&") && !strings.Contains(item.SourceRef, "row=") {
 			out = append(out, item)
 		}
 	}
@@ -120,7 +120,8 @@ INSERT INTO messages(id,session_id,role,content,timestamp,_compressed_summary) V
 	}
 	items := nativeSessionItems(t, hp, "s1")
 	body := nativeBody(t, hp, items[0])
-	if !strings.Contains(body, "Reasoning retained") || !strings.Contains(body, "GeneratedSummarySecret") || !strings.Contains(body, `"compacted":1`) {
+	rawBodies := nativeRawBodies(t, hp, "s1")
+	if !strings.Contains(rawBodies, "Reasoning retained") || !strings.Contains(rawBodies, "GeneratedSummarySecret") || !strings.Contains(rawBodies, `"compacted":1`) {
 		t.Fatal("original rows/flags missing from custody")
 	}
 	if got := nativeProjectedMessages(t, body); len(got) != 1 || got[0] != "Cedar archive" {
@@ -239,7 +240,7 @@ func TestNativeOpenCodeBothSchemasDedupeMirrorsRetainRows(t *testing.T) {
 		t.Fatalf("mirror/text projection: %v", messages)
 	}
 	for _, table := range []string{`"table":"session"`, `"table":"session_v2"`, `"table":"message"`, `"table":"session_message"`, `"table":"part"`} {
-		if !strings.Contains(body, table) {
+		if !strings.Contains(nativeRawBodies(t, hp, "mirror"), table) {
 			t.Fatalf("lost table provenance: %s", table)
 		}
 	}

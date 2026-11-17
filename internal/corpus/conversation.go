@@ -23,6 +23,7 @@ func conversationTextContext(ctx context.Context, format, body string) (string, 
 	scanner.Buffer(make([]byte, 4096), 1<<30)
 	line := 0
 	lastUser := ""
+	semanticOrdinal := 0
 	for scanner.Scan() {
 		if err := ctx.Err(); err != nil {
 			return "", err
@@ -33,13 +34,30 @@ func conversationTextContext(ctx context.Context, format, body string) (string, 
 			continue
 		}
 		var row struct {
-			Type      string          `json:"type"`
-			Timestamp string          `json:"timestamp"`
-			Message   json.RawMessage `json:"message"`
-			Payload   json.RawMessage `json:"payload"`
+			Type      string            `json:"type"`
+			Timestamp string            `json:"timestamp"`
+			Message   json.RawMessage   `json:"message"`
+			Payload   json.RawMessage   `json:"payload"`
+			Context   map[string]string `json:"context"`
+			Source    struct {
+				Table     string `json:"table"`
+				MessageID string `json:"message_id"`
+			} `json:"source"`
 		}
 		if err := json.Unmarshal([]byte(raw), &row); err != nil {
 			return "", fmt.Errorf("invalid transcript record %d", line)
+		}
+		if (format == "opencode" || format == "hermes") && row.Type == "native_session" {
+			var contextParts []string
+			for _, field := range []string{"title", "cwd", "model", "source", "parent_session_id"} {
+				if value := row.Context[field]; value != "" {
+					contextParts = append(contextParts, field+": "+value)
+				}
+			}
+			if len(contextParts) > 0 {
+				fmt.Fprintf(&out, "Session context: %s\n\n", strings.Join(contextParts, "; "))
+			}
+			continue
 		}
 		var message struct {
 			Type    string          `json:"type"`
@@ -111,7 +129,16 @@ func conversationTextContext(ctx context.Context, format, body string) (string, 
 		if strings.TrimSpace(text) == "" {
 			continue
 		}
-		fmt.Fprintf(&out, "[%s record %d] %s: %s\n\n", row.Timestamp, line, message.Role, text)
+		semanticOrdinal++
+		if format == "opencode" || format == "hermes" {
+			attribution := fmt.Sprintf("message %d", semanticOrdinal)
+			if row.Source.Table != "" && row.Source.MessageID != "" {
+				attribution = row.Source.Table + ":" + row.Source.MessageID
+			}
+			fmt.Fprintf(&out, "[%s %s] %s: %s\n\n", row.Timestamp, attribution, message.Role, text)
+		} else {
+			fmt.Fprintf(&out, "[%s record %d] %s: %s\n\n", row.Timestamp, line, message.Role, text)
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		return "", fmt.Errorf("transcript record exceeds supported size or cannot be read")

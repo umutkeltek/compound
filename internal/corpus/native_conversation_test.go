@@ -148,3 +148,168 @@ func TestNativeRefreshUnsupportedSchemaIsActionableFailure(t *testing.T) {
 		t.Fatalf("schema failure concealed: %+v", r)
 	}
 }
+
+func TestNativeRawOnlyAppendReusesSemanticProjectionAndVectors(t *testing.T) {
+	hp := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "state.db")
+	nativeCorpusSQL(t, path, `
+CREATE TABLE sessions(id TEXT PRIMARY KEY,source TEXT,started_at REAL,runtime_revision INTEGER);
+CREATE TABLE messages(id INTEGER PRIMARY KEY,session_id TEXT,role TEXT,content TEXT,timestamp REAL,active INTEGER DEFAULT 1,compacted INTEGER DEFAULT 0,_compressed_summary INTEGER DEFAULT 0);
+INSERT INTO sessions VALUES('stable','cli',1,1);
+INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(1,'stable','user','Cedar archive decision',1),(2,'stable','tool','Original hidden tool',2);
+`)
+	lane := LaneConfig{Lane: "native-stable", SourceFamily: "native_stable_fixture", Privacy: "private", Embedder: EmbedderConfig{Provider: "local", Model: "fixture", Dims: 3}, Source: &SourceConfig{Root: root, Format: "hermes"}}
+	factory := func(l LaneConfig) (Embedder, error) {
+		return &fakeEmbedder{identity: l.Embedder.Identity(), dim: l.Embedder.Dims}, nil
+	}
+	now := time.Now()
+	first := Refresh(context.Background(), hp, []LaneConfig{lane}, factory, now)
+	if first.Failed() {
+		t.Fatalf("initial: %+v", first)
+	}
+	beforeManifest, err := sourceobs.LoadSourceManifest(hp, lane.SourceFamily)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oldProjection sourceobs.SourceManifestItem
+	for _, item := range beforeManifest.Items {
+		if strings.Contains(item.SourceRef, "session=stable&") && !strings.Contains(item.SourceRef, "row=") {
+			oldProjection = item
+		}
+	}
+	nativeCorpusSQL(t, path, "UPDATE sessions SET runtime_revision=2; INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(3,'stable','tool','Another hidden tool',3);")
+	second := Refresh(context.Background(), hp, []LaneConfig{lane}, factory, now)
+	if second.Failed() {
+		t.Fatalf("raw update: %+v", second)
+	}
+	if second.Sources[0].NewEmbeddedChunks != 0 {
+		t.Fatalf("raw row append changed existing semantic chunk hashes: new_embedded_chunks=%d prepared_items=%d reused_items=%d", second.Sources[0].NewEmbeddedChunks, second.Sources[0].PreparedItems, second.Sources[0].ReusedItems)
+	}
+	afterManifest, err := sourceobs.LoadSourceManifest(hp, lane.SourceFamily)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reused := false
+	for _, item := range afterManifest.Items {
+		if item.SourceKey == oldProjection.SourceKey && item.VersionState != "superseded" && item.ID == oldProjection.ID && item.BodyRef == oldProjection.BodyRef {
+			reused = true
+		}
+	}
+	if !reused || second.Sources[0].CapturedFiles != 0 {
+		t.Fatal("raw-only update minted a semantic projection version")
+	}
+	nativeCorpusSQL(t, path, "INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(4,'stable','user','Birch archive confirmation',4);")
+	visible := Refresh(context.Background(), hp, []LaneConfig{lane}, factory, now)
+	if visible.Failed() || visible.Sources[0].NewEmbeddedChunks == 0 {
+		t.Fatalf("visible append not embedded: %+v", visible)
+	}
+	current := Search(context.Background(), hp, []LaneConfig{lane}, factory, "Birch archive", 5, QueryOptions{IncludeText: true})
+	if len(current.Evidence) != 1 || !strings.Contains(current.Evidence[0].Text, "Birch archive confirmation") || strings.Contains(current.Evidence[0].Text, "hidden tool") {
+		t.Fatalf("visible append recall: %+v", current)
+	}
+	historical := Search(context.Background(), hp, []LaneConfig{lane}, factory, "archive", 5, QueryOptions{IncludeText: true, IncludeHistory: true})
+	if len(historical.Evidence) != 2 {
+		t.Fatalf("projection history: %+v", historical)
+	}
+}
+
+func TestNativeAttributionAndCustodyOnlyRowsIgnoreRawLinePositions(t *testing.T) {
+	for _, format := range []string{"hermes", "opencode"} {
+		message := "{\"type\":\"message\",\"timestamp\":\"1\",\"message\":{\"role\":\"user\",\"content\":\"Cedar archive\"},\"source\":{\"table\":\"messages\",\"message_id\":\"7\"}}\n"
+		raw := "{\"type\":\"native_row\",\"row\":{\"role\":\"user\",\"content\":\"Hidden raw tool/reasoning payload\"}}\n"
+		a, err := conversationText(format, raw+message)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := conversationText(format, raw+raw+message)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a != b || !strings.Contains(a, "messages:7") {
+			t.Fatalf("%s unstable native attribution: %q %q", format, a, b)
+		}
+		item := sourceobs.SourceManifestItem{ID: "stable_fixture", SourceKind: format + "_transcript_v1", SourceRef: "sqlite:/fixture.db"}
+		chunks, err := ChunkItem(item, raw, ChunkConfig{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(chunks) != 0 {
+			t.Fatalf("%s raw custody row embedded: %+v", format, chunks)
+		}
+		contextual := "{\"type\":\"native_session\",\"context\":{\"title\":\"Archive plan\",\"cwd\":\"/workspace/fixture\",\"model\":\"fixture-model\"}}\n" + message
+		text, err := conversationText(format, contextual)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(text, "Archive plan") || !strings.Contains(text, "/workspace/fixture") {
+			t.Fatalf("useful source context lost: %s", text)
+		}
+	}
+}
+
+func TestNativeMirroredDatabasesPreserveSourceIdentityWithoutReembedding(t *testing.T) {
+	hp := t.TempDir()
+	a, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := `
+CREATE TABLE sessions(id TEXT PRIMARY KEY,source TEXT,started_at REAL,runtime_revision INTEGER,title TEXT);
+CREATE TABLE messages(id INTEGER PRIMARY KEY,session_id TEXT,role TEXT,content TEXT,timestamp REAL,active INTEGER DEFAULT 1,compacted INTEGER DEFAULT 0,_compressed_summary INTEGER DEFAULT 0);
+INSERT INTO sessions VALUES('mirror-session','cli',1,1,'Archive plan');
+INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(1,'mirror-session','user','Cedar archive choice',1);
+`
+	nativeCorpusSQL(t, filepath.Join(a, "state.db"), fixture)
+	nativeCorpusSQL(t, filepath.Join(b, "archive.db"), fixture)
+	lane := LaneConfig{Lane: "native-db-mirror", SourceFamily: "native_mirrored_fixture", Privacy: "private", Embedder: EmbedderConfig{Provider: "local", Model: "fixture", Dims: 3}, Source: &SourceConfig{Root: a, Format: "hermes"}}
+	factory := func(l LaneConfig) (Embedder, error) {
+		return &fakeEmbedder{identity: l.Embedder.Identity(), dim: l.Embedder.Dims}, nil
+	}
+	first := Refresh(context.Background(), hp, []LaneConfig{lane}, factory, time.Now())
+	if first.Failed() || first.Sources[0].NewEmbeddedChunks == 0 {
+		t.Fatalf("first source: %+v", first)
+	}
+	// An explicitly approved second account/archive copy has the same native
+	// IDs/text but a distinct database namespace, even with a different name.
+	lane.Source = &SourceConfig{Root: b, Format: "hermes", Database: "archive.db"}
+	second := Refresh(context.Background(), hp, []LaneConfig{lane}, factory, time.Now())
+	if second.Failed() || second.Sources[0].NewEmbeddedChunks != 0 {
+		t.Fatalf("mirrored source reembedded: %+v", second)
+	}
+	source, err := sourceobs.LoadSourceManifest(hp, lane.SourceFamily)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projections := []sourceobs.SourceManifestItem{}
+	namespaces := map[string]bool{}
+	for _, item := range source.Items {
+		if item.VersionState == "superseded" {
+			continue
+		}
+		if strings.Contains(item.SourceRef, "session=mirror-session&") && !strings.Contains(item.SourceRef, "row=") {
+			projections = append(projections, item)
+			namespaces[item.SourceNamespace] = true
+		}
+	}
+	if len(projections) != 2 || len(namespaces) != 2 || projections[0].ID == projections[1].ID || projections[0].BodyRef != projections[1].BodyRef {
+		t.Fatalf("source identities or shared semantic custody lost: %+v", projections)
+	}
+	var indexed Manifest
+	if err := readJSONFile(filepath.Join(IndexDir(hp, lane), "manifest.json"), &indexed); err != nil {
+		t.Fatal(err)
+	}
+	for _, projection := range projections {
+		resolved, err := ResolveChunkText(hp, indexed, projection.ID+"#0", true, lane)
+		if err != nil || !strings.Contains(resolved.Text, "Cedar archive choice") {
+			t.Fatalf("source %s is not recoverable: %+v %v", projection.ID, resolved, err)
+		}
+	}
+}

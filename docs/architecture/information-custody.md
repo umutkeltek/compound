@@ -605,18 +605,28 @@ unsupported schemas, linked database paths, and interrupted inventories.
 
 A read-only SQLite transaction binds each inventory. Database/WAL identity skips
 unchanged refreshes. Session revision, message/part identity, update timestamps and
-compression flags select changed bodies. A daily full-row reconciliation catches
-content corrections without changed revision metadata; each session's manifest
-fingerprint records progress, bounded to 128 session reads and 128 MiB of exports
-per pass (64 MiB per session). Refresh reports selected body rows/bytes and pending
-sessions. No independent cursor database or full transcript re-export is needed.
+compression flags select changed sessions. A daily full-row reconciliation catches
+content corrections without changed revision metadata. Each session's v3 manifest
+fingerprint records resumable progress, bounded to 128 session reads and 128 MiB
+of changed row/projection exports per pass (64 MiB per session). Changed sessions
+still read their native rows; refresh counters distinguish SQL reads from captures.
 
-Owned immutable session snapshots preserve original rows and table/session/database
-provenance, including inactive/compacted originals and generated summaries. Only
-original user/assistant text enters semantic chunks; system, tool, reasoning and
-compressed-summary payloads stay outside that view. OpenCode's legacy/v2 mirrors
-retain their original rows while duplicate mirrored text appears once in recall.
-The native database and its separately verified backup remain original source
-evidence; the semantic view and index are derived. Missing sessions report incomplete
-coverage and preserve owned current and historical evidence. A failed inventory
-publishes no checkpoint; retry resumes from the last atomically published manifest.
+Each original native row/version has its own content-addressed owned item, keyed
+by approved database namespace, session, table and actual native primary key.
+Composite v2 part keys retain message ID plus ordinal. Original columns, BLOB
+encoding, inactive/compacted originals and generated summaries remain recoverable;
+missing rows and historical versions are never deleted. Typed custody-only row and
+checkpoint bodies normalize to empty text and never become Markdown embeddings.
+
+A separate small session projection contains original user/assistant text, useful
+session context and stable message provenance. It changes only when its actual
+semantic bytes change. Raw heartbeat/tool/state changes reuse the projection body
+and vectors; raw rows are never duplicated into that body. Native row/message IDs
+provide attribution independently of physical JSONL record positions. OpenCode's
+legacy/v2 mirrors preserve all original rows and repeated-turn multiplicity.
+
+The native database and its independently verified backup remain original source
+evidence; retrieval and indexes are derived. Missing sessions report incomplete
+coverage while preserving owned current/historical evidence. Failed inventories
+publish no checkpoint. A v2 migration captures row items and a new projection,
+retaining the original v2 snapshot and its source fingerprint as historical evidence.
