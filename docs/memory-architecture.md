@@ -399,7 +399,13 @@ being paged per item.
    usual `memory_delta` Transition. No candidate, no adjudication step. Why,
    how and actor are required; each text is one line (detail goes behind
    `--evidence`). Bounds: why and how at most 600 bytes, the how of a lesson
-   with a trigger at most 300 (it is the injected line), `--by` at most 64. `lesson` is not in the candidate `ClaimTypes`, and
+   with a trigger at most 300 (it is the injected line), `--by` at most 64.
+   `--by` is cleaned before it is checked and stored, on the door and every
+   lesson verb: invisible characters (control and format characters, such as
+   a zero-width space) are removed, and only plain ASCII letters, digits and
+   `: . _ - @ /` are accepted. The stored author is then exactly what the hook
+   shows, and a look-alike owner name (a zero-width space inside `operator:`,
+   a Cyrillic letter) cannot pass the owner-name check. `lesson` is not in the candidate `ClaimTypes`, and
    `lesson_on_write` is not a candidate promotion basis, so no other path can
    mint a lesson.
    - **Slot.** Default slot is `skill:<name>` (or `lessons`) `::

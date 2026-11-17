@@ -86,7 +86,7 @@ and every later rebuild (automatic or with no flags) reads the ledger plus those
 and `how_to_apply`. Limits: `apply` is one line of at most 300 bytes, at most 2 lessons per call, and
 an index file of at most 256 KiB (written as compact JSON). Every field an entry carries is bounded so
 no single lesson can take more than a small share of the index: at the lesson door `--by` is at most 64
-bytes, the trigger tool at most 64, a new pattern at most 256, and the how of a lesson with a trigger at
+bytes after invisible characters are removed (plain ASCII only, the same characters the hook shows), the trigger tool at most 64, a new pattern at most 256, and the how of a lesson with a trigger at
 most 300 (a trigger-less lesson, recall only, keeps 600); the builder cleans the author shown in the
 frame to 64 safe characters, refuses an id over 128 bytes or one that is not plain text, refuses a
 lesson-backed skill line whose id is not a claim id, and leaves out (and reports) any entry over 2 KiB
