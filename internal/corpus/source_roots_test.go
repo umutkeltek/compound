@@ -3,9 +3,12 @@ package corpus
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -102,8 +105,44 @@ func TestSourceDeletionPreservesOwnedSearchAndReportsMissing(t *testing.T) {
 }
 
 func TestRootInventoryDescendantCannotHoldRefreshPipeOpen(t *testing.T) {
-	script := filepath.Join(t.TempDir(), "inventory.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\n(sleep 1) &\nprintf '%s' '{\"roots\":[]}'\n"), 0700); err != nil {
+	fixture := t.TempDir()
+	script := filepath.Join(fixture, "inventory.sh")
+	pidFile := filepath.Join(fixture, "descendant.pid")
+	// WaitDelay bounds the caller, but the intentionally inherited-pipe fixture
+	// must also observe its own bounded child exit before returning to a runner.
+	// Signal 0 is read-only; no process is terminated and a recycled PID can
+	// only make this cleanup fail closed, never signal unrelated work.
+	t.Cleanup(func() {
+		raw, err := os.ReadFile(pidFile)
+		if os.IsNotExist(err) {
+			return
+		}
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+		if err != nil || pid <= 0 {
+			t.Error("invalid owned fixture descendant identity")
+			return
+		}
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			err := syscall.Kill(pid, 0)
+			if errors.Is(err, syscall.ESRCH) {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Error("owned inventory fixture descendant did not exit")
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
+	quotedPID := "'" + strings.ReplaceAll(pidFile, "'", "'\"'\"'") + "'"
+	body := "#!/bin/sh\nsleep 1 &\nprintf '%s' \"$!\" > " + quotedPID + "\nprintf '%s' '{\"roots\":[]}'\n"
+
+	if err := os.WriteFile(script, []byte(body), 0700); err != nil {
 		t.Fatal(err)
 	}
 	cfg := SourceConfig{Format: "claude", RootsCommand: []string{script}}
