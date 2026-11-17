@@ -204,7 +204,7 @@ func CaptureCodexHistory(ctx context.Context, homePath, family, root, database, 
 			result.NativeRowsCaptured += row.Rows
 			result.NativeRowBytesCaptured += int64(len(row.Body))
 		}
-		fragment.Items = append(fragment.Items, SourceManifestItem{ID: idFor("srcitem_", family, key, hash), SourceKey: key, SourceNamespace: namespace, SourceFingerprint: row.Fingerprint, SourceKind: "codex-history_transcript_v1", SourceRef: ref, FileHash: hash, SnapshotTime: now.UTC().Format(time.RFC3339Nano), Privacy: "private", BodyPolicy: "source_in_place", PageSlug: slug, EvidenceRefs: []string{"source:" + ref, hash}})
+		fragment.Items = append(fragment.Items, SourceManifestItem{VersionState: "current", ID: idFor("srcitem_", family, key, hash), SourceKey: key, SourceNamespace: namespace, SourceFingerprint: row.Fingerprint, SourceKind: "codex-history_transcript_v1", SourceRef: ref, FileHash: hash, SnapshotTime: now.UTC().Format(time.RFC3339Nano), Privacy: "private", BodyPolicy: "source_in_place", PageSlug: slug, EvidenceRefs: []string{"source:" + ref, hash}})
 		return nil
 	}
 	err = readCodexHistoryRecords(ctx, request, func(row codexHistoryRecord) error {

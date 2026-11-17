@@ -58,6 +58,9 @@ INSERT INTO thread_items VALUES('db-only-thread','native-turn','native-reasoning
 	}
 	found := false
 	for _, item := range m.Items {
+		if item.VersionState != "current" {
+			t.Fatalf("new native source version is not canonical: %+v", item)
+		}
 		if item.ID == got.Evidence[0].ItemID {
 			ref, e := url.Parse(item.SourceRef)
 			if e != nil {
