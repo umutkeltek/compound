@@ -594,3 +594,29 @@ Brain-like Markdown, database retrieval stores, and control-plane repositories e
 their bodies, writers, and consumers differ. A single “OS absorbed” status cannot retire all three. The end
 state is subtraction: Compound owns durable bodies and meaning; Markdown is a client, indexes are rented,
 the gateway executes, and legacy systems are evidence/archives or gone.
+
+### Native conversation recall adapters
+
+Corpus source formats include OMP JSONL (`omp`), OpenCode SQLite (`opencode`), and
+Hermes SQLite (`hermes`). SQLite sources use an approved directory root with an
+optional relative `database` filename; defaults are `opencode.db` and `state.db`.
+They require Python 3's standard SQLite library and refuse unavailable backends,
+unsupported schemas, linked database paths, and interrupted inventories.
+
+A read-only SQLite transaction binds each inventory. Database/WAL identity skips
+unchanged refreshes. Session revision, message/part identity, update timestamps and
+compression flags select changed bodies. A daily full-row reconciliation catches
+content corrections without changed revision metadata; each session's manifest
+fingerprint records progress, bounded to 128 session reads and 128 MiB of exports
+per pass (64 MiB per session). Refresh reports selected body rows/bytes and pending
+sessions. No independent cursor database or full transcript re-export is needed.
+
+Owned immutable session snapshots preserve original rows and table/session/database
+provenance, including inactive/compacted originals and generated summaries. Only
+original user/assistant text enters semantic chunks; system, tool, reasoning and
+compressed-summary payloads stay outside that view. OpenCode's legacy/v2 mirrors
+retain their original rows while duplicate mirrored text appears once in recall.
+The native database and its separately verified backup remain original source
+evidence; the semantic view and index are derived. Missing sessions report incomplete
+coverage and preserve owned current and historical evidence. A failed inventory
+publishes no checkpoint; retry resumes from the last atomically published manifest.

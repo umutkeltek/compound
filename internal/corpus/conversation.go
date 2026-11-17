@@ -15,7 +15,7 @@ func conversationText(format, body string) (string, error) {
 	return conversationTextContext(context.Background(), format, body)
 }
 func conversationTextContext(ctx context.Context, format, body string) (string, error) {
-	if format != "codex" && format != "claude" {
+	if format != "codex" && format != "claude" && format != "omp" && format != "opencode" && format != "hermes" {
 		return "", fmt.Errorf("unknown transcript format")
 	}
 	var out strings.Builder
@@ -47,6 +47,9 @@ func conversationTextContext(ctx context.Context, format, body string) (string, 
 			Content json.RawMessage `json:"content"`
 		}
 		var encoded json.RawMessage
+		if (format == "omp" || format == "opencode" || format == "hermes") && row.Type == "message" {
+			encoded = row.Message
+		}
 		if format == "codex" && row.Type == "response_item" {
 			encoded = row.Payload
 		}

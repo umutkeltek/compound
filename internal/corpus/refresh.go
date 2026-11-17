@@ -13,6 +13,7 @@ import (
 )
 
 type SourceConfig struct {
+	Database     string   `json:"database,omitempty" yaml:"database,omitempty"`
 	Roots        []string `json:"roots,omitempty" yaml:"roots,omitempty"`
 	RootsCommand []string `json:"roots_command,omitempty" yaml:"roots_command,omitempty"`
 
@@ -21,6 +22,10 @@ type SourceConfig struct {
 }
 type EmbedderFactory func(LaneConfig) (Embedder, error)
 type Coverage struct {
+	NativeMetadataRows  int    `json:"native_metadata_rows,omitempty"`
+	NativeBodyRows      int    `json:"native_body_rows,omitempty"`
+	NativeBodyBytes     int64  `json:"native_body_bytes,omitempty"`
+	NativeSessionBodies int    `json:"native_session_bodies,omitempty"`
 	Error               string `json:"error,omitempty"`
 	BodyBytesRead       int64  `json:"body_bytes_read"`
 	VectorBytesRead     int64  `json:"vector_bytes_read"`
@@ -117,11 +122,21 @@ func Refresh(ctx context.Context, homePath string, lanes []LaneConfig, factory E
 						if i > 0 || valid.Source.Root == "" {
 							ns = root
 						}
-						part, e := sourceobs.CaptureApprovedDirectoryBatchWithOptions(ctx, homePath, valid.SourceFamily, root, valid.Source.Format, now, sourceobs.CaptureOptions{ContinueAfterRefusedSymlink: true, SourceNamespace: ns})
+						var part sourceobs.CaptureBatchReport
+						var e error
+						if valid.Source.Format == "opencode" || valid.Source.Format == "hermes" {
+							part, e = sourceobs.CaptureNativeConversations(ctx, homePath, valid.SourceFamily, root, valid.Source.Format, valid.Source.Database, now)
+						} else {
+							part, e = sourceobs.CaptureApprovedDirectoryBatchWithOptions(ctx, homePath, valid.SourceFamily, root, valid.Source.Format, now, sourceobs.CaptureOptions{ContinueAfterRefusedSymlink: true, SourceNamespace: ns})
+						}
 						if e != nil {
 							err = e
 							break
 						}
+						captured.NativeMetadataRows += part.NativeMetadataRows
+						captured.NativeBodyRows += part.NativeBodyRows
+						captured.NativeBodyBytes += part.NativeBodyBytes
+						captured.NativeSessionBodies += part.NativeSessionBodies
 						captured.RefusedSymlinks += part.RefusedSymlinks
 						captured.Missing += part.Missing
 						captured.Oversized += part.Oversized
@@ -136,11 +151,18 @@ func Refresh(ctx context.Context, homePath string, lanes []LaneConfig, factory E
 					c.Status = "capture_failed"
 					c.Error = err.Error()
 				} else {
+					c.NativeMetadataRows = captured.NativeMetadataRows
+					c.NativeBodyRows = captured.NativeBodyRows
+					c.NativeBodyBytes = captured.NativeBodyBytes
+					c.NativeSessionBodies = captured.NativeSessionBodies
 					c.RefusedSymlinks = captured.RefusedSymlinks
 					c.MissingFiles = captured.Missing
 					c.OversizedFiles = captured.Oversized
 					c.DeferredFiles = captured.Deferred
 					c.FreshnessBasis = "inode_size_mtime_ctime; capture hashes changed bytes"
+					if valid.Source.Format == "opencode" || valid.Source.Format == "hermes" {
+						c.FreshnessBasis = "sqlite_transaction; database_wal_identity; session_metadata; daily_full_row_reconciliation"
+					}
 					c.CapturedFiles = captured.Captured
 					c.UnchangedFiles = captured.Unchanged
 					c.PendingFiles = captured.Pending
@@ -213,11 +235,14 @@ func (s SourceConfig) validate() error {
 			return fmt.Errorf("approved source roots must be absolute")
 		}
 	}
+	if s.Database != "" && (filepath.IsAbs(s.Database) || filepath.Clean(s.Database) == ".." || strings.HasPrefix(filepath.Clean(s.Database), ".."+string(filepath.Separator))) {
+		return fmt.Errorf("source database must stay beneath approved root")
+	}
 	switch s.Format {
-	case "markdown", "claude", "codex":
+	case "markdown", "claude", "codex", "omp", "opencode", "hermes":
 		return nil
 	default:
-		return fmt.Errorf("source format must be markdown, claude or codex")
+		return fmt.Errorf("source format must be markdown, claude, codex, omp, opencode or hermes")
 	}
 }
 
