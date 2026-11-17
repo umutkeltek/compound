@@ -155,6 +155,7 @@ func FormatDoorMap(m DoorMap, now time.Time) string {
 	if ok {
 		fmt.Fprintf(&b, " (%s old)", humanAge(age))
 	}
+	b.WriteString("\n" + WiringHint)
 	b.WriteString("\n\n## Doors\n")
 	for _, d := range m.Doors {
 		fmt.Fprintf(&b, "- %s %s: %s\n    use: %s\n", strings.ToUpper(d.Status), d.Name, d.Detail, d.Use)

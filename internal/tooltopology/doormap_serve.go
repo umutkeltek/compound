@@ -71,6 +71,11 @@ func humanAge(d time.Duration) string {
 // rest to doors and models, and the final fitBlock cap is the backstop that
 // makes the limit unconditional. Harness versions are not served: they are
 // for `compound doors show`, not for acting on the machine.
+// WiringHint is the one line that points a harness at how every harness is
+// wired, so it asks instead of rediscovering it. It rides inside the block,
+// so MaxServedBytes still caps the whole block.
+const WiringHint = "Harness wiring: compound harness map; prove it live: compound harness check"
+
 const (
 	budgetHeader  = 110
 	budgetDoors   = 1900
@@ -127,6 +132,7 @@ func renderDoorMapWith(m DoorMap, now, observed time.Time, slack, badExtra int) 
 	var lines []string
 	lines = append(lines, truncBytes(fmt.Sprintf("## Door map (cached, not live; doors checked %s ago at %s). Full: compound doors show",
 		humanAge(now.Sub(observed)), observed.UTC().Format("2006-01-02T15:04Z")), budgetHeader))
+	lines = append(lines, WiringHint)
 	lines = append(lines, renderDoorLines(m.Doors, budgetDoors+slack/2, badExtra)...)
 	if l := renderMCPLine(m.MCP, budgetMCP); l != "" {
 		lines = append(lines, l)

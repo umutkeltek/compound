@@ -324,7 +324,7 @@ func TestServeDoorMapFreshContainsDoorsRecipesAndChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := ServeDoorMap(home, doorNow.Add(2*time.Hour), DefaultDoorMapTTL)
-	for _, want := range []string{"## Door map", "doors checked 3h ago", "PASS web: websearch", "HUMAN gui:", "FAIL devices:", "MCP: h1[alpha,beta]", "Models: lane-one=vendor/model-1", "Changed: mcp beta added to h1 (1h)"} {
+	for _, want := range []string{"## Door map", WiringHint + "\n", "doors checked 3h ago", "PASS web: websearch", "HUMAN gui:", "FAIL devices:", "MCP: h1[alpha,beta]", "Models: lane-one=vendor/model-1", "Changed: mcp beta added to h1 (1h)"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("served block missing %q:\n%s", want, got)
 		}
@@ -449,6 +449,28 @@ func TestLiveShapedSnapshotServesEveryRecipeWhole(t *testing.T) {
 	}
 	if strings.Contains(got, "Versions:") || !strings.Contains(got, "FAIL disk:") || !strings.Contains(got, "UNKNOWN surface:") {
 		t.Fatalf("block must keep non-passing doors and drop harness versions:\n%s", got)
+	}
+	if !strings.Contains(got, "\n"+WiringHint+"\n") {
+		t.Fatalf("a full block must still point at the harness wiring map:\n%s", got)
+	}
+}
+
+// The wiring pointer rides inside the capped block, survives the worst case,
+// and the full drilldown carries it too.
+func TestWiringHintIsServedAndShown(t *testing.T) {
+	if len(WiringHint) > 100 || !strings.Contains(WiringHint, "compound harness map") || !strings.Contains(WiringHint, "compound harness check") {
+		t.Fatalf("hint must be one short line naming both commands: %q", WiringHint)
+	}
+	long := strings.Repeat("longword ", 60)
+	m := DoorMap{SchemaVersion: DoorMapSchema, GeneratedAt: doorNow.Format(time.RFC3339)}
+	for i := 0; i < 40; i++ {
+		m.Doors = append(m.Doors, Door{Name: fmt.Sprintf("door-%02d", i), Status: StatusFail, Detail: long})
+	}
+	if got := RenderDoorMap(m, doorNow, doorNow); len(got) > MaxServedBytes || !strings.Contains(got, WiringHint) {
+		t.Fatalf("worst case (%d bytes) lost the wiring hint:\n%s", len(got), got)
+	}
+	if got := FormatDoorMap(m, doorNow); !strings.Contains(got, "\n"+WiringHint+"\n") {
+		t.Fatalf("doors show must carry the wiring hint:\n%s", got)
 	}
 }
 

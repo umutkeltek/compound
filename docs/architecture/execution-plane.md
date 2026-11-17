@@ -195,6 +195,10 @@ one-line pointer to `compound doors serve` in their compiled instruction block.
   `COMPOUND_DOOR_DOCTOR_JSON`), MCP config files (server names only, never env/args/URLs), harness binaries
   resolved on PATH (version inferred from the install path or package metadata, never by running them), and
   the launch owner's lane projection (`COMPOUND_LANE_PROJECTION_DIR`).
+- The MCP files come from the harness registry's wiring facts (`compound harness map`), read by the
+  registry's one reader, plus each signed-in Claude seat's own list; the served block names the seats
+  whose list differs from their family's. The block also carries one line that points at
+  `compound harness map` and `compound harness check`, inside the same 3000-byte cap.
 - Freshness is explicit: the block states when doors were checked. Past a 24h TTL it withholds all door
   statuses and says how to refresh. A missing or unreadable snapshot is announced, not omitted.
 - `changed_since_last` is the diff against the previous snapshot; `recent_changes` rolls it forward 72h.
