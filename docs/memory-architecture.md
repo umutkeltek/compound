@@ -581,3 +581,21 @@ rechunks all owned bodies and reconciles the incremental result. Query and docto
 verify referenced vector shard checksums; missing/corrupt shards are errors,
 never an empty successful search. Empty normalized transcripts are recorded as
 explicit empty-item checkpoints, not missing chunk records.
+
+Optional local Ollama `embedder.model_digest` pins the current model's SHA-256
+revision while preserving the existing embedding identity and index directory.
+Inventory checks bracket embedding requests. A changed or removed bound pin
+refuses query/reuse until an explicit rebuild; model-change errors never trigger
+service restart or download. First adoption of an old unbound index is labeled
+`prospective` and reuses vectors: it does not prove which historical weights
+produced them. A rebuild labels guarded requests separately. These checks observe
+before/after inventory; they do not attest the provider's internals or an
+unobserved swap and return between checks. Pinned readers consume the exact
+validated immutable shard manifest, including across concurrent index changes.
+
+Backend health reports a credential-free endpoint and separates readiness from
+safe recovery eligibility. Generic unpinned local OpenAI-compatible services
+may pass their embedding probe without Ollama's inventory API. HTTPS readiness
+keeps certificate verification. Automatic restart remains restricted to an
+attested existing owner and an eligible endpoint; custom services receive an
+actionable failure instead.
