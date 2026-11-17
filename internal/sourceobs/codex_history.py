@@ -310,9 +310,14 @@ def main():
             fp = "codex-cursor-v1:"+base64.urlsafe_b64encode(canonical(state).encode()).decode().rstrip("=")
             emit("cursor/"+sid,sid,"cursor","thread_history_projection_state",raw,fp,2 if thread_row else 1)
             if thread_row:
-                context = {k:thread_row[k] for k in ("title","cwd","model","source") if isinstance(thread_row.get(k),str) and thread_row[k]}
-                body = canonical({"type":"native_session","format":"codex-history","thread_id":sid,"context":context})+"\n"
-                emit("context/"+sid,sid,"semantic_context","threads",body)
+                context_key = "context/"+sid
+                has_native_items = maxima.get("thread_items",-1)>=0 or maxima.get("thread_realtime_items",-1)>=0
+                if has_native_items:
+                    context = {k:thread_row[k] for k in ("title","cwd","model","source") if isinstance(thread_row.get(k),str) and thread_row[k]}
+                    body = canonical({"type":"native_session","format":"codex-history","thread_id":sid,"context":context})+"\n"
+                    emit(context_key,sid,"semantic_context","threads",body)
+                elif old(context_key):
+                    emit(context_key,sid,"cursor","threads",{"type":"native_context_without_items","thread_id":sid})
     print(canonical({"complete":True,"pending":pending,"deferred":deferred,"seen_threads":seen,"session_bodies":len(body_threads),**stats}),flush=True)
     db.rollback()
     db.close()

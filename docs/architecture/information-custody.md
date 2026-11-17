@@ -679,3 +679,11 @@ cannot advance another capture's cursor. Native deletion can change the current
 projection while prior owned versions remain available; disappearance of a whole
 thread reports missing coverage and preserves its owned evidence. Mirrored
 databases retain separate SQLite/thread provenance while sharing identical bodies.
+
+
+The retrieval preparer honors the adapter's declared raw/cursor/inventory
+SQLite views without reading their bodies or copying them into the retrieval
+manifest. Custody and source-history checks remain with SourceManifest. State-only
+threads retain native raw metadata but publish no context-only retrieval item until
+native history items exist. A tool-only capture therefore changes owned source
+evidence without rewriting an unchanged retrieval manifest.

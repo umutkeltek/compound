@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -179,4 +180,23 @@ func conversationTimestamp(raw json.RawMessage) (string, error) {
 		return number.String(), nil
 	}
 	return "", fmt.Errorf("timestamp must be a string or number")
+}
+
+// The native adapter declares custody views in stable SQLite provenance. Keep
+// their owned source bodies outside the retrieval cache; normalization remains
+// empty if a caller explicitly inspects one through ChunkItem.
+func custodyOnlyConversationItem(item sourceobs.SourceManifestItem) bool {
+	if item.SourceKind != "codex-history_transcript_v1" {
+		return false
+	}
+	ref, err := url.Parse(item.SourceRef)
+	if err != nil || ref.Scheme != "sqlite" {
+		return false
+	}
+	switch ref.Query().Get("view") {
+	case "raw_pack", "raw_row", "cursor", "inventory":
+		return true
+	default:
+		return false
+	}
 }

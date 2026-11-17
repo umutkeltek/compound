@@ -120,6 +120,10 @@ func prepareIncremental(ctx context.Context, hp string, lane LaneConfig, old Man
 		if err := validateCurrentItemAccess(lane, item); err != nil {
 			return preparedIndex{}, err
 		}
+		if custodyOnlyConversationItem(item) {
+			continue
+		}
+
 		key := preparationKey(item)
 		prior, reuse := cache[key]
 		// In-place bodies are mutable and have no immutable custody identity.

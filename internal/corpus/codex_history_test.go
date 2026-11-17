@@ -74,7 +74,7 @@ INSERT INTO thread_items VALUES('db-only-thread','native-turn','native-reasoning
 	}
 	nativeCorpusSQL(t, path, `INSERT INTO thread_items VALUES('db-only-thread','native-turn','tool-next',5,1004,'{"type":"toolResult","output":"Hidden appended tool"}','toolResult',5);UPDATE thread_history_projection_state SET next_rollout_ordinal=11;`)
 	tool := refresh()
-	if tool.Failed() || tool.Sources[0].NewEmbeddedChunks != 0 || tool.Sources[0].CapturedFiles != 0 {
+	if tool.Failed() || tool.Sources[0].NewEmbeddedChunks != 0 || tool.Sources[0].CapturedFiles != 0 || tool.Sources[0].IndexBytesWritten != 0 || tool.Sources[0].BodyBytesRead != 0 {
 		t.Fatalf("tool append changed semantic packs: %+v", tool)
 	}
 	if next := search(); len(next.Evidence) != 1 || next.Evidence[0].ItemID != got.Evidence[0].ItemID {
@@ -93,5 +93,52 @@ INSERT INTO thread_items VALUES('db-only-thread','native-turn','native-reasoning
 		if err != nil || text != "" {
 			t.Fatalf("raw %s became semantic: %q %v", kind, text, err)
 		}
+	}
+}
+
+func TestCodexHistoryStateOnlyThreadsDoNotEmbedOrRewriteRetrieval(t *testing.T) {
+	hp := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := filepath.Join(root, "thread_history_1.sqlite")
+	nativeCorpusSQL(t, db, `
+CREATE TABLE thread_history_projection_state(thread_id TEXT PRIMARY KEY,next_rollout_byte_offset INTEGER,next_rollout_ordinal INTEGER);
+CREATE TABLE thread_turns(thread_id TEXT,turn_id TEXT,rollout_ordinal INTEGER,status TEXT,error_json TEXT);
+CREATE TABLE thread_items(thread_id TEXT,turn_id TEXT,item_id TEXT,rollout_ordinal INTEGER,created_at_ms INTEGER,item_json TEXT,item_type TEXT,updated_at_ordinal INTEGER);
+CREATE TABLE thread_realtime_items(thread_id TEXT,item_id TEXT,rollout_ordinal INTEGER,created_at_ms INTEGER,item_type TEXT,item_json TEXT);
+CREATE UNIQUE INDEX idx_thread_items_page ON thread_items(thread_id,rollout_ordinal);
+CREATE INDEX idx_thread_items_updated_page ON thread_items(thread_id,updated_at_ordinal);
+INSERT INTO thread_history_projection_state VALUES('metadata-only',0,0);
+`)
+	meta := filepath.Join(root, "metadata.sqlite")
+	nativeCorpusSQL(t, meta, `CREATE TABLE threads(id TEXT PRIMARY KEY,title TEXT,cwd TEXT,model TEXT,updated_at_ms INTEGER); INSERT INTO threads VALUES('metadata-only','A raw metadata title','/workspace/fixture','fixture',1);`)
+	lane := LaneConfig{Lane: "state-only-native", SourceFamily: "state_only_native_fixture", Privacy: "private", Embedder: EmbedderConfig{Provider: "local", Model: "fixture", Dims: 3}, Source: &SourceConfig{Root: root, Format: "codex-history", StateDatabase: "metadata.sqlite"}}
+	factory := func(l LaneConfig) (Embedder, error) {
+		return &fakeEmbedder{identity: l.Embedder.Identity(), dim: l.Embedder.Dims}, nil
+	}
+	now := time.Now().UTC()
+	first := Refresh(context.Background(), hp, []LaneConfig{lane}, factory, now)
+	if first.Failed() || first.Sources[0].NewEmbeddedChunks != 0 || first.Sources[0].BodyBytesRead != 0 {
+		t.Fatalf("empty native history generated retrieval work: %+v", first)
+	}
+	m, err := sourceobs.LoadSourceManifest(hp, lane.SourceFamily)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Items) != 2 {
+		t.Fatalf("native metadata was discarded or context-only artifact generated: %+v", m)
+	}
+	for _, item := range m.Items {
+		if item.PageSlug != "" || item.BodyRef == "" {
+			t.Fatalf("metadata escaped raw custody: %+v", item)
+		}
+	}
+	nativeCorpusSQL(t, meta, "UPDATE threads SET updated_at_ms=2;")
+	second := Refresh(context.Background(), hp, []LaneConfig{lane}, factory, now)
+	c := second.Sources[0]
+	if second.Failed() || c.NewEmbeddedChunks != 0 || c.BodyBytesRead != 0 || c.IndexBytesWritten != 0 || !c.IndexUnchanged {
+		t.Fatalf("raw metadata revision rewrote retrieval: %+v", c)
 	}
 }
