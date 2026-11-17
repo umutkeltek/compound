@@ -3,6 +3,7 @@ package corpus
 import (
 	"context"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -72,10 +73,12 @@ INSERT INTO thread_items VALUES('db-only-thread','native-turn','native-reasoning
 	if unchanged.Failed() || unchanged.Sources[0].NativeBodyRows != 0 || unchanged.Sources[0].BodyBytesRead != 0 || unchanged.Sources[0].NewEmbeddedChunks != 0 {
 		t.Fatalf("unchanged history read or embedded bodies: %+v", unchanged)
 	}
+	beforeToolIndex, _ := os.ReadFile(filepath.Join(IndexDir(hp, lane), "manifest.json"))
 	nativeCorpusSQL(t, path, `INSERT INTO thread_items VALUES('db-only-thread','native-turn','tool-next',5,1004,'{"type":"toolResult","output":"Hidden appended tool"}','toolResult',5);UPDATE thread_history_projection_state SET next_rollout_ordinal=11;`)
 	tool := refresh()
 	if tool.Failed() || tool.Sources[0].NewEmbeddedChunks != 0 || tool.Sources[0].CapturedFiles != 0 || tool.Sources[0].IndexBytesWritten != 0 || tool.Sources[0].BodyBytesRead != 0 {
-		t.Fatalf("tool append changed semantic packs: %+v", tool)
+		afterToolIndex, _ := os.ReadFile(filepath.Join(IndexDir(hp, lane), "manifest.json"))
+		t.Fatalf("tool append changed semantic packs: %+v\nbefore=%s\nafter=%s", tool, beforeToolIndex, afterToolIndex)
 	}
 	if next := search(); len(next.Evidence) != 1 || next.Evidence[0].ItemID != got.Evidence[0].ItemID {
 		t.Fatalf("tool append changed source identity: %+v", next)
