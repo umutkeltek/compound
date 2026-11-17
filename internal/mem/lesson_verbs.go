@@ -136,13 +136,14 @@ func normalizeLessonChangeInput(in LessonChangeInput) (LessonChangeInput, error)
 		return in, fmt.Errorf("name the lesson: compound memory lesson <retire|amend|restore> <claim_id>")
 	case in.Actor == "":
 		return in, fmt.Errorf("lesson change needs --by <actor>")
-	case checkLessonActor(in.Actor) != nil:
-		return in, checkLessonActor(in.Actor)
-	case len(in.Actor) > LessonActorMaxBytes:
-		return in, fmt.Errorf("--by is %d bytes; the limit is %d", len(in.Actor), LessonActorMaxBytes)
 	case len(in.Reason) > lessonTextMax:
 		return in, fmt.Errorf("reason must be at most %d characters", lessonTextMax)
 	}
+	actor, err := CleanLessonActor(in.Actor)
+	if err != nil {
+		return in, err
+	}
+	in.Actor = actor
 	return in, nil
 }
 

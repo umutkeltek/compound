@@ -31,6 +31,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"compound/internal/candidates"
 	"compound/internal/policy"
@@ -228,14 +229,40 @@ func (t LessonTrigger) OrdinaryCallMatches() []string {
 	return hits
 }
 
-// checkLessonActor refuses the actor shapes Compound reads as owner
-// provenance. A later slice reads lesson provenance, and a typed owner name
-// must never look like owner approval; an agent records itself.
-func checkLessonActor(actor string) error {
-	if policy.HasOperatorProvenance(actor) {
-		return fmt.Errorf("actor %q is reserved for owner provenance (operator…, human…); record yourself, for example --by agent:<name>", actor)
+// CleanLessonActor returns the --by value a lesson records: invisible
+// characters (control and format characters such as a zero-width space)
+// removed, then plain ASCII letters, digits and ": . _ - @ /" only, at most
+// LessonActorMaxBytes, and never an actor Compound reads as owner
+// provenance. The hook shows the same characters, so what is stored is what
+// is displayed, and a look-alike (a zero-width space inside "operator:", a
+// Cyrillic letter) cannot pass the reserved-name check. A later slice reads
+// lesson provenance; a typed owner name must never look like owner approval.
+func CleanLessonActor(raw string) (string, error) {
+	var b strings.Builder
+	for _, r := range strings.TrimSpace(raw) {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			continue
+		}
+		if !lessonActorRune(r) {
+			return "", fmt.Errorf("--by %q may use only plain ASCII letters, digits and : . _ - @ / (found %q)", raw, r)
+		}
+		b.WriteRune(r)
 	}
-	return nil
+	actor := b.String()
+	switch {
+	case actor == "":
+		return "", fmt.Errorf("lesson needs --by <actor>")
+	case len(actor) > LessonActorMaxBytes:
+		return "", fmt.Errorf("--by is %d bytes; the limit is %d", len(actor), LessonActorMaxBytes)
+	case policy.HasOperatorProvenance(actor):
+		return "", fmt.Errorf("actor %q is reserved for owner provenance (operator…, human…); record yourself, for example --by agent:<name>", actor)
+	}
+	return actor, nil
+}
+
+func lessonActorRune(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+		r == ':' || r == '.' || r == '_' || r == '-' || r == '@' || r == '/'
 }
 
 // checkNewLessonTrigger adds the door's tighter length cap to a trigger that
@@ -326,8 +353,6 @@ func normalizeLessonInput(in LessonInput) (LessonInput, error) {
 		return in, fmt.Errorf("lesson needs --how (what to do instead)")
 	case in.Actor == "":
 		return in, fmt.Errorf("lesson needs --by <actor>")
-	case len(in.Actor) > LessonActorMaxBytes:
-		return in, fmt.Errorf("--by is %d bytes; the limit is %d", len(in.Actor), LessonActorMaxBytes)
 	case len(in.Why) > lessonTextMax || len(in.How) > lessonTextMax:
 		return in, fmt.Errorf("lesson why/how must each be at most %d characters; put detail behind --evidence", lessonTextMax)
 	}
@@ -346,9 +371,11 @@ func normalizeLessonInput(in LessonInput) (LessonInput, error) {
 			return in, err
 		}
 	}
-	if err := checkLessonActor(in.Actor); err != nil {
+	actor, err := CleanLessonActor(in.Actor)
+	if err != nil {
 		return in, err
 	}
+	in.Actor = actor
 	evidence := make([]string, 0, len(in.Evidence))
 	for _, ref := range in.Evidence {
 		if ref = strings.TrimSpace(ref); ref != "" {
