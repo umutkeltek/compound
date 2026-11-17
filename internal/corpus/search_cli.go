@@ -84,9 +84,9 @@ func SearchCLI(ctx context.Context, hp string, lanes []LaneConfig, args []string
 			retrievalparity.Record(hp, retrievalparity.NewRow(retrievalparity.ConsumerSearch, query, refs, time.Since(started), err == nil, time.Now()))
 			if err != nil {
 				if errors.Is(err, mem.ErrEngineUnavailable) {
-					fmt.Fprintln(errout, "memory search: backend unavailable; relevance could not be assessed")
+					fmt.Fprintln(errout, "memory search: backend unavailable; relevance could not be assessed; run 'compound corpus backend-health' for details")
 				} else {
-					fmt.Fprintln(errout, "memory search: source query unavailable")
+					fmt.Fprintln(errout, "memory search: source query unavailable; run 'compound corpus backend-health' for details")
 				}
 				return 1
 			}
