@@ -40,6 +40,14 @@ func shardFiles(t *testing.T, dir string) map[string]int64 {
 	}
 	return out
 }
+func freezeCompactionClock(t *testing.T) {
+	t.Helper()
+	old := shardCompactionNow
+	instant := time.Now()
+	shardCompactionNow = func() time.Time { return instant }
+	t.Cleanup(func() { shardCompactionNow = old })
+}
+
 func compactFixture(t *testing.T, dir string, m Manifest) ShardCompactionReport {
 	t.Helper()
 	unlock, err := lockCorpusIndex(context.Background(), dir)
@@ -53,6 +61,7 @@ func compactFixture(t *testing.T, dir string, m Manifest) ShardCompactionReport 
 	return compactRedundantShards(context.Background(), dir, m, 3, ShardCompactionConfig{Enabled: true})
 }
 func TestShardCompactionBoundsRepeatedGrowthAndPreservesCurrentHistory(t *testing.T) {
+	freezeCompactionClock(t)
 	dir := t.TempDir()
 	values := map[string][]float32{}
 	var reclaimed int64
@@ -91,6 +100,7 @@ func TestShardCompactionBoundsRepeatedGrowthAndPreservesCurrentHistory(t *testin
 	}
 }
 func TestShardCompactionDefaultOffAndExactVectorRetention(t *testing.T) {
+	freezeCompactionClock(t)
 	dir := t.TempDir()
 	if err := ensureShardAccessGate(dir); err != nil {
 		t.Fatal(err)
@@ -134,6 +144,7 @@ func TestShardCompactionDefaultOffAndExactVectorRetention(t *testing.T) {
 	}
 }
 func TestShardCompactionBoundedPassAndCancellation(t *testing.T) {
+	freezeCompactionClock(t)
 	dir := t.TempDir()
 	if err := ensureShardAccessGate(dir); err != nil {
 		t.Fatal(err)
@@ -165,6 +176,7 @@ func TestShardCompactionBoundedPassAndCancellation(t *testing.T) {
 	}
 }
 func TestShardReadOnlyLegacyGateAndUnsafeFiles(t *testing.T) {
+	freezeCompactionClock(t)
 	dir := t.TempDir()
 	release, err := acquireShardRead(context.Background(), dir)
 	if err != nil {
@@ -197,6 +209,7 @@ func TestShardReadOnlyLegacyGateAndUnsafeFiles(t *testing.T) {
 	}
 }
 func TestShardCompactionRetainsIncompleteAndFailedPublications(t *testing.T) {
+	freezeCompactionClock(t)
 	dir := t.TempDir()
 	if err := ensureShardAccessGate(dir); err != nil {
 		t.Fatal(err)
@@ -220,6 +233,7 @@ func TestShardCompactionRetainsIncompleteAndFailedPublications(t *testing.T) {
 	}
 }
 func TestShardSnapshotReaderDefersCollectorAndDoesNotWaitForWriterInference(t *testing.T) {
+	freezeCompactionClock(t)
 	hp := t.TempDir()
 	f := seedOwnedSnapshotLane(t, hp, "Cedar reader fixture")
 	if _, err := Index(context.Background(), hp, f.lane, f.embedder, IndexOptions{Incremental: true}); err != nil {
@@ -314,6 +328,7 @@ func TestShardSnapshotReaderDefersCollectorAndDoesNotWaitForWriterInference(t *t
 	}
 }
 func TestShardCompactionWiredOnlyAfterDurableIndexPublication(t *testing.T) {
+	freezeCompactionClock(t)
 	hp := t.TempDir()
 	f := seedOwnedSnapshotLane(t, hp, "Initial compaction fixture")
 	f.lane.ShardCompaction.Enabled = true
@@ -370,3 +385,31 @@ func TestShardCompactionWiredOnlyAfterDurableIndexPublication(t *testing.T) {
 	}
 }
 func sha256Bytes(body []byte) []byte { sum := sha256.Sum256(body); return sum[:] }
+
+func TestShardCompactionRejectsUncommittedViewAndCooperativeDeadline(t *testing.T) {
+	dir := t.TempDir()
+	if err := ensureShardAccessGate(dir); err != nil {
+		t.Fatal(err)
+	}
+	a, b := compactionHash(1), compactionHash(2)
+	old, _, _ := writeVectorShard(dir, map[string][]float32{a: {1, 0, 0}}, 3)
+	current, _, _ := writeVectorShard(dir, map[string][]float32{a: {1, 0, 0}, b: {0, 1, 0}}, 3)
+	m := compactionManifest(current, 3)
+	if err := writeJSONFile(filepath.Join(dir, "manifest.json"), m); err != nil {
+		t.Fatal(err)
+	}
+	forged := compactionManifest(old, 3)
+	r := compactRedundantShards(context.Background(), dir, forged, 3, ShardCompactionConfig{Enabled: true})
+	if r.Status != "uncommitted_manifest" || r.ReclaimedFiles != 0 {
+		t.Fatalf("caller view became authority: %+v", r)
+	}
+	previous := shardCompactionNow
+	defer func() { shardCompactionNow = previous }()
+	instant := time.Now()
+	calls := 0
+	shardCompactionNow = func() time.Time { calls++; return instant.Add(time.Duration(calls) * shardCompactTimeBudget) }
+	r = compactRedundantShards(context.Background(), dir, m, 3, ShardCompactionConfig{Enabled: true})
+	if !r.Deferred || r.ReclaimedFiles != 0 {
+		t.Fatalf("cooperative deadline ignored: %+v", r)
+	}
+}

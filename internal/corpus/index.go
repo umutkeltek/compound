@@ -461,10 +461,15 @@ func readVectors(dir string) (VectorFile, error) {
 	if err != nil && !os.IsNotExist(err) {
 		return VectorFile{}, err
 	}
+	return readVectorsSnapshot(dir, manifest)
+}
+
+// The caller owns either the writer lease or a short snapshot-reader lease.
+// Never sample another mutable manifest after selecting the generation.
+func readVectorsSnapshot(dir string, manifest Manifest) (VectorFile, error) {
 	if manifest.VectorShards != nil {
 		return readShardedVectors(dir, manifest)
 	}
-
 	var out VectorFile
 	if err := readJSONFile(filepath.Join(dir, "vectors.json"), &out); err != nil {
 		return VectorFile{}, err

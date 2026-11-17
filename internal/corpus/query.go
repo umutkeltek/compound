@@ -466,17 +466,11 @@ func (t *IndexTransport) load() (*loadedIndex, error) {
 		t.modelErr = err
 		return nil, err
 	}
-	var vectors VectorFile
-	if manifest.VectorShards != nil {
-		// Shards are immutable. Never re-read a mutable manifest after validating
-		// its digest binding, including during a concurrent index publication.
-		vectors, err = readShardedVectors(dir, manifest)
-	} else {
-		vectors, err = readVectors(dir)
-	}
+	vectors, err := readVectorsSnapshot(dir, manifest)
 	if err != nil {
 		return nil, err
 	}
+
 	t.loaded = &loadedIndex{identity: identity, manifest: manifest, vectors: vectors}
 	return t.loaded, nil
 }

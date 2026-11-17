@@ -46,6 +46,8 @@ const (
 // Called only by the existing index writer, after successful complete durable
 // publication (including unchanged complete generations). No source body,
 // manifest, vectors.json rollback file, or vector entry is removed.
+var shardCompactionNow = time.Now
+
 func compactRedundantShards(ctx context.Context, dir string, manifest Manifest, dims int, config ShardCompactionConfig) ShardCompactionReport {
 	r := ShardCompactionReport{Protocol: shardReaderProtocol, Status: "disabled"}
 	if !config.Enabled {
@@ -82,7 +84,7 @@ func compactRedundantShards(ctx context.Context, dir string, manifest Manifest, 
 	}
 	r.Status = "complete"
 	r.FreeBytesBefore = shardFreeBytes(dir)
-	started := time.Now()
+	started := shardCompactionNow()
 	path := filepath.Join(dir, "vector-shards")
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
@@ -123,7 +125,7 @@ func compactRedundantShards(ctx context.Context, dir string, manifest Manifest, 
 		return r
 	}
 	for r.ScannedFiles < shardCompactMaxScanned && r.ReclaimedFiles < shardCompactMaxRemoved {
-		if ctx.Err() != nil || time.Since(started) >= shardCompactTimeBudget {
+		if ctx.Err() != nil || shardCompactionNow().Sub(started) >= shardCompactTimeBudget {
 			r.Deferred = true
 			break
 		}
