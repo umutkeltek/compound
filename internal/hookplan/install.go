@@ -451,31 +451,30 @@ func installHooksImpl(
 		if err != nil {
 			return report, fmt.Errorf("%s: %w", harness, err)
 		}
-		reportedBindings := make([]HookInstallBinding, 0, len(bindings))
-		for _, binding := range bindings {
-			reportedBindings = append(reportedBindings, HookInstallBinding{
-				Event:    binding.Event,
-				Matcher:  binding.Matcher,
-				Command:  binding.Command,
-				Blocking: binding.Blocking,
-			})
-		}
-		matcher, command := installedGuardProjection(bindings)
-		// Project the installed per-event timeout onto the reported bindings so
-		// the install report reflects the live, on-disk timeout that survived
-		// the wholesale Compound-entry replace (hand-set timeout adopted from
-		// the prior entry, or the desired timeout if pinned).
-		for i := range reportedBindings {
-			if t, ok := installedTimeouts[reportedBindings[i].Event]; ok {
-				reportedBindings[i].Timeout = t
-			}
-		}
 		prepared = append(prepared, staged)
-		report.Entries = append(report.Entries, HookInstallEntry{
-			Harness: harness, ConfigPath: configPath, ConfigRevision: hookConfigRevision(staged.after),
-			Action: staged.action, Matcher: matcher, Command: command,
-			Bindings: reportedBindings,
-		})
+		report.Entries = append(report.Entries, installedHookEntry(harness, configPath, staged, bindings, installedTimeouts))
+	}
+	// Record-only provider lanes: every other launcher profile found under baseDir. A named
+	// harness or a config-dir override selects one profile, so neither reaches them.
+	if strings.TrimSpace(configDir) == "" && (len(want) == 0 || want[ProviderLanesHarness]) {
+		lanes, err := DiscoverProviderLanes(baseDir, harness.DefaultRegistry())
+		if err != nil {
+			return report, err
+		}
+		for _, lane := range lanes {
+			var desired []desiredHookBinding
+			for _, binding := range providerLaneBindings(binaryPath, lane.Harness) {
+				if allowedEvents == nil || allowedEvents[binding.Event] {
+					desired = append(desired, binding)
+				}
+			}
+			staged, bindings, installedTimeouts, err := prepareHookBindings(lane.Harness, lane.ConfigPath, desired, check)
+			if err != nil {
+				return report, fmt.Errorf("%s (%s): %w", lane.Harness, lane.Label, err)
+			}
+			prepared = append(prepared, staged)
+			report.Entries = append(report.Entries, installedHookEntry(lane.Harness, lane.ConfigPath, staged, bindings, installedTimeouts))
+		}
 	}
 	if check {
 		return report, nil
@@ -484,6 +483,31 @@ func installHooksImpl(
 		return report, err
 	}
 	return report, nil
+}
+
+// installedHookEntry is the report row for one staged harness config: the bindings it holds
+// after the change, each with its installed timeout (a hand-set timeout adopted from the prior
+// entry, or the desired one), so the report shows the live, on-disk value.
+func installedHookEntry(harnessName, configPath string, staged preparedHookConfig, bindings []desiredHookBinding, installedTimeouts map[string]int) HookInstallEntry {
+	reported := make([]HookInstallBinding, 0, len(bindings))
+	for _, binding := range bindings {
+		row := HookInstallBinding{
+			Event:    binding.Event,
+			Matcher:  binding.Matcher,
+			Command:  binding.Command,
+			Blocking: binding.Blocking,
+		}
+		if t, ok := installedTimeouts[binding.Event]; ok {
+			row.Timeout = t
+		}
+		reported = append(reported, row)
+	}
+	matcher, command := installedGuardProjection(bindings)
+	return HookInstallEntry{
+		Harness: harnessName, ConfigPath: configPath, ConfigRevision: hookConfigRevision(staged.after),
+		Action: staged.action, Matcher: matcher, Command: command,
+		Bindings: reported,
+	}
 }
 
 func commitHookInstallTransaction(

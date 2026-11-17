@@ -180,6 +180,21 @@ That path installs observation-only `claude_code` context hooks and preserves
 the launch-profile owner's model and effort settings. The profile id remains
 visible in route evidence; the hook runtime identity remains `claude_code`.
 
+### Record-only provider lanes
+
+Every other Claude profile folder under the launcher's profile root
+(`.switchback/config/claude/_providers/<label>/settings.json`) is a record-only
+provider lane. `compound hook install` (all harnesses) and
+`compound hook install --harness claude-provider-lanes` give each one the
+session briefing, a `--spool` PreToolUse that records the call and never blocks,
+PostToolUse, and a session-end receipt. The four governed lanes keep their own
+folders and compiled posture. The lanes are read from the machine: the hooks
+report as the registered name of the launch profile that starts Claude in that
+folder, else `claude_<label>` (or `claude_<lane>` for a `gateway-<lane>`
+folder), else the generic `claude_code` posture above. `--check` reports every
+lane; `compound hook uninstall --harness claude-provider-lanes` removes only
+Compound's entries.
+
 ### Compare models and efforts published by the profile owner
 
 `route experiment-plan` reads the owner's non-secret conformance projection.
