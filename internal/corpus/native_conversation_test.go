@@ -171,6 +171,16 @@ INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(1,'stable','us
 	if first.Failed() {
 		t.Fatalf("initial: %+v", first)
 	}
+	beforeManifest, err := sourceobs.LoadSourceManifest(hp, lane.SourceFamily)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oldProjection sourceobs.SourceManifestItem
+	for _, item := range beforeManifest.Items {
+		if strings.Contains(item.SourceRef, "session=stable&") && !strings.Contains(item.SourceRef, "row=") {
+			oldProjection = item
+		}
+	}
 	nativeCorpusSQL(t, path, "UPDATE sessions SET runtime_revision=2; INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(3,'stable','tool','Another hidden tool',3);")
 	second := Refresh(context.Background(), hp, []LaneConfig{lane}, factory, now)
 	if second.Failed() {
@@ -178,5 +188,65 @@ INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(1,'stable','us
 	}
 	if second.Sources[0].NewEmbeddedChunks != 0 {
 		t.Fatalf("raw row append changed existing semantic chunk hashes: new_embedded_chunks=%d prepared_items=%d reused_items=%d", second.Sources[0].NewEmbeddedChunks, second.Sources[0].PreparedItems, second.Sources[0].ReusedItems)
+	}
+	afterManifest, err := sourceobs.LoadSourceManifest(hp, lane.SourceFamily)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reused := false
+	for _, item := range afterManifest.Items {
+		if item.SourceKey == oldProjection.SourceKey && item.VersionState != "superseded" && item.ID == oldProjection.ID && item.BodyRef == oldProjection.BodyRef {
+			reused = true
+		}
+	}
+	if !reused || second.Sources[0].CapturedFiles != 0 {
+		t.Fatal("raw-only update minted a semantic projection version")
+	}
+	nativeCorpusSQL(t, path, "INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(4,'stable','user','Birch archive confirmation',4);")
+	visible := Refresh(context.Background(), hp, []LaneConfig{lane}, factory, now)
+	if visible.Failed() || visible.Sources[0].NewEmbeddedChunks == 0 {
+		t.Fatalf("visible append not embedded: %+v", visible)
+	}
+	current := Search(context.Background(), hp, []LaneConfig{lane}, factory, "Birch archive", 5, QueryOptions{IncludeText: true})
+	if len(current.Evidence) != 1 || !strings.Contains(current.Evidence[0].Text, "Birch archive confirmation") || strings.Contains(current.Evidence[0].Text, "hidden tool") {
+		t.Fatalf("visible append recall: %+v", current)
+	}
+	historical := Search(context.Background(), hp, []LaneConfig{lane}, factory, "archive", 5, QueryOptions{IncludeText: true, IncludeHistory: true})
+	if len(historical.Evidence) != 2 {
+		t.Fatalf("projection history: %+v", historical)
+	}
+}
+
+func TestNativeAttributionAndCustodyOnlyRowsIgnoreRawLinePositions(t *testing.T) {
+	for _, format := range []string{"hermes", "opencode"} {
+		message := "{\"type\":\"message\",\"timestamp\":\"1\",\"message\":{\"role\":\"user\",\"content\":\"Cedar archive\"},\"source\":{\"table\":\"messages\",\"message_id\":\"7\"}}\n"
+		raw := "{\"type\":\"native_row\",\"row\":{\"role\":\"user\",\"content\":\"Hidden raw tool/reasoning payload\"}}\n"
+		a, err := conversationText(format, raw+message)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := conversationText(format, raw+raw+message)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a != b || !strings.Contains(a, "messages:7") {
+			t.Fatalf("%s unstable native attribution: %q %q", format, a, b)
+		}
+		item := sourceobs.SourceManifestItem{ID: "stable_fixture", SourceKind: format + "_transcript_v1", SourceRef: "sqlite:/fixture.db"}
+		chunks, err := ChunkItem(item, raw, ChunkConfig{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(chunks) != 0 {
+			t.Fatalf("%s raw custody row embedded: %+v", format, chunks)
+		}
+		contextual := "{\"type\":\"native_session\",\"context\":{\"title\":\"Archive plan\",\"cwd\":\"/workspace/fixture\",\"model\":\"fixture-model\"}}\n" + message
+		text, err := conversationText(format, contextual)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(text, "Archive plan") || !strings.Contains(text, "/workspace/fixture") {
+			t.Fatalf("useful source context lost: %s", text)
+		}
 	}
 }

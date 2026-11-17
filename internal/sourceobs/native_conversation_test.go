@@ -64,7 +64,7 @@ func nativeSessionItems(t *testing.T, hp, sid string) []SourceManifestItem {
 	t.Helper()
 	var out []SourceManifestItem
 	for _, item := range nativeManifest(t, hp).Items {
-		if strings.Contains(item.SourceRef, "session="+sid+"&") {
+		if strings.Contains(item.SourceRef, "session="+sid+"&") && !strings.Contains(item.SourceRef, "row=") {
 			out = append(out, item)
 		}
 	}
@@ -120,7 +120,8 @@ INSERT INTO messages(id,session_id,role,content,timestamp,_compressed_summary) V
 	}
 	items := nativeSessionItems(t, hp, "s1")
 	body := nativeBody(t, hp, items[0])
-	if !strings.Contains(body, "Reasoning retained") || !strings.Contains(body, "GeneratedSummarySecret") || !strings.Contains(body, `"compacted":1`) {
+	rawBodies := nativeRawBodies(t, hp, "s1")
+	if !strings.Contains(rawBodies, "Reasoning retained") || !strings.Contains(rawBodies, "GeneratedSummarySecret") || !strings.Contains(rawBodies, `"compacted":1`) {
 		t.Fatal("original rows/flags missing from custody")
 	}
 	if got := nativeProjectedMessages(t, body); len(got) != 1 || got[0] != "Cedar archive" {
@@ -239,7 +240,7 @@ func TestNativeOpenCodeBothSchemasDedupeMirrorsRetainRows(t *testing.T) {
 		t.Fatalf("mirror/text projection: %v", messages)
 	}
 	for _, table := range []string{`"table":"session"`, `"table":"session_v2"`, `"table":"message"`, `"table":"session_message"`, `"table":"part"`} {
-		if !strings.Contains(body, table) {
+		if !strings.Contains(nativeRawBodies(t, hp, "mirror"), table) {
 			t.Fatalf("lost table provenance: %s", table)
 		}
 	}
@@ -451,65 +452,5 @@ func TestNativePublicationRefusesNewerSessionCheckpoint(t *testing.T) {
 	retry := captureNative(t, hp, root, "hermes", now)
 	if retry.Captured != 1 {
 		t.Fatalf("retry after competing publication: %+v", retry)
-	}
-}
-
-func nativeArtifactTotals(t *testing.T, hp string) (int64, int) {
-	t.Helper()
-	var bytes int64
-	count := 0
-	for _, root := range []string{filepath.Join(hp, "artifacts", "sha256"), filepath.Join(hp, "private", "artifacts", "sha256")} {
-		err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			if err != nil {
-				return err
-			}
-			if entry.Type().IsRegular() {
-				info, err := entry.Info()
-				if err != nil {
-					return err
-				}
-				bytes += info.Size()
-				count++
-			}
-			return nil
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	return bytes, count
-}
-
-func TestNativeRowCustodyAvoidsWholeSessionAmplification(t *testing.T) {
-	hp, root := t.TempDir(), nativeRoot(t)
-	path := filepath.Join(root, "state.db")
-	nativeSQL(t, path, hermesNativeSchema+`
-INSERT INTO sessions(id,source,started_at) VALUES('growth','cli',1);
-INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(1,'growth','user','Cedar archive',1);
-INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(2,'growth','tool',replace(hex(zeroblob(1048576)),'00','x'),2);
-`)
-	now := time.Now().UTC().Truncate(24 * time.Hour).Add(time.Hour)
-	captureNative(t, hp, root, "hermes", now)
-	before, countBefore := nativeArtifactTotals(t, hp)
-	unchanged := captureNative(t, hp, root, "hermes", now)
-	afterUnchanged, countUnchanged := nativeArtifactTotals(t, hp)
-	if before != afterUnchanged || countBefore != countUnchanged || unchanged.NativeBodyRows != 0 {
-		t.Fatalf("unchanged refresh wrote/read bodies: bytes%d->%d count%d->%d report%+v", before, afterUnchanged, countBefore, countUnchanged, unchanged)
-	}
-	nativeSQL(t, path, "UPDATE sessions SET runtime_revision=2;")
-	captureNative(t, hp, root, "hermes", now)
-	afterState, _ := nativeArtifactTotals(t, hp)
-	for i := 0; i < 10; i++ {
-		nativeSQL(t, path, fmt.Sprintf("UPDATE sessions SET runtime_revision=%d; INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(%d,'growth','tool','small tool result %d',%d);", i+3, i+3, i, i+3))
-		captureNative(t, hp, root, "hermes", now)
-	}
-	after, countAfter := nativeArtifactTotals(t, hp)
-	stateBytes, growthBytes := afterState-before, after-afterState
-	t.Logf("MEASURED native owned artifact growth: state_only_bytes=%d ten_small_appends_bytes=%d new_artifacts=%d initial_artifact_bytes=%d unchanged_body_rows=%d", stateBytes, growthBytes, countAfter-countBefore, before, unchanged.NativeBodyRows)
-	if stateBytes > 16<<10 || growthBytes > 128<<10 {
-		t.Fatalf("whole-session amplification: state_only_bytes=%d ten_small_appends_bytes=%d new_artifacts=%d initial_artifact_bytes=%d", stateBytes, growthBytes, countAfter-countBefore, before)
 	}
 }

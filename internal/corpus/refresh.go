@@ -22,6 +22,9 @@ type SourceConfig struct {
 }
 type EmbedderFactory func(LaneConfig) (Embedder, error)
 type Coverage struct {
+	NativeRowsCaptured     int   `json:"native_rows_captured,omitempty"`
+	NativeRowBytesCaptured int64 `json:"native_row_bytes_captured,omitempty"`
+
 	NativeMetadataRows  int    `json:"native_metadata_rows,omitempty"`
 	NativeBodyRows      int    `json:"native_body_rows,omitempty"`
 	NativeBodyBytes     int64  `json:"native_body_bytes,omitempty"`
@@ -133,6 +136,8 @@ func Refresh(ctx context.Context, homePath string, lanes []LaneConfig, factory E
 							err = e
 							break
 						}
+						captured.NativeRowsCaptured += part.NativeRowsCaptured
+						captured.NativeRowBytesCaptured += part.NativeRowBytesCaptured
 						captured.NativeMetadataRows += part.NativeMetadataRows
 						captured.NativeBodyRows += part.NativeBodyRows
 						captured.NativeBodyBytes += part.NativeBodyBytes
@@ -151,6 +156,8 @@ func Refresh(ctx context.Context, homePath string, lanes []LaneConfig, factory E
 					c.Status = "capture_failed"
 					c.Error = err.Error()
 				} else {
+					c.NativeRowsCaptured = captured.NativeRowsCaptured
+					c.NativeRowBytesCaptured = captured.NativeRowBytesCaptured
 					c.NativeMetadataRows = captured.NativeMetadataRows
 					c.NativeBodyRows = captured.NativeBodyRows
 					c.NativeBodyBytes = captured.NativeBodyBytes

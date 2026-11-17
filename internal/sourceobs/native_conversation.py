@@ -19,6 +19,10 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=binary)
 
 
+def digest(body):
+    return hashlib.sha256(body.encode()).hexdigest()
+
+
 def text_content(value):
     if isinstance(value, str):
         return value
@@ -79,12 +83,22 @@ def layouts(db, tables, format):
 
 
 def session_body(db, schema, format, sid):
-    raw, messages, mirrored_text = [], [], {}
+    raw, messages, mirrored_text, context = [], [], {}, {}
     for st, mt, pt, v2 in sorted(schema, key=lambda x: not x[3]):
         session = db.execute('SELECT * FROM "' + st + '" WHERE id=?', (sid,)).fetchone()
         if session is None:
             continue
-        raw.append({"table": st, "row": dict(session)})
+        session = dict(session)
+        raw.append({"table": st, "row": session})
+        # Only useful stable session context belongs in retrieval. Runtime
+        # revisions, counters, heartbeat/last-read times remain custody-only.
+        for field, names in {"title": ("title",), "model": ("model",), "source": ("source",),
+                             "cwd": ("cwd", "directory"), "parent_session_id": ("parent_session_id", "parent_id")}.items():
+            if field not in context:
+                for name in names:
+                    if isinstance(session.get(name), str) and session[name]:
+                        context[field] = session[name]
+                        break
         order = "timestamp,id" if format == "hermes" else ("seq,id" if v2 else "time_created,id")
         rows = read_rows(db, mt, sid, order)
         by_message = {}
@@ -95,8 +109,6 @@ def session_body(db, schema, format, sid):
         for row in rows:
             raw.append({"table": mt, "row": row})
             if format == "hermes":
-                # Inactive/compacted originals remain evidence; generated summaries
-                # are custodied but never treated as original semantic text.
                 if row["_compressed_summary"]:
                     continue
                 role, content = row["role"], row["content"]
@@ -122,8 +134,6 @@ def session_body(db, schema, format, sid):
             if message is None:
                 continue
             signature = (role, message["message"]["content"])
-            # Only dedupe across the two schema mirrors, never repeated turns
-            # within one source history. All original rows remain above.
             if format == "opencode":
                 if not v2 and mirrored_text.get(signature, 0):
                     mirrored_text[signature] -= 1
@@ -132,12 +142,11 @@ def session_body(db, schema, format, sid):
                     mirrored_text[signature] = mirrored_text.get(signature, 0) + 1
             messages.append(message)
     messages.sort(key=lambda m: float(m["timestamp"] or 0))
-    return raw, messages
+    return raw, messages, context
 
 
 def metadata_rows(db, table, sid, session=False):
     columns = {r[1] for r in db.execute('PRAGMA table_info("' + table + '")')}
-    # No content, reasoning, tool payload or data JSON on the metadata path.
     wanted = [n for n in ("id", "message_id", "type", "seq", "ordinal", "role", "time_created",
                          "time_updated", "timestamp", "active", "compacted", "_compressed_summary",
                          "started_at", "ended_at", "runtime_revision", "runtime_generation",
@@ -160,7 +169,13 @@ def inventory(db, schema):
             for table in (mt, pt):
                 if table:
                     meta.extend({"table": table, "row": r} for r in metadata_rows(db, table, sid))
-        yield sid, hashlib.sha256(canonical(meta).encode()).hexdigest(), len(meta)
+        yield sid, digest(canonical(meta)), len(meta)
+
+
+def row_identity(table, row):
+    # Actual native primary keys, including the v2 part composite key.
+    fields = ("message_id", "ordinal") if table == "session_part" else ("id",)
+    return canonical([row[name] for name in fields])
 
 
 def main():
@@ -179,32 +194,48 @@ def main():
     for sid, meta, metadata_count in inventory(db, schema):
         old = request["previous"].get(sid, "")
         result = {"session_id": sid, "metadata_rows": metadata_count}
-        if old.startswith("native-session-v2:" + meta + ":") and (not request["reconcile"] or old.endswith(":" + str(request["reconcile_epoch"]))):
+        if old.startswith("native-session-v3:" + meta + ":") and (not request["reconcile"] or old.endswith(":" + str(request["reconcile_epoch"]))):
             print(canonical(result), flush=True)
             continue
         if count >= MAX_SESSIONS or size >= MAX_BYTES:
             pending += 1
             print(canonical(result), flush=True)
             continue
-        rows, messages = session_body(db, schema, request["format"], sid)
+        rows, messages, context = session_body(db, schema, request["format"], sid)
         original = canonical(rows)
+        if len(original.encode()) > MAX_SESSION_BYTES:
+            raise ValueError("native session exceeds 64 MiB; configure a bounded source export")
         result["body_rows"], result["body_bytes"] = len(rows), len(original.encode())
-        fingerprint = "native-session-v2:" + meta + ":" + hashlib.sha256(original.encode()).hexdigest() + ":" + str(request["reconcile_epoch"])
-        result["fingerprint"] = fingerprint
+        fingerprint = "native-session-v3:" + meta + ":" + digest(original) + ":" + str(request["reconcile_epoch"])
+        row_exports, export_bytes = [], 0
+        for entry in rows:
+            table, row = entry["table"], entry["row"]
+            rid = row_identity(table, row)
+            body = canonical({"type": "native_row", "format": request["format"], "session_id": sid,
+                              "source": {"table": table, "row_id": rid}, "row": row}) + "\n"
+            row_fp = "native-row-v3:" + digest(body)
+            if request["rows"].get(sid, {}).get(table + "\x1f" + rid) != row_fp:
+                row_exports.append({"kind": "row", "session_id": sid, "table": table, "row_id": rid,
+                                    "fingerprint": row_fp, "body": body})
+                export_bytes += len(body.encode())
+        # No raw payload enters the retrieval body. Stable provenance IDs are
+        # retained on messages; source-row count cannot renumber visible turns.
+        projection = canonical({"type": "native_session", "format": request["format"],
+                                "session_id": sid, "context": context}) + "\n"
+        projection += "".join(canonical(m) + "\n" for m in messages)
+        changed_projection = request["projection_hashes"].get(sid) != "sha256:" + digest(projection)
+        if changed_projection:
+            export_bytes += len(projection.encode())
         count += 1
-        if old.rsplit(":", 1)[0] != fingerprint.rsplit(":", 1)[0]:
-            header = {"type": "native_session", "format": request["format"], "session_id": sid,
-                      "tables": sorted({r["table"] for r in rows})}
-            body = canonical(header) + "\n" + "".join(canonical({"type": "source_row", **r}) + "\n" for r in rows)
-            body += "".join(canonical(m) + "\n" for m in messages)
-            if len(body.encode()) > MAX_SESSION_BYTES:
-                raise ValueError("native session exceeds 64 MiB; configure a bounded source export")
-            if size + len(body.encode()) > MAX_BYTES:
-                result.pop("fingerprint")
-                pending += 1
-            else:
-                result["body"] = body
-                size += len(body.encode())
+        if size + export_bytes > MAX_BYTES:
+            pending += 1
+        else:
+            for exported in row_exports:
+                print(canonical(exported), flush=True)
+            if changed_projection:
+                result["body"] = projection
+            result["fingerprint"] = fingerprint
+            size += export_bytes
         print(canonical(result), flush=True)
     db.rollback()
     db.close()
@@ -215,7 +246,6 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
-        # Do not expose source bodies or SQL parameters in errors.
         detail = str(exc)
         safe_prefixes = ("unsupported native schema:", "unsupported incomplete OpenCode schema:",
                          "unsupported OpenCode schema:", "native session exceeds ",

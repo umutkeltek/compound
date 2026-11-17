@@ -85,6 +85,9 @@ func nativeDatabaseFingerprint(path string) (string, error) {
 }
 
 type nativeSessionRecord struct {
+	Kind         string  `json:"kind"`
+	Table        string  `json:"table"`
+	RowID        string  `json:"row_id"`
 	SessionID    string  `json:"session_id"`
 	Fingerprint  string  `json:"fingerprint"`
 	Body         *string `json:"body"`
@@ -98,7 +101,7 @@ type nativeSessionRecord struct {
 // CaptureNativeConversations takes one SQLite read transaction. Native metadata
 // selects changed sessions; daily bounded full-row reconciliation catches edits
 // with unchanged revisions. Per-session fingerprints are durable manifest cursors.
-// Missing sessions preserve owned current recall: absence does not invalidate
+// Raw row versions are separately content-addressed custody-only items. A session\n// projection is published only when its semantic bytes change.\n// Missing sessions preserve owned current recall: absence does not invalidate
 // past evidence. The raw original database and its independent backup stay intact.
 func CaptureNativeConversations(ctx context.Context, homePath, family, root, format, database string, now time.Time) (CaptureBatchReport, error) {
 	result := CaptureBatchReport{}
@@ -126,6 +129,8 @@ func CaptureNativeConversations(ctx context.Context, homePath, family, root, for
 		return result, loadErr
 	}
 	current, previous := map[string]SourceManifestItem{}, map[string]string{}
+	rowFingerprints := map[string]map[string]string{}
+	projectionHashes := map[string]string{}
 	expectedItems := map[string]SourceManifestItem{}
 	inventoryKey := idFor("source_", family, namespace, "inventory")
 	var checkpoint SourceManifestItem
@@ -142,12 +147,24 @@ func CaptureNativeConversations(ctx context.Context, homePath, family, root, for
 			return result, fmt.Errorf("native checkpoint has no session provenance")
 		}
 		sid := parsed.Query().Get("session")
-		current[sid], previous[sid] = item, item.SourceFingerprint
 		expectedItems[item.SourceKey] = item
+		if rid := parsed.Query().Get("row"); rid != "" {
+			table := parsed.Query().Get("table")
+			if table == "" {
+				return result, fmt.Errorf("native row checkpoint has no table provenance")
+			}
+			if rowFingerprints[sid] == nil {
+				rowFingerprints[sid] = map[string]string{}
+			}
+			rowFingerprints[sid][table+"\x1f"+rid] = item.SourceFingerprint
+			continue
+		}
+		current[sid], previous[sid] = item, item.SourceFingerprint
+		projectionHashes[sid] = item.FileHash
 	}
 	epoch, previousEpoch := now.UTC().Unix()/86400, int64(-1)
 	parts := strings.Split(checkpoint.SourceFingerprint, ":")
-	if len(parts) == 3 && parts[0] == "native-db-v2" {
+	if len(parts) == 3 && parts[0] == "native-db-v3" {
 		previousEpoch, _ = strconv.ParseInt(parts[2], 10, 64)
 	}
 	if previousEpoch == epoch && len(parts) == 3 && parts[1] == identity {
@@ -155,14 +172,14 @@ func CaptureNativeConversations(ctx context.Context, homePath, family, root, for
 		result.SourceManifestReport = SourceManifestReport{ManifestID: existing.ID, ManifestPath: SourceManifestPath(homePath, family), AuthorityRef: SourceManifestAuthorityRef(family), ItemCount: len(existing.Items)}
 		return result, ctx.Err()
 	}
-	request, _ := json.Marshal(map[string]any{"database": path, "format": format, "previous": previous, "reconcile": previousEpoch != epoch, "reconcile_epoch": epoch})
+	request, _ := json.Marshal(map[string]any{"database": path, "format": format, "previous": previous, "rows": rowFingerprints, "projection_hashes": projectionHashes, "reconcile": previousEpoch != epoch, "reconcile_epoch": epoch})
 	spool, err := newSourceManifestSnapshotBatch(128)
 	if err != nil {
 		return result, err
 	}
 	defer spool.Close()
 	fragment := SourceManifest{SchemaVersion: SourceManifestSchemaVersion, ID: "srcman_" + safeManifestName(family), SourceFamily: family, AuthorityRef: SourceManifestAuthorityRef(family), Lifecycle: defaultSourceManifestLifecycle()}
-	appendBody := func(sid, fingerprint, body string, inventory bool) error {
+	appendBody := func(sid, fingerprint, body string, inventory bool, table, rowID string) error {
 		tables := "session,message,part,session_v2,session_message,session_part"
 		if format == "hermes" {
 			tables = "sessions,messages"
@@ -170,11 +187,16 @@ func CaptureNativeConversations(ctx context.Context, homePath, family, root, for
 		if inventory {
 			tables = "inventory"
 		}
-		ref := (&url.URL{Scheme: "sqlite", Path: filepath.ToSlash(path), RawQuery: url.Values{"session": {sid}, "tables": {tables}}.Encode()}).String()
+		query := url.Values{"session": {sid}, "tables": {tables}}
 		key := idFor("source_", family, namespace, "session", sid)
 		if inventory {
 			key = inventoryKey
 		}
+		if rowID != "" {
+			query = url.Values{"session": {sid}, "table": {table}, "row": {rowID}}
+			key = idFor("source_", family, namespace, "row", sid, table, rowID)
+		}
+		ref := (&url.URL{Scheme: "sqlite", Path: filepath.ToSlash(path), RawQuery: query.Encode()}).String()
 		hash := hashBytes([]byte(body))
 		temp, err := os.CreateTemp(spool.spoolDir, "native-session-*")
 		if err != nil {
@@ -193,6 +215,7 @@ func CaptureNativeConversations(ctx context.Context, homePath, family, root, for
 		return nil
 	}
 	metadataOnly, seen := []SourceManifestItem{}, map[string]bool{}
+	seenRows := map[string]bool{}
 	err = readNativeSessions(ctx, request, func(row nativeSessionRecord) error {
 		if row.Complete {
 			result.Pending = row.Pending
@@ -200,6 +223,25 @@ func CaptureNativeConversations(ctx context.Context, homePath, family, root, for
 		}
 		if row.SessionID == "" || seen[row.SessionID] {
 			return fmt.Errorf("invalid native session inventory")
+		}
+		if row.Kind == "row" {
+			if err := validateNativeRowIdentity(format, row.Table, row.RowID); err != nil {
+				return err
+			}
+			key := idFor("source_", family, namespace, "row", row.SessionID, row.Table, row.RowID)
+			if seenRows[key] || row.Body == nil || row.Fingerprint != "native-row-v3:"+strings.TrimPrefix(hashBytes([]byte(*row.Body)), "sha256:") {
+				return fmt.Errorf("invalid native row export")
+			}
+			seenRows[key] = true
+			if err := appendBody(row.SessionID, row.Fingerprint, *row.Body, false, row.Table, row.RowID); err != nil {
+				return err
+			}
+			result.NativeRowsCaptured++
+			result.NativeRowBytesCaptured += int64(len(*row.Body))
+			return nil
+		}
+		if row.Kind != "" {
+			return fmt.Errorf("unsupported native export record")
 		}
 		seen[row.SessionID] = true
 		result.NativeMetadataRows += row.MetadataRows
@@ -212,7 +254,7 @@ func CaptureNativeConversations(ctx context.Context, homePath, family, root, for
 			if row.Fingerprint == "" {
 				return fmt.Errorf("native session fingerprint missing")
 			}
-			if err := appendBody(row.SessionID, row.Fingerprint, *row.Body, false); err != nil {
+			if err := appendBody(row.SessionID, row.Fingerprint, *row.Body, false, "", ""); err != nil {
 				return err
 			}
 			result.Captured++
@@ -245,7 +287,7 @@ func CaptureNativeConversations(ctx context.Context, homePath, family, root, for
 		// A commit during capture changes this BEFORE-transaction identity, so
 		// the following refresh rechecks it rather than skipping new rows.
 		body := fmt.Sprintf("{\"type\":\"native_inventory\",\"missing_sessions\":%d}\n", result.Missing)
-		if err := appendBody("", fmt.Sprintf("native-db-v2:%s:%d", identity, epoch), body, true); err != nil {
+		if err := appendBody("", fmt.Sprintf("native-db-v3:%s:%d", identity, epoch), body, true, "", ""); err != nil {
 			return result, err
 		}
 		fragment.Items[len(fragment.Items)-1].StructureOverlays = []SourceStructureOverlay{{Kind: "native_missing_sessions", Count: result.Missing}}
@@ -370,6 +412,24 @@ func readNativeSessions(ctx context.Context, request []byte, consume func(native
 	}
 	if !complete {
 		return fmt.Errorf("native SQLite inventory interrupted before completion")
+	}
+	return nil
+}
+
+// The source adapter uses actual native PKs, not invented row entities. A row
+// snapshot stays a typed non-message record, so raw tools/reasoning never embed.
+func validateNativeRowIdentity(format, table, rowID string) error {
+	allowed := map[string]bool{"sessions": true, "messages": true}
+	if format == "opencode" {
+		allowed = map[string]bool{"session": true, "message": true, "part": true, "session_v2": true, "session_message": true, "session_part": true}
+	}
+	var parts []json.RawMessage
+	want := 1
+	if table == "session_part" {
+		want = 2
+	}
+	if !allowed[table] || json.Unmarshal([]byte(rowID), &parts) != nil || len(parts) != want {
+		return fmt.Errorf("invalid native row primary-key provenance")
 	}
 	return nil
 }
