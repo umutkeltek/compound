@@ -1,6 +1,7 @@
 package corpus
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -36,6 +37,11 @@ func Doctor(homePath string, lane LaneConfig) (DoctorReport, error) {
 		return DoctorReport{}, err
 	}
 	dir := IndexDir(homePath, lane)
+	release, err := acquireShardRead(context.Background(), dir)
+	if err != nil {
+		return DoctorReport{}, err
+	}
+	defer release()
 	report := DoctorReport{
 		SchemaVersion:    ManifestSchemaVersion,
 		Status:           "fail",
@@ -86,7 +92,7 @@ func Doctor(homePath string, lane LaneConfig) (DoctorReport, error) {
 		doctorCheck("chunk_order", lossyOrder == 0, fmt.Sprintf("lossy_items=%d", lossyOrder)),
 	)
 
-	vectors, err := readVectors(dir)
+	vectors, err := readVectorsSnapshot(dir, manifest)
 	if err != nil {
 		if os.IsNotExist(err) {
 			report.Checks = append(report.Checks, doctorCheck("vectors", false, "vectors.json missing"))

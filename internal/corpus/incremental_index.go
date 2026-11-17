@@ -59,6 +59,11 @@ func lockCorpusIndex(ctx context.Context, dir string) (func(), error) {
 	for {
 		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
+			if err := ensureShardAccessGate(dir); err != nil {
+				_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+				_ = f.Close()
+				return nil, err
+			}
 			return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); _ = f.Close() }, nil
 		}
 		if err != syscall.EWOULDBLOCK && err != syscall.EAGAIN {
@@ -241,6 +246,7 @@ func indexIncremental(ctx context.Context, hp string, lane LaneConfig, embedder 
 		report.ReusedChunks = len(prepared.chunks)
 		report.EmbeddedChunks = len(prepared.chunks)
 		report.Unchanged = true
+		report.ShardCompaction = compactRedundantShards(ctx, dir, old, lane.Embedder.Dims, lane.ShardCompaction)
 		finish()
 		return report, nil
 	}
@@ -470,6 +476,7 @@ func indexIncremental(ctx context.Context, hp string, lane LaneConfig, embedder 
 			return report, err
 		}
 	}
+	report.ShardCompaction = compactRedundantShards(ctx, dir, prepared.manifest, lane.Embedder.Dims, lane.ShardCompaction)
 	finish()
 	return report, nil
 }
@@ -586,35 +593,37 @@ func readVectorShard(dir, ref string, dims int) (map[string][]float32, int64, er
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, 0, err
+		return nil, int64(len(raw)), err
 	}
 	digest := sha256.Sum256(raw)
 	if hex.EncodeToString(digest[:]) != ref {
-		return nil, 0, fmt.Errorf("vector shard checksum mismatch")
+		return nil, int64(len(raw)), fmt.Errorf("vector shard checksum mismatch")
 	}
 	if len(raw) < 16 || string(raw[:8]) != vectorShardMagic || int(binary.LittleEndian.Uint32(raw[8:12])) != dims {
-		return nil, 0, fmt.Errorf("vector shard identity mismatch")
+		return nil, int64(len(raw)), fmt.Errorf("vector shard identity mismatch")
 	}
 	count := int(binary.LittleEndian.Uint32(raw[12:16]))
 	stride := 32 + 4*dims
 	if dims <= 0 || dims > 65536 || stride < 32 || count != (len(raw)-16)/stride || 16+count*stride != len(raw) {
-		return nil, 0, fmt.Errorf("vector shard length mismatch")
+		return nil, int64(len(raw)), fmt.Errorf("vector shard length mismatch")
 	}
 	values := make(map[string][]float32, count)
 	reader := bytes.NewReader(raw[16:])
 	for i := 0; i < count; i++ {
 		hash := make([]byte, 32)
 		if _, err := io.ReadFull(reader, hash); err != nil {
-			return nil, 0, err
+			return nil, int64(len(raw)), err
 		}
 		vec := make([]float32, dims)
 		if err := binary.Read(reader, binary.LittleEndian, vec); err != nil {
-			return nil, 0, err
+			return nil, int64(len(raw)), err
 		}
 		values["sha256:"+hex.EncodeToString(hash)] = vec
 	}
 	return values, int64(len(raw)), nil
 }
+
+var readShardForSnapshot = readVectorShard
 
 func readShardedVectors(dir string, manifest Manifest) (VectorFile, error) {
 	byHash := map[string][]float32{}
@@ -631,7 +640,7 @@ func readShardedVectors(dir string, manifest Manifest) (VectorFile, error) {
 		return VectorFile{}, fmt.Errorf("vector shard dimensions missing")
 	}
 	for _, ref := range manifest.VectorShards {
-		values, _, err := readVectorShard(dir, ref, dims)
+		values, _, err := readShardForSnapshot(dir, ref, dims)
 		if err != nil {
 			return VectorFile{}, err
 		}

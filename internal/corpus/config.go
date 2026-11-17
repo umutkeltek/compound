@@ -29,6 +29,8 @@ const (
 var ErrEmbedderMismatch = errors.New("corpus embedder identity mismatch")
 
 type LaneConfig struct {
+	ShardCompaction ShardCompactionConfig `json:"shard_compaction,omitempty" yaml:"shard_compaction,omitempty"`
+
 	Source       *SourceConfig  `json:"source,omitempty" yaml:"source,omitempty"`
 	Lane         string         `json:"lane" yaml:"lane"`
 	SourceFamily string         `json:"source_family" yaml:"source_family"`
