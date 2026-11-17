@@ -610,8 +610,11 @@ content corrections without changed revision metadata. Each session's v3 manifes
 fingerprint records resumable progress, bounded to two session reads and 128 MiB
 of changed row/projection exports per pass (64 MiB per session). The small session
 batch bounds row custody publication so backfill can commit progress within a
-refresh deadline. Changed sessions still read their native rows; refresh counters
-distinguish SQL reads from captures.
+refresh deadline. Uncaptured sessions go first, followed by the oldest per-session
+checkpoint epoch with deterministic session-ID ties. Backfill and reconciliation
+therefore keep reaching later sessions even when bounded passes cross UTC days.
+Changed sessions still read their native rows; refresh counters distinguish SQL
+reads from captures.
 
 Each original native row/version has its own content-addressed owned item, keyed
 by approved database namespace, session, table and actual native primary key.

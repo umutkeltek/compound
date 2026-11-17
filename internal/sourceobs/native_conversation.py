@@ -179,6 +179,19 @@ def row_identity(table, row):
     return canonical([row[name] for name in fields])
 
 
+
+def capture_priority(session, previous):
+    sid = session[0]
+    fingerprint = previous.get(sid, "")
+    if not fingerprint:
+        return (0, 0, sid)
+    try:
+        epoch = int(fingerprint.rsplit(":", 1)[-1])
+    except ValueError:
+        epoch = -1
+    return (1, epoch, sid)
+
+
 def main():
     request = json.load(sys.stdin)
     db = sqlite3.connect(pathlib.Path(request["database"]).absolute().as_uri() + "?mode=ro", uri=True, timeout=5)
@@ -192,7 +205,8 @@ def main():
             if table and db.execute('SELECT 1 FROM "' + table + '" AS m LEFT JOIN "' + st + '" AS s ON s.id=m.session_id WHERE s.id IS NULL LIMIT 1').fetchone():
                 raise ValueError("native conversation rows have no owning session: " + table)
     count, size, pending = 0, 0, 0
-    for sid, meta, metadata_count in inventory(db, schema):
+    sessions = sorted(inventory(db, schema), key=lambda row: capture_priority(row, request["previous"]))
+    for sid, meta, metadata_count in sessions:
         old = request["previous"].get(sid, "")
         result = {"session_id": sid, "metadata_rows": metadata_count}
         if old.startswith("native-session-v3:" + meta + ":") and (not request["reconcile"] or old.endswith(":" + str(request["reconcile_epoch"]))):

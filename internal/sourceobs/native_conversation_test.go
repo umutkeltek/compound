@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -231,6 +232,62 @@ INSERT INTO messages(id,session_id,role,content,timestamp) SELECT rowid,id,'user
 	done := captureNative(t, hp, root, "hermes", now.Add(24*time.Hour))
 	if done.NativeBodyRows != 0 || done.NativeSessionBodies != 0 || done.Pending != 0 {
 		t.Fatalf("completed reconcile repeated: %+v", done)
+	}
+}
+
+func TestNativeBoundedBackfillAndReconciliationCrossUTCPeriods(t *testing.T) {
+	hp, root := t.TempDir(), nativeRoot(t)
+	path := filepath.Join(root, "state.db")
+	nativeSQL(t, path, hermesNativeSchema+`
+WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<5)
+INSERT INTO sessions(id,source,started_at) SELECT printf('s%03d',i),'cli',i FROM n;
+INSERT INTO messages(id,session_id,role,content,timestamp) SELECT rowid,id,'user','Synthetic turn ' || id,started_at FROM sessions;
+`)
+	now := time.Now().UTC().Truncate(24 * time.Hour).Add(time.Hour)
+	// Uncaptured sessions must receive the budget even when every pass starts
+	// a new daily reconciliation. Otherwise the same prefix can starve the tail.
+	for day, captured := range []int{2, 2, 1} {
+		pass := captureNative(t, hp, root, "hermes", now.Add(time.Duration(day)*24*time.Hour))
+		if pass.Captured != captured || pass.NativeSessionBodies != 2 || pass.Pending != 3 {
+			t.Fatalf("cross-day backfill %d: %+v", day, pass)
+		}
+	}
+	for i := 1; i <= 5; i++ {
+		sid := fmt.Sprintf("s%03d", i)
+		items := nativeSessionItems(t, hp, sid)
+		if len(items) != 1 {
+			t.Fatalf("cross-day coverage for %s: %+v", sid, items)
+		}
+		if got := nativeProjectedMessages(t, nativeBody(t, hp, items[0])); len(got) != 1 || got[0] != "Synthetic turn "+sid {
+			t.Fatalf("cross-day projection for %s: %v", sid, got)
+		}
+	}
+	for i, pending := range []int{1, 0} {
+		pass := captureNative(t, hp, root, "hermes", now.Add(48*time.Hour))
+		if pass.Captured != 0 || pass.NativeSessionBodies != 2-i || pass.Pending != pending {
+			t.Fatalf("finish cross-day checkpoint %d: %+v", i, pass)
+		}
+	}
+	// Once backfill finishes, older checkpoint epochs must also precede newer
+	// ones across day changes, so daily reconciliation eventually reads the tail.
+	for day := 3; day <= 5; day++ {
+		pass := captureNative(t, hp, root, "hermes", now.Add(time.Duration(day)*24*time.Hour))
+		if pass.Captured != 0 || pass.NativeSessionBodies != 2 {
+			t.Fatalf("cross-day reconciliation %d: %+v", day, pass)
+		}
+	}
+	minEpoch := now.Add(72*time.Hour).Unix() / 86400
+	for i := 1; i <= 5; i++ {
+		sid := fmt.Sprintf("s%03d", i)
+		items := nativeSessionItems(t, hp, sid)
+		if len(items) != 1 {
+			t.Fatalf("reconciliation duplicated session %s: %+v", sid, items)
+		}
+		parts := strings.Split(items[0].SourceFingerprint, ":")
+		epoch, err := strconv.ParseInt(parts[len(parts)-1], 10, 64)
+		if err != nil || epoch < minEpoch {
+			t.Fatalf("session %s starved across UTC periods: %s", sid, items[0].SourceFingerprint)
+		}
 	}
 }
 
