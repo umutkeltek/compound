@@ -599,3 +599,13 @@ may pass their embedding probe without Ollama's inventory API. HTTPS readiness
 keeps certificate verification. Automatic restart remains restricted to an
 attested existing owner and an eligible endpoint; custom services receive an
 actionable failure instead.
+
+
+The installed memory-service helper accepts an explicitly released READY maintenance
+item with `tick --start`, validates its identity and owner, and asks the native claim
+owner to reclaim it. HELD work stays refused. Routine upgrades must quiesce writers
+without turning the service into an operator-only hold. `tick --recovery-only`
+reserves the same maintenance work and probes or recovers its existing backend without
+indexing. Recovery defers while an observed corpus refresh or manual index is active,
+including a global home argument or the configured binary path. This bounded process
+observation is not an atomic guarantee against a process starting immediately afterward.
