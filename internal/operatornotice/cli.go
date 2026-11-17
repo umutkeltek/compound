@@ -13,7 +13,7 @@ import (
 
 const noticeUsage = "usage: compound notice flush [--transport buzz] [--home P] [--json]\n" +
 	"       compound notice return-queue list|show <id>|ack <id> --by <actor> [--home P]\n" +
-	"       compound notice deadman ping [--fail] [--home P]"
+	"       compound notice deadman ping [--fail [--reason TEXT]] [--home P]"
 
 // ReviewsBuilder assembles the annotated, authority-stamped review queue for a
 // home. It is injected because building it is reviewqueue.Build, which depends

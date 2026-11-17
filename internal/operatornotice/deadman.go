@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const deadmanPingURLFile = "healthchecks-ping-url"
@@ -86,9 +87,54 @@ func deadmanState(homePath string) string {
 	}
 }
 
-// deadmanPing GETs the ping URL (or <url>/fail) and returns a one-line status
-// that never contains the URL.
-func deadmanPing(homePath string, fail bool) (string, error) {
+// deadmanReasonMax bounds the reason a fail ping carries, in characters. The
+// receiver puts it into one alert message; without it that message can only
+// say "unspecified".
+const deadmanReasonMax = 200
+
+// cleanDeadmanReason makes caller text one short printable line: control
+// characters and runs of white space become one space, and long text is cut.
+func cleanDeadmanReason(raw string) string {
+	var b strings.Builder
+	pendingSpace, n := false, 0
+	for _, r := range raw {
+		if unicode.IsSpace(r) || !unicode.IsPrint(r) {
+			pendingSpace = true
+			continue
+		}
+		if n >= deadmanReasonMax {
+			b.WriteString("...")
+			break
+		}
+		if pendingSpace && b.Len() > 0 {
+			b.WriteByte(' ')
+			n++
+		}
+		pendingSpace = false
+		b.WriteRune(r)
+		n++
+	}
+	return b.String()
+}
+
+// reasonCarriesCredential reports whether the reason repeats the ping URL or a
+// token-length part of its path. The reason leaves the machine in an alert,
+// so it must never carry the credential.
+func reasonCarriesCredential(reason string, u *url.URL) bool {
+	if strings.Contains(reason, u.String()) {
+		return true
+	}
+	for _, segment := range strings.Split(u.Path, "/") {
+		if len(segment) >= 16 && strings.Contains(reason, segment) {
+			return true
+		}
+	}
+	return false
+}
+
+// deadmanPing GETs the ping URL (or <url>/fail, with ?reason= when one is
+// given) and returns a one-line status that never contains the URL.
+func deadmanPing(homePath string, fail bool, reason string) (string, error) {
 	u, err := readDeadmanURL(homePath)
 	if err != nil {
 		return "", err
@@ -99,6 +145,14 @@ func deadmanPing(homePath string, fail bool) (string, error) {
 		target.Path = strings.TrimRight(target.Path, "/") + "/fail"
 		target.RawPath = ""
 		signal = "fail"
+	}
+	if reason != "" {
+		if reasonCarriesCredential(reason, u) {
+			return "", errors.New("deadman: the reason repeats the ping URL, which is a credential; nothing was sent")
+		}
+		query := target.Query()
+		query.Set("reason", reason)
+		target.RawQuery = query.Encode()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), deadmanTimeout)
 	defer cancel()
@@ -122,25 +176,43 @@ func deadmanPing(homePath string, fail bool) (string, error) {
 	return fmt.Sprintf("deadman: %s sent (HTTP %d)", signal, resp.StatusCode), nil
 }
 
-const deadmanUsage = "usage: compound notice deadman ping [--fail] [--home P]"
+const deadmanUsage = "usage: compound notice deadman ping [--fail [--reason TEXT]] [--home P]"
 
-// runDeadmanCLI is `compound notice deadman ping [--fail]`. Exit 0 when the
-// ping was accepted or nothing is configured; 1 when a configured ping could
-// not be delivered or the URL file is refused; 2 on usage.
+// runDeadmanCLI is `compound notice deadman ping [--fail [--reason TEXT]]`.
+// Exit 0 when the ping was accepted or nothing is configured; 1 when a
+// configured ping could not be delivered or the URL file or reason is refused;
+// 2 on usage. A usage error sends nothing, so a caller can retry without
+// --reason against an older binary.
 func runDeadmanCLI(homePath string, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || args[0] != "ping" {
 		fmt.Fprintln(stderr, deadmanUsage)
 		return 2
 	}
-	fail := false
-	for _, a := range args[1:] {
-		if a != "--fail" {
+	fail, reason, haveReason := false, "", false
+	rest := args[1:]
+	for i := 0; i < len(rest); i++ {
+		switch a := rest[i]; {
+		case a == "--fail":
+			fail = true
+		case a == "--reason" && i+1 < len(rest):
+			reason, haveReason = rest[i+1], true
+			i++
+		case strings.HasPrefix(a, "--reason="):
+			reason, haveReason = strings.TrimPrefix(a, "--reason="), true
+		default:
 			fmt.Fprintln(stderr, deadmanUsage)
 			return 2
 		}
-		fail = true
 	}
-	status, err := deadmanPing(homePath, fail)
+	if haveReason {
+		reason = cleanDeadmanReason(reason)
+		if !fail || reason == "" {
+			fmt.Fprintln(stderr, "deadman: --reason needs --fail and some text")
+			fmt.Fprintln(stderr, deadmanUsage)
+			return 2
+		}
+	}
+	status, err := deadmanPing(homePath, fail, reason)
 	if errors.Is(err, errDeadmanNotConfigured) {
 		fmt.Fprintln(stdout, err.Error())
 		return 0
