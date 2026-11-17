@@ -43,7 +43,11 @@ func RestoreArchive(archivePath, targetHome string, now time.Time) (RestoreRepor
 	return report, withManifestRecoveryGuidance(err)
 }
 
-func restoreArchiveWithLimits(archivePath, targetHome string, now time.Time, limits archiveReadLimits) (report RestoreReport, resultErr error) {
+func restoreArchiveWithLimits(archivePath, targetHome string, now time.Time, limits archiveReadLimits) (RestoreReport, error) {
+	return restoreArchiveWithStage(archivePath, targetHome, "", now, limits)
+}
+
+func restoreArchiveWithStage(archivePath, targetHome, resumeStage string, now time.Time, limits archiveReadLimits) (report RestoreReport, resultErr error) {
 	if strings.TrimSpace(archivePath) == "" {
 		return RestoreReport{}, fmt.Errorf("archive path required")
 	}
@@ -81,32 +85,49 @@ func restoreArchiveWithLimits(archivePath, targetHome string, now time.Time, lim
 			resultErr = errors.Join(resultErr, fmt.Errorf("close verified archive source %s: %w", archivePath, err))
 		}
 	}()
-	stagingName, staging, stagingInfo, err := createRestoreStaging(parent, parentFD, parentPath)
+	if resumeStage != "" && !archive.streamed {
+		return RestoreReport{}, fmt.Errorf("resume stage requires a streamed backup archive")
+	}
+	var stagingName string
+	var staging *os.Root
+	var stagingInfo os.FileInfo
+	if resumeStage == "" {
+		stagingName, staging, stagingInfo, err = createRestoreStaging(parent, parentFD, parentPath)
+	} else {
+		stagingName, staging, stagingInfo, err = openExistingRestoreStaging(parent, parentPath, resumeStage, targetName)
+	}
 	if err != nil {
 		return RestoreReport{}, err
 	}
 	stagingPath := filepath.Join(parentPath, stagingName)
 	published := false
 	defer func() {
-		if !published {
+		if !published && resumeStage == "" {
 			if err := cleanupRestoreStaging(parent, staging, stagingName, stagingInfo, stagingPath); err != nil {
 				resultErr = errors.Join(resultErr, fmt.Errorf("restore cleanup incomplete for private staging %s; inspect manually before retrying: %w", stagingPath, err))
 			}
+		}
+		if !published && resumeStage != "" && resultErr != nil {
+			resultErr = fmt.Errorf("resume restore failed; pinned stage preserved at %s (archive %s): %w", stagingPath, archivePath, resultErr)
 		}
 		if err := staging.Close(); err != nil {
 			resultErr = errors.Join(resultErr, fmt.Errorf("close restore staging %s: %w", stagingPath, err))
 		}
 	}()
 
-	target := &archiveRestoreTarget{root: staging, displayPath: stagingPath, deferFileParentSync: archive.streamed, stagingInfo: stagingInfo}
+	target := &archiveRestoreTarget{root: staging, displayPath: stagingPath, deferFileParentSync: archive.streamed, stagingInfo: stagingInfo, requireSingleLinks: resumeStage != ""}
 	if restoreArchivePreflighted != nil {
 		if err := restoreArchivePreflighted(archivePath); err != nil {
 			return RestoreReport{}, err
 		}
 	}
-	manifest, actual, err := archive.extract(target)
-	if err != nil {
-		return RestoreReport{}, err
+	var manifest ArchiveManifest
+	var actual map[string]ArchiveEntry
+	if resumeStage == "" {
+		manifest, actual, err = archive.extract(target)
+		if err != nil {
+			return RestoreReport{}, err
+		}
 	}
 	verify := archive.streamedReport
 	if !archive.streamed {
@@ -115,14 +136,18 @@ func restoreArchiveWithLimits(archivePath, targetHome string, now time.Time, lim
 			return RestoreReport{}, err
 		}
 	}
-	if err := target.completeHabitat(); err != nil {
-		return RestoreReport{}, err
+	if resumeStage == "" {
+		if err := target.completeHabitat(); err != nil {
+			return RestoreReport{}, err
+		}
 	}
 	if err := verifyRestoreStaging(parent, staging, stagingName, stagingInfo, stagingPath); err != nil {
 		return RestoreReport{}, err
 	}
-	if err := target.finalizeDirectoryModes(); err != nil {
-		return RestoreReport{}, err
+	if resumeStage == "" {
+		if err := target.finalizeDirectoryModes(); err != nil {
+			return RestoreReport{}, err
+		}
 	}
 	if archive.streamed {
 		if err := target.validatePinnedHomeWithStreamed(true); err != nil {
@@ -210,7 +235,14 @@ func restoreArchiveWithLimits(archivePath, targetHome string, now time.Time, lim
 			return RestoreReport{}, fmt.Errorf("restore published but final device flush failed; target preserved for manual verification: %w", err)
 		}
 	}
-	return RestoreReport{ArchivePath: archivePath, TargetHome: targetHome, Kind: verify.Kind, Files: verify.Files, Bytes: verify.Bytes}, nil
+	report = RestoreReport{ArchivePath: archivePath, TargetHome: targetHome, Kind: verify.Kind, Files: verify.Files, Bytes: verify.Bytes}
+	if resumeStage != "" {
+		report.RevalidatedStage = stagingPath
+		report.ArchiveSHA256 = fmt.Sprintf("%x", archive.preflightDigest)
+		report.StageIdentity = restoreStageIdentity(stagingInfo)
+		report.StageOwnerUID, _ = fileOwnerUID(stagingInfo)
+	}
+	return report, nil
 }
 
 func openStableRestoreParent(path string) (*os.Root, *os.File, os.FileInfo, error) {
@@ -397,6 +429,7 @@ func clearRestoreStaging(staging *os.Root, display string) error {
 }
 
 type archiveRestoreTarget struct {
+	requireSingleLinks  bool
 	root                *os.Root
 	displayPath         string
 	deferFileParentSync bool

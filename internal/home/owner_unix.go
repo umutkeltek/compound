@@ -3,6 +3,7 @@
 package home
 
 import (
+	"fmt"
 	"os"
 	"syscall"
 )
@@ -31,4 +32,12 @@ func privateObjectLinkCount(info os.FileInfo) (uint64, bool) {
 		return 0, false
 	}
 	return uint64(st.Nlink), true
+}
+
+func restoreStageIdentity(info os.FileInfo) string {
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("%d:%d", st.Dev, st.Ino)
 }

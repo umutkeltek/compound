@@ -93,3 +93,22 @@ func TierZeroLawLine(cwd string) string {
 	}
 	return tierZeroLawPrefix + laws
 }
+
+// TierZeroLawLineCompact is TierZeroLawLine without the italic explanations
+// (`*(...)*`) that follow some laws. The session start spends a hard byte
+// budget, and the laws' names carry the rule; `compound orient` serves the full
+// text. It returns "" when no constitution is found above cwd.
+func TierZeroLawLineCompact(cwd string) string {
+	line := TierZeroLawLine(cwd)
+	for {
+		start := strings.Index(line, " *(")
+		if start < 0 {
+			return line
+		}
+		end := strings.Index(line[start:], ")*")
+		if end < 0 {
+			return line
+		}
+		line = line[:start] + line[start+end+2:]
+	}
+}

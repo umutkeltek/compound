@@ -113,11 +113,15 @@ type VerifyReport struct {
 }
 
 type RestoreReport struct {
-	ArchivePath string
-	TargetHome  string
-	Kind        string
-	Files       int
-	Bytes       int64
+	RevalidatedStage string
+	ArchiveSHA256    string
+	StageIdentity    string
+	StageOwnerUID    uint32
+	ArchivePath      string
+	TargetHome       string
+	Kind             string
+	Files            int
+	Bytes            int64
 }
 
 type CompactOptions struct {

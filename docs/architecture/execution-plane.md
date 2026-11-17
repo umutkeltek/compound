@@ -200,11 +200,14 @@ one-line pointer to `compound doors serve` in their compiled instruction block.
 - `changed_since_last` is the diff against the previous snapshot; `recent_changes` rolls it forward 72h.
 - The snapshot is evidence, not truth. Fixture replays of session-start do not include it.
 - Operator model: when `COMPOUND_HOME/config/operator-model.md` exists, the live `session-start`
-  payload appends it after the door map, one blank line apart, under a header that names the file.
+  payload leads with it, then the door map, one blank line apart, under a header that names the file.
+  A harness may keep only the first bytes of a long hook output (Claude Code keeps a 2,000-byte preview of
+  anything over 10,000 bytes), so the minimal start text is ordered: the ask-first line, the operator model, the
+  door map, then the compact laws, and stays under 10,000 bytes.
   It is private runtime state under `COMPOUND_HOME`, never tracked in a repository, and reaches every
   harness that receives the door map, including lanes served only by `compound doors serve` (the hook
   and that command compose the same session-start payload). The operator's rules reach agents whole: a model within
-  6144 bytes is served as written; past that, every `## ` section is a rule and is served whole unless its heading marks
+  5120 bytes is served as written; past that, every `## ` section is a rule and is served whole unless its heading marks
   it as background (who, about, background, context, notes, history, examples, reference). Background sections are added
   in file order while they fit, and each one left out is named, with its size, in one closing line. Nothing is ever cut
   inside a section. A missing or unreadable file serves nothing.

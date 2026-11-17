@@ -2,6 +2,8 @@ package contract
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -114,5 +116,28 @@ func TestServedSummaryNamesTopOffersAndSealedPackID(t *testing.T) {
 	if resealed.ContextPack.ID != sealed.ContextPack.ID || resealed.ContextPack.SummaryMD != summary {
 		t.Fatalf("reseal changed identity: id %s -> %s\nsummary before:\n%s\nafter:\n%s",
 			sealed.ContextPack.ID, resealed.ContextPack.ID, summary, resealed.ContextPack.SummaryMD)
+	}
+}
+
+func TestTierZeroLawLineCompactDropsExplanationsButKeepsEveryLaw(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, universalPrinciplesPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "## The Laws\n1. Discover reality before acting.\n2. Keep humans on irreversible decisions. *(by setting the envelope, not by being paged.)*\n3. Prove the change.\n\n## Other\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	full, compact := TierZeroLawLine(dir), TierZeroLawLineCompact(dir)
+	want := "Tier-0 constitution: Laws 1. Discover reality before acting. · 2. Keep humans on irreversible decisions. · 3. Prove the change."
+	if compact != want {
+		t.Fatalf("compact law line:\n got %q\nwant %q", compact, want)
+	}
+	if !strings.Contains(full, "*(by setting the envelope") || len(compact) >= len(full) {
+		t.Fatalf("full law line must keep its explanations: %q", full)
+	}
+	if TierZeroLawLineCompact(t.TempDir()) != "" {
+		t.Fatal("no constitution must give an empty line")
 	}
 }

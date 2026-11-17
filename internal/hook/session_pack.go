@@ -57,14 +57,20 @@ func sessionStartOnDemand(name string, fx Fixture, deps Deps, now time.Time) (Re
 		_ = recordSessionOrientation(deps.HomePath, fx.SessionID, ev.Header.ID, sessionOrientationOnDemand, now)
 	}
 	return Result{
-		Event:         ev,
-		Summary:       contract.TierZeroLawLine(fx.Cwd),
-		ContextOutput: joinSessionStartParts(sessionStartDoorMap(fx, deps, now), onDemandPackPointer(fx)),
+		Event:   ev,
+		Summary: contract.TierZeroLawLine(fx.Cwd),
+		// Order is the budget: a harness may keep only the first bytes of a long
+		// hook output, so the one ask-first line and the operator's rules lead, then
+		// the door map, then the laws (compact: orient serves their full text).
+		ContextOutput:    joinSessionStartParts(onDemandPackPointer(fx), sessionStartDoorMap(fx, deps, now), contract.TierZeroLawLineCompact(fx.Cwd)),
+		SummaryInContext: true,
 	}, nil
 }
 
-// onDemandPackPointer is the one line that replaces the pack body: the exact
-// command that serves it for this harness and repository.
+// onDemandPackPointer is the one "ask Compound first" line that replaces the
+// pack body: the exact command that serves the pack for this harness and
+// repository, then the read-only commands that answer what a change touches
+// and which doors are open. Every command named here exists today.
 func onDemandPackPointer(fx Fixture) string {
 	harnessName := safeMD(fx.Harness)
 	if harnessName == "" {
@@ -74,7 +80,7 @@ func onDemandPackPointer(fx Fixture) string {
 	if cwd == "" {
 		cwd = "<repository>"
 	}
-	return fmt.Sprintf("Context pack is on demand: run `compound orient --harness %s --cwd %s --task \"<task>\" --brief` before a non-trivial task.", harnessName, cwd)
+	return fmt.Sprintf("Context pack is on demand: run `compound orient --harness %s --cwd %s --task \"<task>\" --brief` before a non-trivial task. Ask Compound first, not memory: `compound system depends|impact|inventory` for what a change touches, `compound doors serve` before acting on the machine.", harnessName, cwd)
 }
 
 // pointerShellWord single-quotes a path the agent will paste into a shell when it

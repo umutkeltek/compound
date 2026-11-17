@@ -9,6 +9,7 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/capgraph"
+	"compound/internal/contract"
 	"compound/internal/hookplan"
 	"compound/internal/mem"
 	"compound/internal/tooltopology"
@@ -96,6 +97,9 @@ func sessionPackFixture(harnessName, repo string) Fixture {
 // servedSessionStart is what the harness reads: the live response joins Summary
 // and ContextOutput the same way.
 func servedSessionStart(res Result) string {
+	if res.SummaryInContext {
+		return joinSessionStartParts(res.ContextOutput)
+	}
 	return joinSessionStartParts(res.Summary, res.ContextOutput)
 }
 
@@ -158,12 +162,12 @@ func TestSessionPackMinimalServesLawsDoorMapAndPointerOnly(t *testing.T) {
 			if operatorModel == "" || !strings.Contains(operatorModel, sessionPackOperatorModel) {
 				t.Fatalf("scratch home serves no operator model: %q", operatorModel)
 			}
-			order := []string{"Tier-0 constitution:", "## Door map", operatorModel, "Context pack is on demand"}
+			order := []string{"Context pack is on demand", operatorModel, "## Door map", "Tier-0 constitution:"}
 			last := -1
 			for _, part := range order {
 				at := strings.Index(served, part)
 				if at <= last {
-					t.Fatalf("minimal session start must serve law line, door map, operator model, pointer in that order; %q at %d after %d:\n%s", part, at, last, served)
+					t.Fatalf("minimal session start must serve pointer, operator model, door map, law line in that order; %q at %d after %d:\n%s", part, at, last, served)
 				}
 				last = at
 			}
@@ -195,9 +199,10 @@ func TestSessionPackMinimalServesLawsDoorMapAndPointerOnly(t *testing.T) {
 	}
 }
 
-// The minimal start's ContextOutput is the full start's payload (door map, then the
-// operator model when the home has one) followed by the pointer, byte for byte.
-func TestSessionPackMinimalKeepsTheSessionStartPayloadThenThePointer(t *testing.T) {
+// The minimal start's ContextOutput is the ask-first pointer, the full start's payload
+// (operator model when the home has one, then the door map), then the compact law line,
+// byte for byte.
+func TestSessionPackMinimalOrdersPointerPayloadThenLaws(t *testing.T) {
 	t.Setenv(SessionPackEnv, "")
 	fx := Fixture{Hook: "session-start", Harness: "codex", Cwd: "/repo/productX", RepoKind: "product", Live: true}
 	for name, model := range map[string]string{"with operator model": syntheticOperatorModel, "without operator model": ""} {
@@ -212,7 +217,7 @@ func TestSessionPackMinimalKeepsTheSessionStartPayloadThenThePointer(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := tooltopology.ServeSessionStart(home, fixedNow, tooltopology.DefaultDoorMapTTL) + "\n\n" + onDemandPackPointer(fx)
+			want := joinSessionStartParts(onDemandPackPointer(fx), tooltopology.ServeSessionStart(home, fixedNow, tooltopology.DefaultDoorMapTTL), contract.TierZeroLawLineCompact(fx.Cwd))
 			if res.ContextOutput != want {
 				t.Fatalf("minimal ContextOutput:\n got %q\nwant %q", res.ContextOutput, want)
 			}

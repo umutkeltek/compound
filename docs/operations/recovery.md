@@ -194,3 +194,31 @@ intended body or attach the digest to a source manifest.
 This procedure assumes a trusted local home and quiesced old writers. The
 directory lock coordinates cooperating binaries; it cannot exclude a hostile
 same-UID process that swaps a path between final validation and unlink.
+
+### Resume an extracted streamed restore
+
+If a streamed restore was interrupted after extraction, retain its unpublished
+private sibling staging directory and the original archive. Use the same native
+owner to revalidate the staged bytes:
+
+```sh
+compound home restore /safe/local/path/compound-home.tar.gz \
+  --resume-stage /safe/recovery/.compound-restore-staging-ID \
+  --target /safe/recovery/restored-home
+```
+
+This option does not assert that the stage completed a prior restore. It reopens
+and verifies the original archive, checks every staged body and the exact
+inventory, and retains the existing health, durability, stable-root and
+no-replacement publication checks. The archive must use a streamed format.
+The stage must already contain the complete habitat: resuming does not recreate
+directories, normalize permissions, or rewrite references.
+
+The explicit stage must be a current-user-owned mode-0700 native staging sibling.
+The live home and its descendants, symlink stages, foreign-owned files, and
+regular files with multiple filesystem links are refused. Streamed archives do
+not admit tar hardlinks; their supported portable symlinks retain archive link
+verification. Failure preserves the stage and leaves the requested target absent.
+Success reports the revalidated stage path, archive SHA-256, stage device/inode
+identity and owning UID. Keep the candidate executable identity and the new
+RunAttempt with this report; prior interrupted attempts remain failed.

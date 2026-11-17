@@ -167,11 +167,15 @@ type CoordinationDeliveryInput struct {
 // Result is what a hook produces: the normalized event, the typed objects, and the small
 // harness-facing output line.
 type Result struct {
-	MemoryRefresh        string                   `json:"memory_refresh,omitempty"`
-	Event                envelope.HookEvent       `json:"event"`
-	Produced             []envelope.Envelope      `json:"produced"`
-	Summary              string                   `json:"summary"`
-	ContextOutput        string                   `json:"-"`
+	MemoryRefresh string              `json:"memory_refresh,omitempty"`
+	Event         envelope.HookEvent  `json:"event"`
+	Produced      []envelope.Envelope `json:"produced"`
+	Summary       string              `json:"summary"`
+	ContextOutput string              `json:"-"`
+	// SummaryInContext marks a result whose ContextOutput already carries the
+	// Summary at the position the start text wants it; the live response then
+	// does not prepend it a second time.
+	SummaryInContext     bool                     `json:"-"`
 	Injection            *InjectionArtifact       `json:"injection,omitempty"`
 	Context              *ContextObservation      `json:"-"`
 	CoordinationDelivery *hookplan.DeliveryReport `json:"-"`
