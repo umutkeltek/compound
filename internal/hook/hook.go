@@ -473,7 +473,7 @@ func Run(fx Fixture, deps Deps, now time.Time) (Result, error) {
 		refreshPostToolCaches(deps.HomePath, fx.Live, name == "PostToolUse" && res.Event.CapabilityUse != nil, now)
 		memoryFixture := fx
 		memoryFixture.Hook = name
-		res.MemoryRefresh = refreshApprovedMemory(deps.HomePath, memoryFixture, now)
+		res.MemoryRefresh = refreshApprovedMemory(deps.HomePath, memoryFixture, func() time.Time { return hookNow(deps) })
 		return res, nil
 	}
 	if err := validateHookResult(res); err != nil {
@@ -492,7 +492,7 @@ func Run(fx Fixture, deps Deps, now time.Time) (Result, error) {
 	refreshPostToolCaches(deps.HomePath, fx.Live, name == "PostToolUse" && res.Event.CapabilityUse != nil, now)
 	memoryFixture := fx
 	memoryFixture.Hook = name
-	res.MemoryRefresh = refreshApprovedMemory(deps.HomePath, memoryFixture, now)
+	res.MemoryRefresh = refreshApprovedMemory(deps.HomePath, memoryFixture, func() time.Time { return hookNow(deps) })
 	return res, nil
 }
 

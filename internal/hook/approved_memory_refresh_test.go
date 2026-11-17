@@ -66,14 +66,14 @@ func TestApprovedMemoryTriggerUsesGovernedResumeAndIgnoresReplay(t *testing.T) {
 		return nil
 	}
 	fx := Fixture{Live: true, Hook: "PostToolUse", Cwd: cwd}
-	if got := refreshApprovedMemory(hp, fx, time.Now()); !strings.HasPrefix(got, "requested:") {
+	if got := refreshApprovedMemoryAt(hp, fx, time.Now()); !strings.HasPrefix(got, "requested:") {
 		t.Fatalf("trigger %s", got)
 	}
 	fx.Live = false
-	refreshApprovedMemory(hp, fx, time.Now())
+	refreshApprovedMemoryAt(hp, fx, time.Now())
 	fx.Live = true
 	fx.Hook = "UserPromptSubmit"
-	refreshApprovedMemory(hp, fx, time.Now())
+	refreshApprovedMemoryAt(hp, fx, time.Now())
 	if calls != 1 {
 		t.Fatalf("unexpected launches %d", calls)
 	}
@@ -171,7 +171,7 @@ func TestMemoryRefreshStartsOnceForTwoHundredSimultaneousCalls(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-gate
-			statuses[i] = refreshApprovedMemory(hp, fx, now)
+			statuses[i] = refreshApprovedMemoryAt(hp, fx, now)
 		}(i)
 	}
 	close(gate)
@@ -218,7 +218,7 @@ func TestMemoryRefreshRequestProcessHelper(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			statuses[i] = refreshApprovedMemory(hp, fx, now)
+			statuses[i] = refreshApprovedMemoryAt(hp, fx, now)
 		}(i)
 	}
 	wg.Wait()
@@ -310,7 +310,7 @@ func TestMemoryRefreshDoesNotStartWhatAForeignLeaseMustDeny(t *testing.T) {
 	fx := Fixture{Live: true, Hook: "PostToolUse", Cwd: cwd}
 	writeMemoryRefreshLease(t, hp, id, "lane:other")
 	for i := 0; i < 50; i++ {
-		if got := refreshApprovedMemory(hp, fx, now.Add(time.Duration(i)*time.Hour)); got != "lease_held" {
+		if got := refreshApprovedMemoryAt(hp, fx, now.Add(time.Duration(i)*time.Hour)); got != "lease_held" {
 			t.Fatalf("foreign lease status %q, want lease_held", got)
 		}
 	}
@@ -323,11 +323,11 @@ func TestMemoryRefreshDoesNotStartWhatAForeignLeaseMustDeny(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(hp, "work", "leases", id+".json"), []byte("{"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if got := refreshApprovedMemory(hp, fx, now); got != "lease_unavailable" || starts.Load() != 0 {
+	if got := refreshApprovedMemoryAt(hp, fx, now); got != "lease_unavailable" || starts.Load() != 0 {
 		t.Fatalf("unreadable lease: status %q starts %d", got, starts.Load())
 	}
 	writeMemoryRefreshLease(t, hp, id, memoryRefreshActor)
-	if got := refreshApprovedMemory(hp, fx, now); got != "requested:"+id || starts.Load() != 1 {
+	if got := refreshApprovedMemoryAt(hp, fx, now); got != "requested:"+id || starts.Load() != 1 {
 		t.Fatalf("automation lease: status %q starts %d, want one request", got, starts.Load())
 	}
 }
@@ -342,7 +342,7 @@ func TestMemoryRefreshPacingDoublesUntilCoverageMoves(t *testing.T) {
 	call := func(offset time.Duration, want string) {
 		t.Helper()
 		before := starts.Load()
-		got := refreshApprovedMemory(hp, fx, at.Add(offset))
+		got := refreshApprovedMemoryAt(hp, fx, at.Add(offset))
 		if want == "start" {
 			if got != "requested:"+id || starts.Load() != before+1 {
 				t.Fatalf("at +%s after the last start: status %q, want a start", offset, got)
@@ -412,7 +412,7 @@ func TestMemoryRefreshStampFailureStartsNothing(t *testing.T) {
 			hp, cwd, _ := memoryRefreshHome(t, now.Add(-time.Hour))
 			spoil(t, memoryRefreshRequestDir(hp))
 			before := starts.Load()
-			got := refreshApprovedMemory(hp, Fixture{Live: true, Hook: "PostToolUse", Cwd: cwd}, now)
+			got := refreshApprovedMemoryAt(hp, Fixture{Live: true, Hook: "PostToolUse", Cwd: cwd}, now)
 			if got != "request_state_unavailable" || starts.Load() != before {
 				t.Fatalf("status %q starts +%d, want request_state_unavailable and no start", got, starts.Load()-before)
 			}
@@ -432,7 +432,7 @@ func TestMemoryRefreshStampFailureStartsNothing(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = os.Chmod(dir, 0700) })
 		before := starts.Load()
-		got := refreshApprovedMemory(hp, Fixture{Live: true, Hook: "PostToolUse", Cwd: cwd}, now)
+		got := refreshApprovedMemoryAt(hp, Fixture{Live: true, Hook: "PostToolUse", Cwd: cwd}, now)
 		if got != "request_state_unavailable" || starts.Load() != before {
 			t.Fatalf("status %q starts +%d, want request_state_unavailable and no start", got, starts.Load()-before)
 		}
@@ -465,7 +465,7 @@ func TestMemoryRefreshFreshFailureKeepsBackoff(t *testing.T) {
 		{3 * time.Minute, "requested:" + id},
 	} {
 		failed(now.Add(tc.offset))
-		if got := refreshApprovedMemory(hp, fx, now.Add(tc.offset)); got != tc.want {
+		if got := refreshApprovedMemoryAt(hp, fx, now.Add(tc.offset)); got != tc.want {
 			t.Fatalf("fresh failed source at +%s: got %s, want %s", tc.offset, got, tc.want)
 		}
 	}
@@ -493,7 +493,7 @@ func TestMemoryRefreshHeldLaunchLockDoesNotConsumeRetry(t *testing.T) {
 	}
 	fx := Fixture{Live: true, Hook: "PostToolUse", Cwd: cwd}
 	for i := 0; i < 50; i++ {
-		if got := refreshApprovedMemory(hp, fx, now.Add(time.Duration(i)*time.Minute)); got != "already_running" {
+		if got := refreshApprovedMemoryAt(hp, fx, now.Add(time.Duration(i)*time.Minute)); got != "already_running" {
 			t.Fatalf("held launch lock: got %s", got)
 		}
 	}
@@ -506,7 +506,113 @@ func TestMemoryRefreshHeldLaunchLockDoesNotConsumeRetry(t *testing.T) {
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
 		t.Fatal(err)
 	}
-	if got := refreshApprovedMemory(hp, fx, now); got != "requested:"+id || starts.Load() != 1 {
+	if got := refreshApprovedMemoryAt(hp, fx, now); got != "requested:"+id || starts.Load() != 1 {
 		t.Fatalf("released launch lock: got %s starts=%d", got, starts.Load())
+	}
+}
+
+func TestMemoryRefreshSuccessfulCoverageAllowsNewTerminalContent(t *testing.T) {
+	now := time.Now().UTC()
+	hp, cwd, id := memoryRefreshHome(t, now.Add(-time.Hour))
+	installTestMemoryService(t)
+	starts := countMemoryRefreshStarts(t)
+	fx := Fixture{Live: true, Hook: "PostToolUse", Cwd: cwd}
+	if got := refreshApprovedMemoryAt(hp, fx, now); got != "requested:"+id {
+		t.Fatalf("initial request: %q", got)
+	}
+	setMemoryCoverage(t, hp, now.Add(time.Second))
+	transcript := filepath.Join(cwd, "session.md")
+	if err := os.WriteFile(transcript, []byte("A new correction after successful capture."), 0600); err != nil {
+		t.Fatal(err)
+	}
+	changed := now.Add(2 * time.Second)
+	if err := os.Chtimes(transcript, changed, changed); err != nil {
+		t.Fatal(err)
+	}
+	fx.Hook, fx.TranscriptPath = "SessionEnd", transcript
+
+	var wg sync.WaitGroup
+	gate := make(chan struct{})
+	statuses := make([]string, 50)
+	for i := range statuses {
+		wg.Add(1)
+		go func(i int) { defer wg.Done(); <-gate; statuses[i] = refreshApprovedMemoryAt(hp, fx, changed) }(i)
+	}
+	close(gate)
+	wg.Wait()
+	requested := 0
+	for _, got := range statuses {
+		switch got {
+		case "requested:" + id:
+			requested++
+		case "request_busy", "recently_requested":
+		default:
+			t.Fatalf("terminal burst status: %q", got)
+		}
+	}
+	if requested != 1 || starts.Load() != 2 {
+		t.Fatalf("new terminal burst requested=%d total starts=%d, want 1 and 2", requested, starts.Load())
+	}
+	for i := 0; i < 50; i++ {
+		if got := refreshApprovedMemoryAt(hp, fx, changed.Add(time.Second)); got != "recently_requested" {
+			t.Fatalf("duplicate terminal request %d: %q", i, got)
+		}
+	}
+	if got := starts.Load(); got != 2 {
+		t.Fatalf("starts=%d, want 2", got)
+	}
+}
+
+func refreshApprovedMemoryAt(hp string, fx Fixture, now time.Time) string {
+	return refreshApprovedMemory(hp, fx, func() time.Time { return now })
+}
+func TestMemoryRefreshPublishesDecisionTimeAfterDelayedHook(t *testing.T) {
+	now := time.Now().UTC()
+	hp, cwd, id := memoryRefreshHome(t, now.Add(-time.Hour))
+	installTestMemoryService(t)
+	starts := countMemoryRefreshStarts(t)
+	fx := Fixture{Live: true, Hook: "PostToolUse", Cwd: cwd}
+	if got := refreshApprovedMemoryAt(hp, fx, now); got != "requested:"+id {
+		t.Fatal(got)
+	}
+	setMemoryCoverage(t, hp, now.Add(10*time.Second))
+	transcript := filepath.Join(cwd, "session.md")
+	if err := os.WriteFile(transcript, []byte("Changed while the earlier hook was busy."), 0600); err != nil {
+		t.Fatal(err)
+	}
+	changed := now.Add(11 * time.Second)
+	if err := os.Chtimes(transcript, changed, changed); err != nil {
+		t.Fatal(err)
+	}
+	fx.Hook, fx.TranscriptPath = "SessionEnd", transcript
+	delayed := func(entry, decision time.Time) func() time.Time {
+		calls := 0
+		return func() time.Time {
+			calls++
+			if calls == 1 {
+				return entry
+			}
+			return decision
+		}
+	}
+	if got := refreshApprovedMemory(hp, fx, delayed(now.Add(5*time.Second), changed)); got != "requested:"+id {
+		t.Fatalf("delayed new content: %q", got)
+	}
+	if got := refreshApprovedMemory(hp, fx, delayed(now.Add(6*time.Second), now.Add(12*time.Second))); got != "recently_requested" {
+		t.Fatalf("delayed duplicate: %q", got)
+	}
+	if starts.Load() != 2 {
+		t.Fatalf("starts=%d, want 2", starts.Load())
+	}
+	var stamp memoryRefreshRequest
+	b, err := os.ReadFile(filepath.Join(memoryRefreshRequestDir(hp), "last-request.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &stamp); err != nil {
+		t.Fatal(err)
+	}
+	if stamp.RequestedAt != changed.UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("stamp %s did not use decision time %s", stamp.RequestedAt, changed)
 	}
 }

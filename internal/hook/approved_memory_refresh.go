@@ -19,9 +19,9 @@ import (
 
 const memoryRefreshActor = "automation:memory-refresh"
 
-// Request pacing for the whole home, across every session. After a start the
-// next one waits memoryRefreshMinGap. While starts do not lead to a newer
-// refresh, the wait doubles per start up to memoryRefreshMaxGap.
+// Unsuccessful starts are paced across the whole home. New due content can
+// start immediately after every source has newer coverage without a hard failure.
+// The new request stamp excludes duplicates until coverage advances again.
 const (
 	memoryRefreshMinGap        = time.Minute
 	memoryRefreshMaxGap        = 30 * time.Minute
@@ -63,9 +63,9 @@ func memoryRefreshLaunchActive(hp string) (bool, error) {
 // The existing native execution rail checks current policy and the exact Work
 // generation before the child can mutate. Competing triggers lose that CAS.
 //
-// Every live tool call of every session reaches this function, so it starts
-// nothing that admission must deny (a foreign lease) and starts at most one
-// admission command per gap for the whole home (claimMemoryRefreshRequest).
+// Every live tool call in every session reaches this function. It starts nothing
+// admission must deny, and requires newer non-failed coverage or an elapsed
+// per-home retry gap before admitting another refresh.
 // It never waits. It returns the status kept in Result.MemoryRefresh:
 //
 //	""                         not a live PostToolUse, Stop or SessionEnd hook, or no refresh due
@@ -86,7 +86,7 @@ func memoryRefreshLaunchActive(hp string) (bool, error) {
 //	request_state_unavailable  the request stamp could not be read or written
 //	launch_failed              the admission command could not be started
 //	requested:<work id>        the admission command was started
-func refreshApprovedMemory(hp string, fx Fixture, now time.Time) string {
+func refreshApprovedMemory(hp string, fx Fixture, clock func() time.Time) string {
 	if !fx.Live || (fx.Hook != "PostToolUse" && fx.Hook != "SessionEnd" && fx.Hook != "Stop") {
 		return ""
 	}
@@ -94,7 +94,7 @@ func refreshApprovedMemory(hp string, fx Fixture, now time.Time) string {
 	if fx.Hook == "SessionEnd" {
 		source = fx.TranscriptPath
 	}
-	due, err := corpus.RefreshDue(hp, now, source)
+	due, err := corpus.RefreshDue(hp, clock(), source)
 	if err != nil {
 		return "configuration_unavailable"
 	}
@@ -144,7 +144,7 @@ func refreshApprovedMemory(hp string, fx Fixture, now time.Time) string {
 		return "service_unavailable"
 	}
 	args := []string{"tick", "--binary", binary, "--memory-home", hp, "--workspace", cwd}
-	if status := claimMemoryRefreshRequest(hp, now); status != "" {
+	if status := claimMemoryRefreshRequest(hp, clock); status != "" {
 		return status
 	}
 	if err := startMemoryRefresh(service, hp, cwd, args); err != nil {
@@ -184,11 +184,10 @@ func memoryRefreshRequestDir(hp string) string {
 // stamp. Go opens files close-on-exec, and the lock is released before the
 // caller starts the child, so the child never holds it.
 //
-// Pacing. A start is allowed when the last one is at least the gap ago. The gap
-// is memoryRefreshMinGap after a start that led to a newer refresh. When
-// coverage did not move past the last start, that start was a miss: the gap
-// doubles per miss in a row, up to memoryRefreshMaxGap.
-func claimMemoryRefreshRequest(hp string, now time.Time) string {
+// Pacing lasts until every source has newer coverage without a hard failure.
+// Then a newly due transcript can start immediately. Sample the decision clock
+// after reading coverage and again when publishing, not at the earlier hook event.
+func claimMemoryRefreshRequest(hp string, clock func() time.Time) string {
 	dir := memoryRefreshRequestDir(hp)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "request_state_unavailable"
@@ -205,7 +204,7 @@ func claimMemoryRefreshRequest(hp string, now time.Time) string {
 		return "request_state_unavailable"
 	}
 	path := filepath.Join(dir, "last-request.json")
-	next := memoryRefreshRequest{SchemaVersion: memoryRefreshRequestSchema, RequestedAt: now.UTC().Format(time.RFC3339Nano)}
+	next := memoryRefreshRequest{SchemaVersion: memoryRefreshRequestSchema}
 	body, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -228,18 +227,19 @@ func claimMemoryRefreshRequest(hp string, now time.Time) string {
 		if err != nil {
 			return "configuration_unavailable"
 		}
-		gap := memoryRefreshMinGap
+		gap := time.Duration(0)
 		if missed {
 			gap = memoryRefreshGap(last.Misses)
 			next.Misses = last.Misses + 1
 		}
-		if now.Sub(at) < gap {
+		if clock().Sub(at) < gap {
 			if missed && last.Misses > 0 {
 				return "backing_off"
 			}
 			return "recently_requested"
 		}
 	}
+	next.RequestedAt = clock().UTC().Format(time.RFC3339Nano)
 	raw, err := json.Marshal(next)
 	if err != nil {
 		return "request_state_unavailable"
