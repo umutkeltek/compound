@@ -440,6 +440,9 @@ func verifyStreamedStagedFile(target *archiveRestoreTarget, entry ArchiveEntry) 
 	if err != nil {
 		return err
 	}
+	if target.requireSingleLinks && (!ownedByCurrent(before) || !singleLinkPrivateObject(before)) {
+		return fmt.Errorf("resumed archive entry must be current-user-owned with one filesystem link: %s", entry.Path)
+	}
 	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
 		return fmt.Errorf("restored archive entry must remain regular: %s", entry.Path)
 	}
@@ -460,6 +463,9 @@ func verifyStreamedStagedFile(target *archiveRestoreTarget, entry ArchiveEntry) 
 	}
 	if !opened.Mode().IsRegular() || after.Mode()&os.ModeSymlink != 0 || !after.Mode().IsRegular() || !os.SameFile(before, opened) || !os.SameFile(before, after) {
 		return fmt.Errorf("restored archive entry identity changed while verifying: %s", entry.Path)
+	}
+	if target.requireSingleLinks && (!ownedByCurrent(opened) || !ownedByCurrent(after) || !singleLinkPrivateObject(opened) || !singleLinkPrivateObject(after)) {
+		return fmt.Errorf("resumed archive entry ownership or link count changed: %s", entry.Path)
 	}
 	if n != entry.Size || hex.EncodeToString(sum.Sum(nil)) != entry.SHA256 {
 		return fmt.Errorf("restored archive checksum mismatch for %s", entry.Path)

@@ -4185,10 +4185,10 @@ func cmdHome(args []string) {
 		}
 		targetPath := valueFlag(args, "--target")
 		if archivePath == "" || targetPath == "" {
-			fmt.Fprintln(os.Stderr, "usage: compound home restore <archive.tar.gz> --target <new-absent-home-path>")
+			fmt.Fprintln(os.Stderr, "usage: compound home restore <archive.tar.gz> --target <new-absent-home-path> [--resume-stage <private-sibling-stage>]")
 			os.Exit(2)
 		}
-		report, err := home.RestoreArchive(archivePath, targetPath, time.Now())
+		report, err := restoreHomeArchive(archivePath, targetPath, args, time.Now())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "home restore:", err)
 			os.Exit(1)
@@ -4621,6 +4621,7 @@ func printHomeRestoreReport(r home.RestoreReport) {
 	fmt.Printf("- kind: %s\n", r.Kind)
 	fmt.Printf("- files: %d\n", r.Files)
 	fmt.Printf("- bytes: %d\n", r.Bytes)
+	printHomeRestoreResumeEvidence(r)
 	fmt.Println("- verdict: ok")
 }
 
