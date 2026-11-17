@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBackendReadinessClassifiesFailuresWithoutDownloading(t *testing.T) {
@@ -156,5 +157,44 @@ func TestBackendReadinessGenericHTTPSUsesNormalCertificateVerification(t *testin
 	got := checkBackend(context.Background(), cfg.BaseURL, cfg)
 	if got.Status != "ready" || got.RecoveryEligible || embeds != 1 {
 		t.Fatalf("trusted TLS not usable: %+v embeds=%d", got, embeds)
+	}
+}
+
+func TestBackendReadinessDistinguishesResponseTimeoutFromConnectionRefusal(t *testing.T) {
+	for _, listening := range []bool{false, true} {
+		name := "connection_refused"
+		want := "process_unavailable"
+		if listening {
+			name = "response_timeout"
+			want = "process_unhealthy"
+		}
+		t.Run(name, func(t *testing.T) {
+			arrived := make(chan struct{})
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/tags" {
+					t.Errorf("unexpected request %s", r.URL.Path)
+				}
+				close(arrived)
+				// A real accepted request whose server never sends a response header.
+				<-r.Context().Done()
+			}))
+			t.Cleanup(srv.Close)
+			if !listening {
+				srv.Close()
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+			got := checkBackend(ctx, srv.URL, EmbedderConfig{Provider: "ollama", Model: "fixture", Dims: 2})
+			if listening {
+				select {
+				case <-arrived:
+				default:
+					t.Fatal("response timeout was not observed after accepting the request")
+				}
+			}
+			if got.Status != want {
+				t.Fatalf("listening=%v check=%+v want=%s", listening, got, want)
+			}
+		})
 	}
 }
