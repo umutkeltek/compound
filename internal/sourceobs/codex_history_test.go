@@ -3,7 +3,9 @@ package sourceobs
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -381,4 +383,80 @@ func TestCodexHistoryMalformedNativeTextDoesNotEchoPayload(t *testing.T) {
 	if _, err := os.Stat(SourceManifestPath(hp, "codex_history_fixture")); !os.IsNotExist(err) {
 		t.Fatal("malformed source advanced its checkpoint")
 	}
+}
+
+// A tail observation must not stand in for custody of the intervening history.
+func TestCodexHistoryFairBackfillAndRecentTail(t *testing.T) {
+	hp, root := t.TempDir(), nativeRoot(t)
+	db := filepath.Join(root, "thread_history_1.sqlite")
+	nativeSQL(t, db, codexHistorySchema+`
+WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<80)
+INSERT INTO thread_items(thread_id,turn_id,item_id,rollout_ordinal,created_at_ms,item_json,item_type,updated_at_ordinal)
+SELECT 'thread-a','turn-a','history-'||x,x*512,x,'{"type":"agentMessage","text":"history-'||x||'"}','agentMessage',x*512 FROM n;
+INSERT INTO thread_history_projection_state VALUES('thread-z',10,2);
+INSERT INTO thread_items(thread_id,turn_id,item_id,rollout_ordinal,created_at_ms,item_json,item_type,updated_at_ordinal)
+VALUES('thread-z','turn-z','late-user',1,99999,'{"type":"userMessage","content":"Late thread visible promptly"}','userMessage',1);
+`)
+	now := time.Now().UTC().Truncate(24 * time.Hour).Add(time.Hour)
+	first := captureCodex(t, hp, root, "", now)
+	if first.Pending == 0 || first.NativeBodyRows > 32*512+8 {
+		t.Fatalf("unbounded or missing backlog: %+v", first)
+	}
+	if !strings.Contains(codexCurrentBody(t, hp, "semantic/thread-z/thread_items/0"), "Late thread visible promptly") {
+		t.Fatal("late thread starved behind early history")
+	}
+	assertContiguous := func() {
+		t.Helper()
+		var last int64 = -1
+		packs := map[int64]bool{}
+		for _, item := range codexManifest(t, hp).Items {
+			if item.VersionState == "superseded" {
+				continue
+			}
+			ref, _ := url.Parse(item.SourceRef)
+			if ref.Query().Get("thread") != "thread-a" {
+				continue
+			}
+			if ref.Query().Get("view") == "raw_pack" && ref.Query().Get("table") == "thread_items" {
+				var bucket int64
+				fmt.Sscan(ref.Query().Get("bucket"), &bucket)
+				packs[bucket] = true
+			}
+			if ref.Query().Get("view_key") == "cursor/thread-a" {
+				raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(item.SourceFingerprint, "codex-cursor-v1:"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var state struct {
+					Tables map[string]struct {
+						Last int64 `json:"last"`
+					} `json:"tables"`
+				}
+				if err := json.Unmarshal(raw, &state); err != nil {
+					t.Fatal(err)
+				}
+				last = state.Tables["thread_items"].Last
+			}
+		}
+		if last >= 80*512 {
+			t.Fatal("tail capture jumped over history")
+		}
+		for bucket := int64(1); bucket*512 <= last; bucket++ {
+			if !packs[bucket] {
+				t.Fatalf("watermark crossed missing pack %d", bucket)
+			}
+		}
+	}
+	assertContiguous()
+	nativeSQL(t, db, `INSERT INTO thread_items(thread_id,turn_id,item_id,rollout_ordinal,created_at_ms,item_json,item_type,updated_at_ordinal)
+ VALUES('thread-a','turn-a','fresh-tail',41984,999999,'{"type":"agentMessage","text":"Fresh tail during backfill"}','agentMessage',41984);
+ UPDATE thread_history_projection_state SET next_rollout_ordinal=41985 WHERE thread_id='thread-a';`)
+	second := captureCodex(t, hp, root, "", now)
+	if second.Pending == 0 || second.NativeBodyRows > 32*512+8 {
+		t.Fatalf("second bounded pass: %+v", second)
+	}
+	if !strings.Contains(codexCurrentBody(t, hp, "semantic/thread-a/thread_items/82"), "Fresh tail during backfill") {
+		t.Fatal("new tail waited for history")
+	}
+	assertContiguous()
 }
