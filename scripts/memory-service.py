@@ -4,6 +4,9 @@
 Setup is itself run inside an operator-authorized WorkEnvelope. Every hook-triggered pass
 reserves a fresh action/policy through work advance --execute; it never edits the
 ledger, promotes source statements, or revives retired ingestion jobs.
+Explicit tick --start may claim only this service's existing READY work.
+Tick --recovery-only runs the same admitted recovery without corpus refresh;
+HELD work still requires operator release outside this helper.
 """
 import argparse
 import hashlib
@@ -136,7 +139,7 @@ def require_admitted_refresh(binary, home):
     if not re.fullmatch(r"ratt_[A-Za-z0-9_]+", rid):
         raise RuntimeError("refresh requires governed execution")
     attempt = json.loads((home / "run_attempts" / (rid + ".json")).read_text())
-    record = run(binary, ["work", "show", work_id(home), "--json"], capture=True)
+    record = maintenance_work(binary, home)
     actions = record.get("run_ids", [])
     if (record.get("state") != "running" or record.get("owner") != ACTOR
             or attempt.get("work_id") != record.get("id")
@@ -145,6 +148,11 @@ def require_admitted_refresh(binary, home):
             or not actions or attempt.get("action_intent_id") != actions[-1]
             or not record.get("policy_decision_id")):
         raise RuntimeError("refresh execution reservation changed")
+
+
+def recover(binary, home):
+    require_admitted_refresh(binary, home)
+    recover_backend(binary, home)
 
 
 def refresh(binary, home):
@@ -170,27 +178,60 @@ def work_id(home):
     return "work_memory_refresh_" + hashlib.sha256(str(home).encode()).hexdigest()[:16]
 
 
-def tick(binary, home, workspace):
+def validate_maintenance_work(record, home):
+    if record.get("id") != work_id(home) or record.get("owner") != ACTOR:
+        raise RuntimeError("maintenance work identity or owner mismatch")
+
+
+def maintenance_work(binary, home):
+    record = run(binary, ["work", "show", work_id(home), "--json"], capture=True)
+    validate_maintenance_work(record, home)
+    return record
+
+
+def claim_ready(binary, home, record):
+    validate_maintenance_work(record, home)
+    if record.get("state") != "ready":
+        raise RuntimeError("only ready maintenance work may be claimed")
+    # The service claims as itself through native policy; no takeover or new work.
+    run(binary, ["work", "claim", work_id(home), "--by", ACTOR])
+    claimed = maintenance_work(binary, home)
+    if claimed.get("state") != "claimed":
+        raise RuntimeError("maintenance claim reservation changed")
+    return claimed
+
+
+def tick(binary, home, workspace, start=False, recovery_only=False):
     wid = work_id(home)
-    record = run(binary, ["work", "show", wid, "--json"], capture=True)
+    record = maintenance_work(binary, home)
+    if record.get("state") == "ready" and start:
+        record = claim_ready(binary, home, record)
     state = record["state"]
     if state not in ("claimed", "verifying"):
         raise RuntimeError("maintenance work is " + state + "; no automatic takeover")
     args = ["work", "advance", wid, "--to", "running", "--by", ACTOR,
             "--execute", "--harness", "os-harness-entrypoints",
-            "--workspace", str(workspace), "--timeout", "8m"]
+            "--workspace", str(workspace), "--timeout", "3m" if recovery_only else "8m"]
     if state == "verifying":
         args += ["--resume-verifying"]
-    run(binary, args + ["--", sys.executable, str(Path(__file__).resolve()), "refresh",
+    operation = "recover" if recovery_only else "refresh"
+    run(binary, args + ["--", sys.executable, str(Path(__file__).resolve()), operation,
                          "--binary", str(binary), "--memory-home", str(home), "--workspace", str(workspace)])
 
 
 def setup(binary, home, workspace, config):
     # This operation is called inside the setup work's admitted subprocess.
-    run(binary, ["corpus", "configure", "--file", str(config)])
     wid = work_id(home)
     probe = subprocess.run([str(binary), "work", "show", wid, "--json"],
                            capture_output=True, text=True)
+    record = None
+    if not probe.returncode:
+        record = json.loads(probe.stdout)
+        validate_maintenance_work(record, home)
+        if record.get("state") not in ("ready", "claimed", "verifying"):
+            raise RuntimeError("existing maintenance work is not available")
+    # Refuse held or foreign work before changing configuration.
+    run(binary, ["corpus", "configure", "--file", str(config)])
     if probe.returncode:
         run(binary, ["work", "create", "--work-id", wid, "--owner", ACTOR,
                      "--by", ACTOR, "--state", "ready",
@@ -202,10 +243,8 @@ def setup(binary, home, workspace, config):
                      "--execute", "--harness", "os-harness-entrypoints",
                      "--workspace", str(workspace), "--timeout", "1m",
                      "--", "/usr/bin/true"])
-    else:
-        record = json.loads(probe.stdout)
-        if record["owner"] != ACTOR or record["state"] not in ("claimed", "verifying"):
-            raise RuntimeError("existing maintenance work is not available")
+    elif record["state"] == "ready":
+        claim_ready(binary, home, record)
     # Live hooks perform the first capture through the same native resume path.
     print(json.dumps({"status": "configured", "work_id": wid,
                       "trigger": "live PostToolUse and SessionEnd hooks",
@@ -214,12 +253,16 @@ def setup(binary, home, workspace, config):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("operation", choices=("setup", "tick", "refresh"))
+    p.add_argument("operation", choices=("setup", "tick", "refresh", "recover"))
     p.add_argument("--binary", type=Path, required=True)
     p.add_argument("--home", "--memory-home", dest="home", type=Path, required=True)
     p.add_argument("--workspace", type=Path, required=True)
     p.add_argument("--config", type=Path)
+    p.add_argument("--start", action="store_true", help="explicitly claim this service's existing ready work")
+    p.add_argument("--recovery-only", action="store_true", help="run admitted backend recovery without indexing")
     a = p.parse_args()
+    if (a.start or a.recovery_only) and a.operation != "tick":
+        p.error("--start and --recovery-only require tick")
     for value in (a.binary, a.home, a.workspace):
         if not value.is_absolute() or not value.exists():
             p.error("binary, home and workspace must be existing absolute paths")
@@ -227,8 +270,10 @@ def main():
     try:
         if a.operation == "refresh":
             refresh(a.binary, a.home)
+        elif a.operation == "recover":
+            recover(a.binary, a.home)
         elif a.operation == "tick":
-            tick(a.binary, a.home, a.workspace)
+            tick(a.binary, a.home, a.workspace, start=a.start, recovery_only=a.recovery_only)
         else:
             if a.config is None:
                 p.error("setup requires --config with approved sources")

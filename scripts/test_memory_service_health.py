@@ -139,5 +139,115 @@ class RecoveryTests(unittest.TestCase):
                     service.require_admitted_refresh(Path("/fixture/bin/compound"), home)
 
 
+
+class HelperAdmissionTests(unittest.TestCase):
+    binary = Path("/fixture/bin/compound")
+    home = Path("/fixture/home")
+    workspace = Path("/fixture/workspace")
+
+    def record(self, state="ready"):
+        return {"id": service.work_id(self.home), "owner": service.ACTOR, "state": state}
+
+    def test_explicit_start_claims_only_existing_ready_work_then_executes(self):
+        record = self.record()
+        commands = []
+        def command(binary, args, capture=False):
+            commands.append(args)
+            if args[:2] == ["work", "show"]:
+                return dict(record)
+            if args[:2] == ["work", "claim"]:
+                self.assertEqual(args, ["work", "claim", record["id"], "--by", service.ACTOR])
+                record["state"] = "claimed"
+        with patch.object(service, "run", side_effect=command):
+            service.tick(self.binary, self.home, self.workspace, start=True)
+        writes = [args for args in commands if args[:2] != ["work", "show"]]
+        self.assertEqual([args[1] for args in writes], ["claim", "advance"])
+        self.assertNotIn("--resume-verifying", writes[-1])
+        self.assertIn("refresh", writes[-1])
+        self.assertNotIn("create", [args[1] for args in commands])
+
+    def test_ready_without_explicit_start_and_held_with_start_refuse(self):
+        for state, start in [("ready", False), ("held", True)]:
+            with self.subTest(state=state), patch.object(service, "run", return_value=self.record(state)) as run:
+                with self.assertRaises(RuntimeError):
+                    service.tick(self.binary, self.home, self.workspace, start=start)
+                self.assertEqual(run.call_count, 1)
+
+    def test_tick_refuses_wrong_owner_or_work_id_before_mutation(self):
+        for state in ("ready", "claimed", "verifying"):
+            for field, value in [("owner", "unrelated-actor"), ("id", "work_unrelated")]:
+                record = self.record(state)
+                record[field] = value
+                with self.subTest(state=state, field=field), patch.object(service, "run", return_value=record) as run:
+                    with self.assertRaises(RuntimeError):
+                        service.tick(self.binary, self.home, self.workspace, start=True)
+                    self.assertEqual(run.call_count, 1)
+
+    def test_setup_admits_existing_ready_owner_without_replacement_or_refresh(self):
+        record = self.record()
+        commands = []
+        def command(binary, args, capture=False):
+            commands.append(args)
+            if args[:2] == ["work", "claim"]:
+                record["state"] = "claimed"
+            if args[:2] == ["work", "show"]:
+                return dict(record)
+        probe = subprocess.CompletedProcess([], 0, json.dumps(record))
+        with patch.object(service.subprocess, "run", return_value=probe), patch.object(service, "run", side_effect=command):
+            service.setup(self.binary, self.home, self.workspace, Path("/fixture/config.yaml"))
+        self.assertEqual([args[1] for args in commands if args[0] == "work" and args[1] != "show"], ["claim"])
+        self.assertNotIn("refresh", [item for args in commands for item in args])
+
+    def test_setup_held_or_wrong_identity_does_not_reconfigure_or_claim(self):
+        for patch_record in [{"state": "held"}, {"owner": "unrelated-actor"}, {"id": "work_unrelated"}]:
+            record = self.record()
+            record.update(patch_record)
+            probe = subprocess.CompletedProcess([], 0, json.dumps(record))
+            with self.subTest(record=patch_record), patch.object(service.subprocess, "run", return_value=probe), patch.object(service, "run") as run:
+                with self.assertRaises(RuntimeError):
+                    service.setup(self.binary, self.home, self.workspace, Path("/fixture/config.yaml"))
+                run.assert_not_called()
+
+    def test_explicit_start_cannot_bypass_native_claim_refusal(self):
+        with patch.object(service, "run", side_effect=[self.record(), RuntimeError("native claim refused")]) as run:
+            with self.assertRaisesRegex(RuntimeError, "native claim refused"):
+                service.tick(self.binary, self.home, self.workspace, start=True)
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args_list[-1].args[1][:2], ["work", "claim"])
+
+    def test_recovery_refuses_attempt_for_a_different_home_work(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / "run_attempts").mkdir()
+            rid = "ratt_fixture_foreign"
+            record = {"id": "work_unrelated", "owner": service.ACTOR, "state": "running",
+                      "run_ids": ["act_fixture"], "policy_decision_id": "pol_fixture"}
+            attempt = {"work_id": record["id"], "origin": "harness_execution",
+                       "status": "running", "action_intent_id": "act_fixture"}
+            (home / "run_attempts" / (rid + ".json")).write_text(json.dumps(attempt))
+            with patch.dict(service.os.environ, {"COMPOUND_RUN_ATTEMPT_ID": rid}), patch.object(service, "run", return_value=record), patch.object(service, "recover_backend") as recover:
+                with self.assertRaisesRegex(RuntimeError, "identity or owner"):
+                    service.recover(self.binary, home)
+                recover.assert_not_called()
+
+    def test_recovery_tick_uses_current_native_attempt_and_never_full_refresh(self):
+        with patch.object(service, "run", side_effect=[self.record("verifying"), None]) as run:
+            service.tick(self.binary, self.home, self.workspace, recovery_only=True)
+        args = run.call_args_list[-1].args[1]
+        self.assertIn("--execute", args)
+        self.assertIn("--resume-verifying", args)
+        self.assertIn("recover", args)
+        self.assertNotIn("refresh", args)
+        with patch.object(service, "require_admitted_refresh") as guard, patch.object(service, "recover_backend") as recover, patch.object(service.subprocess, "run") as process:
+            service.recover(self.binary, self.home)
+            guard.assert_called_once_with(self.binary, self.home)
+            recover.assert_called_once_with(self.binary, self.home)
+            process.assert_not_called()
+        with patch.object(service, "require_admitted_refresh", side_effect=RuntimeError("reservation changed")), patch.object(service, "recover_backend") as recover:
+            with self.assertRaisesRegex(RuntimeError, "reservation changed"):
+                service.recover(self.binary, self.home)
+            recover.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
