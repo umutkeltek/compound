@@ -735,3 +735,5 @@ contains the next uncaptured history; tail visibility never skips older custody.
 Optional native turn anchors bring the latest visible user/agent items forward
 even when raw tools follow them. Full thread metadata has a separate raw source
 key, so a deferred metadata body cannot discard a small progress cursor.
+Context enters retrieval only after the thread has owned visible-message evidence;
+inventorying a large native backlog does not create context-only embeddings.

@@ -474,20 +474,43 @@ INSERT INTO thread_items(thread_id,turn_id,item_id,rollout_ordinal,created_at_ms
 SELECT thread_id,'turn-z','late',1,1,'{"type":"userMessage","content":"Cold thread must progress"}','userMessage',1
 FROM thread_history_projection_state WHERE thread_id LIKE 'thread-z%';
 `)
+	nativeSQL(t, filepath.Join(root, "context.sqlite"), `CREATE TABLE threads(id TEXT PRIMARY KEY,title TEXT,cwd TEXT);
+WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<48)
+INSERT INTO threads SELECT printf('thread-z%02d',x),'Cold thread context','/workspace/fixture' FROM n;`)
 	now := time.Now().UTC()
 	for pass := 0; pass < 4; pass++ {
 		nativeSQL(t, db, fmt.Sprintf(`INSERT INTO thread_items(thread_id,turn_id,item_id,rollout_ordinal,created_at_ms,item_json,item_type,updated_at_ordinal)
 VALUES('thread-a','turn-a','fresh-%d',%d,%d,'{"type":"agentMessage","text":"Continuously active thread"}','agentMessage',%d);
 UPDATE thread_history_projection_state SET next_rollout_ordinal=%d WHERE thread_id='thread-a';`, pass, (82+pass)*512, 999999+pass, (82+pass)*512, (82+pass)*512+1))
-		r := captureCodex(t, hp, root, "", now)
+		r := captureCodex(t, hp, root, "context.sqlite", now)
 		if r.NativeBodyRows > 32*512+8 {
 			t.Fatalf("pass %d exceeded bounded range work: %+v", pass, r)
+		}
+		visible, contexts := map[string]bool{}, map[string]bool{}
+		for _, item := range codexManifest(t, hp).Items {
+			if item.VersionState == "superseded" {
+				continue
+			}
+			ref, _ := url.Parse(item.SourceRef)
+			q := ref.Query()
+			if q.Get("view") == "semantic" {
+				visible[q.Get("thread")] = true
+			}
+			if q.Get("view") == "semantic_context" {
+				contexts[q.Get("thread")] = true
+			}
+		}
+		for sid := range contexts {
+			if !visible[sid] {
+				t.Fatalf("uncaptured thread %s generated context-only retrieval", sid)
+			}
 		}
 	}
 	for n := 1; n <= 48; n++ {
 		if !strings.Contains(codexCurrentBody(t, hp, fmt.Sprintf("semantic/thread-z%02d/thread_items/0", n)), "Cold thread must progress") {
 			t.Fatalf("cold thread %d starved under a continuous tail", n)
 		}
+		codexCurrentBody(t, hp, fmt.Sprintf("context/thread-z%02d", n))
 	}
 	if !strings.Contains(codexCurrentBody(t, hp, "pack/thread-a/thread_items/1"), "old history") {
 		t.Fatal("tail priority starved contiguous history")

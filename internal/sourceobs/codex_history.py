@@ -82,11 +82,15 @@ def main():
     body_threads = set()
     pack_metadata_rows = 0
     emitted = set()
+    visible_threads = {key[len("semantic/"):].rsplit("/",2)[0] for key,value in previous.items()
+                       if key.startswith("semantic/") and not value.get("fingerprint","").endswith(sha(""))}
     def emit(key, sid, kind, table, body, fingerprint=None, rows=0, bucket=None):
         if key in emitted:
             return
         emitted.add(key)
         body = canonical(body)+"\n" if not isinstance(body, str) else body
+        if kind=="semantic" and body:
+            visible_threads.add(sid)
         print(canonical({"key":key,"thread_id":sid,"kind":kind,"table":table,"bucket":bucket,
                          "body":body,"fingerprint":fingerprint or "codex-body-v1:"+sha(body),
                          "rows":rows}), flush=True)
@@ -413,9 +417,9 @@ def main():
             emit("cursor/"+sid,sid,"cursor","thread_history_projection_state",raw,fp,1)
         probe = info["probe"]
         context_key = "context/"+sid
-        if probe and (prior is None or prior.get("metadata")!=state.get("metadata")):
+        if probe and (prior is None or prior.get("metadata")!=state.get("metadata") or not old(context_key)):
             has_items = info["maxima"]["thread_items"]>=0 or info["maxima"]["thread_realtime_items"]>=0
-            if has_items:
+            if has_items and sid in visible_threads:
                 context = {k:probe[k] for k in ("title","cwd","model","source") if isinstance(probe.get(k),str) and probe[k]}
                 body = canonical({"type":"native_session","format":"codex-history","thread_id":sid,"context":context})+"\n"
                 emit(context_key,sid,"semantic_context","threads",body)
