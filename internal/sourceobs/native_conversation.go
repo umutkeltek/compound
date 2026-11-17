@@ -101,7 +101,9 @@ type nativeSessionRecord struct {
 // CaptureNativeConversations takes one SQLite read transaction. Native metadata
 // selects changed sessions; daily bounded full-row reconciliation catches edits
 // with unchanged revisions. Per-session fingerprints are durable manifest cursors.
-// Raw row versions are separately content-addressed custody-only items. A session\n// projection is published only when its semantic bytes change.\n// Missing sessions preserve owned current recall: absence does not invalidate
+// Raw row versions are separately content-addressed custody-only items. A session
+// projection is published only when its semantic bytes change.
+// Missing sessions preserve owned current recall: absence does not invalidate
 // past evidence. The raw original database and its independent backup stay intact.
 func CaptureNativeConversations(ctx context.Context, homePath, family, root, format, database string, now time.Time) (CaptureBatchReport, error) {
 	result := CaptureBatchReport{}
@@ -211,7 +213,11 @@ func CaptureNativeConversations(ctx context.Context, homePath, family, root, for
 			return closeErr
 		}
 		spool.files = append(spool.files, sourceManifestFileSnapshot{path: ref, spoolPath: temp.Name(), fileHash: hash, bodyBytes: int64(len(body)), modTime: now, mode: 0600})
-		fragment.Items = append(fragment.Items, SourceManifestItem{ID: idFor("srcitem_", family, key, hash), SourceKey: key, SourceNamespace: namespace, SourceFingerprint: fingerprint, SourceKind: format + "_transcript_v1", SourceRef: ref, FileHash: hash, SnapshotTime: now.UTC().Format(time.RFC3339Nano), Privacy: "private", BodyPolicy: "source_in_place", EvidenceRefs: []string{"source:" + ref, hash}})
+		pageSlug := ""
+		if !inventory && rowID == "" {
+			pageSlug = format + " conversation"
+		}
+		fragment.Items = append(fragment.Items, SourceManifestItem{PageSlug: pageSlug, ID: idFor("srcitem_", family, key, hash), SourceKey: key, SourceNamespace: namespace, SourceFingerprint: fingerprint, SourceKind: format + "_transcript_v1", SourceRef: ref, FileHash: hash, SnapshotTime: now.UTC().Format(time.RFC3339Nano), Privacy: "private", BodyPolicy: "source_in_place", EvidenceRefs: []string{"source:" + ref, hash}})
 		return nil
 	}
 	metadataOnly, seen := []SourceManifestItem{}, map[string]bool{}

@@ -250,3 +250,66 @@ func TestNativeAttributionAndCustodyOnlyRowsIgnoreRawLinePositions(t *testing.T)
 		}
 	}
 }
+
+func TestNativeMirroredDatabasesPreserveSourceIdentityWithoutReembedding(t *testing.T) {
+	hp := t.TempDir()
+	a, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := `
+CREATE TABLE sessions(id TEXT PRIMARY KEY,source TEXT,started_at REAL,runtime_revision INTEGER,title TEXT);
+CREATE TABLE messages(id INTEGER PRIMARY KEY,session_id TEXT,role TEXT,content TEXT,timestamp REAL,active INTEGER DEFAULT 1,compacted INTEGER DEFAULT 0,_compressed_summary INTEGER DEFAULT 0);
+INSERT INTO sessions VALUES('mirror-session','cli',1,1,'Archive plan');
+INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(1,'mirror-session','user','Cedar archive choice',1);
+`
+	nativeCorpusSQL(t, filepath.Join(a, "state.db"), fixture)
+	nativeCorpusSQL(t, filepath.Join(b, "archive.db"), fixture)
+	lane := LaneConfig{Lane: "native-db-mirror", SourceFamily: "native_mirrored_fixture", Privacy: "private", Embedder: EmbedderConfig{Provider: "local", Model: "fixture", Dims: 3}, Source: &SourceConfig{Root: a, Format: "hermes"}}
+	factory := func(l LaneConfig) (Embedder, error) {
+		return &fakeEmbedder{identity: l.Embedder.Identity(), dim: l.Embedder.Dims}, nil
+	}
+	first := Refresh(context.Background(), hp, []LaneConfig{lane}, factory, time.Now())
+	if first.Failed() || first.Sources[0].NewEmbeddedChunks == 0 {
+		t.Fatalf("first source: %+v", first)
+	}
+	// An explicitly approved second account/archive copy has the same native
+	// IDs/text but a distinct database namespace, even with a different name.
+	lane.Source = &SourceConfig{Root: b, Format: "hermes", Database: "archive.db"}
+	second := Refresh(context.Background(), hp, []LaneConfig{lane}, factory, time.Now())
+	if second.Failed() || second.Sources[0].NewEmbeddedChunks != 0 {
+		t.Fatalf("mirrored source reembedded: %+v", second)
+	}
+	source, err := sourceobs.LoadSourceManifest(hp, lane.SourceFamily)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projections := []sourceobs.SourceManifestItem{}
+	namespaces := map[string]bool{}
+	for _, item := range source.Items {
+		if item.VersionState == "superseded" {
+			continue
+		}
+		if strings.Contains(item.SourceRef, "session=mirror-session&") && !strings.Contains(item.SourceRef, "row=") {
+			projections = append(projections, item)
+			namespaces[item.SourceNamespace] = true
+		}
+	}
+	if len(projections) != 2 || len(namespaces) != 2 || projections[0].ID == projections[1].ID || projections[0].BodyRef != projections[1].BodyRef {
+		t.Fatalf("source identities or shared semantic custody lost: %+v", projections)
+	}
+	var indexed Manifest
+	if err := readJSONFile(filepath.Join(IndexDir(hp, lane), "manifest.json"), &indexed); err != nil {
+		t.Fatal(err)
+	}
+	for _, projection := range projections {
+		resolved, err := ResolveChunkText(hp, indexed, projection.ID+"#0", true, lane)
+		if err != nil || !strings.Contains(resolved.Text, "Cedar archive choice") {
+			t.Fatalf("source %s is not recoverable: %+v %v", projection.ID, resolved, err)
+		}
+	}
+}

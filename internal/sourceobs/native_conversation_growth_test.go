@@ -117,7 +117,7 @@ INSERT INTO messages(id,session_id,role,content,timestamp,tool_calls) VALUES(2,'
 		SourceFingerprint: fmt.Sprintf("native-session-v2:legacy:legacy:%d", now.Unix()/86400),
 		SourceKind:        "hermes_transcript_v1", SourceRef: ref, FileHash: hashBytes([]byte(legacy)), SnapshotTime: now.Format(time.RFC3339Nano),
 		Privacy: "private", BodyPolicy: "owned_snapshot", BodyRef: bodyRef, BodyBytes: int64(len(legacy))}
-	manifest := SourceManifest{SchemaVersion: SourceManifestSchemaVersion, ID: "srcman_native_fixture", SourceFamily: "native_fixture", AuthorityRef: SourceManifestAuthorityRef("native_fixture"), Items: []SourceManifestItem{old}}
+	manifest := SourceManifest{SchemaVersion: SourceManifestSchemaVersion, ID: "srcman_native_fixture", SourceFamily: "native_fixture", AuthorityRef: SourceManifestAuthorityRef("native_fixture"), Lifecycle: defaultSourceManifestLifecycle(), Items: []SourceManifestItem{old}}
 	if _, err := RecordSourceManifest(hp, manifest); err != nil {
 		t.Fatal(err)
 	}
