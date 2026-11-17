@@ -1,11 +1,13 @@
 package sourceobs
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -241,5 +243,125 @@ func TestCodexHistoryMirrorsShareBodiesAndRejectUnsafeMetadataPaths(t *testing.T
 	}
 	if len(aliases) != 2 {
 		t.Fatal(fmt.Sprintf("mirror source attribution lost: %+v", aliases))
+	}
+}
+
+func TestCodexHistoryConcurrentCaptureCannotOverwriteNewGeneration(t *testing.T) {
+	hp, root := t.TempDir(), nativeRoot(t)
+	db := filepath.Join(root, "thread_history_1.sqlite")
+	nativeSQL(t, db, codexHistorySchema)
+	now := time.Now().UTC()
+	captureCodex(t, hp, root, "", now)
+	nativeSQL(t, db, `UPDATE thread_items SET item_json='{"type":"agentMessage","text":"Concurrent archive generation"}',updated_at_ordinal=60 WHERE item_id='agent-native';`)
+	prior := readCodexHistoryRecords
+	defer func() { readCodexHistoryRecords = prior }()
+	var winner []byte
+	triggered := false
+	readCodexHistoryRecords = func(ctx context.Context, request []byte, consume func(codexHistoryRecord) error) error {
+		return prior(ctx, request, func(row codexHistoryRecord) error {
+			if row.Complete && !triggered {
+				triggered = true
+				readCodexHistoryRecords = prior
+				if _, err := CaptureCodexHistory(ctx, hp, "codex_history_fixture", root, "", "", now); err != nil {
+					return err
+				}
+				var err error
+				winner, err = os.ReadFile(SourceManifestPath(hp, "codex_history_fixture"))
+				if err != nil {
+					return err
+				}
+			}
+			return consume(row)
+		})
+	}
+	_, err := CaptureCodexHistory(context.Background(), hp, "codex_history_fixture", root, "", "", now)
+	if err == nil || !strings.Contains(err.Error(), "advanced concurrently") {
+		t.Fatalf("stale capture manufactured a new generation: %v", err)
+	}
+	after, err := os.ReadFile(SourceManifestPath(hp, "codex_history_fixture"))
+	if err != nil || string(after) != string(winner) {
+		t.Fatal("stale source publication overwrote winner")
+	}
+	if !strings.Contains(codexCurrentBody(t, hp, "semantic/thread-a/thread_items/0"), "Concurrent archive generation") {
+		t.Fatal("winning native projection unavailable")
+	}
+}
+
+func TestCodexHistoryWALCommitIsObservedWithoutNativeWrites(t *testing.T) {
+	hp, root := t.TempDir(), nativeRoot(t)
+	db := filepath.Join(root, "thread_history_1.sqlite")
+	nativeSQL(t, db, codexHistorySchema)
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	script := `import sqlite3,sys
+c=sqlite3.connect(sys.argv[1])
+c.execute("PRAGMA journal_mode=WAL")
+c.execute("PRAGMA wal_autocheckpoint=0")
+c.execute("BEGIN")
+c.execute("""INSERT INTO thread_items VALUES('thread-a','turn-a','wal-user',5,1005,'{"type":"userMessage","id":"wal-user","content":[{"type":"text","text":"WAL-only visible archive"}]}','userMessage',5,NULL,NULL,'native')""")
+c.execute("UPDATE thread_history_projection_state SET next_rollout_ordinal=25")
+print("uncommitted",flush=True)
+sys.stdin.readline()
+c.commit()
+print("committed",flush=True)
+sys.stdin.readline()
+c.close()
+`
+	cmd := exec.CommandContext(ctx, python, "-I", "-u", "-c", script, db)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { fmt.Fprintln(stdin, "finish"); stdin.Close(); _ = cmd.Wait() }()
+	scanner := bufio.NewScanner(stdout)
+	if !scanner.Scan() || scanner.Text() != "uncommitted" {
+		t.Fatal("native WAL fixture did not start")
+	}
+	now := time.Now().UTC()
+	readHash := func(path string) string {
+		t.Helper()
+		raw, e := os.ReadFile(path)
+		if e != nil {
+			t.Fatal(e)
+		}
+		return hashBytes(raw)
+	}
+	mainBefore, walBefore := readHash(db), readHash(db+"-wal")
+	captureCodex(t, hp, root, "", now)
+	if readHash(db) != mainBefore || readHash(db+"-wal") != walBefore {
+		t.Fatal("read-only capture changed native DB/WAL")
+	}
+	if strings.Contains(codexCurrentBody(t, hp, "semantic/thread-a/thread_items/0"), "WAL-only") {
+		t.Fatal("uncommitted native rows entered custody")
+	}
+	fmt.Fprintln(stdin, "commit")
+	if !scanner.Scan() || scanner.Text() != "committed" {
+		t.Fatal("native WAL fixture did not commit")
+	}
+	if readHash(db) != mainBefore || readHash(db+"-wal") == walBefore {
+		t.Fatal("fixture did not isolate a WAL-only commit")
+	}
+	walCommitted := readHash(db + "-wal")
+	captured := captureCodex(t, hp, root, "", now)
+	if captured.Captured != 1 || !strings.Contains(codexCurrentBody(t, hp, "semantic/thread-a/thread_items/0"), "WAL-only visible archive") {
+		t.Fatalf("WAL-only change was skipped: %+v", captured)
+	}
+	if readHash(db) != mainBefore || readHash(db+"-wal") != walCommitted {
+		t.Fatal("WAL-only capture wrote the source")
+	}
+	steady := captureCodex(t, hp, root, "", now)
+	if steady.NativeBodyRows != 0 {
+		t.Fatal("unchanged active WAL reread bodies")
 	}
 }

@@ -61,6 +61,13 @@ func CaptureCodexHistory(ctx context.Context, homePath, family, root, database, 
 			return result, err
 		}
 	}
+	var metadataBefore os.FileInfo
+	if metaPath != "" {
+		metadataBefore, err = os.Stat(metaPath)
+		if err != nil {
+			return result, err
+		}
+	}
 	before, err := os.Stat(path)
 	if err != nil {
 		return result, err
@@ -224,6 +231,12 @@ func CaptureCodexHistory(ctx context.Context, homePath, family, root, database, 
 	after, err := os.Stat(path)
 	if err != nil || !os.SameFile(before, after) {
 		return result, fmt.Errorf("Codex database replaced during read; retry")
+	}
+	if metaPath != "" {
+		metadataAfter, e := os.Stat(metaPath)
+		if e != nil || !os.SameFile(metadataBefore, metadataAfter) {
+			return result, fmt.Errorf("Codex metadata database replaced during read; retry")
+		}
 	}
 	seen := map[string]bool{}
 	for _, sid := range complete.SeenThreads {
