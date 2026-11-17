@@ -129,13 +129,16 @@ func readRefreshCoverage(homePath string, lane LaneConfig, now time.Time) (Cover
 }
 
 // refreshLanesByAge gives skipped and newly configured sources their turn after
-// a bounded pass. The caller's configuration remains unchanged.
+// a bounded pass. Failed sources win ties with completed sources from the same
+// pass; older unattempted sources still retain their turn. The caller's order is unchanged.
 func refreshLanesByAge(homePath string, lanes []LaneConfig, now time.Time) []LaneConfig {
 	ordered := append([]LaneConfig(nil), lanes...)
 	checked := make(map[string]time.Time, len(lanes))
+	failed := make(map[string]bool, len(lanes))
 	for _, lane := range lanes {
 		var previous Coverage
 		if readJSONFile(refreshPath(homePath, lane), &previous) == nil {
+			failed[lane.Lane] = hardRefreshStatuses[previous.Status]
 			last := previous.LastAttemptAt
 			if last == "" {
 				last = previous.CheckedAt
@@ -147,7 +150,11 @@ func refreshLanesByAge(homePath string, lanes []LaneConfig, now time.Time) []Lan
 		}
 	}
 	sort.SliceStable(ordered, func(i, j int) bool {
-		return checked[ordered[i].Lane].Before(checked[ordered[j].Lane])
+		left, right := ordered[i].Lane, ordered[j].Lane
+		if checked[left].Equal(checked[right]) && failed[left] != failed[right] {
+			return failed[left]
+		}
+		return checked[left].Before(checked[right])
 	})
 	return ordered
 }

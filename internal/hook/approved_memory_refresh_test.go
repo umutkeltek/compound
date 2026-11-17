@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -308,7 +309,7 @@ func TestMemoryRefreshDoesNotStartWhatAForeignLeaseMustDeny(t *testing.T) {
 	starts := countMemoryRefreshStarts(t)
 	fx := Fixture{Live: true, Hook: "PostToolUse", Cwd: cwd}
 	writeMemoryRefreshLease(t, hp, id, "lane:other")
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 50; i++ {
 		if got := refreshApprovedMemory(hp, fx, now.Add(time.Duration(i)*time.Hour)); got != "lease_held" {
 			t.Fatalf("foreign lease status %q, want lease_held", got)
 		}
@@ -436,4 +437,76 @@ func TestMemoryRefreshStampFailureStartsNothing(t *testing.T) {
 			t.Fatalf("status %q starts +%d, want request_state_unavailable and no start", got, starts.Load()-before)
 		}
 	})
+}
+
+func TestMemoryRefreshFreshFailureKeepsBackoff(t *testing.T) {
+	now := time.Now().UTC()
+	hp, cwd, id := memoryRefreshHome(t, now)
+	installTestMemoryService(t)
+	starts := countMemoryRefreshStarts(t)
+	fx := Fixture{Live: true, Hook: "PostToolUse", Cwd: cwd}
+	path := filepath.Join(filepath.Dir(corpus.IndexDir(hp, corpus.LaneConfig{Lane: "fixture"})), "refresh.json")
+	failed := func(at time.Time) {
+		t.Helper()
+		body, _ := json.Marshal(map[string]string{"lane": "fixture", "status": "index_failed", "checked_at": at.Format(time.RFC3339Nano)})
+		if err := os.WriteFile(path, body, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	failed(now)
+	for _, tc := range []struct {
+		offset time.Duration
+		want   string
+	}{
+		{0, "requested:" + id},
+		{59 * time.Second, "recently_requested"},
+		{time.Minute, "requested:" + id},
+		{179 * time.Second, "backing_off"},
+		{3 * time.Minute, "requested:" + id},
+	} {
+		failed(now.Add(tc.offset))
+		if got := refreshApprovedMemory(hp, fx, now.Add(tc.offset)); got != tc.want {
+			t.Fatalf("fresh failed source at +%s: got %s, want %s", tc.offset, got, tc.want)
+		}
+	}
+	if got := starts.Load(); got != 3 {
+		t.Fatalf("starts=%d, want 3", got)
+	}
+}
+
+func TestMemoryRefreshHeldLaunchLockDoesNotConsumeRetry(t *testing.T) {
+	now := time.Now().UTC()
+	hp, cwd, id := memoryRefreshHome(t, now.Add(-time.Hour))
+	installTestMemoryService(t)
+	starts := countMemoryRefreshStarts(t)
+	dir := filepath.Join(hp, "lock")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := os.OpenFile(filepath.Join(dir, "memory-refresh-launch.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	fx := Fixture{Live: true, Hook: "PostToolUse", Cwd: cwd}
+	for i := 0; i < 50; i++ {
+		if got := refreshApprovedMemory(hp, fx, now.Add(time.Duration(i)*time.Minute)); got != "already_running" {
+			t.Fatalf("held launch lock: got %s", got)
+		}
+	}
+	if got := starts.Load(); got != 0 {
+		t.Fatalf("busy launcher started %d commands", got)
+	}
+	if _, err := os.Stat(filepath.Join(memoryRefreshRequestDir(hp), "last-request.json")); !os.IsNotExist(err) {
+		t.Fatalf("active launch consumed a request: %v", err)
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	if got := refreshApprovedMemory(hp, fx, now); got != "requested:"+id || starts.Load() != 1 {
+		t.Fatalf("released launch lock: got %s starts=%d", got, starts.Load())
+	}
 }

@@ -1843,7 +1843,7 @@ Ordinary tool hooks continue to inspect nonterminal attempts only.
 ### Memory backend recovery
 
 The approved-memory hook starts `compound-memory-service tick`, which holds a per-home
-nonblocking launch lock across admission and execution. The hook checks the exact maintenance lease before launching anything and paces requests per home: one minute initially, doubling to thirty minutes while successful coverage does not advance. A fresh failed check remains due so it cannot reset failure backoff. Duplicate triggers exit without
+nonblocking launch lock across admission and execution. The hook checks the exact maintenance lease before launching anything and paces requests per home: one minute initially, doubling to thirty minutes while successful coverage does not advance. A fresh failed check remains due so it cannot reset failure backoff. A held launch lock suppresses hooks before they consume a request stamp, including slow admission. When attempt ages tie, a failed source precedes completed sources on the next pass; unattempted older sources retain their turn. Deadline errors stay visible as failures, while bounded backfill remains a successful pass with incomplete coverage. Duplicate triggers exit without
 queuing work. A nine-minute deadline includes admission; cancellation sends SIGTERM
 to the native execution owner so it can finalize the attempt. The helper runs `compound-memory-service refresh`
 inside the same governed execution reservation. `compound corpus backend-health` is a

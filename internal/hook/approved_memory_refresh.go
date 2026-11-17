@@ -42,6 +42,23 @@ var startMemoryRefresh = func(binary, homePath, cwd string, args []string) error
 	return nil
 }
 
+// A shared nonblocking probe observes the native service lock without changing it.
+func memoryRefreshLaunchActive(hp string) (bool, error) {
+	lock, err := os.Open(filepath.Join(hp, "lock", "memory-refresh-launch.lock"))
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer lock.Close()
+	err = syscall.Flock(int(lock.Fd()), syscall.LOCK_SH|syscall.LOCK_NB)
+	if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+		return true, nil
+	}
+	return false, err
+}
+
 // refreshApprovedMemory never captures/indexes in the prompt injection process.
 // The existing native execution rail checks current policy and the exact Work
 // generation before the child can mutate. Competing triggers lose that CAS.
@@ -58,6 +75,8 @@ var startMemoryRefresh = func(binary, homePath, cwd string, args []string) error
 //	work_<state>               the item is not verifying or not owned by the automation actor
 //	lease_unavailable          the item's lease could not be read
 //	lease_held                 another actor holds the item's lease, so admission would deny it
+//	already_running            the service holds its launch lock; no request or retry is consumed
+//	launch_state_unavailable   the service launch lock could not be observed
 //	workspace_unavailable      the hook cwd is not a usable workspace
 //	binary_unavailable         the running binary could not be resolved
 //	service_unavailable        the memory service next to the binary is missing or not executable
@@ -103,6 +122,11 @@ func refreshApprovedMemory(hp string, fx Fixture, now time.Time) string {
 	}
 	if held && strings.TrimSpace(lease.By) != memoryRefreshActor {
 		return "lease_held"
+	}
+	if active, err := memoryRefreshLaunchActive(hp); err != nil {
+		return "launch_state_unavailable"
+	} else if active {
+		return "already_running"
 	}
 	cwd := fx.Cwd
 	if !filepath.IsAbs(cwd) || filepath.Clean(cwd) == filepath.Clean(hp) {

@@ -96,3 +96,36 @@ func TestInterruptedRefreshDoesNotMonopolizeNextPass(t *testing.T) {
 		t.Fatalf("interrupted source monopolized next pass: %+v", next)
 	}
 }
+
+type cutRefreshEmbedder struct{ *fakeEmbedder }
+
+func (e *cutRefreshEmbedder) Embed(context.Context, []string) ([][]float32, error) {
+	return nil, context.DeadlineExceeded
+}
+
+func TestRefreshRetriesCutSourceBeforeCompletedTie(t *testing.T) {
+	hp, now := t.TempDir(), time.Now().UTC()
+	lanes := []LaneConfig{fairRefreshLane(t, "completed"), fairRefreshLane(t, "cut-short")}
+	first := Refresh(context.Background(), hp, lanes, func(l LaneConfig) (Embedder, error) {
+		base := &fakeEmbedder{identity: l.Embedder.Identity(), dim: 3}
+		if l.Lane == "cut-short" {
+			return &cutRefreshEmbedder{base}, nil
+		}
+		return base, nil
+	}, now)
+	if !first.Failed() || first.Sources[1].Status != "index_failed" {
+		t.Fatalf("deadline lost its real failure status: %+v", first)
+	}
+	if first.Sources[0].LastAttemptAt != first.Sources[1].LastAttemptAt {
+		t.Fatal("fixture must reproduce the shared pass timestamp")
+	}
+	next := Refresh(context.Background(), hp, lanes, func(l LaneConfig) (Embedder, error) {
+		return &fakeEmbedder{identity: l.Embedder.Identity(), dim: 3}, nil
+	}, now.Add(time.Second))
+	if next.Failed() || next.Sources[0].Lane != "cut-short" || next.Sources[0].IndexedAt == "" {
+		t.Fatalf("cut source did not recover before completed source: %+v", next)
+	}
+	if lanes[0].Lane != "completed" {
+		t.Fatal("mutated caller order")
+	}
+}
