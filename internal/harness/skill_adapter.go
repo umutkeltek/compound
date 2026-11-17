@@ -113,6 +113,44 @@ func SkillAdaptersFor(names []string) []HarnessAdapter {
 	return out
 }
 
+// skillFrontmatter renders the YAML frontmatter block every adapter starts with. The name is
+// a fixed skill identifier; the description is a YAML double-quoted scalar, because a plain
+// scalar holding ": " (as every adapter description does) is rejected by strict YAML parsers
+// with "mapping values are not allowed", and the harness that reads the skill drops it.
+func skillFrontmatter(name, description string) string {
+	return "---\nname: " + name + "\ndescription: " + yamlDoubleQuoted(description) + "\n---\n"
+}
+
+// yamlDoubleQuoted returns s as a YAML double-quoted scalar. Backslash and double quote are
+// escaped; control characters use YAML escapes, so the value stays on one line.
+func yamlDoubleQuoted(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 2)
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			if r < 0x20 || r == 0x7f {
+				fmt.Fprintf(&b, `\x%02x`, r)
+				continue
+			}
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
 // claudeCodeAdapter: the tracked template carries ONLY a generic slot
 // ({{claude_extras}}); every harness-specific MCP-tool-name reference AND
 // every Claude-only extra (voice-notify endpoint, Claude customizations
@@ -130,11 +168,7 @@ func SkillAdaptersFor(names []string) []HarnessAdapter {
 // extras block moves from tracked to overlay). Re-applying via the door on
 // an unchanged overlay preserves the on-disk adapter sha256.
 func claudeCodeAdapter() HarnessAdapter {
-	header := `---
-name: Browser
-description: Claude browser-automation adapter. One door for every web task (open, read, click, fill, screenshot, logged-in site): the ` + "`agent-browser`" + ` CLI with an isolated profile, headless by default; canonical body below. Harness-specific invocation block comes from a private operator overlay at render time.
----
-
+	header := skillFrontmatter("Browser", "Claude browser-automation adapter. One door for every web task (open, read, click, fill, screenshot, logged-in site): the `agent-browser` CLI with an isolated profile, headless by default; canonical body below. Harness-specific invocation block comes from a private operator overlay at render time.") + `
 # Claude Browser Adapter (rendered, do not edit by hand)
 
 This adapter is rendered by ` + "`compound harness skill-adapter`" + ` from the canonical body at
@@ -162,11 +196,7 @@ This adapter is rendered by ` + "`compound harness skill-adapter`" + ` from the 
 // state is operator config; the template names it only to say it is not the
 // door for this skill, and never asserts whether it is on or off.
 func codexAdapter() HarnessAdapter {
-	header := `---
-name: Browser
-description: Codex browser-automation adapter. One door: the ` + "`agent-browser`" + ` CLI from the shell, isolated profile, headless by default. Canonical body below.
----
-
+	header := skillFrontmatter("Browser", "Codex browser-automation adapter. One door: the `agent-browser` CLI from the shell, isolated profile, headless by default. Canonical body below.") + `
 # Codex Browser Adapter (rendered, do not edit by hand)
 
 This adapter is rendered by ` + "`compound harness skill-adapter`" + ` from the canonical body at
@@ -222,11 +252,7 @@ profile registry and is not a door for logged-in or unattended work; use the com
 // for public, unprofiled pages: nothing verifies that they read the profile
 // registry, so profile-bound work stays on the CLI.
 func hermesAdapter() HarnessAdapter {
-	header := `---
-name: Browser
-description: Hermes browser-automation adapter. One door: the ` + "`agent-browser`" + ` CLI from the shell (isolated profile, headless by default). Hermes-native ` + "`browser_*`" + ` tools only for public pages. Canonical body below.
----
-
+	header := skillFrontmatter("Browser", "Hermes browser-automation adapter. One door: the `agent-browser` CLI from the shell (isolated profile, headless by default). Hermes-native `browser_*` tools only for public pages. Canonical body below.") + `
 # Hermes Browser Adapter (rendered, do not edit by hand)
 
 This adapter is rendered by ` + "`compound harness skill-adapter`" + ` from the canonical body at
