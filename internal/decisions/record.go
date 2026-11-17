@@ -139,6 +139,12 @@ func Record(store *mem.Store, homePath string, in RecordInput) (RecordReport, er
 			return RecordReport{}, fmt.Errorf("decisions record: --scope %s requires a --review-trigger revisit condition", WorktreeKeepScope)
 		}
 	}
+	var undoNames []string
+	for _, name := range strings.Split(in.UndoOf, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			undoNames = append(undoNames, name)
+		}
+	}
 	now := in.Now
 	if now.IsZero() {
 		now = time.Now()
@@ -190,8 +196,11 @@ func Record(store *mem.Store, homePath string, in RecordInput) (RecordReport, er
 		ReviewTrigger:      reviewTrigger,
 		WorktreeBranchRef:  worktreeKeepBranchRef,
 	}
-	if undoOf := strings.TrimSpace(in.UndoOf); undoOf != "" {
-		fm.Supersedes = []string{undoOf}
+	fm.Supersedes = undoNames
+	if len(undoNames) > 0 {
+		if err := checkUndoNamesKnown(store, undoNames); err != nil {
+			return RecordReport{}, err
+		}
 	}
 	fmBytes, err := yaml.Marshal(fm)
 	if err != nil {
@@ -232,4 +241,36 @@ func cleanRecordStrings(values []string) []string {
 		}
 	}
 	return out
+}
+
+// checkUndoNamesKnown refuses an --undo-of name that matches no decision claim
+// in the store (any lifecycle state, retired ones included), so a typo cannot
+// retire nothing unnoticed. A name matches a claim's decision id, claim id or
+// decision:// ref; the identity rule is mem's (DecisionCanonicalID).
+func checkUndoNamesKnown(store *mem.Store, names []string) error {
+	claims, err := store.AllCurrent()
+	if err != nil {
+		return fmt.Errorf("decisions record: read decision claims: %w", err)
+	}
+	known := map[string]bool{}
+	for _, c := range claims {
+		if c.ClaimType != "decision" {
+			continue
+		}
+		known[strings.TrimSpace(c.ID)] = true
+		known[mem.DecisionCanonicalID(c)] = true
+		if id := strings.TrimSpace(c.Qualifiers["decision_id"]); id != "" {
+			known[id] = true
+		}
+	}
+	var unknown []string
+	for _, name := range names {
+		if !known[strings.TrimSpace(strings.TrimPrefix(name, mem.DecisionRefPrefix))] {
+			unknown = append(unknown, name)
+		}
+	}
+	if len(unknown) > 0 {
+		return fmt.Errorf("decisions record: --undo-of names no known decision: %s", strings.Join(unknown, ", "))
+	}
+	return nil
 }
