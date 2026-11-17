@@ -83,7 +83,7 @@ func lessonStressSubjects(shell, nonShell bool) []lessonStressSubject {
 	lessonStressOnce.Do(func() {
 		fill := func(unit string, n int) string { return strings.Repeat(unit, n/len(unit)+1)[:n] }
 		random := make([]byte, LessonShellSubjectMaxBytes)
-		x := uint32(2463534242)
+		x := uint32(0x92d68ca2) // xorshift32 seed; written in hex because the redact gate reads the decimal form as a phone number
 		for i := range random {
 			x ^= x << 13
 			x ^= x >> 17

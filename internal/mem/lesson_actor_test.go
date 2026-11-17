@@ -48,7 +48,7 @@ func TestLessonActorIsCleanedBeforeItIsCheckedAndStored(t *testing.T) {
 		t.Fatal("a refused verb must leave the lesson current")
 	}
 
-	good := "agent:b2-test_1.0@host.example/x"
+	good := "agent:b2-test_1.0/x@lane" // every allowed punctuation mark; not an e-mail shape (redact gate)
 	res, err := write(good)
 	if err != nil || res.Claim.Qualifiers["written_by"] != good {
 		t.Fatalf("a plain name is accepted and stored as given: %q %v", res.Claim.Qualifiers["written_by"], err)
