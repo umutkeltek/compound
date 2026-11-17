@@ -465,6 +465,31 @@ time from the hook plan's lane homes, the lane registry file (`LANES_JSON`, or
 `adapters/_lib/lanes.json` in the working repository) and the folder those
 homes share; no list of homes is kept in Compound.
 
+`compound harness check` proves the map against the machine. It prints one row
+per fact (`PASS`, `FAIL`, `INFO` or `UNKNOWN`) with the file to fix, and exits 1
+on any `FAIL`:
+
+- **Context route.** The wiring file must exist, hold Compound's hook or plugin,
+  and, where the harness can say so, the harness must report it loaded
+  (`codex features list` for Codex hooks, `opencode api GET /api/plugin` for the
+  OpenCode plugin). A file that only exists never passes; a harness that does
+  not answer leaves the row `UNKNOWN`.
+- **MCP servers.** `~/.claude.json` is the owner list for the Claude family. A
+  signed-in seat whose list differs fails (it converges at its next mirrored
+  launch); a model lane that differs is `INFO`. Every active harness that
+  supports MCP must run the `compound` server. A server one family runs and
+  another does not is `INFO`, with both files.
+- **Claude permissions.** A home in bypass mode with an empty or missing
+  `permissions.deny` fails; each row also says whether the pre-tool hook is
+  absent, record-only or blocking.
+- **Skill adapters.** Each rendered skill adapter must open with strictly valid
+  YAML frontmatter.
+
+```sh
+compound harness check                     # every harness
+compound harness check --harness codex --json
+```
+
 ## Governed execution and supervised sessions
 
 ### First model route

@@ -150,6 +150,18 @@ func DiscoverClaudeHomes(src ClaudeHomeSources) []ClaudeHome {
 		}
 	}
 
+	// Two folders can share a base name (a lane at the tree root and one in the
+	// lanes folder); a row must name exactly one home, so both take their parent.
+	byName := map[string]int{}
+	for _, h := range homes {
+		byName[h.Name]++
+	}
+	for i, h := range homes {
+		if byName[h.Name] > 1 && h.Kind != ClaudeHomeDefault {
+			homes[i].Name = filepath.Base(filepath.Dir(h.Dir)) + "/" + h.Name
+		}
+	}
+
 	rank := map[string]int{ClaudeHomeDefault: 0, ClaudeHomeNative: 1, ClaudeHomeLane: 2}
 	sort.SliceStable(homes, func(i, j int) bool {
 		if rank[homes[i].Kind] != rank[homes[j].Kind] {

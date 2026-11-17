@@ -128,3 +128,19 @@ func TestDefaultClaudeHomeSourcesAsksTheHookPlanForEveryRegistryName(t *testing.
 		t.Fatalf("sources = %+v", src)
 	}
 }
+
+// A row names exactly one home, so two homes with the same folder name each
+// take their parent folder in the name.
+func TestDiscoverClaudeHomesDisambiguatesSameNamedHomes(t *testing.T) {
+	user, src := syntheticClaudeTree(t)
+	writeWiringFile(t, filepath.Join(user, "tool", "config", "claude", "lanes", "tap-lane", "settings.json"), `{}`)
+	var names []string
+	for _, h := range DiscoverClaudeHomes(src) {
+		if strings.HasSuffix(h.Name, "tap-lane") {
+			names = append(names, h.Name)
+		}
+	}
+	if strings.Join(names, ",") != "claude/tap-lane,lanes/tap-lane" {
+		t.Fatalf("same-named homes = %v", names)
+	}
+}

@@ -1290,8 +1290,8 @@ func cmdHarness(args []string) {
 	// Slice C.4: the AdapterRegistry-backed subcommands (run, executors)
 	// live in harness_exec_cli.go and dispatch before the capabilities
 	// registry is loaded -- they don't need it.
-	if target == "map" {
-		// Where each harness is wired, read from the registry's wiring facts.
+	if target == "map" || target == "check" {
+		// Where each harness is wired (map), and the live proof of it (check).
 		os.Exit(harness.RunWiringCommand(target, args[1:], hookplan.LaneHookSettingsPath, os.Stdout, os.Stderr))
 	}
 	if target == "capability-drift" {

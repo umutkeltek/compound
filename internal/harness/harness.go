@@ -975,7 +975,8 @@ func DefaultRegistry() Registry {
 
 // The wiring facts below were measured on 2026-11-18 with each harness's own
 // listing command (named in Listing). A fact nobody could verify says Unknown.
-// Change one only after the listing command shows the new state.
+// Change one only after the listing command shows the new state, and change
+// the live check that proves it (wiring_check.go) in the same commit.
 
 // claudeCodeWiring covers the whole Claude family: the default home, native
 // seats and model lanes all read the same file names inside their own home.

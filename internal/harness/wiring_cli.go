@@ -59,6 +59,8 @@ func RunWiringCommand(sub string, args []string, laneSettings LaneSettingsFunc, 
 		}
 		fmt.Fprint(stdout, out)
 		return 0
+	case "check":
+		return runWiringCheck(reg, only, homes, userHome, asJSON, stdout, stderr)
 	}
 	fmt.Fprintln(stderr, WiringUsage)
 	return 2
@@ -194,8 +196,18 @@ func foundHomesLabel(homes []ClaudeHome, userHome string) []string {
 		label := map[string]string{ClaudeHomeDefault: "default", ClaudeHomeNative: "native seats", ClaudeHomeLane: "model lanes"}[kind]
 		out = append(out, label+": "+strings.Join(byKind[kind], ", "))
 	}
-	if len(treeOrder) > 0 {
-		out = append(out, "config tree: "+strings.Join(treeOrder, ", "))
+	var roots []string
+	for _, tree := range treeOrder {
+		nested := false
+		for _, other := range treeOrder {
+			nested = nested || (other != tree && strings.HasPrefix(tree, other+"/"))
+		}
+		if !nested {
+			roots = append(roots, tree)
+		}
+	}
+	if len(roots) > 0 {
+		out = append(out, "config tree: "+strings.Join(roots, ", "))
 	}
 	return out
 }
