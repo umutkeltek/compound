@@ -113,8 +113,9 @@ def main():
         size = meta["body_size"] or 0
         if size > MAX_ROW or used_bytes+size > MAX_BYTES:
             return None
-        sql = 'SELECT * FROM "'+table+'" WHERE thread_id=? AND rollout_ordinal=?'
-        found = db.execute(sql, (meta["thread_id"],meta["rollout_ordinal"])).fetchone()
+        keys = ["thread_id","turn_id"] if table=="thread_turns" else (["thread_id","turn_id","item_id"] if table=="thread_items" else ["thread_id","item_id"])
+        sql = 'SELECT * FROM "'+table+'" WHERE '+" AND ".join('"'+key+'"=?' for key in keys)
+        found = db.execute(sql,tuple(meta[key] for key in keys)).fetchone()
         if found is None:
             raise ValueError("row disappeared inside read transaction")
         row = dict(found)
@@ -125,6 +126,7 @@ def main():
         return row
     def capture_pack(sid, table, bucket, force=False):
         nonlocal used_packs, deferred
+        force = force or states.get(sid,{}).get("epoch",epoch)<epoch
         marker = (sid,table,bucket)
         if marker in captured:
             return True

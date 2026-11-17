@@ -106,6 +106,15 @@ INSERT INTO thread_items VALUES('thread-a','turn-a','reasoning',4,1003,'{"type":
 	if changed.Captured != 1 || !strings.Contains(codexCurrentBody(t, hp, "semantic/thread-a/thread_items/0"), "Revised cedar archive") {
 		t.Fatalf("native earlier-row update lost: %+v", changed)
 	}
+	// A due reconcile verifies the large row even if an append selected its
+	// range earlier in this capture.
+	nativeSQL(t, db, `UPDATE thread_items SET item_json=replace(item_json,'xxx','yyy') WHERE item_id='large-tool'; INSERT INTO thread_items VALUES('thread-a','turn-a','tool-daily',6,1005,'{"type":"toolResult","output":"daily append"}','toolResult',6,NULL,NULL,'future'); UPDATE thread_history_projection_state SET next_rollout_ordinal=32;`)
+	captureCodex(t, hp, root, "state_5.sqlite", now.Add(24*time.Hour))
+	reconciled := codexCurrentBody(t, hp, `large/thread-a/thread_items/["turn-a","large-tool"]`)
+	if !strings.Contains(reconciled, strings.Repeat("y", 10000)) || !strings.Contains(codexCurrentBody(t, hp, "pack/thread-a/thread_items/0"), hashBytes([]byte(reconciled))) {
+		t.Fatal("append shortcut skipped due large-row reconciliation")
+	}
+
 }
 
 func TestCodexHistoryScaleBackfillAndDailyReconcileResume(t *testing.T) {

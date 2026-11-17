@@ -161,7 +161,12 @@ func CaptureCodexHistory(ctx context.Context, homePath, family, root, database, 
 		if metaPath != "" {
 			query.Set("metadata_database", filepath.ToSlash(metaPath))
 		}
-		ref := (&url.URL{Scheme: "sqlite", Path: filepath.ToSlash(path), RawQuery: query.Encode()}).String()
+		sourcePath := path
+		if row.Table == "threads" && metaPath != "" {
+			sourcePath = metaPath
+			query.Set("history_database", filepath.ToSlash(path))
+		}
+		ref := (&url.URL{Scheme: "sqlite", Path: filepath.ToSlash(sourcePath), RawQuery: query.Encode()}).String()
 		hash := hashBytes([]byte(row.Body))
 		if old, ok := current[row.Key]; ok && old.FileHash == hash {
 			if old.SourceFingerprint != row.Fingerprint {
