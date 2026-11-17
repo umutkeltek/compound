@@ -295,7 +295,7 @@ compound doctor                             # full check; also names installed h
 ```
 
 `compound init --check` exits 1 when something still needs `compound init`, so a script can use
-it. After `compound hook uninstall`, it reports that harness as `not wired` and exits 1 until you wire it again. That is the expected state, not a fault. The harness names are `claude-code`, `codex`, `opencode` and `oh-my-pi`. What each hook does,
+it. After `compound hook uninstall`, it reports that harness as `not wired` and exits 1 until you wire it again. That is the expected state, not a fault. A harness whose file is in place but which reports that it did not load Compound (an OpenCode plugin that failed to load, Codex hooks turned off) shows `not working` with the fix, and also exits 1; `compound harness check` shows every row. The harness names are `claude-code`, `codex`, `opencode` and `oh-my-pi`. What each hook does,
 isolated profiles and other harnesses are in [Harness wiring](harness-wiring.md).
 
 ## 4. Your first useful session

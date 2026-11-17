@@ -757,7 +757,7 @@ func firstLine(s string) string {
 func runWiringCheck(reg Registry, only string, homes []ClaudeHome, userHome string, asJSON bool, stdout, stderr io.Writer) int {
 	rows, err := CheckWiring(WiringCheck{
 		Registry: reg, UserHome: userHome, Homes: homes, Only: only,
-		Probe:         ExecWiringProbe(wiringProbeTimeout, userHome),
+		Probe:         ExecWiringProbe(WiringProbeTimeout, userHome),
 		SkillAdapters: RenderedSkillAdapterPaths(),
 	})
 	if err != nil {
@@ -780,8 +780,8 @@ func runWiringCheck(reg Registry, only string, homes []ClaudeHome, userHome stri
 	return 0
 }
 
-// wiringProbeTimeout bounds each harness report command.
-const wiringProbeTimeout = 20 * time.Second
+// WiringProbeTimeout bounds each harness report command the check runs.
+const WiringProbeTimeout = 20 * time.Second
 
 // maxListedHomes caps the homes one PASS or INFO line names.
 const maxListedHomes = 6

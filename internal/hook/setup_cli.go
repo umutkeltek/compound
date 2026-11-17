@@ -18,6 +18,7 @@ import (
 	"compound/internal/contract"
 	"compound/internal/envelope"
 	"compound/internal/eventstore"
+	"compound/internal/harness"
 	"compound/internal/home"
 	"compound/internal/hookplan"
 )
@@ -36,7 +37,8 @@ const (
 	InitUsage = "usage: compound init [--harness claude-code|codex|opencode|oh-my-pi] [--check] [--base DIR] [--binary PATH]\n" +
 		"  sets Compound up for this user: creates the Compound home if it is missing, wires the hooks of every\n" +
 		"  supported harness found here (Claude Code, Codex, OpenCode, oh-my-pi), and checks that `compound` is on PATH.\n" +
-		"  --check only reports; it changes nothing and exits 1 when something still needs `compound init`."
+		"  --check only reports; it changes nothing and exits 1 when something still needs `compound init`\n" +
+		"  or a wired harness reports that it did not load Compound (the same rows `compound harness check` prints)."
 	ReceiptUsage = "usage: compound receipt last [--json] [--home PATH]\n" +
 		"  shows the newest receipt: what the last session (or closed work item) did, and where its transcript is."
 )
@@ -227,7 +229,7 @@ func RunInitCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", err)
 		return 2
 	}
-	needsInit := false
+	needsInit, notWorking := false, false
 
 	homePath, err := home.Resolve("")
 	if err != nil {
@@ -287,7 +289,16 @@ func RunInitCommand(args []string, stdout, stderr io.Writer) int {
 		default:
 			state := map[string]string{"installed": "wired", "updated": "wired (updated)", "ok": "already wired", "absent": "not wired", "drift": "needs an update"}[e.Action]
 			if o.check && e.Action == "ok" {
-				state = "wired"
+				// The installed file matches; whether the route is alive is the
+				// harness check's answer, so a plugin the harness failed to load
+				// cannot read as wired.
+				line, fix, broken := liveWiredLine(o, h, e.ConfigPath)
+				fmt.Fprintf(stdout, "%s: %s\n", h.Label, line)
+				if fix != "" {
+					fmt.Fprintf(stdout, "  fix: %s\n", fix)
+				}
+				notWorking = notWorking || broken
+				continue
 			}
 			needsInit = needsInit || (o.check && e.Action != "ok")
 			fmt.Fprintf(stdout, "%s: %s (%s)\n", h.Label, state, e.ConfigPath)
@@ -302,6 +313,8 @@ func RunInitCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "\nNo supported harness found. Install Claude Code, Codex, OpenCode or oh-my-pi, open it once, then run `compound init` again.")
 	case o.check && needsInit:
 		fmt.Fprintln(stdout, "\nRun `compound init` to finish.")
+	case o.check && notWorking:
+		fmt.Fprintln(stdout, "\nA harness is wired but its route is not working; follow the fix above. Every row: compound harness check")
 	case !o.check:
 		next := wire[0] // the harness this run wired, else the first one already wired
 		for _, name := range wire {
@@ -318,10 +331,46 @@ func RunInitCommand(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stdout, "Check: compound init --check   Last session: compound receipt last   Undo: compound hook uninstall --harness %s\n", next)
 	}
-	if needsInit {
+	if needsInit || notWorking {
 		return 1
 	}
 	return 0
+}
+
+// liveWiredLine is the `init --check` line for a harness whose installed file
+// matches: the context-route row of the same check `compound harness check`
+// runs. A FAIL row is not wired however good the file looks; an UNKNOWN row
+// stays wired but says it was not verified.
+func liveWiredLine(o *setupOptions, h hookplan.SetupHarness, configPath string) (line, fix string, broken bool) {
+	line = "wired (" + configPath + ")"
+	if o.scope != "global" {
+		return line, "", false
+	}
+	reg := harness.DefaultRegistry()
+	entry, ok := reg.Get(h.Name)
+	if !ok || entry.Wiring == nil {
+		return line, "", false
+	}
+	rows, err := harness.CheckWiring(harness.WiringCheck{
+		Registry: reg, UserHome: o.base, Only: entry.Name,
+		Probe: harness.ExecWiringProbe(harness.WiringProbeTimeout, o.base),
+	})
+	if err != nil {
+		return line + "; not verified: " + err.Error(), "", false
+	}
+	for _, row := range rows {
+		if row.Fact != harness.FactContext || (row.Home != "" && row.Home != harness.ClaudeHomeDefault) {
+			continue
+		}
+		switch row.Status {
+		case harness.WiringFail:
+			return "not working: " + row.Found + " (" + row.Path + ")", row.Fix, true
+		case harness.WiringUnknownRow:
+			return line + "; not verified: " + row.Found, "", false
+		}
+		return line, "", false
+	}
+	return line, "", false
 }
 
 // bindsEvent reports whether an install entry wired the named native event.
