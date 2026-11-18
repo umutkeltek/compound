@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -45,8 +46,11 @@ func cmdDoctor(args []string) {
 
 type doctorHook struct {
 	Harness    string `json:"harness"`
-	Status     string `json:"status"` // installed|ok|drift|absent
+	Status     string `json:"status"` // installed|ok|drift|absent|error
 	ConfigPath string `json:"config_path"`
+	// Selector is the `hook install --harness` value that wires this row when
+	// `compound init` does not (the record-only model lanes).
+	Selector string `json:"selector,omitempty"`
 }
 
 // doctorPermissionPosture is one harness's read-only permission-authority
@@ -296,8 +300,13 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 			rep.HookHint = "could not read harness configs: " + herr.Error()
 		} else {
 			for _, e := range hookRep.Entries { // only harnesses this machine has (a profile folder or installed hooks)
-				if e.Action != "absent" || hookplan.HarnessConfigPresent(base, e.Harness, "") {
-					rep.Hooks = append(rep.Hooks, doctorHook{Harness: e.Harness, Status: e.Action, ConfigPath: e.ConfigPath})
+				if e.Action != "absent" || e.Selector != "" || hookplan.HarnessConfigPresent(base, e.Harness, "") {
+					rep.Hooks = append(rep.Hooks, doctorHook{Harness: e.Harness, Status: e.Action, ConfigPath: e.ConfigPath, Selector: e.Selector})
+				}
+			}
+			for _, p := range hookRep.LaneProblems { // an unreadable lane file is a row, not a lost section
+				if p.State == hookplan.LaneStateError {
+					rep.Hooks = append(rep.Hooks, doctorHook{Harness: firstNonEmpty(p.Label, hookplan.ProviderLanesHarness), Status: p.State, ConfigPath: p.ConfigPath, Selector: hookplan.ProviderLanesHarness})
 				}
 			}
 		}
@@ -314,16 +323,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	if len(rep.Hooks)+len(rep.HookFiles) > 0 {
 		rep.HookHint = ""
 	}
-	for _, h := range append(append([]doctorHook(nil), rep.Hooks...), rep.HookFiles...) {
-		if h.Status == "absent" || h.Status == "drift" {
-			rep.HookHint = "run `compound init` to wire them"
-			break
-		}
-		if h.Status == "foreign" {
-			rep.HookHint = "a file Compound did not write sits at a hook path; move it aside, then run `compound init`"
-			break
-		}
-	}
+	rep.HookHint = firstNonEmpty(doctorHookWireHint(append(append([]doctorHook(nil), rep.Hooks...), rep.HookFiles...)), rep.HookHint)
 
 	// 1b) Hook enforcement — the check above proves the config names Compound's command; this
 	// proves the binary behind that command still refuses a mutation. A wired-but-no-op gate is
@@ -1385,4 +1385,30 @@ func surfacingAge(d time.Duration) string {
 	default:
 		return fmt.Sprintf("%dd", int(d/(24*time.Hour)))
 	}
+}
+
+// doctorHookWireHint names the command that wires each unwired row: `compound init` for
+// the harnesses it sets up, and the row's own selector for the model lanes init never
+// wires. A foreign file met before any unwired row keeps its own hint.
+func doctorHookWireHint(hooks []doctorHook) string {
+	var wire []string
+	for _, h := range hooks {
+		if h.Status == "foreign" && len(wire) == 0 {
+			return "a file Compound did not write sits at a hook path; move it aside, then run `compound init`"
+		}
+		if h.Status != "absent" && h.Status != "drift" && h.Status != hookplan.LaneStateError {
+			continue
+		}
+		command := "`compound init`"
+		if h.Selector != "" {
+			command = "`compound hook install --harness " + h.Selector + "`"
+		}
+		if !slices.Contains(wire, command) {
+			wire = append(wire, command)
+		}
+	}
+	if len(wire) == 0 {
+		return ""
+	}
+	return "run " + strings.Join(wire, " and ") + " to wire them"
 }
