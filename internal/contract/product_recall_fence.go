@@ -338,7 +338,14 @@ func productEntitiesForClaim(fence productRecallFence, claim mem.Claim) (map[str
 		}
 	}
 	entity := strings.TrimSpace(claim.Entity)
-	add(entity, strings.HasPrefix(strings.ToLower(entity), "product:"))
+	// A fully qualified ledger entity already names its owner. Normalizing its
+	// separators here can turn that single owner into two different products.
+	// Cross-references below must still resolve independently.
+	if exact := fence.products.canonical[canonicalProductEntityKey(entity)]; len(exact) == 1 {
+		associated[exact[0]] = true
+	} else {
+		add(entity, strings.HasPrefix(strings.ToLower(entity), "product:"))
+	}
 	if alias, ok := structuralProductEntityAlias(entity); ok {
 		add(alias, false)
 	}
