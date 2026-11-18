@@ -17,11 +17,10 @@ import (
 	"time"
 )
 
-// This is a frozen synthetic test prerequisite, not a reproducible source
-// build. It contains Linux PG17, Python, sudo and a root-owned Docker CLI.
-// Mounted PostgreSQL data and the Docker socket were excluded from the freeze.
-// Every test copies its current sealed source into a new disposable container.
-const credentialAlignmentPrerequisiteImage = "sha256:e9851137192b495dcc67f03d032446a0bfeca905351b4065ba214173dac9a5fa"
+// The classic image store addresses the frozen linux/amd64 image by config.
+// The containerd store addresses its offline import by the OCI manifest.
+const credentialAlignmentImageConfig = "sha256:0f1fdc9bee7d75929baf8def8a5ee96d443e2466368856cff981f7c569ea68b8"
+const credentialAlignmentImageManifest = "sha256:55f66e6004016464ed6fe353783bed9d6de4af03ff736ccc9e4d0a24b0197c56"
 const credentialAlignmentDockerHost = "unix:///var/run/docker.sock"
 const credentialAlignmentReportLimit = 4 << 20
 const credentialAlignmentProofMode = "credential-password-alignment-native"
@@ -76,14 +75,34 @@ func credentialAlignmentDocker(args ...string) []string {
 	return append([]string{"docker", "--host", credentialAlignmentDockerHost}, args...)
 }
 
+func credentialAlignmentLocalImage(ctx context.Context, run credentialAlignmentCommandRunner, environment []string, stderr io.Writer) (string, error) {
+	var diagnostics bytes.Buffer
+	for _, id := range []string{credentialAlignmentImageConfig, credentialAlignmentImageManifest} {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		var metadata bytes.Buffer
+		args := credentialAlignmentDocker("image", "inspect", "--format", "{{.Id}} {{.Os}}/{{.Architecture}}", id)
+		if err := run(ctx, args, environment, &metadata, &diagnostics); err != nil {
+			continue
+		}
+		if strings.TrimSpace(metadata.String()) != id+" linux/amd64" {
+			return "", errors.New("credential-alignment prerequisite identity or platform differs")
+		}
+		return id, nil
+	}
+	_, _ = stderr.Write(diagnostics.Bytes())
+	return "", errors.New("frozen credential-alignment prerequisite image absent; recover it using docs/architecture/contracts/closed-credential-password-alignment.md")
+}
+
 func runCredentialAlignmentProof(ctx context.Context, run credentialAlignmentCommandRunner, stdout, stderr io.Writer) (result error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	environment := credentialAlignmentEnvironment("")
-	var image bytes.Buffer
-	if err := run(ctx, credentialAlignmentDocker("image", "inspect", "--format", "{{.Id}}", credentialAlignmentPrerequisiteImage), environment, &image, stderr); err != nil || strings.TrimSpace(image.String()) != credentialAlignmentPrerequisiteImage {
-		return errors.New("frozen credential-alignment prerequisite image absent or different; proof never pulls or installs prerequisites")
+	image, err := credentialAlignmentLocalImage(ctx, run, environment, stderr)
+	if err != nil {
+		return err
 	}
 	var tokenBytes [16]byte
 	if _, err := rand.Read(tokenBytes[:]); err != nil {
@@ -99,13 +118,13 @@ func runCredentialAlignmentProof(ctx context.Context, run credentialAlignmentCom
 		result = errors.Join(result, cleanupCredentialAlignmentFixture(context.WithoutCancel(ctx), run, environment, name, token, workLabel, containerID, stderr))
 	}()
 	var started bytes.Buffer
-	args := credentialAlignmentDocker("run", "--pull", "never", "--detach", "--name", name,
+	args := credentialAlignmentDocker("run", "--pull", "never", "--platform", "linux/amd64", "--detach", "--name", name,
 		"--label", "compound.credential-alignment-fixture="+token,
 		"--label", "compound.work="+workLabel,
 		"--network", "none", "--hostname", name, "--add-host", name+":127.0.0.1",
 		"--memory", "512m", "--cpus", "2", "--pids-limit", "256",
 		"--mount", "type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock,readonly",
-		"--env", "POSTGRES_HOST_AUTH_METHOD=trust", credentialAlignmentPrerequisiteImage)
+		"--env", "POSTGRES_HOST_AUTH_METHOD=trust", image)
 	if err := run(ctx, args, environment, &started, stderr); err != nil {
 		return fmt.Errorf("create owned credential-alignment fixture: %w", err)
 	}
@@ -151,7 +170,7 @@ func runCredentialAlignmentProof(ctx context.Context, run credentialAlignmentCom
 	if err := errors.Join(runErr, report.err, validateCredentialAlignmentReport(report.Bytes())); err != nil {
 		return fmt.Errorf("required native credential-alignment consumers failed: %w", err)
 	}
-	_, err := fmt.Fprintf(stdout, "credential-alignment-native: passed=%d skipped=0 frozen-prerequisite=%s\n", len(credentialAlignmentRequiredTests), credentialAlignmentPrerequisiteImage)
+	_, err = fmt.Fprintf(stdout, "credential-alignment-native: passed=%d skipped=0 frozen-prerequisite=%s\n", len(credentialAlignmentRequiredTests), image)
 	return err
 }
 
