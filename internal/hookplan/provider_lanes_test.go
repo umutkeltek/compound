@@ -93,7 +93,7 @@ func TestDiscoverProviderLanesResolvesRegisteredNamesFromTheMachine(t *testing.T
 		"deepseek-flash-api":            "claude_deepseek_flash_api",
 		"gateway-deepseek-flash-nvidia": "claude_deepseek_flash_nvidia",
 		"gateway-neuralwatt":            "claude_neuralwatt",
-		"gateway-unlisted-local":        "claude_code",
+		"gateway-unlisted-local":        "",
 		"gpt56-sol-codex":               "claude_gpt",
 		"kimi":                          "claude_kimi",
 	}
@@ -108,6 +108,12 @@ func TestDiscoverProviderLanesResolvesRegisteredNamesFromTheMachine(t *testing.T
 		if lane.Harness != name {
 			t.Fatalf("lane %s resolved to %q, want %q", label, lane.Harness, name)
 		}
+		if name == "" {
+			if lane.NotWired == "" {
+				t.Fatalf("lane %s has no name and must say why it is not wired", label)
+			}
+			continue
+		}
 		if _, registered := harness.DefaultRegistry().Harnesses[name]; !registered {
 			t.Fatalf("lane %s resolved to unregistered name %q", label, name)
 		}
@@ -120,8 +126,8 @@ func TestDiscoverProviderLanesResolvesRegisteredNamesFromTheMachine(t *testing.T
 	}
 }
 
-// Without the launcher's launch profiles file, a folder whose own name is not registered takes
-// the generic Claude posture instead of borrowing another lane's registered name.
+// Without the launcher's launch profiles file, a folder whose own name is not registered is
+// not wired, instead of borrowing another lane's registered name or claude_code.
 func TestDiscoverProviderLanesWithoutLaunchProfilesDoesNotGuess(t *testing.T) {
 	base := providerLaneFixture(t, false)
 	lanes, err := DiscoverProviderLanes(base, harness.DefaultRegistry())
@@ -129,8 +135,8 @@ func TestDiscoverProviderLanesWithoutLaunchProfilesDoesNotGuess(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := providerLaneByLabel(t, lanes)
-	if name := got["gpt56-sol-codex"].Harness; name != "claude_code" {
-		t.Fatalf("gpt56-sol-codex resolved to %q without a launch profile naming it, want claude_code", name)
+	if lane := got["gpt56-sol-codex"]; lane.Harness != "" || lane.NotWired == "" {
+		t.Fatalf("gpt56-sol-codex without a launch profile naming it = %+v, want not wired", lane)
 	}
 	if name := got["gateway-neuralwatt"].Harness; name != "claude_neuralwatt" {
 		t.Fatalf("gateway-neuralwatt = %q, want claude_neuralwatt from the gateway-<lane> folder name", name)
@@ -156,8 +162,8 @@ func TestInstallProviderLanesIsRecordOnlyAndKeepsOtherSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(check.Entries) != 6 {
-		t.Fatalf("check entries = %+v, want all six lanes", check.Entries)
+	if len(check.Entries) != 5 || len(check.LaneProblems) != 1 {
+		t.Fatalf("check entries = %+v problems = %+v, want five lanes and one not wired", check.Entries, check.LaneProblems)
 	}
 	for _, entry := range check.Entries {
 		if entry.Action != "absent" && entry.Action != "drift" {
@@ -214,22 +220,18 @@ func TestInstallProviderLanesIsRecordOnlyAndKeepsOtherSettings(t *testing.T) {
 	if after, _ := os.ReadFile(filepath.Join(root, "zai-lane", "settings.json")); string(after) != string(before["zai-lane"]) {
 		t.Fatal("provider-lane install touched the governed zai lane")
 	}
-	// A lane with no registry row of its own records as the generic Claude posture.
-	generic := hookInstallEntryForHarness(t, report, "claude_code")
-	if !strings.HasSuffix(generic.ConfigPath, filepath.Join("gateway-unlisted-local", "settings.json")) {
-		t.Fatalf("generic lane entry = %+v", generic)
+	// A lane with no registered name of its own is not wired: never claude_code, the
+	// operator's own seats, and its settings stay as they were.
+	if len(report.LaneProblems) != 1 || report.LaneProblems[0].Label != "gateway-unlisted-local" || report.LaneProblems[0].State != LaneStateNotWired {
+		t.Fatalf("lane problems = %+v, want gateway-unlisted-local not wired", report.LaneProblems)
 	}
-	for _, binding := range generic.Bindings {
-		if binding.Blocking || strings.Contains(binding.Command, "--enforce") {
-			t.Fatalf("generic lane got a blocking binding: %+v", binding)
+	for _, entry := range report.Entries {
+		if entry.Harness == "claude_code" || strings.Contains(entry.ConfigPath, "gateway-unlisted-local") {
+			t.Fatalf("a lane without a name of its own was wired: %+v", entry)
 		}
 	}
-	genericCommands := readJSONMap(t, filepath.Join(root, "gateway-unlisted-local", "settings.json"))
-	if got := commandsFor(t, genericCommands, "SessionEnd"); len(got) != 1 || got[0] != "'/usr/local/bin/compound' hook session-end-adapter --live --harness claude_code" {
-		t.Fatalf("generic lane SessionEnd = %v", got)
-	}
-	if got := commandsFor(t, genericCommands, "PreToolUse"); len(got) != 1 || got[0] != "'/usr/local/bin/compound' hook pre-tool-use --live --harness claude_code --spool" {
-		t.Fatalf("generic lane PreToolUse = %v", got)
+	if got := commandsFor(t, readJSONMap(t, filepath.Join(root, "gateway-unlisted-local", "settings.json")), "PreToolUse"); len(got) != 0 {
+		t.Fatalf("not-wired lane got hooks: %v", got)
 	}
 
 	again, err := InstallHooksWithRoster(base, providerLaneTestBinary, "global", []string{ProviderLanesHarness}, "", nil, true, nil)
@@ -350,6 +352,12 @@ func TestEveryDerivedProviderLaneNameHasTheRecordOnlyFloor(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, lane := range lanes {
+			if lane.NotWired != "" {
+				continue
+			}
+			if lane.Harness == "claude_code" {
+				t.Errorf("lane %s records under claude_code, the operator's own seats", lane.Label)
+			}
 			for _, event := range []string{"SessionStart", "PostToolUse", "SessionEnd"} {
 				if !reg.Supports(lane.Harness, event) {
 					t.Errorf("lane %s reports as %s, which does not support %s", lane.Label, lane.Harness, event)

@@ -330,6 +330,9 @@ type HookInstallEntry struct {
 	Bindings       []HookInstallBinding `json:"bindings"`
 	Matcher        string               `json:"matcher"` // blocking guard matcher; empty for observation-only posture
 	Command        string               `json:"command"` // blocking guard command; empty for observation-only posture
+	// Selector is the `hook install --harness` value that writes this entry when it is
+	// not Harness itself: ProviderLanesHarness for a record-only lane home.
+	Selector string `json:"selector,omitempty"`
 }
 
 // HookInstallReport is the full install/check result.
@@ -337,6 +340,8 @@ type HookInstallReport struct {
 	Check   bool               `json:"check"`
 	Scope   string             `json:"scope"`
 	Entries []HookInstallEntry `json:"entries"`
+	// LaneProblems are record-only lane homes this run did not wire (see HookLaneProblem).
+	LaneProblems []HookLaneProblem `json:"lane_problems,omitempty"`
 }
 
 // InstallHooks writes (or, with check=true, only reports) Compound bindings into each requested
@@ -457,11 +462,7 @@ func installHooksImpl(
 	// Record-only provider lanes: every other launcher profile found under baseDir. A named
 	// harness or a config-dir override selects one profile, so neither reaches them.
 	if strings.TrimSpace(configDir) == "" && (len(want) == 0 || want[ProviderLanesHarness]) {
-		lanes, err := DiscoverProviderLanes(baseDir, harness.DefaultRegistry())
-		if err != nil {
-			return report, err
-		}
-		for _, lane := range lanes {
+		for _, lane := range wirableProviderLanes(baseDir, &report) {
 			var desired []desiredHookBinding
 			for _, binding := range providerLaneBindings(binaryPath, lane.Harness) {
 				if allowedEvents == nil || allowedEvents[binding.Event] {
@@ -470,10 +471,13 @@ func installHooksImpl(
 			}
 			staged, bindings, installedTimeouts, err := prepareHookBindings(lane.Harness, lane.ConfigPath, desired, check)
 			if err != nil {
-				return report, fmt.Errorf("%s (%s): %w", lane.Harness, lane.Label, err)
+				laneProblem(&report, lane, err)
+				continue
 			}
 			prepared = append(prepared, staged)
-			report.Entries = append(report.Entries, installedHookEntry(lane.Harness, lane.ConfigPath, staged, bindings, installedTimeouts))
+			entry := installedHookEntry(lane.Harness, lane.ConfigPath, staged, bindings, installedTimeouts)
+			entry.Selector = ProviderLanesHarness
+			report.Entries = append(report.Entries, entry)
 		}
 	}
 	if check {

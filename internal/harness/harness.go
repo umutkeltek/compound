@@ -974,7 +974,7 @@ func DefaultRegistry() Registry {
 // ProviderLaneName reports whether name is one the hook plan's record-only lane
 // set can report a lane home's hooks as (hookplan.DiscoverProviderLanes): a
 // registered Claude lane launched through the lane wrapper, other than
-// claude_code, the generic posture a lane with no row of its own falls back to.
+// claude_code, which belongs to the operator's own seats and never to a lane home.
 // The hook plan and the capability floor below share this test, so a name the
 // plan can derive is exactly a name that can get the floor.
 func (r Registry) ProviderLaneName(name string) bool {

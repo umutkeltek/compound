@@ -6,8 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"compound/internal/harness"
 )
 
 // setup.go holds what `compound init`, `compound hook uninstall` and the doctor's hook section
@@ -213,16 +211,13 @@ func UninstallHooks(
 		report.Entries = append(report.Entries, entry)
 	}
 	if strings.TrimSpace(configDir) == "" && (len(want) == 0 || want[ProviderLanesHarness]) {
-		lanes, err := DiscoverProviderLanes(baseDir, harness.DefaultRegistry())
-		if err != nil {
-			return report, err
-		}
-		for _, lane := range lanes {
+		for _, lane := range wirableProviderLanes(baseDir, &report) {
 			staged, _, _, err := prepareHookBindings(lane.Harness, lane.ConfigPath, nil, check)
 			if err != nil {
-				return report, fmt.Errorf("%s (%s): %w", lane.Harness, lane.Label, err)
+				laneProblem(&report, lane, err)
+				continue
 			}
-			entry := HookInstallEntry{Harness: lane.Harness, ConfigPath: lane.ConfigPath, ConfigRevision: hookConfigRevision(staged.after), Action: "absent"}
+			entry := HookInstallEntry{Harness: lane.Harness, ConfigPath: lane.ConfigPath, ConfigRevision: hookConfigRevision(staged.after), Action: "absent", Selector: ProviderLanesHarness}
 			if staged.action != "ok" {
 				entry.Action = "removed"
 				if check {

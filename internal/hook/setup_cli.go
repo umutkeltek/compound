@@ -163,6 +163,15 @@ func RunInstallCommand(args []string, stdout, stderr io.Writer) int {
 	if !o.check && !o.json {
 		fmt.Fprintln(stdout, "\ninteractive Codex/Claude PreToolUse is observation-only; isolated executor profiles use explicit enforcement, or --enforce-governed (blocks only inside governed runs) where the lane was watch-only.")
 	}
+	return laneExit(strings.TrimSpace(*harnessFlag), report)
+}
+
+// laneExit fails the run on an unreadable lane home only when the record-only lane set
+// was named on its own; with every harness, one bad lane file is a row, not a failure.
+func laneExit(harnessFlag string, report hookplan.HookInstallReport) int {
+	if harnessFlag == hookplan.ProviderLanesHarness && report.HasLaneErrors() {
+		return 1
+	}
 	return 0
 }
 
@@ -196,7 +205,7 @@ func RunUninstallCommand(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	printHookReport(stdout, o.json, "hook uninstall", report)
-	return 0
+	return laneExit(strings.TrimSpace(*harnessFlag), report)
 }
 
 func printHookReport(stdout io.Writer, asJSON bool, head string, report hookplan.HookInstallReport) {
@@ -211,6 +220,17 @@ func printHookReport(stdout io.Writer, asJSON bool, head string, report hookplan
 			fmt.Fprintln(stdout, line)
 		} else {
 			fmt.Fprintf(stdout, "%s [%s]\n", line, e.Matcher)
+		}
+	}
+	for _, p := range report.LaneProblems {
+		name := p.Label
+		if name == "" {
+			name = hookplan.ProviderLanesHarness
+		}
+		if p.ConfigPath != "" {
+			fmt.Fprintf(stdout, "- %s: %s -> %s (%s)\n", name, p.State, p.ConfigPath, p.Detail)
+		} else {
+			fmt.Fprintf(stdout, "- %s: %s (%s)\n", name, p.State, p.Detail)
 		}
 	}
 }
