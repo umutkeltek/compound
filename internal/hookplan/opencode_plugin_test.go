@@ -21,9 +21,16 @@ func TestEmbeddedOpenCodePluginMatchesAdapterSource(t *testing.T) {
 	if !strings.HasPrefix(openCodePluginSource, OpenCodePluginMarker+"\n") {
 		t.Fatal("the plugin must start with the ownership marker line")
 	}
-	for _, want := range []string{`"session-start"`, `"user-prompt-submit"`, `"post-tool-use"`, `"--harness", "opencode"`, `"session.created"`, `"chat.message"`, `"tool.execute.after"`} {
+	for _, want := range []string{`"session-start"`, `"user-prompt-submit"`, `"post-tool-use"`, `"--harness", "opencode"`, `"session.created"`, `api.session.hook("prompt"`, `api.session.hook("context"`, `api.tool.hook("execute.after"`, `id: "compound"`, `setup: async`, `export default CompoundPlugin`} {
 		if !strings.Contains(openCodePluginSource, want) {
 			t.Fatalf("plugin no longer carries %s", want)
+		}
+	}
+	// OpenCode 2.x refuses a bare plugin function as the default export, and the lane is
+	// record-only: the plugin must never register a callback that could deny a tool call.
+	for _, banned := range []string{`hook("execute.before"`, `"tool.execute.before"`, `"chat.message"`, `export default async`, `): Plugin {`} {
+		if strings.Contains(openCodePluginSource, banned) {
+			t.Fatalf("plugin carries %s", banned)
 		}
 	}
 }

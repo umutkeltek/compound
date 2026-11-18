@@ -59,10 +59,10 @@ func ResolveInstallRequest(laneFile, harnessFlag, rosterFlag, configDir string) 
 	} else {
 		switch strings.TrimSpace(harnessFlag) {
 		case "", "all":
-		case "claude-code", "claude-zai", "claude-minimax", "claude-qwen", "claude-unattended", "codex", "oh-my-pi", "opencode":
+		case "claude-code", "claude-zai", "claude-minimax", "claude-qwen", "claude-unattended", "codex", "oh-my-pi", "opencode", ProviderLanesHarness:
 			harnesses = []string{strings.TrimSpace(harnessFlag)}
 		default:
-			return InstallRequest{}, fmt.Errorf("--harness must be claude-code, claude-zai, claude-minimax, claude-qwen, claude-unattended, codex, oh-my-pi, opencode, or all")
+			return InstallRequest{}, fmt.Errorf("--harness must be claude-code, claude-zai, claude-minimax, claude-qwen, claude-unattended, codex, oh-my-pi, opencode, %s, or all", ProviderLanesHarness)
 		}
 	}
 	allowedEvents, err := rosterEvent(roster)

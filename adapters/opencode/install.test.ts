@@ -24,7 +24,7 @@ test("installer backs up and registers the local plugin without clobbering other
     return {
       mutation_ready: false,
       intentions: [
-        { intention: "prepare_context", disposition: "native", native_events: ["chat.message"] },
+        { intention: "prepare_context", disposition: "native", native_events: ["session.context"] },
         {
           intention: "guard_mutation",
           disposition: "unsupported",
@@ -82,7 +82,7 @@ test("installer refuses adapter drift before writing config", async () => {
       compilePosture: async () => ({
         mutation_ready: true,
         intentions: [
-          { intention: "prepare_context", disposition: "native", native_events: ["chat.message"] },
+          { intention: "prepare_context", disposition: "native", native_events: ["session.context"] },
           {
             intention: "guard_mutation",
             disposition: "native",

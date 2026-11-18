@@ -355,7 +355,7 @@ func TestCompileSemanticPostureThroughOpenCodeAdapterKeepsBlockingGapExplicit(t 
 	if compiled.MutationReady {
 		t.Fatalf("OpenCode cannot deny before tool execution and must not become mutation-ready: %+v", compiled)
 	}
-	assertCompiledIntention(t, compiled, IntentionPrepareContext, DispositionNative, []string{"chat.message"})
+	assertCompiledIntention(t, compiled, IntentionPrepareContext, DispositionNative, []string{"session.context"})
 	assertCompiledIntention(t, compiled, IntentionGuardMutation, DispositionUnsupported, nil)
 	assertCompiledIntention(t, compiled, IntentionObserveOutcome, DispositionNative, []string{"tool.execute.after"})
 

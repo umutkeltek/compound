@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"compound/internal/harness"
 )
 
 // setup.go holds what `compound init`, `compound hook uninstall` and the doctor's hook section
@@ -209,6 +211,31 @@ func UninstallHooks(
 			changed.Entries = append(changed.Entries, entry)
 		}
 		report.Entries = append(report.Entries, entry)
+	}
+	if strings.TrimSpace(configDir) == "" && (len(want) == 0 || want[ProviderLanesHarness]) {
+		lanes, err := DiscoverProviderLanes(baseDir, harness.DefaultRegistry())
+		if err != nil {
+			return report, err
+		}
+		for _, lane := range lanes {
+			staged, _, _, err := prepareHookBindings(lane.Harness, lane.ConfigPath, nil, check)
+			if err != nil {
+				return report, fmt.Errorf("%s (%s): %w", lane.Harness, lane.Label, err)
+			}
+			entry := HookInstallEntry{Harness: lane.Harness, ConfigPath: lane.ConfigPath, ConfigRevision: hookConfigRevision(staged.after), Action: "absent"}
+			if staged.action != "ok" {
+				entry.Action = "removed"
+				if check {
+					entry.Action = "would remove"
+				}
+				for _, binding := range providerLaneBindings(binaryPath, lane.Harness) {
+					entry.Bindings = append(entry.Bindings, HookInstallBinding{Event: binding.Event, Matcher: binding.Matcher, Command: binding.Command, Blocking: binding.Blocking})
+				}
+				prepared = append(prepared, staged)
+				changed.Entries = append(changed.Entries, entry)
+			}
+			report.Entries = append(report.Entries, entry)
+		}
 	}
 	if !check && len(prepared) > 0 {
 		if publish != nil {

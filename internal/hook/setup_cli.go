@@ -30,9 +30,10 @@ import (
 // has always used.
 
 const (
-	HookInstallUsage = "usage: compound hook install [--lane-file lane.yaml | --harness claude-code|claude-zai|claude-minimax|claude-qwen|claude-unattended|codex|opencode|oh-my-pi|all] [--roster minimal|full] [--scope global|project] [--config-dir DIR] [--base DIR] [--binary PATH] [--check] [--json]\n" +
-		"  --scope project wires the current project (its .claude local settings file) unless --base names another folder."
-	HookUninstallUsage = "usage: compound hook uninstall [--harness claude-code|claude-zai|claude-minimax|claude-qwen|claude-unattended|codex|opencode|oh-my-pi|all] [--scope global|project] [--config-dir DIR] [--base DIR] [--check] [--json]\n" +
+	HookInstallUsage = "usage: compound hook install [--lane-file lane.yaml | --harness claude-code|claude-zai|claude-minimax|claude-qwen|claude-unattended|claude-provider-lanes|codex|opencode|oh-my-pi|all] [--roster minimal|full] [--scope global|project] [--config-dir DIR] [--base DIR] [--binary PATH] [--check] [--json]\n" +
+		"  --scope project wires the current project (its .claude local settings file) unless --base names another folder.\n" +
+		"  claude-provider-lanes (also part of all) gives every other launcher Claude profile a record-only hook set."
+	HookUninstallUsage = "usage: compound hook uninstall [--harness claude-code|claude-zai|claude-minimax|claude-qwen|claude-unattended|claude-provider-lanes|codex|opencode|oh-my-pi|all] [--scope global|project] [--config-dir DIR] [--base DIR] [--check] [--json]\n" +
 		"  removes only Compound's hook entries (or, for OpenCode and oh-my-pi, Compound's own hook file); every other setting and hook stays as it was."
 	InitUsage = "usage: compound init [--harness claude-code|codex|opencode|oh-my-pi] [--check] [--base DIR] [--binary PATH]\n" +
 		"  sets Compound up for this user: creates the Compound home if it is missing, wires the hooks of every\n" +
@@ -181,10 +182,10 @@ func RunUninstallCommand(args []string, stdout, stderr io.Writer) int {
 	var harnesses []string
 	switch h := strings.TrimSpace(*harnessFlag); h {
 	case "", "all":
-	case "claude-code", "claude-zai", "claude-minimax", "claude-qwen", "claude-unattended", "codex", "opencode", "oh-my-pi":
+	case "claude-code", "claude-zai", "claude-minimax", "claude-qwen", "claude-unattended", hookplan.ProviderLanesHarness, "codex", "opencode", "oh-my-pi":
 		harnesses = []string{h}
 	default:
-		fmt.Fprintf(stderr, "error: --harness must be claude-code, claude-zai, claude-minimax, claude-qwen, claude-unattended, codex, opencode, oh-my-pi, or all\n%s\n", HookUninstallUsage)
+		fmt.Fprintf(stderr, "error: --harness must be claude-code, claude-zai, claude-minimax, claude-qwen, claude-unattended, %s, codex, opencode, oh-my-pi, or all\n%s\n", hookplan.ProviderLanesHarness, HookUninstallUsage)
 		return 2
 	}
 	report, err := withHookAuthority(o, func(publish func(hookplan.HookInstallReport) error) (hookplan.HookInstallReport, error) {

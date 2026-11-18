@@ -18,7 +18,7 @@ needs this profile-local link.
 Run against an explicit profile directory:
 
 ```sh
-adapters/claude-zai/install.sh --profile-dir "${HOME}/.switchback/config/claude/zai-direct"
+adapters/claude-zai/install.sh --profile-dir "${HOME}/.switchback/config/claude/_providers/zai-lane"
 ```
 
 The installer refuses to replace a hand-written profile `CLAUDE.md`. Re-running it is idempotent.
