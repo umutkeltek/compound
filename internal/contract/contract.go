@@ -651,18 +651,29 @@ func MaterializeRuntime(in Input, pol OrientationPolicy, homePath string, now ti
 		return result, nil
 	}
 	result.EffectiveContract.SourceRevisions = append([]envelope.SourceRev(nil), result.ContextPack.SourceRevisions...)
-	snapshot, err := loadRuntimeSnapshot(in, pol, homePath, &result.EngineDependencyTrace)
+	// External intake reads review history independently of the memory snapshot,
+	// peers and installed binding. Join both reads before exposing either result.
+	result, externalIntake, err := joinRuntimeSnapshotLanes(
+		func() (RuntimeMaterialization, error) {
+			snapshot, err := loadRuntimeSnapshot(in, pol, homePath, &result.EngineDependencyTrace)
+			if err != nil {
+				return result, err
+			}
+			result.EffectiveContract = projectRuntimeContract(result.EffectiveContract, snapshot)
+			result.ContextPack = projectRuntimePack(result.ContextPack, in, snapshot)
+			result.ContextPack.Retrieval = retrievalPostureFromEngineTrace(result.EngineDependencyTrace)
+			result.ContextPack.Peers = buildPeersSection(homePath, now)
+			return bindRuntimeInstalledHarnessEntrypointRevision(homePath, result)
+		},
+		func() (capgraph.ExternalRepoIntakeReport, error) {
+			return capgraph.ExternalRepoIntakeReportForHome(homePath, in.Task)
+		},
+	)
 	if err != nil {
 		return result, err
 	}
-	result.EffectiveContract = projectRuntimeContract(result.EffectiveContract, snapshot)
-	result.ContextPack = projectRuntimePack(result.ContextPack, in, snapshot)
-	result.ContextPack.Retrieval = retrievalPostureFromEngineTrace(result.EngineDependencyTrace)
-	result.ContextPack, err = appendPackOnlyRuntime(result.ContextPack, in, homePath, now)
-	if err != nil {
-		return result, err
-	}
-	return bindRuntimeInstalledHarnessEntrypointRevision(homePath, result)
+	result.ContextPack, err = appendPackOnlyEvidence(result.ContextPack, in, homePath, now, externalIntake)
+	return result, err
 }
 
 func bindRuntimeInstalledHarnessEntrypointRevision(
@@ -1656,6 +1667,11 @@ func appendPackOnlyRuntime(pack envelope.ContextPack, in Input, homePath string,
 	if err != nil {
 		return pack, err
 	}
+	pack.Peers = buildPeersSection(homePath, now)
+	return appendPackOnlyEvidence(pack, in, homePath, now, externalIntake)
+}
+
+func appendPackOnlyEvidence(pack envelope.ContextPack, in Input, homePath string, now time.Time, externalIntake capgraph.ExternalRepoIntakeReport) (envelope.ContextPack, error) {
 	if len(externalIntake.Matches) > 0 {
 		matches := externalIntake.Matches
 		if len(matches) > maxContextExternalRepoIntakeRefs {
@@ -1693,15 +1709,7 @@ func appendPackOnlyRuntime(pack envelope.ContextPack, in Input, homePath string,
 	if len(records) > 0 {
 		pack.SummaryMD += fmt.Sprintf(" %d projection freshness ref(s) included; generated views are context evidence, not truth.", len(records))
 	}
-	pack, err = appendNegatives(pack, homePath, in, now)
-	if err != nil {
-		return pack, err
-	}
-	// Attach the CONTEXTUAL, display-only peers view (active leases + capped agent-lane cards).
-	// Read-only: it never writes a capgraph/mem byte and never influences routing. Absent content
-	// (fresh home) leaves the section off entirely.
-	pack.Peers = buildPeersSection(homePath, now)
-	return pack, nil
+	return appendNegatives(pack, homePath, in, now)
 }
 
 // appendNegatives joins the negatives projection (internal/negatives — a

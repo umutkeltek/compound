@@ -11,6 +11,7 @@ import (
 
 	"compound/internal/breadth"
 	"compound/internal/capgraph"
+	"golang.org/x/sys/unix"
 )
 
 const runtimeSnapshotLaneTestTimeout = 2 * time.Second
@@ -186,5 +187,59 @@ func TestRuntimeSnapshotRejectsInvalidHooksBeforeStartingCacheLanes(t *testing.T
 	}
 	if embedder.taskCalls != 0 {
 		t.Fatalf("cache lane embedded the task %d time(s) before hook validation rejected the request", embedder.taskCalls)
+	}
+}
+
+// The pipe models a slow external intake read. The memory snapshot can finish
+// only after the normal intake reader opens it. A serial build misses the
+// rendezvous, even when both inputs are small or the filesystem cache is warm.
+func TestPromptMaterializationOverlapsExternalIntake(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "inbox", "external-repo-intake", "batch")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	summary := filepath.Join(dir, "run-summary.json")
+	if err := unix.Mkfifo(summary, 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Release a blocked writer even if a regression skips the intake read.
+	t.Cleanup(func() {
+		reader, err := os.OpenFile(summary, os.O_RDONLY|unix.O_NONBLOCK, 0)
+		if err == nil {
+			reader.Close()
+		}
+	})
+	readStarted := make(chan struct{})
+	writeDone := make(chan error, 1)
+	go func() {
+		writer, err := os.OpenFile(summary, os.O_WRONLY, 0)
+		if err == nil {
+			close(readStarted)
+			_, err = writer.WriteString(`{"decisions":[{"repo":"example/fixture","decision":"reference_only"}]}`)
+			closeErr := writer.Close()
+			err = errors.Join(err, closeErr)
+		}
+		writeDone <- err
+	}()
+	prior := runtimeMemoryDependenciesCaptured
+	defer func() { runtimeMemoryDependenciesCaptured = prior }()
+	overlapErr := errors.New("memory snapshot did not reach the dependency capture")
+	runtimeMemoryDependenciesCaptured = func() {
+		overlapErr = waitForRuntimeSnapshotLanePeer("external intake reader", readStarted)
+	}
+	input := Input{Harness: "codex", Cwd: t.TempDir(), Task: "example/fixture", RepoKind: "product", RepoKindVia: "flag", Mode: "execute", ReadOnlyRetrieval: true}
+	got, err := MaterializeRuntime(input, DefaultPolicy(), home, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overlapErr != nil {
+		t.Fatal(overlapErr)
+	}
+	if err := awaitRuntimeSnapshotLaneValue(t, "intake fixture", writeDone); err != nil {
+		t.Fatal(err)
+	}
+	if !includedRefPresent(got.ContextPack.Included, externalRepoIntakeRef(input.Task)) {
+		t.Fatal("prompt context lost the independently read external evidence")
 	}
 }
