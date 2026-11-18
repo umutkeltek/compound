@@ -140,7 +140,7 @@ func (s *Store) CapturePrivateRuntimeDelivery(workID string, request PrivateRunt
 	if err != nil {
 		return out, err
 	}
-	event, err := completedReceiptedActionEvent(events, consumer.Action, consumer.Decision, consumer.Receipt, consumer.Transition)
+	event, err := s.historicalReceiptedActionEvent(events, consumer.Action, consumer.Decision, consumer.Receipt, consumer.Transition)
 	if err != nil {
 		return out, err
 	}

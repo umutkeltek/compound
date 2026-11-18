@@ -174,7 +174,7 @@ func (s *Store) captureDeliveryOutcomeForStatus(w envelope.WorkEnvelope, proof d
 	if err != nil {
 		return proof, err
 	}
-	event, err := completedReceiptedActionEvent(events, action, decision, receipt, transition)
+	event, err := s.historicalReceiptedActionEvent(events, action, decision, receipt, transition)
 	if err != nil {
 		return proof, err
 	}

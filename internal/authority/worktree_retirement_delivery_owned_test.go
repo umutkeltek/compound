@@ -68,6 +68,11 @@ func newOwnedRetirementFixtureWithRetry(t *testing.T, retry bool) ownedRetiremen
 
 func newOwnedRetirementFixtureWithFailure(t *testing.T, failure string) ownedRetirementFixture {
 	t.Helper()
+	return newOwnedRetirementFixtureForActor(t, failure, "operator:test")
+}
+
+func newOwnedRetirementFixtureForActor(t *testing.T, failure, actor string) ownedRetirementFixture {
+	t.Helper()
 	now := time.Now().UTC()
 	homePath := t.TempDir()
 	if err := homepkg.Init(homePath, "test", now); err != nil {
@@ -77,14 +82,14 @@ func newOwnedRetirementFixtureWithFailure(t *testing.T, failure string) ownedRet
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := s.Create(work.CreateInput{Owner: "operator:test", Actor: "operator:test", State: "ready", SuccessPredicate: "retire exact approved fixture with recoverable proof"}, now)
+	w, err := s.Create(work.CreateInput{Owner: actor, Actor: actor, State: "ready", SuccessPredicate: "retire exact approved fixture with recoverable proof"}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Claim(w.ID, "operator:test", now); err != nil {
+	if _, err := s.Claim(w.ID, actor, now); err != nil {
 		t.Fatal(err)
 	}
-	w, err = s.Advance(w.ID, work.AdvanceInput{To: "running", Actor: "operator:test"}, now)
+	w, err = s.Advance(w.ID, work.AdvanceInput{To: "running", Actor: actor}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +113,7 @@ func newOwnedRetirementFixtureWithFailure(t *testing.T, failure string) ownedRet
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := WorktreeRetirementApplyRequest{HomePath: homePath, PlanPath: paths.PlanPath, ReviewReportPath: report.ReviewPath, Actor: "operator:test", OwnerProof: planRequest.OwnerProof, SourceProof: planRequest.SourceProof}
+	req := WorktreeRetirementApplyRequest{HomePath: homePath, PlanPath: paths.PlanPath, ReviewReportPath: report.ReviewPath, Actor: actor, OwnerProof: planRequest.OwnerProof, SourceProof: planRequest.SourceProof}
 	deps := WorktreeRetirementApplyDependencies{RecoveryInventoryPreflight: work.PreflightRetirementRecoveryInventory,
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 		Evaluate: func(action envelope.ActionIntent, at time.Time) (envelope.PolicyDecision, error) {
@@ -568,5 +573,34 @@ func TestWorktreeRetirementDeliveryOwnedJourney(t *testing.T) {
 	after, err := os.ReadFile(f.result.ResultPath)
 	if err != nil || string(after) != string(resultBytes) {
 		t.Fatal("delivery capture rewrote historical result")
+	}
+}
+
+func TestWorktreeRetirementDeliveryWithHolderReceiptCitation(t *testing.T) {
+	const holder = "executor:fixture"
+	f := newOwnedRetirementFixtureForActor(t, "", holder)
+	capture, err := f.s.CaptureWorktreeRetirementDelivery(f.w.ID, f.request, holder, f.now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := f.s.Advance(f.w.ID, work.AdvanceInput{Actor: holder, To: "verifying",
+		ArtifactID: capture.Delivery.EvidenceRef, VerificationID: f.result.ReceiptID}, f.now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := work.AdvanceInput{Actor: holder, To: w.State,
+		ExpectedWorkState: w.State, ExpectedPolicyDecisionID: w.PolicyDecisionID,
+		ExpectedActionIntentID: w.ActionIntentIDs[len(w.ActionIntentIDs)-1], NonSourceDelivery: &capture.Delivery}
+	if _, err := f.s.Advance(w.ID, input, f.now.Add(3*time.Second)); err == nil {
+		t.Fatal("holder accepted its own retirement binding")
+	}
+	input.Actor, input.Steal, input.StealReason = "operator:test", true, "Bind reviewed fixture retirement"
+	if _, err := f.s.Advance(w.ID, input, f.now.Add(4*time.Second)); err != nil {
+		t.Fatalf("reviewed binding rejected a later holder citation: %v", err)
+	}
+	closed, err := f.s.Close(w.ID, work.CloseInput{Actor: holder, Outcome: "completed", Changed: true,
+		MoveType: "control_plane_repair", Summary: "Retired fixture and verified its recovery", ProofRefs: []string{capture.Delivery.EvidenceRef, f.result.ReceiptID}}, f.now.Add(5*time.Second))
+	if err != nil || closed.Work.State != "completed" || !closed.Receipt.StateDelta.Changed || closed.Receipt.MoveType != "control_plane_repair" || closed.Receipt.ID == f.result.ReceiptID {
+		t.Fatalf("holder close: %+v %v", closed, err)
 	}
 }

@@ -90,7 +90,7 @@ func newPrivateDeliveryFixture(t *testing.T) privateDeliveryFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	event, err := completedReceiptedActionEvent(events, consumed.Action, consumed.Decision, consumed.Receipt, consumed.Transition)
+	event, err := s.historicalReceiptedActionEvent(events, consumed.Action, consumed.Decision, consumed.Receipt, consumed.Transition)
 	if err != nil {
 		t.Fatal(err)
 	}

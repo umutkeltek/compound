@@ -173,7 +173,7 @@ func (s *Store) validateDeliveryOutcomeForStatus(w envelope.WorkEnvelope, proof 
 	if err != nil {
 		return out, err
 	}
-	event, err := completedReceiptedActionEvent(events, out.Action, out.Decision, out.Receipt, out.Transition)
+	event, err := s.historicalReceiptedActionEvent(events, out.Action, out.Decision, out.Receipt, out.Transition)
 	if err != nil {
 		return out, err
 	}

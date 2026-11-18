@@ -24,6 +24,12 @@ The reservation remains until Receipt, Transition and work links converge; exact
 replay cannot alter the sealed outcome. Omitted false preserves existing input
 digests. The index-lock recovery adapter consumes this seam.
 
+A completed action has one producer lifecycle event with its exact action, allowing
+policy, receipt and transition. A later governed advance to verifying may cite that
+receipt alongside its other recorded attachments as verification. Historical readers
+authenticate the advance against its own action, policy and WorkEnvelope generation.
+An overlapping row during incomplete transaction recovery still prevents publication.
+
 A remote effect that cannot be observed uses `state_delta.change_knowledge:
 "unknown"` and omits `changed` entirely. Neither boolean is evidence for an
 unknown remote result. Completed and no-op receipts require known effects.

@@ -670,7 +670,7 @@ func (s *Store) requiredRecoveryCompleted(expected receiptedActionReservation, o
 		if err != nil {
 			continue
 		}
-		event, err := completedReceiptedActionEvent(events, ai, pd, receipt, transition)
+		event, err := s.historicalReceiptedActionEvent(events, ai, pd, receipt, transition)
 		if err != nil {
 			continue
 		}
@@ -717,7 +717,7 @@ func (s *Store) completeReceiptedActionReservationWithPublication(path string, e
 			return err
 		}
 	}
-	event, err := completedReceiptedActionEvent(events, result.Action, result.Decision, result.Receipt, result.Transition)
+	event, err := completedReceiptedActionEvent(events, result.Action, result.Decision, result.Receipt, result.Transition, nil)
 	if err != nil {
 		return err
 	}
@@ -930,7 +930,7 @@ func (s *Store) replayCompletedReceiptedActionWithPublication(workID string, in 
 			return out, err
 		}
 	}
-	if err := validateCompletedReceiptedActionEvent(events, action, decision, receipt, transition, completion); err != nil {
+	if err := s.validateCompletedReceiptedActionEvent(events, action, decision, receipt, transition, completion); err != nil {
 		return out, err
 	}
 	return ReceiptedActionResult{Work: w, Action: action, Decision: decision, Receipt: receipt, Transition: transition, Replayed: true}, nil
@@ -965,8 +965,8 @@ func validateCompletedReceiptedActionOutcome(w envelope.WorkEnvelope, in Receipt
 	return nil
 }
 
-func validateCompletedReceiptedActionEvent(events []Event, action envelope.ActionIntent, decision envelope.PolicyDecision, receipt envelope.Receipt, transition envelope.Transition, completion receiptedActionCompletion) error {
-	event, err := completedReceiptedActionEvent(events, action, decision, receipt, transition)
+func (s *Store) validateCompletedReceiptedActionEvent(events []Event, action envelope.ActionIntent, decision envelope.PolicyDecision, receipt envelope.Receipt, transition envelope.Transition, completion receiptedActionCompletion) error {
+	event, err := s.historicalReceiptedActionEvent(events, action, decision, receipt, transition)
 	if err != nil {
 		return err
 	}
@@ -980,17 +980,20 @@ func validateCompletedReceiptedActionEvent(events []Event, action envelope.Actio
 	return nil
 }
 
-func completedReceiptedActionEvent(events []Event, action envelope.ActionIntent, decision envelope.PolicyDecision, receipt envelope.Receipt, transition envelope.Transition) (Event, error) {
+func completedReceiptedActionEvent(events []Event, action envelope.ActionIntent, decision envelope.PolicyDecision, receipt envelope.Receipt, transition envelope.Transition, isCitation func(int) bool) (Event, error) {
 	var matched Event
 	wantAttached := []string{action.ID, decision.ID, receipt.ID, transition.ID}
 	matching := 0
-	for _, event := range events {
+	for i, event := range events {
 		if !receiptedActionEventTouches(event, wantAttached) {
 			continue
 		}
 		if event.WorkID != action.IDs.WorkID || event.From != event.To || event.By != action.Actor ||
 			event.Note != "receipted action recorded: "+action.Action+" (policy "+decision.Outcome+")" ||
 			!reflect.DeepEqual(event.Attached, wantAttached) {
+			if matching == 1 && isCitation != nil && !receiptedActionEventTouches(event, []string{action.ID, decision.ID, transition.ID}) && isCitation(i) {
+				continue
+			}
 			return Event{}, fmt.Errorf("completed receipted action %s event conflicts with reserved outcome", action.ID)
 		}
 		matched = event
