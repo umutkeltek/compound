@@ -126,6 +126,21 @@ func (e *Engine) QueryWithLanes(text, gate string, allowlist []string, k int) (Q
 		return QueryResult{}, nil
 	}
 
+	// Literal lookup still goes through the normal visibility gate. When an identifier
+	// matches, rank all eligible hits so a top-k cut cannot hide its record.
+	exact := identifierMatches(text, allowedDocs)
+	limit := k
+	if len(exact) != 0 {
+		limit = len(allowedDocs)
+	}
+	result, err := e.rankAllowed(text, allowedDocs, limit)
+	if err == nil && len(exact) != 0 {
+		result.Hits = preferIdentifierMatches(result.Hits, exact, k)
+	}
+	return result, err
+}
+
+func (e *Engine) rankAllowed(text string, allowedDocs []doc, k int) (QueryResult, error) {
 	bm25 := e.bm25(text, allowedDocs)
 	reference := referenceContains(text, allowedDocs)
 	if e.embedder != nil {

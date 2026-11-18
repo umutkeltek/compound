@@ -86,6 +86,8 @@ tree**, and operator paths are **never hardcoded into the public core**. An over
 not a permanent body or meaning owner. Layout + resolution: `runtime.md`; physical and semantic boundaries:
 `information-custody.md`.
 
+On breadth lookup, a complete numeric ID or mixed serial in the question gives matching current claims priority. The engine checks whole identifiers after visibility admission and before the top-k cut. A claim whose entity carries the ID takes priority over incidental mentions. Free-text queries retain their configured ranking.
+
 ## The runtime grammar is the envelope spine (first-order)
 
 Memory is **one** vertical slice, not the substrate. The thing every harness and hook actually runs through
