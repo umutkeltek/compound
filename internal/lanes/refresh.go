@@ -57,6 +57,10 @@ func refreshLaneHookInstall(opts RefreshLaneOptions, harnessName string) error {
 		_, err := contract.ImportHookInstallReport(opts.HomePath, opts.BaseDir, report, opts.Now)
 		return err
 	}
+	if recordOnlyRefreshLane(harnessName) {
+		_, err := hookplan.RefreshProviderLane(opts.BaseDir, opts.BinaryPath, harnessName, false, publish)
+		return err
+	}
 	_, err := hookplan.InstallHooksWithRoster(
 		opts.BaseDir,
 		opts.BinaryPath,
@@ -202,10 +206,14 @@ func hookInstallHarness(canonical string) string {
 		return "claude-unattended"
 	case "claude_code":
 		return "claude-code"
-	case "claude_neuralwatt", "claude_kimi", "claude_gpt56_sol_wpcom":
-		return canonical // no native alias; hookplan skips
 	}
 	return canonical
+}
+
+// Named governed profiles resolve to their native install aliases. Other
+// registered Claude providers are owned by hookplan's record-only writer.
+func recordOnlyRefreshLane(name string) bool {
+	return hookInstallHarness(name) == name && harness.DefaultRegistry().ProviderLaneName(name)
 }
 
 // InstalledHarnesses returns the harness ids in the installed-hooks

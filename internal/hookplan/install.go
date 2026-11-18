@@ -369,7 +369,7 @@ func InstallHooksWithConfigDirAndPublish(
 	check bool,
 	publish func(HookInstallReport) error,
 ) (HookInstallReport, error) {
-	return installHooksImpl(baseDir, binaryPath, scope, harnesses, configDir, nil, check, publish)
+	return installHooksImpl(baseDir, binaryPath, scope, harnesses, configDir, nil, check, publish, "")
 }
 
 // InstallHooksForLane installs the roster a lane manifest entitles into the
@@ -402,7 +402,7 @@ func InstallHooksWithRoster(
 	check bool,
 	publish func(HookInstallReport) error,
 ) (HookInstallReport, error) {
-	return installHooksImpl(baseDir, binaryPath, scope, harnesses, configDir, allowedEvents, check, publish)
+	return installHooksImpl(baseDir, binaryPath, scope, harnesses, configDir, allowedEvents, check, publish, "")
 }
 
 // installHooksImpl is the transaction body shared by every install entry point.
@@ -415,6 +415,7 @@ func installHooksImpl(
 	allowedEvents map[string]bool,
 	check bool,
 	publish func(HookInstallReport) error,
+	providerName string,
 ) (HookInstallReport, error) {
 	if strings.TrimSpace(baseDir) == "" {
 		return HookInstallReport{}, fmt.Errorf("base dir required")
@@ -462,7 +463,14 @@ func installHooksImpl(
 	// Record-only provider lanes: every other launcher profile found under baseDir. A named
 	// harness or a config-dir override selects one profile, so neither reaches them.
 	if strings.TrimSpace(configDir) == "" && (len(want) == 0 || want[ProviderLanesHarness]) {
-		for _, lane := range wirableProviderLanes(baseDir, &report) {
+		lanes := wirableProviderLanes(baseDir, &report)
+		if providerName != "" && report.HasLaneErrors() {
+			return report, fmt.Errorf("cannot establish provider profile owner: %v", report.LaneProblems)
+		}
+		for _, lane := range lanes {
+			if providerName != "" && lane.Harness != providerName {
+				continue
+			}
 			var desired []desiredHookBinding
 			for _, binding := range providerLaneBindings(binaryPath, lane.Harness) {
 				if allowedEvents == nil || allowedEvents[binding.Event] {
@@ -472,6 +480,9 @@ func installHooksImpl(
 			staged, bindings, installedTimeouts, err := prepareHookBindings(lane.Harness, lane.ConfigPath, desired, check)
 			if err != nil {
 				laneProblem(&report, lane, err)
+				if providerName != "" {
+					return report, err
+				}
 				continue
 			}
 			prepared = append(prepared, staged)
@@ -479,6 +490,9 @@ func installHooksImpl(
 			entry.Selector = ProviderLanesHarness
 			report.Entries = append(report.Entries, entry)
 		}
+	}
+	if providerName != "" && len(report.Entries) != 1 {
+		return report, fmt.Errorf("no unique discovered provider profile for %q", providerName)
 	}
 	if check {
 		return report, nil

@@ -52,6 +52,15 @@ type ProviderLane struct {
 	NotWired string `json:"not_wired,omitempty"`
 }
 
+// RefreshProviderLane applies the group writer to exactly one discovered home.
+// Its checked and writing paths both require an unambiguous registered target.
+func RefreshProviderLane(baseDir, binaryPath, name string, check bool, publish func(HookInstallReport) error) (HookInstallReport, error) {
+	if !harness.DefaultRegistry().ProviderLaneName(name) {
+		return HookInstallReport{}, fmt.Errorf("unregistered provider lane %q", name)
+	}
+	return installHooksImpl(baseDir, binaryPath, "global", []string{ProviderLanesHarness}, "", nil, check, publish, name)
+}
+
 // HookLaneProblem is a lane home the plan did not wire. State is LaneStateError (a file
 // could not be read) or LaneStateNotWired (no name unique to the home). Either way the
 // run goes on for every other harness and lane.

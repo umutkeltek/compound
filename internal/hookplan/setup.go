@@ -91,7 +91,7 @@ func InstallSetupHarnesses(baseDir, binaryPath string, names []string, check boo
 		}
 	}
 	if len(settings) > 0 {
-		settingsReport, err := installHooksImpl(baseDir, binaryPath, "global", settings, "", nil, check, publish)
+		settingsReport, err := InstallHooksWithConfigDirAndPublish(baseDir, binaryPath, "global", settings, "", check, publish)
 		if err != nil {
 			return report, err
 		}

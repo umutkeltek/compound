@@ -201,6 +201,11 @@ goes on for every other harness and fails only when `--harness
 claude-provider-lanes` was named. `compound hook uninstall --harness
 claude-provider-lanes` removes only Compound's entries.
 
+When a source installation refreshes an enrolled provider, it checks the registered
+name against the discovered home and refreshes that profile with the same four
+record-only hooks. A missing or ambiguous enrolled home fails preflight before
+publication. The remaining profiles keep their own bindings.
+
 ### Compare models and efforts published by the profile owner
 
 `route experiment-plan` reads the owner's non-secret conformance projection.

@@ -43,7 +43,16 @@ func preflightLaneRefresh(opts RefreshLaneOptions, harnessName string) LaneVerdi
 		v.Detail = "separate adapter owns this lane: the OpenCode plugin and registration are installed by adapters/opencode/install.ts and resolve the binary at call time, so publication neither refreshes nor invalidates it"
 		v.RepairCommand = "bun adapters/opencode/install.ts"
 	default:
-		v.Detail = "no native hook refresh owner for this harness; resolve its adapter activation contract before retrying"
+		if !recordOnlyRefreshLane(harnessName) {
+			v.Detail = "no native hook refresh owner for this harness; resolve its adapter activation contract before retrying"
+			return v
+		}
+		if _, err := hookplan.RefreshProviderLane(opts.BaseDir, opts.BinaryPath, harnessName, true, nil); err != nil {
+			v.Detail = "provider hook refresh preflight: " + err.Error()
+			return v
+		}
+		v.Status = statusRefreshReady
+		v.Detail = "record-only hook writer verified the profile; no refresh performed"
 	}
 	return v
 }
