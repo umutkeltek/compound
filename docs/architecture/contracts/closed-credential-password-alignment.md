@@ -187,7 +187,9 @@ installation fallback. The gate uses only the local Docker Unix socket, creates
 a unique labelled container with no network or published ports, and removes only
 that exact container and its anonymous data volume after rechecking ownership.
 
-The gate selects the local `linux/amd64` image by its configuration digest.
+The gate selects the local `linux/amd64` image by its exact configuration
+digest on the classic Docker store or its exact OCI manifest digest on the
+containerd store. The manifest references the same configuration.
 The tracked [Dockerfile](../../../scripts/testbattery/credential-fixture/Dockerfile)
 pins the frontend, PostgreSQL 17.11 base, Docker 28.5.2 CLI and Debian packages
 for Python 3.13.5 and sudo. It contains no database contents or mounted socket.
@@ -231,20 +233,25 @@ support, including emulation on an ARM host.
 ```bash
 set -euo pipefail
 : "${fixture_worker:?}" "${remote_archive:?}" "${fixture_dir:?}" "${archive_sha256:?}" "${source_head:?}"
-image=sha256:0f1fdc9bee7d75929baf8def8a5ee96d443e2466368856cff981f7c569ea68b8
+config=sha256:0f1fdc9bee7d75929baf8def8a5ee96d443e2466368856cff981f7c569ea68b8
+manifest=sha256:55f66e6004016464ed6fe353783bed9d6de4af03ff736ccc9e4d0a24b0197c56
 mkdir -p "$fixture_dir"
 archive="$fixture_dir/credential-alignment-linux-amd64.tar.zst"
 scp "$fixture_worker:$remote_archive" "$archive"
 test "$(shasum -a 256 "$archive" | awk '{print $1}')" = "$archive_sha256"
 export DOCKER_HOST=unix:///var/run/docker.sock
 zstd -dc "$archive" | docker --host "$DOCKER_HOST" image load
+image=$config
+if ! docker --host "$DOCKER_HOST" image inspect "$config" >/dev/null 2>&1; then
+  image=$manifest
+fi
 test "$(docker --host "$DOCKER_HOST" image inspect --format '{{.Id}} {{.Os}}/{{.Architecture}}' "$image")" = "$image linux/amd64"
 go run ./scripts/testbattery credential-password-alignment-native --source-head "$source_head"
 ```
 
 The gate also checks the sealed source and the exact ID on a warm host. The
-archive checksum identifies the transferred bytes. Docker's configuration digest
-identifies the frozen runtime image across exports.
+archive checksum identifies the transferred bytes. Each Docker store resolves
+the fixed digest it can address to this image and platform.
 
 The fixed native inventory covers repair followed by unchanged verification and
 four-file installation, actual Linux/PG17 primitives, both COMMIT acknowledgement

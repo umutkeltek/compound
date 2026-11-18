@@ -118,10 +118,19 @@ type credentialAlignmentRunnerFixture struct {
 	name, token, label string
 	missingImage       bool
 	wrongImage         bool
+	wrongPlatform      bool
+	manifestStore      bool
 	wrongCleanupOwner  bool
 	goFailure          bool
 	started, removed   bool
 	goEnvironment      []string
+}
+
+func (f *credentialAlignmentRunnerFixture) imageID() string {
+	if f.manifestStore {
+		return credentialAlignmentImageManifest
+	}
+	return credentialAlignmentImageConfig
 }
 
 func (f *credentialAlignmentRunnerFixture) run(_ context.Context, args, environment []string, stdout, _ io.Writer) error {
@@ -142,18 +151,25 @@ func (f *credentialAlignmentRunnerFixture) run(_ context.Context, args, environm
 	}
 	switch args[3] {
 	case "image":
-		if f.missingImage {
+		id := args[len(args)-1]
+		if id != credentialAlignmentImageConfig && id != credentialAlignmentImageManifest {
+			f.t.Fatal("fixture looked up an unpinned image", args)
+		}
+		if f.missingImage || id != f.imageID() {
 			return errors.New("synthetic missing prerequisite")
 		}
-		image := credentialAlignmentPrerequisiteImage
-		if f.wrongImage {
-			image = "sha256:" + strings.Repeat("0", 64)
+		platform := "linux/amd64"
+		if f.wrongPlatform {
+			platform = "linux/arm64"
 		}
-		_, _ = fmt.Fprintln(stdout, image)
+		if f.wrongImage {
+			id = "sha256:" + strings.Repeat("0", 64)
+		}
+		_, _ = fmt.Fprintln(stdout, id, platform)
 	case "run":
 		f.started = true
 		platform := slices.Index(args, "--platform")
-		if platform < 0 || platform+1 >= len(args) || args[platform+1] != "linux/amd64" || args[len(args)-1] != credentialAlignmentPrerequisiteImage {
+		if platform < 0 || platform+1 >= len(args) || args[platform+1] != "linux/amd64" || args[len(args)-1] != f.imageID() {
 			f.t.Fatal("fixture did not select the frozen image and its platform", args)
 		}
 		for i, arg := range args {
@@ -220,6 +236,20 @@ func TestCredentialAlignmentProofUsesFreshOwnedFixtureAndCleansOnFailure(t *test
 			if strings.Contains(value, "foreign") || strings.Contains(value, "synthetic-provider-secret") || strings.HasPrefix(value, "DOCKER_CONTEXT=") {
 				t.Fatal("ambient endpoint, credential or fixture selection escaped into proof")
 			}
+		}
+	}
+}
+
+func TestCredentialAlignmentProofUsesManifestOnContainerd(t *testing.T) {
+	f := &credentialAlignmentRunnerFixture{t: t, manifestStore: true}
+	var output bytes.Buffer
+	if err := runCredentialAlignmentProof(t.Context(), f.run, &output, io.Discard); err != nil || !f.started || !f.removed || !strings.Contains(output.String(), "frozen-prerequisite="+credentialAlignmentImageManifest) {
+		t.Fatal("offline import did not use the exact manifest for start and evidence", err)
+	}
+	for _, manifestStore := range []bool{false, true} {
+		f := &credentialAlignmentRunnerFixture{t: t, manifestStore: manifestStore, wrongPlatform: true}
+		if err := runCredentialAlignmentProof(t.Context(), f.run, io.Discard, io.Discard); err == nil || f.started || f.removed {
+			t.Fatal("image with a different platform caused a fixture start")
 		}
 	}
 }
