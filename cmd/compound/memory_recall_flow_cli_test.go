@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -174,9 +175,23 @@ func TestMemoryRecallFreshSetupAutomaticCaptureAcrossHarnesses(t *testing.T) {
 	if len(first.Evidence) != 1 || !strings.Contains(first.Evidence[0].Text, "Cedar") {
 		t.Fatalf("first: %+v", first)
 	}
+	// The service may still hold its launch lock after coverage and the work
+	// record become visible. Hold that same lock across the terminal hook to
+	// reproduce this finalization window on every filesystem and host.
+	lock, err := os.OpenFile(filepath.Join(hp, "lock", "memory-refresh-launch.lock"), os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lock.Close() })
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
 	writeTurn("Correction: Birch replaces Cedar for the archive.")
 	input, _ = json.Marshal(map[string]any{"cwd": root, "session_id": "fixture_session", "transcript_path": transcript})
 	run(input, "hook", "session-end", "--live", "--harness", "claude_code")
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
 	wait(2)
 	latest := question("--include-private-text")
 	if len(latest.Evidence) != 1 || !strings.Contains(latest.Evidence[0].Text, "Birch") {

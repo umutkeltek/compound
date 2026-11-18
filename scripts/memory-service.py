@@ -224,9 +224,13 @@ def claim_ready(binary, home, record):
     return claimed
 
 
-def _tick_locked(binary, home, workspace, start=False, recovery_only=False, lock_fd=None):
+def _tick_locked(binary, home, workspace, start=False, recovery_only=False, lock_fd=None, after_generation=None):
     wid = work_id(home)
     record = maintenance_work(binary, home)
+    if after_generation and (record.get("state") != "verifying" or
+                             record.get("policy_decision_id") != after_generation):
+        print(json.dumps({"status": "generation_changed", "work_id": wid}))
+        return
     if record.get("state") == "ready" and start:
         record = claim_ready(binary, home, record)
     state = record["state"]
@@ -243,19 +247,26 @@ def _tick_locked(binary, home, workspace, start=False, recovery_only=False, lock
         timeout=240 if recovery_only else 540, lock_fd=lock_fd)
 
 
-def tick(binary, home, workspace, start=False, recovery_only=False):
+def tick(binary, home, workspace, start=False, recovery_only=False, after_generation=None):
     # Cover waiting/admission as well as running refresh. The kernel releases
     # this coordination lock after failures or process exit.
     lock_dir = home / "lock"
     lock_dir.mkdir(parents=True, exist_ok=True)
     with (lock_dir / "memory-refresh-launch.lock").open("a") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            print(json.dumps({"status": "already_running", "work_id": work_id(home)}))
-            return
+        # Only a hook bound to completed coverage may wait. The cap leaves
+        # time before the minimum retry. The hook itself never waits.
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if not after_generation or time.monotonic() >= deadline:
+                    print(json.dumps({"status": "already_running", "work_id": work_id(home)}))
+                    return
+                time.sleep(0.1)
         _tick_locked(binary, home, workspace, start=start, recovery_only=recovery_only,
-                     lock_fd=lock.fileno())
+                     lock_fd=lock.fileno(), after_generation=after_generation)
 
 
 def setup(binary, home, workspace, config):
@@ -299,7 +310,10 @@ def main():
     p.add_argument("--config", type=Path)
     p.add_argument("--start", action="store_true", help="explicitly claim this service's existing ready work")
     p.add_argument("--recovery-only", action="store_true", help="run admitted backend recovery without indexing")
+    p.add_argument("--after-generation", help="terminal correction observed in this verifying policy generation")
     a = p.parse_args()
+    if a.after_generation and (a.operation != "tick" or a.start or a.recovery_only):
+        p.error("--after-generation requires an ordinary refresh tick")
     if (a.start or a.recovery_only) and a.operation != "tick":
         p.error("--start and --recovery-only require tick")
     for value in (a.binary, a.home, a.workspace):
@@ -312,7 +326,8 @@ def main():
         elif a.operation == "recover":
             recover(a.binary, a.home)
         elif a.operation == "tick":
-            tick(a.binary, a.home, a.workspace, start=a.start, recovery_only=a.recovery_only)
+            tick(a.binary, a.home, a.workspace, start=a.start, recovery_only=a.recovery_only,
+                 after_generation=a.after_generation)
         else:
             if a.config is None:
                 p.error("setup requires --config with approved sources")

@@ -356,18 +356,30 @@ func (s SourceConfig) validate() error {
 // RefreshDue is read-only and cheap enough for a post-tool hook. Errors do not
 // authorize work. A stopped or failed refresh remains visibly stale.
 func RefreshDue(hp string, now time.Time, changedSource ...string) (bool, error) {
+	var source string
+	if len(changedSource) > 0 {
+		source = changedSource[0]
+	}
+	due, _, err := RefreshTrigger(hp, now, source)
+	return due, err
+}
+
+// RefreshTrigger reports both general readiness and a change to an exact
+// terminal source since its last non-failed coverage. One failed or overdue
+// lane can make a normal refresh due but cannot qualify another source for handoff.
+func RefreshTrigger(hp string, now time.Time, source string) (due, terminalChanged bool, err error) {
 	raw, err := os.ReadFile(filepath.Join(hp, "config", "memory-engine.yaml"))
 	if os.IsNotExist(err) {
-		return false, nil
+		return false, false, nil
 	}
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	var cfg struct {
 		Lanes []LaneConfig `yaml:"corpus_lanes"`
 	}
 	if err = yaml.Unmarshal(raw, &cfg); err != nil {
-		return false, err
+		return false, false, err
 	}
 	for _, lane := range cfg.Lanes {
 		if lane.Source == nil {
@@ -375,20 +387,27 @@ func RefreshDue(hp string, now time.Time, changedSource ...string) (bool, error)
 		}
 		c, err := readRefreshCoverage(hp, lane, now)
 		if err != nil || hardRefreshStatuses[c.Status] {
-			return true, nil
+			if source == "" {
+				return true, false, nil
+			}
+			due = true
+			continue
 		}
 		stamp, err := time.Parse(time.RFC3339, c.CheckedAt)
-		if len(changedSource) > 0 && filepath.IsAbs(changedSource[0]) {
-			rel, relErr := filepath.Rel(lane.Source.Root, changedSource[0])
+		if err == nil && filepath.IsAbs(source) {
+			rel, relErr := filepath.Rel(lane.Source.Root, source)
 			if relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
-				if st, statErr := os.Stat(changedSource[0]); statErr == nil && st.ModTime().After(stamp) {
-					return true, nil
+				if st, statErr := os.Lstat(source); statErr == nil && st.Mode().IsRegular() && st.ModTime().After(stamp) {
+					return true, true, nil
 				}
 			}
 		}
 		if err != nil || now.Sub(stamp) >= 5*time.Minute {
-			return true, nil
+			if source == "" {
+				return true, false, nil
+			}
+			due = true
 		}
 	}
-	return false, nil
+	return due, false, nil
 }

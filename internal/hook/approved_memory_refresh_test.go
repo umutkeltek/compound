@@ -616,3 +616,63 @@ func TestMemoryRefreshPublishesDecisionTimeAfterDelayedHook(t *testing.T) {
 		t.Fatalf("stamp %s did not use decision time %s", stamp.RequestedAt, changed)
 	}
 }
+
+func TestHeldServiceOnlyHandsOffChangedApprovedTerminalSource(t *testing.T) {
+	now := time.Now().UTC()
+	hp, cwd, id := memoryRefreshHome(t, now.Add(-time.Hour))
+	installTestMemoryService(t)
+	body, err := json.Marshal(envelope.WorkEnvelope{Header: envelope.Header{ID: id},
+		Owner: memoryRefreshActor, State: "verifying", PolicyDecisionID: "pol_terminal_fixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hp, "work", "work", id+".json"), body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(hp, "lock"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := os.OpenFile(filepath.Join(hp, "lock", "memory-refresh-launch.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	old := startMemoryRefresh
+	t.Cleanup(func() { startMemoryRefresh = old })
+	var calls int
+	startMemoryRefresh = func(_, _, _ string, args []string) error {
+		calls++
+		if !strings.HasSuffix(strings.Join(args, " "), "--after-generation pol_terminal_fixture") {
+			t.Fatalf("unexpected handoff: %v", args)
+		}
+		return nil
+	}
+	fx := Fixture{Live: true, Hook: "SessionEnd", Cwd: cwd, TranscriptPath: filepath.Join(t.TempDir(), "outside.md")}
+	if err := os.WriteFile(fx.TranscriptPath, []byte("synthetic"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := refreshApprovedMemoryAt(hp, fx, now); got != "already_running" {
+		t.Fatalf("outside source: %q", got)
+	}
+	fx.TranscriptPath = filepath.Join(cwd, "session.md")
+	if err := os.WriteFile(fx.TranscriptPath, []byte("synthetic"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(fx.TranscriptPath, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if got := refreshApprovedMemoryAt(hp, fx, now); got != "requested:"+id {
+		t.Fatalf("approved source: %q", got)
+	}
+	for i := 0; i < 5; i++ {
+		if got := refreshApprovedMemoryAt(hp, fx, now); got != "recently_requested" {
+			t.Fatalf("duplicate handoff: %q", got)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("terminal handoffs: %d, want 1", calls)
+	}
+}

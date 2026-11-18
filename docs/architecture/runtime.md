@@ -1859,6 +1859,11 @@ read-only probe of configured local model inventory and embedding dimensions. It
 `process_unavailable`, `process_unhealthy`, `model_missing`, or `incompatible`; a ready
 backend followed by failed indexing is reported as `indexing_degraded`. Search continues
 to return backend errors rather than translating an outage into zero relevant memories.
+When an approved transcript has changed since successful coverage and work is already
+verifying, the terminal hook may start one paced, detached tick bound to that policy
+generation. The helper waits up to 30 seconds for the preceding service to release its
+launch lock, then rechecks owner, state and generation before requesting native admission.
+Ordinary hooks return immediately. A newer generation supersedes the old request.
 
 The admitted helper may kickstart only the existing Homebrew Ollama owner on its
 standard local port, after checking that no corpus refresh is active. It never creates

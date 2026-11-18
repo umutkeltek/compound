@@ -94,7 +94,7 @@ func refreshApprovedMemory(hp string, fx Fixture, clock func() time.Time) string
 	if fx.Hook == "SessionEnd" {
 		source = fx.TranscriptPath
 	}
-	due, err := corpus.RefreshDue(hp, clock(), source)
+	due, changed, err := corpus.RefreshTrigger(hp, clock(), source)
 	if err != nil {
 		return "configuration_unavailable"
 	}
@@ -123,9 +123,16 @@ func refreshApprovedMemory(hp string, fx Fixture, clock func() time.Time) string
 	if held && strings.TrimSpace(lease.By) != memoryRefreshActor {
 		return "lease_held"
 	}
+	// Terminal capture may arrive after work returned to verifying but before
+	// its previous service released the launch lock. Bind a detached handoff
+	// to that exact generation. The hook itself never waits.
+	terminalGeneration := ""
+	if changed {
+		terminalGeneration = w.PolicyDecisionID
+	}
 	if active, err := memoryRefreshLaunchActive(hp); err != nil {
 		return "launch_state_unavailable"
-	} else if active {
+	} else if active && terminalGeneration == "" {
 		return "already_running"
 	}
 	cwd := fx.Cwd
@@ -144,6 +151,9 @@ func refreshApprovedMemory(hp string, fx Fixture, clock func() time.Time) string
 		return "service_unavailable"
 	}
 	args := []string{"tick", "--binary", binary, "--memory-home", hp, "--workspace", cwd}
+	if terminalGeneration != "" {
+		args = append(args, "--after-generation", terminalGeneration)
+	}
 	if status := claimMemoryRefreshRequest(hp, clock); status != "" {
 		return status
 	}

@@ -172,6 +172,19 @@ class HelperAdmissionTests(unittest.TestCase):
         self.assertIn("refresh", writes[-1])
         self.assertNotIn("create", [args[1] for args in commands])
 
+    def test_terminal_handoff_rechecks_generation_when_launch_lock_is_acquired(self):
+        for generation, state, expected_advances in [
+                ("pol_prior", "verifying", 0), ("pol_seen", "held", 0), ("pol_seen", "verifying", 1)]:
+            record = dict(self.record(state), policy_decision_id=generation)
+            calls = []
+            def command(binary, args, **kwargs):
+                calls.append(args)
+                if args[:2] == ["work", "show"]:
+                    return record
+            with self.subTest(generation=generation, state=state), patch.object(service, "run", side_effect=command):
+                service.tick(self.binary, self.home, self.workspace, after_generation="pol_seen")
+                self.assertEqual(len([a for a in calls if a[:2] == ["work", "advance"]]), expected_advances)
+
     def test_ready_without_explicit_start_and_held_with_start_refuse(self):
         for state, start in [("ready", False), ("held", True)]:
             with self.subTest(state=state), patch.object(service, "run", return_value=self.record(state)) as run:
