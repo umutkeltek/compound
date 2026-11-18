@@ -1988,36 +1988,25 @@ func (s *Store) list(skip func(id string) bool) ([]RunAttempt, error) {
 		if !Valid(id) {
 			continue
 		}
-		if skip != nil && skip(id) {
-			continue
-		}
 		ids = append(ids, id)
 	}
-	// File and sidecar reads are independent. Keep parallelism small so a
-	// census does not overwhelm the home filesystem or unrelated callers.
+	if skip != nil {
+		skipped := make([]bool, len(ids))
+		readAttemptRecords(len(ids), func(i int) { skipped[i] = skip(ids[i]) })
+		retained := ids[:0]
+		for i, id := range ids {
+			if !skipped[i] {
+				retained = append(retained, id)
+			}
+		}
+		ids = retained
+	}
 	if len(ids) == 0 {
 		return nil, nil
 	}
 	out := make([]RunAttempt, len(ids))
 	readErrors := make([]error, len(ids))
-	const maxReaders = 4
-	readers := min(maxReaders, len(ids))
-	jobs := make(chan int)
-	var workers sync.WaitGroup
-	workers.Add(readers)
-	for range readers {
-		go func() {
-			defer workers.Done()
-			for i := range jobs {
-				out[i], readErrors[i] = s.readFresh(ids[i])
-			}
-		}()
-	}
-	for i := range ids {
-		jobs <- i
-	}
-	close(jobs)
-	workers.Wait()
+	readAttemptRecords(len(ids), func(i int) { out[i], readErrors[i] = s.readFresh(ids[i]) })
 	// A census must also retire older same-Store snapshots: Get after List
 	// must not resurrect a record that List saw changed or unreadable.
 	s.mu.Lock()
@@ -2055,6 +2044,27 @@ func (s *Store) list(skip func(id string) bool) ([]RunAttempt, error) {
 		return out, &UnreadableRunAttemptsError{Issues: issues}
 	}
 	return out, nil
+}
+
+// readAttemptRecords uses the same small I/O limit for status probes and
+// full record reads. The two passes finish in order, so legacy and unreadable
+// records still receive the same fresh validation.
+func readAttemptRecords(count int, read func(int)) {
+	const maxReaders = 4
+	var workers sync.WaitGroup
+	jobs := make(chan int)
+	for range min(maxReaders, count) {
+		workers.Go(func() {
+			for i := range jobs {
+				read(i)
+			}
+		})
+	}
+	for i := range count {
+		jobs <- i
+	}
+	close(jobs)
+	workers.Wait()
 }
 
 // ListNonTerminal returns only pending/running RunAttempts — the set a

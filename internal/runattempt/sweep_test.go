@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -209,6 +210,49 @@ func TestListNonTerminalSurfacesUnreadableLaunchEvidence(t *testing.T) {
 					t.Fatalf("%s returned unreadable attempt material: %+v", name, got)
 				}
 			})
+		}
+	}
+}
+
+// Hold each status probe until the first worker group has started. A serial
+// prefilter stalls here before the existing bounded record readers can run.
+func TestListBoundsConcurrentStatusProbes(t *testing.T) {
+	store := Open(t.TempDir())
+	now := time.Now()
+	for range 12 {
+		if _, err := store.Mint("work_status_probes", "codex", HarnessPlaceholder, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	started := make(chan struct{}, 12)
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	var active atomic.Int32
+	go func() {
+		_, err := store.list(func(string) bool {
+			if n := active.Add(1); n > 4 {
+				t.Errorf("%d record probes active, want at most four", n)
+			}
+			defer active.Add(-1)
+			started <- struct{}{}
+			<-release
+			return true
+		})
+		done <- err
+	}()
+	defer func() {
+		close(release)
+		if err := <-done; err != nil {
+			t.Errorf("list: %v", err)
+		}
+	}()
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	for range 4 {
+		select {
+		case <-started:
+		case <-deadline.C:
+			t.Fatal("four independent record probes could not start")
 		}
 	}
 }
