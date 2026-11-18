@@ -32,13 +32,6 @@ func strictFrontmatter(t *testing.T, rendered string) (skillFrontmatterFields, e
 	return fields, err
 }
 
-func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
-	}
-	return s
-}
-
 func TestSkillFrontmatterSurvivesAStrictYAMLParser(t *testing.T) {
 	tricky := "One door: the `agent-browser` CLI; say \"hello\" (open: read) back\\slash\ttab\x07bell # not a comment"
 	fields, err := strictFrontmatter(t, skillFrontmatter("Browser", tricky))
