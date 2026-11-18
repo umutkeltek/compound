@@ -98,6 +98,25 @@ func DiscoverProviderLanes(baseDir string, registry harness.Registry) ([]Provide
 	return lanes, nil
 }
 
+// WiringHookPlan hands `compound harness check` the hook plan's own readers, so
+// the check names the same lane homes, install commands and hook states as
+// `compound hook install --check`.
+func WiringHookPlan() harness.HookPlan {
+	return harness.HookPlan{
+		LaneSettings: LaneHookSettingsPath,
+		RecordOnlyLanes: func(baseDir string) (map[string]string, error) {
+			lanes, err := DiscoverProviderLanes(baseDir, harness.DefaultRegistry())
+			out := map[string]string{}
+			for _, lane := range lanes {
+				out[lane.ConfigPath] = lane.Harness
+			}
+			return out, err
+		},
+		RecordOnlyInstall: ProviderLanesHarness,
+		PreToolState:      PreToolHookState,
+	}
+}
+
 // launchProfileNamesByLabel maps each profile folder to the launch profiles that start Claude
 // in it, sorted. A missing file means no launch profiles; an unreadable one is an error.
 func launchProfileNamesByLabel(path string) (map[string][]string, error) {

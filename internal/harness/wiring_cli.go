@@ -21,8 +21,32 @@ const WiringUsage = "usage: compound harness map|check [--harness H] [--json]\n"
 	"  map    where each harness gets its instructions, skills, MCP servers, permissions and session context, and its own listing command\n" +
 	"  check  proves the map against this machine: one row per fact, with the file to fix; exits 1 on any FAIL"
 
+// HookPlan carries the hook plan's readers. The hook plan imports this package,
+// so the caller hands them in (hookplan.WiringHookPlan); a zero value reads none.
+type HookPlan struct {
+	LaneSettings LaneSettingsFunc
+	// RecordOnlyLanes maps the settings file of every other lane home the plan
+	// hooks with its record-only set to the harness name its hooks report as.
+	RecordOnlyLanes func(userHome string) (map[string]string, error)
+	// RecordOnlyInstall is the `hook install --harness` selector for those homes.
+	RecordOnlyInstall string
+	// PreToolState names a settings file's Compound pre-tool hook.
+	PreToolState func(settingsPath string) string
+}
+
+// ClaudeHomes finds the Claude homes, the hook plan's lane homes included.
+func (p HookPlan) ClaudeHomes(userHome string, reg Registry) ([]ClaudeHome, error) {
+	src := DefaultClaudeHomeSources(userHome, reg, p.LaneSettings)
+	var err error
+	if p.RecordOnlyLanes != nil {
+		src.RecordOnlyLanes, err = p.RecordOnlyLanes(userHome)
+		src.RecordOnlyInstall = p.RecordOnlyInstall
+	}
+	return DiscoverClaudeHomes(src), err
+}
+
 // RunWiringCommand runs `compound harness map|check`.
-func RunWiringCommand(sub string, args []string, laneSettings LaneSettingsFunc, stdout, stderr io.Writer) int {
+func RunWiringCommand(sub string, args []string, plan HookPlan, stdout, stderr io.Writer) int {
 	only, asJSON := "", false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -49,7 +73,10 @@ func RunWiringCommand(sub string, args []string, laneSettings LaneSettingsFunc, 
 		return 1
 	}
 	reg := DefaultRegistry()
-	homes := DiscoverClaudeHomes(DefaultClaudeHomeSources(userHome, reg, laneSettings))
+	homes, err := plan.ClaudeHomes(userHome, reg)
+	if err != nil {
+		fmt.Fprintln(stderr, "warning: hook plan lane homes not fully read:", err)
+	}
 	switch sub {
 	case "map":
 		out, err := WiringMap(reg, only, homes, userHome, asJSON)
@@ -60,7 +87,7 @@ func RunWiringCommand(sub string, args []string, laneSettings LaneSettingsFunc, 
 		fmt.Fprint(stdout, out)
 		return 0
 	case "check":
-		return runWiringCheck(reg, only, homes, userHome, asJSON, stdout, stderr)
+		return runWiringCheck(reg, only, homes, userHome, plan.PreToolState, asJSON, stdout, stderr)
 	}
 	fmt.Fprintln(stderr, WiringUsage)
 	return 2

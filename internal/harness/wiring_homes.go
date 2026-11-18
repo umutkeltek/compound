@@ -25,6 +25,9 @@ type ClaudeHome struct {
 	// HookHarness is the registry name whose hooks the hook plan installs into
 	// this home; empty when the hook plan does not name it.
 	HookHarness string `json:"hook_harness,omitempty"`
+	// HookInstall is the `hook install --harness` selector for this home when
+	// it is not HookHarness itself (the record-only lane set).
+	HookInstall string `json:"hook_install,omitempty"`
 	// Source names the seam that found it: default, hook-plan, lane-registry,
 	// config-tree or env.
 	Source string `json:"source"`
@@ -51,6 +54,11 @@ type ClaudeHomeSources struct {
 	// LaneSettings maps a registry name to the settings file the hook plan
 	// installs that lane's hooks into.
 	LaneSettings map[string]string `json:"lane_settings,omitempty"`
+	// RecordOnlyLanes maps the settings file of every other lane home the hook
+	// plan hooks with its record-only set to the harness name its hooks report
+	// as; RecordOnlyInstall is the selector that writes them.
+	RecordOnlyLanes   map[string]string `json:"record_only_lanes,omitempty"`
+	RecordOnlyInstall string            `json:"record_only_install,omitempty"`
 	// LanesFile is the lane registry file; "" when none was found.
 	LanesFile string `json:"lanes_file,omitempty"`
 	// ConfigDir is CLAUDE_CONFIG_DIR of this process, when set.
@@ -117,6 +125,16 @@ func DiscoverClaudeHomes(src ClaudeHomeSources) []ClaudeHome {
 	for _, name := range laneNames {
 		dir := filepath.Dir(src.LaneSettings[name])
 		add(ClaudeHome{Name: filepath.Base(dir), Dir: dir, Kind: ClaudeHomeLane, HookHarness: name, Source: "hook-plan", Missing: !isDirectory(dir)})
+		laneParents[filepath.Dir(dir)] = true
+	}
+	recordOnly := make([]string, 0, len(src.RecordOnlyLanes))
+	for path := range src.RecordOnlyLanes {
+		recordOnly = append(recordOnly, path)
+	}
+	sort.Strings(recordOnly)
+	for _, path := range recordOnly {
+		dir := filepath.Dir(path)
+		add(ClaudeHome{Name: filepath.Base(dir), Dir: dir, Kind: ClaudeHomeLane, HookHarness: src.RecordOnlyLanes[path], HookInstall: src.RecordOnlyInstall, Source: "hook-plan"})
 		laneParents[filepath.Dir(dir)] = true
 	}
 

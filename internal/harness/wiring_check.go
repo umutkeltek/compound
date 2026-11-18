@@ -108,6 +108,9 @@ type WiringCheck struct {
 	// RetryDelay is the pause before asking a harness a second time; zero
 	// means two seconds.
 	RetryDelay time.Duration
+	// PreToolState is the hook plan's reader of a home's Compound pre-tool
+	// hook (HookPlan.PreToolState); nil leaves it "not read".
+	PreToolState func(settingsPath string) string
 }
 
 func (c WiringCheck) retryDelay() time.Duration {
@@ -224,7 +227,7 @@ func (c WiringCheck) claudeFamilyRows(w *Wiring, families map[string]familyServe
 		} else {
 			rows = append(rows, claudeHomeMCPRow(home, c.UserHome, w.MCP[0].Shape, ownerPath, owner, ownerErr))
 		}
-		rows = append(rows, claudePermissionsRow(home, ExpandWiringPath(w.Context.Path, c.UserHome, home.Dir)))
+		rows = append(rows, claudePermissionsRow(home, ExpandWiringPath(w.Context.Path, c.UserHome, home.Dir), c.PreToolState))
 	}
 	if adapter, ok := c.SkillAdapters[name]; ok {
 		rows = append(rows, skillAdapterRow(name, adapter))
@@ -254,7 +257,8 @@ func (c WiringCheck) claudeContextRow(w *Wiring, home ClaudeHome) WiringRow {
 	case home.Kind == ClaudeHomeNative:
 		row.Status, row.Fix = WiringFail, "the seat's settings converge at its next mirrored launch; if they do not, check the default home first"
 	case home.HookHarness != "":
-		row.Status, row.Fix = WiringFail, "compound hook install --harness "+strings.ReplaceAll(home.HookHarness, "_", "-")
+		install := firstNonEmptyString(home.HookInstall, strings.ReplaceAll(home.HookHarness, "_", "-"))
+		row.Status, row.Fix = WiringFail, "compound hook install --harness "+install
 	default:
 		row.Status = WiringInfo
 		row.Found += " (lane not enrolled in the hook plan)"
@@ -278,6 +282,9 @@ func ownerListRow(path string, owner MCPServers, err error) WiringRow {
 
 func claudeHomeMCPRow(home ClaudeHome, userHome, shape, ownerPath string, owner MCPServers, ownerErr error) WiringRow {
 	path := home.MCPFile(userHome)
+	if generated := ExpandWiringPath(WiringLaneMCPPath, userHome, home.Dir); home.Kind == ClaudeHomeLane && isRegularFile(generated) {
+		path = generated
+	}
 	row := WiringRow{Harness: "claude_code", Home: home.Name, Fact: FactMCP, Path: path}
 	if ownerErr != nil {
 		row.Status, row.Found = WiringUnknownRow, "cannot compare: the family owner list is unreadable"
@@ -294,7 +301,7 @@ func claudeHomeMCPRow(home ClaudeHome, userHome, shape, ownerPath string, owner 
 	}
 	var parts []string
 	if err != nil {
-		parts = append(parts, "no readable .claude.json")
+		parts = append(parts, "no readable "+filepath.Base(path))
 	}
 	if len(missing) > 0 {
 		parts = append(parts, "missing "+strings.Join(missing, ", "))
@@ -315,7 +322,7 @@ func claudeHomeMCPRow(home ClaudeHome, userHome, shape, ownerPath string, owner 
 
 // claudePermissionsRow fails a home that runs in bypass mode with no deny
 // list, and says what its pre-tool hook does.
-func claudePermissionsRow(home ClaudeHome, settingsPath string) WiringRow {
+func claudePermissionsRow(home ClaudeHome, settingsPath string, preToolState func(string) string) WiringRow {
 	row := WiringRow{Harness: "claude_code", Home: home.Name, Fact: FactPermissions, Path: settingsPath}
 	data, err := os.ReadFile(settingsPath)
 	if err != nil {
@@ -332,8 +339,10 @@ func claudePermissionsRow(home ClaudeHome, settingsPath string) WiringRow {
 		row.Status, row.Found = WiringFail, "settings.json unreadable: "+err.Error()
 		return row
 	}
-	commands, _ := settingsHookCommands(settingsPath, "PreToolUse")
-	hook := preToolHookPosture(commands)
+	hook := "not read"
+	if preToolState != nil {
+		hook = preToolState(settingsPath)
+	}
 	mode := firstNonEmptyString(settings.Permissions.DefaultMode, "default")
 	deny := "deny list present"
 	if len(settings.Permissions.Deny) == 0 {
@@ -347,25 +356,6 @@ func claudePermissionsRow(home ClaudeHome, settingsPath string) WiringRow {
 	}
 	row.Status = WiringPass
 	return row
-}
-
-// preToolHookPosture reads what the Compound PreToolUse command does.
-func preToolHookPosture(commands []string) string {
-	posture := "absent"
-	for _, cmd := range commands {
-		if !strings.Contains(cmd, " hook pre-tool-use ") && !strings.HasSuffix(cmd, " hook pre-tool-use") {
-			continue
-		}
-		switch {
-		case strings.Contains(cmd, "--enforce-governed"):
-			return "blocking in governed runs"
-		case strings.Contains(cmd, "--enforce"):
-			return "blocking"
-		default:
-			posture = "record-only"
-		}
-	}
-	return posture
 }
 
 // hookFileContextRow checks a harness whose hooks live in a settings-style
@@ -776,9 +766,9 @@ func firstLine(s string) string {
 }
 
 // runWiringCheck is the `compound harness check` verb behind RunWiringCommand.
-func runWiringCheck(reg Registry, only string, homes []ClaudeHome, userHome string, asJSON bool, stdout, stderr io.Writer) int {
+func runWiringCheck(reg Registry, only string, homes []ClaudeHome, userHome string, preToolState func(string) string, asJSON bool, stdout, stderr io.Writer) int {
 	rows, err := CheckWiring(WiringCheck{
-		Registry: reg, UserHome: userHome, Homes: homes, Only: only,
+		Registry: reg, UserHome: userHome, Homes: homes, Only: only, PreToolState: preToolState,
 		Probe:         ExecWiringProbe(WiringProbeTimeout, userHome),
 		SkillAdapters: RenderedSkillAdapterPaths(),
 	})

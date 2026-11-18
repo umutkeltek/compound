@@ -191,7 +191,9 @@ PostToolUse, and a session-end receipt. The four governed lanes keep their own
 folders and compiled posture. The lanes are read from the machine: the hooks
 report as the registered name of the launch profile that starts Claude in that
 folder, else `claude_<label>` (or `claude_<lane>` for a `gateway-<lane>`
-folder), else the generic `claude_code` posture above. `--check` reports every
+folder), else the generic `claude_code` posture above. The registry gives every
+such registered name the record-only floor (session start, tool calls and
+session end recorded; nothing blocks). `--check` reports every
 lane; `compound hook uninstall --harness claude-provider-lanes` removes only
 Compound's entries.
 
@@ -492,12 +494,17 @@ on any `FAIL`:
   not answer leaves the row `UNKNOWN`.
 - **MCP servers.** `~/.claude.json` is the owner list for the Claude family. A
   signed-in seat whose list differs fails (it converges at its next mirrored
-  launch); a model lane that differs is `INFO`. Every active harness that
+  launch); a model lane that differs is `INFO`. A model lane's own list is the
+  file the launcher generates in its home at each start
+  (`<home>/switchback-mcp.generated.json`), and its row names that file; a lane
+  without one is read from its `.claude.json`. Every active harness that
   supports MCP must run the `compound` server. A server one family runs and
   another does not is `INFO`, with both files.
 - **Claude permissions.** A home in bypass mode with an empty or missing
   `permissions.deny` fails; each row also says whether the pre-tool hook is
-  absent, record-only or blocking.
+  absent, record-only or blocking, read with the hook plan's own reader, and a
+  lane home the hook plan hooks names the plan's install command, so this check
+  and `compound hook install --check` agree.
 - **Skill adapters.** Each rendered skill adapter must open with strictly valid
   YAML frontmatter.
 

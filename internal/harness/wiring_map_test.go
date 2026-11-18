@@ -86,12 +86,12 @@ func TestRunWiringCommandRefusesBadArguments(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	for _, args := range [][]string{{"--harnes", "codex"}, {"--harness"}, {"stray"}} {
 		var out, errOut bytes.Buffer
-		if code := RunWiringCommand("map", args, nil, &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "usage: compound harness map|check") {
+		if code := RunWiringCommand("map", args, HookPlan{}, &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "usage: compound harness map|check") {
 			t.Fatalf("args %v: exit %d, stderr %q", args, code, errOut.String())
 		}
 	}
 	var out, errOut bytes.Buffer
-	if code := RunWiringCommand("map", []string{"--harness", "codex"}, nil, &out, &errOut); code != 0 || !strings.HasPrefix(out.String(), "codex (active)") {
+	if code := RunWiringCommand("map", []string{"--harness", "codex"}, HookPlan{}, &out, &errOut); code != 0 || !strings.HasPrefix(out.String(), "codex (active)") {
 		t.Fatalf("map --harness codex: exit %d\n%s%s", code, out.String(), errOut.String())
 	}
 }

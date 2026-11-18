@@ -96,6 +96,25 @@ func containsWord(words []string, want string) bool {
 	return false
 }
 
+// PreToolHookState names a settings file's Compound PreToolUse hook the way
+// `compound harness check` prints it: absent, record-only, blocking, or blocking
+// in governed runs. It reads the bindings InstalledHookPostures reads, so the
+// check and the hook plan cannot disagree about a home's hook.
+func PreToolHookState(configPath string) string {
+	state := "absent"
+	for _, installed := range InstalledHookPostures(configPath) {
+		switch {
+		case installed.Posture == HookPostureEnforced:
+			return "blocking"
+		case installed.Posture == HookPostureGovernedOnly:
+			state = "blocking in governed runs"
+		case state == "absent":
+			state = "record-only"
+		}
+	}
+	return state
+}
+
 // HookConfigPath names the native config Compound installs a harness's hooks
 // into, under baseDir, or ("", false) when Compound installs no hooks for it.
 // Registry names (claude_minimax) and installer labels (claude-minimax) both resolve.

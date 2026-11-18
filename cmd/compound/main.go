@@ -1292,7 +1292,7 @@ func cmdHarness(args []string) {
 	// registry is loaded -- they don't need it.
 	if target == "map" || target == "check" {
 		// Where each harness is wired (map), and the live proof of it (check).
-		os.Exit(harness.RunWiringCommand(target, args[1:], hookplan.LaneHookSettingsPath, os.Stdout, os.Stderr))
+		os.Exit(harness.RunWiringCommand(target, args[1:], hookplan.WiringHookPlan(), os.Stdout, os.Stderr))
 	}
 	if target == "capability-drift" {
 		// Compares the DECLARED registry against the lane's real files. Dispatches

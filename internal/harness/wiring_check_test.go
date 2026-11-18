@@ -97,6 +97,9 @@ func (m *wiringMachine) check(t *testing.T, only string) []WiringRow {
 			return []byte(a.out), a.err
 		},
 		SkillAdapters: map[string]string{"claude_code": filepath.Join(m.user, "skills", "claude", "SKILL.md")},
+		// The real reader is the hook plan's (hookplan.PreToolHookState, tested
+		// there against this check); here the row must print what it answers.
+		PreToolState: func(settingsPath string) string { return "state of " + filepath.Base(filepath.Dir(settingsPath)) },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -138,7 +141,7 @@ func TestWiringCheckPassesAFullyWiredMachine(t *testing.T) {
 	if r := findRow(t, rows, "hermes", "", FactContext); r.Status != WiringInfo || !strings.Contains(r.Found, "session-end only") {
 		t.Fatalf("hermes has no session-start route and must say so: %+v", r)
 	}
-	if r := findRow(t, rows, "claude_code", ClaudeHomeDefault, FactPermissions); !strings.Contains(r.Found, "pre-tool hook record-only") {
+	if r := findRow(t, rows, "claude_code", ClaudeHomeDefault, FactPermissions); !strings.HasSuffix(r.Found, "pre-tool hook state of .claude") {
 		t.Fatalf("permissions row must name the pre-tool hook posture: %+v", r)
 	}
 	if r := findRow(t, rows, "codex", "", FactMCP); r.Found != "alpha, compound (off: off)" {
@@ -200,13 +203,10 @@ func TestWiringCheckFailsBypassWithoutDenyAndReadsHookPosture(t *testing.T) {
 			t.Fatalf("%s runs in bypass mode with no deny list and must fail: %+v", home, r)
 		}
 	}
-	if r := findRow(t, rows, "claude_code", "lane-open", FactPermissions); !strings.Contains(r.Found, "pre-tool hook absent") {
-		t.Fatalf("hook posture absent: %+v", r)
+	if r := findRow(t, rows, "claude_code", "lane-open", FactPermissions); !strings.HasSuffix(r.Found, "pre-tool hook state of lane-open") {
+		t.Fatalf("the row must print the hook plan's answer for its own settings file: %+v", r)
 	}
-	if r := findRow(t, rows, "claude_code", "lane-empty", FactPermissions); !strings.HasSuffix(r.Found, "pre-tool hook blocking") {
-		t.Fatalf("hook posture blocking: %+v", r)
-	}
-	if r := findRow(t, rows, "claude_code", "lane-asks", FactPermissions); r.Status != WiringPass || !strings.Contains(r.Found, "blocking in governed runs") {
+	if r := findRow(t, rows, "claude_code", "lane-asks", FactPermissions); r.Status != WiringPass {
 		t.Fatalf("a home that is not in bypass mode passes without a deny list: %+v", r)
 	}
 }
@@ -382,13 +382,13 @@ func TestRunWiringCheckExitCodes(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("LANES_JSON", filepath.Join(m.user, "absent.json"))
 	var out, errOut bytes.Buffer
-	code := RunWiringCommand("check", []string{"--harness", "opencode"}, nil, &out, &errOut)
+	code := RunWiringCommand("check", []string{"--harness", "opencode"}, HookPlan{}, &out, &errOut)
 	if code != 0 || !strings.Contains(out.String(), "UNKNOWN opencode context") {
 		t.Fatalf("exit %d\n%s%s", code, out.String(), errOut.String())
 	}
 	writeWiringFile(t, filepath.Join(m.user, ".config", "opencode", "opencode.json"), `{"mcp":{}}`)
 	out.Reset()
-	code = RunWiringCommand("check", []string{"--harness", "opencode", "--json"}, nil, &out, &errOut)
+	code = RunWiringCommand("check", []string{"--harness", "opencode", "--json"}, HookPlan{}, &out, &errOut)
 	var doc struct {
 		Schema string      `json:"schema_version"`
 		Failed bool        `json:"failed"`
@@ -432,5 +432,43 @@ func TestReadMCPServersShapes(t *testing.T) {
 	}
 	if _, err := ReadMCPServers("xml", path); err == nil {
 		t.Fatal("an unknown shape is an error")
+	}
+}
+
+// Without the hook plan's reader the check says so instead of guessing.
+func TestWiringCheckWithoutTheHookPlanReaderSaysNotRead(t *testing.T) {
+	m := newWiringMachine(t)
+	rows, err := CheckWiring(WiringCheck{Registry: DefaultRegistry(), UserHome: m.user, Homes: m.homes, Only: "claude_code"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := findRow(t, rows, "claude_code", ClaudeHomeDefault, FactPermissions); !strings.HasSuffix(r.Found, "pre-tool hook not read") {
+		t.Fatalf("no reader must read as not read: %+v", r)
+	}
+}
+
+// A model lane's list is the file the launcher generates in its home; the row
+// names that file, and a lane without one still falls back to its .claude.json.
+func TestWiringCheckReadsALaneListFromItsGeneratedFile(t *testing.T) {
+	m := newWiringMachine(t)
+	gen := m.addHome(t, "lane-gen", ClaudeHomeLane, "", `{"mcpServers":{"stale":{}}}`, claudeSettings("default", nil, ""))
+	writeWiringFile(t, ExpandWiringPath(WiringLaneMCPPath, m.user, gen), `{"mcpServers":{"compound":{},"alpha":{}}}`)
+	plain := m.addHome(t, "lane-plain", ClaudeHomeLane, "", `{"mcpServers":{"compound":{}}}`, claudeSettings("default", nil, ""))
+	rows := m.check(t, "claude")
+	if r := findRow(t, rows, "claude_code", "lane-gen", FactMCP); r.Path != ExpandWiringPath(WiringLaneMCPPath, m.user, gen) || r.Status != WiringPass {
+		t.Fatalf("a lane's generated list must be the file read and named: %+v", r)
+	}
+	if r := findRow(t, rows, "claude_code", "lane-plain", FactMCP); r.Path != filepath.Join(plain, ".claude.json") || !strings.Contains(r.Found, "missing alpha") {
+		t.Fatalf("a lane without a generated list keeps its .claude.json: %+v", r)
+	}
+	if !strings.Contains(WiringLaneMCPPath, WiringClaudeHome+"/") || !strings.HasSuffix(WiringLaneMCPPath, ".generated.json") {
+		t.Fatalf("the lane list lives in the lane home: %s", WiringLaneMCPPath)
+	}
+	var mapped bool
+	for _, src := range claudeCodeWiring().MCP {
+		mapped = mapped || src.Path == WiringLaneMCPPath
+	}
+	if !mapped {
+		t.Fatal("harness map must carry the lane's generated list as a Claude-family fact")
 	}
 }
