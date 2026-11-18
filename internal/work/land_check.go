@@ -417,11 +417,26 @@ func (s *Store) evaluateLandCheckWithFacts(w envelope.WorkEnvelope, opts LandChe
 	}
 
 	if !proofFound {
+		report.Status = "missing_source_bound_proof"
 		proofAction := fmt.Sprintf("run fresh canonical certifying proof for attached candidate commit:%s, then rerun land-check", candidate)
 		if report.CandidateContainedInTarget {
-			// Post-land: the verifier verdict is the canonical proof; the laptop
-			// battery remains only for governance-core diffs.
-			proofAction = fmt.Sprintf("wait for a green verifier verdict covering commit:%s, attach it with compound work verifier-verdict %s --tip %s --attach --actor <actor>, then rerun land-check; a governance-core diff must instead %s", candidate, w.ID, candidate, proofAction)
+			// Post-land: the proof that can close depends on the repository
+			// (land_check_route.go). Only Compound's own profile waits for the
+			// remote verifier; its laptop battery remains for governance-core diffs.
+			route, err := facts.proofRoute(repoPath, contract.RepositoryFingerprint, expectedBase, candidate)
+			if err != nil {
+				return report, err
+			}
+			switch route.kind {
+			case landingProofRouteRemoteVerifier:
+				proofAction = fmt.Sprintf("wait for a green verifier verdict covering commit:%s, attach it with compound work verifier-verdict %s --tip %s --attach --actor <actor>, then rerun land-check; a governance-core diff must instead %s", candidate, w.ID, candidate, proofAction)
+			case landingProofRouteNativeExact:
+				report.Status = "awaiting_native_proof"
+				proofAction = nativeExactCandidateProofAction(w.ID, candidate, expectedBase, route.profile)
+			default:
+				report.Status = "unsupported_proof_profile"
+				proofAction = noProofProfileAction(candidate, route.reason)
+			}
 		}
 		if !report.CleanTarget {
 			proofAction += fmt.Sprintf(
@@ -430,7 +445,6 @@ func (s *Store) evaluateLandCheckWithFacts(w envelope.WorkEnvelope, opts LandChe
 				strings.Join(dirtyStatusPaths(statusOutput), ", "),
 			)
 		}
-		report.Status = "missing_source_bound_proof"
 		report.NextAction = proofAction
 		return report, nil
 	}
@@ -454,6 +468,21 @@ func (s *Store) evaluateLandCheckWithFacts(w envelope.WorkEnvelope, opts LandChe
 		// make later worktree state disappear. Surface every dirty path as a
 		// preservation warning so default text clients do not hide foreign WIP.
 		if verifierProof {
+			// The remote verifier runs Compound's suite only. Its verdict names a
+			// Compound commit and can never certify another repository's tip.
+			route, err := facts.proofRoute(repoPath, contract.RepositoryFingerprint, expectedBase, candidate)
+			if err != nil {
+				return report, err
+			}
+			if route.kind != landingProofRouteRemoteVerifier {
+				report.Status = "verifier_not_applicable"
+				next := noProofProfileAction(candidate, route.reason)
+				if route.kind == landingProofRouteNativeExact {
+					next = nativeExactCandidateProofAction(w.ID, candidate, expectedBase, route.profile)
+				}
+				report.NextAction = fmt.Sprintf("attached %s cannot certify this repository; %s", verifierRef, next)
+				return report, nil
+			}
 			ev, err := LoadVerifierVerdictEvidence(VerifierVerdictsDir(s.home))
 			if err != nil {
 				return report, fmt.Errorf("verifier verdict evidence: %w", err)

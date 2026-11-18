@@ -24,6 +24,7 @@ const (
 	landingReadAncestry      = "ancestry"
 	landingReadIdentity      = "identity"
 	landingReadOwnedPaths    = "owned_paths"
+	landingReadProofRoute    = "proof_route"
 )
 
 // landingProjectionReadTimeout bounds each repository-scoped Git read of one
@@ -114,6 +115,7 @@ type landingGitFacts struct {
 	// base, because a different base can name a different lineage.
 	identitySession *gitrepository.IdentitySession
 	ownedDirtyCache map[string]landingFact[landingOwnedDirtyFact]
+	proofRouteCache map[string]landingFact[landingProofRoute]
 
 	// readTimeout bounds each read; zero reads without a bound.
 	readTimeout time.Duration
@@ -140,6 +142,7 @@ func newLandingGitFacts() *landingGitFacts {
 		identityCache:      map[string]landingFact[gitrepository.Identity]{},
 		identitySession:    gitrepository.NewIdentitySession(),
 		ownedDirtyCache:    map[string]landingFact[landingOwnedDirtyFact]{},
+		proofRouteCache:    map[string]landingFact[landingProofRoute]{},
 		readTimeout:        landingProjectionReadTimeout,
 		unavailable:        map[string]*landingRepositoryUnavailableError{},
 		reads:              map[string]int{},
@@ -410,6 +413,24 @@ func (f *landingGitFacts) ownedPathsDirty(repoPath, expectedBase, candidate stri
 		err:   err,
 	}
 	return dirty, append([]string(nil), paths...), err
+}
+
+// proofRoute reads the committed proof profile route at one exact candidate
+// (land_check_route.go), keyed by every input of that read.
+func (f *landingGitFacts) proofRoute(repoPath, fingerprint, expectedBase, candidate string) (landingProofRoute, error) {
+	if f == nil {
+		return landingProofRouteAtCandidate(repoPath, fingerprint, expectedBase, candidate)
+	}
+	key := landingFactsKey(repoPath, fingerprint, expectedBase, candidate)
+	if fact, ok := f.proofRouteCache[key]; ok {
+		return fact.value, fact.err
+	}
+	value, err := boundedLandingRead(f, repoPath, func() (landingProofRoute, error) {
+		return landingProofRouteAtCandidate(repoPath, fingerprint, expectedBase, candidate)
+	})
+	f.recordRead(landingReadProofRoute)
+	f.proofRouteCache[key] = landingFact[landingProofRoute]{value: value, err: err}
+	return value, err
 }
 
 // landingFactsKey joins exact read inputs into one cache key. NUL separates

@@ -1101,7 +1101,8 @@ func (s *Store) applyWorkbenchGitDeliveryWithFacts(item *WorkbenchItem, w envelo
 		return
 	}
 	switch live.Status {
-	case "missing_source_bound_proof", "awaiting_verifier_verdict", "verifier_verdict_mismatch":
+	case "missing_source_bound_proof", "awaiting_verifier_verdict", "verifier_verdict_mismatch",
+		"awaiting_native_proof", "unsupported_proof_profile", "verifier_not_applicable":
 		item.LandingStatus = "awaiting_proof"
 		item.NextAction = live.NextAction
 	case "verifier_red_culprit":

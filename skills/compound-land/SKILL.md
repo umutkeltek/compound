@@ -95,7 +95,10 @@ compound work land-check "$WORK" --tip "$LANDED_SHA" --json          # landed; p
 
 Then `work close ... --proof <land-check evidence ref>`. Land-check statuses on this path:
 `awaiting_verifier_verdict` (wait for the verifier), `verifier_red_culprit` (fix forward or revert the same
-day), `verifier_verdict_mismatch` (attach the current covering verdict). Compound reads the evidence from
+day), `verifier_verdict_mismatch` (attach the current covering verdict). The verifier covers Compound
+only: for another repository land-check names `awaiting_native_proof` (run its exact-candidate
+`proof-check --repo`), `unsupported_proof_profile` (an explicit gap) or `verifier_not_applicable` (a
+verifier verdict was attached to it); none of them closes. Compound reads the evidence from
 `$COMPOUND_HOME/state/verify/` (`verdicts.tsv`, `red.json`); the verify loop mirrors its files there.
 Close re-reads them, so a red named after the land-check still refuses the close.
 

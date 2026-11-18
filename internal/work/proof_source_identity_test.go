@@ -247,7 +247,9 @@ func TestCompleteProofResourceStoresSealedSourceSnapshot(t *testing.T) {
 func TestLandCheckRefusesSourceControlledCandidateWithoutCommittedProof(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 28, 7, 30, 0, 0, time.UTC)
-	repo, base, candidate := sharedLandingLandedRepo(t)
+	// A Compound repository: other repositories route to their own native proof
+	// (land_check_route_test.go); every route refuses a landed tip without proof.
+	repo, base, candidate := landedRepoWithProfile(t, map[string]string{"go.mod": routeCompoundGoMod})
 	store, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

@@ -184,7 +184,10 @@ func TestVerifierVerdictIsTheCanonicalCloseProof(t *testing.T) {
 	}
 	setup := func(t *testing.T) fixture {
 		t.Helper()
-		repo, base, candidate := sharedLandingLandedRepo(t)
+		// The verifier runs Compound's own suite, so its fixture is a Compound
+		// repository (module compound); land_check_route_test.go pins that other
+		// repositories route to their native proof instead.
+		repo, base, candidate := landedRepoWithProfile(t, map[string]string{"go.mod": routeCompoundGoMod})
 		// A later landing on main: the verifier tested main including the candidate.
 		writeLandingFile(t, filepath.Join(repo, "later.txt"), "later\n")
 		landingGit(t, repo, "add", "later.txt")

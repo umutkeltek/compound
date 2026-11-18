@@ -1141,7 +1141,15 @@ no green full-suite row. Land-check then applies one rule (`internal/work/verifi
   yet"). There is no fallback to a laptop battery.
 
 Close revalidates live, so a red verdict named after the land-check still refuses
-the close. Diffs whose presubmit report carries `presubmit.plan.scope.governance_core`
+the close. The verifier runs Compound's suite only. Land-check reads the committed
+proof profile at the exact candidate (`internal/work/land_check_route.go`): Compound's
+own profile waits for the verifier as above; a repository that commits a supported
+native profile (`compound-proof.json` consumers or a Rust workspace) gets
+`awaiting_native_proof`, which names the exact-candidate `proof-check` run; a
+repository with neither gets `unsupported_proof_profile`, an explicit verification
+gap. A verifier verdict attached to another repository refuses as
+`verifier_not_applicable` and never certifies it. Routing changes no close gate.
+Diffs whose presubmit report carries `presubmit.plan.scope.governance_core`
 (`governanceCorePaths` in `internal/proofscope`) keep the full pre-land canonical
 battery and the exact-tip equality rule; the presubmit verdict line names them as
 `governance_core=<path>`.

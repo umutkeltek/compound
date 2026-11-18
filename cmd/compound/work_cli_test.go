@@ -58,8 +58,10 @@ func TestWorkLandCheckDefaultTextReportsForeignDirtPreservation(t *testing.T) {
 	out := captureStdout(t, func() {
 		cmdWork([]string{"land-check", w.ID, "--tip", tip, "--dry-run"})
 	})
-	if !strings.Contains(out, "status=missing_source_bound_proof") ||
-		!strings.Contains(out, "fresh canonical certifying proof") ||
+	// The fixture repository commits no proof profile, so its landed tip is an
+	// explicit verification gap; the foreign-WIP warning rides on every route.
+	if !strings.Contains(out, "status=unsupported_proof_profile") ||
+		!strings.Contains(out, "verification gap") ||
 		!strings.Contains(out, "next_action:") ||
 		!strings.Contains(out, "preserve") ||
 		!strings.Contains(out, "foreign-lane-wip.txt") {
