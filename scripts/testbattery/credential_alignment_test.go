@@ -152,6 +152,10 @@ func (f *credentialAlignmentRunnerFixture) run(_ context.Context, args, environm
 		_, _ = fmt.Fprintln(stdout, image)
 	case "run":
 		f.started = true
+		platform := slices.Index(args, "--platform")
+		if platform < 0 || platform+1 >= len(args) || args[platform+1] != "linux/amd64" || args[len(args)-1] != credentialAlignmentPrerequisiteImage {
+			f.t.Fatal("fixture did not select the frozen image and its platform", args)
+		}
 		for i, arg := range args {
 			if arg == "--name" {
 				f.name = args[i+1]

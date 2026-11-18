@@ -187,16 +187,64 @@ installation fallback. The gate uses only the local Docker Unix socket, creates
 a unique labelled container with no network or published ports, and removes only
 that exact container and its anonymous data volume after rechecking ownership.
 
-The prerequisite is immutable image
-`sha256:e9851137192b495dcc67f03d032446a0bfeca905351b4065ba214173dac9a5fa`.
-It is a frozen synthetic test dependency, not a reproducible source build. It
-contains PostgreSQL 17.11, Python 3.13.5, sudo and the root-owned Docker 28 CLI.
-Its mounted PostgreSQL data and Docker socket were excluded from the freeze.
-The test suite copies all current program and fixture bodies from sealed HEAD
-before every native consumer; stale program bytes in the dependency layer cannot
-select execution. This host prerequisite is explicitly classified outside the
-fresh-clone CI subset; it remains mandatory for canonical preland and postland
-proof, alongside every existing gate.
+The gate selects the local `linux/amd64` image by its configuration digest.
+The tracked [Dockerfile](../../../scripts/testbattery/credential-fixture/Dockerfile)
+pins the frontend, PostgreSQL 17.11 base, Docker 28.5.2 CLI and Debian packages
+for Python 3.13.5 and sudo. It contains no database contents or mounted socket.
+Every native consumer copies its program and fixture bodies from sealed HEAD.
+Canonical preland and postland proof require this image. Fresh-clone CI runs
+the synthetic cases.
+
+### Build and recover the native fixture
+
+The existing Linux amd64 verifier worker owns this build. From its clean checkout
+at the required source revision, use its existing Docker Buildx builder and an
+empty context. Set `fixture_dir` to a work-specific directory outside the
+checkout. The worker used Docker 26.1.5 and Buildx 0.13.1. The following Bash
+commands run two uncached builds and export only the selected image ID.
+
+```bash
+set -euo pipefail
+: "${fixture_dir:?set the fixture artifact directory}"
+image=sha256:0f1fdc9bee7d75929baf8def8a5ee96d443e2466368856cff981f7c569ea68b8
+mkdir -p "$fixture_dir"
+context=$(mktemp -d "$fixture_dir/context.XXXXXXXX")
+for build in first second; do
+  docker buildx build --platform linux/amd64 --no-cache --provenance=false \
+    --build-arg SOURCE_DATE_EPOCH=0 --file scripts/testbattery/credential-fixture/Dockerfile \
+    --load --iidfile "$fixture_dir/$build.iid" "$context"
+  test "$(cat "$fixture_dir/$build.iid")" = "$image"
+done
+cd "$fixture_dir"
+docker image save "$image" | zstd -T1 -q -o credential-alignment-linux-amd64.tar.zst
+zstd -tq credential-alignment-linux-amd64.tar.zst
+sha256sum credential-alignment-linux-amd64.tar.zst
+```
+
+Record the compressed archive checksum with the worker's build evidence. On the
+canonical runner, set `fixture_worker` to the existing worker and
+`remote_archive` to that retained archive path. Run the following from the clean
+checkout of the source to prove. Use a separate local artifact directory so the
+transfer leaves the checkout clean. The runner needs Linux amd64 execution
+support, including emulation on an ARM host.
+
+```bash
+set -euo pipefail
+: "${fixture_worker:?}" "${remote_archive:?}" "${fixture_dir:?}" "${archive_sha256:?}" "${source_head:?}"
+image=sha256:0f1fdc9bee7d75929baf8def8a5ee96d443e2466368856cff981f7c569ea68b8
+mkdir -p "$fixture_dir"
+archive="$fixture_dir/credential-alignment-linux-amd64.tar.zst"
+scp "$fixture_worker:$remote_archive" "$archive"
+test "$(shasum -a 256 "$archive" | awk '{print $1}')" = "$archive_sha256"
+export DOCKER_HOST=unix:///var/run/docker.sock
+zstd -dc "$archive" | docker --host "$DOCKER_HOST" image load
+test "$(docker --host "$DOCKER_HOST" image inspect --format '{{.Id}} {{.Os}}/{{.Architecture}}' "$image")" = "$image linux/amd64"
+go run ./scripts/testbattery credential-password-alignment-native --source-head "$source_head"
+```
+
+The gate also checks the sealed source and the exact ID on a warm host. The
+archive checksum identifies the transferred bytes. Docker's configuration digest
+identifies the frozen runtime image across exports.
 
 The fixed native inventory covers repair followed by unchanged verification and
 four-file installation, actual Linux/PG17 primitives, both COMMIT acknowledgement
