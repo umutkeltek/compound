@@ -170,6 +170,14 @@ function createCompoundPlugin(runHook: HookRunner = runCompoundHook): PluginDefi
       const directory = api.location?.directory || process.cwd()
       const sessionStarts = new Map<string, Promise<string>>()
       const promptContexts = new Map<string, string>()
+      // Where each session was created. OpenCode runs one plugin copy per location and
+      // calls every copy's hooks, so a copy acts only on sessions of its own location
+      // (or ones it never saw created); otherwise each copy would start the briefing.
+      const sessionDirectories = new Map<string, string>()
+      const ownSession = (sessionID: string): boolean => {
+        const created = sessionDirectories.get(sessionID)
+        return !created || !api.location?.directory || created === api.location.directory
+      }
 
       const invokeOpen = async (name: CompoundHookName, input: HookInput): Promise<string> => {
         try {
@@ -195,6 +203,7 @@ function createCompoundPlugin(runHook: HookRunner = runCompoundHook): PluginDefi
       const forget = (sessionID: string) => {
         sessionStarts.delete(sessionID)
         promptContexts.delete(sessionID)
+        sessionDirectories.delete(sessionID)
       }
 
       // Start the briefing as soon as a session exists, so the first prompt rarely waits
@@ -213,7 +222,8 @@ function createCompoundPlugin(runHook: HookRunner = runCompoundHook): PluginDefi
             if (!sessionID) continue
             if (event.type === "session.created") {
               const created = event.data?.location?.directory
-              if (created && api.location?.directory && created !== api.location.directory) continue
+              if (created) sessionDirectories.set(sessionID, created)
+              if (!ownSession(sessionID)) continue
               void ensureSessionStart(sessionID, created || directory)
             }
             if (event.type === "session.deleted") forget(sessionID)
@@ -229,6 +239,7 @@ function createCompoundPlugin(runHook: HookRunner = runCompoundHook): PluginDefi
       try {
         registrations.push(
           await api.session.hook("prompt", async (input) => {
+            if (!ownSession(input.sessionID)) return
             try {
               await ensureSessionStart(input.sessionID)
               const context = await invokeOpen("user-prompt-submit", {
@@ -246,6 +257,7 @@ function createCompoundPlugin(runHook: HookRunner = runCompoundHook): PluginDefi
 
         registrations.push(
           await api.session.hook("context", async (input) => {
+            if (!ownSession(input.sessionID)) return
             try {
               const blocks: string[] = []
               const sessionContext = await ensureSessionStart(input.sessionID)
@@ -263,6 +275,7 @@ function createCompoundPlugin(runHook: HookRunner = runCompoundHook): PluginDefi
 
         registrations.push(
           await api.tool.hook("execute.after", (input) => {
+            if (!ownSession(input.sessionID)) return
             try {
               void invokeOpen("post-tool-use", {
                 hook_event_name: "PostToolUse",

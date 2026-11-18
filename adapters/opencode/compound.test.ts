@@ -161,6 +161,27 @@ describe("CompoundPlugin", () => {
     await cleanup()
   })
 
+  test("prompt, context and after-tool hooks ignore a session created at another location", async () => {
+    const calls: string[] = []
+    const runner: HookRunner = async (name, input) => {
+      calls.push(name + ":" + input.session_id)
+      return "CONTEXT"
+    }
+    const fake = fakeAPI("/work")
+    const cleanup = await testing.createWithRunner(runner).setup(fake.api)
+
+    await fake.emit({ type: "session.created", data: { sessionID: "elsewhere", location: { directory: "/other" } } })
+    await fake.hooks.prompt?.({ sessionID: "elsewhere", prompt: { text: "hi" } })
+    const request = contextInput("elsewhere")
+    await fake.hooks.context?.(request)
+    await fake.hooks.toolAfter?.({ tool: "bash", sessionID: "elsewhere", status: "completed" })
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    expect(calls).toEqual([])
+    expect(systemText(request)).toBe("EXISTING")
+    await cleanup()
+  })
+
   test("leaves the system prompt alone when Compound has nothing to add", async () => {
     const fake = fakeAPI()
     const cleanup = await testing.createWithRunner(async () => "").setup(fake.api)
