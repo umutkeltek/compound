@@ -191,11 +191,15 @@ PostToolUse, and a session-end receipt. The four governed lanes keep their own
 folders and compiled posture. The lanes are read from the machine: the hooks
 report as the registered name of the launch profile that starts Claude in that
 folder, else `claude_<label>` (or `claude_<lane>` for a `gateway-<lane>`
-folder), else the generic `claude_code` posture above. The registry gives every
-such registered name the record-only floor (session start, tool calls and
-session end recorded; nothing blocks). `--check` reports every
-lane; `compound hook uninstall --harness claude-provider-lanes` removes only
-Compound's entries.
+folder). Each name belongs to one home: a name two homes claim goes to neither,
+and a home left without a registered name of its own is reported `not wired` and
+gets no hooks; nothing records as `claude_code`, the operator's own seats. The
+registry gives every such registered name the record-only floor (session start,
+tool calls and session end recorded; nothing blocks). `--check` reports every
+lane. An unreadable lane file or launch profiles file is an `error` row; the run
+goes on for every other harness and fails only when `--harness
+claude-provider-lanes` was named. `compound hook uninstall --harness
+claude-provider-lanes` removes only Compound's entries.
 
 ### Compare models and efforts published by the profile owner
 
@@ -491,7 +495,9 @@ on any `FAIL`:
   and, where the harness can say so, the harness must report it loaded
   (`codex features list` for Codex hooks, `opencode api GET /api/plugin` for the
   OpenCode plugin). A file that only exists never passes; a harness that does
-  not answer leaves the row `UNKNOWN`.
+  not answer leaves the row `UNKNOWN`. A hook line whose program (its first
+  word) is not an executable file fails and names that program. oh-my-pi cannot
+  report what it loaded, so its row is `UNKNOWN` ("wired, not verified").
 - **MCP servers.** `~/.claude.json` is the owner list for the Claude family. A
   signed-in seat whose list differs fails (it converges at its next mirrored
   launch); a model lane that differs is `INFO`. A model lane's own list is the
