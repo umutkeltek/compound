@@ -87,3 +87,38 @@ func RetiredDecisionIDs(members []Claim, named map[string]bool) map[string]bool 
 	}
 	return retired
 }
+
+// applyRecallDecisionRetirements adds accepted operator decisions' named retirements
+// to a recall snapshot. AllCurrent retains the input inventory for decisions --all.
+// Neither the editable index nor an ordinary promoted claim can supply this authority.
+func applyRecallDecisionRetirements(claims []Claim, superseded map[string]bool, asOf int64) {
+	var members, protected []Claim
+	for _, c := range claims {
+		if c.ClaimType != "decision" || c.Seq > asOf || c.Visibility == "retired" || c.State == ClaimStateNeedsReview || superseded[c.ID] {
+			continue
+		}
+		members = append(members, c)
+		if HasProtectedOperationalDecisionAuthority(c) {
+			protected = append(protected, c)
+		}
+	}
+	named := DecisionSupersedesNames(protected, func(c Claim) bool {
+		return c.Qualifiers["lifecycle_status"] == "accepted"
+	})
+	if len(named) == 0 {
+		return
+	}
+	retired := RetiredDecisionIDs(members, named)
+	// Only trusted imports may link a claim ID to a protected decision's canonical
+	// name. A generic page can copy a decision_id but cannot thereby retire a ruling.
+	retiredProtected := RetiredDecisionIDs(protected, named)
+	for _, c := range members {
+		ids := retired
+		if HasProtectedOperationalDecisionAuthority(c) {
+			ids = retiredProtected
+		}
+		if ids[DecisionCanonicalID(c)] {
+			superseded[c.ID] = true
+		}
+	}
+}

@@ -199,6 +199,7 @@ func (s *Store) derivePositions(opts PositionFoldOptions, now time.Time) ([]Posi
 			return nil, 0, nil, err
 		}
 	}
+	applyRecallDecisionRetirements(claims, superseded, asOf)
 	out := foldPositionRows(claims, superseded, asOf, foldedAt, entity, topicSet)
 	return out, asOf, subtree, nil
 }

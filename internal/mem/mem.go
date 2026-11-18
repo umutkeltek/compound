@@ -1998,6 +1998,7 @@ func (s *Store) Recall(entity string, opts RecallOpts) (RecallResult, error) {
 	if err != nil {
 		return res, err
 	}
+	applyRecallDecisionRetirements(claims, superseded, asOf)
 	for _, c := range gated {
 		if !superseded[c.ID] {
 			res.Claims = append(res.Claims, c)

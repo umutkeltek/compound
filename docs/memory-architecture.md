@@ -28,7 +28,10 @@ smallest promotable durable memory object.
 - **Entity**: routed thing such as a project, product, repo, server, person,
   concept, topic, doctrine, or tool.
 - **Claim**: smallest durable statement Compound can reason about. A claim can be
-  candidate, promoted, superseded, retired, or rejected.
+  candidate, promoted, superseded, retired, or rejected. Current recall and positions
+  honor named retirements from accepted, operator-reviewed decisions at the requested
+  ledger sequence. A retired ruling remains available in decision history and in
+  recall at a sequence before its replacement.
 - **Position**: current stance for one fact slot (`entity + topic/domain +
   predicate + claim_type`), derived from promoted claims and
   supersession/review edges. For a decision carrying an explicit `decision_id`,

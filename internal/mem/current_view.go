@@ -113,6 +113,7 @@ func (s *Store) currentViewForTopic(topicToken string, includeLessons bool) (*Cu
 
 	generation := currentViewGeneration(claims, edges)
 	decorated, superseded := foldCurrentViewState(claims, edges, generation)
+	applyRecallDecisionRetirements(decorated, superseded, generation)
 	current := visibleCurrentViewClaims(decorated, superseded)
 	positions := foldPositionRows(decorated, superseded, generation, "", "", nil)
 	var lessons map[string]Claim
@@ -129,7 +130,7 @@ func (s *Store) currentViewForTopic(topicToken string, includeLessons bool) (*Cu
 		byID[claim.ID] = claim
 	}
 	h := sha256.New()
-	_, _ = h.Write([]byte("compound.memory.current-view.v1\x00claims.jsonl\x00"))
+	_, _ = h.Write([]byte("compound.memory.current-view.v2\x00claims.jsonl\x00"))
 	_, _ = h.Write(claimsRaw)
 	_, _ = h.Write([]byte("\x00edges.jsonl\x00"))
 	_, _ = h.Write(edgesRaw)
