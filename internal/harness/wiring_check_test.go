@@ -100,6 +100,8 @@ func (m *wiringMachine) check(t *testing.T, only string) []WiringRow {
 		// The real reader is the hook plan's (hookplan.PreToolHookState, tested
 		// there against this check); here the row must print what it answers.
 		PreToolState: func(settingsPath string) string { return "state of " + filepath.Base(filepath.Dir(settingsPath)) },
+		// The fixture's hook program; TestWiringCheckFailsAHookWhoseProgramIsGone checks the real lookup.
+		Executable: func(word string) bool { return word == "/usr/local/bin/compound" },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -129,11 +131,14 @@ func TestWiringCheckPassesAFullyWiredMachine(t *testing.T) {
 		{"claude_code", ClaudeHomeDefault, FactPermissions}, {"claude_code", "", FactSkillAdapter},
 		{"codex", "", FactContext}, {"codex", "", FactMCP},
 		{"opencode", "", FactContext}, {"opencode", "", FactMCP},
-		{"oh_my_pi", "", FactContext}, {"hermes", "", FactSessionEnd}, {"hermes", "", FactMCP},
+		{"hermes", "", FactSessionEnd}, {"hermes", "", FactMCP},
 	} {
 		if r := findRow(t, rows, want.harness, want.home, want.fact); r.Status != WiringPass {
 			t.Errorf("%+v = %s: %s", want, r.Status, r.Found)
 		}
+	}
+	if r := findRow(t, rows, "oh_my_pi", "", FactContext); r.Status != WiringUnknownRow || !strings.HasPrefix(r.Found, "wired, not verified") {
+		t.Fatalf("oh-my-pi cannot say it loaded the shim, so its row is unknown: %+v", r)
 	}
 	if r := findRow(t, rows, "deepseek_harness", "", FactStatus); r.Status != WiringInfo || !strings.Contains(r.Found, "dormant") {
 		t.Fatalf("a dormant harness is reported, not checked: %+v", r)
@@ -470,5 +475,59 @@ func TestWiringCheckReadsALaneListFromItsGeneratedFile(t *testing.T) {
 	}
 	if !mapped {
 		t.Fatal("harness map must carry the lane's generated list as a Claude-family fact")
+	}
+}
+
+// A hook line whose program no longer exists is not a working hook: the Claude
+// and Codex context rows fail and name the program; a real one passes.
+func TestWiringCheckFailsAHookWhoseProgramIsGone(t *testing.T) {
+	m := newWiringMachine(t)
+	gone := filepath.Join(m.user, "bin", "gone-compound")
+	real := filepath.Join(m.user, "bin", "compound")
+	writeWiringFile(t, real, "#!/bin/sh\nexit 0\n")
+	if err := os.Chmod(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settings := func(program string) string {
+		return `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"'` + program + `' hook session-start --live --harness claude_code"}]}]}}`
+	}
+	m.addHome(t, "lane-gone", ClaudeHomeLane, "claude_kimi", `{}`, settings(gone))
+	m.addHome(t, "lane-real", ClaudeHomeLane, "claude_kimi", `{}`, settings(real))
+	writeWiringFile(t, filepath.Join(m.user, ".claude", "settings.json"), settings(gone))
+	writeWiringFile(t, filepath.Join(m.user, ".codex", "hooks.json"), strings.ReplaceAll(settings(gone), "claude_code", "codex"))
+	rows, err := CheckWiring(WiringCheck{Registry: DefaultRegistry(), UserHome: m.user, Homes: m.homes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []WiringRow{
+		findRow(t, rows, "claude_code", ClaudeHomeDefault, FactContext),
+		findRow(t, rows, "claude_code", "lane-gone", FactContext),
+		findRow(t, rows, "codex", "", FactContext),
+	} {
+		if r.Status != WiringFail || !strings.Contains(r.Found, gone) || r.Fix == "" {
+			t.Errorf("a hook whose program is gone must fail and name it: %+v", r)
+		}
+	}
+	if r := findRow(t, rows, "claude_code", "lane-real", FactContext); r.Status != WiringPass {
+		t.Fatalf("a hook whose program exists passes: %+v", r)
+	}
+}
+
+// A probed harness that leaves a child holding its output open must not keep the
+// check waiting past the timeout.
+func TestExecWiringProbeDoesNotWaitForAChildThatKeepsOutputOpen(t *testing.T) {
+	dir := t.TempDir()
+	writeWiringFile(t, filepath.Join(dir, "lingers"), "#!/bin/sh\nsleep 30 &\nexec sleep 30\n")
+	if err := os.Chmod(filepath.Join(dir, "lingers"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	start := time.Now()
+	_, err := ExecWiringProbe(200*time.Millisecond, dir)("lingers")
+	if took := time.Since(start); took > 10*time.Second {
+		t.Fatalf("the probe waited %s for a child that kept its output open", took)
+	}
+	if err == nil || !strings.Contains(err.Error(), "did not answer") {
+		t.Fatalf("err = %v, want a timeout", err)
 	}
 }

@@ -49,7 +49,8 @@ func TestHarnessCheckAgreesWithHookInstallCheckOnLaneHomes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		rows, err := harness.CheckWiring(harness.WiringCheck{Registry: reg, UserHome: base, Homes: homes, Only: "claude_code", PreToolState: plan.PreToolState})
+		rows, err := harness.CheckWiring(harness.WiringCheck{Registry: reg, UserHome: base, Homes: homes, Only: "claude_code", PreToolState: plan.PreToolState,
+			Executable: func(word string) bool { return word == providerLaneTestBinary }})
 		if err != nil {
 			t.Fatal(err)
 		}

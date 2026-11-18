@@ -77,6 +77,9 @@ func ExecWiringProbe(timeout time.Duration, dir string) WiringProbe {
 		if dir != "" {
 			cmd.Dir = dir
 		}
+		// A child that keeps stdout open (a daemon the harness starts) must not hold the
+		// check past its timeout: after the kill, stop waiting for the pipes.
+		cmd.WaitDelay = wiringProbeWaitDelay
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		out, err := cmd.Output()
@@ -111,6 +114,50 @@ type WiringCheck struct {
 	// PreToolState is the hook plan's reader of a home's Compound pre-tool
 	// hook (HookPlan.PreToolState); nil leaves it "not read".
 	PreToolState func(settingsPath string) string
+	// Executable reports whether a hook command's first word is a program that
+	// can run; nil looks it up the way a shell would (exec.LookPath).
+	Executable func(word string) bool
+}
+
+// missingHookProgram returns the program of the first command carrying marker
+// when no such command names a program that can run, else "". A config line
+// that points at a deleted binary is not a working hook.
+func (c WiringCheck) missingHookProgram(commands []string, marker string) string {
+	executable := c.Executable
+	if executable == nil {
+		executable = func(word string) bool { _, err := exec.LookPath(word); return err == nil }
+	}
+	missing := ""
+	for _, command := range commands {
+		if !strings.Contains(command, marker) {
+			continue
+		}
+		word := hookCommandProgram(command)
+		if word != "" && executable(word) {
+			return ""
+		}
+		if missing == "" {
+			missing = firstNonEmptyString(word, command)
+		}
+	}
+	return missing
+}
+
+// hookCommandProgram is a hook command's first word, without the shell quotes
+// the hook plan writes around it.
+func hookCommandProgram(command string) string {
+	command = strings.TrimSpace(command)
+	for _, q := range []string{"'", `"`} {
+		if rest, ok := strings.CutPrefix(command, q); ok {
+			if end := strings.Index(rest, q); end >= 0 {
+				return rest[:end]
+			}
+		}
+	}
+	if fields := strings.Fields(command); len(fields) > 0 {
+		return fields[0]
+	}
+	return ""
 }
 
 func (c WiringCheck) retryDelay() time.Duration {
@@ -240,10 +287,16 @@ func (c WiringCheck) claudeContextRow(w *Wiring, home ClaudeHome) WiringRow {
 	row := WiringRow{Harness: "claude_code", Home: home.Name, Fact: FactContext, Path: path}
 	commands, err := settingsHookCommands(path, "SessionStart")
 	wired := err == nil && containsMarker(commands, w.Context.Marker)
+	missing := ""
+	if wired {
+		missing = c.missingHookProgram(commands, w.Context.Marker)
+	}
 	switch {
-	case wired:
+	case wired && missing == "":
 		row.Status, row.Found = WiringPass, "SessionStart runs the Compound hook"
 		return row
+	case wired:
+		row.Found = "SessionStart runs " + missing + ", which is not an executable file"
 	case err != nil && os.IsNotExist(err):
 		row.Found = "no settings.json"
 	case err != nil:
@@ -259,6 +312,8 @@ func (c WiringCheck) claudeContextRow(w *Wiring, home ClaudeHome) WiringRow {
 	case home.HookHarness != "":
 		install := firstNonEmptyString(home.HookInstall, strings.ReplaceAll(home.HookHarness, "_", "-"))
 		row.Status, row.Fix = WiringFail, "compound hook install --harness "+install
+	case missing != "":
+		row.Status = WiringFail
 	default:
 		row.Status = WiringInfo
 		row.Found += " (lane not enrolled in the hook plan)"
@@ -377,6 +432,11 @@ func (c WiringCheck) hookFileContextRow(name string, w *Wiring) WiringRow {
 		row.Fix = "compound init --harness " + name
 		return row
 	}
+	if missing := c.missingHookProgram(commands, w.Context.Marker); missing != "" {
+		row.Status, row.Found = WiringFail, "SessionStart runs "+missing+", which is not an executable file"
+		row.Fix = "compound init --harness " + name
+		return row
+	}
 	if name != "codex" {
 		row.Status, row.Found = WiringPass, "SessionStart runs the Compound hook"
 		return row
@@ -434,7 +494,7 @@ func (c WiringCheck) ownedFileContextRow(name string, w *Wiring) WiringRow {
 		return row
 	}
 	if name != "opencode" {
-		row.Status, row.Found = WiringPass, "Compound's "+w.Context.Kind+" is installed; the harness cannot report whether it loaded it"
+		row.Status, row.Found = WiringUnknownRow, "wired, not verified: Compound's "+w.Context.Kind+" is installed; the harness cannot report whether it loaded it"
 		return row
 	}
 	if c.Probe == nil {
@@ -791,6 +851,10 @@ func runWiringCheck(reg Registry, only string, homes []ClaudeHome, userHome stri
 	}
 	return 0
 }
+
+// wiringProbeWaitDelay is how long a probe waits for its output pipes after the
+// timeout kill.
+const wiringProbeWaitDelay = 2 * time.Second
 
 // WiringProbeTimeout bounds each harness report command the check runs.
 const WiringProbeTimeout = 20 * time.Second
