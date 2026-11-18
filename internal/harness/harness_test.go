@@ -622,3 +622,41 @@ func TestHarnessIdentityNormalizesHyphenAndUnderscore(t *testing.T) {
 		}
 	}
 }
+
+// A provider lane row with no hooks of its own gets the record-only floor; the
+// governed lanes keep their own floor; a name that is no lane stays fail-closed.
+func TestRecordOnlyLaneFloor(t *testing.T) {
+	r := DefaultRegistry()
+	for _, name := range []string{"claude_kimi", "claude-kimi", "claude_neuralwatt", "claude_gpt"} {
+		for _, event := range []string{"SessionStart", "PostToolUse", "SessionEnd"} {
+			if !r.Supports(name, event) {
+				t.Errorf("%s should get the record-only floor for %s", name, event)
+			}
+		}
+		for _, event := range []string{"PreToolUse", "UserPromptSubmit", "Stop"} {
+			if r.Supports(name, event) {
+				t.Errorf("%s must not claim %s: the record-only set never blocks", name, event)
+			}
+		}
+	}
+	if !r.ProviderLaneName("claude_kimi") {
+		t.Error("claude_kimi is a registered Claude lane the hook plan can derive")
+	}
+	for _, name := range []string{"claude_code", "claude_native_account_pool", "claude_not_a_lane", "codex", "kimi"} {
+		if r.ProviderLaneName(name) {
+			t.Errorf("%s must not be a provider lane name", name)
+		}
+	}
+	for _, name := range []string{"claude_not_a_lane", "claude_native_account_pool"} {
+		for _, event := range []string{"SessionStart", "PostToolUse", "SessionEnd", "PreToolUse"} {
+			if r.Supports(name, event) {
+				t.Errorf("%s is not a hooked lane and must still fail closed on %s", name, event)
+			}
+		}
+	}
+	for _, name := range []string{"claude_zai", "claude_minimax", "claude_qwen", "claude_unattended"} {
+		if !r.Supports(name, "PreToolUse") || !r.Supports(name, "UserPromptSubmit") {
+			t.Errorf("governed lane %s lost its own floor", name)
+		}
+	}
+}

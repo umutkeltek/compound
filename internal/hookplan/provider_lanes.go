@@ -144,10 +144,8 @@ func resolveProviderLaneHarness(label string, launchProfiles []string, registry 
 		candidates = append(candidates, "claude_"+underscoreName(rest))
 	}
 	for _, candidate := range candidates {
-		if !strings.HasPrefix(candidate, "claude_") || candidate == "claude_code" {
-			continue
-		}
-		if _, ok := registry.Harnesses[candidate]; ok {
+		// The registry's own test, so every name derived here gets its record-only floor.
+		if registry.ProviderLaneName(candidate) {
 			return candidate
 		}
 	}

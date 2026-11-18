@@ -338,3 +338,26 @@ func commandsFor(t *testing.T, settings map[string]any, event string) []string {
 	}
 	return out
 }
+
+// Every name the hook plan derives for a lane home must carry the record-only
+// floor in the registry the hook runtime reads, or the lane's events are written
+// as fail_open (capability absent) although its hooks ran.
+func TestEveryDerivedProviderLaneNameHasTheRecordOnlyFloor(t *testing.T) {
+	reg := harness.DefaultRegistry()
+	for _, withProfiles := range []bool{true, false} {
+		lanes, err := DiscoverProviderLanes(providerLaneFixture(t, withProfiles), reg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, lane := range lanes {
+			for _, event := range []string{"SessionStart", "PostToolUse", "SessionEnd"} {
+				if !reg.Supports(lane.Harness, event) {
+					t.Errorf("lane %s reports as %s, which does not support %s", lane.Label, lane.Harness, event)
+				}
+			}
+			if lane.Harness != "claude_code" && reg.Supports(lane.Harness, "PreToolUse") {
+				t.Errorf("record-only lane %s (%s) must not claim a blocking pre-tool hook", lane.Label, lane.Harness)
+			}
+		}
+	}
+}

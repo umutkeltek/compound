@@ -326,7 +326,7 @@ type ManifestCapabilities struct {
 // purpose: PreToolUseBlock=false unless the harness is known to enforce it, because
 // assuming a block that does not exist is a silent fail-open.
 func DefaultRegistry() Registry {
-	return Registry{Harnesses: map[string]Harness{
+	return withRecordOnlyLaneFloor(Registry{Harnesses: map[string]Harness{
 		"claude_code": {
 			Name:                 "claude_code",
 			Selection:            claudeLaneSelection(),
@@ -504,17 +504,12 @@ func DefaultRegistry() Registry {
 			Selection:            claudeLaneSelection(),
 			Posture:              PostureUnattended,
 			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
-			// Registry identity only. This lane is a Claude-family launch profile that
-			// was previously absent from the registry; its settings have no
-			// installed hook bindings yet, so the conservative floor stays at the
-			// un-installed shape (every hook flag false) and the lane will fail a
-			// readiness check that asks for PreToolUse block or SessionEnd receipt.
-			// That is the next slice: the isolated lane installer must install and
-			// attest hooks before raising the capability floor. (The earlier
-			// `compound hook install --harness claude-neuralwatt` form is invalid
-			// here — hook install accepts Claude-family harness types, not raw
-			// lane IDs.) The credential is the GATEWAY token, not the provider
-			// key, mirroring the switchback launch-profiles.json note.
+			// A Claude-family launch profile with no hook flags of its own: the
+			// hook plan's record-only set (`compound hook install --harness
+			// claude-provider-lanes`) hooks its home, and withRecordOnlyLaneFloor
+			// gives it the matching floor (no PreToolUse block). The credential is
+			// the GATEWAY token, not the provider key, mirroring the switchback
+			// launch-profiles.json note.
 			Capabilities: Capabilities{
 				NativeSkills: true, MCP: true,
 			},
@@ -524,7 +519,7 @@ func DefaultRegistry() Registry {
 				"long-session instruction drift",
 				"instruction/context budget cap",
 				"gateway-credential lane (not provider key) — the tap forwards to the gateway, which injects the upstream provider key",
-				"registry identity only — hook installation and capability-floor raise land in a follow-up slice",
+				"record-only hook floor (withRecordOnlyLaneFloor): session start and tool calls recorded, never blocked",
 			},
 			InjectBudgetMS: 1500,
 		},
@@ -545,7 +540,7 @@ func DefaultRegistry() Registry {
 				"long-session instruction drift",
 				"instruction/context budget cap",
 				"wpcom free-proxy lane — Opus/Sonnet/Haiku all route through the same target; the wpcom proxy does not differentiate them",
-				"registry identity only — hook installation and capability-floor raise land in a follow-up slice",
+				"record-only hook floor (withRecordOnlyLaneFloor): session start and tool calls recorded, never blocked",
 			},
 			InjectBudgetMS: 1500,
 		},
@@ -566,7 +561,7 @@ func DefaultRegistry() Registry {
 				"long-session instruction drift",
 				"instruction/context budget cap",
 				"wpcom free-proxy lane via Headroom transport — compression enabled, hosted tool-search injection disabled for Switchback target compatibility",
-				"registry identity only — hook installation and capability-floor raise land in a follow-up slice",
+				"record-only hook floor (withRecordOnlyLaneFloor): session start and tool calls recorded, never blocked",
 			},
 			InjectBudgetMS: 1500,
 		},
@@ -587,7 +582,7 @@ func DefaultRegistry() Registry {
 				"long-session instruction drift",
 				"instruction/context budget cap",
 				"strict native Codex OAuth lane — sole target codex-relay; no wpcom proxy, no provider fallback",
-				"registry identity only — hook installation and capability-floor raise land in a follow-up slice",
+				"record-only hook floor (withRecordOnlyLaneFloor): session start and tool calls recorded, never blocked",
 			},
 			InjectBudgetMS: 1500,
 		},
@@ -608,7 +603,7 @@ func DefaultRegistry() Registry {
 				"long-session instruction drift",
 				"instruction/context budget cap",
 				"subscription lane (Kimi K3 coding plan) via rotating OAuth, not API billing",
-				"registry identity only — hook installation and capability-floor raise land in a follow-up slice",
+				"record-only hook floor (withRecordOnlyLaneFloor): session start and tool calls recorded, never blocked",
 			},
 			InjectBudgetMS: 1500,
 		},
@@ -629,7 +624,7 @@ func DefaultRegistry() Registry {
 				"long-session instruction drift",
 				"instruction/context budget cap",
 				"direct-API lane (api.deepseek.com) — falls back to the NVIDIA Build variant if the direct upstream rejects",
-				"registry identity only — hook installation and capability-floor raise land in a follow-up slice",
+				"record-only hook floor (withRecordOnlyLaneFloor): session start and tool calls recorded, never blocked",
 			},
 			InjectBudgetMS: 1500,
 		},
@@ -650,7 +645,7 @@ func DefaultRegistry() Registry {
 				"long-session instruction drift",
 				"instruction/context budget cap",
 				"NVIDIA Build free-tier lane (integrate.api.nvidia.com) — rate-limited; multiple targets ensure the lane survives single-target rejections",
-				"registry identity only — hook installation and capability-floor raise land in a follow-up slice",
+				"record-only hook floor (withRecordOnlyLaneFloor): session start and tool calls recorded, never blocked",
 			},
 			InjectBudgetMS: 1500,
 		},
@@ -970,7 +965,40 @@ func DefaultRegistry() Registry {
 			InjectBudgetMS:  1500,
 			ExpectedVersion: "0.1.0-rc.7",
 		},
-	}}
+	}})
+}
+
+// ProviderLaneName reports whether name is one the hook plan's record-only lane
+// set can report a lane home's hooks as (hookplan.DiscoverProviderLanes): a
+// registered Claude lane launched through the lane wrapper, other than
+// claude_code, the generic posture a lane with no row of its own falls back to.
+// The hook plan and the capability floor below share this test, so a name the
+// plan can derive is exactly a name that can get the floor.
+func (r Registry) ProviderLaneName(name string) bool {
+	if !strings.HasPrefix(name, "claude_") || name == "claude_code" {
+		return false
+	}
+	h, ok := r.Harnesses[name]
+	return ok && h.Selection != nil && *h.Selection == *claudeLaneSelection()
+}
+
+// withRecordOnlyLaneFloor gives every provider lane row that declares no hook of
+// its own the floor of the hook plan's record-only set: session-start context,
+// tool calls recorded, a session-end receipt, and no blocking. Rows that already
+// declare hooks (the governed lanes) keep their own floor untouched.
+func withRecordOnlyLaneFloor(r Registry) Registry {
+	for name, h := range r.Harnesses {
+		c := h.Capabilities
+		if !r.ProviderLaneName(name) || c.SessionStartContext || c.UserPromptContext ||
+			c.PreToolUseBlock || c.PostToolUseEvent || c.StopFeedback || c.SessionEndReceipt {
+			continue
+		}
+		h.Capabilities.SessionStartContext = true
+		h.Capabilities.PostToolUseEvent = true
+		h.Capabilities.SessionEndReceipt = true
+		r.Harnesses[name] = h
+	}
+	return r
 }
 
 // The wiring facts below were measured on 2026-11-18 with each harness's own
