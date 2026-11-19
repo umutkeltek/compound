@@ -474,8 +474,11 @@ clauses are AND, values within a clause are OR, using the existing token/normali
 phrase-exact matching). Skill task-class clauses also match literal task words, including singular/plural
 forms: ranking stop-words cannot erase explicit skill intent. Unknown dimensions fail closed. Skill imports reject blank/unknown kinds and
 empty or whitespace-only values before normalization or graph mutation. No conditions is compatible.
-These hard gates are skill-only; instruction-rule semantic matching remains unchanged. Conditions
-belong in reviewed manifests: replaying a manifest replaces node metadata, so an older manifest
+Instruction-rule `task-class` clauses can opt in to `phrases` as alternatives to token values
+and `unless_phrases` to veto the clause. Phrases match contiguous whole words, ignoring case
+and punctuation and keeping words that ranking drops. For rules that opt in, every condition
+must pass before semantic similarity can contribute to rank. Other instruction rules retain
+semantic eligibility. Conditions belong in reviewed manifests: replaying a manifest replaces node metadata, so an older manifest
 without conditions can clear them. Offers remain evidence, not proof of invocation or permission.
 
 The self-improving loop is what makes this *compound*: the distiller's own misses/false-triggers and a

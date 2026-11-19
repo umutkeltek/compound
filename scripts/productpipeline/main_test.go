@@ -192,7 +192,7 @@ func checkRoutingCases(t *testing.T, store *capgraph.Store, bundle string) {
 	}
 	var cases struct {
 		Cases []struct {
-			ID, Task         string
+			ID, Task, First  string
 			Expected, Absent []string
 		}
 		KnownLimitations []struct {
@@ -203,39 +203,44 @@ func checkRoutingCases(t *testing.T, store *capgraph.Store, bundle string) {
 	if err := json.Unmarshal(b, &cases); err != nil {
 		t.Fatal(err)
 	}
-	if len(cases.Cases) != 30 || len(cases.KnownLimitations) != 1 {
+	if len(cases.Cases) != 40 || len(cases.KnownLimitations) != 1 {
 		t.Fatal("routing corpus unexpectedly changed")
 	}
-	for _, c := range cases.Cases {
-		t.Run(c.ID, func(t *testing.T) {
-			offers, err := store.SurfaceForHarness(c.Task, "codex")
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, id := range c.Expected {
-				if !hasOffer(offers, id) {
-					t.Errorf("missing expected context %s", id)
+	for _, harness := range []string{"codex", "claude_code"} {
+		for _, c := range cases.Cases {
+			t.Run(c.ID+"/"+harness, func(t *testing.T) {
+				offers, err := store.SurfaceForHarness(c.Task, harness)
+				if err != nil {
+					t.Fatal(err)
 				}
-			}
-			for _, id := range c.Absent {
-				if hasOffer(offers, id) {
-					t.Errorf("near-miss offered %s", id)
+				if c.First != "" && (len(offers) == 0 || offers[0].Node.ID != c.First) {
+					t.Errorf("first offer should be %s, got %v", c.First, offers)
 				}
-			}
-			for _, o := range offers {
-				if len(o.Node.Read) == 0 {
-					t.Errorf("offered context has no local body: %s", o.Node.ID)
-				}
-				for _, read := range o.Node.Read {
-					if !strings.HasPrefix(read, bundle+string(filepath.Separator)) {
-						t.Errorf("read escapes relocated bundle: %s", read)
-					}
-					if _, err := os.ReadFile(read); err != nil {
-						t.Errorf("offered read unavailable: %v", err)
+				for _, id := range c.Expected {
+					if !hasOffer(offers, id) {
+						t.Errorf("missing expected context %s", id)
 					}
 				}
-			}
-		})
+				for _, id := range c.Absent {
+					if hasOffer(offers, id) {
+						t.Errorf("near-miss offered %s", id)
+					}
+				}
+				for _, o := range offers {
+					if len(o.Node.Read) == 0 {
+						t.Errorf("offered context has no local body: %s", o.Node.ID)
+					}
+					for _, read := range o.Node.Read {
+						if !strings.HasPrefix(read, bundle+string(filepath.Separator)) {
+							t.Errorf("read escapes relocated bundle: %s", read)
+						}
+						if _, err := os.ReadFile(read); err != nil {
+							t.Errorf("offered read unavailable: %v", err)
+						}
+					}
+				}
+			})
+		}
 	}
 	// Deliberately not counted as a silence success: a complete negated lexical
 	// match remains an offer in the existing matcher. Consumer intent must gate action.

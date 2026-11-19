@@ -258,7 +258,7 @@ func skillObservedAtOK(v string) bool {
 // restricted skill into an unrestricted offer. No conditions remains compatible.
 func skillWhenOK(conditions []InstructionRuleWhen) bool {
 	for _, when := range conditions {
-		if !instructionRuleWhenKindOK(when.Kind) || len(cleanStrings(when.Values)) == 0 {
+		if when.usesPhrases() || !instructionRuleWhenKindOK(when.Kind) || len(cleanStrings(when.Values)) == 0 {
 			return false
 		}
 	}
@@ -272,6 +272,22 @@ func instructionRuleEntryOK(skill SkillManifestEntry) bool {
 	for _, when := range cleanInstructionWhen(skill.When) {
 		if !instructionRuleWhenKindOK(when.Kind) {
 			return false
+		}
+	}
+	for _, when := range skill.When {
+		if !when.usesPhrases() {
+			continue
+		}
+		if normalizeTriggerValue(when.Kind) != "task-class" ||
+			(len(cleanStrings(when.Values)) == 0 && len(when.Phrases) == 0) {
+			return false
+		}
+		for _, phrases := range [][]string{when.Phrases, when.UnlessPhrases} {
+			for _, phrase := range phrases {
+				if normalizedPhrase(phrase) == "" {
+					return false
+				}
+			}
 		}
 	}
 	return true
@@ -373,8 +389,13 @@ func cleanInstructionWhen(values []InstructionRuleWhen) []InstructionRuleWhen {
 				cleaned = append(cleaned, raw)
 			}
 		}
-		if kind != "" && len(cleaned) > 0 {
-			out = append(out, InstructionRuleWhen{Kind: kind, Values: cleaned})
+		if kind != "" && (len(cleaned) > 0 || len(value.Phrases) > 0) {
+			out = append(out, InstructionRuleWhen{
+				Kind:          kind,
+				Values:        cleaned,
+				Phrases:       cleanOptionalStrings(value.Phrases),
+				UnlessPhrases: cleanOptionalStrings(value.UnlessPhrases),
+			})
 		}
 	}
 	return out

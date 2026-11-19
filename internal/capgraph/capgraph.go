@@ -15,11 +15,13 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	"compound/internal/candidates"
 	"compound/internal/envelope"
@@ -53,8 +55,14 @@ var FeedbackEdges = map[string]bool{EdMissedWhen: true, EdFalseTriggeredBy: true
 
 // InstructionRuleWhen describes one trigger dimension for an instruction rule or skill.
 type InstructionRuleWhen struct {
-	Kind   string   `json:"kind" yaml:"kind"`
-	Values []string `json:"values" yaml:"values"`
+	Kind          string   `json:"kind" yaml:"kind"`
+	Values        []string `json:"values" yaml:"values"`
+	Phrases       []string `json:"phrases,omitempty" yaml:"phrases,omitempty"`
+	UnlessPhrases []string `json:"unless_phrases,omitempty" yaml:"unless_phrases,omitempty"`
+}
+
+func (when InstructionRuleWhen) usesPhrases() bool {
+	return len(when.Phrases) > 0 || len(when.UnlessPhrases) > 0
 }
 
 type InstructionRoute struct {
@@ -736,7 +744,10 @@ func (s *Store) surface(task, harness string, ctx SurfaceContext) ([]Surfaced, e
 		semanticMatched := sem >= semanticFloor
 		matchTokens := tokens
 		if n.Kind == "instruction_rule" {
-			if !nodeWhenMatches(n, ctx, tokens, instructionTokens) && !semanticMatched {
+			// A phrase-scoped rule requires its declared conditions for eligibility.
+			// Semantic similarity can still rank it once those conditions match.
+			if !nodeWhenMatches(n, ctx, tokens, instructionTokens) &&
+				(!semanticMatched || slices.ContainsFunc(n.When, InstructionRuleWhen.usesPhrases)) {
 				continue
 			}
 			matchTokens = instructionTokens
@@ -1365,6 +1376,15 @@ func instructionRuleWhenMatches(when InstructionRuleWhen, ctx SurfaceContext, ta
 	if kind == "" {
 		kind = "task-class"
 	}
+	if kind == "task-class" && when.usesPhrases() {
+		task := " " + normalizedPhrase(ctx.Task) + " "
+		if containsTaskPhrase(task, when.UnlessPhrases) {
+			return false
+		}
+		if containsTaskPhrase(task, when.Phrases) {
+			return true
+		}
+	}
 	for _, value := range when.Values {
 		value = strings.TrimSpace(strings.ToLower(value))
 		if value == "" {
@@ -1391,6 +1411,22 @@ func instructionRuleWhenMatches(when InstructionRuleWhen, ctx SurfaceContext, ta
 			if normalizeTriggerValue(ctx.Phase) == normalizeTriggerValue(value) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func normalizedPhrase(text string) string {
+	words := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	})
+	return strings.Join(words, " ")
+}
+
+func containsTaskPhrase(paddedTask string, phrases []string) bool {
+	for _, phrase := range phrases {
+		if phrase := normalizedPhrase(phrase); phrase != "" && strings.Contains(paddedTask, " "+phrase+" ") {
+			return true
 		}
 	}
 	return false
