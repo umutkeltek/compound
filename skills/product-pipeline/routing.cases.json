@@ -244,6 +244,100 @@
       "absent": []
     },
     {
+      "id": "named_buyer_discovery",
+      "task": "Where can Example Notepad find its next customers?",
+      "expected": [
+        "instruction_rule:product-lifecycle-distribution"
+      ],
+      "absent": [],
+      "first": "instruction_rule:product-lifecycle-distribution"
+    },
+
+    {
+      "id": "anonymous_buyer_discovery",
+      "task": "Where can we find our next customers?",
+      "expected": [
+        "instruction_rule:product-lifecycle-distribution"
+      ],
+      "absent": [],
+      "first": "instruction_rule:product-lifecycle-distribution"
+    },
+
+    {
+      "id": "small_business_buyer_discovery",
+      "task": "Where can a small bakery find new customers?",
+      "expected": [
+        "instruction_rule:product-lifecycle-distribution"
+      ],
+      "absent": [],
+      "first": "instruction_rule:product-lifecycle-distribution"
+    },
+
+    {
+      "id": "first_customers",
+      "task": "How can my shop get its first customers?",
+      "expected": [
+        "instruction_rule:product-lifecycle-distribution"
+      ],
+      "absent": [],
+      "first": "instruction_rule:product-lifecycle-distribution"
+    },
+
+    {
+      "id": "ambiguous_customer_location",
+      "task": "Where are our customers?",
+      "expected": [],
+      "absent": [
+        "instruction_rule:product-lifecycle-distribution"
+      ]
+    },
+
+    {
+      "id": "customer_records",
+      "task": "Where can I find the customers' data in our database?",
+      "expected": [],
+      "absent": [
+        "instruction_rule:product-lifecycle-distribution"
+      ]
+    },
+
+    {
+      "id": "customer_database",
+      "task": "Where can we find our next customers in the database?",
+      "expected": [],
+      "absent": [
+        "instruction_rule:product-lifecycle-distribution"
+      ]
+    },
+
+    {
+      "id": "send_on_x",
+      "task": "Send an X post about how we'll find our next customers.",
+      "expected": [],
+      "absent": [
+        "instruction_rule:product-lifecycle-distribution"
+      ]
+    },
+
+    {
+      "id": "draft_for_x",
+      "task": "Draft an X post about how we'll find our next customers.",
+      "expected": [],
+      "absent": [
+        "instruction_rule:product-lifecycle-distribution"
+      ]
+    },
+
+    {
+      "id": "private_musing",
+      "task": "Private musing: I wonder where we can find our next customers someday.",
+      "expected": [],
+      "absent": [
+        "instruction_rule:product-lifecycle-distribution"
+      ]
+    },
+
+    {
       "id": "launch_crash",
       "task": "Fix the crash when I launch the app at step three.",
       "expected": [],

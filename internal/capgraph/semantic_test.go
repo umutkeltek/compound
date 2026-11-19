@@ -479,6 +479,55 @@ func TestInstructionRuleWhenGateSatisfiedSemantically(t *testing.T) {
 	}
 }
 
+func TestInstructionRuleTaskPhrasesGateSemanticEligibility(t *testing.T) {
+	_, store := newStore(t)
+	rule := Node{
+		ID: "instruction_rule:buyer-discovery", Kind: "instruction_rule",
+		Name: "Buyer discovery", Weight: 1, Triggers: []string{"customers"},
+		When: []InstructionRuleWhen{
+			{Kind: "harness", Values: []string{"codex"}},
+			{
+				Kind:          "task-class",
+				Values:        []string{"acquisition"},
+				Phrases:       []string{"find our next customers"},
+				UnlessPhrases: []string{"in the database"},
+			},
+		},
+	}
+	if err := store.Add(rule); err != nil {
+		t.Fatal(err)
+	}
+	stub := newSemanticStub("stub:rule-phrases:2:f32")
+	// Identical embeddings isolate eligibility from relevance scoring.
+	for _, tc := range []struct {
+		task, harness string
+		want          bool
+	}{
+		{"Can we FIND our next-customers?", "codex", true},
+		{"Where do our customers come from?", "codex", false},
+		{"Find our local next customers", "codex", false},
+		{"Find our next customership metric", "codex", false},
+		{"Find our next customers in the database", "codex", false},
+		{"Customer acquisition in the database", "codex", false},
+		{"Customer acquisition", "codex", true},
+		{"Find our next customers", "claude_code", false},
+	} {
+		t.Run(tc.task+"/"+tc.harness, func(t *testing.T) {
+			hits, err := store.SurfaceForContext(SurfaceContext{Task: tc.task, Harness: tc.harness, Embedder: stub})
+			if err != nil {
+				t.Fatal(err)
+			}
+			hit := surfacedByID(hits, rule.ID)
+			if (hit != nil) != tc.want {
+				t.Fatalf("want rule offered = %v, got %+v", tc.want, hits)
+			}
+			if hit != nil && !strings.Contains(hit.Why, "+semantic=") {
+				t.Fatalf("eligible rule should still receive semantic score: %+v", hit)
+			}
+		})
+	}
+}
+
 // flakySemanticEmbedder succeeds for a fixed number of Embed calls, then
 // errors — the shape of a cold start dying at a surfacing timeout mid-graph.
 type flakySemanticEmbedder struct {

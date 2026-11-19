@@ -706,6 +706,45 @@
             "compare",
             "channel",
             "medium"
+          ],
+          "phrases": [
+            "find its next customers",
+            "find our next customers",
+            "find their next customers",
+            "find your next customers",
+            "find my next customers",
+            "find new customers",
+            "find more customers",
+            "find first customers",
+            "find its first customers",
+            "find our first customers",
+            "find my first customers",
+            "get its first customers",
+            "get our first customers",
+            "get my first customers",
+            "get new customers",
+            "get more customers"
+          ],
+          "unless_phrases": [
+            "in the database",
+            "in our database",
+            "in the customer database",
+            "from the database",
+            "customer records",
+            "customer data",
+            "customers data",
+            "customer table",
+            "draft an x post",
+            "write an x post",
+            "send an x post",
+            "queue an x post",
+            "publish an x post",
+            "draft a post for x",
+            "send a post to x",
+            "queue this to x",
+            "private musing",
+            "private reflection",
+            "thinking out loud"
           ]
         },
         {
@@ -750,7 +789,7 @@
         }
       ],
       "boundary": [
-        "Offer-only context. Recheck readiness, silence and action authority at the governed consumer. Token gates do not understand full semantic negation; semantic retrieval may bypass branch conditions.",
+        "Offer-only context. Recheck readiness, silence and action authority at the governed consumer. Explicit buyer intent is required. Token and phrase gates do not understand full semantic negation.",
         "Multiple addresses are not sending permission; no fake warm-up, identity rotation, unsolicited bulk effects or automatic publication."
       ]
     },
