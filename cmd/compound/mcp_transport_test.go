@@ -988,6 +988,45 @@ func TestMCPTransportOrientRecallClampsRecallRefsToBoundedCap(t *testing.T) {
 
 // ---------- tools/call · dispatch ----------
 
+func TestMCPTransportInitializedCallAcceptsRequestMetadata(t *testing.T) {
+	homePath := initMCPTestHome(t)
+	lines := runReadyMCPTransport(t, nil, []string{
+		`{"jsonrpc":"2.0","id":"recall","method":"tools/call","params":{"_meta":{},"name":"compound_orient_recall","arguments":{"task":"Recall the current operating rules","harness":"hermes"}}}`,
+	}, homePath)
+	response := rawResp(t, lines, "recall")
+	result, ok := response["result"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("initialized recall with empty request metadata failed: %+v", response)
+	}
+	ack := decodeMCPStructuredContent(t, result)
+	if packID, _ := ack["pack_id"].(string); !strings.HasPrefix(packID, "ctx_") {
+		t.Fatalf("expected a recalled context pack, got %+v", ack)
+	}
+}
+
+func TestMCPTransportInitializedCallMetadataPreservesErrors(t *testing.T) {
+	homePath := initMCPTestHome(t)
+	for _, tc := range []struct {
+		name   string
+		params string
+		code   int
+	}{
+		{"non-object metadata", `{"name":"compound_orient_recall","_meta":[]}`, rpcInvalidParams},
+		{"unknown parameter", `{"name":"compound_orient_recall","_meta":{},"extra":true}`, rpcInvalidParams},
+		{"unknown tool", `{"name":"unlisted","_meta":{"progressToken":1}}`, rpcToolUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			call := `{"jsonrpc":"2.0","id":"call","method":"tools/call","params":` + tc.params + `}`
+			lines := runReadyMCPTransport(t, nil, []string{call}, homePath)
+			response := rawResp(t, lines, "call")
+			errObj, _ := response["error"].(map[string]interface{})
+			if errObj["code"] != float64(tc.code) {
+				t.Fatalf("want JSON-RPC error %d, got %+v", tc.code, response)
+			}
+		})
+	}
+}
+
 func TestMCPTransportUnknownToolReturnsToolUnavailable(t *testing.T) {
 	homePath := initMCPTestHome(t)
 	call := map[string]any{

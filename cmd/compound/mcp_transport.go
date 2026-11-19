@@ -220,11 +220,6 @@ type mcpToolDescriptor struct {
 type mcpToolCallParams struct {
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
-}
-
-type mcpModernToolCallParams struct {
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments,omitempty"`
 	Meta      json.RawMessage `json:"_meta,omitempty"`
 }
 
@@ -682,7 +677,7 @@ func mcpHandleModernToolsCall(rawParams json.RawMessage) interface{} {
 	if len(rawParams) == 0 {
 		return &jsonRPCError{Code: rpcInvalidParams, Message: "tools/call params required"}
 	}
-	var params mcpModernToolCallParams
+	var params mcpToolCallParams
 	if err := strictDecodeArgs(rawParams, &params); err != nil {
 		return &jsonRPCError{Code: rpcInvalidParams, Message: "invalid tools/call params"}
 	}

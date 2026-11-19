@@ -1424,7 +1424,8 @@ compound transition show <id>
 
 `compound mcp-transport` exposes a newline-delimited JSON-RPC 2.0 MCP server on stdio with two bounded request
 modes. Lifecycle clients negotiate an exact supported revision with typed `initialize` parameters, then send
-`notifications/initialized` before `tools/list` or `tools/call`. Modern clients may call `server/discover` before
+`notifications/initialized` before `tools/list` or `tools/call`. An initialized `tools/call` accepts optional
+object-valued `_meta`, including an empty object. Modern clients may call `server/discover` before
 initialization and send the advertised revision in
 `_meta["io.modelcontextprotocol/protocolVersion"]` plus an object in
 `_meta["io.modelcontextprotocol/clientCapabilities"]` on each stateless `tools/list` or `tools/call`;

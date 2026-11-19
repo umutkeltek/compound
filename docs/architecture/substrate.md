@@ -88,6 +88,8 @@ not a permanent body or meaning owner. Layout + resolution: `runtime.md`; physic
 
 On breadth lookup, a complete numeric ID or mixed serial in the question gives matching current claims priority. The engine checks whole identifiers after visibility admission and before the top-k cut. A claim whose entity carries the ID takes priority over incidental mentions. Free-text queries retain their configured ranking.
 
+An explicit `compound memory query` for one full Git snapshot head or commit ID limits the engine to current `repo:` head claims with that exact value. An absent or superseded head yields zero current hits. Returned claims retain their ledger evidence and sequence. They describe the recorded snapshot. Use the repository's history or a fresh Git read for historical or live heads.
+
 ## The runtime grammar is the envelope spine (first-order)
 
 Memory is **one** vertical slice, not the substrate. The thing every harness and hook actually runs through
