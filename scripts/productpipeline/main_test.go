@@ -176,7 +176,7 @@ func checkRoutingCases(t *testing.T, store *capgraph.Store, bundle string) {
 	if err := json.Unmarshal(b, &cases); err != nil {
 		t.Fatal(err)
 	}
-	if len(cases.Cases) != 21 || len(cases.KnownLimitations) != 1 {
+	if len(cases.Cases) != 24 || len(cases.KnownLimitations) != 1 {
 		t.Fatal("routing corpus unexpectedly changed")
 	}
 	for _, c := range cases.Cases {

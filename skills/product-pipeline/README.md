@@ -83,7 +83,7 @@ its output and the receiving owner's readiness are real.
 | [Delivery](branches/delivery.md): ready slice | Source plus actual consumer proof | QA, release or measurement |
 | [QA](branches/qa.md): critical/failure journey check | Reproducible defects or readiness evidence | Delivery or release |
 | [Release](branches/release.md): readiness/rollback need | Exact artifact and release evidence | Distribution and measurement |
-| [Distribution](branches/distribution.md): channel/audience thesis | Eligible campaign or authorized delivery evidence | Activation and measurement |
+| [Distribution](branches/distribution.md): buyers' discovery path, medium choice | One bounded, measurable medium test (or explicit no-op) and its delivery evidence | Activation and measurement |
 | [Activation](branches/activation.md): first-value friction | Observed barrier and testable change | Experiment or spec |
 | [Retention/support](branches/retention.md): mature recurring-use evidence | Cause and bounded recovery proposal | Experiment, QA or delivery |
 | [Measurement](branches/measurement.md): observed change/cohort | Keep/change/stop/inconclusive decision | Strategy, experiment or learning |

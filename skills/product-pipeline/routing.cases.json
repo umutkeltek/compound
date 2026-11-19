@@ -112,6 +112,34 @@
       ]
     },
     {
+      "id": "distribution_next_step",
+      "task": "What is the next distribution step for this app?",
+      "expected": [
+        "instruction_rule:product-lifecycle-distribution"
+      ],
+      "absent": [
+        "skill:product-pipeline"
+      ]
+    },
+    {
+      "id": "explicit_post_request",
+      "task": "Queue tomorrow's tip post to X at 17:00 UTC.",
+      "expected": [],
+      "absent": [
+        "instruction_rule:product-lifecycle-distribution",
+        "skill:product-pipeline"
+      ]
+    },
+    {
+      "id": "private_idea",
+      "task": "Long term, this camera app could become a dream photo app for women.",
+      "expected": [],
+      "absent": [
+        "instruction_rule:product-lifecycle-distribution",
+        "skill:product-pipeline"
+      ]
+    },
+    {
       "id": "activation",
       "task": "Find the onboarding bottleneck preventing users from reaching first value.",
       "expected": [

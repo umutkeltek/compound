@@ -661,7 +661,20 @@
         "prospect",
         "channel",
         "marketing",
-        "cold"
+        "cold",
+        "step",
+        "medium",
+        "customers",
+        "buyers",
+        "reach",
+        "downloads",
+        "installs",
+        "discovery",
+        "social",
+        "posts",
+        "seo",
+        "community",
+        "partners"
       ],
       "when": [
         {
@@ -680,7 +693,20 @@
             "prospect",
             "channel",
             "marketing",
-            "cold"
+            "cold",
+            "step",
+            "medium",
+            "customers",
+            "buyers",
+            "reach",
+            "downloads",
+            "installs",
+            "discovery",
+            "social",
+            "posts",
+            "seo",
+            "community",
+            "partners"
           ]
         }
       ],

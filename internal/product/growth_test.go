@@ -983,6 +983,28 @@ func TestGrowthRecordAndAssessmentEvidence(t *testing.T) {
 	}
 }
 
+// TestGrowthMediumChoiceNeedsAnAssessment guards the embedded catalog: the
+// contract's sales surfaces ("app_store") are not a chosen way to reach
+// buyers, so a product that only lists them has no medium choice on file.
+// A learned fact for the area is the record of the choice.
+func TestGrowthMediumChoiceNeedsAnAssessment(t *testing.T) {
+	home := t.TempDir()
+	applyGrowthBundle(t, home, "product:sold", nil)
+	applyGrowthBundle(t, home, "product:chosen", func(p *Product) {
+		p.Learned = []LearnedFact{{At: growthAsOf.AddDate(0, 0, -3), Fact: "Chose store search over an own social account; test first downloads per 100 impressions for 28 days.", EvidenceRef: "fixture:medium-choice", Area: "acquisition_channels"}}
+	})
+	g := buildGrowthT(t, home, growthOpts())
+
+	sold := growthAudit(t, growthApp(t, g, "product:sold"), "acquisition_channels")
+	if sold.Status != GrowthBlind || sold.Basis != GrowthBasisNone || strings.Contains(sold.Summary, "app_store") {
+		t.Fatalf("sales surfaces counted as a medium choice: %+v", sold)
+	}
+	chosen := growthAudit(t, growthApp(t, g, "product:chosen"), "acquisition_channels")
+	if chosen.Status != GrowthMeasured || chosen.Basis != GrowthBasisAssessment || !strings.Contains(chosen.Summary, "Chose store search") {
+		t.Fatalf("recorded medium choice not read: %+v", chosen)
+	}
+}
+
 // growthTwelveGroupAreas gives every embedded group two areas: one free, one
 // that needs a single root area in the last group.
 func growthTwelveGroupAreas(t *testing.T) string {
