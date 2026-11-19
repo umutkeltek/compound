@@ -651,7 +651,7 @@
       "kind": "instruction_rule",
       "name": "Product lifecycle: distribution handoff",
       "status": "active",
-      "weight": 1,
+      "weight": 3,
       "triggers": [
         "campaign",
         "launch",
@@ -661,16 +661,51 @@
         "prospect",
         "channel",
         "marketing",
-        "cold"
+        "step",
+        "medium",
+        "customers",
+        "buyers",
+        "reach",
+        "downloads",
+        "installs",
+        "discovery",
+        "social",
+        "posts",
+        "seo",
+        "community",
+        "partners",
+        "attract"
       ],
       "when": [
         {
           "kind": "task-class",
           "values": [
             "campaign",
-            "launch",
             "distribution",
-            "acquisition"
+            "acquisition",
+            "attract",
+            "audience",
+            "prospect",
+            "marketing",
+            "customers",
+            "buyers",
+            "community",
+            "partners",
+            "seo"
+          ]
+        },
+        {
+          "kind": "task-class",
+          "values": [
+            "campaign",
+            "launch",
+            "reach",
+            "attract",
+            "step",
+            "choose",
+            "compare",
+            "channel",
+            "medium"
           ]
         },
         {
@@ -680,7 +715,19 @@
             "prospect",
             "channel",
             "marketing",
-            "cold"
+            "medium",
+            "customers",
+            "buyers",
+            "downloads",
+            "installs",
+            "discovery",
+            "social",
+            "posts",
+            "seo",
+            "community",
+            "partners",
+            "step",
+            "app"
           ]
         }
       ],

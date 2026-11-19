@@ -1,12 +1,13 @@
 areas:
+  # The product contract's `channels` lists where the product is sold (app_store,
+  # web). That is not a choice of how buyers find it, so it is not evidence here.
+  # Only an assessment (a learned fact for this area) answers this question.
   - id: acquisition_channels
     group: acquisition
-    title: Where to find users
-    question: Have we picked the few channels most likely to reach our users?
-    measure: channel choice
+    title: Where to find buyers
+    question: Have we chosen, from buyer evidence, the medium and next test to reach buyers?
+    measure: medium choice
     skills: [product-marketing]
-    evidence:
-      record: [channels]
   - id: acquisition_search
     group: acquisition
     title: Search visibility
