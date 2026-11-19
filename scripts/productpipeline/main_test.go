@@ -97,6 +97,33 @@ func TestPublicBundleFreshCloneRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkRoutingCases(t, store, relocated)
+	// Real installations also offer a posting tool. Check which guidance wins
+	// while leaving the ordinary public-bundle corpus independent of fixtures.
+	t.Run("acquisition before publishing", func(t *testing.T) {
+		writer, err := capgraph.Open(home)
+		if err != nil {
+			t.Fatal(err)
+		}
+		posting := capgraph.Node{
+			ID: "skill:posting-fixture", Kind: "skill", Name: "Schedule approved posts",
+			Triggers: []string{"what", "distribution", "app", "apps", "post", "queue"}, Weight: 1,
+		}
+		if err := writer.Add(posting); err != nil {
+			t.Fatal(err)
+		}
+		for _, tc := range []struct{ task, first string }{
+			{"What is the next distribution step for this app?", "instruction_rule:product-lifecycle-distribution"},
+			{"Queue tomorrow's tip post.", posting.ID},
+		} {
+			offers, err := store.SurfaceForHarness(tc.task, "codex")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(offers) == 0 || offers[0].Node.ID != tc.first {
+				t.Errorf("%q: wanted %s first, got %v", tc.task, tc.first, offers)
+			}
+		}
+	})
 	// Read through the actual ContextPack consumer, not just the graph projection.
 	packBody := run("run", "./cmd/compound", "orient", "--harness", "codex", "--cwd", relocated, "--task", "Verify critical journey recovery including offline and permission failures.")
 	var pack envelope.ContextPack
@@ -176,7 +203,7 @@ func checkRoutingCases(t *testing.T, store *capgraph.Store, bundle string) {
 	if err := json.Unmarshal(b, &cases); err != nil {
 		t.Fatal(err)
 	}
-	if len(cases.Cases) != 24 || len(cases.KnownLimitations) != 1 {
+	if len(cases.Cases) != 30 || len(cases.KnownLimitations) != 1 {
 		t.Fatal("routing corpus unexpectedly changed")
 	}
 	for _, c := range cases.Cases {

@@ -226,6 +226,54 @@
       "absent": [
         "skill:product-pipeline"
       ]
+    },
+    {
+      "id": "audience_channel",
+      "task": "Which channel would help us reach our next customers?",
+      "expected": [
+        "instruction_rule:product-lifecycle-distribution"
+      ],
+      "absent": []
+    },
+    {
+      "id": "attract_users",
+      "task": "How can we attract users who need this app?",
+      "expected": [
+        "instruction_rule:product-lifecycle-distribution"
+      ],
+      "absent": []
+    },
+    {
+      "id": "launch_crash",
+      "task": "Fix the crash when I launch the app at step three.",
+      "expected": [],
+      "absent": [
+        "instruction_rule:product-lifecycle-distribution"
+      ]
+    },
+    {
+      "id": "reach_settings",
+      "task": "Can we reach the settings step with VoiceOver?",
+      "expected": [],
+      "absent": [
+        "instruction_rule:product-lifecycle-distribution"
+      ]
+    },
+    {
+      "id": "math_distribution",
+      "task": "How does the probability distribution in this app work?",
+      "expected": [],
+      "absent": [
+        "instruction_rule:product-lifecycle-distribution"
+      ]
+    },
+    {
+      "id": "cold_start",
+      "task": "Test the app launch time after twenty cold starts.",
+      "expected": [],
+      "absent": [
+        "instruction_rule:product-lifecycle-distribution"
+      ]
     }
   ],
   "known_limitations": [
