@@ -243,7 +243,13 @@ func (b *OperatorSessionBroker) Close() {
 }
 
 func (b *OperatorSessionBroker) ChildEnv(env []string) []string {
-	return append(env, OperatorSessionEnv+"=1", OperatorSocketEnv+"="+b.socket, OperatorBrokerKeyEnv+"="+b.key, OperatorInstanceEnv+"="+b.instance)
+	entry := func(name, value string) string { return name + "=" + value }
+	return append(env,
+		entry(OperatorSessionEnv, "1"),
+		entry(OperatorSocketEnv, b.socket),
+		entry(OperatorBrokerKeyEnv, b.key),
+		entry(OperatorInstanceEnv, b.instance),
+	)
 }
 
 func (b *OperatorSessionBroker) prune(now time.Time) {
