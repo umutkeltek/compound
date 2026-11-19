@@ -789,7 +789,7 @@
         }
       ],
       "boundary": [
-        "Offer-only context. Recheck readiness, silence and action authority at the governed consumer. Token gates do not understand full semantic negation; semantic retrieval may bypass branch conditions.",
+        "Offer-only context. Recheck readiness, silence and action authority at the governed consumer. Explicit buyer intent is required. Token and phrase gates do not understand full semantic negation.",
         "Multiple addresses are not sending permission; no fake warm-up, identity rotation, unsolicited bulk effects or automatic publication."
       ]
     },
