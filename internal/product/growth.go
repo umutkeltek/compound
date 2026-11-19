@@ -815,6 +815,20 @@ func (g *growthGroup) finalize(idx *whereIndex) {
 	// The identity owner's rule, so app pages, `product where` and the work
 	// a piece of work records all use one name per app.
 	g.canonical = mainSpelling(g.ids, func(id string) bool { return g.registered[id] }, func(id string) int { return g.rows[strings.ToLower(id)] })
+	// A product's contract facts are read from the member the identity owner
+	// names, not from whichever member sorts first. The aliases of one product
+	// each hold part of its record — the registry bundle on one, a scratch
+	// project contract on another — and a first-wins merge over sorted slugs
+	// decides which record stands by how a name happens to be spelled.
+	//
+	// The canonical member's own record wins, because that member is the
+	// product's identity: its record is the product's record, and an alias's
+	// record never overrides it. When the canonical member records nothing
+	// for a predicate, another member's record is used, and the most recently
+	// recorded one wins, because a later record supersedes an earlier one.
+	// A predicate no member records stays absent, so the reader says nothing
+	// is on file instead of inventing an answer.
+	claims := map[string]mem.Claim{}
 	for _, id := range g.ids {
 		facts := idx.claims[id]
 		if len(facts) == 0 {
@@ -836,11 +850,57 @@ func (g *growthGroup) finalize(idx *whereIndex) {
 			g.profile, g.profileDeclared = profileFromFacts(facts)
 		}
 		for predicate, c := range facts {
-			if _, seen := g.claims[predicate]; !seen {
-				g.claims[predicate] = c.Object
+			prior, seen := claims[predicate]
+			if !seen {
+				claims[predicate] = c
+				continue
+			}
+			if g.claimWins(c, prior, id) {
+				claims[predicate] = c
 			}
 		}
 	}
+	for predicate, c := range claims {
+		g.claims[predicate] = c.Object
+	}
+}
+
+// claimWins reports whether candidate beats prior for one predicate of one
+// product. The canonical member's record stands over an alias's; between two
+// aliases the more recently recorded one stands. The canonical member is the
+// product's identity, so its record is the product's record.
+//
+// A record that answers nothing is no record: "unknown" is how the ledger
+// spells a field nobody filled in, and the reader treats it as missing
+// evidence. Such a record must not stand over a member that does answer the
+// question, or the product's own silence would hide a fact another member
+// holds.
+func (g *growthGroup) claimWins(candidate, prior mem.Claim, candidateID string) bool {
+	candidateBlank := growthClaimBlank(candidate.Object)
+	priorBlank := growthClaimBlank(prior.Object)
+	if candidateBlank != priorBlank {
+		// The member that answers the question stands over the one that does
+		// not, whatever the identity order says.
+		return !candidateBlank
+	}
+	if candidateBlank {
+		// Neither answers; the canonical member's slot still stands, so the
+		// merge stays deterministic.
+		return candidateID == g.canonical && prior.Entity != g.canonical
+	}
+	if candidateID == g.canonical && prior.Entity != g.canonical {
+		return true
+	}
+	if prior.Entity == g.canonical && candidateID != g.canonical {
+		return false
+	}
+	return candidate.Seq > prior.Seq
+}
+
+// growthClaimBlank reports whether a recorded value answers nothing.
+func growthClaimBlank(value string) bool {
+	v := strings.TrimSpace(value)
+	return v == "" || v == EssenceUnknown
 }
 
 func growthHumanize(id string) string {
