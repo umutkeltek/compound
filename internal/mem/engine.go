@@ -172,7 +172,8 @@ func (s *Store) QueryBreadth(text string, k int, eng Engine) ([]Claim, error) {
 	if err != nil {
 		return nil, err
 	}
-	result, err := s.queryBreadthFromView(text, k, eng, true, view, nil)
+	snapshotHead := gitSnapshotHeadFromQuery(text)
+	result, err := s.queryBreadthFromView(text, k, eng, snapshotHead == "", view, nil, snapshotHead)
 	return result.Claims, err
 }
 
@@ -181,7 +182,7 @@ func (s *Store) QueryBreadthResult(text string, k int, eng Engine) (ReadOnlyBrea
 	if err != nil {
 		return ReadOnlyBreadthQueryResult{}, err
 	}
-	return s.queryBreadthFromView(text, k, eng, true, view, nil)
+	return s.queryBreadthFromView(text, k, eng, true, view, nil, "")
 }
 
 // QueryBreadthReadOnly shares QueryBreadth's validation and ranking path but does not capture
@@ -192,7 +193,7 @@ func (s *Store) QueryBreadthReadOnly(text string, k int, eng Engine) ([]Claim, e
 	if err != nil {
 		return nil, err
 	}
-	result, err := s.queryBreadthFromView(text, k, eng, false, view, nil)
+	result, err := s.queryBreadthFromView(text, k, eng, false, view, nil, "")
 	return result.Claims, err
 }
 
@@ -201,19 +202,19 @@ func (s *Store) QueryBreadthReadOnlyResult(text string, k int, eng Engine) (Read
 	if err != nil {
 		return ReadOnlyBreadthQueryResult{}, err
 	}
-	return s.queryBreadthFromView(text, k, eng, false, view, nil)
+	return s.queryBreadthFromView(text, k, eng, false, view, nil, "")
 }
 
 // QueryBreadthReadOnlyFromView preserves the normal read-only query ingress,
 // ranking, alias expansion, and fail-closed authority checks while reusing an
 // invocation's already-stabilized memory view.
 func (s *Store) QueryBreadthReadOnlyFromView(text string, k int, eng Engine, view *CurrentView) ([]Claim, error) {
-	result, err := s.queryBreadthFromView(text, k, eng, false, view, nil)
+	result, err := s.queryBreadthFromView(text, k, eng, false, view, nil, "")
 	return result.Claims, err
 }
 
 func (s *Store) QueryBreadthReadOnlyFromViewResult(text string, k int, eng Engine, view *CurrentView) (ReadOnlyBreadthQueryResult, error) {
-	return s.queryBreadthFromView(text, k, eng, false, view, nil)
+	return s.queryBreadthFromView(text, k, eng, false, view, nil, "")
 }
 
 // QueryBreadthReadOnlyFromViewExpanded is the invocation-snapshot variant used
@@ -221,7 +222,7 @@ func (s *Store) QueryBreadthReadOnlyFromViewResult(text string, k int, eng Engin
 // prevents the breadth engine and the caller's revision from observing different
 // alias-registry generations.
 func (s *Store) QueryBreadthReadOnlyFromViewExpanded(text string, k int, eng Engine, view *CurrentView, expanded ExpandedQuery) ([]Claim, error) {
-	result, err := s.queryBreadthFromView(text, k, eng, false, view, &expanded)
+	result, err := s.queryBreadthFromView(text, k, eng, false, view, &expanded, "")
 	return result.Claims, err
 }
 
@@ -236,10 +237,10 @@ type ReadOnlyBreadthQueryResult struct {
 }
 
 func (s *Store) QueryBreadthReadOnlyFromViewExpandedResult(text string, k int, eng Engine, view *CurrentView, expanded ExpandedQuery) (ReadOnlyBreadthQueryResult, error) {
-	return s.queryBreadthFromView(text, k, eng, false, view, &expanded)
+	return s.queryBreadthFromView(text, k, eng, false, view, &expanded, "")
 }
 
-func (s *Store) queryBreadthFromView(text string, k int, eng Engine, captureObserved bool, view *CurrentView, capturedExpansion *ExpandedQuery) (ReadOnlyBreadthQueryResult, error) {
+func (s *Store) queryBreadthFromView(text string, k int, eng Engine, captureObserved bool, view *CurrentView, capturedExpansion *ExpandedQuery, snapshotHead string) (ReadOnlyBreadthQueryResult, error) {
 	if capturedExpansion != nil && expandedQueryProvided(*capturedExpansion) && capturedExpansion.Original != text {
 		return ReadOnlyBreadthQueryResult{}, fmt.Errorf("captured recall expansion mismatch: original does not match query text")
 	}
@@ -267,12 +268,18 @@ func (s *Store) queryBreadthFromView(text string, k int, eng Engine, captureObse
 	}
 	allow := make([]string, 0, len(cur))
 	for _, c := range cur {
+		if snapshotHead != "" && !matchesGitSnapshotHead(c, snapshotHead) {
+			continue
+		}
 		allow = append(allow, c.ID)
 	}
 	// E1 deterministic query expansion: widen the QUERY only (never the gate).
 	// Absent/empty registry → original text only (fail-open, byte-identical path).
 	expanded := ExpandedQuery{Original: text, Text: text}
-	if capturedExpansion != nil && expandedQueryProvided(*capturedExpansion) {
+	queryText := text
+	if snapshotHead != "" {
+		queryText = snapshotHead
+	} else if capturedExpansion != nil && expandedQueryProvided(*capturedExpansion) {
 		expanded = cloneExpandedQuery(*capturedExpansion)
 	} else {
 		reg, _ := LoadRecallAliases(s.home)
@@ -290,7 +297,7 @@ func (s *Store) queryBreadthFromView(text string, k int, eng Engine, captureObse
 		hits, err := eng.Query(queryText, GateList, allow, fetchK)
 		return hits, nil, err
 	}
-	hits, degradedLanes, err := query(text)
+	hits, degradedLanes, err := query(queryText)
 	if err != nil {
 		return ReadOnlyBreadthQueryResult{}, err
 	}
@@ -322,6 +329,9 @@ func (s *Store) queryBreadthFromView(text string, k int, eng Engine, captureObse
 			c, ok := view.byID[h.ClaimID]
 			if !ok {
 				return ReadOnlyBreadthQueryResult{}, fmt.Errorf("%w: %q", ErrEngineServedUnownedClaim, h.ClaimID) // was: silent drop
+			}
+			if snapshotHead != "" && !matchesGitSnapshotHead(c, snapshotHead) {
+				return ReadOnlyBreadthQueryResult{}, fmt.Errorf("%w: %q is outside the repository head allowlist", ErrEngineServedUnownedClaim, h.ClaimID)
 			}
 			out = append(out, cloneCurrentViewClaim(c))
 		case KindObservedFact:
