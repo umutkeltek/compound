@@ -685,6 +685,10 @@ entry. Negative coverage, refresh errors, stale windows and passed resets stay u
 Tool-scoped windows do not constrain generation; only empty, general or generation scopes
 are applicable. Unknown scopes, tool-only observations and account/window usage marked
 estimated remain unknown for admission. Fresh labels never replace timestamp/reset checks.
+For MiniMax build, extraction and unattended continuation, a service-labeled observation
+must cover both general text windows on each account. The reader checks the service label
+against the window name and excludes video quota from these text decisions. Other capability
+classes and legacy observations without service labels retain the provider-wide checks.
 Provider-wide usage does not prove account selection: multiple enabled accounts are
 admitted only when all are independently usable, without adding their percentages.
 Account identifiers and private source errors do not enter capacity evidence.

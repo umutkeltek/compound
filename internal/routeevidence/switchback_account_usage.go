@@ -25,6 +25,7 @@ type switchbackAccountUsage struct {
 		UsageKind       string  `json:"usage_kind"`
 		Windows         []struct {
 			Name      string   `json:"name"`
+			Model     string   `json:"model"`
 			Used      *float64 `json:"used_percent"`
 			Remaining *float64 `json:"remaining_percent"`
 			SampledAt string   `json:"sampled_at"`
@@ -78,7 +79,7 @@ func guardSwitchbackAccountUsage(homePath, lane, class string, source LaneCapaci
 		// Subprocess errors can contain account identity or private source text.
 		return LaneCapacityDecision{}, errors.New("Switchback account usage observation unavailable")
 	}
-	capacity, err := parseSwitchbackAccountUsage(body, provider, now, time.Duration(source.FreshnessMinutes)*time.Minute, expectedMinutes)
+	capacity, err := parseSwitchbackAccountUsage(body, provider, class, now, time.Duration(source.FreshnessMinutes)*time.Minute, expectedMinutes)
 	if err != nil {
 		return LaneCapacityDecision{}, err
 	}
@@ -86,7 +87,7 @@ func guardSwitchbackAccountUsage(homePath, lane, class string, source LaneCapaci
 	return decideLaneCapacity(homePath, lane, now, confirm, alternatives, cfg, capacity)
 }
 
-func parseSwitchbackAccountUsage(body []byte, provider string, now time.Time, freshness time.Duration, expectedMinutes int) (LaneCapacity, error) {
+func parseSwitchbackAccountUsage(body []byte, provider, class string, now time.Time, freshness time.Duration, expectedMinutes int) (LaneCapacity, error) {
 	bad := func() (LaneCapacity, error) {
 		return LaneCapacity{}, errors.New("invalid Switchback account usage observation")
 	}
@@ -116,6 +117,7 @@ func parseSwitchbackAccountUsage(body []byte, provider string, now time.Time, fr
 	members := []LaneCapacity{}
 	seen := map[string]bool{}
 	matched := false
+	textService := provider == "minimax" && (class == "build-implement" || class == "classify-extract" || class == "work.continue.unattended")
 	for _, account := range report.Accounts {
 		if account.Provider != provider {
 			continue
@@ -140,6 +142,7 @@ func parseSwitchbackAccountUsage(body []byte, provider string, now time.Time, fr
 			member = unknown("usage_unavailable")
 		} else {
 			windowNames := map[string]bool{}
+			serviceWindows := map[string]bool{}
 			applicableWindows := 0
 			for _, window := range account.Windows {
 				// MCP/tool quotas do not constrain generation capacity.
@@ -149,6 +152,16 @@ func parseSwitchbackAccountUsage(body []byte, provider string, now time.Time, fr
 				if window.Scope != "" && window.Scope != "general" && window.Scope != "generation" {
 					member = unknown("window_scope_unknown")
 					break
+				}
+				if textService && window.Scope == "generation" && window.Model != "" {
+					if !strings.HasPrefix(window.Name, window.Model+"/") {
+						member = unknown("window_model_mismatch")
+						break
+					}
+					serviceWindows[window.Name] = true
+					if window.Model == "video" {
+						continue
+					}
 				}
 				if window.Estimated || window.UsageKind == "estimated" {
 					member = unknown("estimated_usage")
@@ -187,7 +200,9 @@ func parseSwitchbackAccountUsage(body []byte, provider string, now time.Time, fr
 					}
 				}
 			}
-			if member.State == CapacityAlive && applicableWindows == 0 {
+			if member.State == CapacityAlive && len(serviceWindows) > 0 && (!serviceWindows["general/interval"] || !serviceWindows["general/weekly"]) {
+				member = unknown("text_windows_unavailable")
+			} else if member.State == CapacityAlive && applicableWindows == 0 {
 				member = unknown("no_generation_windows")
 			}
 			if member.State == CapacityAlive {

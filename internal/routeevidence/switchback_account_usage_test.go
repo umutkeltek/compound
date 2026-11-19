@@ -95,7 +95,7 @@ func TestSwitchbackUsageFreshnessErrorsAndResetSemantics(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			doc := accountUsageFixture(now)
 			tc.mutate(doc)
-			got, err := parseSwitchbackAccountUsage(usageBody(t, doc), "minimax", now, 15*time.Minute, 60)
+			got, err := parseSwitchbackAccountUsage(usageBody(t, doc), "minimax", "build-implement", now, 15*time.Minute, 60)
 			if tc.bad {
 				if err == nil {
 					t.Fatalf("accepted malformed report: %+v", got)
@@ -110,7 +110,7 @@ func TestSwitchbackUsageFreshnessErrorsAndResetSemantics(t *testing.T) {
 			}
 		})
 	}
-	if _, err := parseSwitchbackAccountUsage(make([]byte, MaxCodexBarProbeBytes+1), "minimax", now, time.Minute, 60); err == nil {
+	if _, err := parseSwitchbackAccountUsage(make([]byte, MaxCodexBarProbeBytes+1), "minimax", "build-implement", now, time.Minute, 60); err == nil {
 		t.Fatal("oversized usage accepted")
 	}
 }
@@ -126,7 +126,7 @@ func TestSwitchbackUsageRequiresEveryEnabledAccountUsable(t *testing.T) {
 	doc["accounts"] = []any{first, second}
 	parse := func() LaneCapacity {
 		t.Helper()
-		got, err := parseSwitchbackAccountUsage(usageBody(t, doc), "minimax", now, 15*time.Minute, 60)
+		got, err := parseSwitchbackAccountUsage(usageBody(t, doc), "minimax", "build-implement", now, 15*time.Minute, 60)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -150,8 +150,55 @@ func TestSwitchbackUsageRequiresEveryEnabledAccountUsable(t *testing.T) {
 		t.Fatalf("account cannot outlive run: %+v", got)
 	}
 	second["slot"] = "configured"
-	if _, err := parseSwitchbackAccountUsage(usageBody(t, doc), "minimax", now, 15*time.Minute, 60); err == nil {
+	if _, err := parseSwitchbackAccountUsage(usageBody(t, doc), "minimax", "build-implement", now, 15*time.Minute, 60); err == nil {
 		t.Fatal("duplicate account slot accepted")
+	}
+}
+
+func TestSwitchbackTextCapacityUsesTheConfiguredServicesWindows(t *testing.T) {
+	now := time.Now().UTC()
+	window := func(model, period string, used int) map[string]any {
+		w := usageWindow(accountUsageFixture(now))
+		w["model"], w["scope"], w["name"] = model, "generation", model+"/"+period
+		w["used_percent"], w["remaining_percent"] = used, 100-used
+		return w
+	}
+	video := window("video", "interval", 100)
+	short := window("general", "interval", 1)
+	week := window("general", "weekly", 52)
+	stale := window("general", "interval", 1)
+	stale["sampled_at"] = now.Add(-16 * time.Minute).Format(time.RFC3339Nano)
+	mislabeled := window("video", "interval", 100)
+	mislabeled["name"] = "general/interval"
+	for _, tc := range []struct {
+		name, capability string
+		windows          []any
+		want             LaneCapacityState
+	}{
+		{"video capped", "build-implement", []any{video, short, week}, CapacityAlive},
+		{"text interval capped", "build-implement", []any{video, window("general", "interval", 100), week}, CapacityWalled},
+		{"text week capped", "build-implement", []any{short, window("general", "weekly", 100)}, CapacityWalled},
+		{"stale text", "build-implement", []any{stale, week, video}, CapacityUnknown},
+		{"missing text week", "build-implement", []any{short, video}, CapacityUnknown},
+		{"video only", "build-implement", []any{video}, CapacityUnknown},
+		{"inconsistent service", "build-implement", []any{mislabeled, short, week}, CapacityUnknown},
+		{"other capability", "video-generation", []any{video, short, week}, CapacityWalled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := accountUsageFixture(now)
+			usageAccount(doc)["windows"] = tc.windows
+			cfg := LaneCapacityConfig{AccountUsageRunner: func(context.Context, string, ...string) ([]byte, error) {
+				return usageBody(t, doc), nil
+			}}
+			source := LaneCapacitySourceRef{Kind: "switchback_account_usage", Ref: "switchback://account-usage/minimax", FreshnessMinutes: 15}
+			got, err := GuardDeclaredLaneCapacityWithConfig(t.TempDir(), "fixture", tc.capability, source, now, 60, false, nil, true, cfg)
+			if err != nil || got.Capacity.State != tc.want {
+				t.Fatalf("capacity state %s, error %v, want %s", got.Capacity.State, err, tc.want)
+			}
+			if tc.want == CapacityAlive && (got.Capacity.Remaining != 48 || got.Refused || got.ConfirmationRequired) {
+				t.Fatalf("unexpected text allowance: %+v", got)
+			}
+		})
 	}
 }
 
@@ -305,7 +352,7 @@ func TestSwitchbackUsageOnlyMeasuredGenerationWindowsConstrainCapacity(t *testin
 		t.Run(tc.name, func(t *testing.T) {
 			doc := accountUsageFixture(now)
 			tc.mutate(doc)
-			got, err := parseSwitchbackAccountUsage(usageBody(t, doc), "minimax", now, 15*time.Minute, 60)
+			got, err := parseSwitchbackAccountUsage(usageBody(t, doc), "minimax", "build-implement", now, 15*time.Minute, 60)
 			if err != nil || got.State != tc.want {
 				t.Fatalf("got %+v, %v; want %s", got, err, tc.want)
 			}
